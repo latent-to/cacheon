@@ -1,0 +1,186 @@
+# Cacheon (SN14) — Architecture & Engineering Notes
+
+This document is the single place for architecture decisions, incentive mechanism design, build sequence, and lessons learned for **Cacheon** (Bittensor subnet 14). Update it when something changes or when a decision gets revisited.
+
+## Current state
+
+| Item     | Value                                               |
+| -------- | --------------------------------------------------- |
+| Phase    | 1 — Baseline Harness (in progress)                  |
+| Model    | Qwen2.5-7B-Instruct                                 |
+| Hardware | H100 80GB SXM (production), RTX 4090 (dev)          |
+| Runtime  | HuggingFace Transformers (monkey-patched attention) |
+
+## System overview
+
+One validator (the subnet owner). One eval pipeline. One person setting weights.
+
+```
+BITTENSOR CHAIN
+  │
+  │  miner registers: {"model": "hf/repo", "revision": "sha"}
+  ▼
+CPU SERVER  ← remote_validator.py (not yet built)
+  │  holds wallet keys
+  │  reads chain commitments
+  │  selects challengers
+  │  uploads prompts + model pointers to GPU pod over SSH/SFTP
+  │  processes results JSON
+  │  calls set_weights()
+  │
+  │  ── SSH/SFTP ──────────────────────────────────────────────
+  ▼
+GPU POD  ← pod_eval.py (not yet built)
+  │  no wallet keys, no chain access
+  │  receives models + prompts
+  │  runs harness: PassthroughPolicy baseline + miner KVCachePolicy
+  │  runs scoring: KL gate + weighted score
+  │  writes results JSON
+  │
+  └──────── results JSON back over SSH ──────────────────────▶ CPU SERVER
+```
+
+**Why the CPU/GPU split?** Security boundary within our own infrastructure. If the GPU pod is compromised, the attacker gets model weights and eval results — not wallet keys, not the ability to set weights. The two sides communicate over SSH: prompts and policy pointers in, a results JSON out.
+
+**Other validators on Cacheon (SN14):** Other validator hotkeys can exist on the subnet and set their own weights independently. In practice, nobody else is running independent eval — it would require the same GPU setup and matching eval methodology. The Bittensor protocol allows other validators to copy or follow the subnet owner's weights via chain consensus. The public API (leaderboard, scores) is for miners and community monitoring, not for weight-setting by other validators.
+
+## Incentive mechanism
+
+### King-of-the-hill / winner-take-all
+
+One reigning champion. All emission goes to the king. Challengers must beat the king's score to dethrone them.
+
+GPU eval only runs when new challengers exist. If no new miner has registered since the last round, the king keeps weight and no inference runs. This is the right cost model: GPU inference is expensive; running it every block for every registered miner would make the subnet uneconomical.
+
+**Tradeoffs considered:**
+
+- Top-N split (e.g. 60/25/10/5%) distributes incentive more broadly but weakens the signal — miners optimize for "good enough to be top-4" rather than "best." Winner-takes-all creates a sharper optimization target.
+- Running eval on all miners every round would be more statistically robust but costs 10–100× more GPU time. King-of-the-hill amortizes that cost by only evaluating new entrants.
+
+### One commitment per hotkey
+
+Miners register once per hotkey. To submit a new policy, register a new hotkey. This creates commitment pressure: you can't iterate cheaply on the same registration. Miners are incentivized to test locally before committing.
+
+**Why not allow re-submission on the same hotkey?** Unlimited resubmission turns the subnet into a free hyperparameter search service. One-shot creates real skin in the game.
+
+### Scoring formula
+
+```python
+if kl_divergence > QUALITY_THRESHOLD:
+    score = 0.0
+else:
+    score = (0.6 * memory_reduction) + (0.4 * latency_improvement)
+
+QUALITY_THRESHOLD = 0.1   # nats — tunable
+```
+
+- **Hard KL gate, not soft penalty.** A soft penalty creates incentives to trade output quality for efficiency in ways that are hard to detect. Hard reject above threshold is cleaner and easier to reason about.
+- **60/40 memory/latency split.** Memory is weighted higher because it's the primary bottleneck at scale — KV cache memory determines max context length and batch size. Latency matters but is secondary. Both weights are tunable once we see real submissions.
+- **Memory measured by harness, not self-reported.** `torch.cuda.max_memory_allocated()` is used, not `policy.memory_bytes()`. Self-reported memory can be faked; GPU allocator measurement cannot. `memory_bytes()` exists as a cross-check and debugging aid — a large discrepancy flags the submission.
+
+## Harness architecture
+
+### HuggingFace, not vLLM
+
+vLLM manages its own KV cache internally (PagedAttention). Replacing it would mean fighting undocumented internals that change between versions. HuggingFace models are plain Python — every attention layer is a `forward()` method you can swap at runtime.
+
+Monkey-patching: replace each layer's `self_attn.forward` with a function that calls `policy.write()` and `policy.attend()` after Q/K/V projections and RoPE. Baseline and miner policy run on the same HF stack, so relative comparisons are valid.
+
+**Qwen-specific gotchas (applies to Qwen2.5-7B-Instruct):**
+
+- **GQA**: `num_key_value_heads != num_attention_heads`. Use the right count when reshaping after projection.
+- **RoPE**: Qwen applies rotary position embeddings to Q and K after projection, before attention. Apply RoPE before calling `policy.write()` — otherwise the miner's cache stores unencoded keys and attention scores will be wrong.
+- **Prefill shape**: `seq_len = full prompt length` during prefill, `seq_len = 1` during decode. `write()` handles both without special-casing.
+
+### The `write` + `attend` interface shape
+
+Three separate hooks (write, score, aggregate) would force score tensor materialization and create a circular dependency for eviction strategies:
+
+- H2O-style eviction needs attention weights to track token importance. Attention weights are computed during scoring. If scoring is a separate hook that runs after `write`, the eviction decision in `write` has no access to the current step's attention weights.
+- TurboQuant computes `Q @ K_compressed.T + QJL_correction → softmax → aggregate` in one fused call. Splitting scoring and aggregation forces materialization of the full `[batch, heads, 1, seq_len]` score tensor — which defeats the point at long context.
+
+`write` + `attend` lets the miner own the full pass. The miner's object holds state across calls, so importance accumulators, codebooks, and rotation matrices are all accessible inside `attend` when needed.
+
+### Single-operator eval in V1
+
+One validator, one GPU pod, one person deciding weights. This is not a decentralization tradeoff — it's just the operational reality of V1. The subnet owner runs both the CPU server and the GPU pod.
+
+The CPU/GPU split is a **security boundary**, not an architectural requirement for decentralization. It means a compromised GPU pod can't steal wallet keys or forge weight-setting.
+
+**Why not let other validators run their own eval?** Different hardware produces different KL values. An H100 and an A100 running the same policy produce slightly different floating-point results. If multiple independent validators ran eval and set weights, they'd disagree on who's king and produce conflicting weight signals. Centralized eval on one reference machine eliminates that variance.
+
+**Known tradeoff:** Trust is concentrated in the subnet operator. The mitigation path is publishing eval rollouts — prompts, baseline logits, KL values — to verifiable storage (e.g. Cloudflare R2) so anyone can audit results after the fact. Verify-after-the-fact rather than run-it-yourself. This is the V2 plan.
+
+## Build sequence
+
+Five phases. Each produces something runnable and validates assumptions before committing to the next.
+
+| Phase       | What to build                                                                                                        | Done when                                                                                                                          |
+| ----------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Harness | Load Qwen2.5-7B, monkey-patch attention, passthrough policy, prefill + decode, return logits + latency + peak memory | Passthrough produces identical token-for-token output to unpatched HF on 5 prompts                                                 |
+| 2 — Scoring | `scoring.py`: KL divergence, memory delta, latency delta → score dict                                                | KL between identical logits = 0; KL between baseline and degraded policy > 0; score formula matches hand-computed cases            |
+| 3 — Sandbox | AST analysis + subprocess isolation, import allowlist, output validation                                             | `import os` rejected before execution; file write killed at subprocess level; legitimate TurboQuant-style policy runs successfully |
+| 4 — Prompts | Block-hash seeded PG19 sampling                                                                                      | Same block hash always produces same passage set; different hashes produce different sets                                          |
+| 5 — API     | FastAPI: `POST /evaluate`, `GET /health`, `GET /leaderboard`; commit pointer resolution; hotkey auth                 | `POST /evaluate` returns score dict; unregistered hotkey rejected with 401; leaderboard returns current king                       |
+
+**Don't skip phases.** Each one validates assumptions the next phase depends on. Sandbox bolted on after the fact has gaps.
+
+### Phase 1 stop condition
+
+Passthrough policy must produce **identical token-for-token output** to unpatched HuggingFace on 5 prompts. `harness.verify()` checks this. If it fails, the monkey-patch has a bug — check RoPE ordering and GQA reshape before continuing.
+
+### Phase 3 — Sandbox layers
+
+**Layer 1 — Static AST analysis (before execution):**
+
+- Parse submitted file with Python's `ast` module
+- Reject any import not on the allowlist: `torch`, `numpy`, `math`, `einops`
+- Reject `eval()`, `exec()`, `__import__()`, `open()`, `os.system()`
+
+**Layer 2 — Subprocess isolation (at execution):**
+
+- No network access (network namespace or firewall rule)
+- No filesystem writes outside a wiped temp dir
+- Kill process if runtime exceeds 5 minutes
+- Validate `AttentionOutput.output`: correct dtype + shape, no NaN/Inf, values in `[-100, 100]`
+
+Triton is not on the V1 allowlist. Triton kernels can read arbitrary GPU memory and are harder to sandbox. PyTorch ops are sufficient to implement TurboQuant's algorithm correctly — the fused kernel is a hardware optimization, not an algorithmic one. Triton unlocks in V2 with additional isolation.
+
+### Phase 5 — Public API
+
+The public API is for **monitoring only** — miners and community can check eval status, scores, and leaderboard. It does not participate in weight-setting.
+
+| Endpoint               | What it does                                        |
+| ---------------------- | --------------------------------------------------- |
+| `GET /health`          | Returns 200 if harness is ready.                    |
+| `GET /leaderboard`     | Current king and recent challenger history. Public. |
+| `GET /scores/{hotkey}` | Score history for a specific miner. Public.         |
+
+Weight-setting happens entirely inside `remote_validator.py` on the CPU server — it reads chain commitments, runs eval via the GPU pod over SSH, and calls `set_weights()` directly. No external API call is involved in the weight-setting path.
+
+## Key decisions log
+
+| Decision                            | Reasoning                                                                                                                                                                                                                                                                                    | Alternatives considered                                                                              |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| HuggingFace over vLLM               | vLLM's internal KV cache can't be replaced without fighting undocumented internals. HF gives exact hook points. Relative comparisons valid on same stack.                                                                                                                                    | vLLM: rejected — PagedAttention is not hookable cleanly                                              |
+| Single-operator eval in V1          | One validator, one GPU pod, one person setting weights. Different hardware produces different KL values — one reference machine eliminates variance. CPU/GPU split keeps wallet keys off the inference pod. Other validators can exist on-chain but nobody else is running independent eval. | Decentralized: deferred to V2 via verifiable rollouts                                                |
+| King-of-the-hill / WTA              | Sharper optimization target than top-N split. GPU eval only runs when new challengers exist — amortizes cost.                                                                                                                                                                                | Top-N split: considered, rejected — weakens incentive signal                                         |
+| One commitment per hotkey           | Commitment pressure: miners test locally before committing. Clean on-chain record.                                                                                                                                                                                                           | Unlimited resubmission: turns subnet into free hyperparameter search                                 |
+| On-chain commit pointer             | Policy code lives in public repo; on-chain record is `{model, revision}` JSON. Harness fetches and pins exact commit.                                                                                                                                                                        | Direct `.py` file upload: considered, replaced — pointer is cleaner and more auditable               |
+| PG19 for V1 prompts                 | Long-form text, real context lengths, diverse content. Block-hash seed makes selection deterministic and verifiable. No transformation needed.                                                                                                                                               | Synthetic stream with LLM transformation: deferred to V2+ — adds complexity without clear V1 benefit |
+| Hard KL gate                        | Soft penalty creates incentives to trade output quality for efficiency in unacceptable ways. Hard reject above threshold is cleaner.                                                                                                                                                         | Soft KL penalty in score: rejected                                                                   |
+| `write` + `attend` over three hooks | Three hooks force score tensor materialization and create circular dependency for eviction. `write + attend` lets the miner own the full pass.                                                                                                                                               | Separate score/aggregate hooks: rejected — kills TurboQuant-class fused approaches                   |
+| Triton blocked in V1                | Triton kernels can read arbitrary GPU memory. PyTorch implements TurboQuant's algorithm correctly. Kernel optimization is V2.                                                                                                                                                                | Allow Triton in V1: rejected — sandboxing is harder, algorithmic correctness is sufficient for V1    |
+| ~20% attention weight checks        | Catches degenerate policies that collapse attention to one token without triggering the KL gate.                                                                                                                                                                                             | Always check: overhead not worth it every round                                                      |
+
+## Out of scope for V1
+
+| Item                                                    | When                                  |
+| ------------------------------------------------------- | ------------------------------------- |
+| Decentralized validator execution / verifiable rollouts | V2 — after harness is stable          |
+| Triton / custom kernel support                          | V2 — requires kernel-level sandboxing |
+| Multi-model evaluation                                  | V2 — harness is architected for it    |
+| Parallel submission evaluation                          | V2 — serial queue is fine for V1      |
+| Frontend / leaderboard UI                               | After API is stable                   |
+| Additional prompt datasets (V2+)                        | After V1 is running                   |
+| Scheduling, batching, offloading optimizations          | V2+                                   |
