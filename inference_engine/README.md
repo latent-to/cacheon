@@ -24,7 +24,20 @@ bash -c "$(curl -fsSL -H "Authorization: token $GITHUB_PAT" \
   https://raw.githubusercontent.com/latent-to/cacheon/main/inference_engine/setup.sh)"
 ```
 
-This clones the repo to `/root/cacheon`, creates a venv at `/root/venv`, installs deps, downloads model weights to `/root/.cache/huggingface` (~16GB), and runs the smoke test. Everything under `/root` persists across pod restarts on Lium.
+**Storage layout (Lium):**
+
+| Path | Backing | Speed | Persists across… |
+|------|---------|-------|-------------------|
+| `/root` | Local NVMe | ~4 GB/s | Pod **restart** (stop/start), wiped on **delete** |
+| `/mnt` | S3-backed volume | ~5 MB/s | Pod **delete** (as long as volume is kept) |
+
+The script handles model weights in three tiers:
+
+1. **Already on local NVMe** (`/root/.cache/huggingface`) → skip, nothing to do.
+2. **On the volume but not local** (`/mnt/.cache/huggingface`) → `rsync` from volume to NVMe once (~20–50 min for 15 GB over s3fs).
+3. **First time ever** → download from Hugging Face to `/mnt` (persistent), then copy to `/root` (fast).
+
+After the first download, deleting and re-renting a pod only triggers step 2 (copy from volume), not a full re-download.
 
 On subsequent SSHs:
 
