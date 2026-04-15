@@ -21,7 +21,7 @@ export GITHUB_PAT=your_github_pat_here
 export HF_TOKEN=your_hf_token_here
 
 bash -c "$(curl -fsSL -H "Authorization: token $GITHUB_PAT" \
-  https://raw.githubusercontent.com/xavierlyu/cacheon/main/inference_engine/setup.sh)"
+  https://raw.githubusercontent.com/latent-to/cacheon/main/inference_engine/setup.sh)"
 ```
 
 This clones the repo to `/root/cacheon`, creates a venv at `/root/venv`, installs deps, downloads model weights to `/root/.cache/huggingface` (~16GB), and runs the smoke test. Everything under `/root` persists across pod restarts on Lium.
@@ -56,7 +56,7 @@ python scripts/smoke_test.py
 # 4. Phase 1 gate — 7B model on CUDA (~25 min for 5 prompts × 128 tokens)
 #    THE stop condition. Runs harness.verify() on 5 prompts with the real 7B.
 #    Prints baseline latency and peak GPU memory — record these for Phase 2.
-python -m inference_engine.harness
+python -m inference_engine
 ```
 
 **Confirmed baseline (GeForce RTX 3090, Qwen2.5-7B-Instruct, FP16, 5 prompts × 128 tokens):**
