@@ -11,6 +11,7 @@ This code lives on the GPU pod.
 | `policy.py`        | `KVCachePolicy` interface — the contract every miner submission implements                      |
 | `passthrough.py`   | Baseline policy: uncompressed FP16 cache, standard attention. The control variable.             |
 | `harness.py`       | Loads the model, monkey-patches attention, runs the generate loop, collects metrics             |
+| `scoring.py`       | Takes two `RunResult`s (baseline + miner) → `ScoreResult` (KL gate + weighted score)           |
 | `setup.sh`         | Provisions a fresh GPU instance: system deps, repo clone/pull, venv, model download, smoke test |
 | `requirements.txt` | Python deps with version constraints explained                                                  |
 
@@ -66,9 +67,9 @@ pytest tests/test_harness_integration.py -v -m integration
 #    Human-readable output: monkey-patch sanity, verify, baseline metrics.
 python scripts/smoke_test.py
 
-# 4. Phase 1 gate — 7B model on CUDA (~25 min for 5 prompts × 128 tokens)
-#    THE stop condition. Runs harness.verify() on 5 prompts with the real 7B.
-#    Prints baseline latency and peak GPU memory — record these for Phase 2.
+# 4. Full harness run — 7B model on CUDA (~25 min for 5 prompts × 128 tokens)
+#    Runs harness.verify() on 5 prompts with the real 7B (Phase 1 stop condition ✅).
+#    Then runs PassthroughPolicy baseline and prints latency + peak GPU memory.
 python -m inference_engine
 ```
 

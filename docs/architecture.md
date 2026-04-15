@@ -6,10 +6,12 @@ This document is the single place for architecture decisions, incentive mechanis
 
 | Item     | Value                                               |
 | -------- | --------------------------------------------------- |
-| Phase    | 1 — Baseline Harness (in progress)                  |
+| Phase    | 3 — Sandbox (next up)                               |
 | Model    | Qwen2.5-7B-Instruct                                 |
 | Hardware | H100 80GB SXM (production), RTX 4090 (dev)          |
 | Runtime  | HuggingFace Transformers (monkey-patched attention) |
+
+Phases 1 (Harness) and 2 (Scoring) are complete. See [Build sequence](#build-sequence) for status of each phase.
 
 ## System overview
 
@@ -19,28 +21,39 @@ One validator (the subnet owner). One eval pipeline. One person setting weights.
 BITTENSOR CHAIN
   │
   │  miner registers: {"model": "hf/repo", "revision": "sha"}
+  │  one commitment per hotkey — permanent, no re-do
   ▼
-CPU SERVER  ← remote_validator.py (not yet built)
-  │  holds wallet keys
-  │  reads chain commitments
-  │  selects challengers
-  │  uploads prompts + model pointers to GPU pod over SSH/SFTP
-  │  processes results JSON
-  │  calls set_weights()
+CPU SERVER  ← remote_validator.py (not yet built — Phase 5)
+  │
+  │  [Main loop, ~every 360s]
+  │  1. fetch metagraph + all revealed commitments
+  │  2. sandbox-precheck new submissions (AST + subprocess — Phase 3)
+  │  3. identify king (lowest score in state) and new challengers
+  │  4. if no new challengers → set_weights(king), sleep, loop
+  │  5. if challengers exist → SSH to GPU pod with eval job
   │
   │  ── SSH/SFTP ──────────────────────────────────────────────
   ▼
-GPU POD  ← pod_eval.py (not yet built)
-  │  no wallet keys, no chain access
-  │  receives models + prompts
-  │  runs harness: PassthroughPolicy baseline + miner KVCachePolicy
-  │  runs scoring: KL gate + weighted score
-  │  writes results JSON
+GPU POD  ← pod_eval.py (not yet built — Phase 5)
   │
-  └──────── results JSON back over SSH ──────────────────────▶ CPU SERVER
+  │  no wallet keys, no chain access
+  │  load Qwen2.5-7B-Instruct
+  │  generate prompts (block-hash seeded PG19 — Phase 4)
+  │  for each challenger:
+  │    baseline = harness.run(PassthroughPolicy, prompts)
+  │    miner    = harness.run(MinerPolicy, prompts)
+  │    result   = scoring.score(baseline, miner)
+  │  write results.json
+  │
+  └──────── results.json back over SSH ───────────────────────▶ CPU SERVER
+  │
+  │  6. did any challenger beat king? → new king
+  │  7. set_weights(winner_uid = 1.0, all others = 0.0)
 ```
 
 **Why the CPU/GPU split?** Security boundary within our own infrastructure. If the GPU pod is compromised, the attacker gets model weights and eval results — not wallet keys, not the ability to set weights. The two sides communicate over SSH: prompts and policy pointers in, a results JSON out.
+
+**Why ~360s polling interval?** GPU eval takes minutes to hours — there's no benefit to reacting faster. One full scan per epoch (fetch metagraph + all revealed commitments, compare against known state) is sufficient. The loop runs immediately after a successful eval; 360s sleep only when idle (no challengers) or on chain/eval failures.
 
 **Other validators on Cacheon (SN14):** Other validator hotkeys can exist on the subnet and set their own weights independently. In practice, nobody else is running independent eval — it would require the same GPU setup and matching eval methodology. The Bittensor protocol allows other validators to copy or follow the subnet owner's weights via chain consensus. The public API (leaderboard, scores) is for miners and community monitoring, not for weight-setting by other validators.
 
@@ -115,13 +128,13 @@ The CPU/GPU split is a **security boundary**, not an architectural requirement f
 
 Five phases. Each produces something runnable and validates assumptions before committing to the next.
 
-| Phase       | What to build                                                                                                        | Done when                                                                                                                          |
-| ----------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 1 — Harness | Load Qwen2.5-7B, monkey-patch attention, passthrough policy, prefill + decode, return logits + latency + peak memory | Passthrough produces identical token-for-token output to unpatched HF on 5 prompts                                                 |
-| 2 — Scoring | `scoring.py`: KL divergence, memory delta, latency delta → score dict                                                | KL between identical logits = 0; KL between baseline and degraded policy > 0; score formula matches hand-computed cases            |
-| 3 — Sandbox | AST analysis + subprocess isolation, import allowlist, output validation                                             | `import os` rejected before execution; file write killed at subprocess level; legitimate TurboQuant-style policy runs successfully |
-| 4 — Prompts | Block-hash seeded PG19 sampling                                                                                      | Same block hash always produces same passage set; different hashes produce different sets                                          |
-| 5 — API     | FastAPI: `POST /evaluate`, `GET /health`, `GET /leaderboard`; commit pointer resolution; hotkey auth                 | `POST /evaluate` returns score dict; unregistered hotkey rejected with 401; leaderboard returns current king                       |
+| Phase       | Status | What to build                                                                                                        | Done when                                                                                                                          |
+| ----------- | ------ | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Harness | ✅ Done | Load Qwen2.5-7B, monkey-patch attention, passthrough policy, prefill + decode, return logits + latency + peak memory | Passthrough produces identical token-for-token output to unpatched HF on 5 prompts                                                 |
+| 2 — Scoring | ✅ Done | `scoring.py`: KL divergence, memory delta, latency delta → score dict                                                | KL between identical logits = 0; KL between baseline and degraded policy > 0; score formula matches hand-computed cases            |
+| 3 — Sandbox | 🔲 Next | AST analysis + subprocess isolation, import allowlist, output validation                                             | `import os` rejected before execution; file write killed at subprocess level; legitimate TurboQuant-style policy runs successfully |
+| 4 — Prompts | 🔲 Todo | Block-hash seeded PG19 sampling                                                                                      | Same block hash always produces same passage set; different hashes produce different sets                                          |
+| 5 — Validator | 🔲 Todo | `remote_validator.py` (CPU): chain scan, challenger selection, SSH to GPU pod, `set_weights()`. `pod_eval.py` (GPU): load policy, run harness + scoring, write results JSON. `GET /leaderboard`, `GET /scores/{hotkey}`, `GET /health` | `remote_validator.py` detects new challenger, runs eval, king is dethroned when beaten; leaderboard reflects current king |
 
 **Don't skip phases.** Each one validates assumptions the next phase depends on. Sandbox bolted on after the fact has gaps.
 
@@ -146,17 +159,32 @@ Passthrough policy must produce **identical token-for-token output** to unpatche
 
 Triton is not on the V1 allowlist. Triton kernels can read arbitrary GPU memory and are harder to sandbox. PyTorch ops are sufficient to implement TurboQuant's algorithm correctly — the fused kernel is a hardware optimization, not an algorithmic one. Triton unlocks in V2 with additional isolation.
 
-### Phase 5 — Public API
+### Phase 5 — Validator + API
 
-The public API is for **monitoring only** — miners and community can check eval status, scores, and leaderboard. It does not participate in weight-setting.
+Phase 5 has two parts:
+
+**Part A — Validator loop (`remote_validator.py` on CPU server):**
+
+The main loop. Runs forever. No FastAPI — direct Python, no external API call in the weight-setting path.
+
+1. Fetch metagraph + all revealed commitments (~every 360s)
+2. Sandbox-precheck new submissions
+3. Identify king (lowest score from state) and new challengers (hotkey:block not yet evaluated)
+4. If no challengers → `set_weights(king, 1.0)`, sleep, loop
+5. If challengers → SSH to GPU pod: send `prompts.json` + policy pointers
+6. GPU pod runs harness + scoring, writes `results.json`, SSH back
+7. Update state: did any challenger beat the king?
+8. `set_weights(winner_uid = 1.0, all others = 0.0)` via `subtensor.set_weights()`
+
+**Part B — Monitoring API (FastAPI, optional):**
+
+Read-only. Miners and community check status. Does not participate in weight-setting.
 
 | Endpoint               | What it does                                        |
 | ---------------------- | --------------------------------------------------- |
-| `GET /health`          | Returns 200 if harness is ready.                    |
+| `GET /health`          | Service status, last eval block, current king.      |
 | `GET /leaderboard`     | Current king and recent challenger history. Public. |
 | `GET /scores/{hotkey}` | Score history for a specific miner. Public.         |
-
-Weight-setting happens entirely inside `remote_validator.py` on the CPU server — it reads chain commitments, runs eval via the GPU pod over SSH, and calls `set_weights()` directly. No external API call is involved in the weight-setting path.
 
 ## Key decisions log
 
