@@ -83,9 +83,9 @@ def main():
             call_log.append(("write", layer_idx, keys.shape))
             super().write(keys, values, layer_idx, positions)
 
-        def attend(self, query, layer_idx):
+        def attend(self, query, layer_idx, **kwargs):
             call_log.append(("attend", layer_idx))
-            return super().attend(query, layer_idx)
+            return super().attend(query, layer_idx, **kwargs)
 
     policy = TracePolicy()
     policy.setup(harness._cache_config)

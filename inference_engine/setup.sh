@@ -8,13 +8,13 @@
 #   bash setup.sh                  # full setup + download models
 #   bash setup.sh --no-model       # skip model download (deps only)
 #
-# Persistent volume is mounted at /workspace on Lium/RunPod.
+# Persistent volume is mounted at /root on Lium/RunPod.
 # Model weights are cached there so they survive pod restarts.
 
 set -euo pipefail
 
 # ── config ────────────────────────────────────────────────────────────────────
-REPO_URL="https://github.com/latent-to/cacheon.git"   # TODO: replace with real URL
+REPO_URL="https://github.com/latent-to/cacheon.git"
 WORKSPACE="/root"
 REPO_DIR="$WORKSPACE/cacheon"
 export HF_HOME="$WORKSPACE/.cache/huggingface"    # weights persist across restarts
