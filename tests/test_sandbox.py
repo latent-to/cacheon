@@ -263,6 +263,22 @@ class TestBlockedAttrs:
         assert not r.ok
         assert "os" in r.reason
 
+    def test_blocked_dunder_builtins_import(self):
+        src = _minimal_policy(
+            extra_body='    def extra(self): __builtins__.__import__("os").system("id")'
+        )
+        r = check(src)
+        assert not r.ok
+        assert "__builtins__" in r.reason
+
+    def test_blocked_dunder_builtins_getattr_style(self):
+        src = _minimal_policy(
+            extra_body='    def extra(self): __builtins__.open("/etc/passwd")'
+        )
+        r = check(src)
+        assert not r.ok
+        assert "__builtins__" in r.reason
+
 
 class TestSubmoduleEscapeBlocked:
     """Verify that importing dangerous stdlib objects through inference_engine

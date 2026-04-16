@@ -34,7 +34,7 @@ BLOCKED_CALLS: frozenset[str] = frozenset({
 
 BLOCKED_ATTR_TARGETS: frozenset[str] = frozenset({
     "os", "sys", "subprocess", "socket", "importlib",
-    "ctypes", "cffi", "builtins", "pickle", "shelve",
+    "ctypes", "cffi", "builtins", "__builtins__", "pickle", "shelve",
 })
 
 REQUIRED_METHODS: frozenset[str] = frozenset({
