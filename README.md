@@ -97,7 +97,9 @@ The harness fetches the policy at the pinned revision and runs it inside a sandb
 
 ### Prompts
 
-V1 uses **PG19** (Project Gutenberg books) as the prompt source. The block hash seeds a random selection of passages from the dataset — deterministic, reproducible, and tied to on-chain state. Anyone can verify which passages were used in a given round by replaying the seed derivation.
+V1 uses **PG19** (Project Gutenberg books) as the prompt source. The block hash seeds a deterministic selection of passages — reproducible and tied to on-chain state. Anyone can verify which passages were used in a given round by replaying the seed derivation.
+
+Passages are truncated to **~131K characters (~32K tokens)** and filtered for minimum length (1K chars). Long context is intentional: Qwen2.5-7B's GQA cache is only ~0.7% of peak memory at 2K tokens (invisible to scoring), but ~12% at 32K tokens — large enough for compression gains to register. The dataset revision is pinned for row-level reproducibility.
 
 ### Scoring
 

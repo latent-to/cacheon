@@ -262,7 +262,7 @@ class Harness:
         self,
         policy: KVCachePolicy,
         prompts: list[str],
-        max_new_tokens: int = 128,
+        max_new_tokens: int = 256,
     ) -> RunResult:
         """Run inference with the given policy across all prompts."""
 
