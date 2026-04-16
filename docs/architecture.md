@@ -6,12 +6,12 @@ This document is the single place for architecture decisions, incentive mechanis
 
 | Item     | Value                                               |
 | -------- | --------------------------------------------------- |
-| Phase    | 3 — Sandbox (next up)                               |
+| Phase    | 4 — Prompts (next up)                               |
 | Model    | Qwen2.5-7B-Instruct                                 |
 | Hardware | H100 80GB SXM (production), RTX 4090 (dev)          |
 | Runtime  | HuggingFace Transformers (monkey-patched attention) |
 
-Phases 1 (Harness) and 2 (Scoring) are complete. See [Build sequence](#build-sequence) for status of each phase.
+Phases 1 (Harness), 2 (Scoring), and 3 (Sandbox) are complete. See [Build sequence](#build-sequence) for status of each phase.
 
 ## System overview
 
@@ -128,13 +128,13 @@ The CPU/GPU split is a **security boundary**, not an architectural requirement f
 
 Five phases. Each produces something runnable and validates assumptions before committing to the next.
 
-| Phase       | Status | What to build                                                                                                        | Done when                                                                                                                          |
-| ----------- | ------ | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 1 — Harness | ✅ Done | Load Qwen2.5-7B, monkey-patch attention, passthrough policy, prefill + decode, return logits + latency + peak memory | Passthrough produces identical token-for-token output to unpatched HF on 5 prompts                                                 |
-| 2 — Scoring | ✅ Done | `scoring.py`: KL divergence, memory delta, latency delta → score dict                                                | KL between identical logits = 0; KL between baseline and degraded policy > 0; score formula matches hand-computed cases            |
-| 3 — Sandbox | 🔲 Next | AST analysis + subprocess isolation, import allowlist, output validation                                             | `import os` rejected before execution; file write killed at subprocess level; legitimate TurboQuant-style policy runs successfully |
-| 4 — Prompts | 🔲 Todo | Block-hash seeded PG19 sampling                                                                                      | Same block hash always produces same passage set; different hashes produce different sets                                          |
-| 5 — Validator | 🔲 Todo | `remote_validator.py` (CPU): chain scan, challenger selection, SSH to GPU pod, `set_weights()`. `pod_eval.py` (GPU): load policy, run harness + scoring, write results JSON. `GET /leaderboard`, `GET /scores/{hotkey}`, `GET /health` | `remote_validator.py` detects new challenger, runs eval, king is dethroned when beaten; leaderboard reflects current king |
+| Phase         | Status  | What to build                                                                                                                                                                                                                          | Done when                                                                                                                                                 |
+| ------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Harness   | ✅ Done | Load Qwen2.5-7B, monkey-patch attention, passthrough policy, prefill + decode, return logits + latency + peak memory                                                                                                                   | Passthrough produces identical token-for-token output to unpatched HF on 5 prompts                                                                        |
+| 2 — Scoring   | ✅ Done | `scoring.py`: KL divergence, memory delta, latency delta → score dict                                                                                                                                                                  | KL between identical logits = 0; KL between baseline and degraded policy > 0; score formula matches hand-computed cases                                   |
+| 3 — Sandbox   | ✅ Done | AST analysis + subprocess isolation (firejail), import allowlist, output validation                                                                                                                                                    | `import os` rejected before execution; subprocess jailed with no network / isolated FS / memory cap; legitimate TurboQuant-style policy runs successfully |
+| 4 — Prompts   | 🔲 Todo | Block-hash seeded PG19 sampling                                                                                                                                                                                                        | Same block hash always produces same passage set; different hashes produce different sets                                                                 |
+| 5 — Validator | 🔲 Todo | `remote_validator.py` (CPU): chain scan, challenger selection, SSH to GPU pod, `set_weights()`. `pod_eval.py` (GPU): load policy, run harness + scoring, write results JSON. `GET /leaderboard`, `GET /scores/{hotkey}`, `GET /health` | `remote_validator.py` detects new challenger, runs eval, king is dethroned when beaten; leaderboard reflects current king                                 |
 
 **Don't skip phases.** Each one validates assumptions the next phase depends on. Sandbox bolted on after the fact has gaps.
 
@@ -144,20 +144,30 @@ Passthrough policy must produce **identical token-for-token output** to unpatche
 
 ### Phase 3 — Sandbox layers
 
-**Layer 1 — Static AST analysis (before execution):**
+**Layer 1 — Static AST analysis (`sandbox.py`, before execution):**
 
-- Parse submitted file with Python's `ast` module
-- Reject any import not on the allowlist: `torch`, `numpy`, `math`, `einops`
-- Reject `eval()`, `exec()`, `__import__()`, `open()`, `os.system()`
+- Parse submitted file with Python's `ast` module — no execution
+- Import allowlist: `torch`, `numpy`, `math`, `einops`, `inference_engine` (only `.policy` submodule)
+- Blocked bare calls: `eval`, `exec`, `compile`, `open`, `input`, `breakpoint`, `__import__`, `getattr`, `setattr`, `delattr`, `globals`, `locals`, `vars`
+- Blocked attribute targets: `os`, `sys`, `subprocess`, `socket`, `importlib`, `ctypes`, `cffi`, `builtins`, `__builtins__`, `pickle`, `shelve`
+- Relative imports rejected
+- Structural check: exactly one `KVCachePolicy` subclass with `setup`, `write`, `attend`, `memory_bytes`
 
-**Layer 2 — Subprocess isolation (at execution):**
+Layer 1 is a **fast feedback tool** — miners get a clear error in milliseconds. It is not the security boundary.
 
-- No network access (network namespace or firewall rule)
-- No filesystem writes outside a wiped temp dir
-- Kill process if runtime exceeds 5 minutes
-- Validate `AttentionOutput.output`: correct dtype + shape, no NaN/Inf, values in `[-100, 100]`
+**Layer 2 — OS-level subprocess isolation (`runner.py`, at execution):**
 
-Triton is not on the V1 allowlist. Triton kernels can read arbitrary GPU memory and are harder to sandbox. PyTorch ops are sufficient to implement TurboQuant's algorithm correctly — the fused kernel is a hardware optimization, not an algorithmic one. Triton unlocks in V2 with additional isolation.
+- When `firejail` is installed (production Linux hosts): `--net=none` (no network), `--private=<workdir>` (isolated filesystem), `--rlimit-as=8g` (memory cap), `--rlimit-nproc=64` (process limit)
+- Falls back to bare subprocess on dev machines / CI where firejail is absent (warning logged)
+- Hard timeout: 300 seconds, process group kill
+- Validates `AttentionOutput.output`: correct shape, dtype, no NaN/Inf, values in `[-100, 100]`, attention weights sum to 1
+
+Layer 2 is the **security boundary**. Even if a miner finds a creative AST bypass, firejail prevents network access, filesystem reads, and resource exhaustion at the OS level.
+
+**Design decisions:**
+
+- `super()`, `type()`, `dir()` are intentionally _not_ blocked — they are standard Python patterns miners need, and firejail makes AST-level paranoia unnecessary.
+- Triton is not on the V1 allowlist. Triton kernels can read arbitrary GPU memory and are harder to sandbox. PyTorch ops are sufficient to implement TurboQuant's algorithm correctly. Triton unlocks in V2 with additional isolation.
 
 ### Phase 5 — Validator + API
 

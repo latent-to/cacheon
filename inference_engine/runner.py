@@ -2,6 +2,12 @@
 
 Executes a miner policy in an isolated child process, deserialises
 the output, and validates shape / dtype / NaN / range.
+
+When firejail is available on the host (Linux production), the worker
+runs inside an OS-level jail with no network, an isolated filesystem,
+and a memory cap.  On dev machines / CI where firejail is absent the
+runner falls back to a plain subprocess with a timeout — still safe
+enough for local testing but NOT suitable for untrusted code.
 """
 
 from __future__ import annotations
@@ -9,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +30,39 @@ logger = logging.getLogger(__name__)
 VALUE_RANGE = (-100.0, 100.0)
 TIMEOUT_SECONDS = 300
 ATTN_WEIGHT_SUM_TOL = 0.05
+MEMORY_LIMIT_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
+
+
+def _firejail_available() -> bool:
+    """Check whether firejail is installed and usable."""
+    return shutil.which("firejail") is not None
+
+
+def _build_command(
+    worker_path: str,
+    workdir: str,
+    *,
+    use_firejail: bool,
+) -> list[str]:
+    """Build the subprocess command, optionally wrapped with firejail."""
+    if use_firejail:
+        return [
+            "firejail",
+            "--noprofile",
+            "--quiet",
+            f"--private={workdir}",
+            "--net=none",
+            "--no3d",
+            "--nodvd",
+            "--nosound",
+            "--notv",
+            "--nou2f",
+            "--novideo",
+            f"--rlimit-as={MEMORY_LIMIT_BYTES}",
+            "--rlimit-nproc=64",
+            sys.executable, "-u", os.path.basename(worker_path),
+        ]
+    return [sys.executable, "-u", worker_path]
 
 
 def _write_worker(workdir: str, policy_source: str, config: CacheConfig) -> str:
@@ -56,12 +96,14 @@ def _write_worker(workdir: str, policy_source: str, config: CacheConfig) -> str:
         spec.loader.exec_module(mod)
 
         # Find the KVCachePolicy subclass
+        from inference_engine.policy import KVCachePolicy as _Base
+
         policy_cls = None
         for attr_name in dir(mod):
             obj = getattr(mod, attr_name)
             if (isinstance(obj, type)
-                and hasattr(obj, "write") and hasattr(obj, "attend")
-                and obj.__name__ != "KVCachePolicy"):
+                and issubclass(obj, _Base)
+                and obj is not _Base):
                 policy_cls = obj
                 break
 
@@ -69,7 +111,6 @@ def _write_worker(workdir: str, policy_source: str, config: CacheConfig) -> str:
             print(json.dumps({{"error": "no KVCachePolicy subclass found"}}))
             sys.exit(1)
 
-        # Minimal synthetic run: 1 layer, small shapes
         from inference_engine.policy import CacheConfig as CC, AttentionOutput
 
         cfg = CC(
@@ -181,7 +222,9 @@ def run_check(
     """Run the policy in a subprocess and validate its output.
 
     Layer 1 (static AST) runs first. If it passes, the policy is executed
-    in an isolated child process with a hard timeout.
+    in an isolated child process with a hard timeout.  When firejail is
+    available the process runs with no network, an isolated filesystem,
+    and memory/process limits.
     """
 
     static = static_check(source)
@@ -198,14 +241,26 @@ def run_check(
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env = {**os.environ, "PYTHONPATH": repo_root}
 
+        use_jail = _firejail_available()
+        if use_jail:
+            logger.info("firejail detected — running worker in OS-level jail")
+        else:
+            logger.warning(
+                "firejail not found — running worker WITHOUT OS isolation. "
+                "Install firejail for production use."
+            )
+
+        cmd = _build_command(worker_path, workdir, use_firejail=use_jail)
+
         try:
             proc = subprocess.run(
-                [sys.executable, "-u", worker_path],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 start_new_session=True,
                 env=env,
+                cwd=workdir if use_jail else None,
             )
         except subprocess.TimeoutExpired:
             return CheckResult(
@@ -236,5 +291,4 @@ def run_check(
         return CheckResult(ok=True)
 
     finally:
-        import shutil
         shutil.rmtree(workdir, ignore_errors=True)

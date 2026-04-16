@@ -29,7 +29,6 @@ BLOCKED_CALLS: frozenset[str] = frozenset({
     "eval", "exec", "compile", "open", "input", "breakpoint", "__import__",
     "getattr", "setattr", "delattr",
     "globals", "locals", "vars",
-    "dir", "type", "super",
 })
 
 BLOCKED_ATTR_TARGETS: frozenset[str] = frozenset({
