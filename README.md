@@ -75,9 +75,9 @@ Path 2 is strictly more powerful but requires the miner to control the attention
 
 Cacheon uses a **king-of-the-hill** structure. There is one reigning champion — the miner with the best score on record. All emission goes to the king. Challengers compete to dethrone the king.
 
-GPU evaluation only runs when new challengers exist. If no new miner has registered since the last round, the king keeps their weight and no inference is run. This keeps the subnet economical — GPU inference is expensive, and running it every block for every miner would make participation unsustainable.
+A **challenger** is any hotkey with a commitment that hasn't been evaluated yet. The validator scans on-chain commitments roughly every 360 seconds. If no new commitments exist since the last round, the king keeps their weight and no inference runs. GPU eval is only triggered by new entries.
 
-A challenger must beat the king's score to take the crown. The king is dethroned only when a better policy is found.
+A challenger must beat the king's score to take the crown. The king is dethroned only when a strictly better policy is found. There's no partial credit — winner takes all emission.
 
 ## Miner Submission
 
@@ -119,9 +119,11 @@ else:
 
 ### Harness
 
-The harness is centralized in V1. One GPU pod (B200) runs all evaluations. A separate CPU host holds wallet keys, reads the chain, and sets weights. Validators call the harness API, receive scores, and set weights on-chain themselves — they do not run inference.
+The harness is centralized in V1. One GPU pod runs all evaluations. A separate CPU server holds wallet keys, reads the chain, selects challengers, and sets weights. The GPU pod has no chain access and no wallet keys — it receives prompts and policy pointers over SSH, runs inference, and returns a results JSON.
 
-This split architecture is a security design: a compromised GPU pod cannot steal wallet keys or manipulate weight-setting. Centralized eval also ensures reproducibility — different validator hardware would produce different KL values and disagree on rankings.
+This split is a security boundary: a compromised GPU pod cannot steal wallet keys or manipulate weight-setting. Centralized eval also ensures reproducibility — different hardware produces different KL values and would produce conflicting rankings.
+
+The validator loop runs roughly every 360 seconds. It compares revealed on-chain commitments against known state to find new challengers. If none exist, the current king keeps its weight and no inference runs — GPU time is only spent when there's something new to evaluate.
 
 ## The Interface
 
@@ -186,10 +188,11 @@ class KVCachePolicy:
 
 ## Sandbox and Security
 
-- No network access
-- No filesystem writes
-- Import allowlist: `torch`, `numpy`, `math`, `einops` only
-- Static AST analysis gates execution before the container spins up
+Policy code is checked in two layers before full harness eval:
+
+1. **Static analysis** (`inference_engine/sandbox.py`) — parse with `ast`, no execution. Import allowlist includes `torch`, `numpy`, `math`, `einops`, and `inference_engine` (only the package root and `inference_engine.policy`). Other `inference_engine` submodules are blocked so internal modules cannot re-export stdlib objects.
+
+2. **Subprocess isolation** (`inference_engine/runner.py`) — the policy runs in a child process with a hard timeout and output validation. On Linux production hosts, **firejail** is used when installed: no network (`--net=none`), isolated filesystem under the job temp dir, memory and process limits. If `firejail` is not on `PATH` (typical on macOS / CI), the runner falls back to a plain subprocess and logs a warning — fine for local dev, not the security posture for untrusted code on a GPU pod.
 
 The harness validates at each boundary: output shape/dtype/value checks, `memory_bytes()` cross-checked against `torch.cuda.max_memory_allocated()` (which the miner cannot fake), and wall-clock latency measurement of `write` + `attend`.
 
