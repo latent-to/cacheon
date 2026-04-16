@@ -412,10 +412,34 @@ class TestRunnerEndToEnd:
         assert "blocked import" in r.reason
 
     def test_timeout_kills_subprocess(self):
-        src = _minimal_policy(
-            extra_imports="import time",
-            extra_body="    def slow(self): time.sleep(999)",
-        )
-        # time import will be blocked by static check
-        r = run_check(src, SMALL_CONFIG, timeout=5)
+        """Verify that the subprocess.TimeoutExpired path in run_check works.
+
+        The hang must live inside a method the worker actually calls
+        (attend) and must not use imports outside ALLOWED_IMPORTS.
+        """
+        src = textwrap.dedent("""\
+            import torch
+            from inference_engine.policy import KVCachePolicy, CacheConfig, AttentionOutput
+
+            class HangPolicy(KVCachePolicy):
+                def setup(self, config):
+                    self.k = [None] * config.num_layers
+                    self.v = [None] * config.num_layers
+
+                def write(self, keys, values, layer_idx, positions):
+                    self.k[layer_idx] = keys
+                    self.v[layer_idx] = values
+
+                def attend(self, query, layer_idx, **kwargs):
+                    while True:
+                        pass
+
+                def memory_bytes(self):
+                    return 0
+
+                def get_config(self):
+                    return {"name": "hang"}
+        """)
+        r = run_check(src, SMALL_CONFIG, timeout=3)
         assert not r.ok
+        assert "timed out" in r.reason
