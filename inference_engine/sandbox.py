@@ -14,7 +14,15 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_IMPORTS: frozenset[str] = frozenset({
     "torch", "numpy", "math", "einops",
-    "inference_engine",  # miners must import KVCachePolicy and friends
+    "inference_engine",
+})
+
+# Full dotted paths miners may import from inference_engine.
+# Everything else (runner, sandbox, harness, scoring, …) is off-limits
+# because those modules re-export stdlib objects like os / subprocess.
+_ALLOWED_IE_SUBMODULES: frozenset[str] = frozenset({
+    "inference_engine",
+    "inference_engine.policy",
 })
 
 BLOCKED_CALLS: frozenset[str] = frozenset({
@@ -49,21 +57,31 @@ class _SafetyVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            mod = _top_level_module(alias.name)
-            if mod not in ALLOWED_IMPORTS:
+            top = _top_level_module(alias.name)
+            if top not in ALLOWED_IMPORTS:
                 self.violations.append(
                     f"blocked import: '{alias.name}' "
                     f"(only {sorted(ALLOWED_IMPORTS)} allowed)"
+                )
+            elif top == "inference_engine" and alias.name not in _ALLOWED_IE_SUBMODULES:
+                self.violations.append(
+                    f"blocked import: '{alias.name}' "
+                    f"(only {sorted(_ALLOWED_IE_SUBMODULES)} allowed)"
                 )
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module is not None:
-            mod = _top_level_module(node.module)
-            if mod not in ALLOWED_IMPORTS:
+            top = _top_level_module(node.module)
+            if top not in ALLOWED_IMPORTS:
                 self.violations.append(
                     f"blocked from-import: 'from {node.module} import ...' "
                     f"(only {sorted(ALLOWED_IMPORTS)} allowed)"
+                )
+            elif top == "inference_engine" and node.module not in _ALLOWED_IE_SUBMODULES:
+                self.violations.append(
+                    f"blocked from-import: 'from {node.module} import ...' "
+                    f"(only {sorted(_ALLOWED_IE_SUBMODULES)} allowed)"
                 )
         self.generic_visit(node)
 

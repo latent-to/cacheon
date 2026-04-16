@@ -143,6 +143,57 @@ class TestBlockedAttrs:
         assert "os" in r.reason
 
 
+class TestSubmoduleEscapeBlocked:
+    """Verify that importing dangerous stdlib objects through inference_engine
+    submodules is caught — regression tests for the re-export escape vector."""
+
+    def test_from_runner_import_os(self):
+        src = "from inference_engine.runner import os as myos\n" + _minimal_policy()
+        r = check(src)
+        assert not r.ok
+        assert "blocked from-import" in r.reason
+
+    def test_import_runner_directly(self):
+        src = "import inference_engine.runner\n" + _minimal_policy()
+        r = check(src)
+        assert not r.ok
+        assert "blocked import" in r.reason
+
+    def test_from_sandbox_import(self):
+        src = "from inference_engine.sandbox import check\n" + _minimal_policy()
+        r = check(src)
+        assert not r.ok
+        assert "blocked from-import" in r.reason
+
+    def test_from_harness_import(self):
+        src = "from inference_engine.harness import Harness\n" + _minimal_policy()
+        r = check(src)
+        assert not r.ok
+        assert "blocked from-import" in r.reason
+
+    def test_from_scoring_import(self):
+        src = "from inference_engine.scoring import ScoreResult\n" + _minimal_policy()
+        r = check(src)
+        assert not r.ok
+        assert "blocked from-import" in r.reason
+
+    def test_from_passthrough_import(self):
+        src = "from inference_engine.passthrough import PassthroughPolicy\n" + _minimal_policy()
+        r = check(src)
+        assert not r.ok
+        assert "blocked from-import" in r.reason
+
+    def test_policy_submodule_still_allowed(self):
+        src = _minimal_policy()
+        r = check(src)
+        assert r.ok, f"legitimate policy import rejected: {r.reason}"
+
+    def test_top_level_ie_import_allowed(self):
+        src = "import inference_engine\n" + _minimal_policy()
+        r = check(src)
+        assert r.ok, f"top-level inference_engine import rejected: {r.reason}"
+
+
 class TestAllowedImports:
     def test_allowed_torch(self):
         src = _minimal_policy()
