@@ -6,18 +6,18 @@ This code lives on the GPU pod.
 
 ## Files
 
-| File               | What it does                                                                                                 |
-| ------------------ | ------------------------------------------------------------------------------------------------------------ |
-| `policy.py`        | `KVCachePolicy` interface — the contract every miner submission implements                                   |
-| `passthrough.py`   | Baseline policy: uncompressed FP16 cache, standard attention. The control variable.                          |
-| `harness.py`       | Loads the model, monkey-patches attention, runs the generate loop, collects metrics                          |
-| `scoring.py`       | Takes two `RunResult`s (baseline + miner) → `ScoreResult` (KL gate + weighted score)                         |
-| `prompts.py`       | Deterministic PG19 prompt sampling seeded by block hash → `list[str]`                                        |
-| `sandbox.py`       | Static AST checks on submitted policy source (imports, blocked calls, structure)                             |
-| `runner.py`        | Runs policy in a subprocess with timeout; uses **firejail** on Linux when available for no-net / isolated FS |
-| `__main__.py`      | `python -m inference_engine` — smoke test and baseline metrics                                               |
-| `setup.sh`         | Provisions a fresh GPU instance: deps (incl. `firejail`), repo, venv, model weights, smoke test              |
-| `requirements.txt` | Python deps with version constraints explained                                                               |
+| File               | What it does                                                                                                                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `policy.py`        | `KVCachePolicy` interface — the contract every miner submission implements                                                                                                                                   |
+| `passthrough.py`   | Baseline policy: uncompressed FP16 cache, standard attention. The control variable.                                                                                                                          |
+| `harness.py`       | Loads the model, monkey-patches attention, runs the generate loop, collects metrics                                                                                                                          |
+| `scoring.py`       | Takes two `RunResult`s (baseline + miner) → `ScoreResult` (KL gate + weighted score)                                                                                                                         |
+| `prompts.py`       | Deterministic PG19 prompt sampling seeded by block hash → `list[str]`                                                                                                                                        |
+| `sandbox.py`       | Static AST checks on submitted policy source (imports, blocked calls, structure)                                                                                                                             |
+| `runner.py`        | Subprocess sandbox precheck (`run_check`): timeout + output validation; wraps with **firejail** when `firejail` is on `PATH` (intended on the **CPU validator** in Phase 5; not installed by GPU `setup.sh`) |
+| `__main__.py`      | `python -m inference_engine` — smoke test and baseline metrics                                                                                                                                               |
+| `setup.sh`         | Provisions a fresh **GPU** instance: git, curl, rsync, tmux, repo, venv, model weights, smoke test (no `firejail` — CPU server installs that for `runner`)                                                   |
+| `requirements.txt` | Python deps with version constraints explained                                                                                                                                                               |
 
 ## Setup (new GPU instance)
 

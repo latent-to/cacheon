@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # inference_engine/setup.sh
 #
+# GPU inference pod only — provisions the machine that runs the harness (Qwen,
+# monkey-patched attention, scoring).  The Phase 5 CPU validator (chain scan,
+# sandbox precheck with firejail, set_weights) is a separate host and does NOT
+# use this script.
+#
 # Paste this whole file as the "on-start script" in Lium/RunPod, OR run it
 # manually after SSHing in. Safe to re-run — it pulls instead of re-cloning.
 #
