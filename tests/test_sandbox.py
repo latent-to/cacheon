@@ -243,6 +243,10 @@ class TestAllowedImports:
         r = check(_minimal_policy(extra_imports="import torch.nn"))
         assert r.ok
 
+    def test_allowed_future_annotations(self):
+        r = check(_minimal_policy(extra_imports="from __future__ import annotations"))
+        assert r.ok, f"__future__ should be allowed, got: {r.reason}"
+
 
 class TestStructuralChecks:
     def test_missing_method(self):

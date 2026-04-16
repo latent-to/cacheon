@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 ALLOWED_IMPORTS: frozenset[str] = frozenset({
     "torch", "numpy", "math", "einops",
     "inference_engine",
+    "__future__",
 })
 
 # Full dotted paths miners may import from inference_engine.
