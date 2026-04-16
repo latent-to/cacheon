@@ -27,6 +27,9 @@ _ALLOWED_IE_SUBMODULES: frozenset[str] = frozenset({
 
 BLOCKED_CALLS: frozenset[str] = frozenset({
     "eval", "exec", "compile", "open", "input", "breakpoint", "__import__",
+    "getattr", "setattr", "delattr",
+    "globals", "locals", "vars",
+    "dir", "type", "super",
 })
 
 BLOCKED_ATTR_TARGETS: frozenset[str] = frozenset({
@@ -71,7 +74,11 @@ class _SafetyVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module is not None:
+        if node.level and node.level > 0:
+            self.violations.append(
+                "relative imports are not allowed in policy submissions"
+            )
+        elif node.module is not None:
             top = _top_level_module(node.module)
             if top not in ALLOWED_IMPORTS:
                 self.violations.append(

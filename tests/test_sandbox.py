@@ -108,6 +108,18 @@ class TestBlockedImports:
         r = check(src)
         assert not r.ok
 
+    def test_relative_import_rejected(self):
+        src = "from . import foo\n" + _minimal_policy()
+        r = check(src)
+        assert not r.ok
+        assert "relative" in r.reason
+
+    def test_relative_dotdot_import_rejected(self):
+        src = "from ..utils import bar\n" + _minimal_policy()
+        r = check(src)
+        assert not r.ok
+        assert "relative" in r.reason
+
 
 class TestBlockedCalls:
     def test_blocked_eval(self):
@@ -133,6 +145,76 @@ class TestBlockedCalls:
         r = check(src)
         assert not r.ok
         assert "__import__" in r.reason
+
+
+class TestBlockedIntrospectionCalls:
+    """getattr/globals/locals/vars etc. are classic AST sandbox escapes."""
+
+    def test_blocked_getattr(self):
+        src = _minimal_policy(extra_body='    def extra(self): getattr(self, "k")')
+        r = check(src)
+        assert not r.ok
+        assert "getattr" in r.reason
+
+    def test_blocked_setattr(self):
+        src = _minimal_policy(extra_body='    def extra(self): setattr(self, "k", 1)')
+        r = check(src)
+        assert not r.ok
+        assert "setattr" in r.reason
+
+    def test_blocked_delattr(self):
+        src = _minimal_policy(extra_body='    def extra(self): delattr(self, "k")')
+        r = check(src)
+        assert not r.ok
+        assert "delattr" in r.reason
+
+    def test_blocked_globals(self):
+        src = _minimal_policy(extra_body='    def extra(self): globals()')
+        r = check(src)
+        assert not r.ok
+        assert "globals" in r.reason
+
+    def test_blocked_locals(self):
+        src = _minimal_policy(extra_body='    def extra(self): locals()')
+        r = check(src)
+        assert not r.ok
+        assert "locals" in r.reason
+
+    def test_blocked_vars(self):
+        src = _minimal_policy(extra_body='    def extra(self): vars()')
+        r = check(src)
+        assert not r.ok
+        assert "vars" in r.reason
+
+    def test_blocked_dir(self):
+        src = _minimal_policy(extra_body='    def extra(self): dir(self)')
+        r = check(src)
+        assert not r.ok
+        assert "dir" in r.reason
+
+    def test_getattr_chain_attack_blocked(self):
+        src = _minimal_policy(
+            extra_body='    def extra(self): getattr(__builtins__, "__import__")("os").system("id")'
+        )
+        r = check(src)
+        assert not r.ok
+        assert "getattr" in r.reason
+
+    def test_globals_chain_attack_blocked(self):
+        src = _minimal_policy(
+            extra_body='    def extra(self): globals()["__builtins__"]["__import__"]("os")'
+        )
+        r = check(src)
+        assert not r.ok
+        assert "globals" in r.reason
+
+    def test_method_getattr_not_blocked(self):
+        """obj.getattr(...) as a method call must not trigger the bare-call check."""
+        src = _minimal_policy(
+            extra_body='    def extra(self): self.some_obj.getattr("x")'
+        )
+        r = check(src)
+        assert r.ok, f"method .getattr() falsely blocked: {r.reason}"
 
 
 class TestMethodCallsNotFalsePositive:
