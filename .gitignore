@@ -168,3 +168,4 @@ testing/
 .cursor/
 *.code-workspace
 AGENTS.md
+docs/wiki.md
