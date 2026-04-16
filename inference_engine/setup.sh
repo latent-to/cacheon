@@ -35,7 +35,7 @@ done
 # ── system deps ───────────────────────────────────────────────────────────────
 echo "=== System dependencies ==="
 apt-get update
-apt-get install -y git curl wget ca-certificates rsync tmux firejail
+apt-get install -y --no-install-recommends git curl wget ca-certificates rsync tmux
 
 # ── clone or pull repo ────────────────────────────────────────────────────────
 echo ""
