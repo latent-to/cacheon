@@ -6,12 +6,12 @@ This document is the single place for architecture decisions, incentive mechanis
 
 | Item     | Value                                               |
 | -------- | --------------------------------------------------- |
-| Phase    | 4 — Prompts (next up)                               |
+| Phase    | 5 — Validator + API (next up)                       |
 | Model    | Qwen2.5-7B-Instruct                                 |
 | Hardware | H100 80GB SXM (production), RTX 4090 (dev)          |
 | Runtime  | HuggingFace Transformers (monkey-patched attention) |
 
-Phases 1 (Harness), 2 (Scoring), and 3 (Sandbox) are complete. See [Build sequence](#build-sequence) for status of each phase.
+Phases 1 (Harness), 2 (Scoring), 3 (Sandbox), and 4 (Prompts) are complete. See [Build sequence](#build-sequence) for status of each phase.
 
 ## System overview
 
@@ -133,7 +133,7 @@ Five phases. Each produces something runnable and validates assumptions before c
 | 1 — Harness   | ✅ Done | Load Qwen2.5-7B, monkey-patch attention, passthrough policy, prefill + decode, return logits + latency + peak memory                                                                                                                   | Passthrough produces identical token-for-token output to unpatched HF on 5 prompts                                                                        |
 | 2 — Scoring   | ✅ Done | `scoring.py`: KL divergence, memory delta, latency delta → score dict                                                                                                                                                                  | KL between identical logits = 0; KL between baseline and degraded policy > 0; score formula matches hand-computed cases                                   |
 | 3 — Sandbox   | ✅ Done | AST analysis + subprocess isolation (firejail), import allowlist, output validation                                                                                                                                                    | `import os` rejected before execution; subprocess jailed with no network / isolated FS / memory cap; legitimate TurboQuant-style policy runs successfully |
-| 4 — Prompts   | 🔲 Todo | Block-hash seeded PG19 sampling                                                                                                                                                                                                        | Same block hash always produces same passage set; different hashes produce different sets                                                                 |
+| 4 — Prompts   | ✅ Done | Block-hash seeded PG19 sampling via `prompts.py`                                                                                                                                                                                       | Same block hash always produces same passage set; different hashes produce different sets                                                                 |
 | 5 — Validator | 🔲 Todo | `remote_validator.py` (CPU): chain scan, challenger selection, SSH to GPU pod, `set_weights()`. `pod_eval.py` (GPU): load policy, run harness + scoring, write results JSON. `GET /leaderboard`, `GET /scores/{hotkey}`, `GET /health` | `remote_validator.py` detects new challenger, runs eval, king is dethroned when beaten; leaderboard reflects current king                                 |
 
 **Don't skip phases.** Each one validates assumptions the next phase depends on. Sandbox bolted on after the fact has gaps.

@@ -12,6 +12,7 @@ This code lives on the GPU pod.
 | `passthrough.py`   | Baseline policy: uncompressed FP16 cache, standard attention. The control variable.                          |
 | `harness.py`       | Loads the model, monkey-patches attention, runs the generate loop, collects metrics                          |
 | `scoring.py`       | Takes two `RunResult`s (baseline + miner) → `ScoreResult` (KL gate + weighted score)                         |
+| `prompts.py`       | Deterministic PG19 prompt sampling seeded by block hash → `list[str]`                                        |
 | `sandbox.py`       | Static AST checks on submitted policy source (imports, blocked calls, structure)                             |
 | `runner.py`        | Runs policy in a subprocess with timeout; uses **firejail** on Linux when available for no-net / isolated FS |
 | `__main__.py`      | `python -m inference_engine` — smoke test and baseline metrics                                               |
