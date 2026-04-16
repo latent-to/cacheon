@@ -15,8 +15,6 @@ import tempfile
 import textwrap
 import uuid
 
-import torch
-
 from .policy import CacheConfig
 from .sandbox import CheckResult, check as static_check
 
