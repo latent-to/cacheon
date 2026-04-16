@@ -6,14 +6,17 @@ This code lives on the GPU pod.
 
 ## Files
 
-| File               | What it does                                                                                    |
-| ------------------ | ----------------------------------------------------------------------------------------------- |
-| `policy.py`        | `KVCachePolicy` interface — the contract every miner submission implements                      |
-| `passthrough.py`   | Baseline policy: uncompressed FP16 cache, standard attention. The control variable.             |
-| `harness.py`       | Loads the model, monkey-patches attention, runs the generate loop, collects metrics             |
-| `scoring.py`       | Takes two `RunResult`s (baseline + miner) → `ScoreResult` (KL gate + weighted score)           |
-| `setup.sh`         | Provisions a fresh GPU instance: system deps, repo clone/pull, venv, model download, smoke test |
-| `requirements.txt` | Python deps with version constraints explained                                                  |
+| File               | What it does                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `policy.py`        | `KVCachePolicy` interface — the contract every miner submission implements                                   |
+| `passthrough.py`   | Baseline policy: uncompressed FP16 cache, standard attention. The control variable.                          |
+| `harness.py`       | Loads the model, monkey-patches attention, runs the generate loop, collects metrics                          |
+| `scoring.py`       | Takes two `RunResult`s (baseline + miner) → `ScoreResult` (KL gate + weighted score)                         |
+| `sandbox.py`       | Static AST checks on submitted policy source (imports, blocked calls, structure)                             |
+| `runner.py`        | Runs policy in a subprocess with timeout; uses **firejail** on Linux when available for no-net / isolated FS |
+| `__main__.py`      | `python -m inference_engine` — smoke test and baseline metrics                                               |
+| `setup.sh`         | Provisions a fresh GPU instance: deps (incl. `firejail`), repo, venv, model weights, smoke test              |
+| `requirements.txt` | Python deps with version constraints explained                                                               |
 
 ## Setup (new GPU instance)
 
@@ -27,10 +30,10 @@ bash -c "$(curl -fsSL -H "Authorization: token $GITHUB_PAT" \
 
 **Storage layout (Lium):**
 
-| Path | Backing | Speed | Persists across… |
-|------|---------|-------|-------------------|
-| `/root` | Local NVMe | ~4 GB/s | Pod **restart** (stop/start), wiped on **delete** |
-| `/mnt` | S3-backed volume | ~5 MB/s | Pod **delete** (as long as volume is kept) |
+| Path    | Backing          | Speed   | Persists across…                                  |
+| ------- | ---------------- | ------- | ------------------------------------------------- |
+| `/root` | Local NVMe       | ~4 GB/s | Pod **restart** (stop/start), wiped on **delete** |
+| `/mnt`  | S3-backed volume | ~5 MB/s | Pod **delete** (as long as volume is kept)        |
 
 The script handles model weights in three tiers:
 
