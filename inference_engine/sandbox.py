@@ -101,10 +101,11 @@ class _SafetyVisitor(ast.NodeVisitor):
 
     @staticmethod
     def _call_name(node: ast.Call) -> str | None:
+        """Return the callee name only for bare calls (e.g. eval(...)),
+        not method calls (e.g. torch.compile(...)) — those are guarded
+        by visit_Attribute + BLOCKED_ATTR_TARGETS instead."""
         if isinstance(node.func, ast.Name):
             return node.func.id
-        if isinstance(node.func, ast.Attribute):
-            return node.func.attr
         return None
 
     @staticmethod

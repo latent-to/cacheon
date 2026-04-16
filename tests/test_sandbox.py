@@ -135,6 +135,45 @@ class TestBlockedCalls:
         assert "__import__" in r.reason
 
 
+class TestMethodCallsNotFalsePositive:
+    """Method calls on allowed objects must not be confused with bare
+    blocked built-in calls (e.g. torch.compile != compile)."""
+
+    def test_torch_compile_allowed(self):
+        src = _minimal_policy(
+            extra_body='    def extra(self): return torch.compile(self.attend)'
+        )
+        r = check(src)
+        assert r.ok, f"torch.compile() falsely blocked: {r.reason}"
+
+    def test_model_eval_allowed(self):
+        src = _minimal_policy(
+            extra_body='    def extra(self): self.model.eval()'
+        )
+        r = check(src)
+        assert r.ok, f"model.eval() falsely blocked: {r.reason}"
+
+    def test_tensor_open_method_allowed(self):
+        """Hypothetical .open() method on an allowed object must not trigger."""
+        src = _minimal_policy(
+            extra_body='    def extra(self): self.file_handle.open()'
+        )
+        r = check(src)
+        assert r.ok, f".open() method falsely blocked: {r.reason}"
+
+    def test_bare_eval_still_blocked(self):
+        src = _minimal_policy(extra_body='    def extra(self): eval("1+1")')
+        r = check(src)
+        assert not r.ok
+        assert "eval" in r.reason
+
+    def test_bare_compile_still_blocked(self):
+        src = _minimal_policy(extra_body='    def extra(self): compile("x=1", "<>", "exec")')
+        r = check(src)
+        assert not r.ok
+        assert "compile" in r.reason
+
+
 class TestBlockedAttrs:
     def test_blocked_os_attr(self):
         src = _minimal_policy(extra_body='    def extra(self): os.system("echo hi")')
