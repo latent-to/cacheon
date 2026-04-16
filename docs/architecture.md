@@ -168,6 +168,7 @@ Layer 2 is the **security boundary**. Even if a miner finds a creative AST bypas
 
 - `super()`, `type()`, `dir()` are intentionally _not_ blocked — they are standard Python patterns miners need, and firejail makes AST-level paranoia unnecessary.
 - Triton is not on the V1 allowlist. Triton kernels can read arbitrary GPU memory and are harder to sandbox. PyTorch ops are sufficient to implement TurboQuant's algorithm correctly. Triton unlocks in V2 with additional isolation.
+- **`--private` path constraint:** `--private=<workdir>` hides everything under `$HOME` inside the jail. On the GPU pod, `setup.sh` installs the repo and venv under `/root/` — if firejail ran there, `sys.executable` (`/root/venv/bin/python3`) and the repo would vanish inside the jail. This is why firejail runs on the **CPU server** (Phase 5), not inside the GPU pod's eval script. When provisioning the CPU server, install Python system-wide (e.g. `/usr/bin/python3`) and the repo outside home (e.g. `/opt/cacheon`) so neither is shadowed by `--private`.
 
 ### Phase 5 — Validator + API
 
