@@ -97,7 +97,9 @@ The harness fetches the policy at the pinned revision and runs it inside a sandb
 
 ### Prompts
 
-V1 uses **PG19** (Project Gutenberg books) as the prompt source. The block hash seeds a random selection of passages from the dataset — deterministic, reproducible, and tied to on-chain state. Anyone can verify which passages were used in a given round by replaying the seed derivation.
+V1 uses **PG19** (Project Gutenberg books) as the prompt source. The block hash seeds a deterministic selection of passages — reproducible and tied to on-chain state. Anyone can verify which passages were used in a given round by replaying the seed derivation.
+
+Passages are truncated to **~131K characters (~32K tokens)** and filtered for minimum length (1K chars). Long context is intentional: Qwen2.5-7B's GQA cache is only ~0.7% of peak memory at 2K tokens (invisible to scoring), but ~12% at 32K tokens — large enough for compression gains to register. The dataset revision is pinned for row-level reproducibility.
 
 ### Scoring
 
@@ -192,7 +194,7 @@ Policy code is checked in two layers before full harness eval:
 
 1. **Static analysis** (`inference_engine/sandbox.py`) — parse with `ast`, no execution. Import allowlist includes `torch`, `numpy`, `math`, `einops`, and `inference_engine` (only the package root and `inference_engine.policy`). Other `inference_engine` submodules are blocked so internal modules cannot re-export stdlib objects.
 
-2. **Subprocess isolation** (`inference_engine/runner.py`) — the policy runs in a child process with a hard timeout and output validation. On Linux production hosts, **firejail** is used when installed: no network (`--net=none`), isolated filesystem under the job temp dir, memory and process limits. If `firejail` is not on `PATH` (typical on macOS / CI), the runner falls back to a plain subprocess and logs a warning — fine for local dev, not the security posture for untrusted code on a GPU pod.
+2. **Subprocess isolation** (`inference_engine/runner.py`) — the policy runs in a child process with a hard timeout and output validation. On hosts where **firejail** is installed (the intended production setup is the **CPU validator** in Phase 5), the runner uses it: no network (`--net=none`), isolated filesystem under the job temp dir, memory and process limits. The GPU pod image does not install firejail via `inference_engine/setup.sh` — it runs harness + scoring only. If `firejail` is not on `PATH` (macOS, CI, or GPU-only workflows), the runner falls back to a plain subprocess and logs a warning — fine for local dev, not the security posture for untrusted miner code in production.
 
 The harness validates at each boundary: output shape/dtype/value checks, `memory_bytes()` cross-checked against `torch.cuda.max_memory_allocated()` (which the miner cannot fake), and wall-clock latency measurement of `write` + `attend`.
 

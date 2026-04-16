@@ -3,11 +3,13 @@
 Executes a miner policy in an isolated child process, deserialises
 the output, and validates shape / dtype / NaN / range.
 
-When firejail is available on the host (Linux production), the worker
-runs inside an OS-level jail with no network, an isolated filesystem,
-and a memory cap.  On dev machines / CI where firejail is absent the
-runner falls back to a plain subprocess with a timeout — still safe
-enough for local testing but NOT suitable for untrusted code.
+When firejail is available on the host, the worker runs inside an
+OS-level jail with no network, an isolated filesystem, and a memory cap.
+Production intent is the CPU validator (Phase 5); GPU ``setup.sh`` does
+not install firejail.  On dev machines / CI / GPU-only hosts where
+firejail is absent, the runner falls back to a plain subprocess with a
+timeout — still safe enough for local testing but NOT suitable for
+untrusted code without OS isolation.
 """
 
 from __future__ import annotations

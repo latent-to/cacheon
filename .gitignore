@@ -167,3 +167,5 @@ testing/
 .vscode/settings.json
 .cursor/
 *.code-workspace
+AGENTS.md
+docs/wiki.md
