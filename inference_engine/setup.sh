@@ -75,6 +75,11 @@ fi
 source "$VENV_DIR/bin/activate"
 
 pip install --upgrade pip
+# Install torch from PyTorch's CUDA 12.8 wheel index first. The default PyPI torch
+# build targets newer CUDA than many cloud GPU drivers (e.g. Targon), which then
+# fails at import with a misleading "driver too old" error.
+echo "Installing torch (CUDA 12.8 wheels from download.pytorch.org)..."
+pip install --index-url https://download.pytorch.org/whl/cu128 "torch>=2.4,<3"
 pip install -r "$REPO_DIR/inference_engine/requirements.txt"
 
 # ── model weights ─────────────────────────────────────────────────────────────

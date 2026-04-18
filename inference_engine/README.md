@@ -16,10 +16,12 @@ This code lives on the GPU pod.
 | `sandbox.py`       | Static AST checks on submitted policy source (imports, blocked calls, structure)                                                                                                                             |
 | `runner.py`        | Subprocess sandbox precheck (`run_check`): timeout + output validation; wraps with **firejail** when `firejail` is on `PATH` (intended on the **CPU validator** in Phase 5; not installed by GPU `setup.sh`) |
 | `__main__.py`      | `python -m inference_engine` — smoke test and baseline metrics                                                                                                                                               |
-| `setup.sh`         | Provisions a fresh **GPU** instance: git, curl, rsync, tmux, repo, venv, model weights, smoke test (no `firejail` — CPU server installs that for `runner`)                                                   |
+| `setup.sh`         | Provisions a fresh **GPU** instance: git, curl, tmux, `python3-venv`, repo, venv, model weights, smoke test (no `firejail` — CPU server installs that for `runner`)                                          |
 | `requirements.txt` | Python deps with version constraints explained                                                                                                                                                               |
 
 ## Setup (new GPU instance)
+
+`setup.sh` installs **PyTorch from the CUDA 12.8 wheel index** (`download.pytorch.org/whl/cu128`) before `requirements.txt`, so the build matches typical cloud GPU drivers. If you install dependencies by hand, install a CUDA-12-compatible torch the same way or you may see a misleading “driver too old” error at import.
 
 ```bash
 export GITHUB_PAT=your_github_pat_here
