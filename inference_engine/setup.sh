@@ -35,7 +35,7 @@ done
 # ── system deps ───────────────────────────────────────────────────────────────
 echo "=== System dependencies ==="
 apt-get update
-apt-get install -y --no-install-recommends git curl wget ca-certificates rsync tmux
+apt-get install -y --no-install-recommends git curl wget ca-certificates tmux python3-venv
 
 # ── clone or pull repo ────────────────────────────────────────────────────────
 echo ""
@@ -65,8 +65,11 @@ echo "=== Python dependencies ==="
 echo "Python: $(python3 --version)"
 echo "GPU:    $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'not found')"
 
-if [ ! -d "$VENV_DIR" ]; then
+# Recreate the venv if it's missing OR incomplete (e.g. an empty /workspace/venv
+# pre-created by the volume mount or left over from a failed earlier run).
+if [ ! -x "$VENV_DIR/bin/python" ] || [ ! -f "$VENV_DIR/bin/activate" ]; then
   echo "Creating venv at $VENV_DIR..."
+  rm -rf "$VENV_DIR"
   python3 -m venv "$VENV_DIR"
 fi
 source "$VENV_DIR/bin/activate"
