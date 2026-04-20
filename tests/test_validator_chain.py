@@ -1,0 +1,173 @@
+"""Unit tests for validator.chain — pure helpers, no bittensor required."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+
+import pytest
+
+from validator.chain import (
+    CommitmentRecord,
+    build_commitments,
+    build_winner_take_all_weights,
+    parse_commitment_data,
+    unique_hotkeys,
+)
+
+pytestmark = pytest.mark.unit
+
+
+@dataclass
+class FakeMetagraph:
+    hotkeys: list[str]
+
+
+class TestParseCommitmentData:
+    def test_valid_commitment(self):
+        raw = json.dumps({"model": "hf/repo", "revision": "abc123"})
+        assert parse_commitment_data(raw) == ("hf/repo", "abc123")
+
+    def test_strips_whitespace(self):
+        raw = json.dumps({"model": "  hf/repo  ", "revision": "  abc  "})
+        assert parse_commitment_data(raw) == ("hf/repo", "abc")
+
+    def test_extra_fields_ignored(self):
+        raw = json.dumps({"model": "hf/repo", "revision": "abc", "note": "hi"})
+        assert parse_commitment_data(raw) == ("hf/repo", "abc")
+
+    def test_missing_model(self):
+        raw = json.dumps({"revision": "abc"})
+        assert parse_commitment_data(raw) is None
+
+    def test_missing_revision(self):
+        raw = json.dumps({"model": "hf/repo"})
+        assert parse_commitment_data(raw) is None
+
+    def test_empty_model(self):
+        raw = json.dumps({"model": "", "revision": "abc"})
+        assert parse_commitment_data(raw) is None
+
+    def test_non_json(self):
+        assert parse_commitment_data("not json at all") is None
+
+    def test_json_but_not_object(self):
+        assert parse_commitment_data(json.dumps([1, 2, 3])) is None
+
+    def test_empty_string(self):
+        assert parse_commitment_data("") is None
+
+    def test_none_like_input(self):
+        assert parse_commitment_data(None) is None  # type: ignore[arg-type]
+
+    def test_non_string_model(self):
+        raw = json.dumps({"model": 123, "revision": "abc"})
+        assert parse_commitment_data(raw) is None
+
+
+class TestBuildCommitments:
+    def test_single_commitment(self):
+        mg = FakeMetagraph(hotkeys=["hk0", "hk1", "hk2"])
+        raw = json.dumps({"model": "hf/repo", "revision": "abc"})
+        revealed = {"hk1": [(100, raw)]}
+        out = build_commitments(mg, revealed)
+        assert set(out.keys()) == {1}
+        rec = out[1]
+        assert rec.uid == 1
+        assert rec.hotkey == "hk1"
+        assert rec.commit_block == 100
+        assert rec.model == "hf/repo"
+        assert rec.revision == "abc"
+        assert rec.raw == raw
+
+    def test_picks_latest_block_when_multiple_reveals(self):
+        mg = FakeMetagraph(hotkeys=["hk0"])
+        raw_old = json.dumps({"model": "old/m", "revision": "old"})
+        raw_new = json.dumps({"model": "new/m", "revision": "new"})
+        revealed = {"hk0": [(50, raw_old), (200, raw_new), (100, raw_old)]}
+        out = build_commitments(mg, revealed)
+        assert out[0].commit_block == 200
+        assert out[0].model == "new/m"
+        assert out[0].revision == "new"
+
+    def test_skips_invalid_commitments(self):
+        mg = FakeMetagraph(hotkeys=["hk0", "hk1"])
+        revealed = {
+            "hk0": [(10, "garbage not json")],
+            "hk1": [(20, json.dumps({"model": "hf/repo", "revision": "rev"}))],
+        }
+        out = build_commitments(mg, revealed)
+        assert set(out.keys()) == {1}
+
+    def test_hotkey_with_no_commitments_skipped(self):
+        mg = FakeMetagraph(hotkeys=["hk0", "hk1"])
+        revealed = {"hk1": []}
+        out = build_commitments(mg, revealed)
+        assert out == {}
+
+    def test_hotkey_not_in_revealed_skipped(self):
+        mg = FakeMetagraph(hotkeys=["hk0", "hk1"])
+        revealed = {
+            "hk_ghost": [(10, json.dumps({"model": "m", "revision": "r"}))]
+        }
+        out = build_commitments(mg, revealed)
+        assert out == {}
+
+    def test_uid_ordering_matches_metagraph(self):
+        mg = FakeMetagraph(hotkeys=[f"hk{i}" for i in range(5)])
+        revealed = {
+            f"hk{i}": [(100 + i, json.dumps({"model": f"m{i}", "revision": "r"}))]
+            for i in range(5)
+        }
+        out = build_commitments(mg, revealed)
+        for uid, rec in out.items():
+            assert rec.uid == uid
+            assert rec.hotkey == f"hk{uid}"
+
+    def test_empty_metagraph(self):
+        out = build_commitments(FakeMetagraph(hotkeys=[]), {})
+        assert out == {}
+
+    def test_as_eval_key(self):
+        rec = CommitmentRecord(
+            uid=1, hotkey="hk1", commit_block=100,
+            model="m", revision="r", raw="{}",
+        )
+        assert rec.as_eval_key() == ("hk1", 100)
+
+
+class TestBuildWinnerTakeAllWeights:
+    def test_basic(self):
+        w = build_winner_take_all_weights(5, 2)
+        assert w == [0.0, 0.0, 1.0, 0.0, 0.0]
+
+    def test_winner_at_edge(self):
+        w = build_winner_take_all_weights(3, 0)
+        assert w == [1.0, 0.0, 0.0]
+
+    def test_winner_uid_beyond_n_uids(self):
+        # Defensive: if somehow winner_uid > n_uids-1, grow the vector
+        w = build_winner_take_all_weights(3, 5)
+        assert len(w) == 6
+        assert w[5] == 1.0
+        assert sum(w) == 1.0
+
+    def test_negative_winner_rejected(self):
+        with pytest.raises(ValueError):
+            build_winner_take_all_weights(5, -1)
+
+
+class TestUniqueHotkeys:
+    def test_empty(self):
+        assert unique_hotkeys([]) == set()
+
+    def test_deduplicates(self):
+        recs = [
+            CommitmentRecord(uid=0, hotkey="hk1", commit_block=1,
+                             model="m", revision="r", raw=""),
+            CommitmentRecord(uid=1, hotkey="hk2", commit_block=1,
+                             model="m", revision="r", raw=""),
+            CommitmentRecord(uid=2, hotkey="hk1", commit_block=2,
+                             model="m", revision="r", raw=""),
+        ]
+        assert unique_hotkeys(recs) == {"hk1", "hk2"}

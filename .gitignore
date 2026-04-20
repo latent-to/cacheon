@@ -169,3 +169,6 @@ testing/
 *.code-workspace
 AGENTS.md
 docs/wiki.md
+
+# Phase 5 validator runtime state (atomic JSON; regenerated on startup)
+state/

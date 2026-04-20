@@ -1,0 +1,91 @@
+@startuml
+!theme plain
+skinparam sequenceArrowThickness 1.5
+skinparam sequenceGroupBorderThickness 1
+skinparam noteBorderThickness 1
+skinparam maxMessageSize 120
+
+title Cacheon — Phase 5 Part A\nValidator tick (single run_once() call)
+
+participant "remote_validator.py" as CLI
+participant "config.py"           as CFG
+participant "loop.py"             as LOOP
+participant "chain.py"            as CHAIN
+participant "Bittensor chain"     as BT
+participant "challengers.py"      as CHALL
+participant "state.py"            as STATE
+participant "state/state.json"    as DISK
+participant "eval_fn\n(Part B stub)" as EVAL
+
+== Startup ==
+
+CLI -> CFG  : read NETUID, STATE_DIR,\nPOLL_INTERVAL_S, DRY_RUN
+CLI -> STATE : ValidatorState.load(state_dir)
+STATE -> DISK : read state.json
+DISK --> STATE : king, evaluations,\nprecheck_failures\n(empty state if missing)
+STATE --> CLI : ValidatorState
+CLI -> LOOP : run_forever(subtensor, wallet, state)
+
+== Every ~360 s ==
+
+loop tick
+    LOOP -> CHAIN : fetch_metagraph(subtensor, netuid)
+    CHAIN -> BT   : subtensor.metagraph()\nsubstrate.get_block_hash()
+    BT --> CHAIN  : metagraph, current_block, block_hash
+    CHAIN --> LOOP : metagraph, current_block, block_hash
+
+    LOOP -> CHAIN : fetch_revealed_commitments(subtensor, netuid)
+    CHAIN -> BT   : subtensor.get_all_revealed_commitments()
+    BT --> CHAIN  : { hotkey: [(block, raw_json), …] }
+    CHAIN --> LOOP : revealed dict
+
+    LOOP -> CHAIN : build_commitments(metagraph, revealed)
+    CHAIN --> LOOP : { uid: CommitmentRecord }
+
+    LOOP -> CHALL : select_challengers(state, commitments, precheck)
+    CHALL -> STATE : is_known(hotkey, commit_block) per commit
+    STATE --> CHALL : bool
+    CHALL --> LOOP : ChallengerSet\n{ challengers, newly_rejected, already_known }
+
+    alt newly_rejected not empty
+        LOOP -> STATE : record_precheck_failure(hotkey, block, reason)
+    end
+
+    alt no challengers
+        LOOP -> STATE : save(state_dir)
+        STATE -> DISK : atomic write state.json
+        LOOP -> CHAIN : set_weights(subtensor, wallet, king.uid)
+        CHAIN -> BT   : subtensor.set_weights(uids, weights)
+        BT --> CHAIN  : ok / rejection reason
+        CHAIN --> LOOP : success (or ChainError after 3 retries)
+
+    else challengers exist
+        LOOP -> EVAL : eval_fn(challengers, current_block, block_hash)
+        note over EVAL
+            Part B (future):
+            SSH prompts + policy pointers to GPU pod
+            run harness + scoring on Qwen2.5-7B
+            pull results.json back over SSH
+        end note
+        EVAL --> LOOP : list[EvaluationRecord]
+
+        loop per EvaluationRecord
+            LOOP -> STATE : record_evaluation(ev)
+            note right of STATE
+                promotes ev to king if
+                ev.score > king.score
+                and not disqualified
+            end note
+            STATE --> LOOP : dethroned? (bool)
+        end
+
+        LOOP -> STATE : save(state_dir)
+        STATE -> DISK : atomic write state.json
+        LOOP -> CHAIN : set_weights(subtensor, wallet, king.uid)
+        CHAIN -> BT   : subtensor.set_weights(uids, [0,…,1,…,0])
+        BT --> CHAIN  : ok
+        CHAIN --> LOOP : success
+    end
+end
+
+@enduml
