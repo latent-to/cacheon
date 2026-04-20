@@ -31,9 +31,6 @@ STATE_DIR: Path = Path(
 ).resolve()
 """Where local JSON state files live. Gitignored."""
 
-STATE_SCHEMA_VERSION: int = 1
-"""Bump when the on-disk JSON schema changes in a backwards-incompatible way."""
-
 SANDBOX_PRECHECK_TIMEOUT_S: int = int(
     os.environ.get("CACHEON_SANDBOX_TIMEOUT_S", "60")
 )
