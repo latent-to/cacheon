@@ -2,10 +2,10 @@
 
 # **Cacheon (SN14) — Inference Optimization**
 
-[![Discord Chat](https://img.shields.io/discord/308323056592486420.svg)](https://discord.com/channels/799672011265015819/1364251338707570698)
+[![Discord Chat](https://img.shields.io/discord/308323056592486420.svg)](https://discord.gg/bittensor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Discord](https://discord.com/channels/799672011265015819/1364251338707570698) • [TAO.app](https://tao.app/subnets/14)
+[Discord](https://discord.gg/bittensor) • [TAO.app](https://tao.app/subnets/14)
 
 ---
 
