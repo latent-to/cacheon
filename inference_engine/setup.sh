@@ -6,31 +6,26 @@
 # sandbox precheck with firejail, set_weights) is a separate host and does NOT
 # use this script.
 #
-# Paste this whole file as the "on-start script" in Lium/RunPod, OR run it
+# Paste this whole file as the "on-start script" in Targon/RunPod, OR run it
 # manually after SSHing in. Safe to re-run — it pulls instead of re-cloning.
 #
 # Usage:
 #   bash setup.sh                  # full setup + download models
 #   bash setup.sh --no-model       # skip model download (deps only)
 #
-# Storage layout (Lium):
-#   /mnt   — persistent S3-backed volume (slow, survives pod deletion)
-#   /root  — local NVMe (fast, survives restart but wiped on pod delete)
-#
-# Strategy: download model weights to /mnt once so they survive across pods,
-# then copy to /root on each pod startup for fast inference-time reads.
+# Storage layout (Targon):
+#   Mount your persistent volume at /workspace (recommended). Repo, venv, and
+#   Hugging Face cache all live there — one tier, survives pod restarts as long
+#   as the volume is attached.
 
 set -euo pipefail
 
 # ── config ────────────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/latent-to/cacheon.git"
-LOCAL="/root"                                          # fast local NVMe (ephemeral on delete)
-VOLUME="/mnt"                                          # persistent S3 volume (slow reads)
-REPO_DIR="$LOCAL/cacheon"
-VENV_DIR="$LOCAL/venv"
-LOCAL_HF="$LOCAL/.cache/huggingface"
-VOLUME_HF="$VOLUME/.cache/huggingface"
-export HF_HOME="$LOCAL_HF"                             # inference always reads from local
+BASE="/workspace"
+REPO_DIR="$BASE/cacheon"
+VENV_DIR="$BASE/venv"
+export HF_HOME="$BASE/.cache/huggingface"
 SKIP_MODEL=false
 
 for arg in "$@"; do
@@ -40,7 +35,7 @@ done
 # ── system deps ───────────────────────────────────────────────────────────────
 echo "=== System dependencies ==="
 apt-get update
-apt-get install -y --no-install-recommends git curl wget ca-certificates rsync tmux
+apt-get install -y --no-install-recommends git curl wget ca-certificates tmux python3-venv
 
 # ── clone or pull repo ────────────────────────────────────────────────────────
 echo ""
@@ -70,41 +65,37 @@ echo "=== Python dependencies ==="
 echo "Python: $(python3 --version)"
 echo "GPU:    $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'not found')"
 
-if [ ! -d "$VENV_DIR" ]; then
+# Recreate the venv if it's missing OR incomplete (e.g. an empty /workspace/venv
+# pre-created by the volume mount or left over from a failed earlier run).
+if [ ! -x "$VENV_DIR/bin/python" ] || [ ! -f "$VENV_DIR/bin/activate" ]; then
   echo "Creating venv at $VENV_DIR..."
+  rm -rf "$VENV_DIR"
   python3 -m venv "$VENV_DIR"
 fi
 source "$VENV_DIR/bin/activate"
 
 pip install --upgrade pip
+# Install torch from PyTorch's CUDA 12.8 wheel index first. The default PyPI torch
+# build targets newer CUDA than many cloud GPU drivers (e.g. Targon), which then
+# fails at import with a misleading "driver too old" error.
+echo "Installing torch (CUDA 12.8 wheels from download.pytorch.org)..."
+pip install --index-url https://download.pytorch.org/whl/cu128 "torch>=2.4,<3"
 pip install -r "$REPO_DIR/inference_engine/requirements.txt"
 
 # ── model weights ─────────────────────────────────────────────────────────────
 if [[ "$SKIP_MODEL" == false ]]; then
   MODEL_HUB_DIR="hub/models--Qwen--Qwen2.5-7B-Instruct"
 
-  if [ -d "$LOCAL_HF/$MODEL_HUB_DIR/snapshots" ]; then
+  if [ -d "$HF_HOME/$MODEL_HUB_DIR/snapshots" ]; then
     echo ""
-    echo "=== Model weights already on local NVMe — skipping ==="
-    echo "  $LOCAL_HF/$MODEL_HUB_DIR"
-
-  elif [ -d "$VOLUME_HF/$MODEL_HUB_DIR/snapshots" ]; then
-    echo ""
-    echo "=== Copying model from volume → local NVMe ==="
-    echo "  $VOLUME_HF → $LOCAL_HF"
-    echo "  (s3fs → NVMe, may take 20–50 min for ~15 GB)"
-    mkdir -p "$LOCAL_HF"
-    rsync -ah --info=progress2 "$VOLUME_HF/" "$LOCAL_HF/"
-    echo "  copy done."
-
+    echo "=== Model weights already present — skipping download ==="
+    echo "  $HF_HOME/$MODEL_HUB_DIR"
   else
     echo ""
     echo "=== Downloading model weights ==="
-
-    # Download to persistent volume first
-    echo "  Downloading to volume ($VOLUME_HF) ..."
-    mkdir -p "$VOLUME_HF"
-    HF_HOME="$VOLUME_HF" python3 - <<'EOF'
+    echo "  Target: $HF_HOME"
+    mkdir -p "$HF_HOME"
+    python3 - <<'EOF'
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
@@ -112,17 +103,11 @@ model_name = "Qwen/Qwen2.5-7B-Instruct"
 print(f"  {model_name}...")
 AutoTokenizer.from_pretrained(model_name)
 AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
-print(f"  saved to volume.")
+print("  download complete.")
 EOF
-
-    # Copy to local NVMe for fast reads
-    echo "  Copying volume → local NVMe ..."
-    mkdir -p "$LOCAL_HF"
-    rsync -ah --info=progress2 "$VOLUME_HF/" "$LOCAL_HF/"
-    echo "  copy done."
   fi
 
-  echo "  HF_HOME=$HF_HOME (local NVMe)"
+  echo "  HF_HOME=$HF_HOME"
 fi
 
 # ── smoke test ────────────────────────────────────────────────────────────────
