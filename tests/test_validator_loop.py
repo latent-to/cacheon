@@ -303,6 +303,68 @@ class TestRunOnceStatePersistence:
         assert reloaded.last_scan_block == 1000
 
 
+class TestRunOnceKingUidRecycled:
+    """UID recycling guard: if `metagraph.hotkeys[king.uid]` no longer matches
+    `king.hotkey`, the king's original hotkey has deregistered and the UID has
+    been reassigned. Setting weights would then emit to an unevaluated
+    stranger — we must drop the king instead."""
+
+    def test_recycled_uid_clears_king_and_skips_weights(self, tmp_path):
+        st = FakeSubtensor(hotkeys=["hk0", "hk_new_miner"], revealed={})
+        state = ValidatorState()
+        state.record_evaluation(_make_eval_record(
+            CommitmentRecord(uid=1, hotkey="hk_old_king", commit_block=100,
+                             model="m", revision="r", raw=""),
+            score=0.5,
+        ))
+        assert state.king is not None and state.king.uid == 1
+
+        result = run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, state_dir=tmp_path, dry_run=False,
+        )
+
+        assert state.king is None
+        assert result.weights_set is False
+        assert st.set_weights_calls == []
+
+    def test_king_uid_out_of_range_clears_king(self, tmp_path):
+        st = FakeSubtensor(hotkeys=["hk0"], revealed={})
+        state = ValidatorState()
+        state.record_evaluation(_make_eval_record(
+            CommitmentRecord(uid=5, hotkey="hk_old_king", commit_block=100,
+                             model="m", revision="r", raw=""),
+            score=0.5,
+        ))
+        assert state.king is not None
+
+        result = run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, state_dir=tmp_path, dry_run=True,
+        )
+
+        assert state.king is None
+        assert result.weights_set is False
+
+    def test_matching_hotkey_keeps_king(self, tmp_path):
+        st = FakeSubtensor(hotkeys=["hk0", "hk_king"], revealed={})
+        state = ValidatorState()
+        state.record_evaluation(_make_eval_record(
+            CommitmentRecord(uid=1, hotkey="hk_king", commit_block=100,
+                             model="m", revision="r", raw=""),
+            score=0.5,
+        ))
+
+        result = run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, state_dir=tmp_path, dry_run=False,
+        )
+
+        assert state.king is not None and state.king.uid == 1
+        assert result.weights_set is True
+        assert len(st.set_weights_calls) == 1
+
+
 class TestRunOnceWeightsFailure:
     def test_weights_rpc_failure_is_caught(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0"], revealed={})

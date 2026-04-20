@@ -129,6 +129,24 @@ def run_once(
         current_block, len(metagraph.hotkeys), len(commitments),
     )
 
+    # UID slots can be recycled: if the king's hotkey deregistered, this UID
+    # may now belong to someone else — don't set_weights without a hotkey match.
+    if state.king is not None:
+        live_hotkey = (
+            metagraph.hotkeys[state.king.uid]
+            if state.king.uid < len(metagraph.hotkeys)
+            else None
+        )
+        if live_hotkey != state.king.hotkey:
+            logger.warning(
+                "King UID %d hotkey changed on chain (expected %s…, got %s). "
+                "King was deregistered or UID recycled — clearing throne.",
+                state.king.uid,
+                state.king.hotkey[:16],
+                (live_hotkey or "<out-of-range>")[:16],
+            )
+            state.king = None
+
     challenger_set = select_challengers(
         state, commitments.values(), precheck=precheck,
     )
