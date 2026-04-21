@@ -159,6 +159,31 @@ class TestValidatorStateRecording:
         assert dethroned is False
         assert state.king is None
 
+    def test_nan_score_cannot_become_king(self):
+        """NaN slips past `<= 0.0` (IEEE 754 comparisons with NaN are False).
+        If it became king, nothing could dethrone it since `x > NaN` is also
+        False — must be rejected explicitly."""
+        state = ValidatorState()
+        dethroned = state.record_evaluation(_make_eval(score=float("nan")))
+        assert dethroned is False
+        assert state.king is None
+
+    def test_nan_score_cannot_dethrone_existing_king(self):
+        state = ValidatorState()
+        state.record_evaluation(_make_eval(uid=1, hotkey="hk1", score=0.3))
+        dethroned = state.record_evaluation(
+            _make_eval(uid=2, hotkey="hk2", score=float("nan"))
+        )
+        assert dethroned is False
+        assert state.king is not None
+        assert state.king.uid == 1
+
+    def test_inf_score_cannot_become_king(self):
+        state = ValidatorState()
+        dethroned = state.record_evaluation(_make_eval(score=float("inf")))
+        assert dethroned is False
+        assert state.king is None
+
     def test_record_precheck_failure(self):
         state = ValidatorState()
         state.record_precheck_failure("hk1", 100, "blocked import: os")

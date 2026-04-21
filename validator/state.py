@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tempfile
 import time
@@ -201,7 +202,8 @@ class ValidatorState:
         # A precheck failure key should no longer hold if we somehow ran eval
         self.precheck_failures.pop(ev.eval_key, None)
 
-        if ev.disqualified or ev.score <= 0.0:
+        # NaN/±inf slip past `<= 0.0` and make an unbeatable king; reject non-finite scores.
+        if ev.disqualified or not math.isfinite(ev.score) or ev.score <= 0.0:
             return False
 
         if self.king is None or ev.score > self.king.score:
