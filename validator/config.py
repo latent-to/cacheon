@@ -39,3 +39,13 @@ SANDBOX_PRECHECK_TIMEOUT_S: int = int(
 DRY_RUN: bool = os.environ.get("CACHEON_DRY_RUN", "0") == "1"
 """When True, skip `subtensor.set_weights()` — log what would be set instead.
 Useful for testing the loop without touching the chain."""
+
+VERSION_KEY: int = int(os.environ.get("CACHEON_VERSION_KEY", "1"))
+"""Version tag passed as `version_key` to `subtensor.set_weights(...)`. Bump
+whenever the scoring mechanism, harness semantics, or sandbox rules change in
+a way that would produce different king selections on identical commits.
+
+Yuma consensus only trust-weights validators that agree on the version, so
+bumping this effectively rolls consensus to the new version once a quorum of
+stake has upgraded — validators still running the old code get their weights
+ignored until they update."""

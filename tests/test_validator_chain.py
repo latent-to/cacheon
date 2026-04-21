@@ -9,9 +9,11 @@ import pytest
 
 from validator.chain import (
     CommitmentRecord,
+    NotRegisteredError,
     build_commitments,
     build_winner_take_all_weights,
     parse_commitment_data,
+    preflight_check,
     unique_hotkeys,
 )
 
@@ -171,3 +173,100 @@ class TestUniqueHotkeys:
                              model="m", revision="r", raw=""),
         ]
         assert unique_hotkeys(recs) == {"hk1", "hk2"}
+
+
+class _FakeHotkey:
+    def __init__(self, ss58: str) -> None:
+        self.ss58_address = ss58
+
+
+class _FakeWallet:
+    def __init__(self, ss58: str) -> None:
+        self.hotkey = _FakeHotkey(ss58)
+
+
+class _FakePreflightMetagraph:
+    def __init__(
+        self, hotkeys: list[str], permits: list[bool], stakes: list[float],
+    ) -> None:
+        self.hotkeys = hotkeys
+        self.validator_permit = permits
+        self.S = stakes
+
+
+class _FakePreflightSubtensor:
+    def __init__(
+        self,
+        *,
+        registered_hotkeys: set[str],
+        hotkeys: list[str],
+        permits: list[bool] | None = None,
+        stakes: list[float] | None = None,
+    ) -> None:
+        self._registered = registered_hotkeys
+        self._hotkeys = hotkeys
+        self._permits = permits if permits is not None else [False] * len(hotkeys)
+        self._stakes = stakes if stakes is not None else [0.0] * len(hotkeys)
+
+    def is_hotkey_registered(self, *, netuid: int, hotkey_ss58: str) -> bool:
+        return hotkey_ss58 in self._registered
+
+    def metagraph(self, _netuid: int):
+        return _FakePreflightMetagraph(
+            self._hotkeys, self._permits, self._stakes,
+        )
+
+
+class TestPreflightCheck:
+    def test_unregistered_hotkey_raises(self):
+        st = _FakePreflightSubtensor(
+            registered_hotkeys=set(), hotkeys=["hk_other"],
+        )
+        wallet = _FakeWallet(ss58="hk_us")
+        with pytest.raises(NotRegisteredError) as excinfo:
+            preflight_check(st, wallet, netuid=14)
+        assert "hk_us" in str(excinfo.value)
+        assert "14" in str(excinfo.value)
+
+    def test_registered_with_permit(self):
+        st = _FakePreflightSubtensor(
+            registered_hotkeys={"hk_us"},
+            hotkeys=["hk_other", "hk_us"],
+            permits=[False, True],
+            stakes=[10.0, 500.0],
+        )
+        result = preflight_check(st, _FakeWallet("hk_us"), netuid=14)
+        assert result.uid == 1
+        assert result.has_validator_permit is True
+        assert result.stake == 500.0
+
+    def test_registered_without_permit_warns_but_ok(self, caplog):
+        st = _FakePreflightSubtensor(
+            registered_hotkeys={"hk_us"},
+            hotkeys=["hk_us"],
+            permits=[False],
+            stakes=[0.0],
+        )
+        with caplog.at_level("WARNING"):
+            result = preflight_check(st, _FakeWallet("hk_us"), netuid=14)
+        assert result.uid == 0
+        assert result.has_validator_permit is False
+        assert any("permit" in rec.message.lower() for rec in caplog.records)
+
+    def test_tolerates_missing_validator_permit_attr(self):
+        """Older bittensor / mock metagraphs may not expose validator_permit;
+        preflight should still succeed with has_validator_permit=False."""
+        class SparseMetagraph:
+            hotkeys = ["hk_us"]
+
+        class SparseSubtensor:
+            def is_hotkey_registered(self, *, netuid, hotkey_ss58):
+                return hotkey_ss58 == "hk_us"
+
+            def metagraph(self, _netuid):
+                return SparseMetagraph()
+
+        result = preflight_check(SparseSubtensor(), _FakeWallet("hk_us"), netuid=14)
+        assert result.uid == 0
+        assert result.has_validator_permit is False
+        assert result.stake == 0.0

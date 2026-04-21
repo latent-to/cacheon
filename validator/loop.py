@@ -105,6 +105,7 @@ def run_once(
     precheck: PrecheckFn = allow_all_precheck,
     state_dir = validator_config.STATE_DIR,
     dry_run: bool = validator_config.DRY_RUN,
+    version_key: int = validator_config.VERSION_KEY,
     chain_attempts: int = validator_config.CHAIN_RETRY_ATTEMPTS,
     chain_delay_s: int = validator_config.CHAIN_RETRY_DELAY_S,
 ) -> TickResult:
@@ -198,8 +199,8 @@ def run_once(
         )
     elif dry_run:
         logger.info(
-            "[dry-run] would set_weights(winner_uid=%d) @ block %d",
-            state.king.uid, current_block,
+            "[dry-run] would set_weights(winner_uid=%d, version_key=%d) @ block %d",
+            state.king.uid, version_key, current_block,
         )
         weights_set = True
     else:
@@ -208,6 +209,7 @@ def run_once(
                 subtensor, wallet, netuid,
                 n_uids=len(metagraph.hotkeys),
                 winner_uid=state.king.uid,
+                version_key=version_key,
                 attempts=chain_attempts, delay_s=chain_delay_s,
             )
             state.last_weights_set_block = current_block
@@ -248,6 +250,7 @@ def run_forever(
     state_dir = validator_config.STATE_DIR,
     poll_interval_s: int = validator_config.POLL_INTERVAL_S,
     dry_run: bool = validator_config.DRY_RUN,
+    version_key: int = validator_config.VERSION_KEY,
     stop: StopSignal | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> None:
@@ -262,8 +265,8 @@ def run_forever(
 
     logger.info(
         "Validator loop starting: netuid=%d, poll_interval_s=%d, "
-        "state_dir=%s, dry_run=%s",
-        netuid, poll_interval_s, state_dir, dry_run,
+        "state_dir=%s, dry_run=%s, version_key=%d",
+        netuid, poll_interval_s, state_dir, dry_run, version_key,
     )
 
     while not stop():
@@ -278,6 +281,7 @@ def run_forever(
                 precheck=precheck,
                 state_dir=state_dir,
                 dry_run=dry_run,
+                version_key=version_key,
             )
             logger.info(
                 "Tick OK @ block %d in %.1fs (king_changed=%s, "

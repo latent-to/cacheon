@@ -136,7 +136,25 @@ class TestRunOnceNoChallengers:
         assert call["netuid"] == 14
         assert call["uids"] == [0, 1, 2]
         assert call["weights"] == [0.0, 1.0, 0.0]
+        # version_key is threaded through from VERSION_KEY; default is 1
+        assert call["version_key"] == 1
         assert state.last_weights_set_block == 1000
+
+    def test_version_key_can_be_overridden(self, tmp_path):
+        st = FakeSubtensor(hotkeys=["hk0", "hk1"], revealed={})
+        state = ValidatorState()
+        state.record_evaluation(_make_eval_record(
+            CommitmentRecord(uid=1, hotkey="hk1", commit_block=100,
+                             model="m", revision="r", raw=""),
+            score=0.4,
+        ))
+
+        run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, state_dir=tmp_path, dry_run=False,
+            version_key=42,
+        )
+        assert st.set_weights_calls[0]["version_key"] == 42
 
 
 class TestRunOnceWithChallengers:

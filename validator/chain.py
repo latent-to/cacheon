@@ -248,17 +248,22 @@ def set_weights(
     n_uids: int,
     winner_uid: int,
     *,
+    version_key: int = 0,
     attempts: int = 3,
     delay_s: float = 30.0,
 ) -> None:
     """Push a one-hot weight vector on-chain. Raises `ChainError` if every
-    attempt is rejected — the main loop should sleep and retry next cycle."""
+    attempt is rejected — the main loop should sleep and retry next cycle.
+
+    `version_key` tags the weight vector with the validator's mechanism
+    version; consensus only trust-weights validators that agree on it.
+    """
     weights = build_winner_take_all_weights(n_uids, winner_uid)
     uids = list(range(len(weights)))
 
     logger.info(
-        "Setting weights: winner_uid=%d, n_uids=%d",
-        winner_uid, len(weights),
+        "Setting weights: winner_uid=%d, n_uids=%d, version_key=%d",
+        winner_uid, len(weights), version_key,
     )
 
     last_reason: str | None = None
@@ -269,6 +274,7 @@ def set_weights(
                 netuid=netuid,
                 uids=uids,
                 weights=weights,
+                version_key=version_key,
                 wait_for_inclusion=True,
                 wait_for_finalization=True,
             )
@@ -305,3 +311,75 @@ def unique_hotkeys(
     commitments: Iterable[CommitmentRecord],
 ) -> set[str]:
     return {c.hotkey for c in commitments}
+
+
+# --------------------------------------------------------------------------- #
+# Startup preflight
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class PreflightResult:
+    uid: int
+    has_validator_permit: bool
+    stake: float
+
+
+class NotRegisteredError(RuntimeError):
+    """Validator hotkey is not registered on this subnet — fatal at startup."""
+
+
+def preflight_check(
+    subtensor: bt.Subtensor,
+    wallet: bt.Wallet,
+    netuid: int,
+) -> PreflightResult:
+    """Fail fast on unregistered hotkeys; warn on missing validator permit.
+
+    Raises `NotRegisteredError` if the wallet hotkey isn't registered on the
+    subnet — without this, the loop would happily run then fail every tick at
+    `set_weights` with a cryptic substrate error. Permit absence is logged as
+    a warning, not fatal: a freshly-staked validator may get permit granted on
+    the next epoch without needing a restart.
+    """
+    hotkey_ss58 = wallet.hotkey.ss58_address
+
+    if not subtensor.is_hotkey_registered(
+        netuid=netuid, hotkey_ss58=hotkey_ss58
+    ):
+        raise NotRegisteredError(
+            f"Hotkey {hotkey_ss58} is not registered on netuid {netuid}. "
+            f"Register it with: btcli subnet register --netuid {netuid} "
+            f"--wallet.name <name> --wallet.hotkey <hotkey>"
+        )
+
+    metagraph = subtensor.metagraph(netuid)
+    uid = metagraph.hotkeys.index(hotkey_ss58)
+
+    has_permit = False
+    try:
+        has_permit = bool(metagraph.validator_permit[uid])
+    except (AttributeError, IndexError, TypeError):
+        # older bittensor or odd metagraph shape — treat as unknown
+        logger.debug("Could not read validator_permit[uid=%d]", uid)
+
+    stake = 0.0
+    try:
+        stake = float(metagraph.S[uid])
+    except (AttributeError, IndexError, TypeError):
+        logger.debug("Could not read stake S[uid=%d]", uid)
+
+    logger.info(
+        "Preflight OK: uid=%d, stake=%.2f, validator_permit=%s",
+        uid, stake, has_permit,
+    )
+
+    if not has_permit:
+        logger.warning(
+            "Validator permit not granted for uid=%d — weights will still be "
+            "emitted, but may not count toward consensus until the subnet "
+            "grants permit (typically next epoch, pending stake threshold).",
+            uid,
+        )
+
+    return PreflightResult(uid=uid, has_validator_permit=has_permit, stake=stake)

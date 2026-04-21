@@ -33,6 +33,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from validator import config as validator_config  # noqa: E402
+from validator.chain import NotRegisteredError, preflight_check  # noqa: E402
 from validator.loop import not_implemented_eval, run_forever  # noqa: E402
 from validator.state import ValidatorState  # noqa: E402
 
@@ -121,17 +122,27 @@ def main(argv: list[str] | None = None) -> int:
     subtensor = bt.Subtensor(network=args.network)
     wallet = bt.Wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
 
+    try:
+        preflight_check(subtensor, wallet, netuid=args.netuid)
+    except NotRegisteredError as exc:
+        logger.error("%s", exc)
+        return 4
+
     state = ValidatorState.load(args.state_dir)
-    if state.king is not None:
-        logger.info(
-            "Loaded state: king=UID %d (score=%.4f), %d evaluation(s) on record",
-            state.king.uid, state.king.score, len(state.evaluations),
-        )
-    else:
-        logger.info(
-            "Loaded state: no king yet, %d evaluation(s) on record",
-            len(state.evaluations),
-        )
+    king_desc = (
+        f"king=UID {state.king.uid} (score={state.king.score:.4f})"
+        if state.king is not None
+        else "no king yet"
+    )
+    logger.info(
+        "Loaded state: %s | %d evaluation(s), %d precheck failure(s) | "
+        "last_scan_block=%d, last_weights_set_block=%d",
+        king_desc,
+        len(state.evaluations),
+        len(state.precheck_failures),
+        state.last_scan_block,
+        state.last_weights_set_block,
+    )
 
     eval_fn = not_implemented_eval
     if args.eval_stub:
