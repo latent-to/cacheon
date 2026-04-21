@@ -6,7 +6,7 @@ This document is the single place for architecture decisions, incentive mechanis
 
 | Item     | Value                                               |
 | -------- | --------------------------------------------------- |
-| Phase    | 5 — Validator + API (next up)                       |
+| Phase    | 5 — Validator + API (in progress; Part A complete)  |
 | Model    | Qwen2.5-7B-Instruct                                 |
 | Hardware | H100 80GB SXM (production), RTX 4090 (dev)          |
 | Runtime  | HuggingFace Transformers (monkey-patched attention) |
@@ -23,7 +23,7 @@ BITTENSOR CHAIN
   │  miner registers: {"model": "hf/repo", "revision": "sha"}
   │  one commitment per hotkey — permanent, no re-do
   ▼
-CPU SERVER  ← remote_validator.py (not yet built — Phase 5)
+CPU SERVER  ← remote_validator.py (Phase 5 Part A — complete)
   │
   │  [Main loop, ~every 360s]
   │  1. fetch metagraph + all revealed commitments
@@ -34,7 +34,7 @@ CPU SERVER  ← remote_validator.py (not yet built — Phase 5)
   │
   │  ── SSH/SFTP ──────────────────────────────────────────────
   ▼
-GPU POD  ← pod_eval.py (not yet built — Phase 5)
+GPU POD  ← pod_eval.py (Phase 5 Part B — not yet built)
   │
   │  no wallet keys, no chain access
   │  load Qwen2.5-7B-Instruct
@@ -129,13 +129,13 @@ The CPU/GPU split is a **security boundary**, not an architectural requirement f
 
 Five phases. Each produces something runnable and validates assumptions before committing to the next.
 
-| Phase         | Status  | What to build                                                                                                                                                                                                                          | Done when                                                                                                                                                                       |
-| ------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 — Harness   | ✅ Done | Load Qwen2.5-7B, monkey-patch attention, passthrough policy, prefill + decode, return logits + latency + peak memory                                                                                                                   | Passthrough produces identical token-for-token output to unpatched HF on 5 prompts                                                                                              |
-| 2 — Scoring   | ✅ Done | `scoring.py`: KL divergence, memory delta, latency delta → score dict                                                                                                                                                                  | KL between identical logits = 0; KL between baseline and degraded policy > 0; score formula matches hand-computed cases                                                         |
-| 3 — Sandbox   | ✅ Done | AST analysis + subprocess isolation (`runner.py`; firejail on CPU validator host in prod — not installed by GPU `setup.sh`), import allowlist, output validation                                                                       | `import os` rejected before execution; subprocess jailed with no network / isolated FS / memory cap when firejail present; legitimate TurboQuant-style policy runs successfully |
-| 4 — Prompts   | ✅ Done | Block-hash seeded PG19 sampling via `prompts.py`                                                                                                                                                                                       | Same block hash always produces same passage set; different hashes produce different sets                                                                                       |
-| 5 — Validator | 🔲 Todo | `remote_validator.py` (CPU): chain scan, challenger selection, SSH to GPU pod, `set_weights()`. `pod_eval.py` (GPU): load policy, run harness + scoring, write results JSON. `GET /leaderboard`, `GET /scores/{hotkey}`, `GET /health` | `remote_validator.py` detects new challenger, runs eval, king is dethroned when beaten; leaderboard reflects current king                                                       |
+| Phase         | Status         | What to build                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Done when                                                                                                                                                                       |
+| ------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 — Harness   | ✅ Done        | Load Qwen2.5-7B, monkey-patch attention, passthrough policy, prefill + decode, return logits + latency + peak memory                                                                                                                                                                                                                                                                                                                                                                                                                                            | Passthrough produces identical token-for-token output to unpatched HF on 5 prompts                                                                                              |
+| 2 — Scoring   | ✅ Done        | `scoring.py`: KL divergence, memory delta, latency delta → score dict                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | KL between identical logits = 0; KL between baseline and degraded policy > 0; score formula matches hand-computed cases                                                         |
+| 3 — Sandbox   | ✅ Done        | AST analysis + subprocess isolation (`runner.py`; firejail on CPU validator host in prod — not installed by GPU `setup.sh`), import allowlist, output validation                                                                                                                                                                                                                                                                                                                                                                                                | `import os` rejected before execution; subprocess jailed with no network / isolated FS / memory cap when firejail present; legitimate TurboQuant-style policy runs successfully |
+| 4 — Prompts   | ✅ Done        | Block-hash seeded PG19 sampling via `prompts.py`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Same block hash always produces same passage set; different hashes produce different sets                                                                                       |
+| 5 — Validator | 🟡 In progress | **Part A ✅** `validator/` package + `scripts/remote_validator.py` (CPU): chain scan, local state (`ValidatorState`: king + evaluated-set + score history, atomic JSON persistence), challenger selection, one-hot `set_weights()`. GPU eval injected as a callable so the whole loop is testable without torch. **Part B 🔲** `pod_eval.py` (GPU): load policy at pinned revision, run harness + scoring, write results JSON; SSH/SFTP transport on the CPU side (`eval_fn` callable). **Part C 🔲** `GET /leaderboard`, `GET /scores/{hotkey}`, `GET /health` | `remote_validator.py` detects new challenger, runs eval, king is dethroned when beaten; leaderboard reflects current king                                                       |
 
 **Don't skip phases.** Each one validates assumptions the next phase depends on. Sandbox bolted on after the fact has gaps.
 
@@ -197,14 +197,26 @@ The main loop. Runs forever. No FastAPI — direct Python, no external API call 
 
 1. Fetch metagraph + all revealed commitments (~every 360s)
 2. Sandbox-precheck new submissions
-3. Identify king (lowest score from state) and new challengers (hotkey:block not yet evaluated)
+3. Identify king (highest score from state) and new challengers (hotkey:block not yet evaluated)
 4. If no challengers → `set_weights(king, 1.0)`, sleep, loop
 5. If challengers → SSH to GPU pod: send `prompts.json` + policy pointers
 6. GPU pod runs harness + scoring, writes `results.json`, SSH back
 7. Update state: did any challenger beat the king?
 8. `set_weights(winner_uid = 1.0, all others = 0.0)` via `subtensor.set_weights()`
 
-**Part B — Monitoring API (FastAPI, optional):**
+**Part B — GPU eval transport (`pod_eval.py` on GPU pod + SSH client on CPU server):**
+
+The piece injected as `eval_fn` in `validator/loop.py`. Wires the stubbed eval hook to a real inference pod.
+
+1. CPU side builds an `EvaluationJob` per challenger: `prompts.json` (block-hash seeded PG19), policy pointer `{model, revision}`, current block + block hash.
+2. SSH/SFTP the job payload to the GPU pod (pod has no wallet keys, no chain access).
+3. `pod_eval.py` on the pod: fetches the policy at pinned revision, runs harness + scoring, writes `results.json`.
+4. CPU side pulls `results.json`, validates shape, maps into one `EvaluationRecord` per challenger, returns to the loop.
+5. Timeouts, partial results, and pod restarts are caught by the `run_once` try/except around `eval_fn`; the loop logs and continues.
+
+**Why SSH/SFTP and not an HTTP service on the pod?** Fewer moving parts and no need to expose a port. The pod's only interface is the SSH key the CPU server holds, keeping wallet keys on the CPU side and model weights + eval results on the GPU side.
+
+**Part C — Monitoring API (FastAPI, optional):**
 
 Read-only. Miners and community check status. Does not participate in weight-setting.
 

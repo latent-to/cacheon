@@ -1,0 +1,2 @@
+bittensor>=10
+bittensor-cli>=9

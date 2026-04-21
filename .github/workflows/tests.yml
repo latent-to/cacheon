@@ -29,4 +29,4 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run unit & arch tests
-        run: pytest tests/test_scoring.py tests/test_inference_engine.py tests/test_harness_arch.py tests/test_sandbox.py tests/test_prompts.py -v -m "unit or arch"
+        run: pytest -v -m "unit or arch"
