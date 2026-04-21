@@ -1,18 +1,22 @@
-"""Phase 5 Part B — Eval I/O schema.
+"""JSON contract between the validator host and the inference machine.
 
-Wire format between the CPU validator (which owns chain + state) and the
-GPU worker (which owns torch + the model). Pure dataclasses + JSON
-codecs — no torch, no bittensor, no HF dependency — so the CPU side can
-build / parse jobs and results without pulling in the eval stack.
+The validator process (chain, wallet, saved scores) usually runs on a
+CPU-only box. Model inference runs elsewhere—typically a GPU host with
+no wallet. They communicate by writing files the other side reads:
 
-Two files cross the boundary per tick:
+    job.json       validator → inference   (who to score, model settings)
+    results.json   inference → validator   (scores per challenger)
 
-    job.json       CPU → pod   (what to evaluate)
-    results.json   pod → CPU   (the scores)
+This module defines those payloads as plain dataclasses with JSON
+helpers. It deliberately avoids importing torch, bittensor, or
+HuggingFace so the validator can serialize jobs and parse results with
+only the standard library + these types.
 
-Schema is versioned independently of `validator/state.py`'s
-`SCHEMA_VERSION`. Bump on any non-additive field change; parsers reject
-newer versions rather than silently mis-interpreting fields.
+`SCHEMA_VERSION` here is only for the job/results JSON shape. It is
+separate from `validator.state.SCHEMA_VERSION` (the on-disk validator
+state file);
+bump this when fields on the wire change, not when king/eval history
+storage changes.
 """
 
 from __future__ import annotations

@@ -1,20 +1,23 @@
-"""Phase 5 Part B — Local `EvalFn` (subprocess, no SSH).
+"""Glue from the validator loop to GPU evaluation via a child process.
 
-`make_local_eval_fn(...)` returns an `EvalFn` that:
+The main loop (`validator.loop`) calls an ``eval_fn`` with new on-chain
+challengers; it must return `EvaluationRecord` rows to merge into
+state. This module implements that hook by:
 
-  1. Serializes the tick's challengers into an `EvaluationJob`
-  2. Shells out to `scripts/pod_eval.py` in a subprocess
-  3. Parses `results.json` → `list[EvaluationRecord]`
+  1. Building an `EvaluationJob` (see `eval_schema`) with paths to each
+     miner's `policy.py` on disk (the caller supplies how those paths
+     are resolved—e.g. after a future download step).
+  2. Running `python -m scripts.pod_eval` as a subprocess with
+     ``--job`` / ``--results-out`` (the same JSON files are the API if
+     the script runs on another host later).
+  3. Reading `results.json` and turning rows into `EvaluationRecord`.
 
-This is the PR1 shape of Part B. It's a stepping stone to the Lium
-remote transport — same schema crosses the boundary either way.
+Evaluation runs out-of-process so the long-lived validator does not
+keep a multi-gigabyte model loaded between ticks, and a crash inside
+torch/transformers does not tear down the loop.
 
-Why a subprocess instead of an in-process call? Torch loads 7B of model
-weights. The validator loop is long-lived; we don't want those weights
-pinned in the loop's address space between ticks, and we don't want a
-Python-level crash in the harness to take down the whole loop.
-
-Tests inject a fake `job_runner` to skip the subprocess entirely.
+`job_runner` is injectable so tests can fake the subprocess and assert
+on the written job only.
 """
 
 from __future__ import annotations
@@ -124,13 +127,11 @@ def _job_id(current_block: int) -> str:
 
 
 def _baseline_cache_key(model_name: str, block_hash: str | None) -> str:
-    """Cache key for the baseline artifacts.
-
-    PR1: tie the cache to `(model_name, block_hash)`. Same block hash ⇒
-    same prompts ⇒ reusable baseline. When the CPU decides to refresh
-    prompts (different block_hash), a new cache file is created.
-    """
-    tag = (block_hash or "nohash").lstrip("0x")[:16] or "nohash"
+    """Cache key keyed on (model, block_hash) — same hash ⇒ same prompts
+    ⇒ reusable baseline. `removeprefix` over `lstrip` so "0x000abc" and
+    "0xabc" don't collapse to the same key."""
+    raw = (block_hash or "").removeprefix("0x")
+    tag = raw[:16] or "nohash"
     safe = model_name.replace("/", "_")
     return f"{safe}-{tag}"
 

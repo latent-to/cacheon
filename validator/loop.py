@@ -1,18 +1,20 @@
-"""Phase 5 Part A — Validator loop.
+"""Main validator tick: chain → challengers → optional eval → set weights.
 
-Wires state + chain + challenger selection together. The GPU-side eval
-(Phase 5 Part B) is injected as a callable so this module stays testable
-without SSH, torch, or a GPU.
+This module ties together `chain` (Bittensor RPC), `state` (persisted
+scores), and `challengers` (who still needs a run). It does **not** load
+models: actual scoring is supplied by ``eval_fn`` (see `eval_local` for
+one implementation). That keeps imports here free of torch/GPU code and
+easy to test with a stub.
 
-Flow per tick:
-  1. Fetch metagraph + revealed commitments from chain
-  2. Parse commitments → `{uid: CommitmentRecord}`
-  3. Select new challengers (filter out already-evaluated + pre-rejected)
-  4. Record any new AST-sandbox rejections in state
-  5. If no challengers: set_weights(king), sleep, return
-  6. If challengers: call `eval_fn(...)` (Phase 5 Part B) to get
-     `list[EvaluationRecord]`; record each, possibly dethroning the king
-  7. Set weights to current king
+One pass through the loop:
+  1. Fetch metagraph and revealed commitments from the chain.
+  2. Parse commitments into ``{uid: CommitmentRecord}``.
+  3. Select challengers not yet evaluated and not pre-rejected.
+  4. Record any new AST-sandbox rejections in state.
+  5. If there are no challengers: set weights to the current king, sleep, return.
+  6. If there are challengers: call ``eval_fn(...)`` → ``list[EvaluationRecord]``;
+     merge results into state (king may change).
+  7. Set weights to the current king.
 """
 
 from __future__ import annotations
@@ -42,16 +44,16 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# Eval hook — Phase 5 Part B will implement this over SSH
+# Eval hook — pluggable GPU / harness step (see `eval_local`)
 # --------------------------------------------------------------------------- #
 
 
 class EvalFn(Protocol):
     """Evaluate one or more challengers and return per-challenger results.
 
-    The Phase 5 Part B implementation ships `prompts.json` + policy
-    pointers to the GPU pod over SSH, runs the harness + scoring, and
-    pulls `results.json` back.
+    Production wiring builds a job (prompts + on-disk policy paths),
+    runs the inference harness—often in a subprocess or on a remote
+    host—and returns rows that match `state.EvaluationRecord`.
     """
 
     def __call__(
@@ -69,10 +71,9 @@ def not_implemented_eval(
     current_block: int,
     block_hash: str | None,
 ) -> list[EvaluationRecord]:
-    """Default stub — explodes loudly so Part A never silently crowns
-    a challenger without real eval behind it."""
+    """Default stub — fails fast so the loop never records scores without a real ``eval_fn``."""
     raise NotImplementedError(
-        f"GPU eval is not wired (Phase 5 Part B). "
+        f"eval_fn is not configured. "
         f"Got {len(challengers)} challenger(s) at block {current_block}. "
         f"Pass an `eval_fn=...` to `run_once(...)` / `run_forever(...)`."
     )

@@ -1,17 +1,17 @@
-"""Phase 5 Part A — Challenger selection.
+"""Decide which on-chain commitments still need an evaluation run.
 
-Given the current validator state and the set of on-chain commitments,
-pick which `(uid, hotkey, commit_block)` triples still need GPU
-evaluation this round.
+Inputs: the saved `ValidatorState` and the current map of miners to
+`CommitmentRecord`. Output: the subset that should be sent to ``eval_fn``
+this tick.
 
-Rule: a commitment is a *challenger* iff:
-  - we haven't already evaluated its `(hotkey, commit_block)` pair
-  - we haven't already pre-rejected it via the AST sandbox
+A commitment counts as a *challenger* when:
+  - we have not already recorded a score for its `(hotkey, commit_block)` pair, and
+  - we have not already pre-rejected it from the AST sandbox.
 
-The sandbox precheck itself is a hook — the policy source isn't on-chain,
-only a `(model, revision)` pointer, so actually fetching the code lives
-in a separate layer (Phase 5 Part B). Here we just expose the decision
-surface and a conservative default that lets all commitments through.
+The chain only stores a `(model, revision)` pointer—not policy source—so
+**fetching** code and running the sandbox is done by the ``precheck``
+hook the caller provides. This module only applies the filters above;
+``allow_all_precheck`` is a permissive default for tests and early wiring.
 """
 
 from __future__ import annotations
@@ -33,15 +33,15 @@ class PrecheckResult:
 
 
 PrecheckFn = Callable[[CommitmentRecord], PrecheckResult]
-"""A function that fetches the miner's policy source at the pinned
-revision and runs the Phase 3 AST sandbox on it, returning a
-`PrecheckResult`. In tests and dry runs, use `allow_all_precheck`."""
+"""Fetches the miner's policy at the pinned revision and runs the static
+AST sandbox, returning `PrecheckResult`. Tests and dry runs can use
+`allow_all_precheck` to skip real fetches."""
 
 
 def allow_all_precheck(_commitment: CommitmentRecord) -> PrecheckResult:
-    """Conservative default — no code fetch, no AST check. Every new
-    commitment is forwarded to the GPU evaluator. Used in tests and as
-    the Phase 5 Part A fallback until the source-fetch layer exists."""
+    """Permissive default — no code fetch, no AST check. Every new
+    commitment is forwarded to ``eval_fn``. Useful in tests and early
+    wiring before a real precheck fetches source and runs the sandbox."""
     return PrecheckResult(ok=True)
 
 

@@ -1,13 +1,18 @@
-"""Phase 5 Part A — Validator state.
+"""On-disk memory for the validator: who is winning and what we already scored.
 
-Tracks the king, every (hotkey, commit_block) combo we've already evaluated,
-and per-miner score history. Persisted to JSON on disk with atomic writes so
-a crash mid-write never leaves corrupt state.
+`ValidatorState` holds the current king (best-scoring miner), a set of
+`(hotkey, commit_block)` pairs that have finished evaluation, per-miner
+score history, and reasons for sandbox pre-rejects. The loop loads this
+from `state.json`, updates it each tick, and saves again.
+
+Writes use a temp file + rename so a crash never leaves a torn JSON
+file. `SCHEMA_VERSION` applies to this file only (not the separate
+job/results JSON used to talk to the GPU worker; see `eval_schema`).
 
 Scoring convention: **higher = better**. A policy's score is
 `0.6 * memory_reduction + 0.4 * latency_improvement` (see
-`inference_engine/scoring.py`). The king is whoever holds the highest score.
-Disqualified submissions get score = 0.0 and never take the crown.
+`inference_engine/scoring.py`). The king is the miner with the highest
+score. Disqualified runs store score `0.0` and cannot take the crown.
 """
 
 from __future__ import annotations

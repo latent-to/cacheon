@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from validator.chain import CommitmentRecord
-from validator.eval_local import make_local_eval_fn
+from validator.eval_local import _baseline_cache_key, make_local_eval_fn
 from validator.eval_schema import (
     BaselineMetrics,
     ChallengerResult,
@@ -171,6 +171,32 @@ class TestJobConstruction:
 
         assert len(seen_keys) == 2
         assert seen_keys[0] != seen_keys[1]
+
+    def test_baseline_cache_key_preserves_leading_hex_zeros(self):
+        """Regression: `.lstrip('0x')` treats the prefix as a character
+        set, so "0x000abc" and "0xabc" would collapse onto the same key,
+        reusing a stale baseline against different prompts."""
+        model = "Qwen/Qwen2.5-7B-Instruct"
+        k_leading_zeros = _baseline_cache_key(model, "0x000abc")
+        k_no_zeros = _baseline_cache_key(model, "0xabc")
+        k_single_zero = _baseline_cache_key(model, "0x0abc")
+        assert k_leading_zeros != k_no_zeros
+        assert k_leading_zeros != k_single_zero
+        assert k_single_zero != k_no_zeros
+
+    def test_baseline_cache_key_all_zeros_not_collapsed_to_nohash(self):
+        """All-zero hash is a valid (if cosmically unlucky) block hash —
+        don't collapse it onto the block_hash=None sentinel."""
+        model = "Qwen/Qwen2.5-7B-Instruct"
+        k_zeros = _baseline_cache_key(model, "0x00000000000000000000")
+        k_none = _baseline_cache_key(model, None)
+        assert k_zeros != k_none
+
+    def test_baseline_cache_key_handles_missing_0x_prefix(self):
+        model = "Qwen/Qwen2.5-7B-Instruct"
+        with_prefix = _baseline_cache_key(model, "0xdeadbeef")
+        without_prefix = _baseline_cache_key(model, "deadbeef")
+        assert with_prefix == without_prefix
 
     def test_missing_policy_path_raises(self, tmp_path):
         def runner(ctx):
