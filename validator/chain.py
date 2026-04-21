@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
 if TYPE_CHECKING:
     import bittensor as bt
 
+from . import config as validator_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -248,7 +250,7 @@ def set_weights(
     n_uids: int,
     winner_uid: int,
     *,
-    version_key: int = 0,
+    version_key: int = validator_config.VERSION_KEY,
     attempts: int = 3,
     delay_s: float = 30.0,
 ) -> None:
