@@ -27,6 +27,7 @@ bad policy can't take down the whole tick.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import logging
 import os
@@ -93,27 +94,118 @@ def _load_policy_class(policy_path: str):
 # --------------------------------------------------------------------------- #
 # Baseline cache
 # --------------------------------------------------------------------------- #
+#
+# The on-disk cache stores baseline tensors next to a `manifest` describing
+# the inputs that produced them (model, prompt set, generation length,
+# dtype, format version). On load we recompute the manifest from the
+# current job and only reuse the cached tensors when every field matches.
+# Mismatches (e.g. operator changed `max_new_tokens` or `dtype`) silently
+# turn into a cache miss + recompute rather than a stale baseline.
+
+
+BASELINE_CACHE_VERSION: int = 1
+"""Bump when the saved baseline payload layout changes in a way that
+older readers can't safely interpret."""
 
 
 def _baseline_cache_path(cache_dir: str, key: str) -> Path:
     return Path(cache_dir) / f"baseline-{key}.pt"
 
 
-def _try_load_baseline(cache_dir: str, key: str):
-    """Return a cached RunResult-like dict, or None on miss / unreadable."""
+def _hash_prompts(prompts: list[str]) -> str:
+    """Stable digest over the exact prompt list. Independent of any RNG
+    seed: catches the case where the same `block_hash` produces a
+    different prompt set after a `sample_prompts` change."""
+    h = hashlib.sha256()
+    for p in prompts:
+        b = p.encode("utf-8")
+        h.update(len(b).to_bytes(8, "big"))
+        h.update(b)
+    return h.hexdigest()
+
+
+def _build_baseline_manifest(
+    *,
+    model_name: str,
+    n_prompts: int,
+    max_new_tokens: int,
+    dtype_name: str,
+    prompts: list[str],
+) -> dict:
+    """Snapshot of every input that influences cached baseline bytes."""
+    return {
+        "cache_version": BASELINE_CACHE_VERSION,
+        "schema_version": SCHEMA_VERSION,
+        "model_name": model_name,
+        "n_prompts": int(n_prompts),
+        "max_new_tokens": int(max_new_tokens),
+        "dtype_name": dtype_name,
+        "prompt_hash": _hash_prompts(prompts),
+    }
+
+
+def _manifest_mismatch_reason(saved: dict, expected: dict) -> str | None:
+    """`None` when the saved payload is reusable; otherwise a one-line
+    human-readable reason for the mismatch (used in logs)."""
+    if not isinstance(saved, dict):
+        return "saved payload is missing a manifest"
+    saved_manifest = saved.get("manifest")
+    if not isinstance(saved_manifest, dict):
+        return "saved payload is missing a manifest"
+    for field in (
+        "cache_version",
+        "schema_version",
+        "model_name",
+        "n_prompts",
+        "max_new_tokens",
+        "dtype_name",
+        "prompt_hash",
+    ):
+        if saved_manifest.get(field) != expected.get(field):
+            return (
+                f"{field} changed "
+                f"(cached={saved_manifest.get(field)!r}, "
+                f"expected={expected.get(field)!r})"
+            )
+    return None
+
+
+def _try_load_baseline(cache_dir: str, key: str, *, expected_manifest: dict):
+    """Return the cached payload dict iff its manifest matches *expected_manifest*.
+
+    Misses (file absent), unreadable files, and manifest mismatches all
+    return `None` so the caller recomputes. Mismatch reason is logged.
+    """
     import torch
 
     path = _baseline_cache_path(cache_dir, key)
     if not path.exists():
         return None
     try:
-        return torch.load(path, map_location="cpu", weights_only=False)
+        cached = torch.load(path, map_location="cpu", weights_only=False)
     except Exception as exc:
-        logger.warning("baseline cache at %s unreadable (%s) — recomputing", path, exc)
+        logger.warning(
+            "baseline cache at %s unreadable (%s) — recomputing", path, exc,
+        )
         return None
 
+    reason = _manifest_mismatch_reason(cached, expected_manifest)
+    if reason is not None:
+        logger.warning(
+            "baseline cache at %s rejected: %s — recomputing",
+            path, reason,
+        )
+        return None
+    return cached
 
-def _save_baseline(cache_dir: str, key: str, baseline) -> None:
+
+def _save_baseline(
+    cache_dir: str,
+    key: str,
+    baseline,
+    *,
+    manifest: dict,
+) -> None:
     import torch
 
     path = _baseline_cache_path(cache_dir, key)
@@ -121,6 +213,7 @@ def _save_baseline(cache_dir: str, key: str, baseline) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     torch.save(
         {
+            "manifest": dict(manifest),
             "all_logits": [lg.detach().cpu() for lg in baseline.all_logits],
             "output_ids": baseline.output_ids,
             "output_texts": baseline.output_texts,
@@ -250,7 +343,18 @@ def run_job(
 
     harness = Harness(model_name=job.model_name, device=device, dtype=dtype)
 
-    cached = _try_load_baseline(job.baseline_cache_dir, job.baseline_cache_key)
+    expected_manifest = _build_baseline_manifest(
+        model_name=job.model_name,
+        n_prompts=job.n_prompts,
+        max_new_tokens=job.max_new_tokens,
+        dtype_name=dtype_name,
+        prompts=prompts,
+    )
+    cached = _try_load_baseline(
+        job.baseline_cache_dir,
+        job.baseline_cache_key,
+        expected_manifest=expected_manifest,
+    )
     if cached is not None:
         logger.info(
             "baseline cache HIT (key=%s) — skipping baseline run",
@@ -266,7 +370,12 @@ def run_job(
         baseline = harness.run(
             PassthroughPolicy(), prompts, max_new_tokens=job.max_new_tokens,
         )
-        _save_baseline(job.baseline_cache_dir, job.baseline_cache_key, baseline)
+        _save_baseline(
+            job.baseline_cache_dir,
+            job.baseline_cache_key,
+            baseline,
+            manifest=expected_manifest,
+        )
         baseline_cached = False
 
     baseline_metrics = BaselineMetrics(
