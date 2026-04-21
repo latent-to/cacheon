@@ -1,2 +1,2 @@
-bittensor==10.2.0
-bittensor-cli==9.20.1
+bittensor>=10
+bittensor-cli>=9

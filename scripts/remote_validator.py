@@ -118,8 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Connecting to network=%s netuid=%d wallet=%s/%s",
                 args.network, args.netuid, args.wallet_name, args.wallet_hotkey)
 
-    subtensor = bt.subtensor(network=args.network)
-    wallet = bt.wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
+    subtensor = bt.Subtensor(network=args.network)
+    wallet = bt.Wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
 
     state = ValidatorState.load(args.state_dir)
     if state.king is not None:

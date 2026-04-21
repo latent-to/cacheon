@@ -243,7 +243,7 @@ def fetch_revealed_commitments(
 
 def set_weights(
     subtensor: bt.Subtensor,
-    wallet: bt.wallet,
+    wallet: bt.Wallet,
     netuid: int,
     n_uids: int,
     winner_uid: int,
