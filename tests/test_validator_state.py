@@ -471,6 +471,83 @@ class TestPersistence:
         loaded = ValidatorState.load(tmp_path)
         assert loaded.king is None
 
+    def test_load_corrupt_file_is_quarantined(self, tmp_path):
+        """Corrupt files get renamed so an operator can post-mortem instead
+        of having them silently overwritten on the next save()."""
+        state_path = tmp_path / STATE_FILE_NAME
+        state_path.write_text("{not valid json")
+        loaded = ValidatorState.load(tmp_path)
+        assert loaded.king is None
+        assert not state_path.exists()
+        quarantined = list(tmp_path.glob(f"{STATE_FILE_NAME}.corrupt.*"))
+        assert len(quarantined) == 1
+        assert quarantined[0].read_text() == "{not valid json"
+
+    def test_load_v1_schema_does_not_crash(self, tmp_path):
+        """Regression: a state file using pre-rename field names (`model`
+        instead of `repo`, no `crowned_at_block`) must fall back to a
+        fresh state rather than crash the validator on startup."""
+        v1_payload = {
+            "schema_version": 1,
+            "king": {
+                "uid": 1,
+                "hotkey": "hk_old",
+                "commit_block": 100,
+                "model": "hf/old-repo",  # v1 name
+                "revision": "a" * 40,
+                "score": 0.5,
+                "kl_divergence": 0.01,
+                "memory_reduction": 0.4,
+                "latency_improvement": 0.2,
+                "evaluated_at": 123.0,
+                "evaluation_block": 150,
+                # no crowned_at_block, no source_hash
+            },
+            "evaluations": {
+                "hk_old:100": {
+                    "uid": 1,
+                    "hotkey": "hk_old",
+                    "commit_block": 100,
+                    "model": "hf/old-repo",
+                    "revision": "a" * 40,
+                    "score": 0.5,
+                    "kl_divergence": 0.01,
+                    "memory_reduction": 0.4,
+                    "latency_improvement": 0.2,
+                    "disqualified": False,
+                    "disqualify_reason": None,
+                    "evaluated_at": 123.0,
+                    "evaluation_block": 150,
+                },
+            },
+            "precheck_failures": {},
+            "last_scan_block": 0,
+            "last_weights_set_block": 0,
+        }
+        (tmp_path / STATE_FILE_NAME).write_text(json.dumps(v1_payload))
+        loaded = ValidatorState.load(tmp_path)
+        assert loaded.king is None
+        assert loaded.evaluations == {}
+
+    def test_load_malformed_record_does_not_crash(self, tmp_path):
+        """A record with the right shape but wrong types (e.g. stringly-
+        typed `commit_block`) also hits the recovery path rather than
+        propagating a TypeError out of `load()`."""
+        bad_payload = {
+            "schema_version": SCHEMA_VERSION,
+            "king": None,
+            "evaluations": {
+                "hk:100": {"not": "a real record"},
+            },
+            "precheck_failures": {},
+            "last_scan_block": 0,
+            "last_weights_set_block": 0,
+        }
+        (tmp_path / STATE_FILE_NAME).write_text(json.dumps(bad_payload))
+        loaded = ValidatorState.load(tmp_path)
+        assert loaded.king is None
+        assert loaded.evaluations == {}
+
     def test_newer_schema_rejected(self, tmp_path):
         payload = {
             "schema_version": SCHEMA_VERSION + 99,

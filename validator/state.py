@@ -67,6 +67,30 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
         raise
 
 
+def _quarantine_corrupt_state(path: Path) -> None:
+    """Move a broken `state.json` aside so it isn't overwritten on save.
+
+    Best-effort: if the rename fails the original file stays in place and
+    the next `save()` will clobber it, which is the same outcome as
+    before this helper existed. We log but never raise — startup must
+    succeed even if the filesystem is misbehaving.
+    """
+    try:
+        quarantined = path.with_suffix(
+            path.suffix + f".corrupt.{int(time.time())}"
+        )
+        os.replace(path, quarantined)
+        logger.warning(
+            "Quarantined corrupt state file to %s for post-mortem.",
+            quarantined,
+        )
+    except OSError as exc:
+        logger.warning(
+            "Could not quarantine %s (%s); it will be overwritten on next save.",
+            path, exc,
+        )
+
+
 def _eval_key(hotkey: str, commit_block: int) -> str:
     """Stable dedup key. Miners can technically commit twice — we treat each
     `(hotkey, block)` as its own submission so re-commits trigger re-eval."""
@@ -398,21 +422,52 @@ class ValidatorState:
     @classmethod
     def load(cls, state_dir: str | os.PathLike) -> ValidatorState:
         """Load state from `<state_dir>/state.json`, or return a fresh
-        state if the file doesn't exist or is unparseable."""
+        state if the file is missing, unreadable, or unparseable.
+
+        Recovery policy:
+          * Missing file → fresh state, info log.
+          * Unreadable / malformed JSON / schema drift (old field names,
+            missing required fields, wrong types) → fresh state, error
+            log, and the offending file is renamed to
+            ``state.json.corrupt.<unix_ts>`` so an operator can post-mortem
+            why the king disappeared instead of losing the evidence.
+          * `schema_version` newer than this validator supports → hard
+            `ValueError` re-raise. Silently wiping a newer state file
+            would downgrade in-place and erase progress; that's an
+            operator decision, not a graceful-fallback one.
+        """
         path = Path(state_dir) / STATE_FILE_NAME
         if not path.exists():
             logger.info("No existing state file at %s — starting fresh.", path)
             return cls()
+
+        corrupt_reason: str | None = None
         try:
             with open(path) as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.error(
-                "Failed to load state from %s: %s — starting fresh.",
-                path, exc,
-            )
-            return cls()
-        return cls.from_dict(data)
+            return cls.from_dict(data)
+        except ValueError as exc:
+            # `from_dict` raises ValueError for "version too new" — propagate.
+            # Everything else (including JSONDecodeError, which subclasses
+            # ValueError) is treated as a corrupt-file recovery case.
+            if isinstance(exc, json.JSONDecodeError):
+                corrupt_reason = f"malformed JSON: {exc}"
+            elif "newer than" in str(exc):
+                raise
+            else:
+                corrupt_reason = f"schema mismatch: {exc}"
+        except OSError as exc:
+            corrupt_reason = f"unreadable: {exc}"
+        except (TypeError, KeyError) as exc:
+            # Missing required fields / wrong types after a schema rename.
+            corrupt_reason = f"incompatible shape: {exc!r}"
+
+        logger.error(
+            "Failed to load state from %s (%s) — starting fresh.",
+            path, corrupt_reason,
+        )
+        _quarantine_corrupt_state(path)
+        return cls()
 
     def save(self, state_dir: str | os.PathLike) -> None:
         """Atomically write state to `<state_dir>/state.json`."""
