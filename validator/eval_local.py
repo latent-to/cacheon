@@ -22,7 +22,6 @@ on the written job only.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import subprocess
@@ -41,6 +40,7 @@ from .eval_schema import (
     SCHEMA_VERSION,
     JOB_FILE_NAME,
     RESULTS_FILE_NAME,
+    hash_policy_file,
     read_results,
     write_job,
 )
@@ -137,21 +137,6 @@ def _baseline_cache_key(model_name: str, block_hash: str | None) -> str:
     return f"{safe}-{tag}"
 
 
-def _hash_policy_file(path: Path) -> str:
-    """sha256 of `policy.py` bytes, used for duplicate-of-king detection.
-
-    Read in chunks so a pathological (but still under the size cap)
-    submission doesn't spike validator RSS. Returns hex digest; raises
-    `OSError` if unreadable so the caller can fail the whole tick rather
-    than silently score under an empty hash.
-    """
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(64 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _result_to_record(
     result: EvaluationResult,
     *,
@@ -244,7 +229,7 @@ def make_local_eval_fn(
                 raise FileNotFoundError(
                     f"policy.py for UID {com.uid} not found at {path}"
                 )
-            source_hash = _hash_policy_file(path)
+            source_hash = hash_policy_file(path)
             challenger_jobs.append(ChallengerJob(
                 uid=com.uid,
                 hotkey=com.hotkey,

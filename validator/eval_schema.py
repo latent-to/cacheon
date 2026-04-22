@@ -21,6 +21,7 @@ storage changes.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass, field
@@ -37,6 +38,27 @@ Bump history:
 
 JOB_FILE_NAME: str = "job.json"
 RESULTS_FILE_NAME: str = "results.json"
+
+_HASH_CHUNK_BYTES: int = 64 * 1024
+
+
+def hash_policy_file(path: str | os.PathLike) -> str:
+    """sha256 hex digest of a `policy.py` file, read in 64 KiB chunks.
+
+    Shared by the CPU side (computes the hash before sending `ChallengerJob`)
+    and the pod side (re-hashes the staged file and DQs on mismatch).
+    Keeping the implementation in one place means a future bigger-chunk or
+    streaming-hash change can't silently desynchronize the two boundaries.
+
+    Raises `OSError` if the file can't be read; callers should fail the
+    tick rather than fall back to an empty hash (empty hash disables
+    duplicate-of-king detection for the affected row).
+    """
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(_HASH_CHUNK_BYTES), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 # --------------------------------------------------------------------------- #

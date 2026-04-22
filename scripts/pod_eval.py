@@ -51,6 +51,7 @@ from validator.eval_schema import (  # noqa: E402
     EvaluationJob,
     EvaluationResult,
     SCHEMA_VERSION,
+    hash_policy_file,
     read_job,
     write_results,
 )
@@ -268,17 +269,6 @@ def _dq_result(
     )
 
 
-def _hash_policy_file(path: str) -> str:
-    """sha256 of `policy.py` bytes — pod-side verifier for the CPU-provided
-    hash. Chunked read so a worst-case (but still under the size cap)
-    submission doesn't inflate pod RSS before loading the model."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(64 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _evaluate_challenger(
     harness,
     challenger: ChallengerJob,
@@ -298,7 +288,7 @@ def _evaluate_challenger(
 
     if challenger.source_hash:
         try:
-            actual = _hash_policy_file(challenger.policy_path)
+            actual = hash_policy_file(challenger.policy_path)
         except OSError as exc:
             logger.exception(
                 "challenger uid=%d: cannot read policy.py for hash verification",
