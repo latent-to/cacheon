@@ -36,12 +36,17 @@ class CommitmentRecord:
     """One miner's most recent on-chain commitment, already parsed.
 
     On-chain format (encoded with `subtensor.set_reveal_commitment`):
-        {"model": "hf-user/repo", "revision": "<git sha>"}
+        {"repo": "hf-user/repo-name", "revision": "<40-char hex sha>"}
+
+    `repo` is a HuggingFace repo id (``<owner>/<name>``); the validator
+    fetches `policy.py` from that repo at the pinned commit SHA before
+    evaluation. Miners submit *repositories*, not HF models — the canonical
+    scored model (Qwen) is a separate concept (`EvaluationJob.model_name`).
     """
     uid: int
     hotkey: str
     commit_block: int
-    model: str
+    repo: str
     revision: str
     raw: str  # original JSON string, kept for diagnostics
 
@@ -60,11 +65,18 @@ class _MetagraphLike(Protocol):
 # --------------------------------------------------------------------------- #
 
 
-def parse_commitment_data(raw: str) -> tuple[str, str] | None:
-    """Parse a commitment payload into `(model, revision)` or None.
+_HEX_SHA_LEN: int = 40
 
-    Rejects anything that isn't a JSON object with non-empty `model` +
-    `revision` strings. Silent on failure — the caller logs.
+
+def parse_commitment_data(raw: str) -> tuple[str, str] | None:
+    """Parse a commitment payload into `(repo, revision)` or None.
+
+    Rejects anything that isn't a JSON object with non-empty `repo` +
+    `revision` strings, and requires `revision` to be a 40-char hex SHA
+    (HF/GitHub full commit hash). Branch names and short SHAs are
+    rejected so the `(hotkey, commit_block)` → code mapping cannot
+    silently drift after the commit is on chain. Silent on failure —
+    caller logs.
     """
     if not isinstance(raw, str) or not raw:
         return None
@@ -74,13 +86,20 @@ def parse_commitment_data(raw: str) -> tuple[str, str] | None:
         return None
     if not isinstance(obj, dict):
         return None
-    model = obj.get("model")
+    repo = obj.get("repo")
     revision = obj.get("revision")
-    if not isinstance(model, str) or not model.strip():
+    if not isinstance(repo, str) or not repo.strip():
         return None
-    if not isinstance(revision, str) or not revision.strip():
+    if not isinstance(revision, str):
         return None
-    return model.strip(), revision.strip()
+    revision = revision.strip()
+    if len(revision) != _HEX_SHA_LEN:
+        return None
+    try:
+        int(revision, 16)
+    except ValueError:
+        return None
+    return repo.strip(), revision
 
 
 def build_commitments(
@@ -117,12 +136,12 @@ def build_commitments(
                 uid, hotkey_str[:16] + "...", block,
             )
             continue
-        model, revision = parsed
+        repo, revision = parsed
         out[uid] = CommitmentRecord(
             uid=uid,
             hotkey=hotkey_str,
             commit_block=int(block),
-            model=model,
+            repo=repo,
             revision=revision,
             raw=raw,
         )

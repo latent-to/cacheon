@@ -27,7 +27,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION: int = 1
+SCHEMA_VERSION: int = 2
+"""
+Bump history:
+  1 → initial shape with `model`/`revision`.
+  2 → rename `model` → `repo`; add `source_hash` to `ChallengerJob` and
+      `ChallengerResult` (sha256 of policy.py bytes, verified on the pod).
+"""
 
 JOB_FILE_NAME: str = "job.json"
 RESULTS_FILE_NAME: str = "results.json"
@@ -43,15 +49,23 @@ class ChallengerJob:
     """One challenger to evaluate on the pod.
 
     `policy_path` is a filesystem path **on the pod** where `policy.py`
-    has already been staged (fetched from HF / GitHub by the CPU side
-    and uploaded). The pod never talks to HF directly.
+    has already been staged (fetched from HF by the CPU side and uploaded
+    / mounted). The pod never talks to HF directly.
+
+    `source_hash` is sha256 of the policy.py bytes as fetched on the CPU
+    side. The pod re-hashes the file at `policy_path` and DQs the
+    challenger if it doesn't match, so a corrupted / tampered upload
+    can't silently score something other than what the CPU reviewed.
+    Empty string means "caller didn't compute it" — pod will treat as
+    verified to support legacy callers.
     """
     uid: int
     hotkey: str
     commit_block: int
-    model: str                  # HF repo pointer, informational on the pod
+    repo: str                   # HF repo pointer, informational on the pod
     revision: str               # git sha, informational on the pod
     policy_path: str
+    source_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -133,12 +147,14 @@ class ChallengerResult:
 
     Maps 1:1 onto `validator.state.EvaluationRecord` on the CPU side —
     the CPU adds `evaluated_at` + `evaluation_block` from its own clock /
-    chain view when recording.
+    chain view when recording. `source_hash` echoes back the CPU-provided
+    hash after the pod verified it matches the on-disk `policy.py`
+    (DQ'd with ``source_hash_mismatch`` if not).
     """
     uid: int
     hotkey: str
     commit_block: int
-    model: str
+    repo: str
     revision: str
     score: float
     kl_divergence: float
@@ -146,6 +162,7 @@ class ChallengerResult:
     latency_improvement: float
     disqualified: bool
     disqualify_reason: str | None
+    source_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

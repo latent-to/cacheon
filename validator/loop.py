@@ -180,13 +180,23 @@ def run_once(
             results = []
 
         for ev in results:
-            dethroned = state.record_evaluation(ev)
-            evaluations_recorded.append(ev)
-            if dethroned:
+            outcome = state.record_evaluation(ev, current_block=current_block)
+            evaluations_recorded.append(outcome.stored)
+            logger.info(
+                "recorded UID %d (hotkey %s…) score=%.4f threshold=%.4f "
+                "(dq=%s, dethroned=%s)",
+                outcome.stored.uid, outcome.stored.hotkey[:16],
+                outcome.stored.score, outcome.dethrone_threshold,
+                outcome.stored.disqualify_reason or "no",
+                outcome.dethroned,
+            )
+            if outcome.dethroned:
                 king_changed = True
                 logger.info(
-                    "👑 New king: UID %d (hotkey %s…, score=%.4f)",
-                    ev.uid, ev.hotkey[:16], ev.score,
+                    "👑 New king: UID %d (hotkey %s…, score=%.4f, "
+                    "beat threshold=%.4f)",
+                    outcome.stored.uid, outcome.stored.hotkey[:16],
+                    outcome.stored.score, outcome.dethrone_threshold,
                 )
 
     state.save(state_dir)

@@ -1,13 +1,15 @@
-"""Phase 5 Part B — GPU-side evaluator.
+"""GPU-side evaluator: run one `EvaluationJob`, write one `EvaluationResult`.
 
-Reads an `EvaluationJob` from JSON, runs the baseline + every challenger
-through the Phase 1 harness, scores them against the baseline, and writes
-an `EvaluationResult` back to JSON.
+Reads a job (baseline settings + a list of challengers) from JSON, runs
+the baseline through the inference harness once (or loads it from cache),
+runs each challenger's `policy.py`, scores each against the baseline, and
+writes the per-challenger results back to JSON. The CPU-side validator
+then merges those results into its persistent state.
 
-This script is intentionally a **CLI + orchestration layer** — all heavy
+This script is intentionally a **CLI + orchestration layer**. All heavy
 lifting (model load, patch, run, score) lives in `inference_engine/`.
-Torch + transformers are imported lazily inside `main()` so argparse /
-schema helpers are usable in tests without a GPU.
+Torch + transformers are imported lazily inside `run_job` so argparse /
+schema helpers remain usable in tests without a GPU.
 
 Usage:
 
@@ -254,7 +256,7 @@ def _dq_result(
         uid=challenger.uid,
         hotkey=challenger.hotkey,
         commit_block=challenger.commit_block,
-        model=challenger.model,
+        repo=challenger.repo,
         revision=challenger.revision,
         score=0.0,
         kl_divergence=float("inf"),
@@ -262,7 +264,19 @@ def _dq_result(
         latency_improvement=0.0,
         disqualified=True,
         disqualify_reason=reason,
+        source_hash=challenger.source_hash,
     )
+
+
+def _hash_policy_file(path: str) -> str:
+    """sha256 of `policy.py` bytes — pod-side verifier for the CPU-provided
+    hash. Chunked read so a worst-case (but still under the size cap)
+    submission doesn't inflate pod RSS before loading the model."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _evaluate_challenger(
@@ -273,8 +287,34 @@ def _evaluate_challenger(
     max_new_tokens: int,
 ) -> ChallengerResult:
     """Run one challenger; catch any exception into a DQ result so
-    other challengers in the same job still complete."""
+    other challengers in the same job still complete.
+
+    Also verifies the file at `challenger.policy_path` matches
+    `challenger.source_hash` (if non-empty). A mismatch means the CPU
+    side reviewed different bytes than the pod is about to execute — DQ
+    out rather than score anything.
+    """
     from inference_engine import scoring
+
+    if challenger.source_hash:
+        try:
+            actual = _hash_policy_file(challenger.policy_path)
+        except OSError as exc:
+            logger.exception(
+                "challenger uid=%d: cannot read policy.py for hash verification",
+                challenger.uid,
+            )
+            return _dq_result(
+                challenger, f"policy.py unreadable: {exc}"[:500],
+            )
+        if actual != challenger.source_hash:
+            logger.error(
+                "challenger uid=%d source_hash mismatch "
+                "(expected %s…, got %s…)",
+                challenger.uid,
+                challenger.source_hash[:12], actual[:12],
+            )
+            return _dq_result(challenger, "source_hash_mismatch")
 
     try:
         policy_cls = _load_policy_class(challenger.policy_path)
@@ -298,7 +338,7 @@ def _evaluate_challenger(
         uid=challenger.uid,
         hotkey=challenger.hotkey,
         commit_block=challenger.commit_block,
-        model=challenger.model,
+        repo=challenger.repo,
         revision=challenger.revision,
         score=float(sr.score),
         kl_divergence=float(sr.kl_divergence),
@@ -306,6 +346,7 @@ def _evaluate_challenger(
         latency_improvement=float(sr.latency_improvement),
         disqualified=bool(sr.disqualified),
         disqualify_reason=sr.disqualify_reason,
+        source_hash=challenger.source_hash,
     )
 
 

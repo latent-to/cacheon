@@ -59,18 +59,22 @@ class FakeSubtensor:
 FAKE_WALLET = object()
 
 
-def _commit_json(model: str = "hf/repo", rev: str = "abc") -> str:
-    return json.dumps({"model": model, "revision": rev})
+_SHA_DEFAULT = "a" * 40
+
+
+def _commit_json(repo: str = "hf/repo", rev: str = _SHA_DEFAULT) -> str:
+    return json.dumps({"repo": repo, "revision": rev})
 
 
 def _make_eval_record(
     com: CommitmentRecord, score: float, disqualified: bool = False,
+    source_hash: str = "",
 ) -> EvaluationRecord:
     return EvaluationRecord(
         uid=com.uid,
         hotkey=com.hotkey,
         commit_block=com.commit_block,
-        model=com.model,
+        repo=com.repo,
         revision=com.revision,
         score=score,
         kl_divergence=0.01,
@@ -80,6 +84,18 @@ def _make_eval_record(
         disqualify_reason="dq" if disqualified else None,
         evaluated_at=1700000000.0,
         evaluation_block=1000,
+        source_hash=source_hash,
+    )
+
+
+def _seed_king(state: ValidatorState, com: CommitmentRecord,
+               score: float) -> None:
+    """Seed a pre-existing king for tests that exercise `run_once` against
+    an already-decided state. Uses a current_block well past the king's
+    commit_block so epsilon decay doesn't interfere with the test."""
+    state.record_evaluation(
+        _make_eval_record(com, score=score),
+        current_block=com.commit_block + 10,
     )
 
 
@@ -104,11 +120,12 @@ class TestRunOnceNoChallengers:
     def test_dry_run_with_existing_king_sets_no_real_weights(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0"], revealed={})
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=0, hotkey="hk0", commit_block=100,
-                             model="m", revision="r", raw=""),
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
             score=0.5,
-        ))
+        )
 
         result = run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
@@ -120,11 +137,12 @@ class TestRunOnceNoChallengers:
     def test_live_mode_calls_set_weights_for_king(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0", "hk1", "hk2"], revealed={})
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=1, hotkey="hk1", commit_block=100,
-                             model="m", revision="r", raw=""),
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
             score=0.4,
-        ))
+        )
 
         result = run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
@@ -143,11 +161,12 @@ class TestRunOnceNoChallengers:
     def test_version_key_can_be_overridden(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0", "hk1"], revealed={})
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=1, hotkey="hk1", commit_block=100,
-                             model="m", revision="r", raw=""),
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
             score=0.4,
-        ))
+        )
 
         run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
@@ -162,7 +181,7 @@ class TestRunOnceWithChallengers:
         hotkeys = ["hk0", "hk1"]
         st = FakeSubtensor(
             hotkeys=hotkeys,
-            revealed={"hk1": [(100, _commit_json("hf/m1", "rev1"))]},
+            revealed={"hk1": [(100, _commit_json("hf/m1", "1" * 40))]},
         )
         state = ValidatorState()
 
@@ -191,11 +210,12 @@ class TestRunOnceWithChallengers:
             revealed={"hk0": [(100, _commit_json())]},
         )
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=0, hotkey="hk0", commit_block=100,
-                             model="hf/repo", revision="abc", raw=""),
+                             repo="hf/repo", revision=_SHA_DEFAULT, raw=""),
             score=0.3,
-        ))
+        )
 
         eval_calls = []
 
@@ -232,8 +252,8 @@ class TestRunOnceWithChallengers:
         st = FakeSubtensor(
             hotkeys=["hk0", "hk1"],
             revealed={
-                "hk0": [(100, _commit_json("hf/a", "r0"))],
-                "hk1": [(200, _commit_json("hf/b", "r1"))],
+                "hk0": [(100, _commit_json("hf/a", "a" * 40))],
+                "hk1": [(200, _commit_json("hf/b", "b" * 40))],
             },
         )
         state = ValidatorState()
@@ -276,14 +296,15 @@ class TestRunOnceWithChallengers:
     def test_disqualified_challenger_does_not_dethrone(self, tmp_path):
         st = FakeSubtensor(
             hotkeys=["hk0", "hk1"],
-            revealed={"hk1": [(200, _commit_json("hf/b", "r1"))]},
+            revealed={"hk1": [(200, _commit_json("hf/b", "b" * 40))]},
         )
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=0, hotkey="hk0", commit_block=100,
-                             model="m", revision="r", raw=""),
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
             score=0.3,
-        ))
+        )
 
         def eval_fn(challengers, **_k):
             return [_make_eval_record(challengers[0], score=0.9, disqualified=True)]
@@ -330,11 +351,12 @@ class TestRunOnceKingUidRecycled:
     def test_recycled_uid_clears_king_and_skips_weights(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0", "hk_new_miner"], revealed={})
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=1, hotkey="hk_old_king", commit_block=100,
-                             model="m", revision="r", raw=""),
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
             score=0.5,
-        ))
+        )
         assert state.king is not None and state.king.uid == 1
 
         result = run_once(
@@ -349,11 +371,12 @@ class TestRunOnceKingUidRecycled:
     def test_king_uid_out_of_range_clears_king(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0"], revealed={})
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=5, hotkey="hk_old_king", commit_block=100,
-                             model="m", revision="r", raw=""),
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
             score=0.5,
-        ))
+        )
         assert state.king is not None
 
         result = run_once(
@@ -367,11 +390,12 @@ class TestRunOnceKingUidRecycled:
     def test_matching_hotkey_keeps_king(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0", "hk_king"], revealed={})
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=1, hotkey="hk_king", commit_block=100,
-                             model="m", revision="r", raw=""),
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
             score=0.5,
-        ))
+        )
 
         result = run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
@@ -389,11 +413,12 @@ class TestRunOnceWeightsFailure:
         st._set_weights_result = (False, "retry rate limit")  # always fail
 
         state = ValidatorState()
-        state.record_evaluation(_make_eval_record(
+        _seed_king(
+            state,
             CommitmentRecord(uid=0, hotkey="hk0", commit_block=100,
-                             model="m", revision="r", raw=""),
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
             score=0.5,
-        ))
+        )
 
         result = run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,

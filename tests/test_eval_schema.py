@@ -34,9 +34,10 @@ def _make_challenger_job(uid: int = 1, hotkey: str = "hk_alice") -> ChallengerJo
         uid=uid,
         hotkey=hotkey,
         commit_block=100 + uid,
-        model=f"hf-user/policy-{uid}",
-        revision=f"sha{uid}",
+        repo=f"hf-user/policy-{uid}",
+        revision=f"{uid:040x}",
         policy_path=f"/tmp/policies/{hotkey}/policy.py",
+        source_hash=f"{uid:064x}",
     )
 
 
@@ -60,14 +61,15 @@ def _make_challenger_result(uid: int = 1) -> ChallengerResult:
         uid=uid,
         hotkey=f"hk{uid}",
         commit_block=100 + uid,
-        model=f"hf-user/policy-{uid}",
-        revision=f"sha{uid}",
+        repo=f"hf-user/policy-{uid}",
+        revision=f"{uid:040x}",
         score=0.25,
         kl_divergence=0.015,
         memory_reduction=0.3,
         latency_improvement=0.1,
         disqualified=False,
         disqualify_reason=None,
+        source_hash=f"{uid:064x}",
     )
 
 
@@ -162,14 +164,15 @@ class TestEvaluationResultRoundtrip:
             uid=7,
             hotkey="hk7",
             commit_block=107,
-            model="hf/bad",
-            revision="sha7",
+            repo="hf/bad",
+            revision="7" * 40,
             score=0.0,
             kl_divergence=float("inf"),
             memory_reduction=0.0,
             latency_improvement=0.0,
             disqualified=True,
             disqualify_reason="KL divergence 0.9 exceeds threshold 0.1",
+            source_hash="7" * 64,
         )
         restored = ChallengerResult.from_dict(dq.to_dict())
         assert restored == dq
