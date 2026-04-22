@@ -1,7 +1,8 @@
-"""Validator configuration constants.
+"""Environment-driven defaults for the validator process.
 
-All defaults are overridable via env vars so the validator can run in dev
-(4090, testnet) and prod (H100, mainnet) from the same codebase.
+Paths, poll interval, wallet names, subnet id, and timeouts are read from
+``CACHEON_*`` variables so one codebase can target testnet vs mainnet,
+different machines, and dry-run mode without editing source.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ STATE_DIR: Path = Path(
 SANDBOX_PRECHECK_TIMEOUT_S: int = int(
     os.environ.get("CACHEON_SANDBOX_TIMEOUT_S", "60")
 )
-"""Hard timeout for the Phase 3 static AST precheck per submission."""
+"""Hard timeout (seconds) for the static AST sandbox precheck per submission."""
 
 DRY_RUN: bool = os.environ.get("CACHEON_DRY_RUN", "0") == "1"
 """When True, skip `subtensor.set_weights()` — log what would be set instead.

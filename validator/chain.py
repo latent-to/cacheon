@@ -1,15 +1,13 @@
-"""Phase 5 Part A — Chain interaction.
+"""Everything that talks to Bittensor from the validator.
 
-Two kinds of functions live here:
+**Pure helpers** — `parse_commitment_data`, `build_commitments`,
+`build_winner_take_all_weights`, etc. These only need plain data structures
+and are easy to unit test with a fake metagraph.
 
-1. Pure helpers (`parse_commitment_data`, `build_commitments`,
-   `build_winner_take_all_weights`) — no bittensor dependency, fully
-   unit-testable with a fake metagraph object.
-
-2. Thin RPC wrappers (`fetch_metagraph`, `fetch_revealed_commitments`,
-   `set_weights`) — call into `bittensor` with retry + logging. The
-   `bittensor` import is lazy so the rest of the validator package
-   can be imported and tested without the chain lib installed.
+**RPC wrappers** — `fetch_metagraph`, `fetch_revealed_commitments`,
+`set_weights`. They add retries and logging around `bittensor` calls.
+The library is imported lazily inside those paths so importing
+`validator.*` in tests does not require `bittensor` to be installed.
 """
 
 from __future__ import annotations
