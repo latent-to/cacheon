@@ -39,8 +39,8 @@ def _make_commitment(uid: int = 1, commit_block: int = 100) -> CommitmentRecord:
         uid=uid,
         hotkey=f"hk{uid}",
         commit_block=commit_block,
-        model=f"hf/policy-{uid}",
-        revision=f"sha{uid}",
+        repo=f"hf/policy-{uid}",
+        revision=f"{uid:040x}",
         raw="{}",
     )
 
@@ -78,7 +78,7 @@ def _passthrough_result(job) -> EvaluationResult:
                 uid=c.uid,
                 hotkey=c.hotkey,
                 commit_block=c.commit_block,
-                model=c.model,
+                repo=c.repo,
                 revision=c.revision,
                 score=0.1 * c.uid,
                 kl_divergence=0.02,
@@ -86,6 +86,7 @@ def _passthrough_result(job) -> EvaluationResult:
                 latency_improvement=0.05,
                 disqualified=False,
                 disqualify_reason=None,
+                source_hash=c.source_hash,
             )
             for c in job.challengers
         ],
@@ -230,11 +231,14 @@ class TestResultMapping:
         for r, com in zip(records, coms):
             assert r.hotkey == com.hotkey
             assert r.commit_block == com.commit_block
-            assert r.model == com.model
+            assert r.repo == com.repo
             assert r.revision == com.revision
             assert r.evaluation_block == 555
             assert r.disqualified is False
             assert r.score == pytest.approx(0.1 * com.uid)
+            # source_hash propagated CPU → job → pod → record round-trip
+            assert r.source_hash
+            assert len(r.source_hash) == 64  # sha256 hex
 
     def test_dq_result_flows_through_as_disqualified(self, tmp_path):
         com = _make_commitment(1)

@@ -40,6 +40,7 @@ from .eval_schema import (
     SCHEMA_VERSION,
     JOB_FILE_NAME,
     RESULTS_FILE_NAME,
+    hash_policy_file,
     read_results,
     write_job,
 )
@@ -148,7 +149,7 @@ def _result_to_record(
             uid=r.uid,
             hotkey=r.hotkey,
             commit_block=r.commit_block,
-            model=r.model,
+            repo=r.repo,
             revision=r.revision,
             score=r.score,
             kl_divergence=r.kl_divergence,
@@ -158,6 +159,7 @@ def _result_to_record(
             disqualify_reason=r.disqualify_reason,
             evaluated_at=now,
             evaluation_block=evaluation_block,
+            source_hash=r.source_hash,
         ))
     return records
 
@@ -227,13 +229,15 @@ def make_local_eval_fn(
                 raise FileNotFoundError(
                     f"policy.py for UID {com.uid} not found at {path}"
                 )
+            source_hash = hash_policy_file(path)
             challenger_jobs.append(ChallengerJob(
                 uid=com.uid,
                 hotkey=com.hotkey,
                 commit_block=com.commit_block,
-                model=com.model,
+                repo=com.repo,
                 revision=com.revision,
                 policy_path=str(path),
+                source_hash=source_hash,
             ))
 
         job = EvaluationJob(

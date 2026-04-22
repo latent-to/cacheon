@@ -50,3 +50,26 @@ Yuma consensus only trust-weights validators that agree on the version, so
 bumping this effectively rolls consensus to the new version once a quorum of
 stake has upgraded — validators still running the old code get their weights
 ignored until they update."""
+
+# --------------------------------------------------------------------------- #
+# King defender-advantage window
+# --------------------------------------------------------------------------- #
+
+KING_EPSILON_INITIAL: float = float(
+    os.environ.get("CACHEON_KING_EPSILON_INITIAL", "0.01")
+)
+"""Initial moat a fresh king holds: a challenger must beat
+`king.score * (1 + KING_EPSILON_INITIAL)` to dethrone on the block the king
+was crowned. Linearly decays to 0 over `KING_EPSILON_DECAY_BLOCKS`.
+
+1% is small enough to not protect truly weak kings, large enough to swallow
+float noise and discourage copycat submissions that match king byte-for-byte
+(a byte-identical copy also trips the `duplicate_of_king` DQ path in
+`state.record_evaluation`; the epsilon covers near-duplicates / scoring noise)."""
+
+KING_EPSILON_DECAY_BLOCKS: int = int(
+    os.environ.get("CACHEON_KING_EPSILON_DECAY_BLOCKS", "50400")
+)
+"""Number of chain blocks over which `KING_EPSILON_INITIAL` decays to 0.
+50 400 blocks ≈ 7 days at ~12 s / block. After this window any strict
+improvement dethrones — no grandfathering of stale kings."""

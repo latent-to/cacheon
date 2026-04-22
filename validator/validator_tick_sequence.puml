@@ -5,7 +5,7 @@ skinparam sequenceGroupBorderThickness 1
 skinparam noteBorderThickness 1
 skinparam maxMessageSize 120
 
-title Cacheon — Phase 5 Part A\nValidator tick (single run_once() call)
+title Cacheon — Validator tick (single run_once() call)
 
 participant "remote_validator.py" as CLI
 participant "config.py"           as CFG
@@ -15,7 +15,7 @@ participant "Bittensor chain"     as BT
 participant "challengers.py"      as CHALL
 participant "state.py"            as STATE
 participant "state/state.json"    as DISK
-participant "eval_fn\n(Part B stub)" as EVAL
+participant "eval_fn\n(eval_local or remote)" as EVAL
 
 == Startup ==
 
@@ -62,21 +62,26 @@ loop tick
     else challengers exist
         LOOP -> EVAL : eval_fn(challengers, current_block, block_hash)
         note over EVAL
-            Part B (future):
-            SSH prompts + policy pointers to GPU pod
-            run harness + scoring on Qwen2.5-7B
-            pull results.json back over SSH
+            Builds an EvaluationJob (eval_schema)
+            with per-challenger policy paths +
+            source_hash; runs scripts/pod_eval.py
+            (locally or remote) on Qwen2.5-7B and
+            parses results.json back into rows.
         end note
         EVAL --> LOOP : list[EvaluationRecord]
 
         loop per EvaluationRecord
-            LOOP -> STATE : record_evaluation(ev)
+            LOOP -> STATE : record_evaluation(ev, current_block)
             note right of STATE
-                promotes ev to king if
-                ev.score > king.score
-                and not disqualified
+                1. duplicate-of-king DQ:
+                   same source_hash, later
+                   commit_block → stored DQ'd.
+                2. decaying-epsilon threshold:
+                   challenger must exceed
+                   king.score * (1 + ε(age))
+                   to take the crown.
             end note
-            STATE --> LOOP : dethroned? (bool)
+            STATE --> LOOP : RecordResult(stored, dethroned, threshold)
         end
 
         LOOP -> STATE : save(state_dir)

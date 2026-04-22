@@ -12,16 +12,16 @@ from validator.challengers import (
 from validator.chain import CommitmentRecord
 from validator.state import ValidatorState
 
-from tests.test_validator_state import _make_eval
+from tests.test_validator_state import _make_eval, _record
 
 pytestmark = pytest.mark.unit
 
 
 def _commit(uid: int, hotkey: str, block: int,
-            model: str = "hf/m", revision: str = "r") -> CommitmentRecord:
+            repo: str = "hf/m", revision: str = "a" * 40) -> CommitmentRecord:
     return CommitmentRecord(
         uid=uid, hotkey=hotkey, commit_block=block,
-        model=model, revision=revision, raw="{}",
+        repo=repo, revision=revision, raw="{}",
     )
 
 
@@ -40,7 +40,7 @@ class TestSelectChallengers:
 
     def test_already_evaluated_filtered(self):
         state = ValidatorState()
-        state.record_evaluation(_make_eval(hotkey="hk1", commit_block=20))
+        _record(state, _make_eval(hotkey="hk1", commit_block=20))
         commits = [_commit(0, "hk0", 10), _commit(1, "hk1", 20)]
         result = select_challengers(state, commits)
         assert [c.uid for c in result.challengers] == [0]
@@ -60,7 +60,7 @@ class TestSelectChallengers:
         """Same hotkey at a new block should re-challenge — miners can
         technically re-commit on-chain even though subnet rule is one-shot."""
         state = ValidatorState()
-        state.record_evaluation(_make_eval(hotkey="hk1", commit_block=20))
+        _record(state, _make_eval(hotkey="hk1", commit_block=20))
         commits = [_commit(1, "hk1", 50)]  # same hotkey, new block
         result = select_challengers(state, commits)
         assert len(result.challengers) == 1
@@ -101,7 +101,7 @@ class TestSelectChallengers:
 
     def test_select_does_not_mutate_state(self):
         state = ValidatorState()
-        state.record_evaluation(_make_eval(hotkey="hk1", commit_block=20))
+        _record(state, _make_eval(hotkey="hk1", commit_block=20))
         commits = [_commit(1, "hk1", 20), _commit(2, "hk2", 30)]
 
         snapshot = state.to_dict()
