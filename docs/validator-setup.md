@@ -88,15 +88,19 @@ testing). Add `-v` for verbose output.
 
 All CLI flags can be set via env vars instead. Copy `validator/.env.validator.example` to `.env.validator`, fill in your values, and `source` it before running
 
-| Variable                  | Default        | Description                                       |
-| ------------------------- | -------------- | ------------------------------------------------- |
-| `CACHEON_NETWORK`         | `finney`       | Bittensor network (`finney`, `test`, or `ws://…`) |
-| `CACHEON_NETUID`          | `14`           | Subnet UID                                        |
-| `CACHEON_WALLET_NAME`     | `default`      | Wallet name                                       |
-| `CACHEON_WALLET_HOTKEY`   | `default`      | Hotkey name                                       |
-| `CACHEON_POLL_INTERVAL_S` | `360`          | Seconds to sleep between idle scans               |
-| `CACHEON_STATE_DIR`       | `<repo>/state` | Path where `state.json` is persisted              |
-| `CACHEON_DRY_RUN`         | `0`            | Set to `1` to skip on-chain `set_weights`         |
+| Variable                     | Default                    | Description                                            |
+| ---------------------------- | -------------------------- | ------------------------------------------------------ |
+| `CACHEON_NETWORK`            | `finney`                   | Bittensor network (`finney`, `test`, or `ws://…`)      |
+| `CACHEON_NETUID`             | `14`                       | Subnet UID                                             |
+| `CACHEON_WALLET_NAME`        | `default`                  | Wallet name                                            |
+| `CACHEON_WALLET_HOTKEY`      | `default`                  | Hotkey name                                            |
+| `CACHEON_POLL_INTERVAL_S`    | `360`                      | Seconds to sleep between idle scans                    |
+| `CACHEON_STATE_DIR`          | `<repo>/state`             | Path where `state.json` is persisted                   |
+| `CACHEON_DRY_RUN`            | `0`                        | Set to `1` to skip on-chain `set_weights` and GPU eval |
+| `CACHEON_POLICY_CACHE_DIR`   | `<STATE_DIR>/policy-cache` | Where fetched `policy.py` files are cached             |
+| `CACHEON_POLICY_MAX_BYTES`   | `1048576`                  | Hard size cap (bytes) on a single `policy.py` download |
+| `CACHEON_HF_ETAG_TIMEOUT_S`  | `30.0`                     | Timeout (s) for HEAD/etag revalidation inside `hf_hub_download` (not blob download). Legacy: `CACHEON_HF_FETCH_TIMEOUT_S` still read if unset. |
+| `CACHEON_HF_TOKEN`           | _(none)_                   | Optional HF token for private/gated repos              |
 
 ## Why firejail?
 

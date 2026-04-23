@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from validator.challengers import (
+    PrecheckOutcome,
     PrecheckResult,
     allow_all_precheck,
     select_challengers,
@@ -72,8 +73,11 @@ class TestSelectChallengers:
 
         def reject_odd_uids(com: CommitmentRecord) -> PrecheckResult:
             if com.uid % 2 == 1:
-                return PrecheckResult(ok=False, reason="blocked import: os")
-            return PrecheckResult(ok=True)
+                return PrecheckResult(
+                    outcome=PrecheckOutcome.REJECTED,
+                    reason="blocked import: os",
+                )
+            return PrecheckResult(outcome=PrecheckOutcome.OK)
 
         result = select_challengers(state, commits, precheck=reject_odd_uids)
         assert [c.uid for c in result.challengers] == [0]
@@ -87,7 +91,7 @@ class TestSelectChallengers:
         commits = [_commit(0, "hk0", 10)]
 
         def reject_no_reason(_com):
-            return PrecheckResult(ok=False, reason=None)
+            return PrecheckResult(outcome=PrecheckOutcome.REJECTED, reason=None)
 
         result = select_challengers(state, commits, precheck=reject_no_reason)
         assert len(result.challengers) == 0
@@ -97,7 +101,44 @@ class TestSelectChallengers:
 
     def test_allow_all_precheck(self):
         rec = _commit(0, "hk0", 10)
-        assert allow_all_precheck(rec).ok is True
+        result = allow_all_precheck(rec)
+        assert result.ok is True
+        assert result.outcome is PrecheckOutcome.OK
+
+    def test_precheck_defers_commitment(self):
+        state = ValidatorState()
+        commits = [_commit(0, "hk0", 10), _commit(1, "hk1", 20)]
+
+        def defer_uid_1(com: CommitmentRecord) -> PrecheckResult:
+            if com.uid == 1:
+                return PrecheckResult(
+                    outcome=PrecheckOutcome.DEFERRED,
+                    reason="network timeout",
+                )
+            return PrecheckResult(outcome=PrecheckOutcome.OK)
+
+        result = select_challengers(state, commits, precheck=defer_uid_1)
+        assert [c.uid for c in result.challengers] == [0]
+        assert len(result.deferred) == 1
+        deferred_com, reason = result.deferred[0]
+        assert deferred_com.uid == 1
+        assert "network timeout" in reason
+        assert result.newly_rejected == []
+
+    def test_deferred_not_recorded_in_state(self):
+        state = ValidatorState()
+        commits = [_commit(0, "hk0", 10)]
+
+        def defer_all(com: CommitmentRecord) -> PrecheckResult:
+            return PrecheckResult(outcome=PrecheckOutcome.DEFERRED, reason="retry")
+
+        result = select_challengers(state, commits, precheck=defer_all)
+        assert len(result.deferred) == 1
+        assert len(result.challengers) == 0
+        assert len(result.newly_rejected) == 0
+        # Deferred must not touch state
+        assert not state.has_precheck_failure("hk0", 10)
+        assert not state.is_known("hk0", 10)
 
     def test_select_does_not_mutate_state(self):
         state = ValidatorState()
@@ -107,7 +148,9 @@ class TestSelectChallengers:
         snapshot = state.to_dict()
         _ = select_challengers(
             state, commits,
-            precheck=lambda c: PrecheckResult(ok=False, reason="bad"),
+            precheck=lambda c: PrecheckResult(
+                outcome=PrecheckOutcome.REJECTED, reason="bad"
+            ),
         )
         assert state.to_dict() == snapshot  # selection is side-effect-free
 

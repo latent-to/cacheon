@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 
 from validator.chain import CommitmentRecord
-from validator.eval_local import _baseline_cache_key, make_local_eval_fn
+from validator.eval_local import (
+    _baseline_cache_key,
+    make_cache_policy_source_fn,
+    make_local_eval_fn,
+)
 from validator.eval_schema import (
     BaselineMetrics,
     ChallengerResult,
@@ -330,3 +334,20 @@ class TestSubprocessDefaultRunner:
         )
         with pytest.raises(TimeoutError):
             eval_fn([com], current_block=1, block_hash="0x1")
+
+
+class TestCachePolicySourceFn:
+    def test_resolves_to_expected_path(self, tmp_path):
+        from validator.policy_fetch import sanitize_repo
+
+        cache_dir = tmp_path / "cache"
+        resolve = make_cache_policy_source_fn(cache_dir)
+
+        com = _make_commitment(1)
+        expected = cache_dir / sanitize_repo(com.repo) / com.revision / "policy.py"
+        expected.parent.mkdir(parents=True)
+        expected.write_text("pass")
+
+        result = resolve(com)
+        assert result == expected
+        assert result.exists()
