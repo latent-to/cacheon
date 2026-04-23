@@ -127,7 +127,8 @@ class TestPassthroughAttend:
         out = p.attend(q, layer_idx=0)
         assert out.output.shape == (1, 4, 1, 8)
 
-    def test_attention_weights_returned(self):
+    def test_attention_weights_none_with_sdpa(self):
+        """SDPA does not return attention weights; field should be None."""
         cfg = small_config(num_heads=4, num_kv_heads=2, head_dim=8)
         p = PassthroughPolicy()
         p.setup(cfg)
@@ -135,40 +136,30 @@ class TestPassthroughAttend:
         p.write(k, v, layer_idx=0, positions=torch.arange(5))
         q = torch.randn(1, 4, 5, 8)
         out = p.attend(q, layer_idx=0)
-        assert out.attention_weights is not None
-        assert out.attention_weights.shape == (1, 4, 5, 5)
-
-    def test_attention_weights_sum_to_one(self):
-        """Softmax weights must sum to 1 across the key dimension."""
-        cfg = small_config(num_heads=4, num_kv_heads=2, head_dim=8)
-        p = PassthroughPolicy()
-        p.setup(cfg)
-        k, v = rand_kv(num_kv_heads=2, seq_len=6)
-        p.write(k, v, layer_idx=0, positions=torch.arange(6))
-        q = torch.randn(1, 4, 6, 8)
-        out = p.attend(q, layer_idx=0)
-        sums = out.attention_weights.sum(dim=-1)
-        assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
+        assert out.attention_weights is None
 
     def test_causal_mask_prefill(self):
-        """Position i must not attend to positions j > i during prefill."""
+        """Position i must not attend to positions j > i during prefill.
+
+        V is identity so output[i] == softmax-weights[i]; checking the
+        output upper-triangle is equivalent to checking the weight matrix.
+        """
         cfg = small_config(num_heads=1, num_kv_heads=1, head_dim=4)
         p = PassthroughPolicy()
         p.setup(cfg)
         seq_len = 4
 
-        # Make K very distinct so attention is near-one-hot
         k = torch.zeros(1, 1, seq_len, 4)
-        v = torch.eye(seq_len).unsqueeze(0).unsqueeze(0)   # identity: output == weights
+        v = torch.eye(seq_len).unsqueeze(0).unsqueeze(0)
         for i in range(seq_len):
-            k[0, 0, i, i] = 10.0   # query at pos i strongly attends to key at pos i
+            k[0, 0, i, i] = 10.0
 
         p.write(k, v, layer_idx=0, positions=torch.arange(seq_len))
-        q = k.clone()   # q == k → scores diagonal >> off-diagonal
+        q = k.clone()
         out = p.attend(q, layer_idx=0)
-        weights = out.attention_weights[0, 0]   # [seq_len, seq_len]
+        # V is identity → output ≈ attention weights
+        weights = out.output[0, 0]   # [seq_len, seq_len]
 
-        # Upper triangle (future positions) should be ~0
         for i in range(seq_len):
             for j in range(i + 1, seq_len):
                 assert weights[i, j].item() < 1e-4, (
@@ -176,19 +167,22 @@ class TestPassthroughAttend:
                 )
 
     def test_decode_no_causal_mask(self):
-        """During decode (q_len=1), new token should see the full cache."""
-        cfg = small_config(num_heads=1, num_kv_heads=1, head_dim=4)
+        """During decode (q_len=1), new token should see the full cache.
+
+        V is identity (head_dim == seq_len == 5) so output == weights;
+        all elements should be positive (all positions visible).
+        """
+        cfg = small_config(num_heads=1, num_kv_heads=1, head_dim=5)
         p = PassthroughPolicy()
         p.setup(cfg)
         seq_len = 5
-        k = torch.randn(1, 1, seq_len, 4)
-        v = torch.randn(1, 1, seq_len, 4)
+        k = torch.randn(1, 1, seq_len, 5)
+        v = torch.eye(seq_len).unsqueeze(0).unsqueeze(0)
         p.write(k, v, layer_idx=0, positions=torch.arange(seq_len))
 
-        q = torch.randn(1, 1, 1, 4)
+        q = torch.randn(1, 1, 1, 5)
         out = p.attend(q, layer_idx=0)
-        weights = out.attention_weights[0, 0, 0]  # [seq_len]
-        # All weights should be non-zero (every position visible)
+        weights = out.output[0, 0, 0]  # [seq_len]
         assert (weights > 1e-6).all(), "Decode token cannot see all cache positions"
 
 

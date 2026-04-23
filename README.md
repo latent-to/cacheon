@@ -99,17 +99,17 @@ The harness fetches the policy at the pinned revision and runs it inside a sandb
 
 V1 uses **PG19** (Project Gutenberg books) as the prompt source. The block hash seeds a deterministic selection of passages — reproducible and tied to on-chain state. Anyone can verify which passages were used in a given round by replaying the seed derivation.
 
-Passages are truncated to **~131K characters (~32K tokens)** and filtered for minimum length (1K chars). Long context is intentional: Qwen2.5-7B's GQA cache is only ~0.7% of peak memory at 2K tokens (invisible to scoring), but ~12% at 32K tokens — large enough for compression gains to register. The dataset revision is pinned for row-level reproducibility.
+Passages are truncated to **~131K characters (~32K tokens)** and filtered for minimum length (1K chars). Long context is intentional: Qwen2.5-7B's GQA cache is only ~0.7% of typical peak VRAM at 2K tokens (too small to meaningfully compare policies), but ~12% at 32K tokens — large enough for compression gains to register. The dataset revision is pinned for row-level reproducibility.
 
 ### Scoring
 
 For each evaluation:
 
-1. Run baseline inference (passthrough policy) — record logits, latency, peak memory
+1. Run baseline inference (passthrough policy) — record logits, latency, peak VRAM (monitoring), and KV-cache bytes via `policy.memory_bytes()`
 2. Run the miner's policy — same prompts, same setup, policy applied at the KV layer
 3. Compare across three axes:
    - **Quality**: KL divergence between baseline and policy logits. Submissions exceeding the threshold are rejected.
-   - **Memory**: peak GPU memory reduction relative to baseline, measured by the harness
+   - **Memory**: KV-cache footprint reduction relative to baseline (`policy.memory_bytes()`), not transient peak VRAM
    - **Latency**: time-to-first-token and tokens/sec relative to baseline
 
 ```python
@@ -196,7 +196,7 @@ Policy code is checked in two layers before full harness eval:
 
 2. **Subprocess isolation** (`inference_engine/runner.py`) — the policy runs in a child process with a hard timeout and output validation. On hosts where **firejail** is installed (the intended production setup is the **CPU validator** in Phase 5), the runner uses it: no network (`--net=none`), isolated filesystem under the job temp dir, memory and process limits. The GPU pod image does not install firejail via `inference_engine/setup.sh` — it runs harness + scoring only. If `firejail` is not on `PATH` (macOS, CI, or GPU-only workflows), the runner falls back to a plain subprocess and logs a warning — fine for local dev, not the security posture for untrusted miner code in production.
 
-The harness validates at each boundary: output shape/dtype/value checks, `memory_bytes()` cross-checked against `torch.cuda.max_memory_allocated()` (which the miner cannot fake), and wall-clock latency measurement of `write` + `attend`.
+The harness validates at each boundary: output shape/dtype/value checks, `memory_bytes()` reported per policy (used for the memory score), peak VRAM from `torch.cuda.max_memory_allocated()` recorded for monitoring, and wall-clock latency measurement of `write` + `attend`.
 
 ## Roadmap
 

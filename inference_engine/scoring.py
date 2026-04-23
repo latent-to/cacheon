@@ -95,11 +95,13 @@ def score(baseline: RunResult, miner: RunResult) -> ScoreResult:
 
     kl = _compute_kl(baseline, miner)
 
-    # Memory reduction: positive means miner used less
-    if baseline.peak_memory_bytes > 0:
+    # KV-cache memory reduction: positive means miner's cache is smaller.
+    # Uses policy_memory_bytes (actual KV-cache footprint) rather than
+    # peak VRAM which includes transient attention buffers and model weights.
+    if baseline.policy_memory_bytes > 0:
         mem_reduction = (
-            (baseline.peak_memory_bytes - miner.peak_memory_bytes)
-            / baseline.peak_memory_bytes
+            (baseline.policy_memory_bytes - miner.policy_memory_bytes)
+            / baseline.policy_memory_bytes
         )
     else:
         mem_reduction = 0.0
