@@ -34,7 +34,7 @@ from validator.precheck import make_fetch_precheck
 
 logger = logging.getLogger("e2e_eval")
 
-DEFAULT_DESCRIPTORS_PATH = REPO_ROOT / "scripts" / "e2e_policies.json"
+DEFAULT_DESCRIPTORS_PATH = REPO_ROOT / "scripts" / "example_policies.json"
 
 
 def _load_policy_class(path: Path) -> type:
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         "--policies",
         type=Path,
         default=DEFAULT_DESCRIPTORS_PATH,
-        help="JSON file with policy descriptors (default: scripts/e2e_policies.json)",
+        help="JSON file with policy descriptors (default: scripts/example_policies.json)",
     )
     p.add_argument("--device", default="cuda", help="torch device (cuda/cpu)")
     p.add_argument("--n-prompts", type=int, default=3, help="Number of prompts")
