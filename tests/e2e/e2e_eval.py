@@ -7,7 +7,7 @@ the real pipeline without touching the chain.
 
 Usage (after running e2e_seed_hf.py):
     export HF_TOKEN=hf_...
-    python scripts/e2e_eval.py --device cuda
+    python tests/e2e/e2e_eval.py --device cuda
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -36,7 +36,7 @@ from validator.precheck import make_fetch_precheck
 
 logger = logging.getLogger("e2e_eval")
 
-DEFAULT_DESCRIPTORS_PATH = REPO_ROOT / "scripts" / "example_policies.json"
+DEFAULT_DESCRIPTORS_PATH = REPO_ROOT / "tests" / "e2e" / "fixtures" / "example_policies.json"
 
 
 def _configure_logging(*, verbose: bool = False) -> None:
@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         "--policies",
         type=Path,
         default=DEFAULT_DESCRIPTORS_PATH,
-        help="JSON file with policy descriptors (default: scripts/example_policies.json)",
+        help="JSON file with policy descriptors (default: tests/e2e/fixtures/example_policies.json)",
     )
     p.add_argument("--device", default="cuda", help="torch device (cuda/cpu)")
     p.add_argument("--n-prompts", type=int, default=3, help="Number of prompts")
@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.policies.exists():
         logger.error("Descriptors file not found: %s", args.policies)
-        logger.error("Run scripts/e2e_seed_hf.py first to generate it.")
+        logger.error("Run tests/e2e/e2e_seed_hf.py first to generate it.")
         return 1
 
     descriptors = json.loads(args.policies.read_text())

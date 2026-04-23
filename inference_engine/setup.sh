@@ -102,7 +102,7 @@ import torch
 model_name = "Qwen/Qwen2.5-7B-Instruct"
 print(f"  {model_name}...")
 AutoTokenizer.from_pretrained(model_name)
-AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16)
+AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16)
 print("  download complete.")
 EOF
   fi

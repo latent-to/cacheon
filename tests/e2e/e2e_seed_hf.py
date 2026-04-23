@@ -2,11 +2,11 @@
 """One-time script: upload E2E test policies to HuggingFace.
 
 Run this once, capture the printed JSON, then you may delete this script.
-The JSON is written to `scripts/example_policies.json` for convenience.
+The JSON is written to `tests/e2e/fixtures/example_policies.json` for convenience.
 
 Usage:
     export HF_TOKEN=hf_...
-    python scripts/e2e_seed_hf.py
+    python tests/e2e/e2e_seed_hf.py
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from pathlib import Path
 
 from huggingface_hub import HfApi, upload_file
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-POLICIES_DIR = REPO_ROOT / "scripts" / "example_policies"
-OUTPUT_PATH = REPO_ROOT / "scripts" / "example_policies.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+POLICIES_DIR = REPO_ROOT / "tests" / "e2e" / "fixtures" / "example_policies"
+OUTPUT_PATH = REPO_ROOT / "tests" / "e2e" / "fixtures" / "example_policies.json"
 NAMESPACE = "xavierlyu"
 
 
