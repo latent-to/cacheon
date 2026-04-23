@@ -66,7 +66,7 @@ pytest tests/test_harness_integration.py -v -m integration
 
 # 3. Smoke test — 0.5B model, also works on MPS/CPU (~varies)
 #    Human-readable output: monkey-patch sanity, verify, baseline metrics.
-python scripts/smoke_test.py
+python scripts/verify_harness.py
 
 # 4. Full harness run — 7B model on CUDA (~25 min for 5 prompts × 128 tokens)
 #    Runs harness.verify() on 5 prompts with the real 7B (Phase 1 stop condition ✅).
