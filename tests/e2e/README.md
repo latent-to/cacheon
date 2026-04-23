@@ -16,7 +16,7 @@ python tests/e2e/e2e_eval.py --device cuda --n-prompts 3
 - **Policy fetch** — downloads `policy.py` from HuggingFace via the real `validator.policy_fetch` path
 - **Precheck / sandbox** — runs AST allowlist validation via the real `validator.precheck` path
 - **Harness** — loads Qwen 7B, runs the policy against the PassthroughPolicy baseline
-- **Scoring** — computes KL divergence, memory reduction, latency improvement
+- **Scoring** — computes KL divergence, KV-cache memory reduction (`policy.memory_bytes()`), latency improvement
 
 Prerequisites:
 

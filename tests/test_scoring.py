@@ -184,36 +184,36 @@ class TestMemoryReduction:
 
     def test_miner_uses_less_memory(self):
         result = score(
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=1_000_000_000),
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=500_000_000),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=500_000_000),
         )
         assert result.memory_reduction == pytest.approx(0.5)
 
     def test_miner_uses_more_memory(self):
         result = score(
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=1_000_000_000),
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=1_500_000_000),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_500_000_000),
         )
         assert result.memory_reduction == pytest.approx(-0.5)
 
     def test_identical_memory(self):
         result = score(
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=1_000_000_000),
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=1_000_000_000),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000),
         )
         assert result.memory_reduction == pytest.approx(0.0)
 
     def test_zero_baseline_memory_handled(self):
         result = score(
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=0),
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=500),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=0),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=500),
         )
         assert result.memory_reduction == 0.0
 
     def test_memory_reduction_clamped(self):
         result = score(
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=100),
-            _make_result(logits=[torch.zeros(5, 32)], peak_memory_bytes=500),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=100),
+            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=500),
         )
         assert result.memory_reduction >= -1.0
 
@@ -264,12 +264,12 @@ class TestScoreFormula:
         result = score(
             _make_result(
                 logits=[torch.zeros(5, 32)],
-                peak_memory_bytes=1_000_000_000,
+                policy_memory_bytes=1_000_000_000,
                 latency_s=10.0,
             ),
             _make_result(
                 logits=[torch.zeros(5, 32)],
-                peak_memory_bytes=500_000_000,
+                policy_memory_bytes=500_000_000,
                 latency_s=8.0,
             ),
         )
@@ -282,12 +282,12 @@ class TestScoreFormula:
         result = score(
             _make_result(
                 logits=[torch.zeros(5, 32)],
-                peak_memory_bytes=1_000_000_000,
+                policy_memory_bytes=1_000_000_000,
                 latency_s=10.0,
             ),
             _make_result(
                 logits=[torch.zeros(5, 32)],
-                peak_memory_bytes=700_000_000,
+                policy_memory_bytes=700_000_000,
                 latency_s=5.0,
             ),
         )
@@ -300,12 +300,12 @@ class TestScoreFormula:
         result = score(
             _make_result(
                 logits=[torch.zeros(5, 32)],
-                peak_memory_bytes=1_000_000_000,
+                policy_memory_bytes=1_000_000_000,
                 latency_s=10.0,
             ),
             _make_result(
                 logits=[torch.zeros(5, 32)],
-                peak_memory_bytes=1_500_000_000,
+                policy_memory_bytes=1_500_000_000,
                 latency_s=15.0,
             ),
         )
@@ -320,12 +320,12 @@ class TestScoreFormula:
         result = score(
             _make_result(
                 logits=[base],
-                peak_memory_bytes=1_000_000_000,
+                policy_memory_bytes=1_000_000_000,
                 latency_s=10.0,
             ),
             _make_result(
                 logits=[noisy],
-                peak_memory_bytes=100_000_000,
+                policy_memory_bytes=100_000_000,
                 latency_s=1.0,
             ),
         )
@@ -337,12 +337,12 @@ class TestScoreFormula:
         result = score(
             _make_result(
                 logits=[torch.zeros(5, 32)],
-                peak_memory_bytes=1_000_000_000,
+                policy_memory_bytes=1_000_000_000,
                 latency_s=10.0,
             ),
             _make_result(
                 logits=[torch.zeros(5, 32)],
-                peak_memory_bytes=2_000_000_000,
+                policy_memory_bytes=2_000_000_000,
                 latency_s=20.0,
             ),
         )

@@ -1,6 +1,6 @@
 # Cacheon — Inference Engine
 
-The GPU-side evaluation harness for **Cacheon** (SN14). Loads Qwen2.5-7B-Instruct, monkey-patches attention layers to route K/V through a `KVCachePolicy`, runs prefill + decode, and returns output text, logits, latency, and peak GPU memory.
+The GPU-side evaluation harness for **Cacheon** (SN14). Loads Qwen2.5-7B-Instruct, monkey-patches attention layers to route K/V through a `KVCachePolicy`, runs prefill + decode, and returns output text, logits, latency, peak GPU memory (monitoring), and policy-reported KV-cache bytes (used in scoring).
 
 This code lives on the GPU pod.
 
@@ -9,7 +9,7 @@ This code lives on the GPU pod.
 | File               | What it does                                                                                                                                                                                                 |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `policy.py`        | `KVCachePolicy` interface — the contract every miner submission implements                                                                                                                                   |
-| `passthrough.py`   | Baseline policy: uncompressed FP16 cache, standard attention. The control variable.                                                                                                                          |
+| `passthrough.py`   | Baseline policy: uncompressed FP16 cache, attention via `scaled_dot_product_attention` (Flash Attention on CUDA). The control variable.                                                                      |
 | `harness.py`       | Loads the model, monkey-patches attention, runs the generate loop, collects metrics                                                                                                                          |
 | `scoring.py`       | Takes two `RunResult`s (baseline + miner) → `ScoreResult` (KL gate + weighted score)                                                                                                                         |
 | `prompts.py`       | Deterministic PG19 prompt sampling seeded by block hash → `list[str]`. Passages truncated to ~32K tokens, filtered for min length, dataset revision pinned.                                                  |
