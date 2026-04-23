@@ -52,12 +52,17 @@ POLICY_MAX_BYTES: int = int(
 """Hard size cap (bytes) on a single `policy.py` download. Default 1 MB."""
 
 HF_ETAG_TIMEOUT_S: float = float(
-    os.environ.get("CACHEON_HF_ETAG_TIMEOUT_S", "30.0")
+    os.environ.get(
+        "CACHEON_HF_ETAG_TIMEOUT_S",
+        os.environ.get("CACHEON_HF_FETCH_TIMEOUT_S", "30.0"),
+    )
 )
 """Timeout (seconds) for the HEAD / etag revalidation request inside
 ``hf_hub_download``.  This does **not** cap the blob download itself —
-only the metadata preflight.  Rename reflects this limitation so
-operators don't assume they have a full-download timeout."""
+only the metadata preflight.
+
+``CACHEON_HF_FETCH_TIMEOUT_S`` is still read when
+``CACHEON_HF_ETAG_TIMEOUT_S`` is unset (legacy alias)."""
 
 HF_TOKEN: str | None = os.environ.get("CACHEON_HF_TOKEN")
 """Optional HuggingFace access token. Required only for private or gated

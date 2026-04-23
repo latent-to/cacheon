@@ -46,6 +46,74 @@ def sanitize_repo(repo: str) -> str:
     return safe
 
 
+_HF_HUB_CALL_ERRORS: tuple[type[BaseException], ...] = (
+    LocalEntryNotFoundError,
+    EntryNotFoundError,
+    GatedRepoError,
+    RepositoryNotFoundError,
+    RevisionNotFoundError,
+    HfHubHTTPError,
+    OSError,
+)
+
+
+def _fetch_result_from_hf_hub_exc(exc: BaseException) -> FetchResult:
+    """Map ``HfApi`` / ``hf_hub_download`` failures to a ``FetchResult``.
+
+    Uses ``isinstance`` in specificity order so subclasses (e.g.
+    ``GatedRepoError`` ⊂ ``RepositoryNotFoundError`` ⊂ ``HfHubHTTPError``)
+    map correctly regardless of tuple order in ``except``.
+    """
+    if isinstance(exc, LocalEntryNotFoundError):
+        # HF client can raise this on cache edge cases; treat as transient.
+        return FetchResult(
+            outcome=FetchOutcome.DEFERRED,
+            reason=f"local_cache_miss ({exc})",
+        )
+    if isinstance(exc, GatedRepoError):
+        return FetchResult(
+            outcome=FetchOutcome.REJECTED,
+            reason=f"fetch_forbidden ({exc})",
+        )
+    if isinstance(exc, (RepositoryNotFoundError, RevisionNotFoundError)):
+        return FetchResult(
+            outcome=FetchOutcome.REJECTED,
+            reason=f"revision_unavailable ({exc})",
+        )
+    if isinstance(exc, EntryNotFoundError):
+        return FetchResult(
+            outcome=FetchOutcome.REJECTED,
+            reason=f"policy_missing ({exc})",
+        )
+    if isinstance(exc, HfHubHTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status is not None and status >= 500:
+            return FetchResult(
+                outcome=FetchOutcome.DEFERRED,
+                reason=f"hf_http_{status} ({exc})",
+            )
+        if status == 429:
+            return FetchResult(
+                outcome=FetchOutcome.DEFERRED,
+                reason=f"rate_limited ({exc})",
+            )
+        if status in (401, 403):
+            return FetchResult(
+                outcome=FetchOutcome.REJECTED,
+                reason=f"fetch_forbidden ({exc})",
+            )
+        return FetchResult(
+            outcome=FetchOutcome.DEFERRED,
+            reason=f"hf_http_{status or 'unknown'} ({exc})",
+        )
+    if isinstance(exc, OSError):
+        return FetchResult(
+            outcome=FetchOutcome.DEFERRED,
+            reason=f"fetch_error ({type(exc).__name__}: {exc})",
+        )
+    raise exc
+
+
 def fetch_policy_source(
     repo: str,
     revision: str,
@@ -97,54 +165,8 @@ def fetch_policy_source(
             revision=revision,
             token=hf_token,
         )
-    except LocalEntryNotFoundError as exc:
-        # Only raised when local_files_only=True; treat as transient so we
-        # retry rather than permanently disqualifying the miner.
-        return FetchResult(
-            outcome=FetchOutcome.DEFERRED,
-            reason=f"local_cache_miss ({exc})",
-        )
-    except EntryNotFoundError as exc:
-        return FetchResult(
-            outcome=FetchOutcome.REJECTED,
-            reason=f"policy_missing ({exc})",
-        )
-    except GatedRepoError as exc:
-        return FetchResult(
-            outcome=FetchOutcome.REJECTED,
-            reason=f"fetch_forbidden ({exc})",
-        )
-    except (RepositoryNotFoundError, RevisionNotFoundError) as exc:
-        return FetchResult(
-            outcome=FetchOutcome.REJECTED,
-            reason=f"revision_unavailable ({exc})",
-        )
-    except HfHubHTTPError as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status is not None and status >= 500:
-            return FetchResult(
-                outcome=FetchOutcome.DEFERRED,
-                reason=f"hf_http_{status} ({exc})",
-            )
-        if status == 429:
-            return FetchResult(
-                outcome=FetchOutcome.DEFERRED,
-                reason=f"rate_limited ({exc})",
-            )
-        if status in (401, 403):
-            return FetchResult(
-                outcome=FetchOutcome.REJECTED,
-                reason=f"fetch_forbidden ({exc})",
-            )
-        return FetchResult(
-            outcome=FetchOutcome.DEFERRED,
-            reason=f"hf_http_{status or 'unknown'} ({exc})",
-        )
-    except OSError as exc:
-        return FetchResult(
-            outcome=FetchOutcome.DEFERRED,
-            reason=f"fetch_error ({type(exc).__name__}: {exc})",
-        )
+    except _HF_HUB_CALL_ERRORS as exc:
+        return _fetch_result_from_hf_hub_exc(exc)
 
     if not paths:
         return FetchResult(
@@ -178,52 +200,8 @@ def fetch_policy_source(
             local_dir_use_symlinks=False,
             etag_timeout=etag_timeout_s,
         )
-    except LocalEntryNotFoundError as exc:
-        return FetchResult(
-            outcome=FetchOutcome.DEFERRED,
-            reason=f"local_cache_miss ({exc})",
-        )
-    except EntryNotFoundError as exc:
-        return FetchResult(
-            outcome=FetchOutcome.REJECTED,
-            reason=f"policy_missing ({exc})",
-        )
-    except GatedRepoError as exc:
-        return FetchResult(
-            outcome=FetchOutcome.REJECTED,
-            reason=f"fetch_forbidden ({exc})",
-        )
-    except (RepositoryNotFoundError, RevisionNotFoundError) as exc:
-        return FetchResult(
-            outcome=FetchOutcome.REJECTED,
-            reason=f"revision_unavailable ({exc})",
-        )
-    except HfHubHTTPError as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status is not None and status >= 500:
-            return FetchResult(
-                outcome=FetchOutcome.DEFERRED,
-                reason=f"hf_http_{status} ({exc})",
-            )
-        if status == 429:
-            return FetchResult(
-                outcome=FetchOutcome.DEFERRED,
-                reason=f"rate_limited ({exc})",
-            )
-        if status in (401, 403):
-            return FetchResult(
-                outcome=FetchOutcome.REJECTED,
-                reason=f"fetch_forbidden ({exc})",
-            )
-        return FetchResult(
-            outcome=FetchOutcome.DEFERRED,
-            reason=f"hf_http_{status or 'unknown'} ({exc})",
-        )
-    except OSError as exc:
-        return FetchResult(
-            outcome=FetchOutcome.DEFERRED,
-            reason=f"fetch_error ({type(exc).__name__}: {exc})",
-        )
+    except _HF_HUB_CALL_ERRORS as exc:
+        return _fetch_result_from_hf_hub_exc(exc)
 
     downloaded_path = Path(downloaded)
 

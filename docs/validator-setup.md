@@ -99,7 +99,7 @@ All CLI flags can be set via env vars instead. Copy `validator/.env.validator.ex
 | `CACHEON_DRY_RUN`            | `0`                        | Set to `1` to skip on-chain `set_weights` and GPU eval |
 | `CACHEON_POLICY_CACHE_DIR`   | `<STATE_DIR>/policy-cache` | Where fetched `policy.py` files are cached             |
 | `CACHEON_POLICY_MAX_BYTES`   | `1048576`                  | Hard size cap (bytes) on a single `policy.py` download |
-| `CACHEON_HF_FETCH_TIMEOUT_S` | `30.0`                     | HTTP timeout for HuggingFace downloads                 |
+| `CACHEON_HF_ETAG_TIMEOUT_S`  | `30.0`                     | Timeout (s) for HEAD/etag revalidation inside `hf_hub_download` (not blob download). Legacy: `CACHEON_HF_FETCH_TIMEOUT_S` still read if unset. |
 | `CACHEON_HF_TOKEN`           | _(none)_                   | Optional HF token for private/gated repos              |
 
 ## Why firejail?
