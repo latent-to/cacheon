@@ -115,7 +115,7 @@ echo ""
 echo "=== Smoke test ==="
 cd "$REPO_DIR"
 source "$VENV_DIR/bin/activate"
-python scripts/smoke_test.py --device cuda --max-new-tokens 16
+python scripts/verify_harness.py --device cuda --max-new-tokens 16
 
 echo ""
 echo "=== Setup complete ==="
