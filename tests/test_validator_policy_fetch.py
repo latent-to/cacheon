@@ -112,9 +112,21 @@ class TestSanitizeRepo:
         # Dots in the name itself are preserved.
         assert sanitize_repo(".env/name") == ".env_name"
 
-    def test_double_underscore_empty_segment_rejected(self):
+    def test_underscore_ids_accepted(self):
+        # HF allows underscores anywhere in the name; sanitize_repo must not
+        # false-reject them (`/` is the only path-component separator).
+        assert sanitize_repo("owner/my__model") == "owner_my__model"
+        assert sanitize_repo("owner/model_") == "owner_model_"
+        assert sanitize_repo("_owner/repo") == "_owner_repo"
+        assert sanitize_repo("owner/_model") == "owner__model"
+
+    def test_empty_segment_between_slashes_rejected(self):
         with pytest.raises(ValueError, match="invalid repo"):
-            sanitize_repo("a__b/c")
+            sanitize_repo("owner//name")
+        with pytest.raises(ValueError, match="invalid repo"):
+            sanitize_repo("/name")
+        with pytest.raises(ValueError, match="invalid repo"):
+            sanitize_repo("owner/")
 
 
 class _FakeRepoFile:
@@ -396,6 +408,50 @@ class TestFetchPolicySourceColdFetch:
             )
         assert result.outcome is FetchOutcome.REJECTED
         assert "fetch_forbidden" in (result.reason or "")
+
+    def test_hf_http_400_rejected(self, tmp_path: Path):
+        """Non-retriable 4xx (e.g. 400 Bad Request) must REJECT, not DEFER."""
+        from huggingface_hub.utils import HfHubHTTPError
+
+        exc = HfHubHTTPError("bad request", response=_fake_response(400))
+        with patch("validator.policy_fetch.HfApi", side_effect=exc):
+            result = fetch_policy_source(
+                "owner/name", "a" * 40,
+                cache_dir=tmp_path,
+                max_bytes=1024,
+                etag_timeout_s=30.0,
+            )
+        assert result.outcome is FetchOutcome.REJECTED
+        assert "hf_http_400" in (result.reason or "")
+
+    def test_hf_http_410_rejected(self, tmp_path: Path):
+        from huggingface_hub.utils import HfHubHTTPError
+
+        exc = HfHubHTTPError("gone", response=_fake_response(410))
+        with patch("validator.policy_fetch.HfApi", side_effect=exc):
+            result = fetch_policy_source(
+                "owner/name", "a" * 40,
+                cache_dir=tmp_path,
+                max_bytes=1024,
+                etag_timeout_s=30.0,
+            )
+        assert result.outcome is FetchOutcome.REJECTED
+        assert "hf_http_410" in (result.reason or "")
+
+    def test_hf_http_408_deferred(self, tmp_path: Path):
+        """408 Request Timeout is retriable."""
+        from huggingface_hub.utils import HfHubHTTPError
+
+        exc = HfHubHTTPError("timeout", response=_fake_response(408))
+        with patch("validator.policy_fetch.HfApi", side_effect=exc):
+            result = fetch_policy_source(
+                "owner/name", "a" * 40,
+                cache_dir=tmp_path,
+                max_bytes=1024,
+                etag_timeout_s=30.0,
+            )
+        assert result.outcome is FetchOutcome.DEFERRED
+        assert "hf_http_408" in (result.reason or "")
 
     def test_hf_http_no_response_deferred(self, tmp_path: Path):
         """Server disconnects before sending a response — exc.response is None."""

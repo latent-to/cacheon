@@ -46,13 +46,10 @@ def sanitize_repo(repo: str) -> str:
     Raises:
         ValueError: If the normalized name is not safe for use as a directory name.
     """
-    safe = repo.strip().replace("/", "_")
-    if not safe or safe in (".", ".."):
+    parts = repo.strip().split("/")
+    if not parts or any(p in ("", ".", "..") for p in parts):
         raise ValueError(f"invalid repo for cache path: {repo!r}")
-    for part in safe.split("_"):
-        if not part or part in (".", ".."):
-            raise ValueError(f"invalid repo for cache path: {repo!r}")
-    return safe
+    return "_".join(parts)
 
 
 _HF_HUB_CALL_ERRORS: tuple[type[BaseException], ...] = (
@@ -102,7 +99,14 @@ def _fetch_result_from_hf_hub_exc(exc: BaseException) -> FetchResult:
         )
     if isinstance(exc, HfHubHTTPError):
         status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status is not None and status >= 500:
+        if status is None:
+            # No response attached — treat as transient (e.g. connection reset
+            # wrapped in HfHubHTTPError without a status).
+            return FetchResult(
+                outcome=FetchOutcome.DEFERRED,
+                reason=f"hf_http_unknown ({exc})",
+            )
+        if status >= 500:
             return FetchResult(
                 outcome=FetchOutcome.DEFERRED,
                 reason=f"hf_http_{status} ({exc})",
@@ -112,14 +116,27 @@ def _fetch_result_from_hf_hub_exc(exc: BaseException) -> FetchResult:
                 outcome=FetchOutcome.DEFERRED,
                 reason=f"rate_limited ({exc})",
             )
+        if status in (408, 425):
+            # Request Timeout / Too Early — transient, safe to retry.
+            return FetchResult(
+                outcome=FetchOutcome.DEFERRED,
+                reason=f"hf_http_{status} ({exc})",
+            )
         if status in (401, 403):
             return FetchResult(
                 outcome=FetchOutcome.REJECTED,
                 reason=f"fetch_forbidden ({exc})",
             )
+        if 400 <= status < 500:
+            # Remaining 4xx (400 Bad Request, 410 Gone, 422, etc.) are the
+            # miner's fault — won't get better on retry.
+            return FetchResult(
+                outcome=FetchOutcome.REJECTED,
+                reason=f"hf_http_{status} ({exc})",
+            )
         return FetchResult(
             outcome=FetchOutcome.DEFERRED,
-            reason=f"hf_http_{status or 'unknown'} ({exc})",
+            reason=f"hf_http_{status} ({exc})",
         )
     if isinstance(exc, OSError):
         return FetchResult(
