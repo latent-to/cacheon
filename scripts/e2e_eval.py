@@ -26,7 +26,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from inference_engine import Harness, PassthroughPolicy, sample_prompts
+from inference_engine.harness import Harness
+from inference_engine.passthrough import PassthroughPolicy
+from inference_engine.prompts import sample_prompts
 from inference_engine.scoring import score
 from validator.chain import CommitmentRecord
 from validator.policy_fetch import FetchOutcome, fetch_policy_source
@@ -35,6 +37,17 @@ from validator.precheck import make_fetch_precheck
 logger = logging.getLogger("e2e_eval")
 
 DEFAULT_DESCRIPTORS_PATH = REPO_ROOT / "scripts" / "example_policies.json"
+
+
+def _configure_logging(*, verbose: bool = False) -> None:
+    """Bump noisy third-party loggers to WARNING so e2e_eval / inference_engine INFO shines through."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    for noisy in ("httpx", "huggingface_hub", "urllib3", "requests"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def _load_policy_class(path: Path) -> type:
@@ -75,7 +88,7 @@ def _run_one(
         revision,
         cache_dir=cache_dir,
         max_bytes=1_048_576,
-        timeout_s=30.0,
+        etag_timeout_s=30.0,
         hf_token=hf_token,
     )
     if fetch_result.outcome is not FetchOutcome.OK:
@@ -171,11 +184,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true", help="Output NDJSON")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
-
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-    )
+    _configure_logging(verbose=args.verbose)
 
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
