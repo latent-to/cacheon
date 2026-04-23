@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Phase 5 Part A — CPU-side validator entrypoint.
+"""CPU-side validator entrypoint.
 
-Chain scan loop + local state + (stubbed) GPU eval hook. The actual SSH
-to the GPU pod and result ingestion is Phase 5 Part B — until that's
-wired, pass `--dry-run` and leave `--eval-stub` on to exercise the loop
-end-to-end against a live or testnet chain without trying to run any
-real eval.
+Chain scan loop + local state + precheck (fetch + AST sandbox).
+The actual GPU eval hook is not wired until PR3 — until then you
+must pass ``--dry-run`` or the CLI exits with an error.
 
 Usage:
     python scripts/remote_validator.py \\
@@ -18,12 +16,15 @@ Usage:
 Env vars (all optional; CLI wins):
     CACHEON_NETUID, CACHEON_NETWORK,
     CACHEON_WALLET_NAME, CACHEON_WALLET_HOTKEY,
-    CACHEON_POLL_INTERVAL_S, CACHEON_STATE_DIR, CACHEON_DRY_RUN=1
+    CACHEON_POLL_INTERVAL_S, CACHEON_STATE_DIR, CACHEON_DRY_RUN=1,
+    CACHEON_POLICY_CACHE_DIR, CACHEON_POLICY_MAX_BYTES,
+    CACHEON_HF_ETAG_TIMEOUT_S, CACHEON_HF_TOKEN
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import sys
 from pathlib import Path
@@ -35,6 +36,8 @@ if str(REPO_ROOT) not in sys.path:
 from validator import config as validator_config  # noqa: E402
 from validator.chain import NotRegisteredError, preflight_check  # noqa: E402
 from validator.loop import not_implemented_eval, run_forever  # noqa: E402
+from validator.policy_fetch import fetch_policy_source  # noqa: E402
+from validator.precheck import make_fetch_precheck  # noqa: E402
 from validator.state import ValidatorState  # noqa: E402
 
 
@@ -76,7 +79,7 @@ def _configure_logging(verbose: bool) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Cacheon CPU-side validator (Phase 5 Part A).",
+        description="Cacheon CPU-side validator.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--network", default=validator_config.SUBTENSOR_NETWORK,
@@ -90,10 +93,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--state-dir", default=str(validator_config.STATE_DIR))
     p.add_argument("--dry-run", action="store_true",
                    default=validator_config.DRY_RUN,
-                   help="Do not call subtensor.set_weights() — log only.")
-    p.add_argument("--eval-stub", action="store_true",
-                   help="Force the not-implemented eval stub (Phase 5 "
-                        "Part B not yet wired).")
+                   help="Do not call subtensor.set_weights() and do not "
+                        "run GPU eval — log only.")
+    p.add_argument("--policy-cache-dir",
+                   default=str(validator_config.POLICY_CACHE_DIR),
+                   help="Directory for cached policy.py downloads.")
+    p.add_argument("--policy-max-bytes", type=int,
+                   default=validator_config.POLICY_MAX_BYTES,
+                   help="Max size (bytes) for a single policy.py download.")
+    p.add_argument("--hf-etag-timeout-s", type=float,
+                   default=validator_config.HF_ETAG_TIMEOUT_S,
+                   help="Timeout (seconds) for the HEAD/etag revalidation "
+                        "inside hf_hub_download. Does NOT cap blob downloads.")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -109,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         logging.basicConfig(level=logging.ERROR)
         logging.error(
             "bittensor is not installed. Install it before running "
-            "remote_validator (e.g. `pip install 'bittensor>=8'`)."
+            "remote_validator (e.g. `pip install 'bittensor>=10'`)."
         )
         return 2
 
@@ -144,13 +155,36 @@ def main(argv: list[str] | None = None) -> int:
         state.last_weights_set_block,
     )
 
-    eval_fn = not_implemented_eval
-    if args.eval_stub:
-        logger.warning(
-            "Running with NotImplementedError eval stub — any new "
-            "challenger will crash the tick. Use --dry-run on a network "
-            "with no new commits, or wait for Phase 5 Part B."
+    # Pre-create and writability-check the policy cache directory so a
+    # permissions problem surfaces at startup, not as silent DEFERRED loops.
+    policy_cache_dir = Path(args.policy_cache_dir).resolve()
+    try:
+        policy_cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error(
+            "Cannot create policy cache directory %s: %s", policy_cache_dir, exc
         )
+        return 7
+
+    # Build the real precheck (fetch + AST sandbox)
+    fetch_fn = functools.partial(
+        fetch_policy_source,
+        cache_dir=policy_cache_dir,
+        max_bytes=args.policy_max_bytes,
+        etag_timeout_s=args.hf_etag_timeout_s,
+        hf_token=validator_config.HF_TOKEN,
+    )
+    precheck = make_fetch_precheck(fetch_fn)
+
+    # Fail-fast until PR3 lands a real EvalFn
+    if not args.dry_run:
+        logger.error(
+            "remote_validator currently has no EvalFn wired. "
+            "Run with --dry-run until PR3 (Lium pod transport) lands."
+        )
+        return 6
+
+    eval_fn = not_implemented_eval  # harmless under dry-run; loop never calls it
 
     try:
         run_forever(
@@ -159,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
             state=state,
             netuid=args.netuid,
             eval_fn=eval_fn,
+            precheck=precheck,
             state_dir=args.state_dir,
             poll_interval_s=args.poll_interval,
             dry_run=args.dry_run,

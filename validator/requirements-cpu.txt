@@ -1,2 +1,3 @@
 bittensor>=10
 bittensor-cli>=9
+huggingface_hub>=0.25,<1.0

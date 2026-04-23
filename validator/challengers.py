@@ -8,7 +8,7 @@ A commitment counts as a *challenger* when:
   - we have not already recorded a score for its `(hotkey, commit_block)` pair, and
   - we have not already pre-rejected it from the AST sandbox.
 
-The chain only stores a `(model, revision)` pointer—not policy source—so
+The chain only stores a `(repo, revision)` pointer—not policy source—so
 **fetching** code and running the sandbox is done by the ``precheck``
 hook the caller provides. This module only applies the filters above;
 ``allow_all_precheck`` is a permissive default for tests and early wiring.
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import Callable, Iterable
 
 from .chain import CommitmentRecord
@@ -26,10 +27,21 @@ from .state import ValidatorState
 logger = logging.getLogger(__name__)
 
 
+class PrecheckOutcome(str, Enum):
+    OK = "ok"
+    REJECTED = "rejected"
+    DEFERRED = "deferred"
+
+
 @dataclass(frozen=True)
 class PrecheckResult:
-    ok: bool
+    outcome: PrecheckOutcome
     reason: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Back-compat helper — True iff outcome is OK."""
+        return self.outcome is PrecheckOutcome.OK
 
 
 PrecheckFn = Callable[[CommitmentRecord], PrecheckResult]
@@ -42,16 +54,24 @@ def allow_all_precheck(_commitment: CommitmentRecord) -> PrecheckResult:
     """Permissive default — no code fetch, no AST check. Every new
     commitment is forwarded to ``eval_fn``. Useful in tests and early
     wiring before a real precheck fetches source and runs the sandbox."""
-    return PrecheckResult(ok=True)
+    return PrecheckResult(outcome=PrecheckOutcome.OK)
 
 
 @dataclass(frozen=True)
 class ChallengerSet:
     """Result of one round of challenger selection."""
+
     challengers: list[CommitmentRecord]
+    """Commitments that passed precheck and should be evaluated."""
+
     newly_rejected: list[tuple[CommitmentRecord, str]]
     """Commitments the sandbox rejected this round (caller should record
     them in state so we don't re-check next loop)."""
+
+    deferred: list[tuple[CommitmentRecord, str]]
+    """Commitments that hit a transient failure this round (caller should
+    log and retry next loop without recording in state)."""
+
     already_known: list[CommitmentRecord]
     """Commitments we've already decided on (evaluated or pre-rejected)."""
 
@@ -73,6 +93,7 @@ def select_challengers(
     """
     challengers: list[CommitmentRecord] = []
     newly_rejected: list[tuple[CommitmentRecord, str]] = []
+    deferred: list[tuple[CommitmentRecord, str]] = []
     already_known: list[CommitmentRecord] = []
 
     for com in commitments:
@@ -81,13 +102,22 @@ def select_challengers(
             continue
 
         result = precheck(com)
-        if not result.ok:
+        if result.outcome is PrecheckOutcome.REJECTED:
             reason = result.reason or "sandbox precheck failed"
             logger.info(
-                "UID %d (%s) rejected by sandbox precheck: %s",
+                "UID %d (%s) rejected by precheck: %s",
                 com.uid, com.hotkey[:16] + "...", reason,
             )
             newly_rejected.append((com, reason))
+            continue
+
+        if result.outcome is PrecheckOutcome.DEFERRED:
+            reason = result.reason or "precheck deferred"
+            logger.warning(
+                "UID %d (%s) deferred by precheck: %s — will retry next tick",
+                com.uid, com.hotkey[:16] + "...", reason,
+            )
+            deferred.append((com, reason))
             continue
 
         challengers.append(com)
@@ -95,5 +125,6 @@ def select_challengers(
     return ChallengerSet(
         challengers=challengers,
         newly_rejected=newly_rejected,
+        deferred=deferred,
         already_known=already_known,
     )

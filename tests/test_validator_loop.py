@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from validator.chain import CommitmentRecord
-from validator.challengers import PrecheckResult
+from validator.challengers import PrecheckOutcome, PrecheckResult
 from validator.loop import not_implemented_eval, run_once
 from validator.state import EvaluationRecord, ValidatorState
 
@@ -192,7 +192,7 @@ class TestRunOnceWithChallengers:
         result = run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
             netuid=14, eval_fn=eval_fn,
-            state_dir=tmp_path, dry_run=True,
+            state_dir=tmp_path, dry_run=False,
         )
 
         assert result.n_commitments == 1
@@ -226,7 +226,7 @@ class TestRunOnceWithChallengers:
         run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
             netuid=14, eval_fn=eval_fn,
-            state_dir=tmp_path, dry_run=True,
+            state_dir=tmp_path, dry_run=False,
         )
         assert eval_calls == []  # eval_fn never called
 
@@ -243,7 +243,7 @@ class TestRunOnceWithChallengers:
         result = run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
             netuid=14, eval_fn=eval_fn,
-            state_dir=tmp_path, dry_run=True,
+            state_dir=tmp_path, dry_run=False,
         )
         assert result.evaluations_recorded == []
         assert result.king_changed is False
@@ -260,8 +260,11 @@ class TestRunOnceWithChallengers:
 
         def reject_uid_0(com):
             if com.uid == 0:
-                return PrecheckResult(ok=False, reason="blocked import: os")
-            return PrecheckResult(ok=True)
+                return PrecheckResult(
+                    outcome=PrecheckOutcome.REJECTED,
+                    reason="blocked import: os",
+                )
+            return PrecheckResult(outcome=PrecheckOutcome.OK)
 
         ev_seen = []
 
@@ -272,7 +275,7 @@ class TestRunOnceWithChallengers:
         run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
             netuid=14, eval_fn=eval_fn, precheck=reject_uid_0,
-            state_dir=tmp_path, dry_run=True,
+            state_dir=tmp_path, dry_run=False,
         )
 
         assert ev_seen == [1]
@@ -290,8 +293,141 @@ class TestRunOnceWithChallengers:
             run_once(
                 subtensor=st, wallet=FAKE_WALLET, state=state,
                 netuid=14, eval_fn=not_implemented_eval,
-                state_dir=tmp_path, dry_run=True,
+                state_dir=tmp_path, dry_run=False,
             )
+
+    def test_dry_run_short_circuits_before_eval_fn(self, tmp_path):
+        st = FakeSubtensor(
+            hotkeys=["hk0"],
+            revealed={"hk0": [(100, _commit_json())]},
+        )
+        state = ValidatorState()
+
+        eval_called = False
+
+        def eval_fn(challengers, *, current_block, block_hash):
+            nonlocal eval_called
+            eval_called = True
+            return []
+
+        result = run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, eval_fn=eval_fn,
+            state_dir=tmp_path, dry_run=True,
+        )
+        assert not eval_called
+        assert len(result.challenger_set.challengers) == 1
+        assert result.evaluations_recorded == []
+
+    def test_deferred_not_recorded_in_state(self, tmp_path):
+        from validator.challengers import PrecheckOutcome, PrecheckResult
+
+        st = FakeSubtensor(
+            hotkeys=["hk0", "hk1"],
+            revealed={
+                "hk0": [(100, _commit_json("hf/a", "a" * 40))],
+                "hk1": [(200, _commit_json("hf/b", "b" * 40))],
+            },
+        )
+        state = ValidatorState()
+
+        def defer_uid_0(com):
+            if com.uid == 0:
+                return PrecheckResult(
+                    outcome=PrecheckOutcome.DEFERRED,
+                    reason="network flake",
+                )
+            return PrecheckResult(outcome=PrecheckOutcome.OK)
+
+        ev_seen = []
+
+        def eval_fn(challengers, **_k):
+            ev_seen.extend([c.uid for c in challengers])
+            return [_make_eval_record(c, score=0.2 + c.uid * 0.1) for c in challengers]
+
+        result = run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, eval_fn=eval_fn, precheck=defer_uid_0,
+            state_dir=tmp_path, dry_run=False,
+        )
+
+        assert ev_seen == [1]
+        assert len(result.challenger_set.deferred) == 1
+        assert not state.has_precheck_failure("hk0", 100)
+        assert state.has_evaluation("hk1", 200)
+
+    def test_deferred_retries_across_ticks(self, tmp_path):
+        from validator.challengers import PrecheckOutcome, PrecheckResult
+
+        st = FakeSubtensor(
+            hotkeys=["hk0"],
+            revealed={"hk0": [(100, _commit_json("hf/a", "a" * 40))]},
+        )
+        state = ValidatorState()
+
+        call_count = 0
+
+        def defer_once_then_pass(com):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return PrecheckResult(
+                    outcome=PrecheckOutcome.DEFERRED,
+                    reason="network flake",
+                )
+            return PrecheckResult(outcome=PrecheckOutcome.OK)
+
+        def eval_fn(challengers, **_k):
+            return [_make_eval_record(challengers[0], score=0.5)]
+
+        # First tick — deferred
+        result1 = run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, eval_fn=eval_fn, precheck=defer_once_then_pass,
+            state_dir=tmp_path, dry_run=False,
+        )
+        assert len(result1.challenger_set.deferred) == 1
+        assert len(result1.evaluations_recorded) == 0
+
+        # Second tick — same commitment, now passes
+        result2 = run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, eval_fn=eval_fn, precheck=defer_once_then_pass,
+            state_dir=tmp_path, dry_run=False,
+        )
+        assert len(result2.challenger_set.deferred) == 0
+        assert len(result2.evaluations_recorded) == 1
+        assert state.king is not None
+
+    def test_dry_run_records_precheck_rejections(self, tmp_path):
+        from validator.challengers import PrecheckOutcome, PrecheckResult
+
+        st = FakeSubtensor(
+            hotkeys=["hk0", "hk1"],
+            revealed={
+                "hk0": [(100, _commit_json("hf/a", "a" * 40))],
+                "hk1": [(200, _commit_json("hf/b", "b" * 40))],
+            },
+        )
+        state = ValidatorState()
+
+        def reject_uid_0(com):
+            if com.uid == 0:
+                return PrecheckResult(
+                    outcome=PrecheckOutcome.REJECTED,
+                    reason="ast_blocked: import os",
+                )
+            return PrecheckResult(outcome=PrecheckOutcome.OK)
+
+        result = run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, precheck=reject_uid_0,
+            state_dir=tmp_path, dry_run=True,
+        )
+
+        assert len(result.challenger_set.newly_rejected) == 1
+        assert state.has_precheck_failure("hk0", 100)
+        assert not state.is_known("hk1", 200)
 
     def test_disqualified_challenger_does_not_dethrone(self, tmp_path):
         st = FakeSubtensor(
@@ -312,7 +448,7 @@ class TestRunOnceWithChallengers:
         result = run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
             netuid=14, eval_fn=eval_fn,
-            state_dir=tmp_path, dry_run=True,
+            state_dir=tmp_path, dry_run=False,
         )
         assert result.king_changed is False
         assert state.king.uid == 0
@@ -332,7 +468,7 @@ class TestRunOnceStatePersistence:
         run_once(
             subtensor=st, wallet=FAKE_WALLET, state=state,
             netuid=14, eval_fn=eval_fn,
-            state_dir=tmp_path, dry_run=True,
+            state_dir=tmp_path, dry_run=False,
         )
 
         reloaded = ValidatorState.load(tmp_path)
