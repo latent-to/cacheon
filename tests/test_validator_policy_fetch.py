@@ -18,6 +18,19 @@ from validator.policy_fetch import (
 pytestmark = pytest.mark.unit
 
 
+def _fake_response(status_code: int | None = 500) -> MagicMock:
+    """Build a fake httpx.Response stand-in for HfHubHTTPError(response=...).
+
+    huggingface_hub 1.x requires a keyword-only ``response`` argument typed
+    as ``httpx.Response``.  The type annotation is not enforced at runtime,
+    so a MagicMock with ``.status_code`` is sufficient for our exception
+    handlers, which only read ``exc.response.status_code`` via ``getattr``.
+    """
+    resp = MagicMock()
+    resp.status_code = status_code
+    return resp
+
+
 class TestGatedRepoErrorHierarchy:
     """Regression: GatedRepoError must be caught as fetch_forbidden, not
     revision_unavailable, even though it inherits from RepositoryNotFoundError."""
@@ -31,7 +44,7 @@ class TestGatedRepoErrorHierarchy:
 
         with patch(
             "validator.policy_fetch.HfApi",
-            side_effect=GatedRepoError("gated"),
+            side_effect=GatedRepoError("gated", response=_fake_response(403)),
         ):
             result = fetch_policy_source(
                 "owner/name", "a" * 40,
@@ -262,7 +275,9 @@ class TestFetchPolicySourceColdFetch:
 
         with patch(
             "validator.policy_fetch.HfApi",
-            side_effect=RepositoryNotFoundError("repo not found"),
+            side_effect=RepositoryNotFoundError(
+                "repo not found", response=_fake_response(404)
+            ),
         ):
             result = fetch_policy_source(
                 "owner/name", "a" * 40,
@@ -278,7 +293,9 @@ class TestFetchPolicySourceColdFetch:
 
         with patch(
             "validator.policy_fetch.HfApi",
-            side_effect=RevisionNotFoundError("revision not found"),
+            side_effect=RevisionNotFoundError(
+                "revision not found", response=_fake_response(404)
+            ),
         ):
             result = fetch_policy_source(
                 "owner/name", "a" * 40,
@@ -294,7 +311,7 @@ class TestFetchPolicySourceColdFetch:
 
         with patch(
             "validator.policy_fetch.HfApi",
-            side_effect=GatedRepoError("gated"),
+            side_effect=GatedRepoError("gated", response=_fake_response(403)),
         ):
             result = fetch_policy_source(
                 "owner/name", "a" * 40,
@@ -308,9 +325,7 @@ class TestFetchPolicySourceColdFetch:
     def test_hf_http_500_deferred(self, tmp_path: Path):
         from huggingface_hub.utils import HfHubHTTPError
 
-        exc = HfHubHTTPError("server error")
-        exc.response = MagicMock()
-        exc.response.status_code = 503
+        exc = HfHubHTTPError("server error", response=_fake_response(503))
 
         with patch(
             "validator.policy_fetch.HfApi",
@@ -328,9 +343,7 @@ class TestFetchPolicySourceColdFetch:
     def test_hf_http_401_rejected(self, tmp_path: Path):
         from huggingface_hub.utils import HfHubHTTPError
 
-        exc = HfHubHTTPError("unauthorized")
-        exc.response = MagicMock()
-        exc.response.status_code = 401
+        exc = HfHubHTTPError("unauthorized", response=_fake_response(401))
 
         with patch(
             "validator.policy_fetch.HfApi",
@@ -349,7 +362,9 @@ class TestFetchPolicySourceColdFetch:
         """Server disconnects before sending a response — exc.response is None."""
         from huggingface_hub.utils import HfHubHTTPError
 
-        exc = HfHubHTTPError("connection closed")
+        # Construct with a dummy response to satisfy the 1.x constructor,
+        # then clear it to simulate the "connection closed" case.
+        exc = HfHubHTTPError("connection closed", response=_fake_response())
         exc.response = None
 
         with patch(
@@ -483,9 +498,7 @@ class TestFetchPolicySourceColdFetch:
         """HTTP 429 (rate limit) must map to DEFERRED with reason rate_limited."""
         from huggingface_hub.utils import HfHubHTTPError
 
-        exc = HfHubHTTPError("rate limited")
-        exc.response = MagicMock()
-        exc.response.status_code = 429
+        exc = HfHubHTTPError("rate limited", response=_fake_response(429))
 
         with patch(
             "validator.policy_fetch.HfApi",
