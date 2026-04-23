@@ -20,9 +20,9 @@ from datasets import load_dataset
 
 logger = logging.getLogger(__name__)
 
-_DATASET_NAME = "pg19"
+_DATASET_NAME = "emozilla/pg19"
 _DATASET_SPLIT = "train"
-_DATASET_REVISION = "4d28bd77e66947ad3835cf78ed7aaeb4dd87ad8b"
+_DATASET_REVISION = "c021754c8e01c5b1cc83a1f549c1f97fbbb756b8"
 _TEXT_COLUMN = "text"
 
 DEFAULT_MAX_CHARS = 131_072  # ~32K tokens at ~4 chars/token for English prose
@@ -81,7 +81,6 @@ def sample_prompts(
         _DATASET_NAME,
         split=_DATASET_SPLIT,
         revision=_DATASET_REVISION,
-        trust_remote_code=True,
     )
     total = len(ds)
 
