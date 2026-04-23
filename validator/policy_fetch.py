@@ -11,6 +11,7 @@ from enum import Enum
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import HFValidationError
 from huggingface_hub.utils import (
     EntryNotFoundError,
     GatedRepoError,
@@ -35,14 +36,22 @@ class FetchResult:
 
 
 def sanitize_repo(repo: str) -> str:
-    """Turn a HF repo id into a safe directory name.
+    """Turn a HF repo id into a safe single path component under ``cache_dir``.
 
-    Replaces ``/`` with ``_`` so ``owner/name`` becomes ``owner_name``.
-    Path traversal is already impossible because ``/`` becomes ``_``,
-    so we only strip whitespace.
+    Replaces ``/`` with ``_`` so ``owner/name`` becomes ``owner_name``. Rejects
+    values that could escape the cache layout (e.g. ``..``, ``.``, empty
+    segments after normalization) so ``cache_dir / safe / revision`` cannot
+    resolve outside ``cache_dir`` even if a caller bypasses on-chain parsing.
+
+    Raises:
+        ValueError: If the normalized name is not safe for use as a directory name.
     """
-    safe = repo.strip()
-    safe = safe.replace("/", "_")
+    safe = repo.strip().replace("/", "_")
+    if not safe or safe in (".", ".."):
+        raise ValueError(f"invalid repo for cache path: {repo!r}")
+    for part in safe.split("_"):
+        if not part or part in (".", ".."):
+            raise ValueError(f"invalid repo for cache path: {repo!r}")
     return safe
 
 
@@ -53,6 +62,7 @@ _HF_HUB_CALL_ERRORS: tuple[type[BaseException], ...] = (
     RepositoryNotFoundError,
     RevisionNotFoundError,
     HfHubHTTPError,
+    HFValidationError,
     OSError,
 )
 
@@ -84,6 +94,11 @@ def _fetch_result_from_hf_hub_exc(exc: BaseException) -> FetchResult:
         return FetchResult(
             outcome=FetchOutcome.REJECTED,
             reason=f"policy_missing ({exc})",
+        )
+    if isinstance(exc, HFValidationError):
+        return FetchResult(
+            outcome=FetchOutcome.REJECTED,
+            reason=f"invalid_repo ({exc})",
         )
     if isinstance(exc, HfHubHTTPError):
         status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -138,7 +153,13 @@ def fetch_policy_source(
         ``FetchResult`` with ``outcome`` set to ``OK``, ``REJECTED``, or
         ``DEFERRED`` and an appropriate ``reason``.
     """
-    safe_repo = sanitize_repo(repo)
+    try:
+        safe_repo = sanitize_repo(repo)
+    except ValueError as exc:
+        return FetchResult(
+            outcome=FetchOutcome.REJECTED,
+            reason=f"invalid_repo ({exc})",
+        )
     revision_dir = cache_dir / safe_repo / revision
     cache_path = revision_dir / "policy.py"
     ok_sentinel = revision_dir / ".ok"
@@ -197,7 +218,6 @@ def fetch_policy_source(
             revision=revision,
             token=hf_token,
             local_dir=revision_dir,
-            local_dir_use_symlinks=False,
             etag_timeout=etag_timeout_s,
         )
     except _HF_HUB_CALL_ERRORS as exc:

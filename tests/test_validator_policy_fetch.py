@@ -57,6 +57,39 @@ class TestGatedRepoErrorHierarchy:
         assert "revision_unavailable" not in (result.reason or "")
 
 
+class TestHFValidationErrorHandling:
+    def test_hf_validation_error_maps_to_rejected(self, tmp_path):
+        from huggingface_hub.errors import HFValidationError
+
+        with patch(
+            "validator.policy_fetch.HfApi",
+            side_effect=HFValidationError("bad repo id"),
+        ):
+            result = fetch_policy_source(
+                "owner/name", "a" * 40,
+                cache_dir=tmp_path,
+                max_bytes=1024,
+                etag_timeout_s=30.0,
+            )
+        assert result.outcome is FetchOutcome.REJECTED
+        assert "invalid_repo" in (result.reason or "")
+
+
+class TestUnsafeRepoCachePath:
+    def test_fetch_rejects_unsafe_cache_repo_without_hf_call(self, tmp_path):
+        with patch("validator.policy_fetch.HfApi") as mock_api:
+            result = fetch_policy_source(
+                "..",
+                "a" * 40,
+                cache_dir=tmp_path,
+                max_bytes=1024,
+                etag_timeout_s=30.0,
+            )
+        mock_api.assert_not_called()
+        assert result.outcome is FetchOutcome.REJECTED
+        assert "invalid_repo" in (result.reason or "")
+
+
 class TestSanitizeRepo:
     def test_simple_repo(self):
         assert sanitize_repo("owner/name") == "owner_name"
@@ -64,11 +97,13 @@ class TestSanitizeRepo:
     def test_no_slash(self):
         assert sanitize_repo("name") == "name"
 
-    def test_leading_dot_slash_preserved(self):
-        # Dots are preserved; only `/` is replaced. Path traversal is
-        # already impossible because `/` becomes `_`.
-        assert sanitize_repo("./owner/name") == "._owner_name"
-        assert sanitize_repo("../owner/name") == ".._owner_name"
+    def test_dot_dot_segments_rejected(self):
+        with pytest.raises(ValueError, match="invalid repo"):
+            sanitize_repo("./owner/name")
+        with pytest.raises(ValueError, match="invalid repo"):
+            sanitize_repo("../owner/name")
+        with pytest.raises(ValueError, match="invalid repo"):
+            sanitize_repo("..")
 
     def test_trailing_whitespace_trimmed(self):
         assert sanitize_repo(" owner/name ") == "owner_name"
@@ -76,6 +111,10 @@ class TestSanitizeRepo:
     def test_leading_dot_legitimate_name(self):
         # Dots in the name itself are preserved.
         assert sanitize_repo(".env/name") == ".env_name"
+
+    def test_double_underscore_empty_segment_rejected(self):
+        with pytest.raises(ValueError, match="invalid repo"):
+            sanitize_repo("a__b/c")
 
 
 class _FakeRepoFile:

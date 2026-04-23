@@ -18,6 +18,9 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
 
+from huggingface_hub.errors import HFValidationError
+from huggingface_hub.utils import validate_repo_id
+
 if TYPE_CHECKING:
     import bittensor as bt
 
@@ -38,7 +41,8 @@ class CommitmentRecord:
     On-chain format (encoded with `subtensor.set_reveal_commitment`):
         {"repo": "hf-user/repo-name", "revision": "<40-char hex sha>"}
 
-    `repo` is a HuggingFace repo id (``<owner>/<name>``); the validator
+    `repo` is a HuggingFace repo id (``namespace/repo_name`` or a valid
+    single-segment id per ``huggingface_hub`` validation); the validator
     fetches `policy.py` from that repo at the pinned commit SHA before
     evaluation. Miners submit *repositories*, not HF models — the canonical
     scored model (Qwen) is a separate concept (`EvaluationJob.model_name`).
@@ -72,7 +76,8 @@ def parse_commitment_data(raw: str) -> tuple[str, str] | None:
     """Parse a commitment payload into `(repo, revision)` or None.
 
     Rejects anything that isn't a JSON object with non-empty `repo` +
-    `revision` strings, and requires `revision` to be a 40-char hex SHA
+    `revision` strings, requires `repo` to pass HuggingFace repo id
+    validation, and requires `revision` to be a 40-char hex SHA
     (HF/GitHub full commit hash). Branch names and short SHAs are
     rejected so the `(hotkey, commit_block)` → code mapping cannot
     silently drift after the commit is on chain. Silent on failure —
@@ -92,6 +97,11 @@ def parse_commitment_data(raw: str) -> tuple[str, str] | None:
         return None
     if not isinstance(revision, str):
         return None
+    repo_norm = repo.strip()
+    try:
+        validate_repo_id(repo_norm)
+    except HFValidationError:
+        return None
     revision = revision.strip()
     if len(revision) != _HEX_SHA_LEN:
         return None
@@ -99,7 +109,7 @@ def parse_commitment_data(raw: str) -> tuple[str, str] | None:
         int(revision, 16)
     except ValueError:
         return None
-    return repo.strip(), revision
+    return repo_norm, revision
 
 
 def build_commitments(
