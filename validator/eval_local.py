@@ -63,6 +63,23 @@ PR2 will replace this with `validator/policy_fetch.py` (HF/GitHub fetch
 """
 
 
+def make_cache_policy_source_fn(cache_dir: str | os.PathLike) -> PolicySourceFn:
+    """Build a ``PolicySourceFn`` that reads from the fetch cache.
+
+    The cache layout is ``<cache_dir>/<sanitized_repo>/<revision>/policy.py``,
+    matching ``validator/policy_fetch.fetch_policy_source``.
+    """
+    from .policy_fetch import sanitize_repo
+
+    cache_dir = Path(cache_dir).resolve()
+
+    def resolve(com: CommitmentRecord) -> Path:
+        safe = sanitize_repo(com.repo)
+        return cache_dir / safe / com.revision / "policy.py"
+
+    return resolve
+
+
 # --------------------------------------------------------------------------- #
 # Job runner — injected for testability
 # --------------------------------------------------------------------------- #

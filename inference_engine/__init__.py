@@ -1,4 +1,6 @@
-from .policy import KVCachePolicy, CacheConfig, AttentionOutput
-from .passthrough import PassthroughPolicy
-from .harness import Harness, RunResult
-from .prompts import sample_prompts
+# Intentionally empty — import directly from submodules.
+#
+# The CPU-side validator imports `inference_engine.sandbox` (pure AST,
+# no torch / transformers).  Re-exporting `policy`, `passthrough`, or
+# `harness` here would pull in torch at module-load time and break the
+# CPU host where GPU deps are not installed.

@@ -156,10 +156,18 @@ def run_once(
     for com, reason in challenger_set.newly_rejected:
         state.record_precheck_failure(com.hotkey, com.commit_block, reason)
 
+    if challenger_set.deferred:
+        logger.warning(
+            "Challenger selection: %d deferred — will retry next tick",
+            len(challenger_set.deferred),
+        )
+
     logger.info(
-        "Challenger selection: %d new, %d pre-rejected, %d already known",
+        "Challenger selection: %d new, %d pre-rejected, %d deferred, "
+        "%d already known",
         len(challenger_set.challengers),
         len(challenger_set.newly_rejected),
+        len(challenger_set.deferred),
         len(challenger_set.already_known),
     )
 
@@ -167,37 +175,44 @@ def run_once(
     king_changed = False
 
     if challenger_set.challengers:
-        try:
-            results = eval_fn(
-                challenger_set.challengers,
-                current_block=current_block,
-                block_hash=block_hash,
-            )
-        except NotImplementedError:
-            raise
-        except Exception as exc:
-            logger.exception("eval_fn raised: %s", exc)
-            results = []
-
-        for ev in results:
-            outcome = state.record_evaluation(ev, current_block=current_block)
-            evaluations_recorded.append(outcome.stored)
+        if dry_run:
             logger.info(
-                "recorded UID %d (hotkey %s…) score=%.4f threshold=%.4f "
-                "(dq=%s, dethroned=%s)",
-                outcome.stored.uid, outcome.stored.hotkey[:16],
-                outcome.stored.score, outcome.dethrone_threshold,
-                outcome.stored.disqualify_reason or "no",
-                outcome.dethroned,
+                "[dry-run] Would evaluate %d challenger(s): uid=%s",
+                len(challenger_set.challengers),
+                [c.uid for c in challenger_set.challengers],
             )
-            if outcome.dethroned:
-                king_changed = True
+        else:
+            try:
+                results = eval_fn(
+                    challenger_set.challengers,
+                    current_block=current_block,
+                    block_hash=block_hash,
+                )
+            except NotImplementedError:
+                raise
+            except Exception as exc:
+                logger.exception("eval_fn raised: %s", exc)
+                results = []
+
+            for ev in results:
+                outcome = state.record_evaluation(ev, current_block=current_block)
+                evaluations_recorded.append(outcome.stored)
                 logger.info(
-                    "👑 New king: UID %d (hotkey %s…, score=%.4f, "
-                    "beat threshold=%.4f)",
+                    "recorded UID %d (hotkey %s…) score=%.4f threshold=%.4f "
+                    "(dq=%s, dethroned=%s)",
                     outcome.stored.uid, outcome.stored.hotkey[:16],
                     outcome.stored.score, outcome.dethrone_threshold,
+                    outcome.stored.disqualify_reason or "no",
+                    outcome.dethroned,
                 )
+                if outcome.dethroned:
+                    king_changed = True
+                    logger.info(
+                        "👑 New king: UID %d (hotkey %s…, score=%.4f, "
+                        "beat threshold=%.4f)",
+                        outcome.stored.uid, outcome.stored.hotkey[:16],
+                        outcome.stored.score, outcome.dethrone_threshold,
+                    )
 
     state.save(state_dir)
 

@@ -85,6 +85,18 @@ class TestParseCommitmentData:
         raw = json.dumps({"repo": "hf/repo", "revision": "main"})
         assert parse_commitment_data(raw) is None
 
+    def test_invalid_hf_repo_id_extra_slash_rejected(self):
+        raw = json.dumps({"repo": "a/b/c", "revision": _SHA_A})
+        assert parse_commitment_data(raw) is None
+
+    def test_dot_dot_repo_rejected(self):
+        raw = json.dumps({"repo": "..", "revision": _SHA_A})
+        assert parse_commitment_data(raw) is None
+
+    def test_single_segment_repo_allowed(self):
+        raw = json.dumps({"repo": "SomeOrg", "revision": _SHA_A})
+        assert parse_commitment_data(raw) == ("SomeOrg", _SHA_A)
+
 
 class TestBuildCommitments:
     def test_single_commitment(self):
