@@ -16,6 +16,7 @@ sentencepiece>=0.1.99
 tokenizers>=0.15.0
 
 datasets>=2.14.0
+huggingface_hub==1.11.0
 
 # dev / testing
 pytest>=8.0.0
