@@ -56,15 +56,6 @@ def _minimal_policy(extra_imports: str = "", extra_body: str = "") -> str:
                 output = torch.matmul(attn, v)
                 return AttentionOutput(output=output, attention_weights=attn)
 
-            def memory_bytes(self):
-                total = 0
-                for k, v in zip(self.k_cache, self.v_cache):
-                    if k is not None:
-                        total += k.nelement() * k.element_size()
-                    if v is not None:
-                        total += v.nelement() * v.element_size()
-                return total
-
             def get_config(self):
                 return {{"name": "test"}}
             {extra_body}
@@ -257,7 +248,6 @@ class TestStructuralChecks:
                 def setup(self, config): pass
                 def attend(self, query, layer_idx, **kw):
                     return AttentionOutput(output=query)
-                def memory_bytes(self): return 0
                 def get_config(self): return {}
         """)
         r = check(src)
@@ -299,7 +289,7 @@ class TestRunnerValidation:
             "output_has_inf": False,
             "output_min": -2.0,
             "output_max": 3.0,
-            "memory_bytes": 1024,
+
             "attn_weights_shape": [1, 4, 1, 4],
             "attn_weights_sum_last_dim": 1.0,
         }
@@ -313,7 +303,7 @@ class TestRunnerValidation:
             "output_has_inf": False,
             "output_min": -2.0,
             "output_max": 3.0,
-            "memory_bytes": 0,
+
             "attn_weights_shape": None,
         }
         err = _validate_output(result, SMALL_CONFIG)
@@ -328,7 +318,7 @@ class TestRunnerValidation:
             "output_has_inf": True,
             "output_min": -2.0,
             "output_max": 3.0,
-            "memory_bytes": 0,
+
             "attn_weights_shape": None,
         }
         err = _validate_output(result, SMALL_CONFIG)
@@ -343,7 +333,7 @@ class TestRunnerValidation:
             "output_has_inf": False,
             "output_min": -2.0,
             "output_max": 3.0,
-            "memory_bytes": 0,
+
             "attn_weights_shape": None,
         }
         err = _validate_output(result, SMALL_CONFIG)
@@ -358,7 +348,7 @@ class TestRunnerValidation:
             "output_has_inf": False,
             "output_min": -2.0,
             "output_max": 150.0,
-            "memory_bytes": 0,
+
             "attn_weights_shape": None,
         }
         err = _validate_output(result, SMALL_CONFIG)
@@ -402,9 +392,6 @@ class TestRunnerEndToEnd:
                 def attend(self, query, layer_idx, **kwargs):
                     while True:
                         pass
-
-                def memory_bytes(self):
-                    return 0
 
                 def get_config(self):
                     return {"name": "hang"}
