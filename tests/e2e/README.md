@@ -51,4 +51,8 @@ python tests/e2e/e2e_cpu.py \
 ## Prerequisites
 
 - NVIDIA GPU with enough VRAM for Qwen 7B FP16 + KV cache (80 GB recommended)
-- Run `tests/e2e/e2e_seed_hf.py` first to upload fixture policies to HF and generate `fixtures/example_policies.json`
+- Run `tests/e2e/e2e_seed_hf.py` first to upload fixture policies to your HF namespace and generate `fixtures/example_policies.json`:
+  ```bash
+  export HF_TOKEN=hf_...
+  python tests/e2e/e2e_seed_hf.py
+  ```

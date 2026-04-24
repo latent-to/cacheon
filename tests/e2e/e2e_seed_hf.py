@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """One-time script: upload E2E test policies to HuggingFace.
 
-Run this once, capture the printed JSON, then you may delete this script.
-The JSON is written to `tests/e2e/fixtures/example_policies.json` for convenience.
+Each developer runs this once against their own HF namespace to seed the
+fixture repos. The generated `fixtures/example_policies.json` is
+intentionally gitignored — it is personal to whoever ran the seed.
+
+The script resolves your HF username from the token automatically, then
+creates one public model repo per fixture policy:
+
+    {your_username}/cacheon-e2e-{policy_name}
+
+and uploads `policy.py` to each. The resulting commit SHAs are written to
+`tests/e2e/fixtures/example_policies.json` so the E2E tests know exactly
+which revision to fetch.
 
 Usage:
     export HF_TOKEN=hf_...
@@ -21,23 +31,24 @@ from huggingface_hub import HfApi, upload_file
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POLICIES_DIR = REPO_ROOT / "tests" / "e2e" / "fixtures" / "example_policies"
 OUTPUT_PATH = REPO_ROOT / "tests" / "e2e" / "fixtures" / "example_policies.json"
-NAMESPACE = "xavierlyu"
 
 
 def main() -> int:
     token = os.environ.get("HF_TOKEN")
     if not token:
-        print("HF_TOKEN env var required", file=sys.stderr)
+        print("error: HF_TOKEN env var required", file=sys.stderr)
         return 1
 
     api = HfApi(token=token)
+    namespace = api.whoami()["name"]
+    print(f"Authenticated as: {namespace}")
     descriptors: list[dict] = []
 
     for policy_file in sorted(POLICIES_DIR.glob("*.py")):
         if policy_file.name == "__init__.py":
             continue
         name = policy_file.stem
-        repo_id = f"{NAMESPACE}/cacheon-e2e-{name}"
+        repo_id = f"{namespace}/cacheon-e2e-{name}"
 
         print(f"Creating repo {repo_id} ...", end=" ")
         try:
