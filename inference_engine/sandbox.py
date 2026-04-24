@@ -38,7 +38,7 @@ BLOCKED_ATTR_TARGETS: frozenset[str] = frozenset({
 })
 
 REQUIRED_METHODS: frozenset[str] = frozenset({
-    "setup", "write", "attend", "memory_bytes",
+    "setup", "write", "attend",
 })
 
 

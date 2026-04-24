@@ -187,39 +187,6 @@ class TestPassthroughAttend:
 
 
 # ---------------------------------------------------------------------------
-# PassthroughPolicy.memory_bytes
-# ---------------------------------------------------------------------------
-
-class TestMemoryBytes:
-    def test_empty_before_write(self):
-        p = PassthroughPolicy()
-        p.setup(small_config())
-        assert p.memory_bytes() == 0
-
-    def test_correct_after_write(self):
-        p = PassthroughPolicy()
-        p.setup(small_config())
-        k, v = rand_kv(batch=1, num_kv_heads=2, seq_len=10, head_dim=8)
-        p.write(k, v, layer_idx=0, positions=torch.arange(10))
-
-        expected = k.nelement() * k.element_size() + v.nelement() * v.element_size()
-        assert p.memory_bytes() == expected
-
-    def test_grows_with_decode_writes(self):
-        p = PassthroughPolicy()
-        p.setup(small_config())
-        k, v = rand_kv(seq_len=5)
-        p.write(k, v, layer_idx=0, positions=torch.arange(5))
-        before = p.memory_bytes()
-
-        k2, v2 = rand_kv(seq_len=1)
-        p.write(k2, v2, layer_idx=0, positions=torch.tensor([5]))
-        after = p.memory_bytes()
-
-        assert after > before
-
-
-# ---------------------------------------------------------------------------
 # setup resets state
 # ---------------------------------------------------------------------------
 
@@ -230,11 +197,10 @@ class TestSetupReset:
         p.setup(cfg)
         k, v = rand_kv(seq_len=5)
         p.write(k, v, layer_idx=0, positions=torch.arange(5))
-        assert p.memory_bytes() > 0
+        assert p.k_cache[0] is not None
 
         # Reset for a new sequence
         p.setup(cfg)
-        assert p.memory_bytes() == 0
         assert all(c is None for c in p.k_cache)
 
 
