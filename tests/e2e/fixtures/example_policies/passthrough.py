@@ -69,12 +69,3 @@ class PassthroughPolicy(KVCachePolicy):
         output = torch.matmul(attn_weights, v)
 
         return AttentionOutput(output=output, attention_weights=attn_weights)
-
-    def memory_bytes(self) -> int:
-        total = 0
-        for k, v in zip(self.k_cache, self.v_cache):
-            if k is not None:
-                total += k.nelement() * k.element_size()
-            if v is not None:
-                total += v.nelement() * v.element_size()
-        return total

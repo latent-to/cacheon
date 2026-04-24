@@ -59,18 +59,5 @@ class Int8SdpaPolicy(KVCachePolicy):
 
         return AttentionOutput(output=output, attention_weights=None)
 
-    def memory_bytes(self) -> int:
-        total = 0
-        for layer_idx in range(len(self.k_cache)):
-            for k in self.k_cache[layer_idx]:
-                total += k.nelement() * k.element_size()
-            for v in self.v_cache[layer_idx]:
-                total += v.nelement() * v.element_size()
-            for s in self.k_scales[layer_idx]:
-                total += s.nelement() * s.element_size()
-            for s in self.v_scales[layer_idx]:
-                total += s.nelement() * s.element_size()
-        return total
-
     def get_config(self) -> dict:
         return {"name": "int8_sdpa", "description": "INT8 quantization with SDPA attention"}

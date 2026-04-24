@@ -56,14 +56,5 @@ class PassthroughPolicy(KVCachePolicy):
 
         return AttentionOutput(output=output, attention_weights=None)
 
-    def memory_bytes(self) -> int:
-        total = 0
-        for k, v in zip(self.k_cache, self.v_cache):
-            if k is not None:
-                total += k.nelement() * k.element_size()
-            if v is not None:
-                total += v.nelement() * v.element_size()
-        return total
-
     def get_config(self) -> dict:
         return {"name": "passthrough", "description": "Uncompressed FP16 KV cache"}

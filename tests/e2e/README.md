@@ -37,7 +37,7 @@ python tests/e2e/e2e_cpu.py \
 - **Precheck / sandbox** — AST allowlist validation via `validator.precheck`
 - **Baseline** — PassthroughPolicy with SDPA (Flash Attention, no O(N²) matrix)
 - **Challenger eval** — per-challenger try/except → DQ on OOM or crash (matches production `pod_eval.py`)
-- **Scoring** — KL divergence, KV-cache memory reduction (`policy.memory_bytes()`), latency improvement
+- **Scoring** — KL divergence, KV-cache memory reduction (harness-measured allocator delta), latency improvement
 
 ## Fixture policies
 
