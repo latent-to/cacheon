@@ -26,9 +26,9 @@ class AttentionOutput:
 class KVCachePolicy:
     """Base class for all KV cache policies.
 
-    The miner owns the full cache lifecycle: how K/V are stored (write),
-    how attention is computed against them (attend), and how memory is
-    reported (memory_bytes).
+    The miner owns the cache lifecycle: how K/V are stored (write) and
+    how attention is computed against them (attend). Memory is measured
+    by the harness via CUDA allocator delta, not self-reported.
     """
 
     def setup(self, config: CacheConfig) -> None:
@@ -64,10 +64,6 @@ class KVCachePolicy:
         with 0/-inf values (HF causal mask, already incorporates sliding window if applicable).
         Miners may use or ignore it.
         """
-        raise NotImplementedError
-
-    def memory_bytes(self) -> int:
-        """Report current memory usage of all stored cache state."""
         raise NotImplementedError
 
     def get_config(self) -> dict:

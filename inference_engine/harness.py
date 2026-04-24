@@ -36,6 +36,7 @@ Production scoring flow (Phase 3+):
 
 from __future__ import annotations
 
+import gc
 import logging
 import math
 import time
@@ -253,7 +254,7 @@ class Harness:
         return {
             "text": text,
             "token_ids": generated_ids,
-            "logits": torch.stack(all_logits, dim=0),   # [num_generated, vocab_size]
+            "logits": torch.stack(all_logits, dim=0).cpu(),   # [num_generated, vocab_size]
         }
 
     # ---- public API ------------------------------------------------------
@@ -266,12 +267,16 @@ class Harness:
     ) -> RunResult:
         """Run inference with the given policy across all prompts."""
 
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
+            torch.cuda.synchronize(self.device)
+            gc.collect()
+            mem_before = torch.cuda.memory_allocated(self.device)
+        else:
+            mem_before = 0
+
         self._patch_attention(policy)
         try:
-            if self.device.type == "cuda":
-                torch.cuda.reset_peak_memory_stats(self.device)
-                torch.cuda.synchronize(self.device)
-
             start = time.perf_counter()
             results = []
             for prompt in prompts:
@@ -282,23 +287,31 @@ class Harness:
             if self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
             elapsed = time.perf_counter() - start
-
-            peak_mem = (
-                torch.cuda.max_memory_allocated(self.device)
-                if self.device.type == "cuda"
-                else 0
-            )
-
-            return RunResult(
-                output_texts=[r["text"] for r in results],
-                output_ids=[r["token_ids"] for r in results],
-                all_logits=[r["logits"] for r in results],
-                latency_s=elapsed,
-                peak_memory_bytes=peak_mem,
-                policy_memory_bytes=policy.memory_bytes(),
-            )
         finally:
             self._unpatch_attention()
+
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            gc.collect()
+            mem_after = torch.cuda.memory_allocated(self.device)
+            peak_mem = torch.cuda.max_memory_allocated(self.device)
+        else:
+            mem_after = 0
+            peak_mem = 0
+
+        # Delta isolates what the policy added to GPU memory (KV cache).
+        # Only the last prompt's cache survives (setup() resets per prompt),
+        # but both baseline and miner see the same prompts in the same order.
+        policy_mem = max(0, mem_after - mem_before)
+
+        return RunResult(
+            output_texts=[r["text"] for r in results],
+            output_ids=[r["token_ids"] for r in results],
+            all_logits=[r["logits"] for r in results],
+            latency_s=elapsed,
+            peak_memory_bytes=peak_mem,
+            policy_memory_bytes=policy_mem,
+        )
 
     @torch.inference_mode()
     def _generate_reference(self, prompt: str, max_new_tokens: int) -> dict:

@@ -148,7 +148,6 @@ def _write_worker(workdir: str, policy_source: str, config: CacheConfig) -> str:
             "output_has_inf": bool(torch.isinf(out.output).any()),
             "output_min": float(out.output.min()),
             "output_max": float(out.output.max()),
-            "memory_bytes": policy.memory_bytes(),
         }}
 
         if out.attention_weights is not None:
