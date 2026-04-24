@@ -42,30 +42,8 @@ class PassthroughPolicy(KVCachePolicy):
         k = _repeat_kv(self.k_cache[layer_idx], self.num_kv_groups)
         v = _repeat_kv(self.v_cache[layer_idx], self.num_kv_groups)
 
-        scale = self.config.head_dim ** -0.5
-        attn_weights = torch.matmul(query, k.transpose(-2, -1)) * scale
+        # SDPA dispatches to Flash Attention on CUDA — O(N) memory, no OOM at 32K.
+        is_causal = query.shape[2] > 1
+        output = F.scaled_dot_product_attention(query, k, v, is_causal=is_causal)
 
-        if attention_mask is not None:
-            causal_mask = attention_mask[:, :, :, : k.shape[2]]
-            attn_weights = attn_weights + causal_mask
-        else:
-            q_len = query.shape[2]
-            kv_len = k.shape[2]
-            if q_len > 1:
-                mask = torch.triu(
-                    torch.full(
-                        (q_len, kv_len),
-                        float("-inf"),
-                        device=query.device,
-                        dtype=query.dtype,
-                    ),
-                    diagonal=kv_len - q_len + 1,
-                )
-                attn_weights = attn_weights + mask
-
-        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
-            query.dtype
-        )
-        output = torch.matmul(attn_weights, v)
-
-        return AttentionOutput(output=output, attention_weights=attn_weights)
+        return AttentionOutput(output=output, attention_weights=None)

@@ -46,7 +46,7 @@ python tests/e2e/e2e_cpu.py \
 | `int8_sdpa`   | SDPA          | Yes               | Scores > 0 (passes KL gate, ~2x cache reduction) |
 | `int8`        | Manual matmul | No (OOMs at 32K)  | DQ'd with "policy run failed: OOM"               |
 | `naive_evict` | Manual matmul | No                | DQ'd (OOM or KL gate)                            |
-| `passthrough` | Manual matmul | No                | DQ'd (OOM at 32K)                                |
+| `passthrough` | SDPA          | Yes               | Scores ~0 (identity baseline, no compression)    |
 
 ## Prerequisites
 
