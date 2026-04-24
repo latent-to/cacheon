@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -91,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Spawn pod_eval — same subprocess boundary as production
     if args.pod_eval_cmd:
-        cmd = args.pod_eval_cmd.split()
+        cmd = shlex.split(args.pod_eval_cmd)
     else:
         cmd = [sys.executable, "-m", "scripts.pod_eval"]
 
