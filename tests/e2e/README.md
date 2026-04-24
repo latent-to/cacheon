@@ -1,15 +1,12 @@
 # E2E Tests
 
-Run these manually on a GPU pod (or from a CPU host). They are **not collected by pytest** and **not run in CI**.
+Run these manually on a GPU pod. They are **not collected by pytest** and **not run in CI**.
 
-## Two scripts, one shared setup
+## Scripts
 
-Both scripts use `e2e_common.py` to fetch policies from HuggingFace, run the AST sandbox precheck, and build an `EvaluationJob`. They differ in how they run the job:
-
-| Script       | Runs where          | What it exercises                                                                                            |
-| ------------ | ------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `e2e_pod.py` | GPU pod             | Calls `pod_eval.run_job()` in-process — tests baseline + scoring + per-challenger DQ handling                |
-| `e2e_cpu.py` | CPU host or GPU pod | Spawns `python -m scripts.pod_eval` as a subprocess — tests the full JSON contract (job.json → results.json) |
+| Script       | Runs where | What it exercises                                                                             |
+| ------------ | ---------- | --------------------------------------------------------------------------------------------- |
+| `e2e_pod.py` | GPU pod    | Calls `pod_eval.run_job()` in-process — tests baseline + scoring + per-challenger DQ handling |
 
 ## Quick start (GPU pod)
 
@@ -18,17 +15,6 @@ export HF_TOKEN=hf_...
 
 # GPU-side, in-process (fastest, tests the scoring path)
 python tests/e2e/e2e_pod.py --device cuda --n-prompts 3
-
-# CPU-side, subprocess boundary (tests JSON contract)
-python tests/e2e/e2e_cpu.py --device cuda --n-prompts 3
-```
-
-## CPU host → GPU pod via SSH
-
-```bash
-python tests/e2e/e2e_cpu.py \
-    --pod-eval-cmd "ssh gpuhost python -m scripts.pod_eval" \
-    --n-prompts 3
 ```
 
 ## What they test
