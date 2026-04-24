@@ -1,13 +1,18 @@
-"""Smoke test — runs the harness with Qwen2.5-0.5B on CPU or MPS.
+"""Verify the inference harness works end-to-end.
 
-Same architecture as Qwen2.5-7B-Instruct, just smaller (~1GB).
-Verifies monkey-patch mechanics, generate loop, and verification logic
-before you touch the H100.
+Loads Qwen2.5-0.5B-Instruct (~1 GB, same architecture as 7B) and checks:
+1. Monkey-patch wiring — write() / attend() fire for every layer
+2. Passthrough correctness — patched output matches unpatched HuggingFace
+3. Baseline metrics — latency and memory bytes are populated
+
+Run this during GPU pod setup (see inference_engine/setup.sh) or manually
+before trusting the harness with the full 7B model.
 
 Usage:
-    python scripts/smoke_test.py               # auto-detects MPS or CPU
-    python scripts/smoke_test.py --device cpu
-    python scripts/smoke_test.py --device mps
+    python scripts/verify_harness.py               # auto-detects MPS or CPU
+    python scripts/verify_harness.py --device cpu
+    python scripts/verify_harness.py --device mps
+    python scripts/verify_harness.py --device cuda --max-new-tokens 16
 """
 
 import argparse
