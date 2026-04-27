@@ -429,7 +429,7 @@ def make_remote_eval_fn(
         # 6. SSH exec pod_eval.py
         cmd = (
             f"cd {pod_work_dir} && "
-            f"python scripts/pod_eval.py "
+            f"python3 scripts/pod_eval.py "
             f"--job {remote_job} "
             f"--results-out {remote_results} "
             f"--device {device} --dtype {dtype_name}"
