@@ -33,6 +33,7 @@ class PodTransport:
     # -- lifecycle ------------------------------------------------------------
 
     def connect(self) -> None:
+        self.close()  # drop any prior connection before opening a new one
         client = paramiko.SSHClient()
         client.load_system_host_keys()
         client.set_missing_host_key_policy(paramiko.WarningPolicy())
