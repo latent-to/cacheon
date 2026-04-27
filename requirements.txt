@@ -8,3 +8,4 @@ setuptools>=68
 transformers>=4.40
 accelerate>=0.30
 datasets>=2.14
+paramiko>=4.0.0
