@@ -112,7 +112,7 @@ class PodTransport:
         backgrounds the command and echoes the PID.
         """
         escaped = command.replace("'", "'\\''")
-        wrapped = f"nohup sh -c '{escaped}' & echo $!"
+        wrapped = f"nohup sh -c '{escaped}' > /dev/null 2>&1 & echo $!"
         out, err, rc = self.exec(wrapped)
         if rc != 0:
             raise RuntimeError(
