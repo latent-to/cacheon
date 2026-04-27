@@ -455,7 +455,7 @@ def make_remote_eval_fn(
         logger.info("detached exec: %s", cmd)
         started = time.time()
         pid = transport.exec_detached(cmd)
-        logger.info("pod_eval launched as PID %d", pid)
+        logger.info("🚀 pod_eval launched as PID %d", pid)
 
         # 7. Poll until results.json appears or timeout
         while True:

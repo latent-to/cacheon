@@ -133,7 +133,8 @@ class PodTransport:
         out, _err, rc = self.exec(
             f"test -f {remote_path} && echo DONE || echo WAITING"
         )
-        return out.strip() == "DONE"
+        last_line = out.strip().splitlines()[-1].strip() if out.strip() else ""
+        return last_line == "DONE"
 
     def tail(self, remote_path: str, n: int = 5) -> str:
         """Return the last *n* lines of a remote file, or empty string."""
