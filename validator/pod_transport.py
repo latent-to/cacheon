@@ -34,7 +34,8 @@ class PodTransport:
 
     def connect(self) -> None:
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.WarningPolicy())
         client.connect(
             hostname=self.host,
             port=self.port,
