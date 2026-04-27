@@ -2,8 +2,8 @@
 
 This module ties together `chain` (Bittensor RPC), `state` (persisted
 scores), and `challengers` (who still needs a run). It does **not** load
-models: actual scoring is supplied by ``eval_fn`` (see `eval_local` for
-one implementation). That keeps imports here free of torch/GPU code and
+models: actual scoring is supplied by ``eval_fn`` (see `eval_pod` for
+local and remote implementations). That keeps imports here free of torch/GPU code and
 easy to test with a stub.
 
 One pass through the loop:
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# Eval hook — pluggable GPU / harness step (see `eval_local`)
+# Eval hook — pluggable GPU / harness step (see `eval_pod`)
 # --------------------------------------------------------------------------- #
 
 

@@ -1,25 +1,29 @@
-"""Unit tests for validator.eval_local — uses a fake `job_runner` so we
-exercise the schema plumbing without a subprocess, torch, or GPU.
+"""Unit tests for validator.eval_pod — uses a fake ``job_runner`` (local) and
+mock ``PodTransport`` (remote) so we exercise the schema plumbing without a
+subprocess, torch, or GPU.
 
-`pod_eval.py` itself is tested under `integration` (requires Qwen); here
+``pod_eval.py`` itself is tested under ``integration`` (requires Qwen); here
 we test that the CPU side:
   - materializes a valid EvaluationJob on disk,
   - hands it to the runner,
   - maps the runner's EvaluationResult back into EvaluationRecord(s),
-  - handles partial / empty results gracefully.
+  - handles partial / empty results gracefully,
+  - the remote runner stages files, invokes SSH, and parses results.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 from validator.chain import CommitmentRecord
-from validator.eval_local import (
+from validator.eval_pod import (
     _baseline_cache_key,
     make_cache_policy_source_fn,
     make_local_eval_fn,
+    make_remote_eval_fn,
 )
 from validator.eval_schema import (
     BaselineMetrics,
@@ -57,7 +61,7 @@ def _touch_policy(tmp_path: Path, com: CommitmentRecord) -> Path:
 
 
 def _fake_runner_factory(result_fn):
-    """Build a JobRunner that reads the job, calls `result_fn(job)` to
+    """Build a JobRunner that reads the job, calls ``result_fn(job)`` to
     produce an EvaluationResult, and writes it to the expected path."""
 
     def _runner(ctx):
@@ -98,7 +102,7 @@ def _passthrough_result(job) -> EvaluationResult:
 
 
 # --------------------------------------------------------------------------- #
-# Tests
+# Local runner tests
 # --------------------------------------------------------------------------- #
 
 
@@ -117,7 +121,7 @@ class TestEmptyChallengers:
         )
         result = eval_fn([], current_block=500, block_hash="0x1")
         assert result == []
-        assert ran == []  # never launched
+        assert ran == []
 
 
 class TestJobConstruction:
@@ -178,7 +182,7 @@ class TestJobConstruction:
         assert seen_keys[0] != seen_keys[1]
 
     def test_baseline_cache_key_preserves_leading_hex_zeros(self):
-        """Regression: `.lstrip('0x')` treats the prefix as a character
+        """Regression: ``.lstrip('0x')`` treats the prefix as a character
         set, so "0x000abc" and "0xabc" would collapse onto the same key,
         reusing a stale baseline against different prompts."""
         model = "Qwen/Qwen2.5-7B-Instruct"
@@ -240,9 +244,8 @@ class TestResultMapping:
             assert r.evaluation_block == 555
             assert r.disqualified is False
             assert r.score == pytest.approx(0.1 * com.uid)
-            # source_hash propagated CPU → job → pod → record round-trip
             assert r.source_hash
-            assert len(r.source_hash) == 64  # sha256 hex
+            assert len(r.source_hash) == 64
 
     def test_dq_result_flows_through_as_disqualified(self, tmp_path):
         com = _make_commitment(1)
@@ -351,3 +354,202 @@ class TestCachePolicySourceFn:
         result = resolve(com)
         assert result == expected
         assert result.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Remote runner tests (mock PodTransport)
+# --------------------------------------------------------------------------- #
+
+
+def _make_mock_transport(tmp_path: Path, result_fn=_passthrough_result):
+    """Build a mock transport that:
+    - Records all exec / upload / download calls
+    - On ``download(remote, local)`` writes a synthetic results.json
+      derived from the job.json that was uploaded
+    """
+    mock = MagicMock()
+    mock.exec.return_value = ("", "", 0)
+
+    uploaded_files: dict[str, Path] = {}
+
+    def _upload(local, remote):
+        uploaded_files[remote] = Path(local)
+
+    mock.upload.side_effect = _upload
+
+    def _download(remote, local):
+        job_json = None
+        for rpath, lpath in uploaded_files.items():
+            if rpath.endswith("job.json"):
+                job_json = lpath
+                break
+        if job_json is None:
+            raise FileNotFoundError("job.json was never uploaded")
+        job = read_job(job_json)
+        result = result_fn(job)
+        write_results(result, Path(local))
+
+    mock.download.side_effect = _download
+    mock._uploaded = uploaded_files
+
+    return mock
+
+
+class TestRemoteEmptyChallengers:
+    def test_no_challengers_returns_empty(self, tmp_path):
+        transport = _make_mock_transport(tmp_path)
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda com: tmp_path / "unused.py",
+            transport=transport,
+            work_dir=tmp_path / "work",
+        )
+        result = eval_fn([], current_block=500, block_hash="0x1")
+        assert result == []
+        transport.exec.assert_not_called()
+
+
+class TestRemoteStagingDir:
+    def test_creates_remote_staging_dir(self, tmp_path):
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = _make_mock_transport(tmp_path)
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+        )
+        eval_fn([com], current_block=42, block_hash="0x1")
+
+        mkdir_calls = [
+            call for call in transport.exec.call_args_list
+            if "mkdir" in str(call)
+        ]
+        assert len(mkdir_calls) >= 1
+        assert "/tmp/cacheon-eval/" in str(mkdir_calls[0])
+
+
+class TestRemotePolicyUpload:
+    def test_uploads_policy_with_correct_remote_paths(self, tmp_path):
+        coms = [_make_commitment(1), _make_commitment(2)]
+        for c in coms:
+            _touch_policy(tmp_path, c)
+
+        transport = _make_mock_transport(tmp_path)
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+        )
+        eval_fn(coms, current_block=10, block_hash="0x1")
+
+        upload_calls = transport.upload.call_args_list
+        remote_paths = [str(call[0][1]) for call in upload_calls]
+        assert any("policy_1.py" in p for p in remote_paths)
+        assert any("policy_2.py" in p for p in remote_paths)
+        assert any("job.json" in p for p in remote_paths)
+
+
+class TestRemoteSSHExec:
+    def test_invokes_pod_eval_with_correct_command(self, tmp_path):
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = _make_mock_transport(tmp_path)
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            pod_work_dir="/workspace/cacheon",
+            work_dir=tmp_path / "work",
+        )
+        eval_fn([com], current_block=10, block_hash="0x1")
+
+        exec_calls = [str(call) for call in transport.exec.call_args_list]
+        pod_eval_call = [c for c in exec_calls if "pod_eval" in c]
+        assert len(pod_eval_call) == 1
+        assert "/workspace/cacheon" in pod_eval_call[0]
+        assert "--job" in pod_eval_call[0]
+        assert "--results-out" in pod_eval_call[0]
+
+
+class TestRemoteResultsDownload:
+    def test_downloads_and_parses_results(self, tmp_path):
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = _make_mock_transport(tmp_path)
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+        )
+        records = eval_fn([com], current_block=10, block_hash="0x1")
+        assert len(records) == 1
+        assert records[0].uid == 1
+        assert records[0].score == pytest.approx(0.1)
+
+        transport.download.assert_called_once()
+
+
+class TestRemoteCleanup:
+    def test_cleans_up_remote_dir(self, tmp_path):
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = _make_mock_transport(tmp_path)
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+        )
+        eval_fn([com], current_block=10, block_hash="0x1")
+
+        cleanup_calls = [
+            call for call in transport.exec.call_args_list
+            if "rm -rf" in str(call)
+        ]
+        assert len(cleanup_calls) == 1
+
+
+class TestRemoteSSHFailure:
+    def test_ssh_exec_failure_raises_runtime_error(self, tmp_path):
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = MagicMock()
+        call_count = [0]
+
+        def _exec(cmd, **kwargs):
+            call_count[0] += 1
+            if "pod_eval" in cmd:
+                return ("", "CUDA OOM", 1)
+            return ("", "", 0)
+
+        transport.exec.side_effect = _exec
+        transport.upload.return_value = None
+
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+        )
+        with pytest.raises(RuntimeError, match="exited 1"):
+            eval_fn([com], current_block=10, block_hash="0x1")
+
+
+class TestRemoteSFTPFailure:
+    def test_sftp_upload_failure_raises(self, tmp_path):
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = MagicMock()
+        transport.exec.return_value = ("", "", 0)
+        transport.upload.side_effect = OSError("SFTP connection lost")
+
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+        )
+        with pytest.raises(OSError, match="SFTP connection lost"):
+            eval_fn([com], current_block=10, block_hash="0x1")

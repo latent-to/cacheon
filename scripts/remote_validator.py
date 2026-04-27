@@ -2,23 +2,30 @@
 """CPU-side validator entrypoint.
 
 Chain scan loop + local state + precheck (fetch + AST sandbox).
-The actual GPU eval hook is not wired until PR3 — until then you
-must pass ``--dry-run`` or the CLI exits with an error.
+When GPU pod SSH details are provided (``--gpu-pod-ssh-host`` +
+``--gpu-pod-ssh-user``), evaluation runs remotely over SSH/SFTP.
+Without those, you must pass ``--dry-run``.
 
 Usage:
+    # Production (remote GPU eval):
     python scripts/remote_validator.py \\
-        --network finney \\
-        --netuid 14 \\
-        --wallet-name my-validator \\
-        --wallet-hotkey default \\
-        --dry-run
+        --network finney --netuid 14 \\
+        --wallet-name my-validator --wallet-hotkey default \\
+        --gpu-pod-ssh-host ssh.deployments.targon.com \\
+        --gpu-pod-ssh-user wrk-b6ptrqbmfkoj
+
+    # Dry-run (no eval, no weights):
+    python scripts/remote_validator.py --dry-run
 
 Env vars (all optional; CLI wins):
     CACHEON_NETUID, CACHEON_NETWORK,
     CACHEON_WALLET_NAME, CACHEON_WALLET_HOTKEY,
     CACHEON_POLL_INTERVAL_S, CACHEON_STATE_DIR, CACHEON_DRY_RUN=1,
     CACHEON_POLICY_CACHE_DIR, CACHEON_POLICY_MAX_BYTES,
-    CACHEON_HF_ETAG_TIMEOUT_S, CACHEON_HF_TOKEN
+    CACHEON_HF_ETAG_TIMEOUT_S, CACHEON_HF_TOKEN,
+    CACHEON_GPU_POD_SSH_HOST, CACHEON_GPU_POD_SSH_USER,
+    CACHEON_GPU_POD_SSH_PORT, CACHEON_GPU_POD_WORK_DIR,
+    CACHEON_GPU_POD_EVAL_TIMEOUT_S
 """
 
 from __future__ import annotations
@@ -35,7 +42,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from validator import config as validator_config  # noqa: E402
 from validator.chain import NotRegisteredError, preflight_check  # noqa: E402
+from validator.eval_pod import (  # noqa: E402
+    make_cache_policy_source_fn,
+    make_remote_eval_fn,
+)
 from validator.loop import not_implemented_eval, run_forever  # noqa: E402
+from validator.pod_transport import PodTransport  # noqa: E402
 from validator.policy_fetch import fetch_policy_source  # noqa: E402
 from validator.precheck import make_fetch_precheck  # noqa: E402
 from validator.state import ValidatorState  # noqa: E402
@@ -105,6 +117,22 @@ def _build_parser() -> argparse.ArgumentParser:
                    default=validator_config.HF_ETAG_TIMEOUT_S,
                    help="Timeout (seconds) for the HEAD/etag revalidation "
                         "inside hf_hub_download. Does NOT cap blob downloads.")
+    # GPU pod SSH transport
+    p.add_argument("--gpu-pod-ssh-host",
+                   default=validator_config.GPU_POD_SSH_HOST,
+                   help="SSH hostname of the GPU pod. Required for live eval.")
+    p.add_argument("--gpu-pod-ssh-user",
+                   default=validator_config.GPU_POD_SSH_USER,
+                   help="SSH username on the GPU pod.")
+    p.add_argument("--gpu-pod-ssh-port", type=int,
+                   default=validator_config.GPU_POD_SSH_PORT)
+    p.add_argument("--gpu-pod-work-dir",
+                   default=validator_config.GPU_POD_WORK_DIR,
+                   help="Repo checkout path on the GPU pod.")
+    p.add_argument("--gpu-pod-eval-timeout", type=int,
+                   default=validator_config.GPU_POD_EVAL_TIMEOUT_S,
+                   help="Timeout (seconds) for one pod_eval.py run over SSH.")
+
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -176,15 +204,37 @@ def main(argv: list[str] | None = None) -> int:
     )
     precheck = make_fetch_precheck(fetch_fn)
 
-    # Fail-fast until PR3 lands a real EvalFn
-    if not args.dry_run:
+    # Build EvalFn — remote SSH/SFTP when GPU pod details are given,
+    # otherwise stub (requires --dry-run).
+    transport: PodTransport | None = None
+    has_pod = bool(args.gpu_pod_ssh_host and args.gpu_pod_ssh_user)
+
+    if has_pod:
+        transport = PodTransport(
+            host=args.gpu_pod_ssh_host,
+            user=args.gpu_pod_ssh_user,
+            port=args.gpu_pod_ssh_port,
+        )
+        transport.connect()
+        logger.info(
+            "SSH transport connected to %s@%s:%d",
+            args.gpu_pod_ssh_user, args.gpu_pod_ssh_host, args.gpu_pod_ssh_port,
+        )
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=make_cache_policy_source_fn(policy_cache_dir),
+            transport=transport,
+            pod_work_dir=args.gpu_pod_work_dir,
+            timeout_s=float(args.gpu_pod_eval_timeout),
+        )
+    elif args.dry_run:
+        eval_fn = not_implemented_eval
+    else:
         logger.error(
-            "remote_validator currently has no EvalFn wired. "
-            "Run with --dry-run until PR3 (Lium pod transport) lands."
+            "No GPU pod SSH details provided and --dry-run not set. "
+            "Either pass --gpu-pod-ssh-host + --gpu-pod-ssh-user for "
+            "live evaluation, or run with --dry-run."
         )
         return 6
-
-    eval_fn = not_implemented_eval  # harmless under dry-run; loop never calls it
 
     try:
         run_forever(
@@ -204,6 +254,10 @@ def main(argv: list[str] | None = None) -> int:
     except NotImplementedError as exc:
         logger.error("%s", exc)
         return 3
+    finally:
+        if transport is not None:
+            transport.close()
+            logger.info("SSH transport closed.")
     return 0
 
 

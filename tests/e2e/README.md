@@ -1,21 +1,83 @@
 # E2E Tests
 
-Run these manually on a GPU pod. They are **not collected by pytest** and **not run in CI**.
+Run these manually. They are **not collected by pytest** and **not run in CI**.
 
 ## Scripts
 
-| Script       | Runs where | What it exercises                                                                             |
-| ------------ | ---------- | --------------------------------------------------------------------------------------------- |
-| `e2e_pod.py` | GPU pod    | Calls `pod_eval.run_job()` in-process — tests baseline + scoring + per-challenger DQ handling |
+| Script       | Runs where | What it exercises                                                                                       |
+| ------------ | ---------- | ------------------------------------------------------------------------------------------------------- |
+| `e2e_pod.py` | GPU pod    | Calls `pod_eval.run_job()` in-process — tests baseline + scoring + per-challenger DQ handling           |
+| `e2e_cpu.py` | CPU server | Full SSH/SFTP pipeline: fetches policies, uploads to GPU pod, runs pod_eval over SSH, downloads results |
 
-## Quick start (GPU pod)
+## GPU Pod
 
 ```bash
 export HF_TOKEN=hf_...
 
-# GPU-side, in-process (fastest, tests the scoring path)
+# Fast smoke-check (2 prompts — catches regressions quickly)
+python tests/e2e/e2e_pod.py --device cuda --n-prompts 2
+
+# Full run (3 prompts — matches default production sample size)
 python tests/e2e/e2e_pod.py --device cuda --n-prompts 3
+
+# JSON output (pipe into jq for structured inspection)
+python tests/e2e/e2e_pod.py --device cuda --n-prompts 2 --json | jq .
+
+# Verbose logging (shows fetch, precheck, and per-prompt timing)
+python tests/e2e/e2e_pod.py --device cuda --n-prompts 2 -v
 ```
+
+### CLI flags
+
+| Flag               | Default | Description                                                           |
+| ------------------ | ------- | --------------------------------------------------------------------- |
+| `--device`         | `cuda`  | PyTorch device (`cuda` on pod, `cpu` for quick offline sanity checks) |
+| `--n-prompts`      | `3`     | Number of PG19-seeded prompts to run per challenger                   |
+| `--max-new-tokens` | `256`   | Max generation tokens per prompt (lower = faster run)                 |
+| `--policies`       | auto    | Path to `fixtures/example_policies.json`                              |
+| `--json`           | off     | Emit NDJSON result instead of human-readable table                    |
+| `-v / --verbose`   | off     | Debug-level logging for fetch, precheck, and harness                  |
+
+## CPU-side
+
+```bash
+export HF_TOKEN=hf_...
+
+# Smoke-check the full CPU→GPU pipeline
+python tests/e2e/e2e_cpu.py \
+    --gpu-pod-ssh-host ssh.deployments.targon.com \
+    --gpu-pod-ssh-user wrk-b6ptrqbmfkoj \
+    --n-prompts 2
+
+# Full run with verbose logging
+python tests/e2e/e2e_cpu.py \
+    --gpu-pod-ssh-host ssh.deployments.targon.com \
+    --gpu-pod-ssh-user wrk-b6ptrqbmfkoj \
+    --n-prompts 3 -v
+
+# JSON output
+python tests/e2e/e2e_cpu.py \
+    --gpu-pod-ssh-host ssh.deployments.targon.com \
+    --gpu-pod-ssh-user wrk-b6ptrqbmfkoj \
+    --n-prompts 2 --json | jq .
+```
+
+### `e2e_cpu.py` CLI flags
+
+| Flag                 | Default              | Description                              |
+| -------------------- | -------------------- | ---------------------------------------- |
+| `--gpu-pod-ssh-host` | _(required)_         | SSH hostname of the GPU pod              |
+| `--gpu-pod-ssh-user` | _(required)_         | SSH username on the GPU pod              |
+| `--gpu-pod-ssh-port` | `22`                 | SSH port                                 |
+| `--gpu-pod-work-dir` | `/workspace/cacheon` | Repo checkout path on the pod            |
+| `--device`           | `cuda`               | PyTorch device on the pod                |
+| `--dtype`            | `float16`            | Model dtype on the pod                   |
+| `--n-prompts`        | `3`                  | Number of prompts per challenger         |
+| `--max-new-tokens`   | `256`                | Max tokens per prompt                    |
+| `--timeout`          | `1200`               | SSH exec timeout (seconds)               |
+| `--policies`         | auto                 | Path to `fixtures/example_policies.json` |
+| `--json`             | off                  | Emit NDJSON result instead of table      |
+| `-v / --verbose`     | off                  | Debug-level logging                      |
 
 ## What they test
 

@@ -60,6 +60,19 @@ class TestConnect:
 
         transport.set_keepalive.assert_called_once_with(_KEEPALIVE_S)
 
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_second_connect_closes_prior_client(self, MockSSHClient):
+        c1, _t1 = _mock_ssh_client()
+        c2, _t2 = _mock_ssh_client()
+        MockSSHClient.side_effect = [c1, c2]
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        pt.connect()
+
+        c1.close.assert_called_once()
+        assert pt._client is c2
+
 
 class TestClose:
     @patch("validator.pod_transport.paramiko.SSHClient")
