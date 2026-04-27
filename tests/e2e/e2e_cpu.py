@@ -165,9 +165,10 @@ def main(argv: list[str] | None = None) -> int:
 
         # 5. Run pod_eval.py over SSH
         logger.info("── 5/7  SSH exec pod_eval.py ──────────────────────────")
+        venv_python = f"{args.gpu_pod_work_dir}/../venv/bin/python3"
         cmd = (
             f"cd {args.gpu_pod_work_dir} && "
-            f"python3 scripts/pod_eval.py "
+            f"{venv_python} scripts/pod_eval.py "
             f"--job {remote_job} "
             f"--results-out {remote_results} "
             f"--device {args.device} --dtype {args.dtype}"

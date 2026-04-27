@@ -427,9 +427,10 @@ def make_remote_eval_fn(
             )
 
         # 6. SSH exec pod_eval.py
+        venv_python = f"{pod_work_dir}/../venv/bin/python3"
         cmd = (
             f"cd {pod_work_dir} && "
-            f"python3 scripts/pod_eval.py "
+            f"{venv_python} scripts/pod_eval.py "
             f"--job {remote_job} "
             f"--results-out {remote_results} "
             f"--device {device} --dtype {dtype_name}"
