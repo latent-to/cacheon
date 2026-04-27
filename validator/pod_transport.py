@@ -85,9 +85,12 @@ class PodTransport:
         _stdin, stdout, stderr = self._ssh.exec_command(
             command, timeout=timeout,
         )
-        exit_code = stdout.channel.recv_exit_status()
+        # Drain stdout/stderr before recv_exit_status(): if the remote fills
+        # the channel window (~2 MiB) and we wait for exit first, the process
+        # blocks on write and this call deadlocks.
         out = stdout.read().decode("utf-8", errors="replace")
         err = stderr.read().decode("utf-8", errors="replace")
+        exit_code = stdout.channel.recv_exit_status()
         return out, err, exit_code
 
     # -- file transfer --------------------------------------------------------
