@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 
 import paramiko
@@ -86,11 +87,18 @@ class PodTransport:
         _stdin, stdout, stderr = self._ssh.exec_command(
             command, timeout=timeout,
         )
-        # Drain stdout/stderr before recv_exit_status(): if the remote fills
-        # the channel window (~2 MiB) and we wait for exit first, the process
-        # blocks on write and this call deadlocks.
+        # Drain stdout and stderr concurrently — sequential reads can deadlock
+        # when one stream fills the shared channel window (paramiko#1778).
+        err_chunks: list[bytes] = []
+
+        def _drain_stderr():
+            err_chunks.append(stderr.read())
+
+        t = threading.Thread(target=_drain_stderr, daemon=True)
+        t.start()
         out = stdout.read().decode("utf-8", errors="replace")
-        err = stderr.read().decode("utf-8", errors="replace")
+        t.join()
+        err = b"".join(err_chunks).decode("utf-8", errors="replace")
         exit_code = stdout.channel.recv_exit_status()
         return out, err, exit_code
 
