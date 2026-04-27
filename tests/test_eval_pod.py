@@ -583,6 +583,25 @@ class TestRemoteSSHFailure:
         with pytest.raises(RuntimeError, match="exited without producing"):
             eval_fn([com], current_block=10, block_hash="0x1")
 
+    def test_results_appear_after_pid_exits_toctou(self, tmp_path):
+        """File may be written after poll_file but before is_pid_running."""
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = _make_mock_transport(tmp_path)
+        transport.poll_file.side_effect = [False, False, True]
+        transport.is_pid_running.side_effect = [True, False]
+
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+            poll_interval=0.01,
+        )
+        records = eval_fn([com], current_block=10, block_hash="0x1")
+        assert len(records) == 1
+        transport.download.assert_called_once()
+
 
 class TestRemoteSFTPFailure:
     def test_sftp_upload_failure_raises(self, tmp_path):

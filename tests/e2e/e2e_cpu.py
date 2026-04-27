@@ -4,11 +4,11 @@
 Exercises the complete production path without chain interaction:
   1. Fetch fixture policies from HuggingFace (CPU-side).
   2. AST sandbox precheck (CPU-side).
-  3. Build an EvaluationJob.
-  4. SFTP job.json + policy.py files to the GPU pod.
-  5. SSH exec pod_eval.py on the pod.
-  6. SFTP results.json back.
-  7. Parse and print results.
+  3. Build CommitmentRecords + connect SSH.
+  4. Delegate to ``make_remote_eval_fn`` (upload, exec, poll, download).
+  5. Print results.
+
+Uses the *same* transport code as production
 
 Usage:
     export HF_TOKEN=hf_...
@@ -25,8 +25,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
-import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,17 +38,11 @@ from tests.e2e.e2e_common import (
     print_reports,
     print_results,
 )
-from validator.eval_schema import (
-    JOB_FILE_NAME,
-    RESULTS_FILE_NAME,
-    read_results,
-    write_job,
-)
+from validator.chain import CommitmentRecord
+from validator.eval_pod import make_remote_eval_fn
 from validator.pod_transport import PodTransport
 
 logger = logging.getLogger("e2e_cpu")
-
-_POD_STAGING_ROOT = "/tmp/cacheon-e2e"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--n-prompts", type=int, default=3)
     p.add_argument("--max-new-tokens", type=int, default=256)
     p.add_argument("--timeout", type=int, default=1200,
-                   help="SSH exec timeout in seconds.")
+                   help="Poll timeout in seconds.")
     p.add_argument("--json", action="store_true", help="Output NDJSON")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
@@ -81,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.warning("⚠️  HF_TOKEN not set — private/gated repos will fail")
 
     # 1. Fetch + precheck (CPU-side)
-    logger.info("── 1/7  fetch + precheck ──────────────────────────────────")
+    logger.info("── 1/4  fetch + precheck ──────────────────────────────────")
     baseline_cache_dir = "/tmp/cacheon-e2e-baseline-cache"
     job, reports = build_e2e_job(
         args.policies,
@@ -98,8 +90,26 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info("✅  job %s  (%d challengers)", job.job_id, len(job.challengers))
 
-    # 2. Connect
-    logger.info("── 2/7  SSH connect ───────────────────────────────────────")
+    # 2. Build CommitmentRecords + policy_source_fn from the E2E job
+    policy_map: dict[str, Path] = {}
+    commitments: list[CommitmentRecord] = []
+    for cj in job.challengers:
+        key = f"{cj.hotkey}:{cj.commit_block}"
+        policy_map[key] = Path(cj.policy_path)
+        commitments.append(CommitmentRecord(
+            uid=cj.uid,
+            hotkey=cj.hotkey,
+            commit_block=cj.commit_block,
+            repo=cj.repo,
+            revision=cj.revision,
+            raw="{}",
+        ))
+
+    def policy_source_fn(com: CommitmentRecord) -> Path:
+        return policy_map[f"{com.hotkey}:{com.commit_block}"]
+
+    # 3. Connect + run via make_remote_eval_fn
+    logger.info("── 2/4  SSH connect ───────────────────────────────────────")
     transport = PodTransport(
         host=args.gpu_pod_ssh_host,
         user=args.gpu_pod_ssh_user,
@@ -111,136 +121,56 @@ def main(argv: list[str] | None = None) -> int:
         args.gpu_pod_ssh_user, args.gpu_pod_ssh_host, args.gpu_pod_ssh_port,
     )
 
+    last_tail = [""]
+
+    def _on_poll(elapsed: float, pid: int, tail_text: str) -> None:
+        stripped = tail_text.strip()
+        if stripped and stripped != last_tail[0]:
+            for line in stripped.splitlines():
+                logger.info("   │  %s", line)
+            last_tail[0] = stripped
+        logger.info("   ⏳  polling… %.0fs elapsed, PID %d alive", elapsed, pid)
+
+    logger.info("── 3/4  remote eval (detached + poll) ────────────────────")
     try:
-        remote_dir = f"{_POD_STAGING_ROOT}/{job.job_id}"
-        remote_job = f"{remote_dir}/{JOB_FILE_NAME}"
-        remote_results = f"{remote_dir}/{RESULTS_FILE_NAME}"
-
-        # 3. Staging dir
-        logger.info("── 3/7  create staging dir ────────────────────────────")
-        out, err, rc = transport.exec(f"mkdir -p {remote_dir}")
-        if rc != 0:
-            logger.error("❌  mkdir failed: %s", err.strip())
-            return 2
-        logger.info("✅  %s", remote_dir)
-
-        # 4. Upload policies + job.json
-        logger.info("── 4/7  SFTP upload ───────────────────────────────────")
-        local_tmp = Path(tempfile.mkdtemp(prefix="cacheon-e2e-cpu-"))
-        local_job_path = local_tmp / JOB_FILE_NAME
-
-        from validator.eval_schema import ChallengerJob, EvaluationJob, SCHEMA_VERSION
-
-        remote_challengers = []
-        for cj in job.challengers:
-            local_policy = Path(cj.policy_path)
-            remote_policy = f"{remote_dir}/policy_{cj.uid}.py"
-            transport.upload(local_policy, remote_policy)
-            logger.info("   ↑  policy_%-2d  (%s)", cj.uid, cj.hotkey)
-            remote_challengers.append(ChallengerJob(
-                uid=cj.uid,
-                hotkey=cj.hotkey,
-                commit_block=cj.commit_block,
-                repo=cj.repo,
-                revision=cj.revision,
-                policy_path=remote_policy,
-                source_hash=cj.source_hash,
-            ))
-
-        remote_job_obj = EvaluationJob(
-            schema_version=job.schema_version,
-            job_id=job.job_id,
-            current_block=job.current_block,
-            block_hash=job.block_hash,
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=policy_source_fn,
+            transport=transport,
+            pod_work_dir=args.gpu_pod_work_dir,
+            baseline_cache_dir=baseline_cache_dir,
             model_name=job.model_name,
             max_new_tokens=job.max_new_tokens,
             n_prompts=job.n_prompts,
-            baseline_cache_dir=baseline_cache_dir,
-            baseline_cache_key=job.baseline_cache_key,
-            challengers=remote_challengers,
+            device=args.device,
+            dtype_name=args.dtype,
+            timeout_s=float(args.timeout),
+            on_poll=_on_poll,
         )
-        write_job(remote_job_obj, local_job_path)
-        transport.upload(local_job_path, remote_job)
-        logger.info("   ↑  job.json")
-
-        # 5. Detached exec pod_eval.py (nohup to survive proxy timeouts)
-        logger.info("── 5/7  detached exec pod_eval.py ─────────────────────")
-        venv_python = f"{args.gpu_pod_work_dir}/../venv/bin/python3"
-        remote_stdout_log = f"{remote_dir}/stdout.log"
-        cmd = (
-            f"cd {args.gpu_pod_work_dir} && "
-            f"{venv_python} scripts/pod_eval.py "
-            f"--job {remote_job} "
-            f"--results-out {remote_results} "
-            f"--device {args.device} --dtype {args.dtype} "
-            f"> {remote_stdout_log} 2>&1"
+        records = eval_fn(
+            commitments,
+            current_block=job.current_block,
+            block_hash=job.block_hash,
         )
-        logger.info("   $ %s", cmd)
-        started = time.time()
-        pid = transport.exec_detached(cmd)
-        logger.info("   🚀  PID %d launched", pid)
-
-        poll_interval = 30.0
-        last_tail = ""
-        while True:
-            elapsed = time.time() - started
-            if elapsed > float(args.timeout):
-                logger.error("❌  timed out after %.0fs (PID %d)", elapsed, pid)
-                return 3
-            time.sleep(poll_interval)
-
-            if transport.poll_file(remote_results):
-                break
-
-            still_running = transport.is_pid_running(pid)
-            tail = transport.tail(remote_stdout_log, n=3)
-            if tail.strip() and tail.strip() != last_tail:
-                for line in tail.strip().splitlines():
-                    logger.info("   │  %s", line)
-                last_tail = tail.strip()
-
-            if not still_running:
-                full_tail = transport.tail(remote_stdout_log, n=20)
-                logger.error("❌  PID %d exited without results.json", pid)
-                for line in full_tail.strip().splitlines():
-                    logger.error("   │  %s", line)
-                return 3
-
-            logger.info(
-                "   ⏳  polling… %.0fs elapsed, PID %d alive", elapsed, pid
-            )
-
-        elapsed = time.time() - started
-        logger.info("✅  pod_eval done  (%.1fs)", elapsed)
-
-        # 6. Download results
-        logger.info("── 6/7  SFTP download ─────────────────────────────────")
-        local_results = local_tmp / RESULTS_FILE_NAME
-        transport.download(remote_results, local_results)
-        logger.info("   ↓  results.json")
-
-        # 7. Print
-        logger.info("── 7/7  results ───────────────────────────────────────")
-        result = read_results(local_results)
-
-        if args.json:
-            print(json.dumps(result.to_dict(), indent=2))
-        else:
-            print_results(result)
-
-        n_scored = sum(1 for r in result.challenger_results if not r.disqualified)
-        n_dq = sum(1 for r in result.challenger_results if r.disqualified)
-        logger.info("✅  %d scored  %d DQ'd", n_scored, n_dq)
-
-        # cleanup (best-effort)
-        try:
-            transport.exec(f"rm -rf {remote_dir}")
-        except Exception:
-            logger.warning("⚠️  cleanup failed for %s", remote_dir)
-
     finally:
         transport.close()
         logger.info("🔌  SSH closed")
+
+    # 4. Print results
+    logger.info("── 4/4  results ───────────────────────────────────────────")
+    if args.json:
+        for r in records:
+            print(json.dumps({
+                "uid": r.uid, "hotkey": r.hotkey,
+                "score": r.score, "kl": r.kl_divergence,
+                "mem": r.memory_reduction, "lat": r.latency_improvement,
+                "dq": r.disqualified, "reason": r.disqualify_reason,
+            }))
+    else:
+        print_results(records)
+
+    n_scored = sum(1 for r in records if not r.disqualified)
+    n_dq = sum(1 for r in records if r.disqualified)
+    logger.info("✅  %d scored  %d DQ'd", n_scored, n_dq)
 
     return 0
 

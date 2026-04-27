@@ -326,6 +326,10 @@ _POD_BASELINE_CACHE = "/tmp/cacheon-eval-baseline"
 _POLL_INTERVAL_S: float = 30.0
 
 
+PollCallback = Callable[[float, int, str], None]
+"""``on_poll(elapsed_s, pid, tail_text)`` — called each poll iteration."""
+
+
 def make_remote_eval_fn(
     *,
     policy_source_fn: PolicySourceFn,
@@ -340,6 +344,7 @@ def make_remote_eval_fn(
     timeout_s: float = 20 * 60,
     poll_interval: float = _POLL_INTERVAL_S,
     work_dir: str | os.PathLike | None = None,
+    on_poll: PollCallback | None = None,
 ):
     """Build an ``EvalFn`` that runs ``pod_eval.py`` on a remote GPU pod.
 
@@ -357,6 +362,8 @@ def make_remote_eval_fn(
             Defaults to a system temp dir.
         timeout_s: hard wall-clock before giving up on poll.
         poll_interval: seconds between poll checks.
+        on_poll: optional callback invoked each poll iteration with
+            ``(elapsed_s, pid, tail_text)``.
     """
     if work_dir is not None:
         _work_dir = Path(work_dir).resolve()
@@ -461,15 +468,22 @@ def make_remote_eval_fn(
             if transport.poll_file(remote_results):
                 break
             still_running = transport.is_pid_running(pid)
+            tail_text = transport.tail(remote_stdout_log, n=5)
             if not still_running:
-                tail = transport.tail(remote_stdout_log, n=20)
+                if transport.poll_file(remote_results):
+                    break
+                full_tail = transport.tail(remote_stdout_log, n=20)
                 raise RuntimeError(
                     f"pod_eval (PID {pid}) exited without producing "
-                    f"results.json.\nLast output:\n{tail}"
+                    f"results.json.\nLast output:\n{full_tail}"
                 )
-            logger.debug(
-                "poll: PID %d still running (%.0fs elapsed)", pid, elapsed,
-            )
+            if on_poll is not None:
+                on_poll(elapsed, pid, tail_text)
+            else:
+                logger.debug(
+                    "poll: PID %d still running (%.0fs elapsed)",
+                    pid, elapsed,
+                )
 
         elapsed = time.time() - started
         logger.info("pod_eval completed in %.1fs", elapsed)

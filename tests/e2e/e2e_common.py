@@ -186,8 +186,18 @@ def print_reports(reports: list[dict]) -> None:
         logger.info("  %-15s %s", r["name"], r["status"])
 
 
-def print_results(result) -> None:
-    """Print a human-readable table from an EvaluationResult."""
+def print_results(result_or_records) -> None:
+    """Print a human-readable table.
+
+    Accepts either an ``EvaluationResult`` (has ``.challenger_results``)
+    or a flat list of record-like objects (``EvaluationRecord``, etc.)
+    — both expose ``.uid``, ``.hotkey``, ``.kl_divergence``, etc.
+    """
+    if hasattr(result_or_records, "challenger_results"):
+        records = result_or_records.challenger_results
+    else:
+        records = result_or_records
+
     print()
     header = (
         f"{'uid':<5} {'hotkey':<20} {'kl':>8} {'mem':>6} "
@@ -195,7 +205,7 @@ def print_results(result) -> None:
     )
     print(header)
     print("-" * len(header))
-    for r in result.challenger_results:
+    for r in records:
         print(
             f"{r.uid:<5} {r.hotkey:<20} "
             f"{r.kl_divergence:>8.4f} {r.memory_reduction:>6.2f} "
