@@ -48,7 +48,7 @@ def configure_logging(*, verbose: bool = False) -> None:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    for noisy in ("httpx", "huggingface_hub", "urllib3", "requests"):
+    for noisy in ("httpx", "huggingface_hub", "urllib3", "requests", "paramiko"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

@@ -78,9 +78,10 @@ def main(argv: list[str] | None = None) -> int:
 
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
-        logger.warning("HF_TOKEN not set — private/gated repos will fail")
+        logger.warning("⚠️  HF_TOKEN not set — private/gated repos will fail")
 
-    # 1. Build the job (fetch + precheck, all CPU-side)
+    # 1. Fetch + precheck (CPU-side)
+    logger.info("── 1/7  fetch + precheck ──────────────────────────────────")
     baseline_cache_dir = "/tmp/cacheon-e2e-baseline-cache"
     job, reports = build_e2e_job(
         args.policies,
@@ -92,14 +93,13 @@ def main(argv: list[str] | None = None) -> int:
     print_reports(reports)
 
     if not job.challengers:
-        logger.error("No challengers passed fetch + precheck. Nothing to run.")
+        logger.error("❌  no challengers passed fetch + precheck — nothing to run")
         return 1
 
-    logger.info(
-        "Job %s ready: %d challenger(s)", job.job_id, len(job.challengers),
-    )
+    logger.info("✅  job %s  (%d challengers)", job.job_id, len(job.challengers))
 
-    # 2. Connect to the GPU pod
+    # 2. Connect
+    logger.info("── 2/7  SSH connect ───────────────────────────────────────")
     transport = PodTransport(
         host=args.gpu_pod_ssh_host,
         user=args.gpu_pod_ssh_user,
@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     transport.connect()
     logger.info(
-        "SSH connected to %s@%s:%d",
+        "✅  connected  %s@%s:%d",
         args.gpu_pod_ssh_user, args.gpu_pod_ssh_host, args.gpu_pod_ssh_port,
     )
 
@@ -116,13 +116,16 @@ def main(argv: list[str] | None = None) -> int:
         remote_job = f"{remote_dir}/{JOB_FILE_NAME}"
         remote_results = f"{remote_dir}/{RESULTS_FILE_NAME}"
 
-        # 3. Create remote staging dir
+        # 3. Staging dir
+        logger.info("── 3/7  create staging dir ────────────────────────────")
         out, err, rc = transport.exec(f"mkdir -p {remote_dir}")
         if rc != 0:
-            logger.error("Failed to create staging dir: %s", err.strip())
+            logger.error("❌  mkdir failed: %s", err.strip())
             return 2
+        logger.info("✅  %s", remote_dir)
 
-        # 4. Rewrite policy_path to remote paths and upload
+        # 4. Upload policies + job.json
+        logger.info("── 4/7  SFTP upload ───────────────────────────────────")
         local_tmp = Path(tempfile.mkdtemp(prefix="cacheon-e2e-cpu-"))
         local_job_path = local_tmp / JOB_FILE_NAME
 
@@ -133,9 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             local_policy = Path(cj.policy_path)
             remote_policy = f"{remote_dir}/policy_{cj.uid}.py"
             transport.upload(local_policy, remote_policy)
-            logger.info(
-                "  uploaded UID %d policy → %s", cj.uid, remote_policy,
-            )
+            logger.info("   ↑  policy_%-2d  (%s)", cj.uid, cj.hotkey)
             remote_challengers.append(ChallengerJob(
                 uid=cj.uid,
                 hotkey=cj.hotkey,
@@ -160,39 +161,42 @@ def main(argv: list[str] | None = None) -> int:
         )
         write_job(remote_job_obj, local_job_path)
         transport.upload(local_job_path, remote_job)
-        logger.info("  uploaded job.json → %s", remote_job)
+        logger.info("   ↑  job.json")
 
-        # 5. SSH exec pod_eval.py
+        # 5. Run pod_eval.py over SSH
+        logger.info("── 5/7  SSH exec pod_eval.py ──────────────────────────")
         cmd = (
             f"cd {args.gpu_pod_work_dir} && "
-            f"python scripts/pod_eval.py "
+            f"python3 scripts/pod_eval.py "
             f"--job {remote_job} "
             f"--results-out {remote_results} "
             f"--device {args.device} --dtype {args.dtype}"
         )
-        logger.info("SSH exec: %s", cmd)
+        logger.info("   $ %s", cmd)
         started = time.time()
         out, err, rc = transport.exec(cmd, timeout=float(args.timeout))
         elapsed = time.time() - started
-        logger.info("pod_eval finished in %.1fs (exit=%d)", elapsed, rc)
 
         if out.strip():
             for line in out.strip().split("\n")[-20:]:
-                logger.info("  stdout: %s", line)
+                logger.info("   │  %s", line)
         if err.strip():
             for line in err.strip().split("\n")[-20:]:
-                logger.warning("  stderr: %s", line)
+                logger.warning("   │  %s", line)
 
         if rc != 0:
-            logger.error("pod_eval exited %d on the GPU pod", rc)
+            logger.error("❌  pod_eval exited %d  (%.1fs)", rc, elapsed)
             return 3
+        logger.info("✅  pod_eval done  (%.1fs)", elapsed)
 
         # 6. Download results
+        logger.info("── 6/7  SFTP download ─────────────────────────────────")
         local_results = local_tmp / RESULTS_FILE_NAME
         transport.download(remote_results, local_results)
-        logger.info("  downloaded results → %s", local_results)
+        logger.info("   ↓  results.json")
 
-        # 7. Parse and print
+        # 7. Print
+        logger.info("── 7/7  results ───────────────────────────────────────")
         result = read_results(local_results)
 
         if args.json:
@@ -202,17 +206,17 @@ def main(argv: list[str] | None = None) -> int:
 
         n_scored = sum(1 for r in result.challenger_results if not r.disqualified)
         n_dq = sum(1 for r in result.challenger_results if r.disqualified)
-        logger.info("Done: %d scored, %d DQ'd", n_scored, n_dq)
+        logger.info("✅  %d scored  %d DQ'd", n_scored, n_dq)
 
-        # 8. Cleanup remote staging (best-effort)
+        # cleanup (best-effort)
         try:
             transport.exec(f"rm -rf {remote_dir}")
         except Exception:
-            logger.warning("Failed to clean up remote dir %s", remote_dir)
+            logger.warning("⚠️  cleanup failed for %s", remote_dir)
 
     finally:
         transport.close()
-        logger.info("SSH transport closed.")
+        logger.info("🔌  SSH closed")
 
     return 0
 
