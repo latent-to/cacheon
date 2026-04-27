@@ -102,6 +102,49 @@ class PodTransport:
         exit_code = stdout.channel.recv_exit_status()
         return out, err, exit_code
 
+    # -- detached execution ---------------------------------------------------
+
+    def exec_detached(self, command: str) -> int:
+        """Start *command* via ``nohup`` and return its PID immediately.
+
+        The caller is responsible for redirecting stdout/stderr in
+        *command* (e.g. ``> logfile 2>&1``). This method just
+        backgrounds the command and echoes the PID.
+        """
+        escaped = command.replace("'", "'\\''")
+        wrapped = f"nohup sh -c '{escaped}' & echo $!"
+        out, err, rc = self.exec(wrapped)
+        if rc != 0:
+            raise RuntimeError(
+                f"failed to launch detached command: {err.strip()}"
+            )
+        pid_str = out.strip().splitlines()[-1]
+        try:
+            pid = int(pid_str)
+        except ValueError:
+            raise RuntimeError(
+                f"expected PID from detached exec, got: {out.strip()!r}"
+            )
+        logger.debug("detached PID %d: %s", pid, command)
+        return pid
+
+    def poll_file(self, remote_path: str) -> bool:
+        """Return True if *remote_path* exists on the pod."""
+        out, _err, rc = self.exec(
+            f"test -f {remote_path} && echo DONE || echo WAITING"
+        )
+        return out.strip() == "DONE"
+
+    def tail(self, remote_path: str, n: int = 5) -> str:
+        """Return the last *n* lines of a remote file, or empty string."""
+        out, _err, _rc = self.exec(f"tail -n {n} {remote_path} 2>/dev/null")
+        return out
+
+    def is_pid_running(self, pid: int) -> bool:
+        """Check if a process with *pid* is still alive on the pod."""
+        _out, _err, rc = self.exec(f"kill -0 {pid} 2>/dev/null")
+        return rc == 0
+
     # -- file transfer --------------------------------------------------------
 
     def upload(self, local_path: str | os.PathLike, remote_path: str) -> None:

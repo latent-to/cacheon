@@ -364,11 +364,17 @@ class TestCachePolicySourceFn:
 def _make_mock_transport(tmp_path: Path, result_fn=_passthrough_result):
     """Build a mock transport that:
     - Records all exec / upload / download calls
+    - Simulates exec_detached returning a PID
+    - poll_file returns True (results ready immediately)
     - On ``download(remote, local)`` writes a synthetic results.json
       derived from the job.json that was uploaded
     """
     mock = MagicMock()
     mock.exec.return_value = ("", "", 0)
+    mock.exec_detached.return_value = 99999
+    mock.poll_file.return_value = True
+    mock.is_pid_running.return_value = True
+    mock.tail.return_value = ""
 
     uploaded_files: dict[str, Path] = {}
 
@@ -402,10 +408,11 @@ class TestRemoteEmptyChallengers:
             policy_source_fn=lambda com: tmp_path / "unused.py",
             transport=transport,
             work_dir=tmp_path / "work",
+            poll_interval=0.01,
         )
         result = eval_fn([], current_block=500, block_hash="0x1")
         assert result == []
-        transport.exec.assert_not_called()
+        transport.exec_detached.assert_not_called()
 
 
 class TestRemoteStagingDir:
@@ -418,6 +425,7 @@ class TestRemoteStagingDir:
             policy_source_fn=lambda c: _touch_policy(tmp_path, c),
             transport=transport,
             work_dir=tmp_path / "work",
+            poll_interval=0.01,
         )
         eval_fn([com], current_block=42, block_hash="0x1")
 
@@ -440,6 +448,7 @@ class TestRemotePolicyUpload:
             policy_source_fn=lambda c: _touch_policy(tmp_path, c),
             transport=transport,
             work_dir=tmp_path / "work",
+            poll_interval=0.01,
         )
         eval_fn(coms, current_block=10, block_hash="0x1")
 
@@ -451,7 +460,7 @@ class TestRemotePolicyUpload:
 
 
 class TestRemoteSSHExec:
-    def test_invokes_pod_eval_with_correct_command(self, tmp_path):
+    def test_invokes_pod_eval_detached_with_correct_command(self, tmp_path):
         com = _make_commitment(1)
         _touch_policy(tmp_path, com)
 
@@ -461,15 +470,34 @@ class TestRemoteSSHExec:
             transport=transport,
             pod_work_dir="/workspace/cacheon",
             work_dir=tmp_path / "work",
+            poll_interval=0.01,
         )
         eval_fn([com], current_block=10, block_hash="0x1")
 
-        exec_calls = [str(call) for call in transport.exec.call_args_list]
-        pod_eval_call = [c for c in exec_calls if "pod_eval" in c]
-        assert len(pod_eval_call) == 1
-        assert "/workspace/cacheon" in pod_eval_call[0]
-        assert "--job" in pod_eval_call[0]
-        assert "--results-out" in pod_eval_call[0]
+        transport.exec_detached.assert_called_once()
+        cmd = transport.exec_detached.call_args[0][0]
+        assert "/workspace/cacheon" in cmd
+        assert "pod_eval.py" in cmd
+        assert "--job" in cmd
+        assert "--results-out" in cmd
+
+    def test_polls_until_results_appear(self, tmp_path):
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = _make_mock_transport(tmp_path)
+        transport.poll_file.side_effect = [False, False, True]
+        transport.is_pid_running.return_value = True
+
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+            poll_interval=0.01,
+        )
+        records = eval_fn([com], current_block=10, block_hash="0x1")
+        assert len(records) == 1
+        assert transport.poll_file.call_count == 3
 
 
 class TestRemoteResultsDownload:
@@ -482,6 +510,7 @@ class TestRemoteResultsDownload:
             policy_source_fn=lambda c: _touch_policy(tmp_path, c),
             transport=transport,
             work_dir=tmp_path / "work",
+            poll_interval=0.01,
         )
         records = eval_fn([com], current_block=10, block_hash="0x1")
         assert len(records) == 1
@@ -501,6 +530,7 @@ class TestRemoteCleanup:
             policy_source_fn=lambda c: _touch_policy(tmp_path, c),
             transport=transport,
             work_dir=tmp_path / "work",
+            poll_interval=0.01,
         )
         eval_fn([com], current_block=10, block_hash="0x1")
 
@@ -512,28 +542,45 @@ class TestRemoteCleanup:
 
 
 class TestRemoteSSHFailure:
-    def test_ssh_exec_failure_raises_runtime_error(self, tmp_path):
+    def test_detached_exec_failure_raises(self, tmp_path):
         com = _make_commitment(1)
         _touch_policy(tmp_path, com)
 
         transport = MagicMock()
-        call_count = [0]
-
-        def _exec(cmd, **kwargs):
-            call_count[0] += 1
-            if "pod_eval" in cmd:
-                return ("", "CUDA OOM", 1)
-            return ("", "", 0)
-
-        transport.exec.side_effect = _exec
+        transport.exec.return_value = ("", "", 0)
         transport.upload.return_value = None
+        transport.exec_detached.side_effect = RuntimeError(
+            "failed to launch detached command: error"
+        )
 
         eval_fn = make_remote_eval_fn(
             policy_source_fn=lambda c: _touch_policy(tmp_path, c),
             transport=transport,
             work_dir=tmp_path / "work",
+            poll_interval=0.01,
         )
-        with pytest.raises(RuntimeError, match="exited 1"):
+        with pytest.raises(RuntimeError, match="failed to launch"):
+            eval_fn([com], current_block=10, block_hash="0x1")
+
+    def test_process_dies_without_results_raises(self, tmp_path):
+        com = _make_commitment(1)
+        _touch_policy(tmp_path, com)
+
+        transport = MagicMock()
+        transport.exec.return_value = ("", "", 0)
+        transport.upload.return_value = None
+        transport.exec_detached.return_value = 12345
+        transport.poll_file.return_value = False
+        transport.is_pid_running.return_value = False
+        transport.tail.return_value = "Traceback: CUDA OOM\n"
+
+        eval_fn = make_remote_eval_fn(
+            policy_source_fn=lambda c: _touch_policy(tmp_path, c),
+            transport=transport,
+            work_dir=tmp_path / "work",
+            poll_interval=0.01,
+        )
+        with pytest.raises(RuntimeError, match="exited without producing"):
             eval_fn([com], current_block=10, block_hash="0x1")
 
 
@@ -550,6 +597,7 @@ class TestRemoteSFTPFailure:
             policy_source_fn=lambda c: _touch_policy(tmp_path, c),
             transport=transport,
             work_dir=tmp_path / "work",
+            poll_interval=0.01,
         )
         with pytest.raises(OSError, match="SFTP connection lost"):
             eval_fn([com], current_block=10, block_hash="0x1")

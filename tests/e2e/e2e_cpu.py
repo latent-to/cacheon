@@ -163,31 +163,54 @@ def main(argv: list[str] | None = None) -> int:
         transport.upload(local_job_path, remote_job)
         logger.info("   ↑  job.json")
 
-        # 5. Run pod_eval.py over SSH
-        logger.info("── 5/7  SSH exec pod_eval.py ──────────────────────────")
+        # 5. Detached exec pod_eval.py (nohup to survive proxy timeouts)
+        logger.info("── 5/7  detached exec pod_eval.py ─────────────────────")
         venv_python = f"{args.gpu_pod_work_dir}/../venv/bin/python3"
+        remote_stdout_log = f"{remote_dir}/stdout.log"
         cmd = (
             f"cd {args.gpu_pod_work_dir} && "
             f"{venv_python} scripts/pod_eval.py "
             f"--job {remote_job} "
             f"--results-out {remote_results} "
-            f"--device {args.device} --dtype {args.dtype}"
+            f"--device {args.device} --dtype {args.dtype} "
+            f"> {remote_stdout_log} 2>&1"
         )
         logger.info("   $ %s", cmd)
         started = time.time()
-        out, err, rc = transport.exec(cmd, timeout=float(args.timeout))
+        pid = transport.exec_detached(cmd)
+        logger.info("   🚀  PID %d launched", pid)
+
+        poll_interval = 30.0
+        last_tail = ""
+        while True:
+            elapsed = time.time() - started
+            if elapsed > float(args.timeout):
+                logger.error("❌  timed out after %.0fs (PID %d)", elapsed, pid)
+                return 3
+            time.sleep(poll_interval)
+
+            if transport.poll_file(remote_results):
+                break
+
+            still_running = transport.is_pid_running(pid)
+            tail = transport.tail(remote_stdout_log, n=3)
+            if tail.strip() and tail.strip() != last_tail:
+                for line in tail.strip().splitlines():
+                    logger.info("   │  %s", line)
+                last_tail = tail.strip()
+
+            if not still_running:
+                full_tail = transport.tail(remote_stdout_log, n=20)
+                logger.error("❌  PID %d exited without results.json", pid)
+                for line in full_tail.strip().splitlines():
+                    logger.error("   │  %s", line)
+                return 3
+
+            logger.info(
+                "   ⏳  polling… %.0fs elapsed, PID %d alive", elapsed, pid
+            )
+
         elapsed = time.time() - started
-
-        if out.strip():
-            for line in out.strip().split("\n")[-20:]:
-                logger.info("   │  %s", line)
-        if err.strip():
-            for line in err.strip().split("\n")[-20:]:
-                logger.warning("   │  %s", line)
-
-        if rc != 0:
-            logger.error("❌  pod_eval exited %d  (%.1fs)", rc, elapsed)
-            return 3
         logger.info("✅  pod_eval done  (%.1fs)", elapsed)
 
         # 6. Download results

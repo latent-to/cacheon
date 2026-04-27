@@ -323,6 +323,9 @@ _POD_STAGING_ROOT = "/tmp/cacheon-eval"
 _POD_BASELINE_CACHE = "/tmp/cacheon-eval-baseline"
 
 
+_POLL_INTERVAL_S: float = 30.0
+
+
 def make_remote_eval_fn(
     *,
     policy_source_fn: PolicySourceFn,
@@ -335,10 +338,14 @@ def make_remote_eval_fn(
     device: str = "cuda",
     dtype_name: str = "float16",
     timeout_s: float = 20 * 60,
+    poll_interval: float = _POLL_INTERVAL_S,
     work_dir: str | os.PathLike | None = None,
 ):
-    """Build an ``EvalFn`` that runs ``pod_eval.py`` on a remote GPU pod
-    over SSH, transferring files via SFTP.
+    """Build an ``EvalFn`` that runs ``pod_eval.py`` on a remote GPU pod.
+
+    Uses a detached (nohup) execution pattern to survive SSH proxy
+    timeouts: the command is launched in the background, then short-lived
+    SSH calls poll for the results file until it appears.
 
     Args:
         policy_source_fn: resolves ``CommitmentRecord`` -> local
@@ -348,7 +355,8 @@ def make_remote_eval_fn(
         baseline_cache_dir: path *on the pod* for baseline caching.
         work_dir: local scratch directory for temporary job files.
             Defaults to a system temp dir.
-        timeout_s: hard wall-clock for the SSH exec call.
+        timeout_s: hard wall-clock before giving up on poll.
+        poll_interval: seconds between poll checks.
     """
     if work_dir is not None:
         _work_dir = Path(work_dir).resolve()
@@ -426,37 +434,56 @@ def make_remote_eval_fn(
                 "uploaded policy uid=%d → %s", cj_local.uid, cj_remote.policy_path,
             )
 
-        # 6. SSH exec pod_eval.py
+        # 6. Detached exec pod_eval.py (nohup to survive proxy timeouts)
         venv_python = f"{pod_work_dir}/../venv/bin/python3"
+        remote_stdout_log = f"{remote_dir}/stdout.log"
         cmd = (
             f"cd {pod_work_dir} && "
             f"{venv_python} scripts/pod_eval.py "
             f"--job {remote_job} "
             f"--results-out {remote_results} "
-            f"--device {device} --dtype {dtype_name}"
+            f"--device {device} --dtype {dtype_name} "
+            f"> {remote_stdout_log} 2>&1"
         )
-        logger.info("SSH exec: %s", cmd)
+        logger.info("detached exec: %s", cmd)
         started = time.time()
-        out, err, rc = transport.exec(cmd, timeout=timeout_s)
-        elapsed = time.time() - started
-        logger.info("pod_eval finished in %.1fs (exit=%d)", elapsed, rc)
+        pid = transport.exec_detached(cmd)
+        logger.info("pod_eval launched as PID %d", pid)
 
-        if rc != 0:
-            logger.error("pod_eval stderr:\n%s", err[-2000:] if err else "(empty)")
-            raise RuntimeError(
-                f"pod_eval exited {rc} on the GPU pod"
+        # 7. Poll until results.json appears or timeout
+        while True:
+            elapsed = time.time() - started
+            if elapsed > timeout_s:
+                raise RuntimeError(
+                    f"pod_eval timed out after {elapsed:.0f}s (PID {pid})"
+                )
+            time.sleep(poll_interval)
+            if transport.poll_file(remote_results):
+                break
+            still_running = transport.is_pid_running(pid)
+            if not still_running:
+                tail = transport.tail(remote_stdout_log, n=20)
+                raise RuntimeError(
+                    f"pod_eval (PID {pid}) exited without producing "
+                    f"results.json.\nLast output:\n{tail}"
+                )
+            logger.debug(
+                "poll: PID %d still running (%.0fs elapsed)", pid, elapsed,
             )
 
-        # 7. Download results.json
+        elapsed = time.time() - started
+        logger.info("pod_eval completed in %.1fs", elapsed)
+
+        # 8. Download results.json
         transport.download(remote_results, local_results_path)
 
-        # 8. Cleanup remote staging dir (best-effort)
+        # 9. Cleanup remote staging dir (best-effort)
         try:
             transport.exec(f"rm -rf {remote_dir}")
         except Exception:
             logger.warning("failed to clean up remote dir %s", remote_dir)
 
-        # 9. Parse results
+        # 10. Parse results
         return _parse_and_validate_results(
             local_results_path, job.job_id,
             {c.uid for c in remote_challenger_jobs},

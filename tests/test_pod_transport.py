@@ -156,6 +156,155 @@ class TestExec:
 
 
 # --------------------------------------------------------------------------- #
+# Detached exec / poll
+# --------------------------------------------------------------------------- #
+
+
+class TestExecDetached:
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_exec_detached_returns_pid(self, MockSSHClient):
+        client, _ = _mock_ssh_client()
+        MockSSHClient.return_value = client
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+        stdout_mock.read.return_value = b"12345\n"
+        stderr_mock.read.return_value = b""
+        stdout_mock.channel.recv_exit_status.return_value = 0
+        client.exec_command.return_value = (MagicMock(), stdout_mock, stderr_mock)
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        pid = pt.exec_detached("python train.py")
+
+        assert pid == 12345
+        cmd_arg = client.exec_command.call_args[0][0]
+        assert "nohup" in cmd_arg
+        assert "echo $!" in cmd_arg
+
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_exec_detached_non_zero_raises(self, MockSSHClient):
+        client, _ = _mock_ssh_client()
+        MockSSHClient.return_value = client
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+        stdout_mock.read.return_value = b""
+        stderr_mock.read.return_value = b"error\n"
+        stdout_mock.channel.recv_exit_status.return_value = 1
+        client.exec_command.return_value = (MagicMock(), stdout_mock, stderr_mock)
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        with pytest.raises(RuntimeError, match="failed to launch"):
+            pt.exec_detached("bad cmd")
+
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_exec_detached_invalid_pid_raises(self, MockSSHClient):
+        client, _ = _mock_ssh_client()
+        MockSSHClient.return_value = client
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+        stdout_mock.read.return_value = b"not_a_pid\n"
+        stderr_mock.read.return_value = b""
+        stdout_mock.channel.recv_exit_status.return_value = 0
+        client.exec_command.return_value = (MagicMock(), stdout_mock, stderr_mock)
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        with pytest.raises(RuntimeError, match="expected PID"):
+            pt.exec_detached("cmd")
+
+
+class TestPollFile:
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_poll_file_returns_true_when_exists(self, MockSSHClient):
+        client, _ = _mock_ssh_client()
+        MockSSHClient.return_value = client
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+        stdout_mock.read.return_value = b"DONE\n"
+        stderr_mock.read.return_value = b""
+        stdout_mock.channel.recv_exit_status.return_value = 0
+        client.exec_command.return_value = (MagicMock(), stdout_mock, stderr_mock)
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        assert pt.poll_file("/tmp/results.json") is True
+
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_poll_file_returns_false_when_missing(self, MockSSHClient):
+        client, _ = _mock_ssh_client()
+        MockSSHClient.return_value = client
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+        stdout_mock.read.return_value = b"WAITING\n"
+        stderr_mock.read.return_value = b""
+        stdout_mock.channel.recv_exit_status.return_value = 0
+        client.exec_command.return_value = (MagicMock(), stdout_mock, stderr_mock)
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        assert pt.poll_file("/tmp/results.json") is False
+
+
+class TestTail:
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_tail_returns_last_lines(self, MockSSHClient):
+        client, _ = _mock_ssh_client()
+        MockSSHClient.return_value = client
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+        stdout_mock.read.return_value = b"line4\nline5\n"
+        stderr_mock.read.return_value = b""
+        stdout_mock.channel.recv_exit_status.return_value = 0
+        client.exec_command.return_value = (MagicMock(), stdout_mock, stderr_mock)
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        result = pt.tail("/tmp/log.txt", n=2)
+        assert result == "line4\nline5\n"
+
+
+class TestIsPidRunning:
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_pid_running_returns_true(self, MockSSHClient):
+        client, _ = _mock_ssh_client()
+        MockSSHClient.return_value = client
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+        stdout_mock.read.return_value = b""
+        stderr_mock.read.return_value = b""
+        stdout_mock.channel.recv_exit_status.return_value = 0
+        client.exec_command.return_value = (MagicMock(), stdout_mock, stderr_mock)
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        assert pt.is_pid_running(1234) is True
+
+    @patch("validator.pod_transport.paramiko.SSHClient")
+    def test_pid_not_running_returns_false(self, MockSSHClient):
+        client, _ = _mock_ssh_client()
+        MockSSHClient.return_value = client
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+        stdout_mock.read.return_value = b""
+        stderr_mock.read.return_value = b""
+        stdout_mock.channel.recv_exit_status.return_value = 1
+        client.exec_command.return_value = (MagicMock(), stdout_mock, stderr_mock)
+
+        pt = PodTransport(host="h", user="u")
+        pt.connect()
+        assert pt.is_pid_running(1234) is False
+
+
+# --------------------------------------------------------------------------- #
 # Upload / Download
 # --------------------------------------------------------------------------- #
 
