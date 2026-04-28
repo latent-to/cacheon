@@ -431,7 +431,6 @@ def run_job(
         if device == "cuda":
             torch.cuda.synchronize()
             gc.collect()
-            torch.cuda.empty_cache()
 
         baseline = harness.run(
             PassthroughPolicy(),
