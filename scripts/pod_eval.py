@@ -77,7 +77,8 @@ def _load_policy_class(policy_path: str):
     spec.loader.exec_module(mod)
 
     candidates = [
-        obj for name, obj in vars(mod).items()
+        obj
+        for name, obj in vars(mod).items()
         if (
             isinstance(obj, type)
             and issubclass(obj, KVCachePolicy)
@@ -88,9 +89,7 @@ def _load_policy_class(policy_path: str):
         raise RuntimeError("no KVCachePolicy subclass found in policy.py")
     if len(candidates) > 1:
         names = sorted(c.__name__ for c in candidates)
-        raise RuntimeError(
-            f"multiple KVCachePolicy subclasses found: {names}"
-        )
+        raise RuntimeError(f"multiple KVCachePolicy subclasses found: {names}")
     return candidates[0]
 
 
@@ -188,7 +187,9 @@ def _try_load_baseline(cache_dir: str, key: str, *, expected_manifest: dict):
         cached = torch.load(path, map_location="cpu", weights_only=False)
     except Exception as exc:
         logger.warning(
-            "baseline cache at %s unreadable (%s) — recomputing", path, exc,
+            "baseline cache at %s unreadable (%s) — recomputing",
+            path,
+            exc,
         )
         return None
 
@@ -196,7 +197,8 @@ def _try_load_baseline(cache_dir: str, key: str, *, expected_manifest: dict):
     if reason is not None:
         logger.warning(
             "baseline cache at %s rejected: %s — recomputing",
-            path, reason,
+            path,
+            reason,
         )
         return None
     return cached
@@ -295,14 +297,15 @@ def _evaluate_challenger(
                 challenger.uid,
             )
             return _dq_result(
-                challenger, f"policy.py unreadable: {exc}"[:500],
+                challenger,
+                f"policy.py unreadable: {exc}"[:500],
             )
         if actual != challenger.source_hash:
             logger.error(
-                "challenger uid=%d source_hash mismatch "
-                "(expected %s…, got %s…)",
+                "challenger uid=%d source_hash mismatch (expected %s…, got %s…)",
                 challenger.uid,
-                challenger.source_hash[:12], actual[:12],
+                challenger.source_hash[:12],
+                actual[:12],
             )
             return _dq_result(challenger, "source_hash_mismatch")
 
@@ -311,13 +314,33 @@ def _evaluate_challenger(
         policy = policy_cls()
         miner_run = harness.run(policy, prompts, max_new_tokens=max_new_tokens)
     except Exception as exc:
-        logger.exception(
-            "challenger uid=%d failed during run: %s", challenger.uid, exc
-        )
+        logger.exception("challenger uid=%d failed during run: %s", challenger.uid, exc)
         return _dq_result(challenger, f"policy run failed: {exc}"[:500])
 
+    # Teacher-forced KL: re-run the policy on the baseline's exact token
+    # sequence in a single forward pass per prompt.  This eliminates
+    # autoregressive drift from CUDA non-determinism (Flash Attention)
+    # so KL reflects only the policy's effect, not sampling noise.
     try:
-        sr = scoring.score(baseline, miner_run)
+        tf_policy = policy_cls()
+        tf_logits = harness.score_policy_on_sequence(
+            tf_policy,
+            prompts,
+            baseline.output_ids,
+        )
+    except Exception as exc:
+        logger.exception(
+            "challenger uid=%d teacher-forced scoring failed: %s",
+            challenger.uid,
+            exc,
+        )
+        return _dq_result(
+            challenger,
+            f"teacher-forced scoring failed: {exc}"[:500],
+        )
+
+    try:
+        sr = scoring.score(baseline, miner_run, teacher_forced_logits=tf_logits)
     except Exception as exc:
         logger.exception(
             "challenger uid=%d failed during scoring: %s", challenger.uid, exc
@@ -399,7 +422,9 @@ def run_job(
             job.baseline_cache_key,
         )
         baseline = harness.run(
-            PassthroughPolicy(), prompts, max_new_tokens=job.max_new_tokens,
+            PassthroughPolicy(),
+            prompts,
+            max_new_tokens=job.max_new_tokens,
         )
         _save_baseline(
             job.baseline_cache_dir,
@@ -419,16 +444,27 @@ def run_job(
     for i, challenger in enumerate(job.challengers, start=1):
         logger.info(
             "[%d/%d] evaluating challenger uid=%d (hotkey=%s…)",
-            i, len(job.challengers), challenger.uid, challenger.hotkey[:16],
+            i,
+            len(job.challengers),
+            challenger.uid,
+            challenger.hotkey[:16],
         )
         t0 = time.time()
         r = _evaluate_challenger(
-            harness, challenger, prompts, baseline, job.max_new_tokens,
+            harness,
+            challenger,
+            prompts,
+            baseline,
+            job.max_new_tokens,
         )
         logger.info(
             "[%d/%d] uid=%d done in %.1fs (score=%.4f, dq=%s)",
-            i, len(job.challengers), challenger.uid,
-            time.time() - t0, r.score, r.disqualified,
+            i,
+            len(job.challengers),
+            challenger.uid,
+            time.time() - t0,
+            r.score,
+            r.disqualified,
         )
         challenger_results.append(r)
 
@@ -457,15 +493,21 @@ def _build_argparser() -> argparse.ArgumentParser:
     )
     p.add_argument("--job", required=True, help="path to job.json (input)")
     p.add_argument(
-        "--results-out", required=True, help="path to results.json (output)",
+        "--results-out",
+        required=True,
+        help="path to results.json (output)",
     )
     p.add_argument("--device", default="cuda", help="torch device (default: cuda)")
     p.add_argument(
-        "--dtype", default="float16",
+        "--dtype",
+        default="float16",
         help="torch dtype name, e.g. float16, bfloat16 (default: float16)",
     )
     p.add_argument(
-        "-v", "--verbose", action="store_true", help="DEBUG log level",
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="DEBUG log level",
     )
     return p
 
@@ -486,7 +528,10 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "job_id=%s block=%d challengers=%d model=%s",
-        job.job_id, job.current_block, len(job.challengers), job.model_name,
+        job.job_id,
+        job.current_block,
+        len(job.challengers),
+        job.model_name,
     )
 
     try:
