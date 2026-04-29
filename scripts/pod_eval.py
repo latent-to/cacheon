@@ -29,7 +29,6 @@ bad policy can't take down the whole tick.
 from __future__ import annotations
 
 import argparse
-import gc
 import hashlib
 import importlib.util
 import logging
@@ -422,16 +421,6 @@ def run_job(
             "baseline cache MISS (key=%s) — running passthrough baseline",
             job.baseline_cache_key,
         )
-        # CUDA warmup: absorb kernel JIT + allocator cold-start so the
-        # baseline latency measurement isn't inflated by one-time GPU costs.
-        logger.info("CUDA warmup: throwaway 1-token forward pass")
-        _warmup_policy = PassthroughPolicy()
-        harness.run(_warmup_policy, [prompts[0]], max_new_tokens=1)
-        del _warmup_policy
-        if device == "cuda":
-            torch.cuda.synchronize()
-            gc.collect()
-
         baseline = harness.run(
             PassthroughPolicy(),
             prompts,
