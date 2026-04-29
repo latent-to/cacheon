@@ -74,11 +74,6 @@ def _compute_kl_from_logits(
     return total_kl / total_tokens
 
 
-def _compute_kl(baseline: RunResult, miner: RunResult) -> float:
-    """Legacy wrapper — delegates to ``_compute_kl_from_logits``."""
-    return _compute_kl_from_logits(baseline.all_logits, miner.all_logits)
-
-
 def score(
     baseline: RunResult,
     miner: RunResult,

@@ -18,7 +18,6 @@ from inference_engine.scoring import (
     QUALITY_THRESHOLD,
     ScoreResult,
     score,
-    _compute_kl,
     _compute_kl_from_logits,
 )
 
@@ -70,50 +69,42 @@ class TestKLDivergence:
         logits = torch.randn(10, 64)
         bl = _make_result(logits=[logits.clone()])
         mn = _make_result(logits=[logits.clone()])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits(bl.all_logits, mn.all_logits)
         assert abs(kl) < 1e-5, f"KL should be ~0 for identical logits, got {kl}"
 
     def test_different_logits_kl_positive(self):
         base = torch.randn(10, 64)
         shifted = base + torch.randn_like(base) * 5.0
-        bl = _make_result(logits=[base])
-        mn = _make_result(logits=[shifted])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits([base], [shifted])
         assert kl > 0.0, f"KL should be positive for different logits, got {kl}"
 
     def test_kl_averaged_across_tokens(self):
         """KL should be averaged per-token, not summed."""
         base = torch.randn(20, 64)
         shifted = base + torch.randn_like(base) * 2.0
-        bl = _make_result(logits=[base])
-        mn = _make_result(logits=[shifted])
-        kl = _compute_kl(bl, mn)
-        # Averaged KL should be much less than summed
+        kl = _compute_kl_from_logits([base], [shifted])
         assert kl < 100.0, f"KL seems summed not averaged: {kl}"
 
     def test_kl_handles_token_count_mismatch(self):
         """Truncate to shorter when token counts differ."""
         base = torch.randn(10, 32)
         shorter = torch.randn(7, 32)
-        bl = _make_result(logits=[base])
-        mn = _make_result(logits=[shorter])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits([base], [shorter])
         assert isinstance(kl, float)
 
     def test_kl_multiple_prompts(self):
         """KL is averaged across all tokens from all prompts."""
         base1 = torch.randn(5, 32)
         base2 = torch.randn(8, 32)
-        bl = _make_result(logits=[base1.clone(), base2.clone()])
-        mn = _make_result(logits=[base1.clone(), base2.clone()])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits(
+            [base1.clone(), base2.clone()],
+            [base1.clone(), base2.clone()],
+        )
         assert abs(kl) < 1e-5
 
     def test_kl_empty_logits(self):
         empty = torch.randn(0, 32)
-        bl = _make_result(logits=[empty])
-        mn = _make_result(logits=[empty])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits([empty], [empty])
         assert kl == 0.0
 
 
