@@ -79,14 +79,22 @@ def score(
     miner: RunResult,
     *,
     teacher_forced_logits: list | None = None,
+    baseline_latency_s: float | None = None,
+    miner_latency_s: float | None = None,
 ) -> ScoreResult:
     """Score a miner's run against the baseline.
 
     When *teacher_forced_logits* is provided, KL divergence is computed
     from those logits (produced by feeding the baseline's token sequence
     through the miner's policy in a single forward pass) instead of the
-    autoregressive ``miner.all_logits``.  Memory and latency metrics
-    still come from *miner* (the autoregressive run).
+    autoregressive ``miner.all_logits``.  Memory metrics still come from
+    *miner* (the autoregressive run).
+
+    When *baseline_latency_s* / *miner_latency_s* are provided they
+    override ``RunResult.latency_s`` for the latency-improvement
+    calculation.  This supports interleaved per-prompt timing where
+    latency is measured separately from the bulk ``harness.run()`` call
+    that collects logits and memory.
     """
     kl_logits = (
         teacher_forced_logits if teacher_forced_logits is not None else miner.all_logits
@@ -125,9 +133,13 @@ def score(
     else:
         mem_reduction = 0.0
 
-    # Latency improvement: positive means miner was faster
-    if baseline.latency_s > 0:
-        lat_improvement = (baseline.latency_s - miner.latency_s) / baseline.latency_s
+    bl_lat = (
+        baseline_latency_s if baseline_latency_s is not None else baseline.latency_s
+    )
+    mn_lat = miner_latency_s if miner_latency_s is not None else miner.latency_s
+
+    if bl_lat > 0:
+        lat_improvement = (bl_lat - mn_lat) / bl_lat
     else:
         lat_improvement = 0.0
 

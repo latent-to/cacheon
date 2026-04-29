@@ -58,6 +58,8 @@ from validator.eval_schema import (  # noqa: E402
 
 logger = logging.getLogger("cacheon.pod_eval")
 
+N_WARMUP_PASSES = 4
+
 
 # --------------------------------------------------------------------------- #
 # Policy loading
@@ -339,8 +341,44 @@ def _evaluate_challenger(
             f"teacher-forced scoring failed: {exc}"[:500],
         )
 
+    # Interleaved latency: run passthrough and miner back-to-back per
+    # prompt so both see the same CUDA allocator state.  This eliminates
+    # the warmup bias that inflates baseline latency when measured via
+    # the bulk harness.run() call.
     try:
-        sr = scoring.score(baseline, miner_run, teacher_forced_logits=tf_logits)
+        from inference_engine.passthrough import PassthroughPolicy as _PT
+
+        bl_lat, mn_lat = harness.measure_latency_interleaved(
+            _PT(),
+            policy_cls(),
+            prompts,
+            max_new_tokens,
+        )
+        logger.info(
+            "challenger uid=%d interleaved latency: baseline=%.2fs miner=%.2fs",
+            challenger.uid,
+            bl_lat,
+            mn_lat,
+        )
+    except Exception as exc:
+        logger.exception(
+            "challenger uid=%d interleaved latency failed: %s",
+            challenger.uid,
+            exc,
+        )
+        return _dq_result(
+            challenger,
+            f"interleaved latency failed: {exc}"[:500],
+        )
+
+    try:
+        sr = scoring.score(
+            baseline,
+            miner_run,
+            teacher_forced_logits=tf_logits,
+            baseline_latency_s=bl_lat,
+            miner_latency_s=mn_lat,
+        )
     except Exception as exc:
         logger.exception(
             "challenger uid=%d failed during scoring: %s", challenger.uid, exc
@@ -380,6 +418,12 @@ def run_job(
     """
     import torch
 
+    # Pre-allocate large contiguous segments so the CUDA caching allocator
+    # can grow KV-cache tensors (torch.cat pattern) without thousands of
+    # individual cudaMalloc calls and GPU page faults.  Drastically reduces
+    # first-run latency and allocator settling time.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     from inference_engine.harness import Harness
     from inference_engine.passthrough import PassthroughPolicy
     from inference_engine.prompts import sample_prompts
@@ -396,6 +440,17 @@ def run_job(
     logger.info("sampled %d prompt(s)", len(prompts))
 
     harness = Harness(model_name=job.model_name, device=device, dtype=dtype)
+
+    # Heavy warmup: the CUDA allocator needs 2-3 full-decode passes to
+    # settle its internal free-lists for the KV-growth allocation pattern.
+    # A single pass (1-token or full-decode) was tested and had zero effect
+    # on the latency bias.  4 passes reliably reach steady-state.
+    logger.info("warmup: %d full-decode passes to stabilize allocator", N_WARMUP_PASSES)
+    for i in range(N_WARMUP_PASSES):
+        harness.run(
+            PassthroughPolicy(), [prompts[0]], max_new_tokens=job.max_new_tokens
+        )
+    logger.info("warmup complete")
 
     expected_manifest = _build_baseline_manifest(
         model_name=job.model_name,

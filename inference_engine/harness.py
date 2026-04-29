@@ -319,6 +319,56 @@ class Harness:
             policy_memory_bytes=policy_mem,
         )
 
+    def measure_latency_interleaved(
+        self,
+        policy_a: KVCachePolicy,
+        policy_b: KVCachePolicy,
+        prompts: list[str],
+        max_new_tokens: int = 256,
+    ) -> tuple[float, float]:
+        """Measure latency fairly by interleaving per-prompt runs.
+
+        For each prompt, policy_a and policy_b run back-to-back so both
+        see the same CUDA allocator state.  Generated outputs are discarded
+        — this is timing-only.  Memory and logits come from separate
+        ``run()`` calls.
+
+        Returns ``(policy_a_total_s, policy_b_total_s)``.
+        """
+        a_times: list[float] = []
+        b_times: list[float] = []
+
+        for prompt in prompts:
+            # --- policy A ---
+            policy_a.setup(self._cache_config)
+            self._patch_attention(policy_a)
+            try:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                t0 = time.perf_counter()
+                self._generate_one(prompt, max_new_tokens)
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                a_times.append(time.perf_counter() - t0)
+            finally:
+                self._unpatch_attention()
+
+            # --- policy B ---
+            policy_b.setup(self._cache_config)
+            self._patch_attention(policy_b)
+            try:
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                t0 = time.perf_counter()
+                self._generate_one(prompt, max_new_tokens)
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize(self.device)
+                b_times.append(time.perf_counter() - t0)
+            finally:
+                self._unpatch_attention()
+
+        return sum(a_times), sum(b_times)
+
     @torch.inference_mode()
     def _generate_reference(self, prompt: str, max_new_tokens: int) -> dict:
         """Reference generation: unpatched model, full sequence recomputed each step.

@@ -430,6 +430,81 @@ class TestTeacherForcedLogits:
 
 
 # ---------------------------------------------------------------------------
+# Latency overrides (interleaved measurement)
+# ---------------------------------------------------------------------------
+
+
+class TestLatencyOverrides:
+    def test_overrides_used_when_provided(self):
+        """Latency override params replace RunResult.latency_s."""
+        base = torch.zeros(5, 32)
+        result = score(
+            _make_result(logits=[base], latency_s=100.0),
+            _make_result(logits=[base], latency_s=100.0),
+            baseline_latency_s=10.0,
+            miner_latency_s=6.0,
+        )
+        assert result.latency_improvement == pytest.approx(0.4)
+
+    def test_none_overrides_fall_back_to_run_result(self):
+        """None overrides use RunResult.latency_s (backward compat)."""
+        base = torch.zeros(5, 32)
+        r1 = score(
+            _make_result(logits=[base], latency_s=10.0),
+            _make_result(logits=[base], latency_s=6.0),
+        )
+        r2 = score(
+            _make_result(logits=[base], latency_s=10.0),
+            _make_result(logits=[base], latency_s=6.0),
+            baseline_latency_s=None,
+            miner_latency_s=None,
+        )
+        assert r1.latency_improvement == r2.latency_improvement
+
+    def test_overrides_affect_score_not_memory_or_kl(self):
+        """Latency overrides change score but not memory_reduction or kl."""
+        base = torch.zeros(5, 32)
+        r_default = score(
+            _make_result(
+                logits=[base], policy_memory_bytes=1_000_000_000, latency_s=10.0
+            ),
+            _make_result(logits=[base], policy_memory_bytes=500_000_000, latency_s=8.0),
+        )
+        r_override = score(
+            _make_result(
+                logits=[base], policy_memory_bytes=1_000_000_000, latency_s=10.0
+            ),
+            _make_result(logits=[base], policy_memory_bytes=500_000_000, latency_s=8.0),
+            baseline_latency_s=10.0,
+            miner_latency_s=5.0,
+        )
+        assert r_default.memory_reduction == r_override.memory_reduction
+        assert r_default.kl_divergence == r_override.kl_divergence
+        assert r_default.score != r_override.score
+        assert r_override.latency_improvement == pytest.approx(0.5)
+
+    def test_partial_override_baseline_only(self):
+        """Only baseline_latency_s overridden; miner uses RunResult."""
+        base = torch.zeros(5, 32)
+        result = score(
+            _make_result(logits=[base], latency_s=999.0),
+            _make_result(logits=[base], latency_s=6.0),
+            baseline_latency_s=10.0,
+        )
+        assert result.latency_improvement == pytest.approx(0.4)
+
+    def test_partial_override_miner_only(self):
+        """Only miner_latency_s overridden; baseline uses RunResult."""
+        base = torch.zeros(5, 32)
+        result = score(
+            _make_result(logits=[base], latency_s=10.0),
+            _make_result(logits=[base], latency_s=999.0),
+            miner_latency_s=6.0,
+        )
+        assert result.latency_improvement == pytest.approx(0.4)
+
+
+# ---------------------------------------------------------------------------
 # ScoreResult structure
 # ---------------------------------------------------------------------------
 
