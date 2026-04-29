@@ -101,3 +101,28 @@ KING_EPSILON_DECAY_BLOCKS: int = int(
 """Number of chain blocks over which `KING_EPSILON_INITIAL` decays to 0.
 50 400 blocks ≈ 7 days at ~12 s / block. After this window any strict
 improvement dethrones — no grandfathering of stale kings."""
+
+# --------------------------------------------------------------------------- #
+# GPU pod SSH/SFTP transport (Phase 5B)
+# --------------------------------------------------------------------------- #
+
+GPU_POD_SSH_HOST: str = os.environ.get("CACHEON_GPU_POD_SSH_HOST", "")
+"""Hostname (or ``host:port`` via ProxyCommand) of the Targon GPU pod."""
+
+GPU_POD_SSH_USER: str = os.environ.get("CACHEON_GPU_POD_SSH_USER", "")
+"""SSH username on the GPU pod (e.g. ``wrk-b6ptrqbmfkoj``)."""
+
+GPU_POD_SSH_PORT: int = int(os.environ.get("CACHEON_GPU_POD_SSH_PORT", "22"))
+
+GPU_POD_WORK_DIR: str = os.environ.get(
+    "CACHEON_GPU_POD_WORK_DIR", "/workspace/cacheon",
+)
+"""Repo checkout path on the GPU pod — ``cd`` target before running
+``pod_eval.py``."""
+
+GPU_POD_EVAL_TIMEOUT_S: int = int(
+    os.environ.get("CACHEON_GPU_POD_EVAL_TIMEOUT_S", "1200")
+)
+"""Hard wall-clock timeout (seconds) for a single ``pod_eval.py`` run
+over SSH.  Default 20 minutes — generous for the ~5-10 min typical
+Cacheon eval."""

@@ -15,7 +15,7 @@ participant "Bittensor chain"     as BT
 participant "challengers.py"      as CHALL
 participant "state.py"            as STATE
 participant "state/state.json"    as DISK
-participant "eval_fn\n(eval_local or remote)" as EVAL
+participant "eval_fn\n(eval_pod: local or remote)" as EVAL
 
 == Startup ==
 

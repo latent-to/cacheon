@@ -3,7 +3,7 @@
 Submodules implement state files, chain calls, challenger filtering, and
 the main loop. Heavy model work is **not** here: the loop takes an
 ``eval_fn`` that the application wires up (for example subprocess-based
-evaluation in `eval_local`). Re-exports below are the stable surface for
+evaluation in `eval_pod`). Re-exports below are the stable surface for
 callers that only need data shapes and selection logic.
 """
 
