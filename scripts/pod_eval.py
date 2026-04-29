@@ -418,6 +418,12 @@ def run_job(
     """
     import torch
 
+    # Pre-allocate large contiguous segments so the CUDA caching allocator
+    # can grow KV-cache tensors (torch.cat pattern) without thousands of
+    # individual cudaMalloc calls and GPU page faults.  Drastically reduces
+    # first-run latency and allocator settling time.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     from inference_engine.harness import Harness
     from inference_engine.passthrough import PassthroughPolicy
     from inference_engine.prompts import sample_prompts
