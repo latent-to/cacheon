@@ -58,11 +58,12 @@ MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 # Result container
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RunResult:
     output_texts: list[str]
     output_ids: list[list[int]]
-    all_logits: list[torch.Tensor]   # per-prompt [num_generated, vocab_size]
+    all_logits: list[torch.Tensor]  # per-prompt [num_generated, vocab_size]
     latency_s: float
     peak_memory_bytes: int
     policy_memory_bytes: int
@@ -71,6 +72,7 @@ class RunResult:
 # ---------------------------------------------------------------------------
 # Monkey-patch factory
 # ---------------------------------------------------------------------------
+
 
 def _make_patched_forward(
     attn_module,
@@ -91,9 +93,9 @@ def _make_patched_forward(
 
     def patched_forward(
         hidden_states: torch.Tensor,
-        attention_mask=None,            # ignored — policy handles masking
+        attention_mask=None,  # ignored — policy handles masking
         position_ids=None,
-        past_key_value=None,            # ignored — policy IS the cache
+        past_key_value=None,  # ignored — policy IS the cache
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position=None,
@@ -116,7 +118,9 @@ def _make_patched_forward(
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
         # --- Positions for the policy ---
-        positions = position_ids.squeeze(0) if position_ids is not None else cache_position
+        positions = (
+            position_ids.squeeze(0) if position_ids is not None else cache_position
+        )
 
         # --- Policy: write K/V, attend with Q ---
         policy.write(k, v, layer_idx, positions)
@@ -126,10 +130,12 @@ def _make_patched_forward(
         # HF builds a [1,1,1,1] mask that doesn't cover the policy's accumulated
         # KV cache, so we pass None and let the policy attend to all cached positions.
         mask_for_policy = attention_mask if q_len > 1 else None
-        attn_out: AttentionOutput = policy.attend(q, layer_idx, attention_mask=mask_for_policy)
+        attn_out: AttentionOutput = policy.attend(
+            q, layer_idx, attention_mask=mask_for_policy
+        )
 
         # --- Reshape + output projection (unchanged) ---
-        output = attn_out.output                       # [bsz, heads, q_len, head_dim]
+        output = attn_out.output  # [bsz, heads, q_len, head_dim]
         output = output.transpose(1, 2).contiguous().reshape(bsz, q_len, -1)
         output = attn_module.o_proj(output)
 
@@ -143,8 +149,8 @@ def _make_patched_forward(
 # Harness
 # ---------------------------------------------------------------------------
 
-class Harness:
 
+class Harness:
     def __init__(
         self,
         model_name: str = MODEL_NAME,
@@ -185,7 +191,9 @@ class Harness:
         for idx, layer in enumerate(self.model.model.layers):
             self._original_forwards.append(layer.self_attn.forward)
             layer.self_attn.forward = _make_patched_forward(
-                layer.self_attn, policy, idx,
+                layer.self_attn,
+                policy,
+                idx,
                 num_heads=cfg.num_heads,
                 num_kv_heads=cfg.num_kv_heads,
                 head_dim=cfg.head_dim,
@@ -209,9 +217,7 @@ class Harness:
     # ---- single-prompt generation ----------------------------------------
 
     @torch.inference_mode()
-    def _generate_one(
-        self, prompt: str, max_new_tokens: int
-    ) -> dict:
+    def _generate_one(self, prompt: str, max_new_tokens: int) -> dict:
         """Run prefill + decode for one prompt. Returns text, token ids, logits."""
 
         formatted = self._format_prompt(prompt)
@@ -225,7 +231,7 @@ class Harness:
 
         # --- Prefill: full prompt in one forward pass ---
         outputs = self.model(input_ids=input_ids, use_cache=False)
-        next_logits = outputs.logits[:, -1, :]          # [1, vocab_size]
+        next_logits = outputs.logits[:, -1, :]  # [1, vocab_size]
         all_logits.append(next_logits.squeeze(0))
         next_token = next_logits.argmax(dim=-1, keepdim=True)
         generated_ids.append(next_token.item())
@@ -236,9 +242,7 @@ class Harness:
             if generated_ids[-1] == self.tokenizer.eos_token_id:
                 break
 
-            position_ids = torch.tensor(
-                [[prompt_len + step]], device=self.device
-            )
+            position_ids = torch.tensor([[prompt_len + step]], device=self.device)
             outputs = self.model(
                 input_ids=next_token,
                 position_ids=position_ids,
@@ -254,7 +258,9 @@ class Harness:
         return {
             "text": text,
             "token_ids": generated_ids,
-            "logits": torch.stack(all_logits, dim=0).cpu(),   # [num_generated, vocab_size]
+            "logits": torch.stack(
+                all_logits, dim=0
+            ).cpu(),  # [num_generated, vocab_size]
         }
 
     # ---- public API ------------------------------------------------------
@@ -324,7 +330,9 @@ class Harness:
         Returns a dict with 'token_ids' and 'logits' (matching _generate_one).
         """
         formatted = self._format_prompt(prompt)
-        all_ids = self.tokenizer(formatted, return_tensors="pt")["input_ids"].to(self.device)
+        all_ids = self.tokenizer(formatted, return_tensors="pt")["input_ids"].to(
+            self.device
+        )
         generated = []
         all_logits: list[torch.Tensor] = []
 
@@ -376,7 +384,28 @@ class Harness:
         # Continuation logits at positions [prompt_len-1 .. prompt_len+gen_len-2]
         # predict the generated tokens at positions [prompt_len .. prompt_len+gen_len-1].
         gen_len = len(generated_ids)
-        return outputs.logits[:, prompt_len - 1 : prompt_len - 1 + gen_len, :].squeeze(0)
+        return outputs.logits[:, prompt_len - 1 : prompt_len - 1 + gen_len, :].squeeze(
+            0
+        )
+
+    def score_policy_on_sequence(
+        self,
+        policy: KVCachePolicy,
+        prompts: list[str],
+        reference_ids: list[list[int]],
+    ) -> list[torch.Tensor]:
+        """Teacher-forced logits: run each prompt + reference tokens through
+        the patched model in a single forward pass.
+
+        Returns one ``[gen_len, vocab_size]`` tensor per prompt.  These
+        logits are computed on the *exact same token sequence* as the
+        baseline, eliminating autoregressive drift from KL measurement.
+        """
+        logits: list[torch.Tensor] = []
+        for prompt, ref_ids in zip(prompts, reference_ids):
+            lg = self._score_sequence_patched(prompt, ref_ids, policy)
+            logits.append(lg.cpu())
+        return logits
 
     def verify(
         self,
@@ -418,19 +447,23 @@ class Harness:
             status = "PASS" if ok else "FAIL"
             logger.info(
                 "  prompt %d: %s  (KL=%.6f, %d tokens compared)",
-                i, status, kl, n,
+                i,
+                status,
+                kl,
+                n,
             )
 
             if not ok:
                 logger.error(
                     "    KL %.6f (threshold %.6f) — monkey-patch has a bug",
-                    kl, kl_threshold,
+                    kl,
+                    kl_threshold,
                 )
                 return False
 
         logger.info(
             "Verification passed on all %d prompts (KL < %.1e).",
-            len(prompts), kl_threshold,
+            len(prompts),
+            kl_threshold,
         )
         return True
-

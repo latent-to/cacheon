@@ -18,7 +18,7 @@ from inference_engine.scoring import (
     QUALITY_THRESHOLD,
     ScoreResult,
     score,
-    _compute_kl,
+    _compute_kl_from_logits,
 )
 
 pytestmark = pytest.mark.unit
@@ -27,6 +27,7 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_result(
     logits: list[torch.Tensor] | None = None,
@@ -62,56 +63,48 @@ def _shifted_logits(base_logits: torch.Tensor, noise_scale: float) -> torch.Tens
 # KL divergence
 # ---------------------------------------------------------------------------
 
-class TestKLDivergence:
 
+class TestKLDivergence:
     def test_identical_logits_kl_zero(self):
         logits = torch.randn(10, 64)
         bl = _make_result(logits=[logits.clone()])
         mn = _make_result(logits=[logits.clone()])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits(bl.all_logits, mn.all_logits)
         assert abs(kl) < 1e-5, f"KL should be ~0 for identical logits, got {kl}"
 
     def test_different_logits_kl_positive(self):
         base = torch.randn(10, 64)
         shifted = base + torch.randn_like(base) * 5.0
-        bl = _make_result(logits=[base])
-        mn = _make_result(logits=[shifted])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits([base], [shifted])
         assert kl > 0.0, f"KL should be positive for different logits, got {kl}"
 
     def test_kl_averaged_across_tokens(self):
         """KL should be averaged per-token, not summed."""
         base = torch.randn(20, 64)
         shifted = base + torch.randn_like(base) * 2.0
-        bl = _make_result(logits=[base])
-        mn = _make_result(logits=[shifted])
-        kl = _compute_kl(bl, mn)
-        # Averaged KL should be much less than summed
+        kl = _compute_kl_from_logits([base], [shifted])
         assert kl < 100.0, f"KL seems summed not averaged: {kl}"
 
     def test_kl_handles_token_count_mismatch(self):
         """Truncate to shorter when token counts differ."""
         base = torch.randn(10, 32)
         shorter = torch.randn(7, 32)
-        bl = _make_result(logits=[base])
-        mn = _make_result(logits=[shorter])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits([base], [shorter])
         assert isinstance(kl, float)
 
     def test_kl_multiple_prompts(self):
         """KL is averaged across all tokens from all prompts."""
         base1 = torch.randn(5, 32)
         base2 = torch.randn(8, 32)
-        bl = _make_result(logits=[base1.clone(), base2.clone()])
-        mn = _make_result(logits=[base1.clone(), base2.clone()])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits(
+            [base1.clone(), base2.clone()],
+            [base1.clone(), base2.clone()],
+        )
         assert abs(kl) < 1e-5
 
     def test_kl_empty_logits(self):
         empty = torch.randn(0, 32)
-        bl = _make_result(logits=[empty])
-        mn = _make_result(logits=[empty])
-        kl = _compute_kl(bl, mn)
+        kl = _compute_kl_from_logits([empty], [empty])
         assert kl == 0.0
 
 
@@ -119,8 +112,8 @@ class TestKLDivergence:
 # NaN / Inf handling
 # ---------------------------------------------------------------------------
 
-class TestInvalidLogits:
 
+class TestInvalidLogits:
     def test_nan_in_miner_logits_disqualifies(self):
         base = torch.randn(5, 32)
         bad = torch.randn(5, 32)
@@ -151,8 +144,8 @@ class TestInvalidLogits:
 # Quality gate (KL threshold)
 # ---------------------------------------------------------------------------
 
-class TestQualityGate:
 
+class TestQualityGate:
     def test_low_kl_passes_gate(self):
         logits = torch.randn(10, 64)
         result = score(
@@ -180,26 +173,36 @@ class TestQualityGate:
 # Memory reduction
 # ---------------------------------------------------------------------------
 
-class TestMemoryReduction:
 
+class TestMemoryReduction:
     def test_miner_uses_less_memory(self):
         result = score(
-            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000),
+            _make_result(
+                logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000
+            ),
             _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=500_000_000),
         )
         assert result.memory_reduction == pytest.approx(0.5)
 
     def test_miner_uses_more_memory(self):
         result = score(
-            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000),
-            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_500_000_000),
+            _make_result(
+                logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000
+            ),
+            _make_result(
+                logits=[torch.zeros(5, 32)], policy_memory_bytes=1_500_000_000
+            ),
         )
         assert result.memory_reduction == pytest.approx(-0.5)
 
     def test_identical_memory(self):
         result = score(
-            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000),
-            _make_result(logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000),
+            _make_result(
+                logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000
+            ),
+            _make_result(
+                logits=[torch.zeros(5, 32)], policy_memory_bytes=1_000_000_000
+            ),
         )
         assert result.memory_reduction == pytest.approx(0.0)
 
@@ -222,8 +225,8 @@ class TestMemoryReduction:
 # Latency improvement
 # ---------------------------------------------------------------------------
 
-class TestLatencyImprovement:
 
+class TestLatencyImprovement:
     def test_miner_faster(self):
         result = score(
             _make_result(logits=[torch.zeros(5, 32)], latency_s=10.0),
@@ -257,8 +260,8 @@ class TestLatencyImprovement:
 # Score formula
 # ---------------------------------------------------------------------------
 
-class TestScoreFormula:
 
+class TestScoreFormula:
     def test_hand_computed_score(self):
         """memory_reduction=0.5, latency_improvement=0.2 → 0.6*0.5 + 0.4*0.2 = 0.38"""
         result = score(
@@ -351,11 +354,87 @@ class TestScoreFormula:
 
 
 # ---------------------------------------------------------------------------
+# Teacher-forced logits
+# ---------------------------------------------------------------------------
+
+
+class TestTeacherForcedLogits:
+    def test_tf_logits_used_for_kl(self):
+        """When teacher_forced_logits is passed, KL uses those instead
+        of miner.all_logits."""
+        base = torch.randn(10, 64)
+        miner_auto = base + torch.randn_like(base) * 20.0  # large KL
+        miner_tf = base.clone()  # ~zero KL
+
+        result = score(
+            _make_result(logits=[base]),
+            _make_result(logits=[miner_auto]),
+            teacher_forced_logits=[miner_tf],
+        )
+        assert not result.disqualified
+        assert result.kl_divergence < 1e-5
+
+    def test_tf_logits_none_falls_back_to_autoregressive(self):
+        """With teacher_forced_logits=None, the old path is used."""
+        base = torch.randn(10, 64)
+        miner_auto = base + torch.randn_like(base) * 20.0
+
+        r1 = score(
+            _make_result(logits=[base]),
+            _make_result(logits=[miner_auto]),
+        )
+        r2 = score(
+            _make_result(logits=[base]),
+            _make_result(logits=[miner_auto]),
+            teacher_forced_logits=None,
+        )
+        assert r1.kl_divergence == r2.kl_divergence
+
+    def test_tf_logits_nan_disqualifies(self):
+        base = torch.randn(5, 32)
+        bad_tf = torch.randn(5, 32)
+        bad_tf[1, 5] = float("nan")
+        result = score(
+            _make_result(logits=[base]),
+            _make_result(logits=[base.clone()]),
+            teacher_forced_logits=[bad_tf],
+        )
+        assert result.disqualified
+        assert "NaN" in result.disqualify_reason
+
+    def test_tf_logits_inf_disqualifies(self):
+        base = torch.randn(5, 32)
+        bad_tf = torch.randn(5, 32)
+        bad_tf[0, 0] = float("inf")
+        result = score(
+            _make_result(logits=[base]),
+            _make_result(logits=[base.clone()]),
+            teacher_forced_logits=[bad_tf],
+        )
+        assert result.disqualified
+        assert "Inf" in result.disqualify_reason
+
+    def test_tf_logits_memory_latency_from_miner_run(self):
+        """Memory and latency come from the autoregressive miner run,
+        not the teacher-forced logits."""
+        base = torch.zeros(5, 32)
+        result = score(
+            _make_result(
+                logits=[base], policy_memory_bytes=1_000_000_000, latency_s=10.0
+            ),
+            _make_result(logits=[base], policy_memory_bytes=500_000_000, latency_s=6.0),
+            teacher_forced_logits=[base.clone()],
+        )
+        assert result.memory_reduction == pytest.approx(0.5)
+        assert result.latency_improvement == pytest.approx(0.4)
+
+
+# ---------------------------------------------------------------------------
 # ScoreResult structure
 # ---------------------------------------------------------------------------
 
-class TestScoreResultStructure:
 
+class TestScoreResultStructure:
     def test_all_fields_present(self):
         logits = torch.zeros(5, 32)
         result = score(

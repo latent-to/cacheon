@@ -32,7 +32,10 @@ class ScoreResult:
     disqualify_reason: str | None
 
 
-def _compute_kl(baseline: RunResult, miner: RunResult) -> float:
+def _compute_kl_from_logits(
+    baseline_logits: list[torch.Tensor],
+    miner_logits: list[torch.Tensor],
+) -> float:
     """Average per-token KL(baseline || miner) in nats across all prompts.
 
     If the miner generated fewer tokens than baseline on a given prompt,
@@ -41,7 +44,7 @@ def _compute_kl(baseline: RunResult, miner: RunResult) -> float:
     total_kl = 0.0
     total_tokens = 0
 
-    for i, (bl, mn) in enumerate(zip(baseline.all_logits, miner.all_logits)):
+    for i, (bl, mn) in enumerate(zip(baseline_logits, miner_logits)):
         n_bl, n_mn = bl.shape[0], mn.shape[0]
         n = min(n_bl, n_mn)
         if n == 0:
@@ -50,7 +53,10 @@ def _compute_kl(baseline: RunResult, miner: RunResult) -> float:
             logger.warning(
                 "Prompt %d: token count mismatch (baseline=%d, miner=%d), "
                 "truncating to %d",
-                i, n_bl, n_mn, n,
+                i,
+                n_bl,
+                n_mn,
+                n,
             )
         bl_trunc = bl[:n].float()
         mn_trunc = mn[:n].float()
@@ -68,49 +74,60 @@ def _compute_kl(baseline: RunResult, miner: RunResult) -> float:
     return total_kl / total_tokens
 
 
-def _check_logits_valid(miner: RunResult) -> str | None:
-    """Return a disqualify reason if miner logits contain NaN or Inf."""
-    for i, logits in enumerate(miner.all_logits):
+def score(
+    baseline: RunResult,
+    miner: RunResult,
+    *,
+    teacher_forced_logits: list | None = None,
+) -> ScoreResult:
+    """Score a miner's run against the baseline.
+
+    When *teacher_forced_logits* is provided, KL divergence is computed
+    from those logits (produced by feeding the baseline's token sequence
+    through the miner's policy in a single forward pass) instead of the
+    autoregressive ``miner.all_logits``.  Memory and latency metrics
+    still come from *miner* (the autoregressive run).
+    """
+    kl_logits = (
+        teacher_forced_logits if teacher_forced_logits is not None else miner.all_logits
+    )
+
+    # NaN/Inf check on the logits used for KL
+    for i, logits in enumerate(kl_logits):
         if torch.isnan(logits).any():
-            return f"NaN in miner logits for prompt {i}"
+            return ScoreResult(
+                kl_divergence=float("inf"),
+                memory_reduction=0.0,
+                latency_improvement=0.0,
+                score=0.0,
+                disqualified=True,
+                disqualify_reason=f"NaN in miner logits for prompt {i}",
+            )
         if torch.isinf(logits).any():
-            return f"Inf in miner logits for prompt {i}"
-    return None
+            return ScoreResult(
+                kl_divergence=float("inf"),
+                memory_reduction=0.0,
+                latency_improvement=0.0,
+                score=0.0,
+                disqualified=True,
+                disqualify_reason=f"Inf in miner logits for prompt {i}",
+            )
 
-
-def score(baseline: RunResult, miner: RunResult) -> ScoreResult:
-    """Score a miner's run against the baseline."""
-
-    # NaN/Inf check before any computation
-    invalid = _check_logits_valid(miner)
-    if invalid is not None:
-        return ScoreResult(
-            kl_divergence=float("inf"),
-            memory_reduction=0.0,
-            latency_improvement=0.0,
-            score=0.0,
-            disqualified=True,
-            disqualify_reason=invalid,
-        )
-
-    kl = _compute_kl(baseline, miner)
+    kl = _compute_kl_from_logits(baseline.all_logits, kl_logits)
 
     # KV-cache memory reduction: positive means miner's cache is smaller.
     # Uses policy_memory_bytes (actual KV-cache footprint) rather than
     # peak VRAM which includes transient attention buffers and model weights.
     if baseline.policy_memory_bytes > 0:
         mem_reduction = (
-            (baseline.policy_memory_bytes - miner.policy_memory_bytes)
-            / baseline.policy_memory_bytes
-        )
+            baseline.policy_memory_bytes - miner.policy_memory_bytes
+        ) / baseline.policy_memory_bytes
     else:
         mem_reduction = 0.0
 
     # Latency improvement: positive means miner was faster
     if baseline.latency_s > 0:
-        lat_improvement = (
-            (baseline.latency_s - miner.latency_s) / baseline.latency_s
-        )
+        lat_improvement = (baseline.latency_s - miner.latency_s) / baseline.latency_s
     else:
         lat_improvement = 0.0
 
