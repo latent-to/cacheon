@@ -397,6 +397,17 @@ def run_job(
 
     harness = Harness(model_name=job.model_name, device=device, dtype=dtype)
 
+    # Full-decode warmup: absorb GPU cold-start costs (clock ramp, allocator
+    # settling, KV-growth pattern) so baseline and challenger timings are fair.
+    # A 1-token warmup was tried and had zero effect — the full decode loop
+    # (256 steps of torch.cat) is required to reach steady-state GPU perf.
+    logger.info(
+        "full-decode warmup (1 prompt, %d tokens) — absorbing GPU cold-start",
+        job.max_new_tokens,
+    )
+    harness.run(PassthroughPolicy(), [prompts[0]], max_new_tokens=job.max_new_tokens)
+    logger.info("warmup complete")
+
     expected_manifest = _build_baseline_manifest(
         model_name=job.model_name,
         n_prompts=job.n_prompts,
