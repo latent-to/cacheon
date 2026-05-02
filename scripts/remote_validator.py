@@ -53,8 +53,8 @@ from validator.precheck import make_fetch_precheck  # noqa: E402
 from validator.state import ValidatorState  # noqa: E402
 
 
-def _configure_logging(verbose: bool) -> None:
-    """Set up logging.
+def _configure_logging(verbose: bool, log_dir: str) -> None:
+    """Set up logging to both console and a rotating log file.
 
     On import, `bittensor` (a) installs its own root `basicConfig` and
     (b) walks `logging.Logger.manager.loggerDict` and sets every
@@ -65,12 +65,23 @@ def _configure_logging(verbose: bool) -> None:
     root handler, then reset `validator.*` levels to `NOTSET` so they
     inherit from root again.
     """
+    from logging.handlers import RotatingFileHandler
+
     level = logging.DEBUG if verbose else logging.INFO
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         force=True,
     )
+
+    log_path = Path(log_dir) / "validator.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = RotatingFileHandler(log_path, maxBytes=50 * 1024 * 1024, backupCount=3)
+    fh.setLevel(level)
+    fh.setFormatter(fmt)
+    logging.getLogger().addHandler(fh)
 
     for name, lg in list(logging.Logger.manager.loggerDict.items()):
         if isinstance(lg, logging.Logger) and name.startswith("validator"):
@@ -87,6 +98,8 @@ def _configure_logging(verbose: bool) -> None:
         "async_substrate_interface",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    logging.getLogger("validator.cli").info("Logging to %s", log_path)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -152,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    _configure_logging(args.verbose)
+    _configure_logging(args.verbose, log_dir=args.state_dir)
     logger = logging.getLogger("validator.cli")
 
     logger.info("Connecting to network=%s netuid=%d wallet=%s/%s",
