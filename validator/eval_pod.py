@@ -420,7 +420,7 @@ def make_remote_eval_fn(
         )
         write_job(job, local_job_path)
         logger.info(
-            "prepared remote job %s with %d challenger(s)",
+            "📋 prepared remote job %s with %d challenger(s)",
             job_id, len(remote_challenger_jobs),
         )
 
@@ -462,7 +462,7 @@ def make_remote_eval_fn(
             elapsed = time.time() - started
             if elapsed > timeout_s:
                 raise RuntimeError(
-                    f"pod_eval timed out after {elapsed:.0f}s (PID {pid})"
+                    f"💀 pod_eval timed out after {elapsed:.0f}s (PID {pid})"
                 )
             time.sleep(poll_interval)
             if transport.poll_file(remote_results):
@@ -474,19 +474,19 @@ def make_remote_eval_fn(
                     break
                 full_tail = transport.tail(remote_stdout_log, n=20)
                 raise RuntimeError(
-                    f"pod_eval (PID {pid}) exited without producing "
+                    f"💀 pod_eval (PID {pid}) exited without producing "
                     f"results.json.\nLast output:\n{full_tail}"
                 )
             if on_poll is not None:
                 on_poll(elapsed, pid, tail_text)
             else:
-                logger.debug(
-                    "poll: PID %d still running (%.0fs elapsed)",
+                logger.info(
+                    "⏳ PID %d still running (%.0fs elapsed)",
                     pid, elapsed,
                 )
 
         elapsed = time.time() - started
-        logger.info("pod_eval completed in %.1fs", elapsed)
+        logger.info("✅ pod_eval completed in %.1fs", elapsed)
 
         # 8. Download results.json
         transport.download(remote_results, local_results_path)
