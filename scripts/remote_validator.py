@@ -78,7 +78,7 @@ def _configure_logging(verbose: bool, log_dir: str) -> None:
 
     log_path = Path(log_dir) / "validator.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = RotatingFileHandler(log_path, maxBytes=50 * 1024 * 1024, backupCount=3)
+    fh = RotatingFileHandler(log_path, maxBytes=50 * 1024 * 1024, backupCount=3, encoding="utf-8")
     fh.setLevel(level)
     fh.setFormatter(fmt)
     logging.getLogger().addHandler(fh)
