@@ -119,7 +119,6 @@ def wait_for_running(workload_uid: str, interval: int = 15) -> None:
         resp = _req("GET", f"/workloads/{workload_uid}/state")
         data = resp.json()
         status = data.get("status", "UNKNOWN").upper()
-        urls = data.get("urls", [])
         print(f"  status={status}")
         if status == "RUNNING":
             print("\n✓ Workload is RUNNING.\n")
