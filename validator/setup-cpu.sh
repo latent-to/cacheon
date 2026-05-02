@@ -6,7 +6,7 @@
 # set_weights). The GPU inference pod is a separate host; use
 # inference_engine/setup.sh there.
 #
-# Prerequisites (see docs/validator-setup.md):
+# Prerequisites (see https://cacheon.io/docs/validators/cpu-host-setup):
 #   export GITHUB_PAT=<your personal access token>
 #
 # Usage:
@@ -77,4 +77,4 @@ pip install --upgrade pip
 pip install -r "$REPO_DIR/validator/requirements-cpu.txt"
 
 echo ""
-echo "=== Setup complete — see docs/validator-setup.md to run the validator ==="
+echo "=== Setup complete — see https://cacheon.io/docs/validators/cpu-host-setup to run the validator ==="
