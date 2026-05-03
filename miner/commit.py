@@ -64,8 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("OK")
 
-    commits = api.list_repo_commits(args.repo)
-    revision = commits[0].commit_id
+    revision = commit_info.oid
     print(f"Revision: {revision}")
 
     # --- Step 2: Commit on-chain ---
