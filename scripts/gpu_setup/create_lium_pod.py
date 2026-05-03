@@ -3,45 +3,18 @@
 
 import os
 import sys
-from pathlib import Path
 
 from lium.sdk import Lium
 
-POD_NAME = "cacheon-gpu"
-GPU_TYPE = "H100"
-GPU_COUNT = 1
-VOLUME_NAME = "SN14"
+from shared import GPU_COUNT, GPU_PREFERENCE, SSH_KEYS, load_env_dict
+
+POD_NAME = "cacheon-gpu" # TODO: replace this with your pod name
+VOLUME_NAME = "SN14" # TODO: replace this with your volume name
 VOLUME_MOUNT = "/workspace"
 
 DOCKER_IMAGE = "daturaai/pytorch"
 DOCKER_IMAGE_TAG = "2.7.0-py3.12-cuda12.8.0-devel-ubuntu24.04"
-TEMPLATE_NAME = "cacheon-pytorch-h100"
-
-SSH_KEYS = {
-    "xavier-latent": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ80HSdgwG98gpXqe/bwR+1NLIlmZJMNmHro7H7X04UC xllgms@gmail.com",
-    "clement-latent": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMkpQe0zLHSW+heTGX5UV00HbuCA7CUXC9lowjE/aTwR",
-    "cacheon-cpu-validator": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHle3erHaBhA/yRREWFyYk7m0cTHuCdcnsHEsOWzOrWe cacheon-cpu-validator",
-}
-
-ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-
-
-def load_env_dict() -> dict[str, str]:
-    """Parse .env and return as key-value dict (values not printed)."""
-    if not ENV_FILE.exists():
-        print(
-            f"  WARNING: {ENV_FILE} not found, no env vars will be injected.",
-            file=sys.stderr,
-        )
-        return {}
-    env: dict[str, str] = {}
-    for line in ENV_FILE.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        env[key.strip()] = value.strip()
-    return env
+TEMPLATE_NAME = "cacheon-pytorch-gpu"
 
 
 def ensure_ssh_keys(lium: Lium) -> list[str]:
@@ -97,24 +70,24 @@ def find_or_create_template(lium: Lium, env_dict: dict[str, str]) -> str:
     return tmpl.id
 
 
-EXCLUDED_GPU_MODELS = {"NVIDIA H100 PCIe"}
-
-
 def find_executor(lium: Lium) -> str:
-    """Find cheapest available H100 SXM executor (excludes PCIe variants)."""
-    executors = lium.ls(gpu_type=GPU_TYPE, gpu_count=GPU_COUNT)
-    executors = [e for e in executors if e.gpu_model not in EXCLUDED_GPU_MODELS]
-    if not executors:
-        print(
-            f"  ERROR: No {GPU_TYPE} x{GPU_COUNT} (non-PCIe) executors available right now",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    best = min(executors, key=lambda e: e.price_per_hour)
-    loc = best.location.get("country", "?")
-    print(f"  Found {len(executors)} executor(s), picking cheapest:")
-    print(f"    {best.gpu_model} | ${best.price_per_hour:.2f}/hr | {loc} | {best.id}")
-    return best.id
+    """Try GPU types in preference order, return cheapest executor for the first available type."""
+    for pref in GPU_PREFERENCE:
+        gpu_type = pref["type"]
+        exclude = pref["exclude"]
+        executors = lium.ls(gpu_type=gpu_type, gpu_count=GPU_COUNT)
+        executors = [e for e in executors if e.gpu_model not in exclude]
+        if not executors:
+            print(f"  No {gpu_type} x{GPU_COUNT} executors available, trying next...")
+            continue
+        best = min(executors, key=lambda e: e.price_per_hour)
+        loc = best.location.get("country", "?")
+        print(f"  Found {len(executors)} {gpu_type} executor(s), picking cheapest:")
+        print(f"    {best.gpu_model} | ${best.price_per_hour:.2f}/hr | {loc} | {best.id}")
+        return best.id
+    tried = ", ".join(p["type"] for p in GPU_PREFERENCE)
+    print(f"  ERROR: No executors available for any of [{tried}]", file=sys.stderr)
+    sys.exit(1)
 
 
 def main() -> None:
