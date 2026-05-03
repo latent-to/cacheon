@@ -21,6 +21,7 @@ import pytest
 from validator.chain import CommitmentRecord
 from validator.eval_pod import (
     _baseline_cache_key,
+    _preserve_eval_artifacts,
     make_cache_policy_source_fn,
     make_local_eval_fn,
     make_remote_eval_fn,
@@ -620,3 +621,74 @@ class TestRemoteSFTPFailure:
         )
         with pytest.raises(OSError, match="SFTP connection lost"):
             eval_fn([com], current_block=10, block_hash="0x1")
+
+
+# --------------------------------------------------------------------------- #
+# _preserve_eval_artifacts
+# --------------------------------------------------------------------------- #
+
+
+class TestPreserveEvalArtifacts:
+    def _make_transport_with_log(self, log_content: str = "eval output\n"):
+        transport = MagicMock()
+
+        def _download(remote, local):
+            Path(local).parent.mkdir(parents=True, exist_ok=True)
+            Path(local).write_text(log_content)
+
+        transport.download.side_effect = _download
+        return transport
+
+    def test_downloads_log_and_copies_results(self, tmp_path):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        results_file = tmp_path / "results.json"
+        results_file.write_text('{"ok": true}')
+
+        transport = self._make_transport_with_log("pod output here\n")
+        _preserve_eval_artifacts(
+            transport, "/remote/stdout.log",
+            results_file, "eval-42-abc", state_dir,
+        )
+
+        log_path = state_dir / "eval-logs" / "eval-42-abc.log"
+        assert log_path.exists()
+        assert log_path.read_text() == "pod output here\n"
+
+        res_path = state_dir / "eval-results" / "eval-42-abc.json"
+        assert res_path.exists()
+        assert res_path.read_text() == '{"ok": true}'
+
+    def test_log_download_failure_does_not_crash(self, tmp_path):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        results_file = tmp_path / "results.json"
+        results_file.write_text('{"ok": true}')
+
+        transport = MagicMock()
+        transport.download.side_effect = OSError("SSH dropped")
+
+        _preserve_eval_artifacts(
+            transport, "/remote/stdout.log",
+            results_file, "eval-fail", state_dir,
+        )
+
+        assert not (state_dir / "eval-logs" / "eval-fail.log").exists()
+        assert (state_dir / "eval-results" / "eval-fail.json").exists()
+
+    def test_results_copy_failure_does_not_crash(self, tmp_path):
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        missing_results = tmp_path / "nonexistent.json"
+
+        transport = self._make_transport_with_log()
+        _preserve_eval_artifacts(
+            transport, "/remote/stdout.log",
+            missing_results, "eval-nores", state_dir,
+        )
+
+        assert (state_dir / "eval-logs" / "eval-nores.log").exists()
+        assert not (state_dir / "eval-results" / "eval-nores.json").exists()

@@ -478,6 +478,87 @@ class TestRunOnceStatePersistence:
         assert reloaded.last_scan_block == 1000
 
 
+class TestRunOnceKingHistoryJsonl:
+    """Verify that king-history.jsonl is written on dethronement."""
+
+    def test_first_king_creates_jsonl(self, tmp_path):
+        st = FakeSubtensor(
+            hotkeys=["hk0", "hk1"],
+            revealed={"hk1": [(100, _commit_json("hf/m1", "1" * 40))]},
+        )
+        state = ValidatorState()
+
+        def eval_fn(challengers, *, current_block, block_hash):
+            return [_make_eval_record(challengers[0], score=0.5)]
+
+        run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, eval_fn=eval_fn,
+            state_dir=tmp_path, dry_run=False,
+        )
+
+        jsonl = tmp_path / "king-history.jsonl"
+        assert jsonl.exists()
+        lines = jsonl.read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["new_king_uid"] == 1
+        assert "prev_king_uid" not in entry
+
+    def test_no_jsonl_when_no_dethronement(self, tmp_path):
+        st = FakeSubtensor(
+            hotkeys=["hk0", "hk1"],
+            revealed={"hk1": [(200, _commit_json("hf/b", "b" * 40))]},
+        )
+        state = ValidatorState()
+        _seed_king(
+            state,
+            CommitmentRecord(uid=0, hotkey="hk0", commit_block=100,
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
+            score=0.3,
+        )
+
+        def eval_fn(challengers, **_k):
+            return [_make_eval_record(challengers[0], score=0.9, disqualified=True)]
+
+        run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, eval_fn=eval_fn,
+            state_dir=tmp_path, dry_run=False,
+        )
+
+        assert not (tmp_path / "king-history.jsonl").exists()
+
+    def test_dethronement_records_prev_king(self, tmp_path):
+        st = FakeSubtensor(
+            hotkeys=["hk0", "hk1"],
+            revealed={"hk1": [(200, _commit_json("hf/b", "b" * 40))]},
+        )
+        state = ValidatorState()
+        _seed_king(
+            state,
+            CommitmentRecord(uid=0, hotkey="hk0", commit_block=100,
+                             repo="m", revision=_SHA_DEFAULT, raw=""),
+            score=0.3,
+        )
+
+        def eval_fn(challengers, **_k):
+            return [_make_eval_record(challengers[0], score=0.9)]
+
+        run_once(
+            subtensor=st, wallet=FAKE_WALLET, state=state,
+            netuid=14, eval_fn=eval_fn,
+            state_dir=tmp_path, dry_run=False,
+        )
+
+        jsonl = tmp_path / "king-history.jsonl"
+        assert jsonl.exists()
+        entry = json.loads(jsonl.read_text().strip())
+        assert entry["new_king_uid"] == 1
+        assert entry["prev_king_uid"] == 0
+        assert entry["prev_king_hotkey"] == "hk0"
+
+
 class TestRunOnceKingUidRecycled:
     """UID recycling guard: if `metagraph.hotkeys[king.uid]` no longer matches
     `king.hotkey`, the king's original hotkey has deregistered and the UID has

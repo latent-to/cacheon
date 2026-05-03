@@ -121,7 +121,7 @@ GPU_POD_WORK_DIR: str = os.environ.get(
 ``pod_eval.py``."""
 
 GPU_POD_EVAL_TIMEOUT_S: int = int(
-    os.environ.get("CACHEON_GPU_POD_EVAL_TIMEOUT_S", "1200")
+    os.environ.get("CACHEON_GPU_POD_EVAL_TIMEOUT_S", "3000")
 )
 """Hard wall-clock timeout (seconds) for a single ``pod_eval.py`` run
 over SSH.  Default 20 minutes — generous for the ~5-10 min typical

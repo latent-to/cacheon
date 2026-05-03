@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -330,6 +331,36 @@ PollCallback = Callable[[float, int, str], None]
 """``on_poll(elapsed_s, pid, tail_text)`` — called each poll iteration."""
 
 
+def _preserve_eval_artifacts(
+    transport,
+    remote_stdout_log: str,
+    local_results_path: Path,
+    job_id: str,
+    state_dir: Path,
+) -> None:
+    """Download pod stdout and copy results.json to persistent state_dir."""
+    logs_dir = state_dir / "eval-logs"
+    results_dir = state_dir / "eval-results"
+
+    # stdout.log -> state_dir/eval-logs/<job_id>.log
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        local_log = logs_dir / f"{job_id}.log"
+        transport.download(remote_stdout_log, local_log)
+        logger.info("saved eval log -> %s", local_log)
+    except Exception:
+        logger.warning("failed to download stdout.log for %s", job_id)
+
+    # results.json -> state_dir/eval-results/<job_id>.json
+    try:
+        results_dir.mkdir(parents=True, exist_ok=True)
+        dest = results_dir / f"{job_id}.json"
+        shutil.copy2(local_results_path, dest)
+        logger.info("saved eval results -> %s", dest)
+    except Exception:
+        logger.warning("failed to preserve results.json for %s", job_id)
+
+
 def make_remote_eval_fn(
     *,
     policy_source_fn: PolicySourceFn,
@@ -345,6 +376,7 @@ def make_remote_eval_fn(
     poll_interval: float = _POLL_INTERVAL_S,
     work_dir: str | os.PathLike | None = None,
     on_poll: PollCallback | None = None,
+    state_dir: str | os.PathLike | None = None,
 ):
     """Build an ``EvalFn`` that runs ``pod_eval.py`` on a remote GPU pod.
 
@@ -369,6 +401,8 @@ def make_remote_eval_fn(
         _work_dir = Path(work_dir).resolve()
     else:
         _work_dir = Path(tempfile.gettempdir()) / "cacheon-eval-local"
+
+    _state_dir = Path(state_dir).resolve() if state_dir is not None else None
 
     def eval_fn(
         challengers: list[CommitmentRecord],
@@ -490,6 +524,13 @@ def make_remote_eval_fn(
 
         # 8. Download results.json
         transport.download(remote_results, local_results_path)
+
+        # 8b. Preserve eval artifacts locally before remote cleanup
+        if _state_dir is not None:
+            _preserve_eval_artifacts(
+                transport, remote_stdout_log,
+                local_results_path, job_id, _state_dir,
+            )
 
         # 9. Cleanup remote staging dir (best-effort)
         try:

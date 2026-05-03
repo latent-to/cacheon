@@ -486,6 +486,37 @@ def current_timestamp() -> float:
     return time.time()
 
 
+def append_king_history(
+    state_dir: str | os.PathLike,
+    new_king: EvaluationRecord,
+    dethroned_king: KingRecord | None,
+    current_block: int,
+    dethrone_threshold: float,
+) -> None:
+    """Append a single JSON line to ``king-history.jsonl`` on dethronement."""
+    path = Path(state_dir) / "king-history.jsonl"
+    entry = {
+        "ts": time.time(),
+        "block": current_block,
+        "new_king_uid": new_king.uid,
+        "new_king_hotkey": new_king.hotkey,
+        "new_king_score": new_king.score,
+        "new_king_repo": new_king.repo,
+        "new_king_revision": new_king.revision,
+        "dethrone_threshold": dethrone_threshold,
+    }
+    if dethroned_king is not None:
+        entry["prev_king_uid"] = dethroned_king.uid
+        entry["prev_king_hotkey"] = dethroned_king.hotkey
+        entry["prev_king_score"] = dethroned_king.score
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
+    except Exception:
+        logger.warning("failed to append king history to %s", path)
+
+
 def unknown_commits(
     state: ValidatorState,
     commitments: Iterable[tuple[str, int]],

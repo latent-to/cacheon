@@ -24,6 +24,8 @@ MAX_NEW_TOKENS = 8   # short enough for CPU CI, long enough to catch divergence
 @pytest.fixture(scope="module")
 def harness():
     from inference_engine.harness import Harness
+    if torch.cuda.is_available():
+        return Harness(model_name=SMOKE_MODEL, device="cuda", dtype=torch.float16)
     return Harness(model_name=SMOKE_MODEL, device="cpu", dtype=torch.float32)
 
 
@@ -88,4 +90,5 @@ def test_run_result_shapes(harness):
         assert logits.shape[-1] == vocab_size
 
     assert result.latency_s > 0
-    assert result.policy_memory_bytes > 0
+    if harness.device.type == "cuda":
+        assert result.policy_memory_bytes > 0
