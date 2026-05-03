@@ -17,6 +17,7 @@ from validator.state import (
     ValidatorState,
     _atomic_write_json,
     _effective_dethrone_threshold,
+    append_king_history,
     current_timestamp,
     unknown_commits,
 )
@@ -602,3 +603,56 @@ class TestCloneAndTimestamp:
 
     def test_current_timestamp_is_monotonic_enough(self):
         assert current_timestamp() > 0
+
+
+class TestAppendKingHistory:
+    """Tests for the append-only king-history.jsonl writer."""
+
+    def _king(self, uid=1, score=0.5) -> KingRecord:
+        return KingRecord(
+            uid=uid, hotkey=f"hk{uid}", commit_block=100,
+            repo="hf/repo", revision="a" * 40, score=score,
+            kl_divergence=0.01, memory_reduction=0.3,
+            latency_improvement=0.1, evaluated_at=1700000000.0,
+            evaluation_block=1000, crowned_at_block=1000,
+        )
+
+    def test_first_king_no_prev(self, tmp_path):
+        ev = _make_eval(uid=1, score=0.5)
+        append_king_history(tmp_path, ev, None, current_block=1000, dethrone_threshold=0.0)
+
+        lines = (tmp_path / "king-history.jsonl").read_text().strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["new_king_uid"] == 1
+        assert entry["block"] == 1000
+        assert "prev_king_uid" not in entry
+
+    def test_dethronement_includes_prev_king(self, tmp_path):
+        ev = _make_eval(uid=2, hotkey="hk2", score=0.6)
+        prev = self._king(uid=1, score=0.4)
+        append_king_history(tmp_path, ev, prev, current_block=2000, dethrone_threshold=0.404)
+
+        entry = json.loads((tmp_path / "king-history.jsonl").read_text().strip())
+        assert entry["prev_king_uid"] == 1
+        assert entry["prev_king_hotkey"] == "hk1"
+        assert entry["prev_king_score"] == 0.4
+        assert entry["new_king_score"] == 0.6
+
+    def test_multiple_appends(self, tmp_path):
+        for i in range(3):
+            ev = _make_eval(uid=i, hotkey=f"hk{i}", score=0.1 * (i + 1))
+            append_king_history(tmp_path, ev, None, current_block=1000 + i, dethrone_threshold=0.0)
+
+        lines = (tmp_path / "king-history.jsonl").read_text().strip().splitlines()
+        assert len(lines) == 3
+        assert json.loads(lines[2])["new_king_uid"] == 2
+
+    def test_write_failure_does_not_raise(self, tmp_path):
+        ro_dir = tmp_path / "readonly"
+        ro_dir.mkdir()
+        (ro_dir / "king-history.jsonl").write_text("")
+        (ro_dir / "king-history.jsonl").chmod(0o000)
+
+        ev = _make_eval()
+        append_king_history(ro_dir, ev, None, current_block=1, dethrone_threshold=0.0)

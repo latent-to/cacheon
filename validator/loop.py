@@ -38,7 +38,7 @@ from .chain import (
     fetch_revealed_commitments,
     set_weights,
 )
-from .state import EvaluationRecord, ValidatorState
+from .state import EvaluationRecord, ValidatorState, append_king_history
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +195,7 @@ def run_once(
                 results = []
 
             for ev in results:
+                prev_king = state.king
                 outcome = state.record_evaluation(ev, current_block=current_block)
                 evaluations_recorded.append(outcome.stored)
                 logger.info(
@@ -212,6 +213,10 @@ def run_once(
                         "beat threshold=%.4f)",
                         outcome.stored.uid, outcome.stored.hotkey[:16],
                         outcome.stored.score, outcome.dethrone_threshold,
+                    )
+                    append_king_history(
+                        state_dir, outcome.stored, prev_king,
+                        current_block, outcome.dethrone_threshold,
                     )
 
     state.save(state_dir)

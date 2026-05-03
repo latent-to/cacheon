@@ -238,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
             transport=transport,
             pod_work_dir=args.gpu_pod_work_dir,
             timeout_s=float(args.gpu_pod_eval_timeout),
+            state_dir=args.state_dir,
         )
     elif args.dry_run:
         eval_fn = not_implemented_eval
