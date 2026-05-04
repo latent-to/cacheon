@@ -58,6 +58,34 @@ class RawPromptResult:
 # --------------------------------------------------------------------------- #
 
 
+EVAL_NETWORK = "cacheon-eval"
+
+
+def ensure_eval_network() -> None:
+    """Create the internal Docker network if it doesn't exist.
+
+    ``--internal`` blocks container-initiated outbound traffic while
+    still allowing host-to-container access via published ports.
+    """
+    result = subprocess.run(
+        ["docker", "network", "inspect", EVAL_NETWORK],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return
+    logger.info("Creating internal Docker network: %s", EVAL_NETWORK)
+    result = subprocess.run(
+        ["docker", "network", "create", "--internal", EVAL_NETWORK],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Failed to create Docker network {EVAL_NETWORK}: {result.stderr.strip()}"
+        )
+
+
 def pull_image(image: str, digest: str, timeout_s: float = 300) -> None:
     """Pull a Docker image by digest. Raises on failure."""
     ref = f"{image}@{digest}"
@@ -86,13 +114,14 @@ def start_container(
     cpus: int = 32,
 ) -> str:
     """Start an isolated miner container and return its container ID."""
+    ensure_eval_network()
     ref = f"{image}@{digest}"
     cmd = [
         "docker",
         "run",
         "-d",
         "--network",
-        "bridge",
+        EVAL_NETWORK,
         "-p",
         f"127.0.0.1:{host_port}:{container_port}",
         "--read-only",

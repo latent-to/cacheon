@@ -12,8 +12,10 @@ import pytest
 
 from validator.chain import CommitmentRecord
 from validator.docker_eval import (
+    EVAL_NETWORK,
     RawPromptResult,
     allocate_host_port,
+    ensure_eval_network,
     evaluate_challenger,
     pull_image,
     reset_gpu_state,
@@ -62,13 +64,50 @@ class TestPullImage:
 
 
 # --------------------------------------------------------------------------- #
+# ensure_eval_network
+# --------------------------------------------------------------------------- #
+
+
+class TestEnsureEvalNetwork:
+    @patch("validator.docker_eval.subprocess.run")
+    def test_noop_when_network_exists(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        ensure_eval_network()
+        mock_run.assert_called_once()
+        assert "inspect" in mock_run.call_args[0][0]
+
+    @patch("validator.docker_eval.subprocess.run")
+    def test_creates_network_when_missing(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # inspect fails
+            MagicMock(returncode=0),  # create succeeds
+        ]
+        ensure_eval_network()
+        assert mock_run.call_count == 2
+        create_cmd = mock_run.call_args_list[1][0][0]
+        assert "create" in create_cmd
+        assert "--internal" in create_cmd
+        assert EVAL_NETWORK in create_cmd
+
+    @patch("validator.docker_eval.subprocess.run")
+    def test_raises_on_create_failure(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # inspect fails
+            MagicMock(returncode=1, stderr="permission denied"),  # create fails
+        ]
+        with pytest.raises(RuntimeError, match="Failed to create Docker network"):
+            ensure_eval_network()
+
+
+# --------------------------------------------------------------------------- #
 # start_container
 # --------------------------------------------------------------------------- #
 
 
 class TestStartContainer:
+    @patch("validator.docker_eval.ensure_eval_network")
     @patch("validator.docker_eval.subprocess.run")
-    def test_returns_container_id(self, mock_run):
+    def test_returns_container_id(self, mock_run, _mock_net):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="abc123def456\n", stderr=""
         )
@@ -81,8 +120,9 @@ class TestStartContainer:
         )
         assert cid == "abc123def456"
 
+    @patch("validator.docker_eval.ensure_eval_network")
     @patch("validator.docker_eval.subprocess.run")
-    def test_isolation_flags_present(self, mock_run):
+    def test_isolation_flags_present(self, mock_run, _mock_net):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="container_id\n", stderr=""
         )
@@ -97,15 +137,16 @@ class TestStartContainer:
         cmd_str = " ".join(cmd)
         assert "--read-only" in cmd_str
         assert "--cap-drop" in cmd_str and "ALL" in cmd_str
-        assert "--network" in cmd_str and "bridge" in cmd_str
+        assert "--network" in cmd_str and "cacheon-eval" in cmd_str
         assert "--tmpfs" in cmd_str
         assert "no-new-privileges" in cmd_str
         assert "--pids-limit" in cmd_str
         assert "127.0.0.1:9999:" in cmd_str
         assert "/mnt/models:/models:ro" in cmd_str
 
+    @patch("validator.docker_eval.ensure_eval_network")
     @patch("validator.docker_eval.subprocess.run")
-    def test_failure_raises(self, mock_run):
+    def test_failure_raises(self, mock_run, _mock_net):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
         with pytest.raises(RuntimeError, match="docker run failed"):
             start_container(
