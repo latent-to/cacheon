@@ -17,6 +17,20 @@ import re
 import sys
 
 
+def _valid_docker_image(image: str) -> bool:
+    """Check that *image* looks like a Docker reference (with optional port/tag)."""
+    if not image or not re.match(r"^[a-z0-9]", image):
+        return False
+    name = image
+    last_colon = image.rfind(":")
+    if last_colon > 0 and "/" not in image[last_colon:]:
+        tag = image[last_colon + 1:]
+        name = image[:last_colon]
+        if not tag or not re.match(r"^[a-zA-Z0-9._-]+$", tag):
+            return False
+    return bool(re.match(r"^[a-z0-9][a-z0-9._/:-]*$", name))
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description="Commit a Docker image reference on-chain.",
@@ -40,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
-    if not re.match(r"^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+)?$", args.image):
+    if not _valid_docker_image(args.image):
         print(
             f"error: invalid Docker image reference: {args.image}",
             file=sys.stderr,

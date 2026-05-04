@@ -103,12 +103,30 @@ class TestParseCommitmentData:
         raw = json.dumps({"image": "myuser/myrepo", "digest": _DIGEST_A})
         assert parse_commitment_data(raw) == ("myuser/myrepo", _DIGEST_A)
 
-    def test_registry_with_port(self):
+    def test_registry_without_port(self):
         raw = json.dumps(
             {"image": "registry.example.com/repo:latest", "digest": _DIGEST_A}
         )
         assert parse_commitment_data(raw) == (
             "registry.example.com/repo:latest",
+            _DIGEST_A,
+        )
+
+    def test_registry_with_port(self):
+        raw = json.dumps(
+            {"image": "myregistry.com:5000/myimage:v1", "digest": _DIGEST_A}
+        )
+        assert parse_commitment_data(raw) == (
+            "myregistry.com:5000/myimage:v1",
+            _DIGEST_A,
+        )
+
+    def test_registry_with_port_no_tag(self):
+        raw = json.dumps(
+            {"image": "localhost:5000/org/repo", "digest": _DIGEST_A}
+        )
+        assert parse_commitment_data(raw) == (
+            "localhost:5000/org/repo",
             _DIGEST_A,
         )
 

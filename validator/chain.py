@@ -67,13 +67,27 @@ class _MetagraphLike(Protocol):
 # --------------------------------------------------------------------------- #
 
 
-_DOCKER_IMAGE_RE = re.compile(
-    r"^[a-z0-9]"  # must start with lowercase alnum
-    r"[a-z0-9._/-]*"  # body: lowercase, digits, dots, dashes, slashes
-    r"(:[a-zA-Z0-9._-]+)?$"  # optional :tag
-)
-
+_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._/:-]*$")
+_TAG_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _is_valid_docker_image(image: str) -> bool:
+    """Validate a Docker image reference like ``registry:port/repo:tag``.
+
+    The tag is the substring after the last ``:`` only when no ``/``
+    follows that colon (so ``registry:5000/repo`` is a port, not a tag).
+    """
+    if not image:
+        return False
+    name = image
+    last_colon = image.rfind(":")
+    if last_colon > 0 and "/" not in image[last_colon:]:
+        tag = image[last_colon + 1:]
+        name = image[:last_colon]
+        if not tag or not _TAG_RE.match(tag):
+            return False
+    return bool(_NAME_RE.match(name))
 
 
 def parse_commitment_data(raw: str) -> tuple[str, str] | None:
@@ -100,7 +114,7 @@ def parse_commitment_data(raw: str) -> tuple[str, str] | None:
         return None
     image = image.strip()
     digest = digest.strip()
-    if not _DOCKER_IMAGE_RE.match(image):
+    if not _is_valid_docker_image(image):
         return None
     if not _DIGEST_RE.match(digest):
         return None
