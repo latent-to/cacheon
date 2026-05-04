@@ -453,6 +453,11 @@ def run_baseline_if_needed(
     finally:
         stop_and_remove(cid)
 
+    errors = [r for r in speed_results + correctness_results if r.error]
+    if errors:
+        err_msg = "; ".join(f"prompt {r.prompt_index}: {r.error}" for r in errors)
+        raise RuntimeError(f"Baseline had prompt errors (not caching): {err_msg}")
+
     baseline_results: list[BaselinePromptResult] = []
     for speed_r, corr_r in zip(speed_results, correctness_results):
         baseline_results.append(

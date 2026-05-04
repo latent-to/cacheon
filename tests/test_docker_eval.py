@@ -17,6 +17,7 @@ from validator.docker_eval import (
     evaluate_challenger,
     pull_image,
     reset_gpu_state,
+    run_baseline_if_needed,
     send_prompt,
     start_container,
     stop_and_remove,
@@ -638,3 +639,83 @@ class TestEvaluateChallenger:
 
         assert record.disqualified is True
         assert "prompt_errors" in (record.disqualify_reason or "")
+
+
+# --------------------------------------------------------------------------- #
+# run_baseline_if_needed -- error checking
+# --------------------------------------------------------------------------- #
+
+
+class TestRunBaselineErrorCheck:
+    @patch("validator.docker_eval.stop_and_remove")
+    @patch("validator.docker_eval.send_prompt")
+    @patch("validator.docker_eval.wait_for_health")
+    @patch("validator.docker_eval.start_container", return_value="cid_bl")
+    @patch("validator.docker_eval.allocate_host_port", return_value=7777)
+    @patch("validator.docker_eval.pull_image")
+    def test_baseline_prompt_error_raises_and_does_not_cache(
+        self,
+        mock_pull,
+        mock_port,
+        mock_start,
+        mock_health,
+        mock_send,
+        mock_stop,
+        tmp_path,
+    ):
+        warmup_r = RawPromptResult(
+            prompt_index=0,
+            output_text="w",
+            tokens=["w"],
+            top_logprobs=None,
+            ttft_s=1.0,
+            throughput_tps=50.0,
+            output_tokens=1,
+        )
+        ok_r = RawPromptResult(
+            prompt_index=0,
+            output_text="Hello",
+            tokens=["Hello"],
+            top_logprobs=None,
+            ttft_s=0.5,
+            throughput_tps=100.0,
+            output_tokens=1,
+        )
+        error_r = RawPromptResult(
+            prompt_index=1,
+            output_text="",
+            tokens=[],
+            top_logprobs=None,
+            ttft_s=0.0,
+            throughput_tps=0.0,
+            output_tokens=0,
+            error="request_timeout",
+        )
+        mock_send.side_effect = [
+            warmup_r,
+            warmup_r,
+            ok_r,
+            error_r,
+            warmup_r,
+            warmup_r,
+            ok_r,
+            error_r,
+        ]
+
+        prompts = _make_prompts(n=2, n_warmup=2)
+
+        with pytest.raises(RuntimeError, match="Baseline had prompt errors"):
+            run_baseline_if_needed(
+                prompts,
+                baseline_image="vllm:latest",
+                baseline_digest="sha256:" + "b" * 64,
+                model_volume="/models",
+                gpus='"device=0"',
+                cache_dir=tmp_path,
+                block_hash="0xabc",
+                startup_timeout_s=600,
+                per_prompt_timeout_s=120,
+                n_warmup=2,
+            )
+
+        assert list(tmp_path.iterdir()) == []
