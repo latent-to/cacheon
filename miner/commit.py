@@ -40,6 +40,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
+    if not re.match(r"^[a-z0-9][a-z0-9._/-]*(:[a-zA-Z0-9._-]+)?$", args.image):
+        print(
+            f"error: invalid Docker image reference: {args.image}",
+            file=sys.stderr,
+        )
+        return 1
+
     if not re.match(r"^sha256:[0-9a-f]{64}$", args.digest):
         print(
             f"error: digest must be sha256:<64 hex chars>, got: {args.digest}",
