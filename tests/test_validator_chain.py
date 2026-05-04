@@ -122,9 +122,7 @@ class TestParseCommitmentData:
         )
 
     def test_registry_with_port_no_tag(self):
-        raw = json.dumps(
-            {"image": "localhost:5000/org/repo", "digest": _DIGEST_A}
-        )
+        raw = json.dumps({"image": "localhost:5000/org/repo", "digest": _DIGEST_A})
         assert parse_commitment_data(raw) == (
             "localhost:5000/org/repo",
             _DIGEST_A,

@@ -83,7 +83,7 @@ def is_valid_docker_image(image: str) -> bool:
     name = image
     last_colon = image.rfind(":")
     if last_colon > 0 and "/" not in image[last_colon:]:
-        tag = image[last_colon + 1:]
+        tag = image[last_colon + 1 :]
         name = image[:last_colon]
         if not tag or not _TAG_RE.match(tag):
             return False
