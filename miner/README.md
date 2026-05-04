@@ -5,18 +5,16 @@ Full docs: https://cacheon.io/docs/miners/overview
 ## Quick start
 
 ```bash
-export HF_TOKEN=hf_...
-
 python miner/commit.py \
-  --policy-file policy.py \
-  --repo you/my-kv-policy \
+  --image docker.io/myuser/cacheon-miner:v1 \
+  --digest sha256:abc123... \
   --wallet-name my-miner \
   --wallet-hotkey default \
   --network test --netuid 460
 ```
 
-This uploads your `policy.py` to Hugging Face and commits the repo + revision SHA on-chain in one command. The validator picks it up within ~6 minutes.
+This commits your Docker image reference on-chain. The validator picks it up within ~6 minutes, pulls the image, and evaluates it.
 
-## What's a policy?
+## What do miners build?
 
-A single Python class (`KVCachePolicy`) that controls how the KV cache is stored and retrieved during transformer inference. See the [full docs](https://cacheon.io/docs/miners/policy-interface) for the interface spec and [example policies](https://cacheon.io/docs/miners/example-policies).
+A Docker container that serves Qwen2.5-72B-Instruct via an OpenAI-compatible `/v1/chat/completions` endpoint. See the [miner overview](https://cacheon.io/docs/miners/overview) for the full spec.

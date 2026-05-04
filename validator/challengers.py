@@ -106,7 +106,9 @@ def select_challengers(
             reason = result.reason or "sandbox precheck failed"
             logger.info(
                 "UID %d (%s) rejected by precheck: %s",
-                com.uid, com.hotkey[:16] + "...", reason,
+                com.uid,
+                com.hotkey[:16] + "...",
+                reason,
             )
             newly_rejected.append((com, reason))
             continue
@@ -115,7 +117,9 @@ def select_challengers(
             reason = result.reason or "precheck deferred"
             logger.warning(
                 "UID %d (%s) deferred by precheck: %s — will retry next tick",
-                com.uid, com.hotkey[:16] + "...", reason,
+                com.uid,
+                com.hotkey[:16] + "...",
+                reason,
             )
             deferred.append((com, reason))
             continue

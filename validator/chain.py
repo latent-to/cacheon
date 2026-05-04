@@ -1,10 +1,10 @@
 """Everything that talks to Bittensor from the validator.
 
-**Pure helpers** — `parse_commitment_data`, `build_commitments`,
+**Pure helpers** -- `parse_commitment_data`, `build_commitments`,
 `build_winner_take_all_weights`, etc. These only need plain data structures
 and are easy to unit test with a fake metagraph.
 
-**RPC wrappers** — `fetch_metagraph`, `fetch_revealed_commitments`,
+**RPC wrappers** -- `fetch_metagraph`, `fetch_revealed_commitments`,
 `set_weights`. They add retries and logging around `bittensor` calls.
 The library is imported lazily inside those paths so importing
 `validator.*` in tests does not require `bittensor` to be installed.
@@ -14,12 +14,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Protocol
-
-from huggingface_hub.errors import HFValidationError
-from huggingface_hub.utils import validate_repo_id
 
 if TYPE_CHECKING:
     import bittensor as bt
@@ -39,19 +37,18 @@ class CommitmentRecord:
     """One miner's most recent on-chain commitment, already parsed.
 
     On-chain format (encoded with `subtensor.set_reveal_commitment`):
-        {"repo": "hf-user/repo-name", "revision": "<40-char hex sha>"}
+        {"image": "registry/repo:tag", "digest": "sha256:<64-char hex>"}
 
-    `repo` is a HuggingFace repo id (``namespace/repo_name`` or a valid
-    single-segment id per ``huggingface_hub`` validation); the validator
-    fetches `policy.py` from that repo at the pinned commit SHA before
-    evaluation. Miners submit *repositories*, not HF models — the canonical
-    scored model (Qwen) is a separate concept (`EvaluationJob.model_name`).
+    `image` is a Docker image reference (registry/repo:tag or repo:tag).
+    `digest` is the image manifest digest (sha256:...) that pins the exact
+    image content regardless of tag mutations.
     """
+
     uid: int
     hotkey: str
     commit_block: int
-    repo: str
-    revision: str
+    image: str
+    digest: str
     raw: str  # original JSON string, kept for diagnostics
 
     def as_eval_key(self) -> tuple[str, int]:
@@ -61,6 +58,7 @@ class CommitmentRecord:
 class _MetagraphLike(Protocol):
     """Structural type for a bittensor metagraph. Kept minimal so tests
     can pass a plain object with `hotkeys` attribute."""
+
     hotkeys: list[str]
 
 
@@ -69,19 +67,22 @@ class _MetagraphLike(Protocol):
 # --------------------------------------------------------------------------- #
 
 
-_HEX_SHA_LEN: int = 40
+_DOCKER_IMAGE_RE = re.compile(
+    r"^[a-z0-9]"  # must start with lowercase alnum
+    r"[a-z0-9._/-]*"  # body: lowercase, digits, dots, dashes, slashes
+    r"(:[a-zA-Z0-9._-]+)?$"  # optional :tag
+)
+
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def parse_commitment_data(raw: str) -> tuple[str, str] | None:
-    """Parse a commitment payload into `(repo, revision)` or None.
+    """Parse a commitment payload into `(image, digest)` or None.
 
-    Rejects anything that isn't a JSON object with non-empty `repo` +
-    `revision` strings, requires `repo` to pass HuggingFace repo id
-    validation, and requires `revision` to be a 40-char hex SHA
-    (HF/GitHub full commit hash). Branch names and short SHAs are
-    rejected so the `(hotkey, commit_block)` → code mapping cannot
-    silently drift after the commit is on chain. Silent on failure —
-    caller logs.
+    Rejects anything that isn't a JSON object with non-empty `image` +
+    `digest` strings. `image` must look like a Docker image reference
+    (e.g. `docker.io/user/repo:tag`). `digest` must be a sha256 manifest
+    digest (`sha256:<64 hex chars>`). Silent on failure -- caller logs.
     """
     if not isinstance(raw, str) or not raw:
         return None
@@ -91,25 +92,19 @@ def parse_commitment_data(raw: str) -> tuple[str, str] | None:
         return None
     if not isinstance(obj, dict):
         return None
-    repo = obj.get("repo")
-    revision = obj.get("revision")
-    if not isinstance(repo, str) or not repo.strip():
+    image = obj.get("image")
+    digest = obj.get("digest")
+    if not isinstance(image, str) or not image.strip():
         return None
-    if not isinstance(revision, str):
+    if not isinstance(digest, str) or not digest.strip():
         return None
-    repo_norm = repo.strip()
-    try:
-        validate_repo_id(repo_norm)
-    except HFValidationError:
+    image = image.strip()
+    digest = digest.strip()
+    if not _DOCKER_IMAGE_RE.match(image):
         return None
-    revision = revision.strip()
-    if len(revision) != _HEX_SHA_LEN:
+    if not _DIGEST_RE.match(digest):
         return None
-    try:
-        int(revision, 16)
-    except ValueError:
-        return None
-    return repo_norm, revision
+    return image, digest
 
 
 def build_commitments(
@@ -127,7 +122,7 @@ def build_commitments(
 
     Skips:
         - hotkeys with no commitments
-        - commitments that fail JSON parsing or don't have `model`+`revision`
+        - commitments that fail JSON parsing or don't have `image`+`digest`
     """
     out: dict[int, CommitmentRecord] = {}
     hotkeys = list(metagraph.hotkeys)
@@ -142,26 +137,26 @@ def build_commitments(
         if parsed is None:
             logger.debug(
                 "UID %d (%s): commitment at block %d is not valid "
-                "cacheon JSON — skipping.",
-                uid, hotkey_str[:16] + "...", block,
+                "cacheon JSON -- skipping.",
+                uid,
+                hotkey_str[:16] + "...",
+                block,
             )
             continue
-        repo, revision = parsed
+        image, digest = parsed
         out[uid] = CommitmentRecord(
             uid=uid,
             hotkey=hotkey_str,
             commit_block=int(block),
-            repo=repo,
-            revision=revision,
+            image=image,
+            digest=digest,
             raw=raw,
         )
 
     return out
 
 
-def build_winner_take_all_weights(
-    n_uids: int, winner_uid: int
-) -> list[float]:
+def build_winner_take_all_weights(n_uids: int, winner_uid: int) -> list[float]:
     """One-hot weight vector. All mass on `winner_uid`, everyone else 0."""
     if winner_uid < 0:
         raise ValueError(f"winner_uid must be non-negative, got {winner_uid}")
@@ -195,7 +190,10 @@ def _retry(
             last_exc = exc
             logger.warning(
                 "%s failed (attempt %d/%d): %s",
-                label, i + 1, attempts, exc,
+                label,
+                i + 1,
+                attempts,
+                exc,
             )
             if i < attempts - 1:
                 time.sleep(delay_s)
@@ -219,6 +217,7 @@ def fetch_metagraph(
     Block hash is best-effort — RPC can flake under load and we'd rather
     keep going with a None hash than crash the loop.
     """
+
     def _inner() -> tuple[bt.metagraph, int, str | None]:
         metagraph = subtensor.metagraph(netuid)
         current_block = int(subtensor.block)
@@ -226,16 +225,17 @@ def fetch_metagraph(
             block_hash = subtensor.substrate.get_block_hash(current_block)
         except Exception as exc:
             logger.warning(
-                "Block hash lookup failed: %s — continuing with "
-                "block_hash=None .",
+                "Block hash lookup failed: %s — continuing with block_hash=None .",
                 exc,
             )
             block_hash = None
         return metagraph, current_block, block_hash
 
     return _retry(
-        _inner, label="fetch_metagraph",
-        attempts=attempts, delay_s=delay_s,
+        _inner,
+        label="fetch_metagraph",
+        attempts=attempts,
+        delay_s=delay_s,
     )
 
 
@@ -251,6 +251,7 @@ def fetch_revealed_commitments(
     Delegates to whichever bittensor API is available — different
     versions name this differently.
     """
+
     def _inner() -> dict[str, list[tuple[int, str]]]:
         for method_name in (
             "get_all_revealed_commitments",
@@ -265,8 +266,10 @@ def fetch_revealed_commitments(
         )
 
     return _retry(
-        _inner, label="fetch_revealed_commitments",
-        attempts=attempts, delay_s=delay_s,
+        _inner,
+        label="fetch_revealed_commitments",
+        attempts=attempts,
+        delay_s=delay_s,
     )
 
 
@@ -292,7 +295,9 @@ def set_weights(
 
     logger.info(
         "Setting weights: winner_uid=%d, n_uids=%d, version_key=%d",
-        winner_uid, len(weights), version_key,
+        winner_uid,
+        len(weights),
+        version_key,
     )
 
     last_reason: str | None = None
@@ -309,9 +314,7 @@ def set_weights(
             )
             if isinstance(result, (tuple, list)):
                 ok = bool(result[0])
-                last_reason = (
-                    str(result[1]) if len(result) > 1 else None
-                )
+                last_reason = str(result[1]) if len(result) > 1 else None
             else:
                 ok = bool(result)
                 last_reason = None
@@ -320,20 +323,22 @@ def set_weights(
                 return
             logger.warning(
                 "set_weights attempt %d/%d rejected: %s",
-                i + 1, attempts, last_reason,
+                i + 1,
+                attempts,
+                last_reason,
             )
         except Exception as exc:
             last_reason = str(exc)
             logger.error(
                 "set_weights attempt %d/%d raised: %s",
-                i + 1, attempts, exc,
+                i + 1,
+                attempts,
+                exc,
             )
         if i < attempts - 1:
             time.sleep(delay_s)
 
-    raise ChainError(
-        f"set_weights failed after {attempts} attempts: {last_reason}"
-    )
+    raise ChainError(f"set_weights failed after {attempts} attempts: {last_reason}")
 
 
 def unique_hotkeys(
@@ -373,9 +378,7 @@ def preflight_check(
     """
     hotkey_ss58 = wallet.hotkey.ss58_address
 
-    if not subtensor.is_hotkey_registered(
-        netuid=netuid, hotkey_ss58=hotkey_ss58
-    ):
+    if not subtensor.is_hotkey_registered(netuid=netuid, hotkey_ss58=hotkey_ss58):
         raise NotRegisteredError(
             f"Hotkey {hotkey_ss58} is not registered on netuid {netuid}. "
             f"Register it with: btcli subnet register --netuid {netuid} "
@@ -400,7 +403,9 @@ def preflight_check(
 
     logger.info(
         "Preflight OK: uid=%d, stake=%.2f, validator_permit=%s",
-        uid, stake, has_permit,
+        uid,
+        stake,
+        has_permit,
     )
 
     if not has_permit:

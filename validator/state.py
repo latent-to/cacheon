@@ -2,17 +2,15 @@
 
 `ValidatorState` holds the current king (best-scoring miner), a set of
 `(hotkey, commit_block)` pairs that have finished evaluation, per-miner
-score history, and reasons for sandbox pre-rejects. The loop loads this
-from `state.json`, updates it each tick, and saves again.
+score history, and reasons for pre-rejects. The loop loads this from
+`state.json`, updates it each tick, and saves again.
 
 Writes use a temp file + rename so a crash never leaves a torn JSON
-file. `SCHEMA_VERSION` applies to this file only (not the separate
-job/results JSON used to talk to the GPU worker; see `eval_schema`).
+file. `SCHEMA_VERSION` applies to this file only.
 
-Scoring convention: **higher = better**. A policy's score is
-`0.6 * memory_reduction + 0.4 * latency_improvement` (see
-`inference_engine/scoring.py`). The king is the miner with the highest
-score. Disqualified runs store score `0.0` and cannot take the crown.
+Scoring convention: **higher = better**. The king is the miner with the
+highest score. Disqualified runs store score `0.0` and cannot take the
+crown.
 """
 
 from __future__ import annotations
@@ -31,12 +29,14 @@ from . import config as validator_config
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 1
 """
 Bump history:
-  1 → initial shape with `model`/`revision`.
-  2 → rename `model` → `repo`; add `source_hash` to `EvaluationRecord`;
-      add `crowned_at_block` + `source_hash` to `KingRecord`.
+  1 -> initial shape with `model`/`revision`.
+  2 -> rename `model` -> `repo`; add `source_hash` to `EvaluationRecord`;
+       add `crowned_at_block` + `source_hash` to `KingRecord`.
+  3 -> rename `repo` -> `image`, `revision` -> `digest` for Docker-based
+       miner submissions.
 """
 
 STATE_FILE_NAME: str = "state.json"
@@ -76,9 +76,7 @@ def _quarantine_corrupt_state(path: Path) -> None:
     succeed even if the filesystem is misbehaving.
     """
     try:
-        quarantined = path.with_suffix(
-            path.suffix + f".corrupt.{int(time.time())}"
-        )
+        quarantined = path.with_suffix(path.suffix + f".corrupt.{int(time.time())}")
         os.replace(path, quarantined)
         logger.warning(
             "Quarantined corrupt state file to %s for post-mortem.",
@@ -87,7 +85,8 @@ def _quarantine_corrupt_state(path: Path) -> None:
     except OSError as exc:
         logger.warning(
             "Could not quarantine %s (%s); it will be overwritten on next save.",
-            path, exc,
+            path,
+            exc,
         )
 
 
@@ -101,28 +100,28 @@ def _eval_key(hotkey: str, commit_block: int) -> str:
 class EvaluationRecord:
     """One completed evaluation, keyed by (hotkey, commit_block).
 
-    Immutable on purpose — completed evals are append-only history.
+    Immutable on purpose -- completed evals are append-only history.
 
-    `source_hash` is sha256 of the miner's `policy.py` bytes, computed on
-    the CPU side before the job is sent to the GPU pod. An empty string
-    means "unknown" (for legacy rows written before the field existed);
-    duplicate-of-king detection in `record_evaluation` ignores empty
-    hashes so it never mis-fires.
+    `source_hash` is the Docker image digest (sha256:...) from the
+    on-chain commitment. An empty string means "unknown" (for legacy
+    rows); duplicate-of-king detection in `record_evaluation` ignores
+    empty hashes so it never mis-fires.
     """
+
     uid: int
     hotkey: str
     commit_block: int
-    repo: str
-    revision: str
-    score: float                # higher = better; 0.0 if disqualified
+    image: str
+    digest: str
+    score: float  # higher = better; 0.0 if disqualified
     kl_divergence: float
     memory_reduction: float
     latency_improvement: float
     disqualified: bool
     disqualify_reason: str | None
-    evaluated_at: float         # unix timestamp
-    evaluation_block: int       # chain block at eval time
-    source_hash: str = ""       # sha256 of policy.py; "" = unknown
+    evaluated_at: float  # unix timestamp
+    evaluation_block: int  # chain block at eval time
+    source_hash: str = ""  # sha256 of Docker image; "" = unknown
 
     @property
     def eval_key(self) -> str:
@@ -146,11 +145,12 @@ class KingRecord:
     throne; used to compute the decaying epsilon moat in
     `_effective_dethrone_threshold`.
     """
+
     uid: int
     hotkey: str
     commit_block: int
-    repo: str
-    revision: str
+    image: str
+    digest: str
     score: float
     kl_divergence: float
     memory_reduction: float
@@ -170,14 +170,17 @@ class KingRecord:
 
     @classmethod
     def from_evaluation(
-        cls, ev: EvaluationRecord, *, crowned_at_block: int,
+        cls,
+        ev: EvaluationRecord,
+        *,
+        crowned_at_block: int,
     ) -> KingRecord:
         return cls(
             uid=ev.uid,
             hotkey=ev.hotkey,
             commit_block=ev.commit_block,
-            repo=ev.repo,
-            revision=ev.revision,
+            image=ev.image,
+            digest=ev.digest,
             score=ev.score,
             kl_divergence=ev.kl_divergence,
             memory_reduction=ev.memory_reduction,
@@ -209,6 +212,7 @@ class RecordResult:
       ``0.0`` when there was no king to dethrone; useful for operator
       logs + dashboards.
     """
+
     stored: EvaluationRecord
     dethroned: bool
     dethrone_threshold: float
@@ -246,7 +250,7 @@ class ValidatorState:
     """Keyed by `"{hotkey}:{commit_block}"`."""
 
     precheck_failures: dict[str, str] = field(default_factory=dict)
-    """Sandbox AST rejections keyed by `"{hotkey}:{commit_block}"` → reason.
+    """Pre-check rejections keyed by `"{hotkey}:{commit_block}"` -> reason.
     We skip these on future scans without re-evaluating."""
 
     last_scan_block: int = 0
@@ -273,14 +277,10 @@ class ValidatorState:
         key = _eval_key(hotkey, commit_block)
         return key in self.evaluations or key in self.precheck_failures
 
-    def get_evaluation(
-        self, hotkey: str, commit_block: int
-    ) -> EvaluationRecord | None:
+    def get_evaluation(self, hotkey: str, commit_block: int) -> EvaluationRecord | None:
         return self.evaluations.get(_eval_key(hotkey, commit_block))
 
-    def score_history_for_hotkey(
-        self, hotkey: str
-    ) -> list[EvaluationRecord]:
+    def score_history_for_hotkey(self, hotkey: str) -> list[EvaluationRecord]:
         """All evals for a given hotkey, oldest-first by commit_block."""
         matches = [e for e in self.evaluations.values() if e.hotkey == hotkey]
         return sorted(matches, key=lambda e: e.commit_block)
@@ -295,7 +295,10 @@ class ValidatorState:
         self.precheck_failures[_eval_key(hotkey, commit_block)] = reason
 
     def record_evaluation(
-        self, ev: EvaluationRecord, *, current_block: int,
+        self,
+        ev: EvaluationRecord,
+        *,
+        current_block: int,
     ) -> RecordResult:
         """Store an eval; return the record as actually stored.
 
@@ -332,8 +335,10 @@ class ValidatorState:
             )
             logger.info(
                 "UID %d (%s) DQ'd: %s (matches king source_hash=%s)",
-                ev.uid, ev.hotkey[:16],
-                DUPLICATE_OF_KING_REASON, (ev.source_hash or "")[:12],
+                ev.uid,
+                ev.hotkey[:16],
+                DUPLICATE_OF_KING_REASON,
+                (ev.source_hash or "")[:12],
             )
 
         self.evaluations[stored.eval_key] = stored
@@ -356,18 +361,25 @@ class ValidatorState:
             or stored.score <= 0.0
         ):
             return RecordResult(
-                stored=stored, dethroned=False, dethrone_threshold=threshold,
+                stored=stored,
+                dethroned=False,
+                dethrone_threshold=threshold,
             )
 
         if self.king is None or stored.score > threshold:
             self.king = KingRecord.from_evaluation(
-                stored, crowned_at_block=current_block,
+                stored,
+                crowned_at_block=current_block,
             )
             return RecordResult(
-                stored=stored, dethroned=True, dethrone_threshold=threshold,
+                stored=stored,
+                dethroned=True,
+                dethrone_threshold=threshold,
             )
         return RecordResult(
-            stored=stored, dethroned=False, dethrone_threshold=threshold,
+            stored=stored,
+            dethroned=False,
+            dethrone_threshold=threshold,
         )
 
     # ------------------------------------------------------------------ #
@@ -378,9 +390,7 @@ class ValidatorState:
         return {
             "schema_version": self.schema_version,
             "king": self.king.to_dict() if self.king is not None else None,
-            "evaluations": {
-                k: v.to_dict() for k, v in self.evaluations.items()
-            },
+            "evaluations": {k: v.to_dict() for k, v in self.evaluations.items()},
             "precheck_failures": dict(self.precheck_failures),
             "last_scan_block": self.last_scan_block,
             "last_weights_set_block": self.last_weights_set_block,
@@ -409,9 +419,7 @@ class ValidatorState:
             evaluations=evaluations,
             precheck_failures=dict(data.get("precheck_failures") or {}),
             last_scan_block=int(data.get("last_scan_block", 0) or 0),
-            last_weights_set_block=int(
-                data.get("last_weights_set_block", 0) or 0
-            ),
+            last_weights_set_block=int(data.get("last_weights_set_block", 0) or 0),
             schema_version=version,
         )
 
@@ -464,7 +472,8 @@ class ValidatorState:
 
         logger.error(
             "Failed to load state from %s (%s) — starting fresh.",
-            path, corrupt_reason,
+            path,
+            corrupt_reason,
         )
         _quarantine_corrupt_state(path)
         return cls()
@@ -501,8 +510,8 @@ def append_king_history(
         "new_king_uid": new_king.uid,
         "new_king_hotkey": new_king.hotkey,
         "new_king_score": new_king.score,
-        "new_king_repo": new_king.repo,
-        "new_king_revision": new_king.revision,
+        "new_king_image": new_king.image,
+        "new_king_digest": new_king.digest,
         "dethrone_threshold": dethrone_threshold,
     }
     if dethroned_king is not None:
@@ -524,6 +533,4 @@ def unknown_commits(
     """Given `(hotkey, commit_block)` pairs, return those we haven't yet
     evaluated or pre-rejected. Shape-shim for chain code that doesn't
     want to import `ValidatorState` directly."""
-    return [
-        (hk, blk) for hk, blk in commitments if not state.is_known(hk, blk)
-    ]
+    return [(hk, blk) for hk, blk in commitments if not state.is_known(hk, blk)]

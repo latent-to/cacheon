@@ -18,11 +18,20 @@ from tests.test_validator_state import _make_eval, _record
 pytestmark = pytest.mark.unit
 
 
-def _commit(uid: int, hotkey: str, block: int,
-            repo: str = "hf/m", revision: str = "a" * 40) -> CommitmentRecord:
+def _commit(
+    uid: int,
+    hotkey: str,
+    block: int,
+    image: str = "user/m:latest",
+    digest: str = "sha256:" + "a" * 64,
+) -> CommitmentRecord:
     return CommitmentRecord(
-        uid=uid, hotkey=hotkey, commit_block=block,
-        repo=repo, revision=revision, raw="{}",
+        uid=uid,
+        hotkey=hotkey,
+        commit_block=block,
+        image=image,
+        digest=digest,
+        raw="{}",
     )
 
 
@@ -147,7 +156,8 @@ class TestSelectChallengers:
 
         snapshot = state.to_dict()
         _ = select_challengers(
-            state, commits,
+            state,
+            commits,
             precheck=lambda c: PrecheckResult(
                 outcome=PrecheckOutcome.REJECTED, reason="bad"
             ),
