@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from validator.chain import _is_valid_docker_image, _DIGEST_RE  # noqa: E402
+from validator.chain import is_valid_docker_image, DIGEST_RE  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -46,14 +46,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
-    if not _is_valid_docker_image(args.image):
+    if not is_valid_docker_image(args.image):
         print(
             f"error: invalid Docker image reference: {args.image}",
             file=sys.stderr,
         )
         return 1
 
-    if not _DIGEST_RE.match(args.digest):
+    if not DIGEST_RE.match(args.digest):
         print(
             f"error: digest must be sha256:<64 hex chars>, got: {args.digest}",
             file=sys.stderr,

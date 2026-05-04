@@ -69,10 +69,10 @@ class _MetagraphLike(Protocol):
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._/:-]*$")
 _TAG_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
-_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
-def _is_valid_docker_image(image: str) -> bool:
+def is_valid_docker_image(image: str) -> bool:
     """Validate a Docker image reference like ``registry:port/repo:tag``.
 
     The tag is the substring after the last ``:`` only when no ``/``
@@ -114,9 +114,9 @@ def parse_commitment_data(raw: str) -> tuple[str, str] | None:
         return None
     image = image.strip()
     digest = digest.strip()
-    if not _is_valid_docker_image(image):
+    if not is_valid_docker_image(image):
         return None
-    if not _DIGEST_RE.match(digest):
+    if not DIGEST_RE.match(digest):
         return None
     return image, digest
 
