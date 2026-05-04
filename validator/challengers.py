@@ -6,12 +6,13 @@ this tick.
 
 A commitment counts as a *challenger* when:
   - we have not already recorded a score for its `(hotkey, commit_block)` pair, and
-  - we have not already pre-rejected it from the AST sandbox.
+  - we have not already pre-rejected it via the precheck hook.
 
-The chain only stores a `(repo, revision)` pointer—not policy source—so
-**fetching** code and running the sandbox is done by the ``precheck``
-hook the caller provides. This module only applies the filters above;
-``allow_all_precheck`` is a permissive default for tests and early wiring.
+The chain stores an ``(image, digest)`` pointer to a Docker image. The
+``precheck`` hook the caller provides can validate the image reference
+before we spend GPU time on a full eval. This module only applies the
+dedup filters above; ``allow_all_precheck`` is a permissive default for
+tests and early wiring.
 """
 
 from __future__ import annotations
@@ -45,15 +46,15 @@ class PrecheckResult:
 
 
 PrecheckFn = Callable[[CommitmentRecord], PrecheckResult]
-"""Fetches the miner's policy at the pinned revision and runs the static
-AST sandbox, returning `PrecheckResult`. Tests and dry runs can use
-`allow_all_precheck` to skip real fetches."""
+"""Validates a miner's Docker image reference before spending GPU time
+on a full eval, returning `PrecheckResult`. Tests and dry runs can use
+`allow_all_precheck` to skip validation."""
 
 
 def allow_all_precheck(_commitment: CommitmentRecord) -> PrecheckResult:
-    """Permissive default — no code fetch, no AST check. Every new
-    commitment is forwarded to ``eval_fn``. Useful in tests and early
-    wiring before a real precheck fetches source and runs the sandbox."""
+    """Permissive default -- every new commitment is forwarded to
+    ``eval_fn``. Useful in tests and early wiring before a real precheck
+    validates Docker image references."""
     return PrecheckResult(outcome=PrecheckOutcome.OK)
 
 

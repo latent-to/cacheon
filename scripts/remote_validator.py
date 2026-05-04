@@ -113,6 +113,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Do not call subtensor.set_weights() and do not run Docker eval.",
     )
     p.add_argument("-v", "--verbose", action="store_true")
+
+    p.add_argument(
+        "--model-volume",
+        default="/models",
+        help="Host path to the read-only model weights directory.",
+    )
+    p.add_argument(
+        "--gpus",
+        default='"device=0,1,2,3"',
+        help="GPU device specification for Docker --gpus flag.",
+    )
+    p.add_argument(
+        "--baseline-image",
+        default="vllm/vllm-openai:latest",
+        help="Docker image for the vLLM baseline server.",
+    )
+    p.add_argument(
+        "--baseline-digest",
+        default="",
+        help="Digest (sha256:...) of the baseline image. Required for live eval.",
+    )
     return p
 
 
@@ -164,14 +185,25 @@ def main(argv: list[str] | None = None) -> int:
         state.last_weights_set_block,
     )
 
-    # TODO(sprint-3): wire up Docker eval_fn here
     if args.dry_run:
         eval_fn = not_implemented_eval
     else:
-        logger.error(
-            "Live Docker evaluation not yet implemented. Run with --dry-run for now."
+        if not args.baseline_digest:
+            logger.error(
+                "--baseline-digest is required for live eval. "
+                "Use --dry-run to skip Docker evaluation."
+            )
+            return 6
+
+        from validator.docker_eval import make_eval_fn  # noqa: E402
+
+        eval_fn = make_eval_fn(
+            model_volume=args.model_volume,
+            baseline_cache_dir=str(Path(args.state_dir) / "baseline_cache"),
+            gpus=args.gpus,
+            baseline_image=args.baseline_image,
+            baseline_digest=args.baseline_digest,
         )
-        return 6
 
     try:
         run_forever(
