@@ -70,7 +70,6 @@ def _make_eval_record(
     com: CommitmentRecord,
     score: float,
     disqualified: bool = False,
-    source_hash: str = "",
 ) -> EvaluationRecord:
     return EvaluationRecord(
         uid=com.uid,
@@ -79,14 +78,13 @@ def _make_eval_record(
         image=com.image,
         digest=com.digest,
         score=score,
-        kl_divergence=0.01,
-        memory_reduction=score * 0.6,
-        latency_improvement=score * 0.4,
+        ttft_improvement=score * 0.5,
+        throughput_improvement=score * 0.5,
+        token_match_rate=0.995,
         disqualified=disqualified,
         disqualify_reason="dq" if disqualified else None,
         evaluated_at=1700000000.0,
         evaluation_block=1000,
-        source_hash=source_hash,
     )
 
 

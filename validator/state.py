@@ -8,9 +8,11 @@ score history, and reasons for pre-rejects. The loop loads this from
 Writes use a temp file + rename so a crash never leaves a torn JSON
 file. `SCHEMA_VERSION` applies to this file only.
 
-Scoring convention: **higher = better**. The king is the miner with the
-highest score. Disqualified runs store score `0.0` and cannot take the
-crown.
+Scoring convention: **higher = better**. A miner's score is
+`0.5 * max(0, ttft_improvement) + 0.5 * max(0, throughput_improvement)`,
+where improvements are relative to the vLLM baseline (median across
+prompts). The king is the miner with the highest score. Disqualified
+runs store score `0.0` and cannot take the crown.
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     """Write JSON to `path` atomically (tmp file + os.replace).
 
     Never leaves a half-written file even on SIGKILL. Does NOT fsync the
-    directory — validator state loss on a kernel panic is acceptable
+    directory -- validator state loss on a kernel panic is acceptable
     (we re-eval any unknown challenger on next startup).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,13 +64,7 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
 
 
 def _quarantine_corrupt_state(path: Path) -> None:
-    """Move a broken `state.json` aside so it isn't overwritten on save.
-
-    Best-effort: if the rename fails the original file stays in place and
-    the next `save()` will clobber it, which is the same outcome as
-    before this helper existed. We log but never raise — startup must
-    succeed even if the filesystem is misbehaving.
-    """
+    """Move a broken `state.json` aside so it isn't overwritten on save."""
     try:
         quarantined = path.with_suffix(path.suffix + f".corrupt.{int(time.time())}")
         os.replace(path, quarantined)
@@ -85,7 +81,7 @@ def _quarantine_corrupt_state(path: Path) -> None:
 
 
 def _eval_key(hotkey: str, commit_block: int) -> str:
-    """Stable dedup key. Miners can technically commit twice — we treat each
+    """Stable dedup key. Miners can technically commit twice -- we treat each
     `(hotkey, block)` as its own submission so re-commits trigger re-eval."""
     return f"{hotkey}:{commit_block}"
 
@@ -95,11 +91,6 @@ class EvaluationRecord:
     """One completed evaluation, keyed by (hotkey, commit_block).
 
     Immutable on purpose -- completed evals are append-only history.
-
-    `source_hash` is the Docker image digest (sha256:...) from the
-    on-chain commitment. An empty string means "unknown" (for legacy
-    rows); duplicate-of-king detection in `record_evaluation` ignores
-    empty hashes so it never mis-fires.
     """
 
     uid: int
@@ -108,14 +99,13 @@ class EvaluationRecord:
     image: str
     digest: str
     score: float  # higher = better; 0.0 if disqualified
-    kl_divergence: float
-    memory_reduction: float
-    latency_improvement: float
+    ttft_improvement: float
+    throughput_improvement: float
+    token_match_rate: float
     disqualified: bool
     disqualify_reason: str | None
     evaluated_at: float  # unix timestamp
     evaluation_block: int  # chain block at eval time
-    source_hash: str = ""  # sha256 of Docker image; "" = unknown
 
     @property
     def eval_key(self) -> str:
@@ -146,13 +136,12 @@ class KingRecord:
     image: str
     digest: str
     score: float
-    kl_divergence: float
-    memory_reduction: float
-    latency_improvement: float
+    ttft_improvement: float
+    throughput_improvement: float
+    token_match_rate: float
     evaluated_at: float
     evaluation_block: int
     crowned_at_block: int
-    source_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -176,18 +165,17 @@ class KingRecord:
             image=ev.image,
             digest=ev.digest,
             score=ev.score,
-            kl_divergence=ev.kl_divergence,
-            memory_reduction=ev.memory_reduction,
-            latency_improvement=ev.latency_improvement,
+            ttft_improvement=ev.ttft_improvement,
+            throughput_improvement=ev.throughput_improvement,
+            token_match_rate=ev.token_match_rate,
             evaluated_at=ev.evaluated_at,
             evaluation_block=ev.evaluation_block,
             crowned_at_block=crowned_at_block,
-            source_hash=ev.source_hash,
         )
 
 
 # --------------------------------------------------------------------------- #
-# Dethrone threshold — decaying defender's-advantage
+# Dethrone threshold -- decaying defender's-advantage
 # --------------------------------------------------------------------------- #
 
 
@@ -198,13 +186,12 @@ DUPLICATE_OF_KING_REASON: str = "duplicate_of_king"
 class RecordResult:
     """Outcome of `ValidatorState.record_evaluation`.
 
-    * ``stored`` is the record actually written to state — it can differ
+    * ``stored`` is the record actually written to state -- it can differ
       from the input when the duplicate-of-king DQ rule fires.
     * ``dethroned`` is True iff this call made ``stored`` the new king.
     * ``dethrone_threshold`` is the score the challenger needed to beat
       (``king.score * (1 + effective_epsilon)``) at ``current_block``.
-      ``0.0`` when there was no king to dethrone; useful for operator
-      logs + dashboards.
+      ``0.0`` when there was no king to dethrone.
     """
 
     stored: EvaluationRecord
@@ -223,9 +210,7 @@ def _effective_dethrone_threshold(
     """Score a challenger must strictly exceed to dethrone the king.
 
     Starts at `king_score * (1 + epsilon_initial)` the block the king is
-    crowned and decays linearly to `king_score` (the original strict-`>`
-    rule) over `decay_blocks`. Clamped so ages past the window do not go
-    negative. Tunable via env — see `validator.config.KING_EPSILON_*`.
+    crowned and decays linearly to `king_score` over `decay_blocks`.
     """
     if decay_blocks <= 0 or epsilon_initial <= 0.0:
         return king_score
@@ -266,8 +251,8 @@ class ValidatorState:
         return _eval_key(hotkey, commit_block) in self.precheck_failures
 
     def is_known(self, hotkey: str, commit_block: int) -> bool:
-        """Either evaluated or pre-rejected by the sandbox. Either way we've
-        already formed an opinion and shouldn't re-run GPU eval."""
+        """Either evaluated or pre-rejected. Either way we've already
+        formed an opinion and shouldn't re-run eval."""
         key = _eval_key(hotkey, commit_block)
         return key in self.evaluations or key in self.precheck_failures
 
@@ -280,7 +265,7 @@ class ValidatorState:
         return sorted(matches, key=lambda e: e.commit_block)
 
     # ------------------------------------------------------------------ #
-    # Mutators — all side-effect-free w.r.t. disk; caller calls save()
+    # Mutators -- all side-effect-free w.r.t. disk; caller calls save()
     # ------------------------------------------------------------------ #
 
     def record_precheck_failure(
@@ -297,27 +282,21 @@ class ValidatorState:
         """Store an eval; return the record as actually stored.
 
         Two-stage dethronement rule:
-          1. **Duplicate-of-king DQ.** If `ev.source_hash` matches the
-             current king's hash, the hotkeys differ, and `ev.commit_block`
-             is strictly later than the king's, the incoming record is
+          1. **Duplicate-of-king DQ.** If `ev.digest` matches the current
+             king's digest, the hotkeys differ, and `ev.commit_block` is
+             strictly later than the king's, the incoming record is
              rewritten to DQ with reason ``duplicate_of_king`` before
-             being stored (score zeroed). Byte-identical copies can never
-             tie or dethrone — earliest-block-wins by construction.
+             being stored (score zeroed). Byte-identical Docker images
+             can never tie or dethrone -- earliest-block-wins.
           2. **Decaying-epsilon threshold.** A non-DQ'd challenger must
              strictly exceed `_effective_dethrone_threshold(king, block)`
-             to take the crown. The threshold starts at
-             ``king.score * (1 + epsilon_initial)`` and decays to
-             ``king.score`` over `KING_EPSILON_DECAY_BLOCKS` blocks.
-
-        Callers should use the returned `RecordResult.stored`, not the
-        input, for logging and audit trails so duplicate-of-king DQ
-        reasons surface correctly downstream.
+             to take the crown.
         """
         stored = ev
         if (
             self.king is not None
-            and ev.source_hash
-            and ev.source_hash == self.king.source_hash
+            and ev.digest
+            and ev.digest == self.king.digest
             and ev.hotkey != self.king.hotkey
             and ev.commit_block > self.king.commit_block
         ):
@@ -328,19 +307,17 @@ class ValidatorState:
                 disqualify_reason=DUPLICATE_OF_KING_REASON,
             )
             logger.info(
-                "UID %d (%s) DQ'd: %s (matches king source_hash=%s)",
+                "UID %d (%s) DQ'd: %s (matches king digest=%s)",
                 ev.uid,
                 ev.hotkey[:16],
                 DUPLICATE_OF_KING_REASON,
-                (ev.source_hash or "")[:12],
+                (ev.digest or "")[:24],
             )
 
         self.evaluations[stored.eval_key] = stored
 
-        # A precheck failure key should no longer hold if we somehow ran eval
         self.precheck_failures.pop(stored.eval_key, None)
 
-        # NaN/±inf slip past `<= 0.0` and make an unbeatable king; reject non-finite scores.
         threshold = 0.0
         if self.king is not None:
             threshold = _effective_dethrone_threshold(
@@ -427,20 +404,16 @@ class ValidatorState:
         state if the file is missing, unreadable, or unparseable.
 
         Recovery policy:
-          * Missing file → fresh state, info log.
-          * Unreadable / malformed JSON / schema drift (old field names,
-            missing required fields, wrong types) → fresh state, error
-            log, and the offending file is renamed to
-            ``state.json.corrupt.<unix_ts>`` so an operator can post-mortem
-            why the king disappeared instead of losing the evidence.
-          * `schema_version` newer than this validator supports → hard
-            `ValueError` re-raise. Silently wiping a newer state file
-            would downgrade in-place and erase progress; that's an
-            operator decision, not a graceful-fallback one.
+          * Missing file -> fresh state, info log.
+          * Unreadable / malformed JSON / schema drift -> fresh state,
+            error log, and the offending file is renamed to
+            ``state.json.corrupt.<unix_ts>`` for post-mortem.
+          * `schema_version` newer than this validator supports -> hard
+            `ValueError` re-raise.
         """
         path = Path(state_dir) / STATE_FILE_NAME
         if not path.exists():
-            logger.info("No existing state file at %s — starting fresh.", path)
+            logger.info("No existing state file at %s -- starting fresh.", path)
             return cls()
 
         corrupt_reason: str | None = None
@@ -449,9 +422,6 @@ class ValidatorState:
                 data = json.load(f)
             return cls.from_dict(data)
         except ValueError as exc:
-            # `from_dict` raises ValueError for "version too new" — propagate.
-            # Everything else (including JSONDecodeError, which subclasses
-            # ValueError) is treated as a corrupt-file recovery case.
             if isinstance(exc, json.JSONDecodeError):
                 corrupt_reason = f"malformed JSON: {exc}"
             elif "newer than" in str(exc):
@@ -461,11 +431,10 @@ class ValidatorState:
         except OSError as exc:
             corrupt_reason = f"unreadable: {exc}"
         except (TypeError, KeyError) as exc:
-            # Missing required fields / wrong types after a schema rename.
             corrupt_reason = f"incompatible shape: {exc!r}"
 
         logger.error(
-            "Failed to load state from %s (%s) — starting fresh.",
+            "Failed to load state from %s (%s) -- starting fresh.",
             path,
             corrupt_reason,
         )
@@ -525,6 +494,5 @@ def unknown_commits(
     commitments: Iterable[tuple[str, int]],
 ) -> list[tuple[str, int]]:
     """Given `(hotkey, commit_block)` pairs, return those we haven't yet
-    evaluated or pre-rejected. Shape-shim for chain code that doesn't
-    want to import `ValidatorState` directly."""
+    evaluated or pre-rejected."""
     return [(hk, blk) for hk, blk in commitments if not state.is_known(hk, blk)]
