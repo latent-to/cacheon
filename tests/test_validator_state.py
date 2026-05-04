@@ -41,8 +41,8 @@ def _make_eval(
         uid=uid,
         hotkey=hotkey,
         commit_block=commit_block,
-        repo="hf-user/policy",
-        revision="a" * 40,
+        image="user/policy:latest",
+        digest="sha256:" + "a" * 64,
         score=score,
         kl_divergence=kl,
         memory_reduction=mem,
@@ -55,8 +55,9 @@ def _make_eval(
     )
 
 
-def _record(state: ValidatorState, ev: EvaluationRecord,
-            *, current_block: int | None = None) -> RecordResult:
+def _record(
+    state: ValidatorState, ev: EvaluationRecord, *, current_block: int | None = None
+) -> RecordResult:
     """Shorthand — tests that don't care about the block pass
     ``commit_block + 10`` to match the existing `_make_eval` default."""
     if current_block is None:
@@ -203,8 +204,12 @@ class TestValidatorStateRecording:
         out = _record(
             state,
             _make_eval(
-                uid=2, hotkey="hk2", commit_block=200,
-                score=0.9, disqualified=True, reason="nan",
+                uid=2,
+                hotkey="hk2",
+                commit_block=200,
+                score=0.9,
+                disqualified=True,
+                reason="nan",
             ),
         )
         assert out.dethroned is False
@@ -235,7 +240,8 @@ class TestValidatorStateRecording:
         state = ValidatorState()
         _record(state, _make_eval(uid=1, hotkey="hk1", score=0.3))
         out = _record(
-            state, _make_eval(uid=2, hotkey="hk2", score=float("nan")),
+            state,
+            _make_eval(uid=2, hotkey="hk2", score=float("nan")),
         )
         assert out.dethroned is False
         assert state.king is not None
@@ -279,12 +285,21 @@ class TestDuplicateOfKingDQ:
 
     def test_later_duplicate_is_dqd_and_doesnt_tie(self):
         state = ValidatorState()
-        _record(state, _make_eval(
-            uid=1, hotkey="hk1", commit_block=100, score=0.5,
-            source_hash=self._HASH_A,
-        ))
+        _record(
+            state,
+            _make_eval(
+                uid=1,
+                hotkey="hk1",
+                commit_block=100,
+                score=0.5,
+                source_hash=self._HASH_A,
+            ),
+        )
         ev_copy = _make_eval(
-            uid=2, hotkey="hk2", commit_block=200, score=0.5,
+            uid=2,
+            hotkey="hk2",
+            commit_block=200,
+            score=0.5,
             source_hash=self._HASH_A,
         )
         out = _record(state, ev_copy)
@@ -301,14 +316,26 @@ class TestDuplicateOfKingDQ:
         """Can't buy your way past the DQ with noise — if the source is
         byte-identical, the later committer is out regardless of score."""
         state = ValidatorState()
-        _record(state, _make_eval(
-            uid=1, hotkey="hk1", commit_block=100, score=0.5,
-            source_hash=self._HASH_A,
-        ))
-        out = _record(state, _make_eval(
-            uid=2, hotkey="hk2", commit_block=200, score=0.99,
-            source_hash=self._HASH_A,
-        ))
+        _record(
+            state,
+            _make_eval(
+                uid=1,
+                hotkey="hk1",
+                commit_block=100,
+                score=0.5,
+                source_hash=self._HASH_A,
+            ),
+        )
+        out = _record(
+            state,
+            _make_eval(
+                uid=2,
+                hotkey="hk2",
+                commit_block=200,
+                score=0.99,
+                source_hash=self._HASH_A,
+            ),
+        )
         assert out.dethroned is False
         assert out.stored.disqualified is True
         assert state.king.uid == 1
@@ -317,14 +344,26 @@ class TestDuplicateOfKingDQ:
         """Re-committing your own winning policy at a later block is fine —
         the DQ rule targets cross-hotkey copies only."""
         state = ValidatorState()
-        _record(state, _make_eval(
-            uid=1, hotkey="hk1", commit_block=100, score=0.5,
-            source_hash=self._HASH_A,
-        ))
-        out = _record(state, _make_eval(
-            uid=1, hotkey="hk1", commit_block=200, score=0.4,
-            source_hash=self._HASH_A,
-        ))
+        _record(
+            state,
+            _make_eval(
+                uid=1,
+                hotkey="hk1",
+                commit_block=100,
+                score=0.5,
+                source_hash=self._HASH_A,
+            ),
+        )
+        out = _record(
+            state,
+            _make_eval(
+                uid=1,
+                hotkey="hk1",
+                commit_block=200,
+                score=0.4,
+                source_hash=self._HASH_A,
+            ),
+        )
         assert out.stored.disqualified is False
 
     def test_earlier_commit_not_dqd(self):
@@ -332,38 +371,76 @@ class TestDuplicateOfKingDQ:
         never gets duplicate-of-king DQ (could happen if evals land out of
         chronological order). commit_block is authoritative."""
         state = ValidatorState()
-        _record(state, _make_eval(
-            uid=1, hotkey="hk1", commit_block=200, score=0.5,
-            source_hash=self._HASH_A,
-        ))
-        out = _record(state, _make_eval(
-            uid=2, hotkey="hk2", commit_block=100, score=0.49,
-            source_hash=self._HASH_A,
-        ))
+        _record(
+            state,
+            _make_eval(
+                uid=1,
+                hotkey="hk1",
+                commit_block=200,
+                score=0.5,
+                source_hash=self._HASH_A,
+            ),
+        )
+        out = _record(
+            state,
+            _make_eval(
+                uid=2,
+                hotkey="hk2",
+                commit_block=100,
+                score=0.49,
+                source_hash=self._HASH_A,
+            ),
+        )
         assert out.stored.disqualified is False
 
     def test_different_hash_not_dqd(self):
         state = ValidatorState()
-        _record(state, _make_eval(
-            uid=1, hotkey="hk1", commit_block=100, score=0.5,
-            source_hash=self._HASH_A,
-        ))
-        out = _record(state, _make_eval(
-            uid=2, hotkey="hk2", commit_block=200, score=0.4,
-            source_hash=self._HASH_B,
-        ))
+        _record(
+            state,
+            _make_eval(
+                uid=1,
+                hotkey="hk1",
+                commit_block=100,
+                score=0.5,
+                source_hash=self._HASH_A,
+            ),
+        )
+        out = _record(
+            state,
+            _make_eval(
+                uid=2,
+                hotkey="hk2",
+                commit_block=200,
+                score=0.4,
+                source_hash=self._HASH_B,
+            ),
+        )
         assert out.stored.disqualified is False
 
     def test_empty_hash_does_not_trigger_dq(self):
         """Empty source_hash = unknown; never trips the DQ rule (avoids
         false-positive on legacy rows written before the field existed)."""
         state = ValidatorState()
-        _record(state, _make_eval(
-            uid=1, hotkey="hk1", commit_block=100, score=0.5, source_hash="",
-        ))
-        out = _record(state, _make_eval(
-            uid=2, hotkey="hk2", commit_block=200, score=0.4, source_hash="",
-        ))
+        _record(
+            state,
+            _make_eval(
+                uid=1,
+                hotkey="hk1",
+                commit_block=100,
+                score=0.5,
+                source_hash="",
+            ),
+        )
+        out = _record(
+            state,
+            _make_eval(
+                uid=2,
+                hotkey="hk2",
+                commit_block=200,
+                score=0.4,
+                source_hash="",
+            ),
+        )
         assert out.stored.disqualified is False
 
 
@@ -380,18 +457,24 @@ class TestEffectiveDethroneThreshold:
     def test_half_window_half_epsilon(self):
         half = KING_EPSILON_DECAY_BLOCKS // 2
         th = _effective_dethrone_threshold(0.5, 0, half)
-        expected = 0.5 * (1 + KING_EPSILON_INITIAL * (1 - half / KING_EPSILON_DECAY_BLOCKS))
+        expected = 0.5 * (
+            1 + KING_EPSILON_INITIAL * (1 - half / KING_EPSILON_DECAY_BLOCKS)
+        )
         assert th == pytest.approx(expected)
 
     def test_at_window_end_no_moat(self):
         th = _effective_dethrone_threshold(
-            0.5, 0, KING_EPSILON_DECAY_BLOCKS,
+            0.5,
+            0,
+            KING_EPSILON_DECAY_BLOCKS,
         )
         assert th == pytest.approx(0.5)
 
     def test_past_window_clamped_to_score(self):
         th = _effective_dethrone_threshold(
-            0.5, 0, KING_EPSILON_DECAY_BLOCKS * 10,
+            0.5,
+            0,
+            KING_EPSILON_DECAY_BLOCKS * 10,
         )
         assert th == pytest.approx(0.5)
 
@@ -403,13 +486,19 @@ class TestEffectiveDethroneThreshold:
 
     def test_zero_decay_blocks_disables_moat(self):
         th = _effective_dethrone_threshold(
-            0.5, 100, 200, decay_blocks=0,
+            0.5,
+            100,
+            200,
+            decay_blocks=0,
         )
         assert th == 0.5
 
     def test_zero_initial_disables_moat(self):
         th = _effective_dethrone_threshold(
-            0.5, 100, 100, epsilon_initial=0.0,
+            0.5,
+            100,
+            100,
+            epsilon_initial=0.0,
         )
         assert th == 0.5
 
@@ -438,7 +527,10 @@ class TestPersistence:
         _record(
             state,
             _make_eval(
-                uid=2, hotkey="hk2", commit_block=200, score=0.6,
+                uid=2,
+                hotkey="hk2",
+                commit_block=200,
+                score=0.6,
                 source_hash="b" * 64,
             ),
             current_block=210,
@@ -484,10 +576,9 @@ class TestPersistence:
         assert len(quarantined) == 1
         assert quarantined[0].read_text() == "{not valid json"
 
-    def test_load_v1_schema_does_not_crash(self, tmp_path):
-        """Regression: a state file using pre-rename field names (`model`
-        instead of `repo`, no `crowned_at_block`) must fall back to a
-        fresh state rather than crash the validator on startup."""
+    def test_load_stale_field_names_does_not_crash(self, tmp_path):
+        """A state file with unknown field names (e.g. `model` instead of
+        `image`) must fall back to fresh state, not crash on startup."""
         v1_payload = {
             "schema_version": 1,
             "king": {
@@ -576,10 +667,10 @@ class TestUnknownCommits:
         _record(state, _make_eval(hotkey="hk1", commit_block=100))
         state.record_precheck_failure("hk2", 200, "bad")
         incoming = [
-            ("hk1", 100),      # already evaluated
-            ("hk2", 200),      # already pre-rejected
-            ("hk3", 300),      # unknown
-            ("hk1", 150),      # same hotkey, different block → unknown
+            ("hk1", 100),  # already evaluated
+            ("hk2", 200),  # already pre-rejected
+            ("hk3", 300),  # unknown
+            ("hk1", 150),  # same hotkey, different block → unknown
         ]
         result = unknown_commits(state, incoming)
         assert result == [("hk3", 300), ("hk1", 150)]
@@ -610,16 +701,25 @@ class TestAppendKingHistory:
 
     def _king(self, uid=1, score=0.5) -> KingRecord:
         return KingRecord(
-            uid=uid, hotkey=f"hk{uid}", commit_block=100,
-            repo="hf/repo", revision="a" * 40, score=score,
-            kl_divergence=0.01, memory_reduction=0.3,
-            latency_improvement=0.1, evaluated_at=1700000000.0,
-            evaluation_block=1000, crowned_at_block=1000,
+            uid=uid,
+            hotkey=f"hk{uid}",
+            commit_block=100,
+            image="user/repo:latest",
+            digest="sha256:" + "a" * 64,
+            score=score,
+            kl_divergence=0.01,
+            memory_reduction=0.3,
+            latency_improvement=0.1,
+            evaluated_at=1700000000.0,
+            evaluation_block=1000,
+            crowned_at_block=1000,
         )
 
     def test_first_king_no_prev(self, tmp_path):
         ev = _make_eval(uid=1, score=0.5)
-        append_king_history(tmp_path, ev, None, current_block=1000, dethrone_threshold=0.0)
+        append_king_history(
+            tmp_path, ev, None, current_block=1000, dethrone_threshold=0.0
+        )
 
         lines = (tmp_path / "king-history.jsonl").read_text().strip().splitlines()
         assert len(lines) == 1
@@ -631,7 +731,9 @@ class TestAppendKingHistory:
     def test_dethronement_includes_prev_king(self, tmp_path):
         ev = _make_eval(uid=2, hotkey="hk2", score=0.6)
         prev = self._king(uid=1, score=0.4)
-        append_king_history(tmp_path, ev, prev, current_block=2000, dethrone_threshold=0.404)
+        append_king_history(
+            tmp_path, ev, prev, current_block=2000, dethrone_threshold=0.404
+        )
 
         entry = json.loads((tmp_path / "king-history.jsonl").read_text().strip())
         assert entry["prev_king_uid"] == 1
@@ -642,7 +744,9 @@ class TestAppendKingHistory:
     def test_multiple_appends(self, tmp_path):
         for i in range(3):
             ev = _make_eval(uid=i, hotkey=f"hk{i}", score=0.1 * (i + 1))
-            append_king_history(tmp_path, ev, None, current_block=1000 + i, dethrone_threshold=0.0)
+            append_king_history(
+                tmp_path, ev, None, current_block=1000 + i, dethrone_threshold=0.0
+            )
 
         lines = (tmp_path / "king-history.jsonl").read_text().strip().splitlines()
         assert len(lines) == 3

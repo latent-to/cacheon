@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # validator/setup-cpu.sh
 #
-# CPU validator host only — provisions the machine that runs the chain scan
-# loop (metagraph polling, commitment parsing, sandbox precheck with firejail,
-# set_weights). The GPU inference pod is a separate host; use
-# inference_engine/setup.sh there.
+# Validator host setup. Provisions the machine that runs the chain scan
+# loop, Docker-based miner evaluation, and set_weights.
 #
-# Prerequisites (see https://cacheon.io/docs/validators/cpu-host-setup):
+# Prerequisites (see https://cacheon.io/docs/validators/overview):
 #   export GITHUB_PAT=<your personal access token>
 #
 # Usage:
@@ -15,7 +13,7 @@
 
 set -euo pipefail
 
-# ── config ────────────────────────────────────────────────────────────────────
+# -- config --
 REPO_URL="https://github.com/latent-to/cacheon.git"
 BASE="$HOME"
 REPO_DIR="$BASE/cacheon"
@@ -26,15 +24,15 @@ for arg in "$@"; do
   [[ "$arg" == "--pull" ]] && PULL_ONLY=true
 done
 
-# ── system deps ───────────────────────────────────────────────────────────────
+# -- system deps --
 if [[ "$PULL_ONLY" == false ]]; then
   echo "=== System dependencies ==="
   apt-get update -q
   apt-get install -y --no-install-recommends \
-    git curl ca-certificates tmux python3-venv firejail
+    git curl ca-certificates tmux python3-venv docker.io
 fi
 
-# ── clone or pull repo ────────────────────────────────────────────────────────
+# -- clone or pull repo --
 echo ""
 echo "=== Repo ==="
 if [ -z "${GITHUB_PAT:-}" ]; then
@@ -44,10 +42,10 @@ if [ -z "${GITHUB_PAT:-}" ]; then
 fi
 
 if [ -d "$REPO_DIR/.git" ]; then
-  echo "Repo exists — pulling latest..."
+  echo "Repo exists, pulling latest..."
   git -C "$REPO_DIR" pull
 else
-  echo "Cloning $REPO_URL → $REPO_DIR"
+  echo "Cloning $REPO_URL -> $REPO_DIR"
   if [[ "$REPO_URL" == https://github.com/* ]]; then
     CLONE_URL=$(echo "$REPO_URL" | sed -E "s#https://github.com/#https://$GITHUB_PAT@github.com/#")
     git clone "$CLONE_URL" "$REPO_DIR"
@@ -61,7 +59,7 @@ if [[ "$PULL_ONLY" == true ]]; then
   exit 0
 fi
 
-# ── python venv ───────────────────────────────────────────────────────────────
+# -- python venv --
 echo ""
 echo "=== Python dependencies ==="
 echo "Python: $(python3 --version)"
@@ -77,4 +75,5 @@ pip install --upgrade pip
 pip install -r "$REPO_DIR/validator/requirements-cpu.txt"
 
 echo ""
-echo "=== Setup complete — see https://cacheon.io/docs/validators/cpu-host-setup to run the validator ==="
+echo "=== Setup complete ==="
+echo "See https://cacheon.io/docs/validators/overview to run the validator."

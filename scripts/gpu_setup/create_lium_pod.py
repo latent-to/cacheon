@@ -8,8 +8,8 @@ from lium.sdk import Lium
 
 from shared import GPU_COUNT, GPU_PREFERENCE, SSH_KEYS, load_env_dict
 
-POD_NAME = "cacheon-gpu" # TODO: replace this with your pod name
-VOLUME_NAME = "SN14" # TODO: replace this with your volume name
+POD_NAME = "cacheon-gpu"  # TODO: replace this with your pod name
+VOLUME_NAME = "SN14"  # TODO: replace this with your volume name
 VOLUME_MOUNT = "/workspace"
 
 DOCKER_IMAGE = "daturaai/pytorch"
@@ -35,7 +35,9 @@ def find_volume(lium: Lium) -> str:
     """Find volume by VOLUME_NAME, return its ID."""
     for v in lium.volumes():
         if v.name == VOLUME_NAME:
-            print(f"  Volume '{VOLUME_NAME}' found: {v.id} ({v.current_size_gb:.1f} GB)")
+            print(
+                f"  Volume '{VOLUME_NAME}' found: {v.id} ({v.current_size_gb:.1f} GB)"
+            )
             return v.id
     print(f"  ERROR: Volume '{VOLUME_NAME}' not found", file=sys.stderr)
     available = [v.name for v in lium.volumes()]
@@ -83,7 +85,9 @@ def find_executor(lium: Lium) -> str:
         best = min(executors, key=lambda e: e.price_per_hour)
         loc = best.location.get("country", "?")
         print(f"  Found {len(executors)} {gpu_type} executor(s), picking cheapest:")
-        print(f"    {best.gpu_model} | ${best.price_per_hour:.2f}/hr | {loc} | {best.id}")
+        print(
+            f"    {best.gpu_model} | ${best.price_per_hour:.2f}/hr | {loc} | {best.id}"
+        )
         return best.id
     tried = ", ".join(p["type"] for p in GPU_PREFERENCE)
     print(f"  ERROR: No executors available for any of [{tried}]", file=sys.stderr)

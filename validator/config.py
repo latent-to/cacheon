@@ -21,8 +21,8 @@ WALLET_NAME: str = os.environ.get("CACHEON_WALLET_NAME", "default")
 WALLET_HOTKEY: str = os.environ.get("CACHEON_WALLET_HOTKEY", "default")
 
 POLL_INTERVAL_S: int = int(os.environ.get("CACHEON_POLL_INTERVAL_S", "360"))
-"""Seconds to sleep when there's nothing new to evaluate. GPU eval takes
-minutes-to-hours; reacting faster than this buys nothing."""
+"""Seconds to sleep when there's nothing new to evaluate. Docker eval takes
+minutes; reacting faster than this buys nothing."""
 
 CHAIN_RETRY_ATTEMPTS: int = int(os.environ.get("CACHEON_CHAIN_RETRY_ATTEMPTS", "3"))
 CHAIN_RETRY_DELAY_S: int = int(os.environ.get("CACHEON_CHAIN_RETRY_DELAY_S", "30"))
@@ -32,52 +32,18 @@ STATE_DIR: Path = Path(
 ).resolve()
 """Where local JSON state files live. Gitignored."""
 
-SANDBOX_PRECHECK_TIMEOUT_S: int = int(
-    os.environ.get("CACHEON_SANDBOX_TIMEOUT_S", "60")
-)
-"""Hard timeout (seconds) for the static AST sandbox precheck per submission."""
-
 DRY_RUN: bool = os.environ.get("CACHEON_DRY_RUN", "0") == "1"
-"""When True, skip `subtensor.set_weights()` — log what would be set instead.
+"""When True, skip `subtensor.set_weights()` and do not run Docker eval.
 Useful for testing the loop without touching the chain."""
-
-POLICY_CACHE_DIR: Path = Path(
-    os.environ.get("CACHEON_POLICY_CACHE_DIR", str(STATE_DIR / "policy-cache"))
-).resolve()
-"""Where fetched `policy.py` files are cached on disk."""
-
-POLICY_MAX_BYTES: int = int(
-    os.environ.get("CACHEON_POLICY_MAX_BYTES", "1048576")
-)
-"""Hard size cap (bytes) on a single `policy.py` download. Default 1 MB."""
-
-HF_ETAG_TIMEOUT_S: float = float(
-    os.environ.get(
-        "CACHEON_HF_ETAG_TIMEOUT_S",
-        os.environ.get("CACHEON_HF_FETCH_TIMEOUT_S", "30.0"),
-    )
-)
-"""Timeout (seconds) for the HEAD / etag revalidation request inside
-``hf_hub_download``.  This does **not** cap the blob download itself —
-only the metadata preflight.
-
-``CACHEON_HF_FETCH_TIMEOUT_S`` is still read when
-``CACHEON_HF_ETAG_TIMEOUT_S`` is unset (legacy alias)."""
-
-HF_TOKEN: str | None = os.environ.get("CACHEON_HF_TOKEN")
-"""Optional HuggingFace access token. Required only for private or gated
-repositories; most miner repos are public."""
-
 
 VERSION_KEY: int = int(os.environ.get("CACHEON_VERSION_KEY", "1"))
 """Version tag passed as `version_key` to `subtensor.set_weights(...)`. Bump
-whenever the scoring mechanism, harness semantics, or sandbox rules change in
-a way that would produce different king selections on identical commits.
+whenever the scoring mechanism or evaluation rules change in a way that would
+produce different king selections on identical commits.
 
 Yuma consensus only trust-weights validators that agree on the version, so
 bumping this effectively rolls consensus to the new version once a quorum of
-stake has upgraded — validators still running the old code get their weights
-ignored until they update."""
+stake has upgraded."""
 
 # --------------------------------------------------------------------------- #
 # King defender-advantage window
@@ -99,30 +65,5 @@ KING_EPSILON_DECAY_BLOCKS: int = int(
     os.environ.get("CACHEON_KING_EPSILON_DECAY_BLOCKS", "50400")
 )
 """Number of chain blocks over which `KING_EPSILON_INITIAL` decays to 0.
-50 400 blocks ≈ 7 days at ~12 s / block. After this window any strict
-improvement dethrones — no grandfathering of stale kings."""
-
-# --------------------------------------------------------------------------- #
-# GPU pod SSH/SFTP transport (Phase 5B)
-# --------------------------------------------------------------------------- #
-
-GPU_POD_SSH_HOST: str = os.environ.get("CACHEON_GPU_POD_SSH_HOST", "")
-"""Hostname (or ``host:port`` via ProxyCommand) of the Targon GPU pod."""
-
-GPU_POD_SSH_USER: str = os.environ.get("CACHEON_GPU_POD_SSH_USER", "")
-"""SSH username on the GPU pod (e.g. ``wrk-b6ptrqbmfkoj``)."""
-
-GPU_POD_SSH_PORT: int = int(os.environ.get("CACHEON_GPU_POD_SSH_PORT", "22"))
-
-GPU_POD_WORK_DIR: str = os.environ.get(
-    "CACHEON_GPU_POD_WORK_DIR", "/workspace/cacheon",
-)
-"""Repo checkout path on the GPU pod — ``cd`` target before running
-``pod_eval.py``."""
-
-GPU_POD_EVAL_TIMEOUT_S: int = int(
-    os.environ.get("CACHEON_GPU_POD_EVAL_TIMEOUT_S", "3000")
-)
-"""Hard wall-clock timeout (seconds) for a single ``pod_eval.py`` run
-over SSH.  Default 20 minutes — generous for the ~5-10 min typical
-Cacheon eval."""
+50 400 blocks ~ 7 days at ~12 s / block. After this window any strict
+improvement dethrones."""

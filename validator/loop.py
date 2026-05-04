@@ -104,7 +104,7 @@ def run_once(
     netuid: int = validator_config.NETUID,
     eval_fn: EvalFn = not_implemented_eval,
     precheck: PrecheckFn = allow_all_precheck,
-    state_dir = validator_config.STATE_DIR,
+    state_dir=validator_config.STATE_DIR,
     dry_run: bool = validator_config.DRY_RUN,
     version_key: int = validator_config.VERSION_KEY,
     chain_attempts: int = validator_config.CHAIN_RETRY_ATTEMPTS,
@@ -116,19 +116,25 @@ def run_once(
     doesn't construct them so tests can wire plain mocks.
     """
     metagraph, current_block, block_hash = fetch_metagraph(
-        subtensor, netuid,
-        attempts=chain_attempts, delay_s=chain_delay_s,
+        subtensor,
+        netuid,
+        attempts=chain_attempts,
+        delay_s=chain_delay_s,
     )
     revealed = fetch_revealed_commitments(
-        subtensor, netuid,
-        attempts=chain_attempts, delay_s=chain_delay_s,
+        subtensor,
+        netuid,
+        attempts=chain_attempts,
+        delay_s=chain_delay_s,
     )
     commitments = build_commitments(metagraph, revealed)
     state.last_scan_block = current_block
 
     logger.info(
         "Scan @ block %d: %d hotkey(s), %d valid commitment(s)",
-        current_block, len(metagraph.hotkeys), len(commitments),
+        current_block,
+        len(metagraph.hotkeys),
+        len(commitments),
     )
 
     # UID slots can be recycled: if the king's hotkey deregistered, this UID
@@ -150,7 +156,9 @@ def run_once(
             state.king = None
 
     challenger_set = select_challengers(
-        state, commitments.values(), precheck=precheck,
+        state,
+        commitments.values(),
+        precheck=precheck,
     )
 
     for com, reason in challenger_set.newly_rejected:
@@ -163,8 +171,7 @@ def run_once(
         )
 
     logger.info(
-        "Challenger selection: %d new, %d pre-rejected, %d deferred, "
-        "%d already known",
+        "Challenger selection: %d new, %d pre-rejected, %d deferred, %d already known",
         len(challenger_set.challengers),
         len(challenger_set.newly_rejected),
         len(challenger_set.deferred),
@@ -201,8 +208,10 @@ def run_once(
                 logger.info(
                     "recorded UID %d (hotkey %s…) score=%.4f threshold=%.4f "
                     "(dq=%s, dethroned=%s)",
-                    outcome.stored.uid, outcome.stored.hotkey[:16],
-                    outcome.stored.score, outcome.dethrone_threshold,
+                    outcome.stored.uid,
+                    outcome.stored.hotkey[:16],
+                    outcome.stored.score,
+                    outcome.dethrone_threshold,
                     outcome.stored.disqualify_reason or "no",
                     outcome.dethroned,
                 )
@@ -211,12 +220,17 @@ def run_once(
                     logger.info(
                         "👑 New king: UID %d (hotkey %s…, score=%.4f, "
                         "beat threshold=%.4f)",
-                        outcome.stored.uid, outcome.stored.hotkey[:16],
-                        outcome.stored.score, outcome.dethrone_threshold,
+                        outcome.stored.uid,
+                        outcome.stored.hotkey[:16],
+                        outcome.stored.score,
+                        outcome.dethrone_threshold,
                     )
                     append_king_history(
-                        state_dir, outcome.stored, prev_king,
-                        current_block, outcome.dethrone_threshold,
+                        state_dir,
+                        outcome.stored,
+                        prev_king,
+                        current_block,
+                        outcome.dethrone_threshold,
                     )
 
     state.save(state_dir)
@@ -231,17 +245,22 @@ def run_once(
     elif dry_run:
         logger.info(
             "[dry-run] would set_weights(winner_uid=%d, version_key=%d) @ block %d",
-            state.king.uid, version_key, current_block,
+            state.king.uid,
+            version_key,
+            current_block,
         )
         weights_set = True
     else:
         try:
             set_weights(
-                subtensor, wallet, netuid,
+                subtensor,
+                wallet,
+                netuid,
                 n_uids=len(metagraph.hotkeys),
                 winner_uid=state.king.uid,
                 version_key=version_key,
-                attempts=chain_attempts, delay_s=chain_delay_s,
+                attempts=chain_attempts,
+                delay_s=chain_delay_s,
             )
             state.last_weights_set_block = current_block
             state.save(state_dir)
@@ -278,7 +297,7 @@ def run_forever(
     netuid: int = validator_config.NETUID,
     eval_fn: EvalFn = not_implemented_eval,
     precheck: PrecheckFn = allow_all_precheck,
-    state_dir = validator_config.STATE_DIR,
+    state_dir=validator_config.STATE_DIR,
     poll_interval_s: int = validator_config.POLL_INTERVAL_S,
     dry_run: bool = validator_config.DRY_RUN,
     version_key: int = validator_config.VERSION_KEY,
@@ -297,7 +316,11 @@ def run_forever(
     logger.info(
         "Validator loop starting: netuid=%d, poll_interval_s=%d, "
         "state_dir=%s, dry_run=%s, version_key=%d",
-        netuid, poll_interval_s, state_dir, dry_run, version_key,
+        netuid,
+        poll_interval_s,
+        state_dir,
+        dry_run,
+        version_key,
     )
 
     while not stop():
@@ -315,8 +338,7 @@ def run_forever(
                 version_key=version_key,
             )
             logger.info(
-                "Tick OK @ block %d in %.1fs (king_changed=%s, "
-                "new_evals=%d)",
+                "Tick OK @ block %d in %.1fs (king_changed=%s, new_evals=%d)",
                 result.current_block,
                 time.time() - tick_started,
                 result.king_changed,
@@ -327,7 +349,8 @@ def run_forever(
         except Exception as exc:
             logger.exception(
                 "Tick failed after %.1fs: %s — sleeping then retrying",
-                time.time() - tick_started, exc,
+                time.time() - tick_started,
+                exc,
             )
 
         if stop():

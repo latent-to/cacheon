@@ -9,9 +9,9 @@ import requests
 
 from shared import SSH_KEYS, load_env_dict
 
-WORKLOAD_NAME = "test-cacheon" # TODO: replace this with your workload name
+WORKLOAD_NAME = "test-cacheon"  # TODO: replace this with your workload name
 IMAGE = "ghcr.io/manifold-inc/ubuntu-systemd-docker:v3"
-VOLUME_UID = "vol-0lhmsprbolfa" # TODO: replace this with your volume UID
+VOLUME_UID = "vol-0lhmsprbolfa"  # TODO: replace this with your volume UID
 VOLUME_MOUNT = "/workspace"
 
 # Targon has no inventory fallback API; pick exactly one tier below.
@@ -66,7 +66,10 @@ def create_workload(ssh_key_uids: list[str], pod_envs: list[dict]) -> str:
     resource = TARGON_RESOURCE_BY_GPU.get(TARGON_GPU)
     if not resource:
         allowed = ", ".join(sorted(TARGON_RESOURCE_BY_GPU))
-        print(f"  ERROR: TARGON_GPU must be one of [{allowed}], got {TARGON_GPU!r}", file=sys.stderr)
+        print(
+            f"  ERROR: TARGON_GPU must be one of [{allowed}], got {TARGON_GPU!r}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     payload = {
         "name": WORKLOAD_NAME,

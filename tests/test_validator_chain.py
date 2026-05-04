@@ -1,4 +1,4 @@
-"""Unit tests for validator.chain — pure helpers, no bittensor required."""
+"""Unit tests for validator.chain -- pure helpers, no bittensor required."""
 
 from __future__ import annotations
 
@@ -25,34 +25,38 @@ class FakeMetagraph:
     hotkeys: list[str]
 
 
-_SHA_A = "a" * 40
-_SHA_B = "b" * 40
-_SHA_C = "c" * 40
+_DIGEST_A = "sha256:" + "a" * 64
+_DIGEST_B = "sha256:" + "b" * 64
+_DIGEST_C = "sha256:" + "c" * 64
 
 
 class TestParseCommitmentData:
     def test_valid_commitment(self):
-        raw = json.dumps({"repo": "hf/repo", "revision": _SHA_A})
-        assert parse_commitment_data(raw) == ("hf/repo", _SHA_A)
+        raw = json.dumps({"image": "docker.io/user/repo:v1", "digest": _DIGEST_A})
+        assert parse_commitment_data(raw) == ("docker.io/user/repo:v1", _DIGEST_A)
 
     def test_strips_whitespace(self):
-        raw = json.dumps({"repo": "  hf/repo  ", "revision": f"  {_SHA_A}  "})
-        assert parse_commitment_data(raw) == ("hf/repo", _SHA_A)
+        raw = json.dumps(
+            {"image": "  docker.io/user/repo:v1  ", "digest": f"  {_DIGEST_A}  "}
+        )
+        assert parse_commitment_data(raw) == ("docker.io/user/repo:v1", _DIGEST_A)
 
     def test_extra_fields_ignored(self):
-        raw = json.dumps({"repo": "hf/repo", "revision": _SHA_A, "note": "hi"})
-        assert parse_commitment_data(raw) == ("hf/repo", _SHA_A)
+        raw = json.dumps(
+            {"image": "docker.io/user/repo:v1", "digest": _DIGEST_A, "note": "hi"}
+        )
+        assert parse_commitment_data(raw) == ("docker.io/user/repo:v1", _DIGEST_A)
 
-    def test_missing_repo(self):
-        raw = json.dumps({"revision": _SHA_A})
+    def test_missing_image(self):
+        raw = json.dumps({"digest": _DIGEST_A})
         assert parse_commitment_data(raw) is None
 
-    def test_missing_revision(self):
-        raw = json.dumps({"repo": "hf/repo"})
+    def test_missing_digest(self):
+        raw = json.dumps({"image": "docker.io/user/repo:v1"})
         assert parse_commitment_data(raw) is None
 
-    def test_empty_repo(self):
-        raw = json.dumps({"repo": "", "revision": _SHA_A})
+    def test_empty_image(self):
+        raw = json.dumps({"image": "", "digest": _DIGEST_A})
         assert parse_commitment_data(raw) is None
 
     def test_non_json(self):
@@ -67,41 +71,73 @@ class TestParseCommitmentData:
     def test_none_like_input(self):
         assert parse_commitment_data(None) is None  # type: ignore[arg-type]
 
-    def test_non_string_repo(self):
-        raw = json.dumps({"repo": 123, "revision": _SHA_A})
+    def test_non_string_image(self):
+        raw = json.dumps({"image": 123, "digest": _DIGEST_A})
         assert parse_commitment_data(raw) is None
 
-    def test_short_revision_rejected(self):
-        """Branch names / short SHAs are rejected — the (hotkey, block) →
-        code mapping needs to be stable once on chain."""
-        raw = json.dumps({"repo": "hf/repo", "revision": "abc123"})
+    def test_short_digest_rejected(self):
+        raw = json.dumps({"image": "user/repo:v1", "digest": "sha256:abc123"})
         assert parse_commitment_data(raw) is None
 
-    def test_non_hex_revision_rejected(self):
-        raw = json.dumps({"repo": "hf/repo", "revision": "z" * 40})
+    def test_non_sha256_digest_rejected(self):
+        raw = json.dumps({"image": "user/repo:v1", "digest": "md5:" + "a" * 64})
         assert parse_commitment_data(raw) is None
 
-    def test_branch_name_rejected(self):
-        raw = json.dumps({"repo": "hf/repo", "revision": "main"})
+    def test_digest_without_prefix_rejected(self):
+        raw = json.dumps({"image": "user/repo:v1", "digest": "a" * 64})
         assert parse_commitment_data(raw) is None
 
-    def test_invalid_hf_repo_id_extra_slash_rejected(self):
-        raw = json.dumps({"repo": "a/b/c", "revision": _SHA_A})
+    def test_uppercase_hex_in_digest_rejected(self):
+        raw = json.dumps({"image": "user/repo:v1", "digest": "sha256:" + "A" * 64})
         assert parse_commitment_data(raw) is None
 
-    def test_dot_dot_repo_rejected(self):
-        raw = json.dumps({"repo": "..", "revision": _SHA_A})
+    def test_image_with_uppercase_rejected(self):
+        raw = json.dumps({"image": "Docker.io/User/Repo:v1", "digest": _DIGEST_A})
         assert parse_commitment_data(raw) is None
 
-    def test_single_segment_repo_allowed(self):
-        raw = json.dumps({"repo": "SomeOrg", "revision": _SHA_A})
-        assert parse_commitment_data(raw) == ("SomeOrg", _SHA_A)
+    def test_image_starting_with_dot_rejected(self):
+        raw = json.dumps({"image": ".invalid/repo:v1", "digest": _DIGEST_A})
+        assert parse_commitment_data(raw) is None
+
+    def test_simple_image_no_tag(self):
+        raw = json.dumps({"image": "myuser/myrepo", "digest": _DIGEST_A})
+        assert parse_commitment_data(raw) == ("myuser/myrepo", _DIGEST_A)
+
+    def test_registry_without_port(self):
+        raw = json.dumps(
+            {"image": "registry.example.com/repo:latest", "digest": _DIGEST_A}
+        )
+        assert parse_commitment_data(raw) == (
+            "registry.example.com/repo:latest",
+            _DIGEST_A,
+        )
+
+    def test_registry_with_port(self):
+        raw = json.dumps(
+            {"image": "myregistry.com:5000/myimage:v1", "digest": _DIGEST_A}
+        )
+        assert parse_commitment_data(raw) == (
+            "myregistry.com:5000/myimage:v1",
+            _DIGEST_A,
+        )
+
+    def test_registry_with_port_no_tag(self):
+        raw = json.dumps({"image": "localhost:5000/org/repo", "digest": _DIGEST_A})
+        assert parse_commitment_data(raw) == (
+            "localhost:5000/org/repo",
+            _DIGEST_A,
+        )
+
+    def test_old_hf_format_rejected(self):
+        """The old repo/revision format must not be accepted."""
+        raw = json.dumps({"repo": "hf/repo", "revision": "a" * 40})
+        assert parse_commitment_data(raw) is None
 
 
 class TestBuildCommitments:
     def test_single_commitment(self):
         mg = FakeMetagraph(hotkeys=["hk0", "hk1", "hk2"])
-        raw = json.dumps({"repo": "hf/repo", "revision": _SHA_A})
+        raw = json.dumps({"image": "user/repo:v1", "digest": _DIGEST_A})
         revealed = {"hk1": [(100, raw)]}
         out = build_commitments(mg, revealed)
         assert set(out.keys()) == {1}
@@ -109,25 +145,25 @@ class TestBuildCommitments:
         assert rec.uid == 1
         assert rec.hotkey == "hk1"
         assert rec.commit_block == 100
-        assert rec.repo == "hf/repo"
-        assert rec.revision == _SHA_A
+        assert rec.image == "user/repo:v1"
+        assert rec.digest == _DIGEST_A
         assert rec.raw == raw
 
     def test_picks_latest_block_when_multiple_reveals(self):
         mg = FakeMetagraph(hotkeys=["hk0"])
-        raw_old = json.dumps({"repo": "old/m", "revision": _SHA_A})
-        raw_new = json.dumps({"repo": "new/m", "revision": _SHA_B})
+        raw_old = json.dumps({"image": "old/m:v1", "digest": _DIGEST_A})
+        raw_new = json.dumps({"image": "new/m:v2", "digest": _DIGEST_B})
         revealed = {"hk0": [(50, raw_old), (200, raw_new), (100, raw_old)]}
         out = build_commitments(mg, revealed)
         assert out[0].commit_block == 200
-        assert out[0].repo == "new/m"
-        assert out[0].revision == _SHA_B
+        assert out[0].image == "new/m:v2"
+        assert out[0].digest == _DIGEST_B
 
     def test_skips_invalid_commitments(self):
         mg = FakeMetagraph(hotkeys=["hk0", "hk1"])
         revealed = {
             "hk0": [(10, "garbage not json")],
-            "hk1": [(20, json.dumps({"repo": "hf/repo", "revision": _SHA_A}))],
+            "hk1": [(20, json.dumps({"image": "user/repo:v1", "digest": _DIGEST_A}))],
         }
         out = build_commitments(mg, revealed)
         assert set(out.keys()) == {1}
@@ -141,7 +177,7 @@ class TestBuildCommitments:
     def test_hotkey_not_in_revealed_skipped(self):
         mg = FakeMetagraph(hotkeys=["hk0", "hk1"])
         revealed = {
-            "hk_ghost": [(10, json.dumps({"repo": "m", "revision": _SHA_A}))]
+            "hk_ghost": [(10, json.dumps({"image": "m:v1", "digest": _DIGEST_A}))]
         }
         out = build_commitments(mg, revealed)
         assert out == {}
@@ -149,10 +185,12 @@ class TestBuildCommitments:
     def test_uid_ordering_matches_metagraph(self):
         mg = FakeMetagraph(hotkeys=[f"hk{i}" for i in range(5)])
         revealed = {
-            f"hk{i}": [(
-                100 + i,
-                json.dumps({"repo": f"m{i}", "revision": _SHA_A}),
-            )]
+            f"hk{i}": [
+                (
+                    100 + i,
+                    json.dumps({"image": f"m{i}:latest", "digest": _DIGEST_A}),
+                )
+            ]
             for i in range(5)
         }
         out = build_commitments(mg, revealed)
@@ -166,8 +204,12 @@ class TestBuildCommitments:
 
     def test_as_eval_key(self):
         rec = CommitmentRecord(
-            uid=1, hotkey="hk1", commit_block=100,
-            repo="m", revision=_SHA_A, raw="{}",
+            uid=1,
+            hotkey="hk1",
+            commit_block=100,
+            image="m:v1",
+            digest=_DIGEST_A,
+            raw="{}",
         )
         assert rec.as_eval_key() == ("hk1", 100)
 
@@ -182,7 +224,6 @@ class TestBuildWinnerTakeAllWeights:
         assert w == [1.0, 0.0, 0.0]
 
     def test_winner_uid_beyond_n_uids(self):
-        # Defensive: if somehow winner_uid > n_uids-1, grow the vector
         w = build_winner_take_all_weights(3, 5)
         assert len(w) == 6
         assert w[5] == 1.0
@@ -199,12 +240,30 @@ class TestUniqueHotkeys:
 
     def test_deduplicates(self):
         recs = [
-            CommitmentRecord(uid=0, hotkey="hk1", commit_block=1,
-                             repo="m", revision=_SHA_A, raw=""),
-            CommitmentRecord(uid=1, hotkey="hk2", commit_block=1,
-                             repo="m", revision=_SHA_B, raw=""),
-            CommitmentRecord(uid=2, hotkey="hk1", commit_block=2,
-                             repo="m", revision=_SHA_C, raw=""),
+            CommitmentRecord(
+                uid=0,
+                hotkey="hk1",
+                commit_block=1,
+                image="m:v1",
+                digest=_DIGEST_A,
+                raw="",
+            ),
+            CommitmentRecord(
+                uid=1,
+                hotkey="hk2",
+                commit_block=1,
+                image="m:v1",
+                digest=_DIGEST_B,
+                raw="",
+            ),
+            CommitmentRecord(
+                uid=2,
+                hotkey="hk1",
+                commit_block=2,
+                image="m:v1",
+                digest=_DIGEST_C,
+                raw="",
+            ),
         ]
         assert unique_hotkeys(recs) == {"hk1", "hk2"}
 
@@ -221,7 +280,10 @@ class _FakeWallet:
 
 class _FakePreflightMetagraph:
     def __init__(
-        self, hotkeys: list[str], permits: list[bool], stakes: list[float],
+        self,
+        hotkeys: list[str],
+        permits: list[bool],
+        stakes: list[float],
     ) -> None:
         self.hotkeys = hotkeys
         self.validator_permit = permits
@@ -247,14 +309,17 @@ class _FakePreflightSubtensor:
 
     def metagraph(self, _netuid: int):
         return _FakePreflightMetagraph(
-            self._hotkeys, self._permits, self._stakes,
+            self._hotkeys,
+            self._permits,
+            self._stakes,
         )
 
 
 class TestPreflightCheck:
     def test_unregistered_hotkey_raises(self):
         st = _FakePreflightSubtensor(
-            registered_hotkeys=set(), hotkeys=["hk_other"],
+            registered_hotkeys=set(),
+            hotkeys=["hk_other"],
         )
         wallet = _FakeWallet(ss58="hk_us")
         with pytest.raises(NotRegisteredError) as excinfo:
@@ -290,6 +355,7 @@ class TestPreflightCheck:
     def test_tolerates_missing_validator_permit_attr(self):
         """Older bittensor / mock metagraphs may not expose validator_permit;
         preflight should still succeed with has_validator_permit=False."""
+
         class SparseMetagraph:
             hotkeys = ["hk_us"]
 
