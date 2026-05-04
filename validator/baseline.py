@@ -73,9 +73,14 @@ class BaselineCache:
         )
 
 
-def derive_cache_key(block_hash: str) -> str:
-    """SHA-256 of the block hash, first 16 hex chars."""
-    return hashlib.sha256(block_hash.encode()).hexdigest()[:16]
+def derive_cache_key(block_hash: str, baseline_digest: str = "") -> str:
+    """SHA-256 of block_hash + baseline_digest, first 16 hex chars.
+
+    Including the baseline digest ensures a cache miss when the pinned
+    vLLM image changes between validator restarts.
+    """
+    raw = f"{block_hash}:{baseline_digest}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def _cache_file_path(cache_dir: Path, cache_key: str) -> Path:

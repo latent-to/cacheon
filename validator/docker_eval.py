@@ -424,7 +424,7 @@ def run_baseline_if_needed(
     n_warmup: int = 2,
 ) -> BaselineCache:
     """Load cached baseline or run the vLLM baseline container, measure, and cache."""
-    cache_key = derive_cache_key(block_hash)
+    cache_key = derive_cache_key(block_hash, baseline_digest)
     cached = load_cached_baseline(cache_dir, cache_key)
     if cached is not None:
         logger.info(
