@@ -382,12 +382,18 @@ def _parse_json_response(
     message = choice.get("message", {})
     output_text = message.get("content", "")
 
-    lp_data = choice.get("logprobs", {})
-    lp_content = (lp_data or {}).get("content", [])
+    try:
+        lp_data = choice.get("logprobs") or {}
+        lp_content = lp_data.get("content") or []
+    except AttributeError:
+        lp_data = {}
+        lp_content = []
 
     tokens: list[str] = []
     all_top_logprobs: list[list[dict[str, Any]]] = []
     for entry in lp_content:
+        if not isinstance(entry, dict):
+            continue
         tokens.append(entry.get("token", ""))
         all_top_logprobs.append(entry.get("top_logprobs", []))
 
