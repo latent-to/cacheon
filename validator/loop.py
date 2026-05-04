@@ -1,18 +1,19 @@
-"""Main validator tick: chain → challengers → optional eval → set weights.
+"""Main validator tick: chain -> challengers -> optional eval -> set weights.
 
 This module ties together `chain` (Bittensor RPC), `state` (persisted
-scores), and `challengers` (who still needs a run). It does **not** load
-models: actual scoring is supplied by ``eval_fn`` (see `eval_pod` for
-local and remote implementations). That keeps imports here free of torch/GPU code and
+scores), and `challengers` (who still needs a run). It does **not**
+manage Docker containers or GPU resources: actual evaluation is supplied
+by ``eval_fn`` (see `docker_eval.make_eval_fn` for the production
+implementation). That keeps imports here free of Docker/GPU code and
 easy to test with a stub.
 
 One pass through the loop:
   1. Fetch metagraph and revealed commitments from the chain.
   2. Parse commitments into ``{uid: CommitmentRecord}``.
   3. Select challengers not yet evaluated and not pre-rejected.
-  4. Record any new AST-sandbox rejections in state.
+  4. Record any new precheck rejections in state.
   5. If there are no challengers: set weights to the current king, sleep, return.
-  6. If there are challengers: call ``eval_fn(...)`` → ``list[EvaluationRecord]``;
+  6. If there are challengers: call ``eval_fn(...)`` -> ``list[EvaluationRecord]``;
      merge results into state (king may change).
   7. Set weights to the current king.
 """
@@ -44,16 +45,16 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# Eval hook — pluggable GPU / harness step (see `eval_pod`)
+# Eval hook -- pluggable Docker evaluation (see `docker_eval`)
 # --------------------------------------------------------------------------- #
 
 
 class EvalFn(Protocol):
     """Evaluate one or more challengers and return per-challenger results.
 
-    Production wiring builds a job (prompts + on-disk policy paths),
-    runs the inference harness—often in a subprocess or on a remote
-    host—and returns rows that match `state.EvaluationRecord`.
+    Production wiring uses ``docker_eval.make_eval_fn`` which pulls
+    Docker images, starts containers, measures speed and correctness
+    against the vLLM baseline, and returns ``EvaluationRecord`` rows.
     """
 
     def __call__(
@@ -71,7 +72,7 @@ def not_implemented_eval(
     current_block: int,
     block_hash: str | None,
 ) -> list[EvaluationRecord]:
-    """Default stub — fails fast so the loop never records scores without a real ``eval_fn``."""
+    """Default stub -- fails fast so the loop never records scores without a real ``eval_fn``."""
     raise NotImplementedError(
         f"eval_fn is not configured. "
         f"Got {len(challengers)} challenger(s) at block {current_block}. "
