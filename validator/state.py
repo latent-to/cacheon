@@ -30,14 +30,8 @@ from . import config as validator_config
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION: int = 1
-"""
-Bump history:
-  1 -> initial shape with `model`/`revision`.
-  2 -> rename `model` -> `repo`; add `source_hash` to `EvaluationRecord`;
-       add `crowned_at_block` + `source_hash` to `KingRecord`.
-  3 -> rename `repo` -> `image`, `revision` -> `digest` for Docker-based
-       miner submissions.
-"""
+"""Nothing shipped yet. Start fresh at 1; bump when the first production
+state format needs a backward-incompatible change."""
 
 STATE_FILE_NAME: str = "state.json"
 

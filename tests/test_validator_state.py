@@ -576,10 +576,9 @@ class TestPersistence:
         assert len(quarantined) == 1
         assert quarantined[0].read_text() == "{not valid json"
 
-    def test_load_v1_schema_does_not_crash(self, tmp_path):
-        """Regression: a state file using pre-rename field names (`model`
-        instead of `repo`, no `crowned_at_block`) must fall back to a
-        fresh state rather than crash the validator on startup."""
+    def test_load_stale_field_names_does_not_crash(self, tmp_path):
+        """A state file with unknown field names (e.g. `model` instead of
+        `image`) must fall back to fresh state, not crash on startup."""
         v1_payload = {
             "schema_version": 1,
             "king": {
