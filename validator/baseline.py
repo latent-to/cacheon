@@ -13,11 +13,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .state import _atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -100,20 +100,5 @@ def load_cached_baseline(cache_dir: Path, cache_key: str) -> BaselineCache | Non
 
 def save_baseline_cache(cache_dir: Path, cache_key: str, cache: BaselineCache) -> None:
     """Atomically write baseline cache to disk."""
-    cache_dir.mkdir(parents=True, exist_ok=True)
     path = _cache_file_path(cache_dir, cache_key)
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=path.name + ".",
-        suffix=".tmp",
-        dir=str(cache_dir),
-    )
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(cache.to_dict(), f, indent=2, sort_keys=True)
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    _atomic_write_json(path, cache.to_dict())

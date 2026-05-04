@@ -614,13 +614,22 @@ def evaluate_challenger(
 
     logger.info(
         "Challenger UID %d scored: score=%.4f ttft_imp=%.4f tps_imp=%.4f "
-        "match_rate=%.4f",
+        "match_rate=%.4f (%d prompts)",
         com.uid,
         score,
         ttft_imp,
         tps_imp,
         agg_match_rate,
+        len(per_prompt),
     )
+    for pp in per_prompt:
+        logger.debug(
+            "  prompt: ttft=%.4fs tps=%.1f tokens=%d match=%.4f",
+            pp.ttft_s,
+            pp.throughput_tps,
+            pp.output_tokens,
+            pp.token_match_rate,
+        )
 
     return EvaluationRecord(
         uid=com.uid,
