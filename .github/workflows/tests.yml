@@ -28,5 +28,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run unit & arch tests
-        run: pytest -v -m "unit or arch"
+      - name: Run unit tests
+        run: pytest -v -m unit

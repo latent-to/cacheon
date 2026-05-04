@@ -110,8 +110,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         default=validator_config.DRY_RUN,
-        help="Do not call subtensor.set_weights() and do not "
-             "run Docker eval.",
+        help="Do not call subtensor.set_weights() and do not run Docker eval.",
     )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -135,7 +134,10 @@ def main(argv: list[str] | None = None) -> int:
 
     logger.info(
         "Connecting to network=%s netuid=%d wallet=%s/%s",
-        args.network, args.netuid, args.wallet_name, args.wallet_hotkey,
+        args.network,
+        args.netuid,
+        args.wallet_name,
+        args.wallet_hotkey,
     )
 
     subtensor = bt.Subtensor(network=args.network)
@@ -167,8 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         eval_fn = not_implemented_eval
     else:
         logger.error(
-            "Live Docker evaluation not yet implemented. "
-            "Run with --dry-run for now."
+            "Live Docker evaluation not yet implemented. Run with --dry-run for now."
         )
         return 6
 
