@@ -13,22 +13,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
+from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-def _valid_docker_image(image: str) -> bool:
-    """Check that *image* looks like a Docker reference (with optional port/tag)."""
-    if not image or not re.match(r"^[a-z0-9]", image):
-        return False
-    name = image
-    last_colon = image.rfind(":")
-    if last_colon > 0 and "/" not in image[last_colon:]:
-        tag = image[last_colon + 1:]
-        name = image[:last_colon]
-        if not tag or not re.match(r"^[a-zA-Z0-9._-]+$", tag):
-            return False
-    return bool(re.match(r"^[a-z0-9][a-z0-9._/:-]*$", name))
+from validator.chain import _is_valid_docker_image, _DIGEST_RE  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,14 +46,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
-    if not _valid_docker_image(args.image):
+    if not _is_valid_docker_image(args.image):
         print(
             f"error: invalid Docker image reference: {args.image}",
             file=sys.stderr,
         )
         return 1
 
-    if not re.match(r"^sha256:[0-9a-f]{64}$", args.digest):
+    if not _DIGEST_RE.match(args.digest):
         print(
             f"error: digest must be sha256:<64 hex chars>, got: {args.digest}",
             file=sys.stderr,
