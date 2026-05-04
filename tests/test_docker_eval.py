@@ -408,10 +408,14 @@ class TestSendPromptNonStreaming:
     @patch("validator.docker_eval.time.monotonic")
     @patch("validator.docker_eval.urlopen")
     def test_logprobs_content_null(self, mock_urlopen, mock_mono):
-        body = {"choices": [{"message": {"content": "ok"}, "logprobs": {"content": None}}]}
+        body = {
+            "choices": [{"message": {"content": "ok"}, "logprobs": {"content": None}}]
+        }
         mock_urlopen.return_value = _make_json_response(body)
         mock_mono.side_effect = [0.0, 0.5]
-        result = send_prompt(8080, [{"role": "user", "content": "hi"}], stream=False, logprobs=True)
+        result = send_prompt(
+            8080, [{"role": "user", "content": "hi"}], stream=False, logprobs=True
+        )
         assert result.error is None
         assert result.tokens == []
         assert result.top_logprobs is None
@@ -422,17 +426,30 @@ class TestSendPromptNonStreaming:
         body = {"choices": [{"message": {"content": "ok"}, "logprobs": "bad"}]}
         mock_urlopen.return_value = _make_json_response(body)
         mock_mono.side_effect = [0.0, 0.5]
-        result = send_prompt(8080, [{"role": "user", "content": "hi"}], stream=False, logprobs=True)
+        result = send_prompt(
+            8080, [{"role": "user", "content": "hi"}], stream=False, logprobs=True
+        )
         assert result.error is None
         assert result.tokens == []
 
     @patch("validator.docker_eval.time.monotonic")
     @patch("validator.docker_eval.urlopen")
     def test_logprobs_content_has_non_dict_entries(self, mock_urlopen, mock_mono):
-        body = {"choices": [{"message": {"content": "ok"}, "logprobs": {"content": [None, "bad", {"token": "ok", "top_logprobs": []}]}}]}
+        body = {
+            "choices": [
+                {
+                    "message": {"content": "ok"},
+                    "logprobs": {
+                        "content": [None, "bad", {"token": "ok", "top_logprobs": []}]
+                    },
+                }
+            ]
+        }
         mock_urlopen.return_value = _make_json_response(body)
         mock_mono.side_effect = [0.0, 0.5]
-        result = send_prompt(8080, [{"role": "user", "content": "hi"}], stream=False, logprobs=True)
+        result = send_prompt(
+            8080, [{"role": "user", "content": "hi"}], stream=False, logprobs=True
+        )
         assert result.error is None
         assert result.tokens == ["ok"]
         assert result.output_tokens == 1
