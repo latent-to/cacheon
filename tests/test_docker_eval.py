@@ -274,6 +274,26 @@ class TestSendPromptStreaming:
         assert result.error is not None
         assert "request_failed" in result.error
 
+    @patch("validator.docker_eval.time.monotonic")
+    @patch("validator.docker_eval.urlopen")
+    def test_mid_stream_error_returns_partial_result(self, mock_urlopen, mock_mono):
+        def _failing_iter():
+            yield b'data: {"choices": [{"delta": {"content": "Hello"}}]}\n'
+            raise ConnectionResetError("peer reset")
+
+        resp = MagicMock()
+        resp.__iter__ = lambda self: _failing_iter()
+        resp.status = 200
+        mock_urlopen.return_value = resp
+        mock_mono.side_effect = [0.0, 0.1]
+
+        result = send_prompt(8080, [{"role": "user", "content": "hi"}], stream=True)
+
+        assert result.error is not None
+        assert "stream_error" in result.error
+        assert result.tokens == ["Hello"]
+        assert result.ttft_s == pytest.approx(0.1)
+
 
 # --------------------------------------------------------------------------- #
 # send_prompt -- non-streaming

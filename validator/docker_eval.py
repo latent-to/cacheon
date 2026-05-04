@@ -254,28 +254,40 @@ def _parse_sse_response(
     t_first: float | None = None
     t_last: float = t_start
 
-    for raw_line in resp:
-        line = raw_line.decode("utf-8", errors="replace").strip()
-        if not line.startswith("data: "):
-            continue
-        payload = line[6:]
-        if payload == "[DONE]":
-            break
-        try:
-            chunk = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        choices = chunk.get("choices", [])
-        if not choices:
-            continue
-        delta = choices[0].get("delta", {})
-        content = delta.get("content", "")
-        if content:
-            now = time.monotonic()
-            if t_first is None:
-                t_first = now
-            t_last = now
-            tokens.append(content)
+    try:
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices", [])
+            if not choices:
+                continue
+            delta = choices[0].get("delta", {})
+            content = delta.get("content", "")
+            if content:
+                now = time.monotonic()
+                if t_first is None:
+                    t_first = now
+                t_last = now
+                tokens.append(content)
+    except Exception as exc:
+        return RawPromptResult(
+            prompt_index=prompt_index,
+            output_text="".join(tokens),
+            tokens=tokens,
+            top_logprobs=None,
+            ttft_s=(t_first - t_start) if t_first else 0.0,
+            throughput_tps=0.0,
+            output_tokens=len(tokens),
+            error=f"stream_error: {exc}",
+        )
 
     if t_first is None:
         return RawPromptResult(
@@ -452,6 +464,7 @@ def run_baseline_if_needed(
         )
     finally:
         stop_and_remove(cid)
+        reset_gpu_state()
 
     errors = [r for r in speed_results + correctness_results if r.error]
     if errors:
