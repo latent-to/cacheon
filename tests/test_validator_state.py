@@ -36,9 +36,9 @@ def _make_eval(
     disqualified: bool = False,
     reason: str | None = None,
     image: str = "user/server:latest",
-    digest: str = "",
+    digest: str | None = None,
 ) -> EvaluationRecord:
-    if not digest:
+    if digest is None:
         digest = "sha256:" + format(uid, "x").zfill(64)
     return EvaluationRecord(
         uid=uid,
