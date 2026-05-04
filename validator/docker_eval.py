@@ -503,6 +503,10 @@ def evaluate_challenger(
 ) -> EvaluationRecord:
     """Full lifecycle for one challenger. Returns an EvaluationRecord."""
     cid: str | None = None
+    speed_results: list[RawPromptResult] = []
+    correctness_results: list[RawPromptResult] = []
+    eval_error: Exception | None = None
+
     try:
         pull_image(com.image, com.digest)
         host_port = allocate_host_port()
@@ -533,13 +537,14 @@ def evaluate_challenger(
         )
     except Exception as exc:
         logger.error("Challenger UID %d failed: %s", com.uid, exc)
+        eval_error = exc
+    finally:
         if cid is not None:
             stop_and_remove(cid)
             reset_gpu_state()
-        return _dq_record(com, current_block, str(exc))
 
-    stop_and_remove(cid)
-    reset_gpu_state()
+    if eval_error is not None:
+        return _dq_record(com, current_block, str(eval_error))
 
     errors = [r for r in speed_results + correctness_results if r.error]
     if errors:
