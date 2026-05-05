@@ -63,6 +63,18 @@ else
   curl -fsSL https://get.docker.com | sh
 fi
 
+# Ensure dockerd is running (systemctl may not work in containers)
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker daemon not running, starting manually..."
+  nohup dockerd > /var/log/dockerd.log 2>&1 &
+  sleep 5
+  if ! docker info >/dev/null 2>&1; then
+    echo "ERROR: dockerd failed to start. Check /var/log/dockerd.log"
+    exit 1
+  fi
+  echo "dockerd started (PID $(pgrep -x dockerd))"
+fi
+
 # -- NVIDIA Container Toolkit --
 echo ""
 echo "=== NVIDIA Container Toolkit ==="
@@ -70,19 +82,26 @@ if nvidia-ctk --version >/dev/null 2>&1; then
   echo "nvidia-ctk already present: $(nvidia-ctk --version | head -n 1)"
 else
   echo "Installing nvidia-container-toolkit from NVIDIA repository..."
-  distribution="$(. /etc/os-release && echo "${ID}${VERSION_ID}")"
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-  curl -s -L "https://nvidia.github.io/libnvidia-container/${distribution}/libnvidia-container.list" | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+    | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+    | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
   apt-get update -q
   apt-get install -y --no-install-recommends nvidia-container-toolkit
   nvidia-ctk runtime configure --runtime=docker
+  # Restart dockerd to pick up the new runtime config
   if command -v systemctl >/dev/null 2>&1 && systemctl is-active docker >/dev/null 2>&1; then
     systemctl restart docker
-  elif command -v service >/dev/null 2>&1; then
-    service docker restart
   else
-    echo "WARNING: could not restart Docker daemon automatically."
-    echo "         Run 'dockerd &' or restart Docker manually, then re-run this script."
+    pkill -x dockerd && sleep 2
+    nohup dockerd > /var/log/dockerd.log 2>&1 &
+    sleep 5
+    if ! docker info >/dev/null 2>&1; then
+      echo "ERROR: dockerd failed to restart after nvidia-ctk configure. Check /var/log/dockerd.log"
+      exit 1
+    fi
+    echo "dockerd restarted (PID $(pgrep -x dockerd))"
   fi
 fi
 
