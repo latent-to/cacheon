@@ -6,7 +6,7 @@ Usage:
         --image docker.io/myuser/cacheon-miner:v1 \
         --digest sha256:abc123... \
         --wallet-name my-miner --wallet-hotkey default \
-        --network test --netuid 460
+        --network test --netuid 470
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--wallet-hotkey", default="default")
     p.add_argument("--network", default="test", help="Bittensor network: finney | test")
     p.add_argument(
-        "--netuid", type=int, default=460, help="Subnet UID (460=testnet, 14=mainnet)"
+        "--netuid", type=int, default=470, help="Subnet UID (470=testnet, 14=mainnet)"
     )
     args = p.parse_args(argv)
 
