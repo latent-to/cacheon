@@ -90,19 +90,38 @@ else
   apt-get update -q
   apt-get install -y --no-install-recommends nvidia-container-toolkit
   nvidia-ctk runtime configure --runtime=docker
-  # Restart dockerd to pick up the new runtime config
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-active docker >/dev/null 2>&1; then
-    systemctl restart docker
-  else
-    pkill -x dockerd && sleep 2
-    nohup dockerd > /var/log/dockerd.log 2>&1 &
-    sleep 5
-    if ! docker info >/dev/null 2>&1; then
-      echo "ERROR: dockerd failed to restart after nvidia-ctk configure. Check /var/log/dockerd.log"
-      exit 1
-    fi
-    echo "dockerd restarted (PID $(pgrep -x dockerd))"
+fi
+
+# Nested-container fixes (Lium / Targon DinD pods):
+# 1) no-cgroups: skip BPF cgroup device filters that fail inside a nested cgroup namespace
+if grep -q '^#no-cgroups = false' /etc/nvidia-container-runtime/config.toml 2>/dev/null; then
+  echo "Enabling no-cgroups for nested container GPU passthrough..."
+  sed -i 's/^#no-cgroups = false/no-cgroups = true/' /etc/nvidia-container-runtime/config.toml
+elif ! grep -q '^no-cgroups = true' /etc/nvidia-container-runtime/config.toml 2>/dev/null; then
+  echo "WARNING: could not find no-cgroups line in config.toml; GPU passthrough may fail in nested containers."
+fi
+
+# 2) runc 1.1.x: runc 1.2+ rejects /proc mounts from the outer container ("unsafe procfs")
+RUNC_VER="$(runc --version 2>/dev/null | head -1 | grep -oP '[\d]+\.[\d]+' | head -1 || true)"
+if [[ "$RUNC_VER" == "1.2" || "$RUNC_VER" == "1.3" ]]; then
+  echo "Downgrading runc from $RUNC_VER.x to 1.1.15 for nested container compatibility..."
+  curl -fsSL -o /usr/sbin/runc https://github.com/opencontainers/runc/releases/download/v1.1.15/runc.amd64
+  chmod +x /usr/sbin/runc
+  echo "runc: $(runc --version | head -1)"
+fi
+
+# Restart dockerd to pick up runtime config + runc changes
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active docker >/dev/null 2>&1; then
+  systemctl restart docker
+else
+  pkill -x dockerd && sleep 2
+  nohup dockerd > /var/log/dockerd.log 2>&1 &
+  sleep 5
+  if ! docker info >/dev/null 2>&1; then
+    echo "ERROR: dockerd failed to restart after nvidia-ctk configure. Check /var/log/dockerd.log"
+    exit 1
   fi
+  echo "dockerd restarted (PID $(pgrep -x dockerd))"
 fi
 
 # -- clone or update repo --
