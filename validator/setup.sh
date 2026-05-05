@@ -40,8 +40,8 @@ if [[ "$PULL_ONLY" == true ]]; then
   git -C "$REPO_DIR" pull
   # shellcheck source=/dev/null
   source "$VENV_DIR/bin/activate"
-  pip install --upgrade pip
-  pip install -r "$REPO_DIR/validator/requirements-cpu.txt"
+  "$VENV_DIR/bin/pip" install --upgrade pip
+  "$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements-cpu.txt"
   echo "=== Pull-only run complete ==="
   exit 0
 fi
@@ -132,8 +132,9 @@ if [[ ! -x "$VENV_DIR/bin/python" ]] || [[ ! -f "$VENV_DIR/bin/activate" ]]; the
 fi
 # shellcheck source=/dev/null
 source "$VENV_DIR/bin/activate"
-pip install --upgrade pip
-pip install -r "$REPO_DIR/validator/requirements-cpu.txt"
+export PATH="$VENV_DIR/bin:$PATH"
+"$VENV_DIR/bin/pip" install --upgrade pip
+"$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements-cpu.txt"
 
 # Hugging Face cache (all HF operations below use this)
 export HF_HOME="/workspace/.cache/huggingface"
@@ -142,7 +143,7 @@ mkdir -p "$HF_HOME"
 if [[ -n "${HF_TOKEN:-}" ]]; then
   echo ""
   echo "=== Hugging Face CLI (HF_TOKEN set) ==="
-  huggingface-cli login --token "$HF_TOKEN"
+  "$VENV_DIR/bin/huggingface-cli" login --token "$HF_TOKEN"
 fi
 
 # -- disk space (before large downloads) --
@@ -167,12 +168,12 @@ fi
 # -- model weights --
 echo ""
 echo "=== Model weights ($MODEL_NAME) ==="
-huggingface-cli download "$MODEL_NAME" --local-dir "$MODEL_DIR"
+"$VENV_DIR/bin/huggingface-cli" download "$MODEL_NAME" --local-dir "$MODEL_DIR"
 
 # -- PG19 (pinned revision, matches validator/prompts.py) --
 echo ""
 echo "=== PG19 dataset (pinned revision) ==="
-python -c "from datasets import load_dataset; load_dataset('deepmind/pg19', split='train', revision='a0e01428956e39868fa36ccfa0ee236ff04e6a6b'); print('PG19 cached')"
+"$VENV_DIR/bin/python" -c "from datasets import load_dataset; load_dataset('deepmind/pg19', split='train', revision='a0e01428956e39868fa36ccfa0ee236ff04e6a6b'); print('PG19 cached')"
 
 # -- vLLM baseline image --
 echo ""
@@ -196,7 +197,7 @@ echo "=== Verification ==="
 nvidia-smi
 docker --version
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
-python -c "import bittensor, datasets; print('python deps ok')"
+"$VENV_DIR/bin/python" -c "import bittensor, datasets; print('python deps ok')"
 test -d "$MODEL_DIR"
 
 echo ""
