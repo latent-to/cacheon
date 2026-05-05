@@ -16,6 +16,7 @@ set -euo pipefail
 
 # -- config (same layout as legacy setup-cpu.sh) --
 REPO_URL="https://github.com/latent-to/cacheon.git"
+CACHEON_BRANCH="${CACHEON_BRANCH:-main}"
 BASE="$HOME"
 REPO_DIR="$BASE/cacheon"
 VENV_DIR="$BASE/venv-cacheon"
@@ -41,7 +42,7 @@ if [[ "$PULL_ONLY" == true ]]; then
   # shellcheck source=/dev/null
   source "$VENV_DIR/bin/activate"
   "$VENV_DIR/bin/pip" install --upgrade pip
-  "$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements-cpu.txt"
+  "$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements.txt"
   echo "=== Pull-only run complete ==="
   exit 0
 fi
@@ -131,12 +132,12 @@ if [[ -d "$REPO_DIR/.git" ]]; then
   echo "Repo exists, pulling latest..."
   git -C "$REPO_DIR" pull
 else
-  echo "Cloning into $REPO_DIR"
+  echo "Cloning into $REPO_DIR (branch: $CACHEON_BRANCH)"
   if [[ -n "${GITHUB_PAT:-}" ]] && [[ "$REPO_URL" == https://github.com/* ]]; then
     CLONE_URL="${REPO_URL/https:\/\/github.com\//https://${GITHUB_PAT}@github.com/}"
-    git clone "$CLONE_URL" "$REPO_DIR"
+    git clone -b "$CACHEON_BRANCH" "$CLONE_URL" "$REPO_DIR"
   else
-    git clone "$REPO_URL" "$REPO_DIR"
+    git clone -b "$CACHEON_BRANCH" "$REPO_URL" "$REPO_DIR"
   fi
 fi
 
@@ -153,7 +154,7 @@ fi
 source "$VENV_DIR/bin/activate"
 export PATH="$VENV_DIR/bin:$PATH"
 "$VENV_DIR/bin/pip" install --upgrade pip
-"$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements-cpu.txt"
+"$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements.txt"
 
 # Hugging Face cache (all HF operations below use this)
 export HF_HOME="/workspace/.cache/huggingface"

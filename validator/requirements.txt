@@ -2,3 +2,4 @@
 bittensor>=10
 bittensor-cli>=9
 datasets>=3
+huggingface-hub>=1.13.0
