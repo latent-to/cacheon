@@ -50,7 +50,8 @@ MODEL_VOLUME: str = os.environ.get("CACHEON_MODEL_VOLUME", "/models")
 
 GPUS: str = os.environ.get("CACHEON_GPUS", "all")
 """Docker ``--gpus`` value. ``all`` passes every visible GPU; set to
-``device=0,1,2,3`` (or similar) to restrict to specific devices."""
+``device=0,1,2,3`` to restrict to specific devices (commas are quoted
+automatically before passing to Docker's CSV parser)."""
 
 BASELINE_IMAGE: str = os.environ.get(
     "CACHEON_BASELINE_IMAGE", "vllm/vllm-openai:latest"

@@ -116,6 +116,11 @@ def start_container(
     """Start an isolated miner container and return its container ID."""
     ensure_eval_network()
     ref = f"{image}@{digest}"
+    # Docker's --gpus flag uses Go's csv.Reader internally.  Multi-device
+    # values like device=0,1,2,3 must be wrapped in literal double quotes
+    # so the CSV parser treats commas as part of one field.
+    gpus_arg = f'"{gpus}"' if "," in gpus and not gpus.startswith('"') else gpus
+
     cmd = [
         "docker",
         "run",
@@ -144,7 +149,7 @@ def start_container(
         "--cpus",
         str(cpus),
         "--gpus",
-        gpus,
+        gpus_arg,
         ref,
     ]
     logger.info("Starting container: port=%d, image=%s", host_port, ref)

@@ -90,8 +90,13 @@ else
     | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
   apt-get update -q
   apt-get install -y --no-install-recommends nvidia-container-toolkit
-  nvidia-ctk runtime configure --runtime=docker
 fi
+
+nvidia-ctk runtime configure --runtime=docker
+
+mkdir -p /etc/cdi
+nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+echo "CDI specs generated at /etc/cdi/nvidia.yaml"
 
 # Nested-container fixes (Lium / Targon DinD pods):
 # 1) no-cgroups: skip BPF cgroup device filters that fail inside a nested cgroup namespace

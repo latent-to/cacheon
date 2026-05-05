@@ -146,6 +146,60 @@ class TestStartContainer:
 
     @patch("validator.docker_eval.ensure_eval_network")
     @patch("validator.docker_eval.subprocess.run")
+    def test_multi_device_gpus_quoted(self, mock_run, _mock_net):
+        """device=0,1,2,3 must be wrapped in literal double quotes for Docker's CSV parser."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="container_id\n", stderr=""
+        )
+        start_container(
+            _IMAGE,
+            _DIGEST,
+            model_volume="/mnt/models",
+            gpus="device=0,1,2,3",
+            host_port=9999,
+        )
+        cmd = mock_run.call_args[0][0]
+        gpus_idx = cmd.index("--gpus") + 1
+        assert cmd[gpus_idx] == '"device=0,1,2,3"'
+
+    @patch("validator.docker_eval.ensure_eval_network")
+    @patch("validator.docker_eval.subprocess.run")
+    def test_single_device_gpus_not_quoted(self, mock_run, _mock_net):
+        """Single-device values (no commas) should not be wrapped."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="container_id\n", stderr=""
+        )
+        start_container(
+            _IMAGE,
+            _DIGEST,
+            model_volume="/mnt/models",
+            gpus="device=0",
+            host_port=9999,
+        )
+        cmd = mock_run.call_args[0][0]
+        gpus_idx = cmd.index("--gpus") + 1
+        assert cmd[gpus_idx] == "device=0"
+
+    @patch("validator.docker_eval.ensure_eval_network")
+    @patch("validator.docker_eval.subprocess.run")
+    def test_gpus_all_not_quoted(self, mock_run, _mock_net):
+        """'all' should pass through unchanged."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="container_id\n", stderr=""
+        )
+        start_container(
+            _IMAGE,
+            _DIGEST,
+            model_volume="/mnt/models",
+            gpus="all",
+            host_port=9999,
+        )
+        cmd = mock_run.call_args[0][0]
+        gpus_idx = cmd.index("--gpus") + 1
+        assert cmd[gpus_idx] == "all"
+
+    @patch("validator.docker_eval.ensure_eval_network")
+    @patch("validator.docker_eval.subprocess.run")
     def test_failure_raises(self, mock_run, _mock_net):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
         with pytest.raises(RuntimeError, match="docker run failed"):
