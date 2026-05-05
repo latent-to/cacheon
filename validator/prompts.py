@@ -83,7 +83,7 @@ def _load_pg19() -> list[str]:
         raise RuntimeError(
             f"Failed to load PG19. If the dataset is not cached locally, "
             f"pre-download it with:\n"
-            f"  python -c \"from datasets import load_dataset; "
+            f'  python -c "from datasets import load_dataset; '
             f"load_dataset('{DATASET_NAME}', split='{DATASET_SPLIT}')\"\n"
             f"Original error: {exc}"
         ) from exc
