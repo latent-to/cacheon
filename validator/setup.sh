@@ -143,7 +143,7 @@ mkdir -p "$HF_HOME"
 if [[ -n "${HF_TOKEN:-}" ]]; then
   echo ""
   echo "=== Hugging Face CLI (HF_TOKEN set) ==="
-  "$VENV_DIR/bin/huggingface-cli" login --token "$HF_TOKEN"
+  "$VENV_DIR/bin/hf" auth login --token "$HF_TOKEN"
 fi
 
 # -- disk space (before large downloads) --
@@ -168,7 +168,7 @@ fi
 # -- model weights --
 echo ""
 echo "=== Model weights ($MODEL_NAME) ==="
-"$VENV_DIR/bin/huggingface-cli" download "$MODEL_NAME" --local-dir "$MODEL_DIR"
+"$VENV_DIR/bin/hf" download "$MODEL_NAME" --local-dir "$MODEL_DIR"
 
 # -- PG19 (pinned revision, matches validator/prompts.py) --
 echo ""
