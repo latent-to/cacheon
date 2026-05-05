@@ -17,7 +17,6 @@ from validator.prompts import (
     _sample_passage,
     derive_seed,
     sample_prompts,
-    shuffle_for_challenger,
 )
 
 pytestmark = pytest.mark.unit
@@ -168,36 +167,6 @@ class TestSamplePrompts:
                 content.startswith(t.split("{context}")[0]) for t in TEMPLATES
             )
             assert has_template, f"No template prefix found in: {content[:80]}..."
-
-
-# --------------------------------------------------------------------------- #
-# shuffle_for_challenger
-# --------------------------------------------------------------------------- #
-
-
-class TestShuffleForChallenger:
-    def test_same_prompts_different_order(self):
-        prompts = sample_prompts("0xblock", n=5, _rows=FAKE_ROWS)
-        s1 = shuffle_for_challenger(prompts, "0xblock", "hotkey_a")
-        s2 = shuffle_for_challenger(prompts, "0xblock", "hotkey_b")
-        contents1 = [p.messages[0].content for p in s1]
-        contents2 = [p.messages[0].content for p in s2]
-        assert set(contents1) == set(contents2)
-        assert contents1 != contents2
-
-    def test_deterministic(self):
-        prompts = sample_prompts("0xblock", n=5, _rows=FAKE_ROWS)
-        s1 = shuffle_for_challenger(prompts, "0xblock", "hotkey_x")
-        s2 = shuffle_for_challenger(prompts, "0xblock", "hotkey_x")
-        for a, b in zip(s1, s2):
-            assert a.messages[0].content == b.messages[0].content
-
-    def test_does_not_mutate_original(self):
-        prompts = sample_prompts("0xblock", n=5, _rows=FAKE_ROWS)
-        original_contents = [p.messages[0].content for p in prompts]
-        shuffle_for_challenger(prompts, "0xblock", "hotkey_y")
-        after_contents = [p.messages[0].content for p in prompts]
-        assert original_contents == after_contents
 
 
 # --------------------------------------------------------------------------- #

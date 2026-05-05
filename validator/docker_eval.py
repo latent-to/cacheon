@@ -754,7 +754,7 @@ def make_eval_fn(
             logger.error("No block_hash available -- cannot derive prompt seed")
             return [_dq_record(c, current_block, "no_block_hash") for c in challengers]
 
-        from .prompts import sample_prompts, shuffle_for_challenger
+        from .prompts import sample_prompts
 
         prompts = sample_prompts(block_hash, n=10)
 
@@ -779,10 +779,9 @@ def make_eval_fn(
                 com.hotkey[:16],
                 com.image,
             )
-            challenger_prompts = shuffle_for_challenger(prompts, block_hash, com.hotkey)
             record = evaluate_challenger(
                 com,
-                challenger_prompts,
+                prompts,
                 baseline,
                 model_volume=model_volume,
                 gpus=gpus,

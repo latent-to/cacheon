@@ -188,21 +188,3 @@ def sample_prompts(
             )
         )
     return prompts
-
-
-def shuffle_for_challenger(
-    prompts: list[Prompt],
-    block_hash: str,
-    hotkey: str,
-) -> list[Prompt]:
-    """Return a shuffled copy of prompts, seeded by block_hash + hotkey.
-
-    Different challengers see the same prompts in different order,
-    preventing order-specific warmup advantages.
-    """
-    seed_bytes = hashlib.sha256(f"{block_hash}:{hotkey}".encode()).digest()
-    seed = int.from_bytes(seed_bytes[:8], "big")
-    rng = random.Random(seed)
-    shuffled = list(prompts)
-    rng.shuffle(shuffled)
-    return shuffled
