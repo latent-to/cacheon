@@ -154,12 +154,12 @@ if [[ -z "$avail_kb" ]] || ! [[ "$avail_kb" =~ ^[0-9]+$ ]]; then
   echo "WARNING: could not read free space on /workspace (df). Continuing."
 else
   avail_gb=$((avail_kb / 1024 / 1024))
-  if ((avail_gb < 300)); then
-    echo "ERROR: need at least 300 GB free on the /workspace filesystem, found ${avail_gb} GB."
+  if ((avail_gb < 100)); then
+    echo "ERROR: need at least 100 GB free on the /workspace filesystem, found ${avail_gb} GB."
     exit 1
   fi
-  if ((avail_gb < 500)); then
-    echo "WARNING: only ${avail_gb} GB free on /workspace; recommend 500+ GB for model, dataset cache, and Docker layers."
+  if ((avail_gb < 200)); then
+    echo "WARNING: only ${avail_gb} GB free on /workspace; recommend 200+ GB for model, dataset cache, and Docker layers."
   else
     echo "OK: ${avail_gb} GB free on /workspace."
   fi
