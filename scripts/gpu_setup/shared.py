@@ -1,12 +1,13 @@
 """Shared constants and helpers for GPU pod provisioning scripts."""
 
+import os
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_FILE = REPO_ROOT / ".env"
 
-GPU_COUNT = 1
+GPU_COUNT = int(os.environ.get("CACHEON_GPU_COUNT", "8"))
 
 GPU_PREFERENCE = [
     {"type": "H100", "exclude": {"NVIDIA H100 PCIe"}},

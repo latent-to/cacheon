@@ -17,6 +17,8 @@ Env vars (all optional; CLI wins):
     CACHEON_NETUID, CACHEON_NETWORK,
     CACHEON_WALLET_NAME, CACHEON_WALLET_HOTKEY,
     CACHEON_POLL_INTERVAL_S, CACHEON_STATE_DIR, CACHEON_DRY_RUN=1
+    CACHEON_MODEL_VOLUME, CACHEON_GPUS,
+    CACHEON_BASELINE_IMAGE, CACHEON_BASELINE_DIGEST
 """
 
 from __future__ import annotations
@@ -116,22 +118,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p.add_argument(
         "--model-volume",
-        default="/models",
+        default=validator_config.MODEL_VOLUME,
         help="Host path to the read-only model weights directory.",
     )
     p.add_argument(
         "--gpus",
-        default='"device=0,1,2,3"',
+        default=validator_config.GPUS,
         help="GPU device specification for Docker --gpus flag.",
     )
     p.add_argument(
         "--baseline-image",
-        default="vllm/vllm-openai:latest",
+        default=validator_config.BASELINE_IMAGE,
         help="Docker image for the vLLM baseline server.",
     )
     p.add_argument(
         "--baseline-digest",
-        default="",
+        default=validator_config.BASELINE_DIGEST,
         help="Digest (sha256:...) of the baseline image. Required for live eval.",
     )
     return p

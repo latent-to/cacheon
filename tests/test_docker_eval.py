@@ -115,7 +115,7 @@ class TestStartContainer:
             _IMAGE,
             _DIGEST,
             model_volume="/mnt/models",
-            gpus='"device=0"',
+            gpus="device=0",
             host_port=9999,
         )
         assert cid == "abc123def456"
@@ -130,7 +130,7 @@ class TestStartContainer:
             _IMAGE,
             _DIGEST,
             model_volume="/mnt/models",
-            gpus='"device=0"',
+            gpus="device=0",
             host_port=9999,
         )
         cmd = mock_run.call_args[0][0]
@@ -153,7 +153,7 @@ class TestStartContainer:
                 _IMAGE,
                 _DIGEST,
                 model_volume="/mnt/models",
-                gpus='"device=0"',
+                gpus="device=0",
                 host_port=9999,
             )
 
@@ -563,7 +563,7 @@ class TestEvaluateChallenger:
             _make_prompts(n=2, n_warmup=2),
             _make_baseline(n_prompts=2),
             model_volume="/models",
-            gpus='"device=0"',
+            gpus="device=0",
             startup_timeout_s=600,
             per_prompt_timeout_s=120,
             n_warmup=2,
@@ -601,7 +601,7 @@ class TestEvaluateChallenger:
             _make_prompts(),
             _make_baseline(),
             model_volume="/models",
-            gpus='"device=0"',
+            gpus="device=0",
             startup_timeout_s=600,
             per_prompt_timeout_s=120,
             n_warmup=2,
@@ -677,7 +677,7 @@ class TestEvaluateChallenger:
             _make_prompts(n=2, n_warmup=2),
             _make_baseline(n_prompts=2),
             model_volume="/models",
-            gpus='"device=0"',
+            gpus="device=0",
             startup_timeout_s=600,
             per_prompt_timeout_s=120,
             n_warmup=2,
@@ -740,7 +740,7 @@ class TestEvaluateChallenger:
             _make_prompts(n=2, n_warmup=2),
             _make_baseline(n_prompts=2),
             model_volume="/models",
-            gpus='"device=0"',
+            gpus="device=0",
             startup_timeout_s=600,
             per_prompt_timeout_s=120,
             n_warmup=2,
@@ -820,7 +820,7 @@ class TestRunBaselineErrorCheck:
                 baseline_image="vllm:latest",
                 baseline_digest="sha256:" + "b" * 64,
                 model_volume="/models",
-                gpus='"device=0"',
+                gpus="device=0",
                 cache_dir=tmp_path,
                 block_hash="0xabc",
                 startup_timeout_s=600,

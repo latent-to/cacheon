@@ -730,7 +730,7 @@ def make_eval_fn(
     *,
     model_volume: str,
     baseline_cache_dir: str,
-    gpus: str = '"device=0,1,2,3"',
+    gpus: str = "all",
     baseline_image: str,
     baseline_digest: str,
     startup_timeout_s: int = 600,
