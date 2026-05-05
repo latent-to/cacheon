@@ -754,19 +754,12 @@ def make_eval_fn(
             logger.error("No block_hash available -- cannot derive prompt seed")
             return [_dq_record(c, current_block, "no_block_hash") for c in challengers]
 
-        # Prompt sampling is Sprint 4; for now use a placeholder list
-        from .eval_schema import ChatMessage, Prompt as EvalPrompt
+        from .prompts import sample_prompts
 
-        placeholder_prompts = [
-            EvalPrompt(
-                messages=[ChatMessage(role="user", content=f"Prompt {i}")],
-                max_tokens=256,
-            )
-            for i in range(10)
-        ]
+        prompts = sample_prompts(block_hash, n=10)
 
         baseline = run_baseline_if_needed(
-            placeholder_prompts,
+            prompts,
             baseline_image=baseline_image,
             baseline_digest=baseline_digest,
             model_volume=model_volume,
@@ -788,7 +781,7 @@ def make_eval_fn(
             )
             record = evaluate_challenger(
                 com,
-                placeholder_prompts,
+                prompts,
                 baseline,
                 model_volume=model_volume,
                 gpus=gpus,

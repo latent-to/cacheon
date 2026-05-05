@@ -74,12 +74,15 @@ class BaselineCache:
 
 
 def derive_cache_key(block_hash: str, baseline_digest: str = "") -> str:
-    """SHA-256 of block_hash + baseline_digest, first 16 hex chars.
+    """SHA-256 of block_hash + baseline_digest + prompt engine version.
 
     Including the baseline digest ensures a cache miss when the pinned
-    vLLM image changes between validator restarts.
+    vLLM image changes. Including the prompt engine version invalidates
+    the cache when templates or sampling logic change.
     """
-    raw = f"{block_hash}:{baseline_digest}"
+    from .prompts import PROMPT_ENGINE_VERSION
+
+    raw = f"{block_hash}:{baseline_digest}:v{PROMPT_ENGINE_VERSION}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
