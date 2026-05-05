@@ -170,10 +170,10 @@ echo ""
 echo "=== Model weights ($MODEL_NAME) ==="
 "$VENV_DIR/bin/hf" download "$MODEL_NAME" --local-dir "$MODEL_DIR"
 
-# -- PG19 (pinned revision, matches validator/prompts.py) --
+# -- PG19 (matches validator/prompts.py DATASET_NAME) --
 echo ""
-echo "=== PG19 dataset (pinned revision) ==="
-"$VENV_DIR/bin/python" -c "from datasets import load_dataset; load_dataset('deepmind/pg19', split='train', revision='a0e01428956e39868fa36ccfa0ee236ff04e6a6b'); print('PG19 cached')"
+echo "=== PG19 dataset ==="
+"$VENV_DIR/bin/python" -c "from datasets import load_dataset; load_dataset('emozilla/pg19', split='train'); print('PG19 cached')"
 
 # -- vLLM baseline image --
 echo ""
