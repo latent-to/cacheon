@@ -22,9 +22,8 @@ logger = logging.getLogger(__name__)
 
 PROMPT_ENGINE_VERSION: int = 1
 
-DATASET_NAME: str = "deepmind/pg19"
+DATASET_NAME: str = "emozilla/pg19"
 DATASET_SPLIT: str = "train"
-DATASET_REVISION: str = "a0e01428956e39868fa36ccfa0ee236ff04e6a6b"
 
 MIN_CONTEXT_CHARS: int = 16_000
 MAX_CONTEXT_CHARS: int = 131_072
@@ -79,18 +78,13 @@ def _load_pg19() -> list[str]:
         )
 
     try:
-        ds = load_dataset(
-            DATASET_NAME,
-            split=DATASET_SPLIT,
-            revision=DATASET_REVISION,
-        )
+        ds = load_dataset(DATASET_NAME, split=DATASET_SPLIT)
     except Exception as exc:
         raise RuntimeError(
             f"Failed to load PG19. If the dataset is not cached locally, "
             f"pre-download it with:\n"
             f'  python -c "from datasets import load_dataset; '
-            f"load_dataset('{DATASET_NAME}', split='{DATASET_SPLIT}', "
-            f"revision='{DATASET_REVISION}')\"\n"
+            f"load_dataset('{DATASET_NAME}', split='{DATASET_SPLIT}')\"\n"
             f"Original error: {exc}"
         ) from exc
 

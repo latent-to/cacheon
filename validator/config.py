@@ -45,6 +45,19 @@ Yuma consensus only trust-weights validators that agree on the version, so
 bumping this effectively rolls consensus to the new version once a quorum of
 stake has upgraded."""
 
+MODEL_VOLUME: str = os.environ.get("CACHEON_MODEL_VOLUME", "/models")
+"""Host path mounted read-only into miner/baseline containers at ``/models``."""
+
+GPUS: str = os.environ.get("CACHEON_GPUS", "all")
+"""Docker ``--gpus`` value. ``all`` passes every visible GPU; set to
+``device=0,1,2,3`` to restrict to specific devices (commas are quoted
+automatically before passing to Docker's CSV parser)."""
+
+BASELINE_IMAGE: str = os.environ.get(
+    "CACHEON_BASELINE_IMAGE", "vllm/vllm-openai:latest"
+)
+BASELINE_DIGEST: str = os.environ.get("CACHEON_BASELINE_DIGEST", "")
+
 # --------------------------------------------------------------------------- #
 # King defender-advantage window
 # --------------------------------------------------------------------------- #
