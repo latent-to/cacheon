@@ -10,7 +10,7 @@ python miner/commit.py \
   --digest sha256:abc123... \
   --wallet-name my-miner \
   --wallet-hotkey default \
-  --network test --netuid 460
+  --network test --netuid 470
 ```
 
 This commits your Docker image reference on-chain. The validator picks it up within ~6 minutes, pulls the image, and evaluates it.
