@@ -27,6 +27,8 @@ services:
 
 networks:
   cacheon-internal:
+    name: cacheon-internal
     internal: true
   cacheon-egress:
+    name: cacheon-egress
     driver: bridge
