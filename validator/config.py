@@ -20,7 +20,7 @@ SUBTENSOR_NETWORK: str = os.environ.get("CACHEON_NETWORK", "finney")
 WALLET_NAME: str = os.environ.get("CACHEON_WALLET_NAME", "default")
 WALLET_HOTKEY: str = os.environ.get("CACHEON_WALLET_HOTKEY", "default")
 
-POLL_INTERVAL_S: int = int(os.environ.get("CACHEON_POLL_INTERVAL_S", "360"))
+POLL_INTERVAL_S: int = int(os.environ.get("CACHEON_POLL_INTERVAL_S", "36"))
 """Seconds to sleep when there's nothing new to evaluate. Docker eval takes
 minutes; reacting faster than this buys nothing."""
 
@@ -47,14 +47,6 @@ stake has upgraded."""
 
 MODEL_VOLUME: str = os.environ.get("CACHEON_MODEL_VOLUME", "/models")
 """Host path mounted read-only into miner/baseline containers at ``/models``."""
-
-GPUS: str = os.environ.get("CACHEON_GPUS", "all")
-"""Docker ``--gpus`` value. ``all`` passes every visible GPU; set to
-``device=0,1,2,3`` to restrict to specific devices (commas are quoted
-automatically before passing to Docker's CSV parser)."""
-
-GPU_COUNT: int = int(os.environ.get("CACHEON_GPU_COUNT", "0"))
-"""Number of GPUs for tensor-parallel baseline. 0 = auto-detect via nvidia-smi."""
 
 BASELINE_IMAGE: str = os.environ.get(
     "CACHEON_BASELINE_IMAGE", "vllm/vllm-openai:latest"

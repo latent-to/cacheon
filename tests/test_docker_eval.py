@@ -115,7 +115,6 @@ class TestStartContainer:
             _IMAGE,
             _DIGEST,
             model_volume="/mnt/models",
-            gpus="device=0",
             host_port=9999,
         )
         assert cid == "abc123def456"
@@ -130,7 +129,6 @@ class TestStartContainer:
             _IMAGE,
             _DIGEST,
             model_volume="/mnt/models",
-            gpus="device=0",
             host_port=9999,
         )
         cmd = mock_run.call_args[0][0]
@@ -146,8 +144,8 @@ class TestStartContainer:
 
     @patch("validator.docker_eval.ensure_eval_network")
     @patch("validator.docker_eval.subprocess.run")
-    def test_multi_device_gpus_quoted(self, mock_run, _mock_net):
-        """device=0,1,2,3 must be wrapped in literal double quotes for Docker's CSV parser."""
+    def test_gpus_always_all(self, mock_run, _mock_net):
+        """V1 hardcodes --gpus all."""
         mock_run.return_value = MagicMock(
             returncode=0, stdout="container_id\n", stderr=""
         )
@@ -155,43 +153,6 @@ class TestStartContainer:
             _IMAGE,
             _DIGEST,
             model_volume="/mnt/models",
-            gpus="device=0,1,2,3",
-            host_port=9999,
-        )
-        cmd = mock_run.call_args[0][0]
-        gpus_idx = cmd.index("--gpus") + 1
-        assert cmd[gpus_idx] == '"device=0,1,2,3"'
-
-    @patch("validator.docker_eval.ensure_eval_network")
-    @patch("validator.docker_eval.subprocess.run")
-    def test_single_device_gpus_not_quoted(self, mock_run, _mock_net):
-        """Single-device values (no commas) should not be wrapped."""
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="container_id\n", stderr=""
-        )
-        start_container(
-            _IMAGE,
-            _DIGEST,
-            model_volume="/mnt/models",
-            gpus="device=0",
-            host_port=9999,
-        )
-        cmd = mock_run.call_args[0][0]
-        gpus_idx = cmd.index("--gpus") + 1
-        assert cmd[gpus_idx] == "device=0"
-
-    @patch("validator.docker_eval.ensure_eval_network")
-    @patch("validator.docker_eval.subprocess.run")
-    def test_gpus_all_not_quoted(self, mock_run, _mock_net):
-        """'all' should pass through unchanged."""
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="container_id\n", stderr=""
-        )
-        start_container(
-            _IMAGE,
-            _DIGEST,
-            model_volume="/mnt/models",
-            gpus="all",
             host_port=9999,
         )
         cmd = mock_run.call_args[0][0]
@@ -207,7 +168,6 @@ class TestStartContainer:
                 _IMAGE,
                 _DIGEST,
                 model_volume="/mnt/models",
-                gpus="device=0",
                 host_port=9999,
             )
 
@@ -617,7 +577,6 @@ class TestEvaluateChallenger:
             _make_prompts(n=2, n_warmup=2),
             _make_baseline(n_prompts=2),
             model_volume="/models",
-            gpus="device=0",
             startup_timeout_s=600,
             per_prompt_timeout_s=120,
             n_warmup=2,
@@ -655,7 +614,6 @@ class TestEvaluateChallenger:
             _make_prompts(),
             _make_baseline(),
             model_volume="/models",
-            gpus="device=0",
             startup_timeout_s=600,
             per_prompt_timeout_s=120,
             n_warmup=2,
@@ -731,7 +689,6 @@ class TestEvaluateChallenger:
             _make_prompts(n=2, n_warmup=2),
             _make_baseline(n_prompts=2),
             model_volume="/models",
-            gpus="device=0",
             startup_timeout_s=600,
             per_prompt_timeout_s=120,
             n_warmup=2,
@@ -794,7 +751,6 @@ class TestEvaluateChallenger:
             _make_prompts(n=2, n_warmup=2),
             _make_baseline(n_prompts=2),
             model_volume="/models",
-            gpus="device=0",
             startup_timeout_s=600,
             per_prompt_timeout_s=120,
             n_warmup=2,
@@ -874,8 +830,7 @@ class TestRunBaselineErrorCheck:
                 baseline_image="vllm:latest",
                 baseline_digest="sha256:" + "b" * 64,
                 model_volume="/models",
-                gpus="device=0",
-                gpu_count=1,
+                gpu_count=4,
                 cache_dir=tmp_path,
                 block_hash="0xabc",
                 startup_timeout_s=600,

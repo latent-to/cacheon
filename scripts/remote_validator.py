@@ -17,8 +17,7 @@ Env vars (all optional; CLI wins):
     CACHEON_NETUID, CACHEON_NETWORK,
     CACHEON_WALLET_NAME, CACHEON_WALLET_HOTKEY,
     CACHEON_POLL_INTERVAL_S, CACHEON_STATE_DIR, CACHEON_DRY_RUN=1
-    CACHEON_MODEL_VOLUME, CACHEON_GPUS,
-    CACHEON_BASELINE_IMAGE, CACHEON_BASELINE_DIGEST
+    CACHEON_MODEL_VOLUME, CACHEON_BASELINE_IMAGE, CACHEON_BASELINE_DIGEST
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from validator import config as validator_config  # noqa: E402
-from validator.config import GPU_COUNT as CACHEON_GPU_COUNT  # noqa: E402
 from validator.chain import NotRegisteredError, preflight_check  # noqa: E402
 from validator.loop import not_implemented_eval, run_forever  # noqa: E402
 from validator.state import ValidatorState  # noqa: E402
@@ -123,11 +121,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Host path to the read-only model weights directory.",
     )
     p.add_argument(
-        "--gpus",
-        default=validator_config.GPUS,
-        help="GPU device specification for Docker --gpus flag.",
-    )
-    p.add_argument(
         "--baseline-image",
         default=validator_config.BASELINE_IMAGE,
         help="Docker image for the vLLM baseline server.",
@@ -136,12 +129,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--baseline-digest",
         default=validator_config.BASELINE_DIGEST,
         help="Digest (sha256:...) of the baseline image. Auto-detected from local image if omitted.",
-    )
-    p.add_argument(
-        "--gpu-count",
-        type=int,
-        default=CACHEON_GPU_COUNT,
-        help="Number of GPUs for baseline tensor parallelism. 0 = auto-detect.",
     )
     return p
 
@@ -245,8 +232,6 @@ def main(argv: list[str] | None = None) -> int:
         eval_fn = make_eval_fn(
             model_volume=args.model_volume,
             baseline_cache_dir=str(Path(args.state_dir) / "baseline_cache"),
-            gpus=args.gpus,
-            gpu_count=args.gpu_count,
             baseline_image=args.baseline_image,
             baseline_digest=baseline_digest,
         )

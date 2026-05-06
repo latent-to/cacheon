@@ -107,7 +107,6 @@ def start_container(
     digest: str,
     *,
     model_volume: str,
-    gpus: str,
     host_port: int,
     container_port: int = 8000,
     memory: str = "200g",
@@ -124,10 +123,6 @@ def start_container(
     """
     ensure_eval_network()
     ref = f"{image}@{digest}"
-    # Docker's --gpus flag uses Go's csv.Reader internally.  Multi-device
-    # values like device=0,1,2,3 must be wrapped in literal double quotes
-    # so the CSV parser treats commas as part of one field.
-    gpus_arg = f'"{gpus}"' if "," in gpus and not gpus.startswith('"') else gpus
 
     cmd = [
         "docker",
@@ -161,7 +156,7 @@ def start_container(
         "--cpus",
         str(cpus),
         "--gpus",
-        gpus_arg,
+        "all",
         ref,
     ]
     if cmd_args:
@@ -501,7 +496,6 @@ def run_baseline_if_needed(
     baseline_image: str,
     baseline_digest: str,
     model_volume: str,
-    gpus: str,
     gpu_count: int,
     cache_dir: Path,
     block_hash: str,
@@ -529,7 +523,6 @@ def run_baseline_if_needed(
         baseline_image,
         baseline_digest,
         model_volume=model_volume,
-        gpus=gpus,
         host_port=host_port,
         cmd_args=baseline_args,
     )
@@ -585,7 +578,6 @@ def evaluate_challenger(
     baseline: BaselineCache,
     *,
     model_volume: str,
-    gpus: str,
     startup_timeout_s: int,
     per_prompt_timeout_s: int,
     n_warmup: int,
@@ -604,7 +596,6 @@ def evaluate_challenger(
             com.image,
             com.digest,
             model_volume=model_volume,
-            gpus=gpus,
             host_port=host_port,
         )
         wait_for_health(host_port, timeout_s=startup_timeout_s)
@@ -785,8 +776,6 @@ def make_eval_fn(
     *,
     model_volume: str,
     baseline_cache_dir: str,
-    gpus: str = "all",
-    gpu_count: int = 0,
     baseline_image: str,
     baseline_digest: str,
     startup_timeout_s: int = 600,
@@ -798,11 +787,11 @@ def make_eval_fn(
     For each challenger, runs the full Docker lifecycle sequentially.
     Baseline is run once (or loaded from cache) per block hash.
 
-    ``gpu_count`` sets the tensor-parallel size for the baseline. 0 means
-    auto-detect via nvidia-smi at first eval.
+    GPU count is auto-detected via ``nvidia-smi`` on first eval; all
+    GPUs are always used (``--gpus all``).
     """
     cache_dir = Path(baseline_cache_dir)
-    resolved_gpu_count = gpu_count
+    resolved_gpu_count = 0
 
     def eval_fn(
         challengers: list[CommitmentRecord],
@@ -818,7 +807,7 @@ def make_eval_fn(
         if resolved_gpu_count <= 0:
             resolved_gpu_count = _detect_gpu_count()
             if resolved_gpu_count <= 0:
-                logger.error("Could not detect GPU count; set CACHEON_GPU_COUNT")
+                logger.error("Could not detect GPU count via nvidia-smi")
                 return [
                     _dq_record(c, current_block, "no_gpu_count") for c in challengers
                 ]
@@ -833,7 +822,6 @@ def make_eval_fn(
             baseline_image=baseline_image,
             baseline_digest=baseline_digest,
             model_volume=model_volume,
-            gpus=gpus,
             gpu_count=resolved_gpu_count,
             cache_dir=cache_dir,
             block_hash=block_hash,
@@ -855,7 +843,6 @@ def make_eval_fn(
                 prompts,
                 baseline,
                 model_volume=model_volume,
-                gpus=gpus,
                 startup_timeout_s=startup_timeout_s,
                 per_prompt_timeout_s=per_prompt_timeout_s,
                 n_warmup=n_warmup,
