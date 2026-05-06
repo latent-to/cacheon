@@ -86,7 +86,9 @@ class TestEnsureEvalNetwork:
         assert mock_run.call_count == 2
         create_cmd = mock_run.call_args_list[1][0][0]
         assert "create" in create_cmd
-        assert "--internal" in create_cmd
+        assert "com.docker.network.bridge.enable_ip_masquerade=false" in " ".join(
+            create_cmd
+        )
         assert EVAL_NETWORK in create_cmd
 
     @patch("validator.docker_eval.subprocess.run")

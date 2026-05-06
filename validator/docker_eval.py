@@ -62,10 +62,11 @@ EVAL_NETWORK = "cacheon-eval"
 
 
 def ensure_eval_network() -> None:
-    """Create the internal Docker network if it doesn't exist.
+    """Create the eval Docker network if it doesn't exist.
 
-    ``--internal`` blocks container-initiated outbound traffic while
-    still allowing host-to-container access via published ports.
+    Uses a regular bridge with IP masquerade disabled so that:
+    - Host-to-container port publishing (``-p``) works normally.
+    - Containers cannot reach the public internet (no NAT rule).
     """
     result = subprocess.run(
         ["docker", "network", "inspect", EVAL_NETWORK],
@@ -74,9 +75,16 @@ def ensure_eval_network() -> None:
     )
     if result.returncode == 0:
         return
-    logger.info("Creating internal Docker network: %s", EVAL_NETWORK)
+    logger.info("Creating eval Docker network: %s", EVAL_NETWORK)
     result = subprocess.run(
-        ["docker", "network", "create", "--internal", EVAL_NETWORK],
+        [
+            "docker",
+            "network",
+            "create",
+            "--opt",
+            "com.docker.network.bridge.enable_ip_masquerade=false",
+            EVAL_NETWORK,
+        ],
         capture_output=True,
         text=True,
     )
@@ -113,6 +121,7 @@ def start_container(
     cpus: int = 32,
     shm_size: str = "16g",
     cmd_args: list[str] | None = None,
+    container_name: str | None = None,
 ) -> str:
     """Start an isolated container and return its container ID.
 
@@ -144,8 +153,10 @@ def start_container(
         str(cpus),
         "--gpus",
         "all",
-        ref,
     ]
+    if container_name:
+        cmd.extend(["--name", container_name])
+    cmd.append(ref)
     if cmd_args:
         cmd.extend(cmd_args)
     logger.info("Starting container: port=%d, image=%s", host_port, ref)
@@ -512,6 +523,7 @@ def run_baseline_if_needed(
         model_volume=model_volume,
         host_port=host_port,
         cmd_args=baseline_args,
+        container_name="cacheon-baseline",
     )
     try:
         wait_for_health(host_port, timeout_s=startup_timeout_s)
@@ -584,6 +596,7 @@ def evaluate_challenger(
             com.digest,
             model_volume=model_volume,
             host_port=host_port,
+            container_name=f"cacheon-uid{com.uid}-{com.hotkey[:8]}",
         )
         wait_for_health(host_port, timeout_s=startup_timeout_s)
 
