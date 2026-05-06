@@ -133,6 +133,14 @@ def start_container(
     ensure_eval_network()
     ref = f"{image}@{digest}"
 
+    if container_name:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
     cmd = [
         "docker",
         "run",
