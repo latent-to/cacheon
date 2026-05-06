@@ -788,6 +788,7 @@ def make_eval_fn(
     baseline_cache_dir: str,
     baseline_image: str,
     baseline_digest: str,
+    gpu_count: int = 0,
     startup_timeout_s: int = 600,
     per_prompt_timeout_s: int = 120,
     n_warmup: int = 2,
@@ -797,11 +798,11 @@ def make_eval_fn(
     For each challenger, runs the full Docker lifecycle sequentially.
     Baseline is run once (or loaded from cache) per block hash.
 
-    GPU count is auto-detected via ``nvidia-smi`` on first eval; all
-    GPUs are always used (``--gpus all``).
+    If ``gpu_count`` is positive it is used directly; otherwise
+    ``nvidia-smi`` auto-detection is attempted on first eval.
     """
     cache_dir = Path(baseline_cache_dir)
-    resolved_gpu_count = 0
+    resolved_gpu_count = gpu_count
 
     def eval_fn(
         challengers: list[CommitmentRecord],

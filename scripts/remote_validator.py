@@ -234,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_cache_dir=str(Path(args.state_dir) / "baseline_cache"),
             baseline_image=args.baseline_image,
             baseline_digest=baseline_digest,
+            gpu_count=validator_config.GPU_COUNT,
         )
 
     try:
