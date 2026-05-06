@@ -253,10 +253,11 @@ def fetch_metagraph(
     )
 
 
-def _decode_raw_commitment(raw: str | bytes) -> str:
+def _decode_raw_commitment(raw: str | bytes, *, _depth: int = 0) -> str:
     """Normalize a raw on-chain commitment value to a plain JSON string.
 
-    Handles three formats observed in the wild:
+    Handles formats observed in the wild, including double-hex encoding
+    (SDK hex-encodes, then substrate hex-encodes again):
 
     1. Plain JSON string (e.g. ``'{"image": ...}'``).
     2. Hex-encoded string with ``0x`` prefix and optional SCALE compact
@@ -264,7 +265,12 @@ def _decode_raw_commitment(raw: str | bytes) -> str:
     3. Raw bytes with a SCALE compact length prefix followed by UTF-8
        JSON (substrate library decodes to this in some versions, appears
        as ``'E\\x02{"image": ...}'``).
+    4. Double-hex: outer 0x decode yields SCALE prefix + ``0x`` + inner
+       hex of JSON. Recurses to unwrap.
     """
+    if _depth > 3:
+        return str(raw)
+
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")
     s = str(raw)
@@ -275,8 +281,11 @@ def _decode_raw_commitment(raw: str | bytes) -> str:
         except ValueError:
             return s
         text = decoded.decode("utf-8", errors="replace")
-        idx = text.find("{")
-        return text[idx:] if idx >= 0 else text
+        idx_brace = text.find("{")
+        idx_0x = text.find("0x")
+        if idx_0x >= 0 and (idx_brace < 0 or idx_0x < idx_brace):
+            return _decode_raw_commitment(text[idx_0x:], _depth=_depth + 1)
+        return text[idx_brace:] if idx_brace >= 0 else text
 
     idx = s.find("{")
     if idx > 0:
