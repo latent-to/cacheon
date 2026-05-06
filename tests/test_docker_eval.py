@@ -167,6 +167,29 @@ class TestStartContainer:
                 model_volume="/mnt/models",
             )
 
+    @patch("validator.docker_eval.reset_gpu_state")
+    @patch("validator.docker_eval.stop_and_remove")
+    @patch(
+        "validator.docker_eval._get_container_ip",
+        side_effect=RuntimeError("no ip"),
+    )
+    @patch("validator.docker_eval.ensure_eval_network")
+    @patch("validator.docker_eval.subprocess.run")
+    def test_ip_lookup_failure_cleans_up(
+        self, mock_run, _mock_net, _mock_ip, mock_stop_rm, mock_reset_gpu
+    ):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="orphancontainerid\n", stderr=""
+        )
+        with pytest.raises(RuntimeError, match="no ip"):
+            start_container(
+                _IMAGE,
+                _DIGEST,
+                model_volume="/mnt/models",
+            )
+        mock_stop_rm.assert_called_once_with("orphancontainerid")
+        mock_reset_gpu.assert_called_once()
+
 
 # --------------------------------------------------------------------------- #
 # stop_and_remove

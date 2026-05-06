@@ -162,13 +162,18 @@ def start_container(
     if cmd_args:
         cmd.extend(cmd_args)
     logger.info("Starting container: image=%s", ref)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise RuntimeError(
             f"docker run failed (rc={result.returncode}): {result.stderr.strip()}"
         )
     container_id = result.stdout.strip()
-    ip = _get_container_ip(container_id)
+    try:
+        ip = _get_container_ip(container_id)
+    except Exception:
+        stop_and_remove(container_id)
+        reset_gpu_state()
+        raise
     base_url = f"http://{ip}:{container_port}"
     logger.info("Container started: %s url=%s", container_id[:12], base_url)
     return container_id, base_url
@@ -548,15 +553,17 @@ def run_baseline_if_needed(
     baseline_args = _baseline_cmd_args(gpu_count)
     logger.info("Baseline cmd args: %s", baseline_args)
 
+    container_name = "cacheon-baseline"
+    cid: str | None = None
     pull_image(baseline_image, baseline_digest)
-    cid, base_url = start_container(
-        baseline_image,
-        baseline_digest,
-        model_volume=model_volume,
-        cmd_args=baseline_args,
-        container_name="cacheon-baseline",
-    )
     try:
+        cid, base_url = start_container(
+            baseline_image,
+            baseline_digest,
+            model_volume=model_volume,
+            cmd_args=baseline_args,
+            container_name=container_name,
+        )
         wait_for_health(base_url, timeout_s=startup_timeout_s)
 
         speed_results = _run_prompts_on_server(
@@ -576,7 +583,7 @@ def run_baseline_if_needed(
             n_warmup=n_warmup,
         )
     finally:
-        stop_and_remove(cid)
+        stop_and_remove(cid or container_name)
         reset_gpu_state()
 
     errors = [r for r in speed_results + correctness_results if r.error]
@@ -614,6 +621,7 @@ def evaluate_challenger(
     current_block: int,
 ) -> EvaluationRecord:
     """Full lifecycle for one challenger. Returns an EvaluationRecord."""
+    container_name = f"cacheon-uid{com.uid}-{com.hotkey[:8]}"
     cid: str | None = None
     speed_results: list[RawPromptResult] = []
     correctness_results: list[RawPromptResult] = []
@@ -625,7 +633,7 @@ def evaluate_challenger(
             com.image,
             com.digest,
             model_volume=model_volume,
-            container_name=f"cacheon-uid{com.uid}-{com.hotkey[:8]}",
+            container_name=container_name,
         )
         wait_for_health(base_url, timeout_s=startup_timeout_s)
 
@@ -649,9 +657,8 @@ def evaluate_challenger(
         logger.error("Challenger UID %d failed: %s", com.uid, exc)
         eval_error = exc
     finally:
-        if cid is not None:
-            stop_and_remove(cid)
-            reset_gpu_state()
+        stop_and_remove(cid or container_name)
+        reset_gpu_state()
 
     if eval_error is not None:
         return _dq_record(com, current_block, str(eval_error))
