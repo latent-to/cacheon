@@ -29,6 +29,8 @@ MIN_CONTEXT_CHARS: int = 16_000
 MAX_CONTEXT_CHARS: int = 131_072
 MAX_SAMPLE_ATTEMPTS: int = 1_000
 
+CHARS_PER_TOKEN_ESTIMATE: float = 3.5
+
 MIN_ALPHA_RATIO: float = 0.5
 MAX_WHITESPACE_RATIO: float = 0.35
 
@@ -113,11 +115,15 @@ def _is_valid_passage(text: str) -> bool:
     return True
 
 
-def _sample_passage(rng: random.Random, rows: Sequence[str]) -> str:
+def _sample_passage(
+    rng: random.Random,
+    rows: Sequence[str],
+    max_chars: int = MAX_CONTEXT_CHARS,
+) -> str:
     """Sample a single long passage from PG19 with quality filtering.
 
     Picks a random row, picks a random start offset, extracts a slice
-    up to MAX_CONTEXT_CHARS snapped to a word boundary. Retries on
+    up to ``max_chars`` snapped to a word boundary. Retries on
     quality failures up to MAX_SAMPLE_ATTEMPTS times.
     """
     n_rows = len(rows)
@@ -129,7 +135,7 @@ def _sample_passage(rng: random.Random, rows: Sequence[str]) -> str:
 
         max_start = max(0, len(row_text) - MIN_CONTEXT_CHARS)
         start = rng.randint(0, max_start) if max_start > 0 else 0
-        end = min(start + MAX_CONTEXT_CHARS, len(row_text))
+        end = min(start + max_chars, len(row_text))
 
         passage = row_text[start:end]
 
@@ -153,10 +159,24 @@ def derive_seed(block_hash: str) -> int:
     return int.from_bytes(h[:8], "big")
 
 
+def _max_passage_chars(max_context_tokens: int, max_tokens: int = 256) -> int:
+    """Convert a token budget into a conservative character limit for passages.
+
+    Reserves space for ``max_tokens`` output, ~200 tokens for the chat
+    template and instruction text overhead, and applies a
+    ``CHARS_PER_TOKEN_ESTIMATE`` conversion with a safety margin.
+    """
+    available_input_tokens = max_context_tokens - max_tokens
+    overhead_tokens = 200
+    passage_tokens = max(1024, available_input_tokens - overhead_tokens)
+    return min(MAX_CONTEXT_CHARS, int(passage_tokens * CHARS_PER_TOKEN_ESTIMATE))
+
+
 def sample_prompts(
     block_hash: str,
     n: int = 10,
     *,
+    max_context_tokens: int = 0,
     _rows: list[str] | None = None,
 ) -> list[Prompt]:
     """Sample n deterministic prompts seeded by block hash.
@@ -164,15 +184,27 @@ def sample_prompts(
     Each prompt pairs a random PG19 passage with a random instruction
     template, formatted as an OpenAI chat message.
 
+    If ``max_context_tokens`` is positive, passages are capped so
+    that input + output stays within the server's context window.
+
     Pass ``_rows`` to override the PG19 dataset (used in tests).
     """
     rows = _rows if _rows is not None else _load_pg19()
     seed = derive_seed(block_hash)
     rng = random.Random(seed)
 
+    char_limit = MAX_CONTEXT_CHARS
+    if max_context_tokens > 0:
+        char_limit = _max_passage_chars(max_context_tokens)
+        logger.info(
+            "Passage char limit: %d (from max_model_len=%d)",
+            char_limit,
+            max_context_tokens,
+        )
+
     prompts: list[Prompt] = []
     for _ in range(n):
-        passage = _sample_passage(rng, rows)
+        passage = _sample_passage(rng, rows, max_chars=char_limit)
         template = rng.choice(TEMPLATES)
         content = template.format(context=passage)
         prompts.append(

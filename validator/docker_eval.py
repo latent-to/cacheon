@@ -241,6 +241,25 @@ def wait_for_health(
     )
 
 
+def query_max_model_len(host_port: int, timeout_s: float = 10) -> int:
+    """Query the server's max_model_len via GET /v1/models.
+
+    Returns the ``max_model_len`` reported by the first model, or 0
+    if the endpoint is unavailable or the field is missing.
+    """
+    url = f"http://127.0.0.1:{host_port}/v1/models"
+    try:
+        resp = urlopen(url, timeout=timeout_s)
+        data = json.loads(resp.read().decode())
+        models = data.get("data", [])
+        if models:
+            val = models[0].get("max_model_len", 0)
+            return int(val)
+    except Exception as exc:
+        logger.warning("Could not query /v1/models: %s", exc)
+    return 0
+
+
 def send_prompt(
     host_port: int,
     messages: list[dict[str, str]],
@@ -505,12 +524,18 @@ def run_baseline_if_needed(
     gpu_count: int,
     cache_dir: Path,
     block_hash: str,
+    max_model_len: int = 0,
     startup_timeout_s: int = 600,
     per_prompt_timeout_s: int = 120,
     n_warmup: int = 2,
 ) -> BaselineCache:
-    """Load cached baseline or run the vLLM baseline container, measure, and cache."""
-    cache_key = derive_cache_key(block_hash, baseline_digest)
+    """Load cached baseline or run the vLLM baseline container, measure, and cache.
+
+    ``max_model_len`` is included in the cache key so that moving to
+    different hardware (which changes the effective context window)
+    triggers a cache miss and fresh baseline run.
+    """
+    cache_key = derive_cache_key(block_hash, baseline_digest, max_model_len)
     cached = load_cached_baseline(cache_dir, cache_key)
     if cached is not None:
         logger.info(
@@ -780,6 +805,36 @@ def _dq_record(
 # --------------------------------------------------------------------------- #
 
 
+def _discover_max_model_len(
+    *,
+    baseline_image: str,
+    baseline_digest: str,
+    model_volume: str,
+    gpu_count: int,
+    startup_timeout_s: int = 600,
+) -> int:
+    """Start the baseline briefly to discover its max_model_len, then tear down."""
+    baseline_args = _baseline_cmd_args(gpu_count)
+    pull_image(baseline_image, baseline_digest)
+    host_port = allocate_host_port()
+    cid = start_container(
+        baseline_image,
+        baseline_digest,
+        model_volume=model_volume,
+        host_port=host_port,
+        cmd_args=baseline_args,
+        container_name="cacheon-baseline-probe",
+    )
+    try:
+        wait_for_health(host_port, timeout_s=startup_timeout_s)
+        result = query_max_model_len(host_port)
+        logger.info("Discovered max_model_len=%d from baseline", result)
+        return result
+    finally:
+        stop_and_remove(cid)
+        reset_gpu_state()
+
+
 def make_eval_fn(
     *,
     model_volume: str,
@@ -795,11 +850,11 @@ def make_eval_fn(
     For each challenger, runs the full Docker lifecycle sequentially.
     Baseline is run once (or loaded from cache) per block hash.
 
-    GPU count is auto-detected via ``nvidia-smi`` on first eval; all
-    GPUs are always used (``--gpus all``).
+    GPU count and max_model_len are auto-detected on first eval.
     """
     cache_dir = Path(baseline_cache_dir)
     resolved_gpu_count = 0
+    resolved_max_model_len = 0
 
     def eval_fn(
         challengers: list[CommitmentRecord],
@@ -807,7 +862,7 @@ def make_eval_fn(
         current_block: int,
         block_hash: str | None,
     ) -> list[EvaluationRecord]:
-        nonlocal resolved_gpu_count
+        nonlocal resolved_gpu_count, resolved_max_model_len
         if not block_hash:
             logger.error("No block_hash available -- cannot derive prompt seed")
             return [_dq_record(c, current_block, "no_block_hash") for c in challengers]
@@ -821,9 +876,26 @@ def make_eval_fn(
                 ]
             logger.info("Auto-detected %d GPU(s)", resolved_gpu_count)
 
+        if resolved_max_model_len <= 0:
+            resolved_max_model_len = _discover_max_model_len(
+                baseline_image=baseline_image,
+                baseline_digest=baseline_digest,
+                model_volume=model_volume,
+                gpu_count=resolved_gpu_count,
+                startup_timeout_s=startup_timeout_s,
+            )
+            if resolved_max_model_len <= 0:
+                logger.error("Could not discover max_model_len from baseline")
+                return [
+                    _dq_record(c, current_block, "no_max_model_len")
+                    for c in challengers
+                ]
+
         from .prompts import sample_prompts
 
-        prompts = sample_prompts(block_hash, n=10)
+        prompts = sample_prompts(
+            block_hash, n=10, max_context_tokens=resolved_max_model_len
+        )
 
         baseline = run_baseline_if_needed(
             prompts,
@@ -833,6 +905,7 @@ def make_eval_fn(
             gpu_count=resolved_gpu_count,
             cache_dir=cache_dir,
             block_hash=block_hash,
+            max_model_len=resolved_max_model_len,
             startup_timeout_s=startup_timeout_s,
             per_prompt_timeout_s=per_prompt_timeout_s,
             n_warmup=n_warmup,

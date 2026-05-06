@@ -73,16 +73,20 @@ class BaselineCache:
         )
 
 
-def derive_cache_key(block_hash: str, baseline_digest: str = "") -> str:
-    """SHA-256 of block_hash + baseline_digest + prompt engine version.
+def derive_cache_key(
+    block_hash: str,
+    baseline_digest: str = "",
+    max_model_len: int = 0,
+) -> str:
+    """SHA-256 of block_hash + baseline_digest + prompt engine version + max_model_len.
 
-    Including the baseline digest ensures a cache miss when the pinned
-    vLLM image changes. Including the prompt engine version invalidates
-    the cache when templates or sampling logic change.
+    Including ``max_model_len`` ensures a cache miss when hardware
+    changes the effective context window (different GPU count changes
+    KV cache budget, which changes vLLM's max_model_len).
     """
     from .prompts import PROMPT_ENGINE_VERSION
 
-    raw = f"{block_hash}:{baseline_digest}:v{PROMPT_ENGINE_VERSION}"
+    raw = f"{block_hash}:{baseline_digest}:v{PROMPT_ENGINE_VERSION}:ctx{max_model_len}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
