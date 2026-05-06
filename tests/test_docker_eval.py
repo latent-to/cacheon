@@ -284,7 +284,9 @@ class TestSendPromptStreaming:
         # t_start=0, t_first=0.1, t_mid=0.2, t_last=0.3
         mock_mono.side_effect = [0.0, 0.1, 0.2, 0.3]
 
-        result = send_prompt("http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=True)
+        result = send_prompt(
+            "http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=True
+        )
 
         assert result.tokens == ["Hello", " world", "!"]
         assert result.output_text == "Hello world!"
@@ -299,13 +301,17 @@ class TestSendPromptStreaming:
     def test_empty_stream_returns_error(self, mock_urlopen, mock_mono):
         mock_urlopen.return_value = _make_sse_response([])
         mock_mono.return_value = 0.0
-        result = send_prompt("http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=True)
+        result = send_prompt(
+            "http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=True
+        )
         assert result.error == "no_tokens_in_stream"
 
     @patch("validator.docker_eval.urlopen")
     def test_connection_error_returns_error(self, mock_urlopen):
         mock_urlopen.side_effect = ConnectionRefusedError("refused")
-        result = send_prompt("http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=True)
+        result = send_prompt(
+            "http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=True
+        )
         assert result.error is not None
         assert "request_failed" in result.error
 
@@ -322,7 +328,9 @@ class TestSendPromptStreaming:
         mock_urlopen.return_value = resp
         mock_mono.side_effect = [0.0, 0.1]
 
-        result = send_prompt("http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=True)
+        result = send_prompt(
+            "http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=True
+        )
 
         assert result.error is not None
         assert "stream_error" in result.error
@@ -396,7 +404,9 @@ class TestSendPromptNonStreaming:
     def test_no_choices_returns_error(self, mock_urlopen, mock_mono):
         mock_urlopen.return_value = _make_json_response({"choices": []})
         mock_mono.side_effect = [0.0, 0.1]
-        result = send_prompt("http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=False)
+        result = send_prompt(
+            "http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=False
+        )
         assert result.error == "no_choices_in_response"
 
     @patch("validator.docker_eval.time.monotonic")
@@ -408,7 +418,10 @@ class TestSendPromptNonStreaming:
         mock_urlopen.return_value = _make_json_response(body)
         mock_mono.side_effect = [0.0, 0.5]
         result = send_prompt(
-            "http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=False, logprobs=True
+            "http://172.18.0.2:8000",
+            [{"role": "user", "content": "hi"}],
+            stream=False,
+            logprobs=True,
         )
         assert result.error is None
         assert result.tokens == []
@@ -421,7 +434,10 @@ class TestSendPromptNonStreaming:
         mock_urlopen.return_value = _make_json_response(body)
         mock_mono.side_effect = [0.0, 0.5]
         result = send_prompt(
-            "http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=False, logprobs=True
+            "http://172.18.0.2:8000",
+            [{"role": "user", "content": "hi"}],
+            stream=False,
+            logprobs=True,
         )
         assert result.error is None
         assert result.tokens == []
@@ -442,7 +458,10 @@ class TestSendPromptNonStreaming:
         mock_urlopen.return_value = _make_json_response(body)
         mock_mono.side_effect = [0.0, 0.5]
         result = send_prompt(
-            "http://172.18.0.2:8000", [{"role": "user", "content": "hi"}], stream=False, logprobs=True
+            "http://172.18.0.2:8000",
+            [{"role": "user", "content": "hi"}],
+            stream=False,
+            logprobs=True,
         )
         assert result.error is None
         assert result.tokens == ["ok"]
@@ -498,7 +517,10 @@ class TestEvaluateChallenger:
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.send_prompt")
     @patch("validator.docker_eval.wait_for_health")
-    @patch("validator.docker_eval.start_container", return_value=("cid123", "http://172.18.0.2:8000"))
+    @patch(
+        "validator.docker_eval.start_container",
+        return_value=("cid123", "http://172.18.0.2:8000"),
+    )
     @patch("validator.docker_eval.pull_image")
     def test_successful_eval(
         self,
@@ -573,7 +595,10 @@ class TestEvaluateChallenger:
     @patch("validator.docker_eval.reset_gpu_state")
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.wait_for_health")
-    @patch("validator.docker_eval.start_container", return_value=("cid123", "http://172.18.0.2:8000"))
+    @patch(
+        "validator.docker_eval.start_container",
+        return_value=("cid123", "http://172.18.0.2:8000"),
+    )
     @patch("validator.docker_eval.pull_image")
     def test_health_timeout_dqs(
         self,
@@ -606,7 +631,10 @@ class TestEvaluateChallenger:
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.send_prompt")
     @patch("validator.docker_eval.wait_for_health")
-    @patch("validator.docker_eval.start_container", return_value=("cid123", "http://172.18.0.2:8000"))
+    @patch(
+        "validator.docker_eval.start_container",
+        return_value=("cid123", "http://172.18.0.2:8000"),
+    )
     @patch("validator.docker_eval.pull_image")
     def test_correctness_fail_dqs(
         self,
@@ -677,7 +705,10 @@ class TestEvaluateChallenger:
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.send_prompt")
     @patch("validator.docker_eval.wait_for_health")
-    @patch("validator.docker_eval.start_container", return_value=("cid123", "http://172.18.0.2:8000"))
+    @patch(
+        "validator.docker_eval.start_container",
+        return_value=("cid123", "http://172.18.0.2:8000"),
+    )
     @patch("validator.docker_eval.pull_image")
     def test_prompt_error_dqs(
         self,
@@ -742,7 +773,10 @@ class TestRunBaselineErrorCheck:
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.send_prompt")
     @patch("validator.docker_eval.wait_for_health")
-    @patch("validator.docker_eval.start_container", return_value=("cid_bl", "http://172.18.0.3:8000"))
+    @patch(
+        "validator.docker_eval.start_container",
+        return_value=("cid_bl", "http://172.18.0.3:8000"),
+    )
     @patch("validator.docker_eval.pull_image")
     def test_baseline_prompt_error_raises_and_does_not_cache(
         self,

@@ -140,6 +140,7 @@ def start_container(
         "docker",
         "run",
         "-d",
+        "--init",
         "--network",
         INTERNAL_NETWORK,
         "-v",
@@ -175,7 +176,9 @@ def start_container(
 
 def _get_container_ip(container_id: str) -> str:
     """Return the container's IP address on the internal eval network."""
-    template = '{{index .NetworkSettings.Networks "' + INTERNAL_NETWORK + '" "IPAddress"}}'
+    template = (
+        '{{index .NetworkSettings.Networks "' + INTERNAL_NETWORK + '" "IPAddress"}}'
+    )
     result = subprocess.run(
         ["docker", "inspect", "-f", template, container_id],
         capture_output=True,
@@ -487,8 +490,22 @@ def _detect_gpu_count() -> int:
     return 0
 
 
+def _max_model_len(gpu_count: int) -> int:
+    """Choose vLLM max_model_len based on available KV cache (GPU count).
+
+    More GPUs = more memory after TP-sharding the 72B model = room for
+    longer KV caches.  Values are conservative and tested on H200.
+    """
+    if gpu_count >= 8:
+        return 131_072
+    if gpu_count >= 4:
+        return 65_536
+    return 32_768
+
+
 def _baseline_cmd_args(gpu_count: int) -> list[str]:
     """Build the vLLM server command args for the baseline container."""
+    mml = _max_model_len(gpu_count)
     args = [
         "--model",
         "/models",
@@ -496,6 +513,8 @@ def _baseline_cmd_args(gpu_count: int) -> list[str]:
         "Qwen2.5-72B-Instruct",
         "--generation-config",
         "vllm",
+        "--max-model-len",
+        str(mml),
     ]
     if gpu_count > 1:
         args.extend(["--tensor-parallel-size", str(gpu_count)])
@@ -826,7 +845,8 @@ def make_eval_fn(
 
         from .prompts import sample_prompts
 
-        prompts = sample_prompts(block_hash, n=10)
+        mml = _max_model_len(resolved_gpu_count)
+        prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
 
         baseline = run_baseline_if_needed(
             prompts,
