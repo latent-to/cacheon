@@ -178,6 +178,8 @@ def run_once(
         len(challenger_set.deferred),
         len(challenger_set.already_known),
     )
+    for com in challenger_set.challengers:
+        logger.info("  🆕 UID %d  %s  %s", com.uid, com.hotkey, com.image)
 
     evaluations_recorded: list[EvaluationRecord] = []
     king_changed = False
@@ -206,9 +208,11 @@ def run_once(
                 prev_king = state.king
                 outcome = state.record_evaluation(ev, current_block=current_block)
                 evaluations_recorded.append(outcome.stored)
+                _icon = "❌" if outcome.stored.disqualify_reason else "📊"
                 logger.info(
-                    "recorded UID %d (hotkey %s…) score=%.4f threshold=%.4f "
+                    "%s UID %d (hotkey %s…) score=%.4f threshold=%.4f "
                     "(dq=%s, dethroned=%s)",
+                    _icon,
                     outcome.stored.uid,
                     outcome.stored.hotkey[:16],
                     outcome.stored.score,
