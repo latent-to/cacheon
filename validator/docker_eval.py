@@ -62,10 +62,11 @@ EVAL_NETWORK = "cacheon-eval"
 
 
 def ensure_eval_network() -> None:
-    """Create the internal Docker network if it doesn't exist.
+    """Create the eval Docker network if it doesn't exist.
 
-    ``--internal`` blocks container-initiated outbound traffic while
-    still allowing host-to-container access via published ports.
+    Uses a regular bridge with IP masquerade disabled so that:
+    - Host-to-container port publishing (``-p``) works normally.
+    - Containers cannot reach the public internet (no NAT rule).
     """
     result = subprocess.run(
         ["docker", "network", "inspect", EVAL_NETWORK],
@@ -74,9 +75,16 @@ def ensure_eval_network() -> None:
     )
     if result.returncode == 0:
         return
-    logger.info("Creating internal Docker network: %s", EVAL_NETWORK)
+    logger.info("Creating eval Docker network: %s", EVAL_NETWORK)
     result = subprocess.run(
-        ["docker", "network", "create", "--internal", EVAL_NETWORK],
+        [
+            "docker",
+            "network",
+            "create",
+            "--opt",
+            "com.docker.network.bridge.enable_ip_masquerade=false",
+            EVAL_NETWORK,
+        ],
         capture_output=True,
         text=True,
     )
@@ -107,19 +115,31 @@ def start_container(
     digest: str,
     *,
     model_volume: str,
-    gpus: str,
     host_port: int,
     container_port: int = 8000,
     memory: str = "200g",
     cpus: int = 32,
+    shm_size: str = "16g",
+    cmd_args: list[str] | None = None,
+    container_name: str | None = None,
 ) -> str:
-    """Start an isolated miner container and return its container ID."""
+    """Start an isolated container and return its container ID.
+
+    ``cmd_args`` are appended after the image reference and become the
+    container CMD (e.g. ``["--model", "/models"]`` for vLLM).  Miner
+    images define their own entrypoint so this is typically only used
+    for the baseline.
+    """
     ensure_eval_network()
     ref = f"{image}@{digest}"
-    # Docker's --gpus flag uses Go's csv.Reader internally.  Multi-device
-    # values like device=0,1,2,3 must be wrapped in literal double quotes
-    # so the CSV parser treats commas as part of one field.
-    gpus_arg = f'"{gpus}"' if "," in gpus and not gpus.startswith('"') else gpus
+
+    if container_name:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
 
     cmd = [
         "docker",
@@ -129,19 +149,10 @@ def start_container(
         EVAL_NETWORK,
         "-p",
         f"127.0.0.1:{host_port}:{container_port}",
-        "--read-only",
-        "--tmpfs",
-        "/tmp:size=10g",
-        "--tmpfs",
-        "/root:size=1g",
-        "--tmpfs",
-        "/run",
         "-v",
         f"{model_volume}:/models:ro",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
+        "--shm-size",
+        shm_size,
         "--pids-limit",
         "4096",
         "--memory",
@@ -149,9 +160,13 @@ def start_container(
         "--cpus",
         str(cpus),
         "--gpus",
-        gpus_arg,
-        ref,
+        "all",
     ]
+    if container_name:
+        cmd.extend(["--name", container_name])
+    cmd.append(ref)
+    if cmd_args:
+        cmd.extend(cmd_args)
     logger.info("Starting container: port=%d, image=%s", host_port, ref)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
@@ -450,13 +465,44 @@ def _run_prompts_on_server(
     return results
 
 
+def _detect_gpu_count() -> int:
+    """Count GPUs via nvidia-smi. Returns 0 on failure."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return len([l for l in result.stdout.strip().splitlines() if l.strip()])
+    except Exception:
+        pass
+    return 0
+
+
+def _baseline_cmd_args(gpu_count: int) -> list[str]:
+    """Build the vLLM server command args for the baseline container."""
+    args = [
+        "--model",
+        "/models",
+        "--served-model-name",
+        "Qwen2.5-72B-Instruct",
+        "--generation-config",
+        "vllm",
+    ]
+    if gpu_count > 1:
+        args.extend(["--tensor-parallel-size", str(gpu_count)])
+    return args
+
+
 def run_baseline_if_needed(
     prompts: list[Prompt],
     *,
     baseline_image: str,
     baseline_digest: str,
     model_volume: str,
-    gpus: str,
+    gpu_count: int,
     cache_dir: Path,
     block_hash: str,
     startup_timeout_s: int = 600,
@@ -474,14 +520,18 @@ def run_baseline_if_needed(
 
     logger.info("Baseline cache miss for key=%s -- running baseline", cache_key)
 
+    baseline_args = _baseline_cmd_args(gpu_count)
+    logger.info("Baseline cmd args: %s", baseline_args)
+
     pull_image(baseline_image, baseline_digest)
     host_port = allocate_host_port()
     cid = start_container(
         baseline_image,
         baseline_digest,
         model_volume=model_volume,
-        gpus=gpus,
         host_port=host_port,
+        cmd_args=baseline_args,
+        container_name="cacheon-baseline",
     )
     try:
         wait_for_health(host_port, timeout_s=startup_timeout_s)
@@ -535,7 +585,6 @@ def evaluate_challenger(
     baseline: BaselineCache,
     *,
     model_volume: str,
-    gpus: str,
     startup_timeout_s: int,
     per_prompt_timeout_s: int,
     n_warmup: int,
@@ -554,8 +603,8 @@ def evaluate_challenger(
             com.image,
             com.digest,
             model_volume=model_volume,
-            gpus=gpus,
             host_port=host_port,
+            container_name=f"cacheon-uid{com.uid}-{com.hotkey[:8]}",
         )
         wait_for_health(host_port, timeout_s=startup_timeout_s)
 
@@ -735,7 +784,6 @@ def make_eval_fn(
     *,
     model_volume: str,
     baseline_cache_dir: str,
-    gpus: str = "all",
     baseline_image: str,
     baseline_digest: str,
     startup_timeout_s: int = 600,
@@ -746,8 +794,12 @@ def make_eval_fn(
 
     For each challenger, runs the full Docker lifecycle sequentially.
     Baseline is run once (or loaded from cache) per block hash.
+
+    GPU count is auto-detected via ``nvidia-smi`` on first eval; all
+    GPUs are always used (``--gpus all``).
     """
     cache_dir = Path(baseline_cache_dir)
+    resolved_gpu_count = 0
 
     def eval_fn(
         challengers: list[CommitmentRecord],
@@ -755,9 +807,19 @@ def make_eval_fn(
         current_block: int,
         block_hash: str | None,
     ) -> list[EvaluationRecord]:
+        nonlocal resolved_gpu_count
         if not block_hash:
             logger.error("No block_hash available -- cannot derive prompt seed")
             return [_dq_record(c, current_block, "no_block_hash") for c in challengers]
+
+        if resolved_gpu_count <= 0:
+            resolved_gpu_count = _detect_gpu_count()
+            if resolved_gpu_count <= 0:
+                logger.error("Could not detect GPU count via nvidia-smi")
+                return [
+                    _dq_record(c, current_block, "no_gpu_count") for c in challengers
+                ]
+            logger.info("Auto-detected %d GPU(s)", resolved_gpu_count)
 
         from .prompts import sample_prompts
 
@@ -768,7 +830,7 @@ def make_eval_fn(
             baseline_image=baseline_image,
             baseline_digest=baseline_digest,
             model_volume=model_volume,
-            gpus=gpus,
+            gpu_count=resolved_gpu_count,
             cache_dir=cache_dir,
             block_hash=block_hash,
             startup_timeout_s=startup_timeout_s,
@@ -789,7 +851,6 @@ def make_eval_fn(
                 prompts,
                 baseline,
                 model_volume=model_volume,
-                gpus=gpus,
                 startup_timeout_s=startup_timeout_s,
                 per_prompt_timeout_s=per_prompt_timeout_s,
                 n_warmup=n_warmup,
