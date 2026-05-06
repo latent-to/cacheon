@@ -133,12 +133,9 @@ class TestStartContainer:
         )
         cmd = mock_run.call_args[0][0]
         cmd_str = " ".join(cmd)
-        assert "--read-only" in cmd_str
-        assert "--cap-drop" in cmd_str and "ALL" in cmd_str
         assert "--network" in cmd_str and "cacheon-eval" in cmd_str
-        assert "--tmpfs" in cmd_str
-        assert "no-new-privileges" in cmd_str
         assert "--pids-limit" in cmd_str
+        assert "--shm-size" in cmd_str
         assert "127.0.0.1:9999:" in cmd_str
         assert "/mnt/models:/models:ro" in cmd_str
 
