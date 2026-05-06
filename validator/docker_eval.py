@@ -175,7 +175,7 @@ def start_container(
 
 def _get_container_ip(container_id: str) -> str:
     """Return the container's IP address on the internal eval network."""
-    template = "{{.NetworkSettings.Networks." + INTERNAL_NETWORK + ".IPAddress}}"
+    template = '{{index .NetworkSettings.Networks "' + INTERNAL_NETWORK + '" "IPAddress"}}'
     result = subprocess.run(
         ["docker", "inspect", "-f", template, container_id],
         capture_output=True,
