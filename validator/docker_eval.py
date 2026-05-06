@@ -112,8 +112,16 @@ def start_container(
     container_port: int = 8000,
     memory: str = "200g",
     cpus: int = 32,
+    shm_size: str = "16g",
+    cmd_args: list[str] | None = None,
 ) -> str:
-    """Start an isolated miner container and return its container ID."""
+    """Start an isolated container and return its container ID.
+
+    ``cmd_args`` are appended after the image reference and become the
+    container CMD (e.g. ``["--model", "/models"]`` for vLLM).  Miner
+    images define their own entrypoint so this is typically only used
+    for the baseline.
+    """
     ensure_eval_network()
     ref = f"{image}@{digest}"
     # Docker's --gpus flag uses Go's csv.Reader internally.  Multi-device
@@ -133,13 +141,17 @@ def start_container(
         "--tmpfs",
         "/tmp:size=10g",
         "--tmpfs",
-        "/root:size=1g",
+        "/root:size=5g",
         "--tmpfs",
         "/run",
         "-v",
         f"{model_volume}:/models:ro",
         "--cap-drop",
         "ALL",
+        "--cap-add",
+        "IPC_LOCK",
+        "--shm-size",
+        shm_size,
         "--security-opt",
         "no-new-privileges",
         "--pids-limit",
@@ -152,6 +164,8 @@ def start_container(
         gpus_arg,
         ref,
     ]
+    if cmd_args:
+        cmd.extend(cmd_args)
     logger.info("Starting container: port=%d, image=%s", host_port, ref)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
@@ -450,6 +464,37 @@ def _run_prompts_on_server(
     return results
 
 
+def _detect_gpu_count() -> int:
+    """Count GPUs via nvidia-smi. Returns 0 on failure."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return len([l for l in result.stdout.strip().splitlines() if l.strip()])
+    except Exception:
+        pass
+    return 0
+
+
+def _baseline_cmd_args(gpu_count: int) -> list[str]:
+    """Build the vLLM server command args for the baseline container."""
+    args = [
+        "--model",
+        "/models",
+        "--served-model-name",
+        "Qwen2.5-72B-Instruct",
+        "--generation-config",
+        "vllm",
+    ]
+    if gpu_count > 1:
+        args.extend(["--tensor-parallel-size", str(gpu_count)])
+    return args
+
+
 def run_baseline_if_needed(
     prompts: list[Prompt],
     *,
@@ -457,6 +502,7 @@ def run_baseline_if_needed(
     baseline_digest: str,
     model_volume: str,
     gpus: str,
+    gpu_count: int,
     cache_dir: Path,
     block_hash: str,
     startup_timeout_s: int = 600,
@@ -474,6 +520,9 @@ def run_baseline_if_needed(
 
     logger.info("Baseline cache miss for key=%s -- running baseline", cache_key)
 
+    baseline_args = _baseline_cmd_args(gpu_count)
+    logger.info("Baseline cmd args: %s", baseline_args)
+
     pull_image(baseline_image, baseline_digest)
     host_port = allocate_host_port()
     cid = start_container(
@@ -482,6 +531,7 @@ def run_baseline_if_needed(
         model_volume=model_volume,
         gpus=gpus,
         host_port=host_port,
+        cmd_args=baseline_args,
     )
     try:
         wait_for_health(host_port, timeout_s=startup_timeout_s)
@@ -736,6 +786,7 @@ def make_eval_fn(
     model_volume: str,
     baseline_cache_dir: str,
     gpus: str = "all",
+    gpu_count: int = 0,
     baseline_image: str,
     baseline_digest: str,
     startup_timeout_s: int = 600,
@@ -746,8 +797,12 @@ def make_eval_fn(
 
     For each challenger, runs the full Docker lifecycle sequentially.
     Baseline is run once (or loaded from cache) per block hash.
+
+    ``gpu_count`` sets the tensor-parallel size for the baseline. 0 means
+    auto-detect via nvidia-smi at first eval.
     """
     cache_dir = Path(baseline_cache_dir)
+    resolved_gpu_count = gpu_count
 
     def eval_fn(
         challengers: list[CommitmentRecord],
@@ -755,9 +810,19 @@ def make_eval_fn(
         current_block: int,
         block_hash: str | None,
     ) -> list[EvaluationRecord]:
+        nonlocal resolved_gpu_count
         if not block_hash:
             logger.error("No block_hash available -- cannot derive prompt seed")
             return [_dq_record(c, current_block, "no_block_hash") for c in challengers]
+
+        if resolved_gpu_count <= 0:
+            resolved_gpu_count = _detect_gpu_count()
+            if resolved_gpu_count <= 0:
+                logger.error("Could not detect GPU count; set CACHEON_GPU_COUNT")
+                return [
+                    _dq_record(c, current_block, "no_gpu_count") for c in challengers
+                ]
+            logger.info("Auto-detected %d GPU(s)", resolved_gpu_count)
 
         from .prompts import sample_prompts
 
@@ -769,6 +834,7 @@ def make_eval_fn(
             baseline_digest=baseline_digest,
             model_volume=model_volume,
             gpus=gpus,
+            gpu_count=resolved_gpu_count,
             cache_dir=cache_dir,
             block_hash=block_hash,
             startup_timeout_s=startup_timeout_s,

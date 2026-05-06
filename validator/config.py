@@ -53,6 +53,9 @@ GPUS: str = os.environ.get("CACHEON_GPUS", "all")
 ``device=0,1,2,3`` to restrict to specific devices (commas are quoted
 automatically before passing to Docker's CSV parser)."""
 
+GPU_COUNT: int = int(os.environ.get("CACHEON_GPU_COUNT", "0"))
+"""Number of GPUs for tensor-parallel baseline. 0 = auto-detect via nvidia-smi."""
+
 BASELINE_IMAGE: str = os.environ.get(
     "CACHEON_BASELINE_IMAGE", "vllm/vllm-openai:latest"
 )

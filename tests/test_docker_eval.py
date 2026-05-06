@@ -875,6 +875,7 @@ class TestRunBaselineErrorCheck:
                 baseline_digest="sha256:" + "b" * 64,
                 model_volume="/models",
                 gpus="device=0",
+                gpu_count=1,
                 cache_dir=tmp_path,
                 block_hash="0xabc",
                 startup_timeout_s=600,

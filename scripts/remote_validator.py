@@ -33,6 +33,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from validator import config as validator_config  # noqa: E402
+from validator.config import GPU_COUNT as CACHEON_GPU_COUNT  # noqa: E402
 from validator.chain import NotRegisteredError, preflight_check  # noqa: E402
 from validator.loop import not_implemented_eval, run_forever  # noqa: E402
 from validator.state import ValidatorState  # noqa: E402
@@ -134,9 +135,46 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--baseline-digest",
         default=validator_config.BASELINE_DIGEST,
-        help="Digest (sha256:...) of the baseline image. Required for live eval.",
+        help="Digest (sha256:...) of the baseline image. Auto-detected from local image if omitted.",
+    )
+    p.add_argument(
+        "--gpu-count",
+        type=int,
+        default=CACHEON_GPU_COUNT,
+        help="Number of GPUs for baseline tensor parallelism. 0 = auto-detect.",
     )
     return p
+
+
+def _detect_baseline_digest(image: str, logger: logging.Logger) -> str:
+    """Try to read the digest of a locally-pulled baseline image."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                image,
+                "--format",
+                "{{index .RepoDigests 0}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return ""
+        # output looks like "vllm/vllm-openai@sha256:abcd..."
+        raw = result.stdout.strip()
+        if "@" in raw:
+            digest = raw.split("@", 1)[1]
+            logger.info("Auto-detected baseline digest: %s", digest)
+            return digest
+    except Exception as exc:
+        logger.debug("Could not auto-detect baseline digest: %s", exc)
+    return ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -190,10 +228,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         eval_fn = not_implemented_eval
     else:
-        if not args.baseline_digest:
+        baseline_digest = args.baseline_digest
+        if not baseline_digest:
+            baseline_digest = _detect_baseline_digest(args.baseline_image, logger)
+        if not baseline_digest:
             logger.error(
-                "--baseline-digest is required for live eval. "
-                "Use --dry-run to skip Docker evaluation."
+                "Could not determine baseline digest. Either set "
+                "CACHEON_BASELINE_DIGEST, pass --baseline-digest, or "
+                "pull the baseline image first (`docker pull %s`).",
+                args.baseline_image,
             )
             return 6
 
@@ -203,8 +246,9 @@ def main(argv: list[str] | None = None) -> int:
             model_volume=args.model_volume,
             baseline_cache_dir=str(Path(args.state_dir) / "baseline_cache"),
             gpus=args.gpus,
+            gpu_count=args.gpu_count,
             baseline_image=args.baseline_image,
-            baseline_digest=args.baseline_digest,
+            baseline_digest=baseline_digest,
         )
 
     try:
