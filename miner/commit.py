@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    print("Done. Validator will pick this up within ~6 minutes.")
+    print("Done. Validator will pick this up in the next round.")
     return 0
 
 
