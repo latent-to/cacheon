@@ -65,8 +65,9 @@ def main(argv: list[str] | None = None) -> int:
     wallet = bt.Wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
     subtensor = bt.Subtensor(network=args.network)
 
-    commit_data = json.dumps({"image": args.image, "digest": args.digest})
-    print(f"Committing to netuid={args.netuid}: {commit_data}")
+    commit_json = json.dumps({"image": args.image, "digest": args.digest})
+    commit_data = "0x" + commit_json.encode().hex()
+    print(f"Committing to netuid={args.netuid}: {commit_json}")
 
     subtensor.set_reveal_commitment(
         wallet=wallet,

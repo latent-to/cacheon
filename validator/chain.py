@@ -253,6 +253,66 @@ def fetch_metagraph(
     )
 
 
+def _decode_raw_commitment(raw: str | bytes) -> str:
+    """Normalize a raw on-chain commitment value to a plain JSON string.
+
+    Handles three formats observed in the wild:
+
+    1. Plain JSON string (e.g. ``'{"image": ...}'``).
+    2. Hex-encoded string with ``0x`` prefix and optional SCALE compact
+       length prefix (bittensor SDK stores this way in some versions).
+    3. Raw bytes with a SCALE compact length prefix followed by UTF-8
+       JSON (substrate library decodes to this in some versions, appears
+       as ``'E\\x02{"image": ...}'``).
+    """
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    s = str(raw)
+
+    if s.startswith("0x"):
+        try:
+            decoded = bytes.fromhex(s[2:])
+        except ValueError:
+            return s
+        text = decoded.decode("utf-8", errors="replace")
+        idx = text.find("{")
+        return text[idx:] if idx >= 0 else text
+
+    idx = s.find("{")
+    if idx > 0:
+        return s[idx:]
+    return s
+
+
+def _fetch_commitments_raw_substrate(
+    subtensor: bt.Subtensor,
+    netuid: int,
+) -> dict[str, list[tuple[int, str]]]:
+    """Fallback: query the substrate storage map directly.
+
+    Bypasses bittensor's hex decoder, which crashes on some commitment
+    encodings. Returns the same shape as the SDK methods.
+    """
+    result = subtensor.substrate.query_map(
+        module="Commitments",
+        storage_function="RevealedCommitments",
+        params=[netuid],
+    )
+    out: dict[str, list[tuple[int, str]]] = {}
+    for key, value in result:
+        hotkey = str(key)
+        entries = []
+        for entry in value or []:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                data_raw, block = entry[0], entry[1]
+            else:
+                continue
+            entries.append((int(block), _decode_raw_commitment(data_raw)))
+        if entries:
+            out[hotkey] = entries
+    return out
+
+
 def fetch_revealed_commitments(
     subtensor: bt.Subtensor,
     netuid: int,
@@ -262,8 +322,9 @@ def fetch_revealed_commitments(
 ) -> dict[str, list[tuple[int, str]]]:
     """Return `{hotkey: [(block, data_str), ...]}` for the subnet.
 
-    Delegates to whichever bittensor API is available — different
-    versions name this differently.
+    Tries the bittensor SDK first; falls back to a raw substrate query
+    if the SDK chokes on hex decoding (observed with mixed commitment
+    encodings on chain).
     """
 
     def _inner() -> dict[str, list[tuple[int, str]]]:
@@ -273,10 +334,21 @@ def fetch_revealed_commitments(
         ):
             fn = getattr(subtensor, method_name, None)
             if callable(fn):
-                return fn(netuid) or {}
+                try:
+                    return fn(netuid) or {}
+                except ValueError as exc:
+                    if "fromhex" in str(exc) or "hexadecimal" in str(exc):
+                        logger.warning(
+                            "SDK %s hit hex decode error, falling back "
+                            "to raw substrate query: %s",
+                            method_name,
+                            exc,
+                        )
+                        return _fetch_commitments_raw_substrate(subtensor, netuid)
+                    raise
         raise RuntimeError(
             "subtensor has no get_all_revealed_commitments / "
-            "get_revealed_commitments method — bittensor version mismatch?"
+            "get_revealed_commitments method -- bittensor version mismatch?"
         )
 
     return _retry(
