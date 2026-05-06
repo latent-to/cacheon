@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         data=commit_data,
         blocks_until_reveal=1,
     )
-    print("Done. Validator will pick this up within ~6 minutes.")
+    print("Done. Validator will pick this up in the next round.")
     return 0
 
 
