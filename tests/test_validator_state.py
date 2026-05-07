@@ -94,6 +94,58 @@ class TestEvaluationRecord:
         assert ev.throughput_improvement == 0.44
         assert ev.token_match_rate == 0.998
 
+    def test_per_prompt_defaults_to_none(self):
+        ev = _make_eval()
+        assert ev.per_prompt is None
+
+    def test_per_prompt_round_trip(self):
+        pp = [
+            {
+                "ttft_s": 0.5,
+                "throughput_tps": 100.0,
+                "output_tokens": 256,
+                "token_match_rate": 1.0,
+            },
+            {
+                "ttft_s": 0.6,
+                "throughput_tps": 90.0,
+                "output_tokens": 200,
+                "token_match_rate": 0.99,
+            },
+        ]
+        ev = EvaluationRecord(
+            uid=1,
+            hotkey="hk",
+            commit_block=100,
+            image="i:v1",
+            digest="sha256:" + "a" * 64,
+            score=0.5,
+            ttft_improvement=0.1,
+            throughput_improvement=0.2,
+            token_match_rate=0.99,
+            disqualified=False,
+            disqualify_reason=None,
+            evaluated_at=1.0,
+            evaluation_block=110,
+            per_prompt=pp,
+        )
+        d = ev.to_dict()
+        assert d["per_prompt"] == pp
+        restored = EvaluationRecord.from_dict(d)
+        assert restored.per_prompt == pp
+
+    def test_per_prompt_none_omitted_from_dict(self):
+        ev = _make_eval()
+        d = ev.to_dict()
+        assert "per_prompt" not in d
+
+    def test_from_dict_without_per_prompt_is_backward_compatible(self):
+        ev = _make_eval()
+        d = ev.to_dict()
+        assert "per_prompt" not in d
+        restored = EvaluationRecord.from_dict(d)
+        assert restored.per_prompt is None
+
 
 class TestKingRecord:
     def test_from_evaluation(self):

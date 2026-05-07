@@ -106,13 +106,17 @@ class EvaluationRecord:
     disqualify_reason: str | None
     evaluated_at: float  # unix timestamp
     evaluation_block: int  # chain block at eval time
+    per_prompt: list[dict[str, Any]] | None = None
 
     @property
     def eval_key(self) -> str:
         return _eval_key(self.hotkey, self.commit_block)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if d.get("per_prompt") is None:
+            d.pop("per_prompt", None)
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EvaluationRecord:

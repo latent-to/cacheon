@@ -19,6 +19,5 @@ COPY validator/requirements.txt /app/validator/requirements.txt
 RUN pip install --no-cache-dir -r /app/validator/requirements.txt
 
 COPY validator/ /app/validator/
-COPY scripts/ /app/scripts/
 
-ENTRYPOINT ["python", "scripts/remote_validator.py"]
+ENTRYPOINT ["python", "-m", "validator.gpu_eval"]

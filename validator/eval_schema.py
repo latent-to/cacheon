@@ -5,6 +5,10 @@
 dataclasses -- no Pydantic, no torch, no bittensor imports -- so they
 can be tested and serialized cheaply.
 
+``EvalJob`` is what the CPU writes to ``eval_job.json`` for the GPU
+entrypoint to read. It bundles the block context and challenger list
+so the GPU side needs zero chain access.
+
 The ``eval_fn`` contract:
     eval_fn(job: EvaluationJob) -> EvaluationResult
 
@@ -14,8 +18,13 @@ etc.) and is wired in by the CLI entry point.
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -159,3 +168,100 @@ class EvaluationResult:
             aggregation=str(data.get("aggregation", "median")),
             error=data.get("error"),
         )
+
+
+# --------------------------------------------------------------------------- #
+# EvalJob -- CPU -> GPU handoff via S3
+# --------------------------------------------------------------------------- #
+
+EVAL_JOB_FILE = "eval_job.json"
+
+
+@dataclass(frozen=True)
+class ChallengerInfo:
+    """Serializable challenger identity for the GPU eval job.
+
+    Mirrors ``chain.CommitmentRecord`` without pulling in chain.py.
+    """
+
+    uid: int
+    hotkey: str
+    commit_block: int
+    image: str
+    digest: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ChallengerInfo:
+        return cls(
+            uid=int(data["uid"]),
+            hotkey=str(data["hotkey"]),
+            commit_block=int(data["commit_block"]),
+            image=str(data["image"]),
+            digest=str(data["digest"]),
+        )
+
+
+@dataclass(frozen=True)
+class EvalJob:
+    """What the CPU writes to ``eval_job.json`` for the GPU entrypoint.
+
+    Contains block context and a list of challengers. The GPU pod reads
+    this file, runs eval for each challenger, and writes results into
+    ``state.json``.
+    """
+
+    block: int
+    block_hash: str
+    challengers: list[ChallengerInfo]
+    created_at: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "block": self.block,
+            "block_hash": self.block_hash,
+            "challengers": [c.to_dict() for c in self.challengers],
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EvalJob:
+        return cls(
+            block=int(data["block"]),
+            block_hash=str(data["block_hash"]),
+            challengers=[
+                ChallengerInfo.from_dict(c) for c in data.get("challengers", [])
+            ],
+            created_at=float(data.get("created_at", 0.0)),
+        )
+
+    def save(self, state_dir: str | Path) -> None:
+        path = Path(state_dir) / EVAL_JOB_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+        logger.info(
+            "Wrote eval job: %d challenger(s) to %s", len(self.challengers), path
+        )
+
+    @classmethod
+    def load(cls, state_dir: str | Path) -> EvalJob | None:
+        path = Path(state_dir) / EVAL_JOB_FILE
+        if not path.exists():
+            logger.warning("No eval job file at %s", path)
+            return None
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            job = cls.from_dict(data)
+            logger.info(
+                "Loaded eval job: block=%d, %d challenger(s)",
+                job.block,
+                len(job.challengers),
+            )
+            return job
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            logger.error("Failed to load eval job from %s: %s", path, exc)
+            return None
