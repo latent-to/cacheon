@@ -38,7 +38,7 @@ from validator.state import ValidatorState  # noqa: E402
 
 
 def _configure_logging(verbose: bool, log_dir: str) -> None:
-    """Set up logging to both console and a rotating log file.
+    """Set up logging to both console and a timestamped log file.
 
     On import, `bittensor` (a) installs its own root `basicConfig` and
     (b) walks `logging.Logger.manager.loggerDict` and sets every
