@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import socket
 import subprocess
 import time
 from dataclasses import dataclass
@@ -58,40 +57,33 @@ class RawPromptResult:
 # --------------------------------------------------------------------------- #
 
 
-EVAL_NETWORK = "cacheon-eval"
+INTERNAL_NETWORK = "cacheon-internal"
 
 
-def ensure_eval_network() -> None:
-    """Create the eval Docker network if it doesn't exist.
-
-    Uses a regular bridge with IP masquerade disabled so that:
-    - Host-to-container port publishing (``-p``) works normally.
-    - Containers cannot reach the public internet (no NAT rule).
-    """
+def _ensure_network(name: str, *, internal: bool = False) -> None:
+    """Create a Docker network if it doesn't already exist."""
     result = subprocess.run(
-        ["docker", "network", "inspect", EVAL_NETWORK],
+        ["docker", "network", "inspect", name],
         capture_output=True,
         text=True,
     )
     if result.returncode == 0:
         return
-    logger.info("Creating eval Docker network: %s", EVAL_NETWORK)
-    result = subprocess.run(
-        [
-            "docker",
-            "network",
-            "create",
-            "--opt",
-            "com.docker.network.bridge.enable_ip_masquerade=false",
-            EVAL_NETWORK,
-        ],
-        capture_output=True,
-        text=True,
-    )
+    cmd = ["docker", "network", "create"]
+    if internal:
+        cmd.append("--internal")
+    cmd.append(name)
+    logger.info("Creating Docker network: %s (internal=%s)", name, internal)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
-            f"Failed to create Docker network {EVAL_NETWORK}: {result.stderr.strip()}"
+            f"Failed to create Docker network {name}: {result.stderr.strip()}"
         )
+
+
+def ensure_eval_network() -> None:
+    """Create the internal eval network (no internet, no egress)."""
+    _ensure_network(INTERNAL_NETWORK, internal=True)
 
 
 def pull_image(image: str, digest: str, timeout_s: float = 300) -> None:
@@ -115,15 +107,18 @@ def start_container(
     digest: str,
     *,
     model_volume: str,
-    host_port: int,
     container_port: int = 8000,
     memory: str = "200g",
     cpus: int = 32,
     shm_size: str = "16g",
     cmd_args: list[str] | None = None,
     container_name: str | None = None,
-) -> str:
-    """Start an isolated container and return its container ID.
+) -> tuple[str, str]:
+    """Start an isolated container and return ``(container_id, base_url)``.
+
+    The container is placed on the internal Docker network.  The
+    validator (also on the same network) reaches it via its container
+    IP; no host port publishing is needed.
 
     ``cmd_args`` are appended after the image reference and become the
     container CMD (e.g. ``["--model", "/models"]`` for vLLM).  Miner
@@ -145,10 +140,9 @@ def start_container(
         "docker",
         "run",
         "-d",
+        "--init",
         "--network",
-        EVAL_NETWORK,
-        "-p",
-        f"127.0.0.1:{host_port}:{container_port}",
+        INTERNAL_NETWORK,
         "-v",
         f"{model_volume}:/models:ro",
         "--shm-size",
@@ -167,15 +161,42 @@ def start_container(
     cmd.append(ref)
     if cmd_args:
         cmd.extend(cmd_args)
-    logger.info("Starting container: port=%d, image=%s", host_port, ref)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    logger.info("Starting container: image=%s", ref)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise RuntimeError(
             f"docker run failed (rc={result.returncode}): {result.stderr.strip()}"
         )
     container_id = result.stdout.strip()
-    logger.info("Container started: %s", container_id[:12])
-    return container_id
+    try:
+        ip = _get_container_ip(container_id)
+    except Exception:
+        stop_and_remove(container_id)
+        reset_gpu_state()
+        raise
+    base_url = f"http://{ip}:{container_port}"
+    logger.info("Container started: %s url=%s", container_id[:12], base_url)
+    return container_id, base_url
+
+
+def _get_container_ip(container_id: str) -> str:
+    """Return the container's IP address on the internal eval network."""
+    template = (
+        '{{index .NetworkSettings.Networks "' + INTERNAL_NETWORK + '" "IPAddress"}}'
+    )
+    result = subprocess.run(
+        ["docker", "inspect", "-f", template, container_id],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    ip = result.stdout.strip()
+    if result.returncode != 0 or not ip:
+        raise RuntimeError(
+            f"Could not get IP for container {container_id[:12]} "
+            f"on network {INTERNAL_NETWORK}: {result.stderr.strip()}"
+        )
+    return ip
 
 
 def stop_and_remove(container_id: str) -> None:
@@ -205,44 +226,37 @@ def reset_gpu_state() -> None:
         logger.debug("nvidia-smi --gpu-reset failed (non-fatal): %s", exc)
 
 
-def allocate_host_port() -> int:
-    """Find an unused localhost port by binding and releasing."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 # --------------------------------------------------------------------------- #
 # HTTP client
 # --------------------------------------------------------------------------- #
 
 
 def wait_for_health(
-    host_port: int,
+    base_url: str,
     timeout_s: float = 600,
     poll_interval_s: float = 5,
 ) -> None:
     """Poll GET /health until 200. Raises TimeoutError on expiry."""
-    url = f"http://127.0.0.1:{host_port}/health"
+    url = f"{base_url}/health"
     deadline = time.monotonic() + timeout_s
     last_err: str = ""
     while time.monotonic() < deadline:
         try:
             resp = urlopen(url, timeout=5)
             if resp.status == 200:
-                logger.info("Container healthy on port %d", host_port)
+                logger.info("Container healthy at %s", base_url)
                 return
             last_err = f"status={resp.status}"
         except Exception as exc:
             last_err = str(exc)
         time.sleep(poll_interval_s)
     raise TimeoutError(
-        f"/health on port {host_port} not ready after {timeout_s}s: {last_err}"
+        f"/health at {base_url} not ready after {timeout_s}s: {last_err}"
     )
 
 
 def send_prompt(
-    host_port: int,
+    base_url: str,
     messages: list[dict[str, str]],
     max_tokens: int = 256,
     temperature: float = 0,
@@ -259,7 +273,7 @@ def send_prompt(
     When ``stream=False``: parses JSON, returns tokens + logprobs (not timed
     for scoring, but TTFT/throughput are still measured for diagnostics).
     """
-    url = f"http://127.0.0.1:{host_port}/v1/chat/completions"
+    url = f"{base_url}/v1/chat/completions"
     body: dict[str, Any] = {
         "model": "Qwen2.5-72B-Instruct",
         "messages": messages,
@@ -437,7 +451,7 @@ def _parse_json_response(
 
 
 def _run_prompts_on_server(
-    host_port: int,
+    base_url: str,
     prompts: list[Prompt],
     *,
     stream: bool,
@@ -450,7 +464,7 @@ def _run_prompts_on_server(
     for i, prompt in enumerate(prompts):
         msgs = [{"role": m.role, "content": m.content} for m in prompt.messages]
         r = send_prompt(
-            host_port,
+            base_url,
             msgs,
             max_tokens=prompt.max_tokens,
             stream=stream,
@@ -481,8 +495,22 @@ def _detect_gpu_count() -> int:
     return 0
 
 
+def _max_model_len(gpu_count: int) -> int:
+    """Choose vLLM max_model_len based on available KV cache (GPU count).
+
+    More GPUs = more memory after TP-sharding the 72B model = room for
+    longer KV caches.  Values are conservative and tested on H200.
+    """
+    if gpu_count >= 8:
+        return 131_072
+    if gpu_count >= 4:
+        return 65_536
+    return 32_768
+
+
 def _baseline_cmd_args(gpu_count: int) -> list[str]:
     """Build the vLLM server command args for the baseline container."""
+    mml = _max_model_len(gpu_count)
     args = [
         "--model",
         "/models",
@@ -490,6 +518,8 @@ def _baseline_cmd_args(gpu_count: int) -> list[str]:
         "Qwen2.5-72B-Instruct",
         "--generation-config",
         "vllm",
+        "--max-model-len",
+        str(mml),
     ]
     if gpu_count > 1:
         args.extend(["--tensor-parallel-size", str(gpu_count)])
@@ -523,21 +553,21 @@ def run_baseline_if_needed(
     baseline_args = _baseline_cmd_args(gpu_count)
     logger.info("Baseline cmd args: %s", baseline_args)
 
+    container_name = "cacheon-baseline"
+    cid: str | None = None
     pull_image(baseline_image, baseline_digest)
-    host_port = allocate_host_port()
-    cid = start_container(
-        baseline_image,
-        baseline_digest,
-        model_volume=model_volume,
-        host_port=host_port,
-        cmd_args=baseline_args,
-        container_name="cacheon-baseline",
-    )
     try:
-        wait_for_health(host_port, timeout_s=startup_timeout_s)
+        cid, base_url = start_container(
+            baseline_image,
+            baseline_digest,
+            model_volume=model_volume,
+            cmd_args=baseline_args,
+            container_name=container_name,
+        )
+        wait_for_health(base_url, timeout_s=startup_timeout_s)
 
         speed_results = _run_prompts_on_server(
-            host_port,
+            base_url,
             prompts,
             stream=True,
             logprobs=False,
@@ -545,7 +575,7 @@ def run_baseline_if_needed(
             n_warmup=n_warmup,
         )
         correctness_results = _run_prompts_on_server(
-            host_port,
+            base_url,
             prompts,
             stream=False,
             logprobs=True,
@@ -553,7 +583,7 @@ def run_baseline_if_needed(
             n_warmup=n_warmup,
         )
     finally:
-        stop_and_remove(cid)
+        stop_and_remove(cid or container_name)
         reset_gpu_state()
 
     errors = [r for r in speed_results + correctness_results if r.error]
@@ -591,6 +621,7 @@ def evaluate_challenger(
     current_block: int,
 ) -> EvaluationRecord:
     """Full lifecycle for one challenger. Returns an EvaluationRecord."""
+    container_name = f"cacheon-uid{com.uid}-{com.hotkey[:8]}"
     cid: str | None = None
     speed_results: list[RawPromptResult] = []
     correctness_results: list[RawPromptResult] = []
@@ -598,18 +629,16 @@ def evaluate_challenger(
 
     try:
         pull_image(com.image, com.digest)
-        host_port = allocate_host_port()
-        cid = start_container(
+        cid, base_url = start_container(
             com.image,
             com.digest,
             model_volume=model_volume,
-            host_port=host_port,
-            container_name=f"cacheon-uid{com.uid}-{com.hotkey[:8]}",
+            container_name=container_name,
         )
-        wait_for_health(host_port, timeout_s=startup_timeout_s)
+        wait_for_health(base_url, timeout_s=startup_timeout_s)
 
         speed_results = _run_prompts_on_server(
-            host_port,
+            base_url,
             prompts,
             stream=True,
             logprobs=False,
@@ -617,7 +646,7 @@ def evaluate_challenger(
             n_warmup=n_warmup,
         )
         correctness_results = _run_prompts_on_server(
-            host_port,
+            base_url,
             prompts,
             stream=False,
             logprobs=True,
@@ -628,9 +657,8 @@ def evaluate_challenger(
         logger.error("Challenger UID %d failed: %s", com.uid, exc)
         eval_error = exc
     finally:
-        if cid is not None:
-            stop_and_remove(cid)
-            reset_gpu_state()
+        stop_and_remove(cid or container_name)
+        reset_gpu_state()
 
     if eval_error is not None:
         return _dq_record(com, current_block, str(eval_error))
@@ -786,6 +814,7 @@ def make_eval_fn(
     baseline_cache_dir: str,
     baseline_image: str,
     baseline_digest: str,
+    gpu_count: int = 0,
     startup_timeout_s: int = 600,
     per_prompt_timeout_s: int = 120,
     n_warmup: int = 2,
@@ -795,11 +824,11 @@ def make_eval_fn(
     For each challenger, runs the full Docker lifecycle sequentially.
     Baseline is run once (or loaded from cache) per block hash.
 
-    GPU count is auto-detected via ``nvidia-smi`` on first eval; all
-    GPUs are always used (``--gpus all``).
+    If ``gpu_count`` is positive it is used directly; otherwise
+    ``nvidia-smi`` auto-detection is attempted on first eval.
     """
     cache_dir = Path(baseline_cache_dir)
-    resolved_gpu_count = 0
+    resolved_gpu_count = gpu_count
 
     def eval_fn(
         challengers: list[CommitmentRecord],
@@ -823,7 +852,8 @@ def make_eval_fn(
 
         from .prompts import sample_prompts
 
-        prompts = sample_prompts(block_hash, n=10)
+        mml = _max_model_len(resolved_gpu_count)
+        prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
 
         baseline = run_baseline_if_needed(
             prompts,

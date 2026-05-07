@@ -53,6 +53,9 @@ BASELINE_IMAGE: str = os.environ.get(
 )
 BASELINE_DIGEST: str = os.environ.get("CACHEON_BASELINE_DIGEST", "")
 
+GPU_COUNT: int = int(os.environ.get("CACHEON_GPU_COUNT", "0"))
+"""Number of GPUs on the host. Set to 4 for 4x H200, etc."""
+
 # --------------------------------------------------------------------------- #
 # King defender-advantage window
 # --------------------------------------------------------------------------- #

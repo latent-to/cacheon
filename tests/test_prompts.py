@@ -7,15 +7,19 @@ import random
 import pytest
 
 from validator.prompts import (
+    CHARS_PER_TOKEN,
     MAX_CONTEXT_CHARS,
+    MAX_OUTPUT_TOKENS,
     MAX_SAMPLE_ATTEMPTS,
     MIN_ALPHA_RATIO,
     MIN_CONTEXT_CHARS,
+    OVERHEAD_TOKENS,
     PROMPT_ENGINE_VERSION,
     TEMPLATES,
     _is_valid_passage,
     _sample_passage,
     derive_seed,
+    max_passage_chars,
     sample_prompts,
 )
 
@@ -114,6 +118,12 @@ class TestSamplePassage:
         assert len(passage) <= MAX_CONTEXT_CHARS
         assert _is_valid_passage(passage)
 
+    def test_respects_max_chars(self):
+        cap = 18_000
+        rng = random.Random(123)
+        passage = _sample_passage(rng, FAKE_ROWS, max_chars=cap)
+        assert len(passage) <= cap
+
     def test_raises_on_all_junk(self):
         junk_rows = ["x" * 10 for _ in range(5)]
         rng = random.Random(0)
@@ -172,6 +182,26 @@ class TestSamplePrompts:
 # --------------------------------------------------------------------------- #
 # Constants
 # --------------------------------------------------------------------------- #
+
+
+class TestMaxPassageChars:
+    def test_none_returns_fallback(self):
+        assert max_passage_chars(None) == MAX_CONTEXT_CHARS
+
+    def test_32k_context(self):
+        result = max_passage_chars(32_768)
+        expected = int((32_768 - MAX_OUTPUT_TOKENS - OVERHEAD_TOKENS) * CHARS_PER_TOKEN)
+        assert result == expected
+        assert result < MAX_CONTEXT_CHARS
+
+    def test_65k_context(self):
+        result = max_passage_chars(65_536)
+        expected = int((65_536 - MAX_OUTPUT_TOKENS - OVERHEAD_TOKENS) * CHARS_PER_TOKEN)
+        assert result == expected
+
+    def test_never_below_min(self):
+        result = max_passage_chars(600)
+        assert result >= MIN_CONTEXT_CHARS
 
 
 class TestConstants:
