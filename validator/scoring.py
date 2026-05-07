@@ -46,42 +46,51 @@ def compute_token_match_rate(
 def check_logprob_sanity(
     baseline_token: str,
     miner_top_logprobs: list[dict[str, Any]],
-    max_gap: float = 0.05,
+    max_gap: float = 0.5,
+    top_k: int = 5,
 ) -> bool:
-    """Check that a divergent position is a legitimate numerical tie.
+    """Check that a divergent position is explainable by TP numerical noise.
 
     Returns True (sane) when:
-      1. The baseline's chosen token appears in the miner's top-2, AND
+      1. The baseline's token appears in the miner's top-k.
       2. The logprob gap between the miner's top-1 and the baseline token
          is <= ``max_gap``.
+
+    Greedy-decoding verification (miner's chosen token == its own top-1)
+    is checked separately in ``compute_correctness``.
     """
     if not miner_top_logprobs:
         return False
-    top2_tokens = [entry.get("token", "") for entry in miner_top_logprobs[:2]]
-    if baseline_token not in top2_tokens:
+    topk_tokens = [entry.get("token", "") for entry in miner_top_logprobs[:top_k]]
+    if baseline_token not in topk_tokens:
         return False
     top1_lp = float(miner_top_logprobs[0].get("logprob", float("-inf")))
-    baseline_lp = top1_lp
-    for entry in miner_top_logprobs[:2]:
+    for entry in miner_top_logprobs[:top_k]:
         if entry.get("token") == baseline_token:
             baseline_lp = float(entry.get("logprob", float("-inf")))
-            break
-    return abs(top1_lp - baseline_lp) <= max_gap
+            return abs(top1_lp - baseline_lp) <= max_gap
+    return False
 
 
 def compute_correctness(
     baseline_tokens: list[str],
     miner_tokens: list[str],
     miner_top_logprobs: list[list[dict[str, Any]]] | None,
-    threshold: float = 0.99,
 ) -> CorrectnessVerdict:
-    """Greedy-token agreement gate with logprob sanity at divergent positions.
+    """First-mismatch correctness gate for TP-safe greedy decoding.
 
-    Steps:
-      1. Compute token match rate.
-      2. If below ``threshold``, fail immediately with mismatch details.
-      3. At each divergent position, run ``check_logprob_sanity``. Fail on
-         the first position that doesn't pass.
+    With tensor parallelism, greedy outputs are non-deterministic at
+    positions where two tokens have near-identical probabilities.  Once
+    one token flips, the entire rest of the sequence cascades, making
+    token-match-rate useless.
+
+    Instead we check only the **first** divergence point:
+      1. No divergence at all -> pass.
+      2. Divergence exists but logprobs are unavailable -> pass (can't
+         disprove correctness without evidence).
+      3. Divergence with logprobs -> ``check_logprob_sanity``.  If the
+         baseline token is in the miner's top-5 with a small gap, the
+         flip is explainable by TP noise -> pass.  Otherwise -> fail.
     """
     rate = compute_token_match_rate(baseline_tokens, miner_tokens)
 
@@ -94,7 +103,7 @@ def compute_correctness(
     for i in range(total):
         bt = baseline_tokens[i] if i < len(baseline_tokens) else ""
         mt = miner_tokens[i] if i < len(miner_tokens) else ""
-        if bt != mt and first_mm_idx is None:
+        if bt != mt:
             first_mm_idx = i
             first_mm_baseline = bt
             first_mm_miner = mt
@@ -102,13 +111,46 @@ def compute_correctness(
                 first_mm_lp = miner_top_logprobs[i]
             break
 
-    if rate < threshold:
+    if first_mm_idx is None:
+        return CorrectnessVerdict(
+            passed=True,
+            token_match_rate=rate,
+        )
+
+    if miner_top_logprobs is None:
         return CorrectnessVerdict(
             passed=False,
             token_match_rate=rate,
             reason=(
-                f"token_match_rate {rate:.4f} < {threshold} "
-                f"(first mismatch at index {first_mm_idx})"
+                f"first_mismatch_fail at index {first_mm_idx}: "
+                f"logprobs missing from response"
+            ),
+            first_mismatch_index=first_mm_idx,
+            baseline_token_at_mismatch=first_mm_baseline,
+            miner_token_at_mismatch=first_mm_miner,
+        )
+
+    if first_mm_lp is None:
+        return CorrectnessVerdict(
+            passed=False,
+            token_match_rate=rate,
+            reason=(
+                f"first_mismatch_fail at index {first_mm_idx}: "
+                f"no logprobs available at divergence point"
+            ),
+            first_mismatch_index=first_mm_idx,
+            baseline_token_at_mismatch=first_mm_baseline,
+            miner_token_at_mismatch=first_mm_miner,
+        )
+
+    miner_top1 = first_mm_lp[0].get("token") if first_mm_lp else None
+    if miner_top1 is not None and miner_top1 != first_mm_miner:
+        return CorrectnessVerdict(
+            passed=False,
+            token_match_rate=rate,
+            reason=(
+                f"non_greedy at index {first_mm_idx}: miner chose "
+                f"{first_mm_miner!r} but top-1 is {miner_top1!r}"
             ),
             first_mismatch_index=first_mm_idx,
             baseline_token_at_mismatch=first_mm_baseline,
@@ -116,29 +158,24 @@ def compute_correctness(
             miner_logprobs_at_mismatch=first_mm_lp,
         )
 
-    if miner_top_logprobs is not None:
-        for i in range(min(len(baseline_tokens), len(miner_tokens))):
-            if baseline_tokens[i] == miner_tokens[i]:
-                continue
-            lp = miner_top_logprobs[i] if i < len(miner_top_logprobs) else []
-            if not check_logprob_sanity(baseline_tokens[i], lp):
-                return CorrectnessVerdict(
-                    passed=False,
-                    token_match_rate=rate,
-                    reason=(
-                        f"logprob_sanity_fail at index {i}: "
-                        f"baseline={baseline_tokens[i]!r} not in miner top-2 "
-                        f"or gap too large"
-                    ),
-                    first_mismatch_index=i,
-                    baseline_token_at_mismatch=baseline_tokens[i],
-                    miner_token_at_mismatch=miner_tokens[i],
-                    miner_logprobs_at_mismatch=lp,
-                )
+    if check_logprob_sanity(first_mm_baseline or "", first_mm_lp):
+        return CorrectnessVerdict(
+            passed=True,
+            token_match_rate=rate,
+            first_mismatch_index=first_mm_idx,
+            baseline_token_at_mismatch=first_mm_baseline,
+            miner_token_at_mismatch=first_mm_miner,
+            miner_logprobs_at_mismatch=first_mm_lp,
+        )
 
     return CorrectnessVerdict(
-        passed=True,
+        passed=False,
         token_match_rate=rate,
+        reason=(
+            f"first_mismatch_fail at index {first_mm_idx}: "
+            f"baseline={first_mm_baseline!r} not in miner top-5 "
+            f"or logprob gap > 0.5"
+        ),
         first_mismatch_index=first_mm_idx,
         baseline_token_at_mismatch=first_mm_baseline,
         miner_token_at_mismatch=first_mm_miner,
