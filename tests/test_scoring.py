@@ -208,13 +208,20 @@ class TestComputeCorrectness:
         assert v.passed is True
         assert v.first_mismatch_index == 1
 
-    def test_no_logprobs_passes(self):
-        """Without logprobs, can't disprove correctness."""
+    def test_no_logprobs_with_divergence_fails(self):
+        """Miner omitting logprobs on a divergent response is non-compliant."""
         base = ["a", "b", "c"]
         miner = ["a", "X", "c"]
         v = compute_correctness(base, miner, None)
-        assert v.passed is True
+        assert v.passed is False
         assert v.first_mismatch_index == 1
+        assert "logprobs missing" in (v.reason or "")
+
+    def test_no_logprobs_perfect_match_passes(self):
+        """Perfect match without logprobs is fine -- no divergence to check."""
+        tokens = ["a", "b", "c"]
+        v = compute_correctness(tokens, tokens, None)
+        assert v.passed is True
 
     def test_empty_miner_with_logprobs_fails(self):
         base = ["a", "b"]
@@ -225,11 +232,12 @@ class TestComputeCorrectness:
         assert v.baseline_token_at_mismatch == "a"
         assert v.miner_token_at_mismatch == ""
 
-    def test_empty_miner_without_logprobs_passes(self):
+    def test_empty_miner_without_logprobs_fails(self):
         base = ["a", "b"]
         miner: list[str] = []
         v = compute_correctness(base, miner, None)
-        assert v.passed is True
+        assert v.passed is False
+        assert "logprobs missing" in (v.reason or "")
 
     def test_non_greedy_miner_fails(self):
         """Miner's chosen token != its own top-1 -- sampling detected."""

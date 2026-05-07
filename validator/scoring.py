@@ -119,8 +119,12 @@ def compute_correctness(
 
     if miner_top_logprobs is None:
         return CorrectnessVerdict(
-            passed=True,
+            passed=False,
             token_match_rate=rate,
+            reason=(
+                f"first_mismatch_fail at index {first_mm_idx}: "
+                f"logprobs missing from response"
+            ),
             first_mismatch_index=first_mm_idx,
             baseline_token_at_mismatch=first_mm_baseline,
             miner_token_at_mismatch=first_mm_miner,
