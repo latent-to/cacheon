@@ -528,7 +528,7 @@ def _max_model_len(gpu_count: int) -> int:
     """Choose vLLM max_model_len based on available KV cache (GPU count).
 
     More GPUs = more memory after TP-sharding the 72B model = room for
-    longer KV caches.  Values are conservative and tested on H200.
+    longer KV caches.  Values are conservative.
     """
     if gpu_count >= 8:
         return 131_072
