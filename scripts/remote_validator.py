@@ -49,7 +49,7 @@ def _configure_logging(verbose: bool, log_dir: str) -> None:
     root handler, then reset `validator.*` levels to `NOTSET` so they
     inherit from root again.
     """
-    from logging.handlers import RotatingFileHandler
+    from datetime import datetime
 
     level = logging.DEBUG if verbose else logging.INFO
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
@@ -60,11 +60,11 @@ def _configure_logging(verbose: bool, log_dir: str) -> None:
         force=True,
     )
 
-    log_path = Path(log_dir) / "validator.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = RotatingFileHandler(
-        log_path, maxBytes=50 * 1024 * 1024, backupCount=3, encoding="utf-8"
-    )
+    logs_dir = Path(log_dir) / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = logs_dir / f"validator_{ts}.log"
+    fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(level)
     fh.setFormatter(fmt)
     logging.getLogger().addHandler(fh)
@@ -235,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_image=args.baseline_image,
             baseline_digest=baseline_digest,
             gpu_count=validator_config.GPU_COUNT,
+            state_dir=args.state_dir,
         )
 
     try:

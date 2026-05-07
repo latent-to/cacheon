@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from validator.eval_schema import (
+    EVAL_JOB_FILE,
+    ChallengerInfo,
     ChatMessage,
+    EvalJob,
     EvaluationJob,
     EvaluationResult,
     PerPromptResult,
@@ -235,3 +240,93 @@ class TestEvaluationResult:
         result = _make_result(success=False, error="OOM killed")
         restored = EvaluationResult.from_dict(result.to_dict())
         assert restored.error == "OOM killed"
+
+
+# --------------------------------------------------------------------------- #
+# ChallengerInfo
+# --------------------------------------------------------------------------- #
+
+
+class TestChallengerInfo:
+    def test_round_trip(self):
+        ci = ChallengerInfo(
+            uid=3,
+            hotkey="5F3a",
+            commit_block=4500100,
+            image="foo/bar:v1",
+            digest="sha256:" + "c" * 64,
+        )
+        restored = ChallengerInfo.from_dict(ci.to_dict())
+        assert restored == ci
+
+    def test_from_dict_coerces_types(self):
+        ci = ChallengerInfo.from_dict(
+            {
+                "uid": "3",
+                "hotkey": 5,
+                "commit_block": "100",
+                "image": "img",
+                "digest": "d",
+            }
+        )
+        assert ci.uid == 3
+        assert ci.hotkey == "5"
+        assert ci.commit_block == 100
+
+
+# --------------------------------------------------------------------------- #
+# EvalJob
+# --------------------------------------------------------------------------- #
+
+
+class TestEvalJob:
+    def _make_job(self, n_challengers: int = 2) -> EvalJob:
+        challengers = [
+            ChallengerInfo(
+                uid=i,
+                hotkey=f"hk{i}",
+                commit_block=100 + i,
+                image=f"img{i}:v1",
+                digest=f"sha256:{'a' * 64}",
+            )
+            for i in range(n_challengers)
+        ]
+        return EvalJob(
+            block=4501234,
+            block_hash="0xdeadbeef",
+            challengers=challengers,
+            created_at=1700000000.0,
+        )
+
+    def test_round_trip(self):
+        job = self._make_job()
+        restored = EvalJob.from_dict(job.to_dict())
+        assert restored.block == job.block
+        assert restored.block_hash == job.block_hash
+        assert len(restored.challengers) == 2
+        assert restored.challengers[0] == job.challengers[0]
+
+    def test_save_and_load(self, tmp_path):
+        job = self._make_job(3)
+        job.save(tmp_path)
+        assert (tmp_path / EVAL_JOB_FILE).exists()
+        loaded = EvalJob.load(tmp_path)
+        assert loaded is not None
+        assert loaded.block == 4501234
+        assert len(loaded.challengers) == 3
+
+    def test_load_missing_returns_none(self, tmp_path):
+        assert EvalJob.load(tmp_path) is None
+
+    def test_load_corrupt_returns_none(self, tmp_path):
+        (tmp_path / EVAL_JOB_FILE).write_text("{bad json")
+        assert EvalJob.load(tmp_path) is None
+
+    def test_empty_challengers(self):
+        job = EvalJob(block=1, block_hash="0x0", challengers=[])
+        restored = EvalJob.from_dict(job.to_dict())
+        assert restored.challengers == []
+
+    def test_default_created_at(self):
+        job = EvalJob(block=1, block_hash="0x0", challengers=[])
+        assert job.created_at == 0.0

@@ -199,6 +199,35 @@ def _get_container_ip(container_id: str) -> str:
     return ip
 
 
+def capture_container_logs(
+    container_name_or_id: str,
+    state_dir: str | Path,
+    label: str,
+) -> None:
+    """Save ``docker logs`` output to ``state_dir/container_logs/{label}.log``.
+
+    Best-effort: never raises. Called before ``stop_and_remove`` so the
+    container still exists.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "logs", container_name_or_id],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = result.stdout + result.stderr
+        if not output.strip():
+            return
+        log_dir = Path(state_dir) / "container_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{label}.log"
+        log_path.write_text(output, encoding="utf-8")
+        logger.info("Container logs saved: %s (%d chars)", log_path, len(output))
+    except Exception as exc:
+        logger.warning("Failed to capture container logs for %s: %s", label, exc)
+
+
 def stop_and_remove(container_id: str) -> None:
     """Stop and remove a container. Best-effort, never raises."""
     for action in ("stop", "rm"):
@@ -535,6 +564,7 @@ def run_baseline_if_needed(
     gpu_count: int,
     cache_dir: Path,
     block_hash: str,
+    state_dir: str | Path = "",
     startup_timeout_s: int = 600,
     per_prompt_timeout_s: int = 120,
     n_warmup: int = 2,
@@ -583,6 +613,9 @@ def run_baseline_if_needed(
             n_warmup=n_warmup,
         )
     finally:
+        if state_dir:
+            log_label = f"baseline_{cache_key}"
+            capture_container_logs(cid or container_name, state_dir, log_label)
         stop_and_remove(cid or container_name)
         reset_gpu_state()
 
@@ -621,6 +654,7 @@ def evaluate_challenger(
     per_prompt_timeout_s: int,
     n_warmup: int,
     current_block: int,
+    state_dir: str | Path = "",
 ) -> EvaluationRecord:
     """Full lifecycle for one challenger. Returns an EvaluationRecord."""
     container_name = f"cacheon-uid{com.uid}-{com.hotkey[:8]}"
@@ -659,6 +693,9 @@ def evaluate_challenger(
         logger.error("❌ Challenger UID %d failed: %s", com.uid, exc)
         eval_error = exc
     finally:
+        if state_dir:
+            log_label = f"uid{com.uid}_{com.hotkey[:8]}_{current_block}"
+            capture_container_logs(cid or container_name, state_dir, log_label)
         stop_and_remove(cid or container_name)
         reset_gpu_state()
 
@@ -719,6 +756,8 @@ def evaluate_challenger(
         else 0.0
     )
 
+    per_prompt_dicts = [pp.to_dict() for pp in per_prompt] if per_prompt else None
+
     any_failed = any(not v.passed for v in all_verdicts)
     if any_failed:
         reasons = [
@@ -740,6 +779,7 @@ def evaluate_challenger(
             disqualify_reason="correctness_fail: " + "; ".join(reasons),
             evaluated_at=time.time(),
             evaluation_block=current_block,
+            per_prompt=per_prompt_dicts,
         )
 
     score, ttft_imp, tps_imp = compute_improvements(
@@ -782,6 +822,7 @@ def evaluate_challenger(
         disqualify_reason=None,
         evaluated_at=time.time(),
         evaluation_block=current_block,
+        per_prompt=per_prompt_dicts,
     )
 
 
@@ -817,6 +858,7 @@ def make_eval_fn(
     baseline_image: str,
     baseline_digest: str,
     gpu_count: int = 0,
+    state_dir: str = "",
     startup_timeout_s: int = 600,
     per_prompt_timeout_s: int = 120,
     n_warmup: int = 2,
@@ -865,6 +907,7 @@ def make_eval_fn(
             gpu_count=resolved_gpu_count,
             cache_dir=cache_dir,
             block_hash=block_hash,
+            state_dir=state_dir,
             startup_timeout_s=startup_timeout_s,
             per_prompt_timeout_s=per_prompt_timeout_s,
             n_warmup=n_warmup,
@@ -887,6 +930,7 @@ def make_eval_fn(
                 per_prompt_timeout_s=per_prompt_timeout_s,
                 n_warmup=n_warmup,
                 current_block=current_block,
+                state_dir=state_dir,
             )
             results.append(record)
 

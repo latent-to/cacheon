@@ -14,6 +14,7 @@ from validator.chain import CommitmentRecord
 from validator.docker_eval import (
     INTERNAL_NETWORK,
     RawPromptResult,
+    capture_container_logs,
     ensure_eval_network,
     evaluate_challenger,
     pull_image,
@@ -535,7 +536,33 @@ def _make_prompts(n: int = 2, n_warmup: int = 2) -> list[Prompt]:
     ]
 
 
+class TestCaptureContainerLogs:
+    @patch("validator.docker_eval.subprocess.run")
+    def test_saves_logs_to_file(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="vLLM startup log\n", stderr="warning msg\n"
+        )
+        capture_container_logs("test-container", tmp_path, "uid3_abc_500")
+        log_path = tmp_path / "container_logs" / "uid3_abc_500.log"
+        assert log_path.exists()
+        content = log_path.read_text()
+        assert "vLLM startup log" in content
+        assert "warning msg" in content
+
+    @patch("validator.docker_eval.subprocess.run")
+    def test_empty_output_skipped(self, mock_run, tmp_path):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        capture_container_logs("test-container", tmp_path, "empty")
+        assert not (tmp_path / "container_logs" / "empty.log").exists()
+
+    @patch("validator.docker_eval.subprocess.run")
+    def test_never_raises(self, mock_run, tmp_path):
+        mock_run.side_effect = Exception("docker not found")
+        capture_container_logs("test-container", tmp_path, "fail")
+
+
 class TestEvaluateChallenger:
+    @patch("validator.docker_eval.capture_container_logs")
     @patch("validator.docker_eval.reset_gpu_state")
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.send_prompt")
@@ -553,6 +580,7 @@ class TestEvaluateChallenger:
         mock_send,
         mock_stop,
         mock_reset,
+        mock_capture_logs,
     ):
         speed_r = RawPromptResult(
             prompt_index=0,
@@ -604,6 +632,7 @@ class TestEvaluateChallenger:
             per_prompt_timeout_s=120,
             n_warmup=2,
             current_block=500,
+            state_dir="/tmp/test_state",
         )
 
         assert record.disqualified is False
@@ -611,10 +640,16 @@ class TestEvaluateChallenger:
         assert record.token_match_rate == 1.0
         assert record.ttft_improvement > 0
         assert record.throughput_improvement > 0
+        assert record.per_prompt is not None
+        assert len(record.per_prompt) == 2
+        assert record.per_prompt[0]["ttft_s"] == 0.5
+        assert record.per_prompt[0]["throughput_tps"] == 150.0
         mock_pull.assert_called_once()
         mock_stop.assert_called_once_with("cid123")
         mock_reset.assert_called_once()
+        mock_capture_logs.assert_called_once()
 
+    @patch("validator.docker_eval.capture_container_logs")
     @patch("validator.docker_eval.reset_gpu_state")
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.wait_for_health")
@@ -630,6 +665,7 @@ class TestEvaluateChallenger:
         mock_health,
         mock_stop,
         mock_reset,
+        mock_capture_logs,
     ):
         mock_health.side_effect = TimeoutError("/health timeout")
 
@@ -650,6 +686,7 @@ class TestEvaluateChallenger:
         mock_stop.assert_called_once()
         mock_reset.assert_called_once()
 
+    @patch("validator.docker_eval.capture_container_logs")
     @patch("validator.docker_eval.reset_gpu_state")
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.send_prompt")
@@ -667,6 +704,7 @@ class TestEvaluateChallenger:
         mock_send,
         mock_stop,
         mock_reset,
+        mock_capture_logs,
     ):
         speed_r = RawPromptResult(
             prompt_index=0,
@@ -724,6 +762,7 @@ class TestEvaluateChallenger:
         assert "correctness_fail" in (record.disqualify_reason or "")
         assert record.score == 0.0
 
+    @patch("validator.docker_eval.capture_container_logs")
     @patch("validator.docker_eval.reset_gpu_state")
     @patch("validator.docker_eval.stop_and_remove")
     @patch("validator.docker_eval.send_prompt")
@@ -741,6 +780,7 @@ class TestEvaluateChallenger:
         mock_send,
         mock_stop,
         mock_reset,
+        mock_capture_logs,
     ):
         warmup_r = RawPromptResult(
             prompt_index=0,
