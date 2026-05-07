@@ -1,0 +1,3 @@
+# CPU validator requirements. No Docker, no GPU libs, no HuggingFace.
+bittensor>=10
+boto3
