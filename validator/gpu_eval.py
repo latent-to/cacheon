@@ -22,13 +22,10 @@ Env vars:
 from __future__ import annotations
 
 import logging
-import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
 from . import config as validator_config
-from .baseline import derive_cache_key
 from .chain import CommitmentRecord
 from .docker_eval import (
     _dq_record,
@@ -80,7 +77,6 @@ def main() -> int:
     )
 
     if not baseline_digest:
-        from .docker_eval import _detect_gpu_count
         import subprocess
 
         try:
