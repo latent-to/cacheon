@@ -253,6 +253,75 @@ def fetch_metagraph(
     )
 
 
+def _decode_raw_commitment(raw: str | bytes, *, _depth: int = 0) -> str:
+    """Normalize a raw on-chain commitment value to a plain JSON string.
+
+    Handles formats observed in the wild, including double-hex encoding
+    (SDK hex-encodes, then substrate hex-encodes again):
+
+    1. Plain JSON string (e.g. ``'{"image": ...}'``).
+    2. Hex-encoded string with ``0x`` prefix and optional SCALE compact
+       length prefix (bittensor SDK stores this way in some versions).
+    3. Raw bytes with a SCALE compact length prefix followed by UTF-8
+       JSON (substrate library decodes to this in some versions, appears
+       as ``'E\\x02{"image": ...}'``).
+    4. Double-hex: outer 0x decode yields SCALE prefix + ``0x`` + inner
+       hex of JSON. Recurses to unwrap.
+    """
+    if _depth > 3:
+        return str(raw)
+
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    s = str(raw)
+
+    if s.startswith("0x"):
+        try:
+            decoded = bytes.fromhex(s[2:])
+        except ValueError:
+            return s
+        text = decoded.decode("utf-8", errors="replace")
+        idx_brace = text.find("{")
+        idx_0x = text.find("0x")
+        if idx_0x >= 0 and (idx_brace < 0 or idx_0x < idx_brace):
+            return _decode_raw_commitment(text[idx_0x:], _depth=_depth + 1)
+        return text[idx_brace:] if idx_brace >= 0 else text
+
+    idx = s.find("{")
+    if idx > 0:
+        return s[idx:]
+    return s
+
+
+def _fetch_commitments_raw_substrate(
+    subtensor: bt.Subtensor,
+    netuid: int,
+) -> dict[str, list[tuple[int, str]]]:
+    """Fallback: query the substrate storage map directly.
+
+    Bypasses bittensor's hex decoder, which crashes on some commitment
+    encodings. Returns the same shape as the SDK methods.
+    """
+    result = subtensor.substrate.query_map(
+        module="Commitments",
+        storage_function="RevealedCommitments",
+        params=[netuid],
+    )
+    out: dict[str, list[tuple[int, str]]] = {}
+    for key, value in result:
+        hotkey = str(key)
+        entries = []
+        for entry in value or []:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                data_raw, block = entry[0], entry[1]
+            else:
+                continue
+            entries.append((int(block), _decode_raw_commitment(data_raw)))
+        if entries:
+            out[hotkey] = entries
+    return out
+
+
 def fetch_revealed_commitments(
     subtensor: bt.Subtensor,
     netuid: int,
@@ -262,8 +331,9 @@ def fetch_revealed_commitments(
 ) -> dict[str, list[tuple[int, str]]]:
     """Return `{hotkey: [(block, data_str), ...]}` for the subnet.
 
-    Delegates to whichever bittensor API is available — different
-    versions name this differently.
+    Tries the bittensor SDK first; falls back to a raw substrate query
+    if the SDK chokes on hex decoding (observed with mixed commitment
+    encodings on chain).
     """
 
     def _inner() -> dict[str, list[tuple[int, str]]]:
@@ -273,10 +343,21 @@ def fetch_revealed_commitments(
         ):
             fn = getattr(subtensor, method_name, None)
             if callable(fn):
-                return fn(netuid) or {}
+                try:
+                    return fn(netuid) or {}
+                except ValueError as exc:
+                    if "fromhex" in str(exc) or "hexadecimal" in str(exc):
+                        logger.warning(
+                            "SDK %s hit hex decode error, falling back "
+                            "to raw substrate query: %s",
+                            method_name,
+                            exc,
+                        )
+                        return _fetch_commitments_raw_substrate(subtensor, netuid)
+                    raise
         raise RuntimeError(
             "subtensor has no get_all_revealed_commitments / "
-            "get_revealed_commitments method — bittensor version mismatch?"
+            "get_revealed_commitments method -- bittensor version mismatch?"
         )
 
     return _retry(

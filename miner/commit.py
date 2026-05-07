@@ -68,13 +68,24 @@ def main(argv: list[str] | None = None) -> int:
     commit_data = json.dumps({"image": args.image, "digest": args.digest})
     print(f"Committing to netuid={args.netuid}: {commit_data}")
 
-    subtensor.set_reveal_commitment(
-        wallet=wallet,
-        netuid=args.netuid,
-        data=commit_data,
-        blocks_until_reveal=1,
-    )
-    print("Done. Validator will pick this up within ~6 minutes.")
+    try:
+        subtensor.set_reveal_commitment(
+            wallet=wallet,
+            netuid=args.netuid,
+            data=commit_data,
+            blocks_until_reveal=1,
+        )
+    except Exception as e:
+        print(f"error: commitment failed: {e}", file=sys.stderr)
+        print(
+            f"Your hotkey is likely not registered on netuid {args.netuid}. "
+            f"Register first:\n\n"
+            f"  btcli subnet register --netuid {args.netuid}\n\n"
+            f"See https://docs.learnbittensor.org/miners",
+            file=sys.stderr,
+        )
+        return 1
+    print("Done. Validator will pick this up in the next round.")
     return 0
 
 

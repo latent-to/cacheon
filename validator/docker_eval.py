@@ -175,7 +175,7 @@ def start_container(
         reset_gpu_state()
         raise
     base_url = f"http://{ip}:{container_port}"
-    logger.info("Container started: %s url=%s", container_id[:12], base_url)
+    logger.info("🐳 Container started: %s url=%s", container_id[:12], base_url)
     return container_id, base_url
 
 
@@ -244,7 +244,7 @@ def wait_for_health(
         try:
             resp = urlopen(url, timeout=5)
             if resp.status == 200:
-                logger.info("Container healthy at %s", base_url)
+                logger.info("✅ Container healthy at %s", base_url)
                 return
             last_err = f"status={resp.status}"
         except Exception as exc:
@@ -605,7 +605,9 @@ def run_baseline_if_needed(
 
     cache = BaselineCache(cache_key=cache_key, results=baseline_results)
     save_baseline_cache(cache_dir, cache_key, cache)
-    logger.info("Baseline cached: key=%s, %d prompts", cache_key, len(baseline_results))
+    logger.info(
+        "✅ Baseline cached: key=%s, %d prompts", cache_key, len(baseline_results)
+    )
     return cache
 
 
@@ -654,7 +656,7 @@ def evaluate_challenger(
             n_warmup=n_warmup,
         )
     except Exception as exc:
-        logger.error("Challenger UID %d failed: %s", com.uid, exc)
+        logger.error("❌ Challenger UID %d failed: %s", com.uid, exc)
         eval_error = exc
     finally:
         stop_and_remove(cid or container_name)
@@ -871,7 +873,7 @@ def make_eval_fn(
         results: list[EvaluationRecord] = []
         for com in challengers:
             logger.info(
-                "Evaluating challenger UID %d (%s) image=%s",
+                "⚔️  Evaluating challenger UID %d (%s) image=%s",
                 com.uid,
                 com.hotkey[:16],
                 com.image,

@@ -10,6 +10,7 @@ import pytest
 from validator.chain import (
     CommitmentRecord,
     NotRegisteredError,
+    _decode_raw_commitment,
     build_commitments,
     build_winner_take_all_weights,
     parse_commitment_data,
@@ -132,6 +133,93 @@ class TestParseCommitmentData:
         """The old repo/revision format must not be accepted."""
         raw = json.dumps({"repo": "hf/repo", "revision": "a" * 40})
         assert parse_commitment_data(raw) is None
+
+
+class TestDecodeRawCommitment:
+    """Test the three on-chain commitment formats we've observed."""
+
+    def test_plain_json(self):
+        raw = '{"image": "user/repo:v1", "digest": "sha256:aaa"}'
+        assert _decode_raw_commitment(raw) == raw
+
+    def test_hex_encoded_with_0x_prefix(self):
+        payload = '{"image": "user/repo:v1"}'
+        hex_str = "0x" + payload.encode().hex()
+        assert _decode_raw_commitment(hex_str) == payload
+
+    def test_hex_with_scale_prefix(self):
+        """Old bittensor SDK stores 0x + SCALE compact length + hex(json).
+        The SCALE bytes appear before the '{' in the decoded output."""
+        payload = '{"image": "vllm/vllm-openai:latest"}'
+        scale_prefix = b"\xe5\x01"
+        hex_str = "0x" + (scale_prefix + payload.encode()).hex()
+        assert _decode_raw_commitment(hex_str) == payload
+
+    def test_raw_bytes_with_scale_prefix(self):
+        """Newer substrate library returns decoded bytes with SCALE prefix
+        (e.g. 'E\\x02{"image": ...}')."""
+        payload = '{"image": "docker.io/user/repo:v1"}'
+        raw = "E\x02" + payload
+        assert _decode_raw_commitment(raw) == payload
+
+    def test_bytes_input(self):
+        payload = '{"image": "user/repo:v1"}'
+        assert _decode_raw_commitment(payload.encode()) == payload
+
+    def test_invalid_hex_returns_as_is(self):
+        raw = "0xNOTHEX"
+        assert _decode_raw_commitment(raw) == raw
+
+    def test_no_json_brace(self):
+        assert _decode_raw_commitment("just plain text") == "just plain text"
+
+    def test_real_hex_commitment_from_chain(self):
+        """Exact hex blob observed on testnet 470 for 5GxN97KG (work/work)."""
+        raw = (
+            "0xe5017b22696d616765223a2022766c6c6d2f766c6c6d2d6f70656e"
+            "61693a6c6174657374222c2022646967657374223a202273686132"
+            "35363a396566663937333461333062363731336138353636323137"
+            "643336663832373736333066643264333163656337663061303239"
+            "32383335393031613233616134227d"
+        )
+        result = _decode_raw_commitment(raw)
+        parsed = parse_commitment_data(result)
+        assert parsed is not None
+        image, digest = parsed
+        assert image == "vllm/vllm-openai:latest"
+        assert digest == (
+            "sha256:9eff9734a30b6713a8566217d36f8277630fd2d31cec7f0a0292835901a23aa4"
+        )
+
+    def test_real_scale_prefixed_commitment_from_chain(self):
+        """Exact raw blob observed on testnet 470 for 5DJ3Zr (default/two)."""
+        raw = (
+            'E\x02{"image": "docker.io/xavierlyulatent/cacheon-test-miner:v1",'
+            ' "digest": "sha256:6331b7242e44a93868f87049d74f89903d108671'
+            'e98abd6fa50c326a722e563a"}'
+        )
+        result = _decode_raw_commitment(raw)
+        parsed = parse_commitment_data(result)
+        assert parsed is not None
+        image, digest = parsed
+        assert image == "docker.io/xavierlyulatent/cacheon-test-miner:v1"
+        assert digest == (
+            "sha256:6331b7242e44a93868f87049d74f89903d108671e98abd6fa50c326a722e563a"
+        )
+
+    def test_double_hex_commitment_from_chain(self):
+        """Exact double-hex blob observed on testnet 470 for 5E79pX6k
+        (default/three). SDK hex-encoded the JSON, then substrate
+        hex-encoded the result again with a SCALE prefix."""
+        raw = "0x910430783762323236393664363136373635323233613230323236343666363336623635373232653639366632663738363137363639363537323663373937353663363137343635366537343266363336313633363836353666366532643734363537333734326436643639366536353732336137363332323232633230323236343639363736353733373432323361323032323733363836313332333533363361363333373336363536333333363636313338333233343333363233353335333133373335333836333633333933303330333733333632333333363338333436323339363233333632333333343632363133363338333936363335333436343336363633353333333633313635333033383336333736313330333733383335363432323764"
+        result = _decode_raw_commitment(raw)
+        parsed = parse_commitment_data(result)
+        assert parsed is not None
+        image, digest = parsed
+        assert image == "docker.io/xavierlyulatent/cacheon-test-miner:v2"
+        assert digest == (
+            "sha256:c76ec3fa8243b551758cc90073b3684b9b3b34ba689f54d6f5361e0867a0785d"
+        )
 
 
 class TestBuildCommitments:
