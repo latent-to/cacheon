@@ -16,7 +16,6 @@ Conditions (applied to every provider):
     - Storage: >= 400 GB
     - NVLink / SXM: required
     - VRAM/GPU: H200 >= 141 GB, H100 >= 80 GB, A100 >= 80 GB, B200 >= 180 GB
-    - Availability: at least one region
 
 Tier selection (cross-provider, cheapest wins):
     Tier A (preferred): 4x H200, 8x H100, 8x A100 80GB, 8x H200, 2x B200
@@ -441,14 +440,12 @@ def _print_pretty(data: dict) -> None:
             n = len(cfg["matches"])
             tag = f"[{n} found]" if n else "[none]"
             print(f"    {cfg['label']:16s}  {tag}")
-            for m in cfg["matches"][:5]:
+            for m in cfg["matches"]:
                 price = m["hourly_price_cents"] / 100
                 print(
                     f"          {m['provider']:12s}  {m['instance_type']:28s}"
                     f"  ${price:>6.2f}/hr  {m['storage_gb']}GB disk"
                 )
-            if n > 5:
-                print(f"          ... and {n - 5} more")
     print()
 
 

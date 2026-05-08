@@ -24,7 +24,14 @@ SECRET_KEY: str = os.environ.get("HIPPIUS_SECRET_KEY", "")
 BUCKET: str = os.environ.get("CACHEON_S3_BUCKET", "cacheon-validator")
 S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state")
 
-SKIP_PATTERNS: set[str] = {".tmp", ".corrupt."}
+SKIP_PATTERNS: set[str] = {
+    ".tmp",
+    ".corrupt.",
+    # Legacy KV-cache era (do not sync)
+    "policy-cache",
+    # Pre-timestamped single-file log at state root
+    "validator.log",
+}
 
 
 def _client():

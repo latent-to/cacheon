@@ -15,22 +15,13 @@
 
 Cacheon is a Bittensor subnet (SN14) where miners compete to build the **fastest inference server** for a fixed open-source model.
 
-**V1 arena:** serve `Qwen2.5-72B-Instruct` on 4x H200 faster than a pinned vLLM baseline, while preserving output correctness via a first-divergence logprob gate.
+**V1 arena:** serve `Qwen2.5-72B-Instruct` faster than a pinned vLLM baseline, while preserving output correctness via a first-divergence logprob gate.
 
 Miners submit Docker images that expose an OpenAI-compatible `/v1/chat/completions` endpoint. The validator pulls, launches, benchmarks, and scores each submission on TTFT and throughput improvement over baseline.
 
 ## Docs
 
-All documentation lives at [cacheon.io/docs](https://cacheon.io/docs), built from the [cacheon-frontend](https://github.com/latent-to/cacheon-frontend) repo.
-
-## Repository layout
-
-```
-validator/          Core validator logic (chain, loop, state, challengers)
-scripts/            CLI entrypoints and GPU pod provisioning helpers
-miner/              Miner commitment tool
-tests/              Unit tests (pytest -m unit)
-```
+All documentation lives at [cacheon.io/docs](https://cacheon.io/docs).
 
 ## Quick start
 

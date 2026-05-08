@@ -222,7 +222,7 @@ echo "=== Verification ==="
 nvidia-smi
 docker --version
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
-"$VENV_DIR/bin/python" -c "import bittensor, datasets; print('python deps ok')"
+"$VENV_DIR/bin/python" -c "import datasets; print('python deps ok')"
 test -d "$MODEL_DIR"
 
 echo ""
