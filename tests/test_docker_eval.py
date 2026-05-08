@@ -379,16 +379,23 @@ class TestSendPromptStreaming:
 
     @patch("validator.docker_eval.time.monotonic")
     @patch("validator.docker_eval.urlopen")
-    def test_logprob_token_mismatch_returns_error(self, mock_urlopen, mock_mono):
+    def test_batched_logprobs_align_with_tokens(self, mock_urlopen, mock_mono):
+        """Two logprob entries in one chunk produce two aligned tokens."""
         chunks = [
             {
                 "choices": [
                     {
-                        "delta": {"content": "Hello"},
+                        "delta": {"content": "AB"},
                         "logprobs": {
                             "content": [
-                                {"token": "Hello", "top_logprobs": []},
-                                {"token": "extra", "top_logprobs": []},
+                                {
+                                    "token": "A",
+                                    "top_logprobs": [{"token": "A", "logprob": -0.1}],
+                                },
+                                {
+                                    "token": "B",
+                                    "top_logprobs": [{"token": "B", "logprob": -0.2}],
+                                },
                             ]
                         },
                     }
@@ -405,8 +412,65 @@ class TestSendPromptStreaming:
             logprobs=True,
         )
 
-        assert result.error is not None
-        assert "logprob_token_mismatch" in result.error
+        assert result.error is None
+        assert result.tokens == ["A", "B"]
+        assert result.top_logprobs is not None
+        assert len(result.top_logprobs) == 2
+        assert result.top_logprobs[0][0]["token"] == "A"
+        assert result.top_logprobs[1][0]["token"] == "B"
+        assert result.output_text == "AB"
+
+    @patch("validator.docker_eval.time.monotonic")
+    @patch("validator.docker_eval.urlopen")
+    def test_empty_content_with_logprobs_aligns(self, mock_urlopen, mock_mono):
+        """delta.content="" but logprobs present: token comes from logprobs."""
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {"content": "Hello"},
+                        "logprobs": {
+                            "content": [
+                                {
+                                    "token": "Hello",
+                                    "top_logprobs": [
+                                        {"token": "Hello", "logprob": -0.01}
+                                    ],
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {"content": ""},
+                        "logprobs": {
+                            "content": [
+                                {
+                                    "token": " ",
+                                    "top_logprobs": [{"token": " ", "logprob": -0.05}],
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+        ]
+        mock_urlopen.return_value = _make_sse_response(chunks)
+        mock_mono.side_effect = [0.0, 0.1]
+
+        result = send_prompt(
+            "http://172.18.0.2:8000",
+            [{"role": "user", "content": "hi"}],
+            stream=True,
+            logprobs=True,
+        )
+
+        assert result.error is None
+        assert result.tokens == ["Hello", " "]
+        assert len(result.top_logprobs) == 2
 
     @patch("validator.docker_eval.time.monotonic")
     @patch("validator.docker_eval.urlopen")

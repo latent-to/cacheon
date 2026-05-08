@@ -341,15 +341,19 @@ def send_prompt(
 def _parse_sse_response(
     resp: Any, t_start: float, prompt_index: int
 ) -> RawPromptResult:
-    """Parse a streaming SSE response for speed + correctness (single-pass).
+    """Parse a streaming SSE response, extracting speed metrics and
+    correctness data in a single pass.
 
-    Extracts tokens and timing from ``delta.content``, and logprobs from
-    ``choices[0].logprobs.content`` when present.  After parsing,
-    validates ``len(tokens) == len(all_top_logprobs)`` when logprobs were
-    requested; a mismatch is reported as an error so the correctness
-    checker never compares token i against logprob j.
+    Returns a ``RawPromptResult`` with TTFT, throughput, output tokens,
+    and (when the server includes them) per-token logprobs.
+
+    Token source: when logprobs are present in the SSE chunks, tokens
+    are taken from ``logprobs.content[].token`` so each token and its
+    logprobs stay paired by construction.  ``delta.content`` is used
+    for timing and display text only.
     """
     tokens: list[str] = []
+    output_parts: list[str] = []
     all_top_logprobs: list[list[dict[str, Any]]] = []
     t_first: float | None = None
     t_last: float = t_start
@@ -380,6 +384,7 @@ def _parse_sse_response(
                 saw_logprobs = True
                 for entry in lp_content:
                     if isinstance(entry, dict):
+                        tokens.append(entry.get("token", ""))
                         all_top_logprobs.append(entry.get("top_logprobs", []))
 
             if content:
@@ -387,11 +392,13 @@ def _parse_sse_response(
                 if t_first is None:
                     t_first = now
                 t_last = now
-                tokens.append(content)
+                output_parts.append(content)
+                if not saw_logprobs:
+                    tokens.append(content)
     except Exception as exc:
         return RawPromptResult(
             prompt_index=prompt_index,
-            output_text="".join(tokens),
+            output_text="".join(output_parts),
             tokens=tokens,
             top_logprobs=all_top_logprobs if saw_logprobs else None,
             ttft_s=(t_first - t_start) if t_first else 0.0,
@@ -422,7 +429,7 @@ def _parse_sse_response(
     if logprobs_out is not None and len(logprobs_out) != n_tokens:
         return RawPromptResult(
             prompt_index=prompt_index,
-            output_text="".join(tokens),
+            output_text="".join(output_parts),
             tokens=tokens,
             top_logprobs=logprobs_out,
             ttft_s=ttft,
@@ -436,7 +443,7 @@ def _parse_sse_response(
 
     return RawPromptResult(
         prompt_index=prompt_index,
-        output_text="".join(tokens),
+        output_text="".join(output_parts),
         tokens=tokens,
         top_logprobs=logprobs_out,
         ttft_s=ttft,
