@@ -1,0 +1,22 @@
+services:
+  cpu-validator:
+    build:
+      context: ..
+      dockerfile: validator/Dockerfile.cpu
+    container_name: cacheon-cpu-validator
+    restart: unless-stopped
+    volumes:
+      - ${BITTENSOR_DIR:-~/.bittensor}:/root/.bittensor:ro
+      - ${CACHEON_STATE_DIR:-./state}:/app/state
+    environment:
+      - CACHEON_NETWORK=${CACHEON_NETWORK:-finney}
+      - CACHEON_NETUID=${CACHEON_NETUID:-14}
+      - CACHEON_WALLET_NAME=${CACHEON_WALLET_NAME:-default}
+      - CACHEON_WALLET_HOTKEY=${CACHEON_WALLET_HOTKEY:-default}
+      - CACHEON_POLL_INTERVAL_S=${CACHEON_POLL_INTERVAL_S:-300}
+      - CACHEON_STATE_DIR=/app/state
+      - CACHEON_DRY_RUN=${CACHEON_DRY_RUN:-0}
+      - HIPPIUS_ACCESS_KEY=${HIPPIUS_ACCESS_KEY}
+      - HIPPIUS_SECRET_KEY=${HIPPIUS_SECRET_KEY}
+      - CACHEON_S3_BUCKET=${CACHEON_S3_BUCKET:-cacheon-validator}
+      - CACHEON_S3_PREFIX=${CACHEON_S3_PREFIX:-state}
