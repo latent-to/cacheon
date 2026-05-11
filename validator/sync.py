@@ -24,7 +24,14 @@ SECRET_KEY: str = os.environ.get("HIPPIUS_SECRET_KEY", "")
 BUCKET: str = os.environ.get("CACHEON_S3_BUCKET", "cacheon-validator")
 S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state")
 
-SKIP_PATTERNS: set[str] = {".tmp", ".corrupt."}
+SKIP_PATTERNS: set[str] = {
+    ".tmp",
+    ".corrupt.",
+    # Legacy KV-cache era (do not sync)
+    "policy-cache",
+    # Pre-timestamped single-file log at state root
+    "validator.log",
+}
 
 
 def _client():
@@ -59,14 +66,37 @@ def upload(
     state_dir: str | Path,
     bucket: str = "",
     prefix: str = "",
+    only: list[str] | None = None,
 ) -> int:
-    """Upload all files from ``state_dir`` to S3. Returns file count."""
+    """Upload files from ``state_dir`` to S3. Returns file count.
+
+    When *only* is provided, only relative paths (files or directories)
+    matching those prefixes are uploaded. E.g.
+    ``only=["eval_job.json", "logs/"]`` uploads ``eval_job.json`` and
+    everything under ``logs/``.
+    """
     bucket = bucket or BUCKET
     prefix = prefix or S3_PREFIX
     state_path = Path(state_dir)
     if not state_path.is_dir():
         logger.warning("State dir %s does not exist, nothing to upload", state_path)
         return 0
+
+    if only:
+        logger.info(
+            "⏳ S3 upload starting: %s -> s3://%s/%s (filter: %s)",
+            state_path.resolve(),
+            bucket,
+            prefix,
+            ", ".join(only),
+        )
+    else:
+        logger.info(
+            "⏳S3 upload starting: %s -> s3://%s/%s",
+            state_path.resolve(),
+            bucket,
+            prefix,
+        )
 
     s3 = _client()
     count = 0
@@ -76,14 +106,14 @@ def upload(
         rel = local_file.relative_to(state_path).as_posix()
         if _should_skip(rel):
             continue
+        if only and not any(rel == o or rel.startswith(o) for o in only):
+            continue
         key = f"{prefix}/{rel}" if prefix else rel
         logger.debug("Uploading %s -> s3://%s/%s", local_file, bucket, key)
         s3.upload_file(str(local_file), bucket, key)
         count += 1
 
-    logger.info(
-        "Uploaded %d file(s) from %s to s3://%s/%s", count, state_path, bucket, prefix
-    )
+    logger.info("☁️  S3 upload: %d file(s) -> s3://%s/%s", count, bucket, prefix)
     return count
 
 
@@ -97,6 +127,13 @@ def download(
     prefix = prefix or S3_PREFIX
     state_path = Path(state_dir)
     state_path.mkdir(parents=True, exist_ok=True)
+
+    logger.info(
+        "⏳ S3 download starting: s3://%s/%s -> %s",
+        bucket,
+        prefix,
+        state_path.resolve(),
+    )
 
     s3 = _client()
     paginator = s3.get_paginator("list_objects_v2")
@@ -117,9 +154,7 @@ def download(
             s3.download_file(bucket, key, str(local_file))
             count += 1
 
-    logger.info(
-        "Downloaded %d file(s) from s3://%s/%s to %s", count, bucket, prefix, state_path
-    )
+    logger.info("☁️  S3 download: %d file(s) <- s3://%s/%s", count, bucket, prefix)
     return count
 
 

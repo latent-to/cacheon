@@ -297,10 +297,10 @@ def send_prompt(
 ) -> RawPromptResult:
     """Send a chat completion request and parse the response.
 
-    When ``stream=True``: parses SSE, measures TTFT from request to first
-    data chunk, throughput from first to last token.
-    When ``stream=False``: parses JSON, returns tokens + logprobs (not timed
-    for scoring, but TTFT/throughput are still measured for diagnostics).
+    Single-pass design: ``stream=True, logprobs=True`` measures TTFT and
+    throughput while simultaneously collecting tokens + logprobs for
+    correctness checking. The ``stream=False`` path is kept for testing
+    but is not used in production scoring.
     """
     url = f"{base_url}/v1/chat/completions"
     body: dict[str, Any] = {
@@ -341,10 +341,23 @@ def send_prompt(
 def _parse_sse_response(
     resp: Any, t_start: float, prompt_index: int
 ) -> RawPromptResult:
-    """Parse a streaming SSE response for speed measurement."""
+    """Parse a streaming SSE response, extracting speed metrics and
+    correctness data in a single pass.
+
+    Returns a ``RawPromptResult`` with TTFT, throughput, output tokens,
+    and (when the server includes them) per-token logprobs.
+
+    Token source: when logprobs are present in the SSE chunks, tokens
+    are taken from ``logprobs.content[].token`` so each token and its
+    logprobs stay paired by construction.  ``delta.content`` is used
+    for timing and display text only.
+    """
     tokens: list[str] = []
+    output_parts: list[str] = []
+    all_top_logprobs: list[list[dict[str, Any]]] = []
     t_first: float | None = None
     t_last: float = t_start
+    saw_logprobs = False
 
     try:
         for raw_line in resp:
@@ -361,20 +374,33 @@ def _parse_sse_response(
             choices = chunk.get("choices", [])
             if not choices:
                 continue
-            delta = choices[0].get("delta", {})
+            choice = choices[0]
+            delta = choice.get("delta", {})
             content = delta.get("content", "")
+
+            lp_data = choice.get("logprobs") or {}
+            lp_content = lp_data.get("content") or []
+            if lp_content:
+                saw_logprobs = True
+                for entry in lp_content:
+                    if isinstance(entry, dict):
+                        tokens.append(entry.get("token", ""))
+                        all_top_logprobs.append(entry.get("top_logprobs", []))
+
             if content:
                 now = time.monotonic()
                 if t_first is None:
                     t_first = now
                 t_last = now
-                tokens.append(content)
+                output_parts.append(content)
+                if not saw_logprobs:
+                    tokens.append(content)
     except Exception as exc:
         return RawPromptResult(
             prompt_index=prompt_index,
-            output_text="".join(tokens),
+            output_text="".join(output_parts),
             tokens=tokens,
-            top_logprobs=None,
+            top_logprobs=all_top_logprobs if saw_logprobs else None,
             ttft_s=(t_first - t_start) if t_first else 0.0,
             throughput_tps=0.0,
             output_tokens=len(tokens),
@@ -398,11 +424,28 @@ def _parse_sse_response(
     n_tokens = len(tokens)
     tps = (n_tokens / elapsed) if elapsed > 0 and n_tokens > 1 else 0.0
 
+    logprobs_out = all_top_logprobs if saw_logprobs else None
+
+    if logprobs_out is not None and len(logprobs_out) != n_tokens:
+        return RawPromptResult(
+            prompt_index=prompt_index,
+            output_text="".join(output_parts),
+            tokens=tokens,
+            top_logprobs=logprobs_out,
+            ttft_s=ttft,
+            throughput_tps=tps,
+            output_tokens=n_tokens,
+            error=(
+                f"logprob_token_mismatch: {len(logprobs_out)} logprob "
+                f"entries vs {n_tokens} tokens"
+            ),
+        )
+
     return RawPromptResult(
         prompt_index=prompt_index,
-        output_text="".join(tokens),
+        output_text="".join(output_parts),
         tokens=tokens,
-        top_logprobs=None,
+        top_logprobs=logprobs_out,
         ttft_s=ttft,
         throughput_tps=tps,
         output_tokens=n_tokens,
@@ -596,18 +639,10 @@ def run_baseline_if_needed(
         )
         wait_for_health(base_url, timeout_s=startup_timeout_s)
 
-        speed_results = _run_prompts_on_server(
+        results = _run_prompts_on_server(
             base_url,
             prompts,
             stream=True,
-            logprobs=False,
-            per_prompt_timeout_s=per_prompt_timeout_s,
-            n_warmup=n_warmup,
-        )
-        correctness_results = _run_prompts_on_server(
-            base_url,
-            prompts,
-            stream=False,
             logprobs=True,
             per_prompt_timeout_s=per_prompt_timeout_s,
             n_warmup=n_warmup,
@@ -619,20 +654,20 @@ def run_baseline_if_needed(
         stop_and_remove(cid or container_name)
         reset_gpu_state()
 
-    errors = [r for r in speed_results + correctness_results if r.error]
+    errors = [r for r in results if r.error]
     if errors:
         err_msg = "; ".join(f"prompt {r.prompt_index}: {r.error}" for r in errors)
         raise RuntimeError(f"Baseline had prompt errors (not caching): {err_msg}")
 
     baseline_results: list[BaselinePromptResult] = []
-    for speed_r, corr_r in zip(speed_results, correctness_results):
+    for r in results:
         baseline_results.append(
             BaselinePromptResult(
-                tokens=corr_r.tokens,
-                top_logprobs=corr_r.top_logprobs or [],
-                ttft_s=speed_r.ttft_s,
-                throughput_tps=speed_r.throughput_tps,
-                output_tokens=corr_r.output_tokens,
+                tokens=r.tokens,
+                top_logprobs=r.top_logprobs or [],
+                ttft_s=r.ttft_s,
+                throughput_tps=r.throughput_tps,
+                output_tokens=r.output_tokens,
             )
         )
 
@@ -659,8 +694,7 @@ def evaluate_challenger(
     """Full lifecycle for one challenger. Returns an EvaluationRecord."""
     container_name = f"cacheon-uid{com.uid}-{com.hotkey[:8]}"
     cid: str | None = None
-    speed_results: list[RawPromptResult] = []
-    correctness_results: list[RawPromptResult] = []
+    results: list[RawPromptResult] = []
     eval_error: Exception | None = None
 
     try:
@@ -673,18 +707,10 @@ def evaluate_challenger(
         )
         wait_for_health(base_url, timeout_s=startup_timeout_s)
 
-        speed_results = _run_prompts_on_server(
+        results = _run_prompts_on_server(
             base_url,
             prompts,
             stream=True,
-            logprobs=False,
-            per_prompt_timeout_s=per_prompt_timeout_s,
-            n_warmup=n_warmup,
-        )
-        correctness_results = _run_prompts_on_server(
-            base_url,
-            prompts,
-            stream=False,
             logprobs=True,
             per_prompt_timeout_s=per_prompt_timeout_s,
             n_warmup=n_warmup,
@@ -702,7 +728,7 @@ def evaluate_challenger(
     if eval_error is not None:
         return _dq_record(com, current_block, str(eval_error))
 
-    errors = [r for r in speed_results + correctness_results if r.error]
+    errors = [r for r in results if r.error]
     if errors:
         err_msg = "; ".join(f"prompt {r.prompt_index}: {r.error}" for r in errors)
         logger.warning("Challenger UID %d had prompt errors: %s", com.uid, err_msg)
@@ -715,13 +741,12 @@ def evaluate_challenger(
     baseline_ttfts: list[float] = []
     baseline_tps_list: list[float] = []
 
-    n_scored = min(len(speed_results), len(correctness_results), len(baseline.results))
+    n_scored = min(len(results), len(baseline.results))
     for i in range(n_scored):
         bl = baseline.results[i]
-        sp = speed_results[i]
-        cr = correctness_results[i]
+        r = results[i]
 
-        verdict = compute_correctness(bl.tokens, cr.tokens, cr.top_logprobs)
+        verdict = compute_correctness(bl.tokens, r.tokens, r.top_logprobs)
         all_verdicts.append(verdict)
 
         if not verdict.passed:
@@ -736,16 +761,16 @@ def evaluate_challenger(
                 verdict.miner_logprobs_at_mismatch,
             )
 
-        miner_ttfts.append(sp.ttft_s)
-        miner_tps_list.append(sp.throughput_tps)
+        miner_ttfts.append(r.ttft_s)
+        miner_tps_list.append(r.throughput_tps)
         baseline_ttfts.append(bl.ttft_s)
         baseline_tps_list.append(bl.throughput_tps)
 
         per_prompt.append(
             PerPromptResult(
-                ttft_s=sp.ttft_s,
-                throughput_tps=sp.throughput_tps,
-                output_tokens=cr.output_tokens,
+                ttft_s=r.ttft_s,
+                throughput_tps=r.throughput_tps,
+                output_tokens=r.output_tokens,
                 token_match_rate=verdict.token_match_rate,
             )
         )
