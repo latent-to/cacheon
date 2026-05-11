@@ -7,6 +7,7 @@
 [![Discord](https://img.shields.io/discord/308323056592486420.svg)](https://discord.gg/bittensor)
 [![Docs](https://img.shields.io/badge/docs-cacheon.ai-blue)](https://cacheon.ai/docs)
 [![TAO.app](https://img.shields.io/badge/TAO.app-SN14-purple)](https://tao.app/subnets/14)
+[![X](https://img.shields.io/badge/X-@cacheon__ai-000000?logo=x&logoColor=white)](https://x.com/cacheon_ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [Website](https://cacheon.ai) | [Docs](https://cacheon.ai/docs) | [Discord](https://discord.gg/bittensor) | [TAO.app](https://tao.app/subnets/14)
