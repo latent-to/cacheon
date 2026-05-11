@@ -305,7 +305,6 @@ class TestSendPromptStreaming:
             {"choices": [{"delta": {"content": "!"}}]},
         ]
         mock_urlopen.return_value = _make_sse_response(chunks)
-        # t_start=0, t_first=0.1, t_mid=0.2, t_last=0.3
         mock_mono.side_effect = [0.0, 0.1, 0.2, 0.3]
 
         result = send_prompt(
@@ -319,6 +318,159 @@ class TestSendPromptStreaming:
         assert result.throughput_tps == pytest.approx(3 / 0.2)
         assert result.error is None
         assert result.top_logprobs is None
+
+    @patch("validator.docker_eval.time.monotonic")
+    @patch("validator.docker_eval.urlopen")
+    def test_parses_logprobs_from_sse_chunks(self, mock_urlopen, mock_mono):
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {"content": "Hello"},
+                        "logprobs": {
+                            "content": [
+                                {
+                                    "token": "Hello",
+                                    "logprob": -0.01,
+                                    "top_logprobs": [
+                                        {"token": "Hello", "logprob": -0.01},
+                                        {"token": "Hi", "logprob": -3.5},
+                                    ],
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {"content": " world"},
+                        "logprobs": {
+                            "content": [
+                                {
+                                    "token": " world",
+                                    "logprob": -0.02,
+                                    "top_logprobs": [
+                                        {"token": " world", "logprob": -0.02},
+                                    ],
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+        ]
+        mock_urlopen.return_value = _make_sse_response(chunks)
+        mock_mono.side_effect = [0.0, 0.1, 0.2]
+
+        result = send_prompt(
+            "http://172.18.0.2:8000",
+            [{"role": "user", "content": "hi"}],
+            stream=True,
+            logprobs=True,
+        )
+
+        assert result.tokens == ["Hello", " world"]
+        assert result.top_logprobs is not None
+        assert len(result.top_logprobs) == 2
+        assert result.top_logprobs[0][0]["token"] == "Hello"
+        assert result.error is None
+
+    @patch("validator.docker_eval.time.monotonic")
+    @patch("validator.docker_eval.urlopen")
+    def test_batched_logprobs_align_with_tokens(self, mock_urlopen, mock_mono):
+        """Two logprob entries in one chunk produce two aligned tokens."""
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {"content": "AB"},
+                        "logprobs": {
+                            "content": [
+                                {
+                                    "token": "A",
+                                    "top_logprobs": [{"token": "A", "logprob": -0.1}],
+                                },
+                                {
+                                    "token": "B",
+                                    "top_logprobs": [{"token": "B", "logprob": -0.2}],
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+        ]
+        mock_urlopen.return_value = _make_sse_response(chunks)
+        mock_mono.side_effect = [0.0, 0.1]
+
+        result = send_prompt(
+            "http://172.18.0.2:8000",
+            [{"role": "user", "content": "hi"}],
+            stream=True,
+            logprobs=True,
+        )
+
+        assert result.error is None
+        assert result.tokens == ["A", "B"]
+        assert result.top_logprobs is not None
+        assert len(result.top_logprobs) == 2
+        assert result.top_logprobs[0][0]["token"] == "A"
+        assert result.top_logprobs[1][0]["token"] == "B"
+        assert result.output_text == "AB"
+
+    @patch("validator.docker_eval.time.monotonic")
+    @patch("validator.docker_eval.urlopen")
+    def test_empty_content_with_logprobs_aligns(self, mock_urlopen, mock_mono):
+        """delta.content="" but logprobs present: token comes from logprobs."""
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {"content": "Hello"},
+                        "logprobs": {
+                            "content": [
+                                {
+                                    "token": "Hello",
+                                    "top_logprobs": [
+                                        {"token": "Hello", "logprob": -0.01}
+                                    ],
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {"content": ""},
+                        "logprobs": {
+                            "content": [
+                                {
+                                    "token": " ",
+                                    "top_logprobs": [{"token": " ", "logprob": -0.05}],
+                                },
+                            ]
+                        },
+                    }
+                ],
+            },
+        ]
+        mock_urlopen.return_value = _make_sse_response(chunks)
+        mock_mono.side_effect = [0.0, 0.1]
+
+        result = send_prompt(
+            "http://172.18.0.2:8000",
+            [{"role": "user", "content": "hi"}],
+            stream=True,
+            logprobs=True,
+        )
+
+        assert result.error is None
+        assert result.tokens == ["Hello", " "]
+        assert len(result.top_logprobs) == 2
 
     @patch("validator.docker_eval.time.monotonic")
     @patch("validator.docker_eval.urlopen")
@@ -582,16 +734,7 @@ class TestEvaluateChallenger:
         mock_reset,
         mock_capture_logs,
     ):
-        speed_r = RawPromptResult(
-            prompt_index=0,
-            output_text="Hello world",
-            tokens=["Hello", " world"],
-            top_logprobs=None,
-            ttft_s=0.5,
-            throughput_tps=150.0,
-            output_tokens=2,
-        )
-        corr_r = RawPromptResult(
+        scored_r = RawPromptResult(
             prompt_index=0,
             output_text="Hello world",
             tokens=["Hello", " world"],
@@ -600,14 +743,16 @@ class TestEvaluateChallenger:
                 [{"token": " world", "logprob": -0.02}],
             ],
             ttft_s=0.5,
-            throughput_tps=0.0,
+            throughput_tps=150.0,
             output_tokens=2,
         )
         warmup_r = RawPromptResult(
             prompt_index=0,
             output_text="warmup",
             tokens=["warmup"],
-            top_logprobs=None,
+            top_logprobs=[
+                [{"token": "warmup", "logprob": -0.1}],
+            ],
             ttft_s=1.0,
             throughput_tps=50.0,
             output_tokens=1,
@@ -615,12 +760,8 @@ class TestEvaluateChallenger:
         mock_send.side_effect = [
             warmup_r,
             warmup_r,
-            speed_r,
-            speed_r,
-            warmup_r,
-            warmup_r,
-            corr_r,
-            corr_r,
+            scored_r,
+            scored_r,
         ]
 
         record = evaluate_challenger(
@@ -706,16 +847,7 @@ class TestEvaluateChallenger:
         mock_reset,
         mock_capture_logs,
     ):
-        speed_r = RawPromptResult(
-            prompt_index=0,
-            output_text="Hello world",
-            tokens=["Hello", " world"],
-            top_logprobs=None,
-            ttft_s=0.5,
-            throughput_tps=150.0,
-            output_tokens=2,
-        )
-        corr_r = RawPromptResult(
+        wrong_r = RawPromptResult(
             prompt_index=0,
             output_text="WRONG tokens",
             tokens=["WRONG", " tokens"],
@@ -724,14 +856,16 @@ class TestEvaluateChallenger:
                 [{"token": " tokens", "logprob": -0.02}],
             ],
             ttft_s=0.5,
-            throughput_tps=0.0,
+            throughput_tps=150.0,
             output_tokens=2,
         )
         warmup_r = RawPromptResult(
             prompt_index=0,
             output_text="w",
             tokens=["w"],
-            top_logprobs=None,
+            top_logprobs=[
+                [{"token": "w", "logprob": -0.1}],
+            ],
             ttft_s=1.0,
             throughput_tps=50.0,
             output_tokens=1,
@@ -739,12 +873,8 @@ class TestEvaluateChallenger:
         mock_send.side_effect = [
             warmup_r,
             warmup_r,
-            speed_r,
-            speed_r,
-            warmup_r,
-            warmup_r,
-            corr_r,
-            corr_r,
+            wrong_r,
+            wrong_r,
         ]
 
         record = evaluate_challenger(
@@ -786,7 +916,9 @@ class TestEvaluateChallenger:
             prompt_index=0,
             output_text="w",
             tokens=["w"],
-            top_logprobs=None,
+            top_logprobs=[
+                [{"token": "w", "logprob": -0.1}],
+            ],
             ttft_s=1.0,
             throughput_tps=50.0,
             output_tokens=1,
@@ -802,10 +934,6 @@ class TestEvaluateChallenger:
             error="request_timeout",
         )
         mock_send.side_effect = [
-            warmup_r,
-            warmup_r,
-            error_r,
-            error_r,
             warmup_r,
             warmup_r,
             error_r,
@@ -854,7 +982,9 @@ class TestRunBaselineErrorCheck:
             prompt_index=0,
             output_text="w",
             tokens=["w"],
-            top_logprobs=None,
+            top_logprobs=[
+                [{"token": "w", "logprob": -0.1}],
+            ],
             ttft_s=1.0,
             throughput_tps=50.0,
             output_tokens=1,
@@ -863,7 +993,9 @@ class TestRunBaselineErrorCheck:
             prompt_index=0,
             output_text="Hello",
             tokens=["Hello"],
-            top_logprobs=None,
+            top_logprobs=[
+                [{"token": "Hello", "logprob": -0.01}],
+            ],
             ttft_s=0.5,
             throughput_tps=100.0,
             output_tokens=1,
@@ -879,10 +1011,6 @@ class TestRunBaselineErrorCheck:
             error="request_timeout",
         )
         mock_send.side_effect = [
-            warmup_r,
-            warmup_r,
-            ok_r,
-            error_r,
             warmup_r,
             warmup_r,
             ok_r,

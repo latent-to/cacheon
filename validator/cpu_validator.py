@@ -77,6 +77,8 @@ def _configure_logging(verbose: bool, state_dir: str) -> None:
     for name, lg in list(logging.Logger.manager.loggerDict.items()):
         if isinstance(lg, logging.Logger) and name.startswith("validator"):
             lg.setLevel(logging.NOTSET)
+    logging.getLogger("validator").setLevel(logging.NOTSET)
+    logger.setLevel(level)
 
     for noisy in (
         "bittensor",
@@ -118,11 +120,16 @@ def _reload_state(state: ValidatorState, state_dir: str) -> None:
     state.last_weights_set_block = fresh.last_weights_set_block
 
 
+_CPU_UPLOAD_ONLY = ["eval_job.json", "logs/"]
+"""CPU never uploads state.json -- the GPU is the sole writer of eval
+results and king. Prevents the CPU from overwriting GPU results on S3."""
+
+
 def _try_upload(state_dir: str) -> None:
     try:
         from .sync import upload
 
-        upload(state_dir)
+        upload(state_dir, only=_CPU_UPLOAD_ONLY)
     except Exception as exc:
         logger.error("S3 upload failed: %s", exc)
 
@@ -154,6 +161,16 @@ def run_tick(
 
     _reload_state(state, state_dir)
 
+    king_desc = (
+        f"UID {state.king.uid} score={state.king.score:.4f}" if state.king else "none"
+    )
+    logger.info(
+        "📋 State: king=%s | %d eval(s) | last_weights_block=%d",
+        king_desc,
+        len(state.evaluations),
+        state.last_weights_set_block,
+    )
+
     # Chain scan
     metagraph, current_block, block_hash = fetch_metagraph(subtensor, netuid)
     revealed = fetch_revealed_commitments(subtensor, netuid)
@@ -161,7 +178,7 @@ def run_tick(
     state.last_scan_block = current_block
 
     logger.info(
-        "Scan @ block %d: %d hotkey(s), %d valid commitment(s)",
+        "🔍 Scan block %d: %d hotkey(s), %d commitment(s)",
         current_block,
         len(metagraph.hotkeys),
         len(commitments),
@@ -176,7 +193,7 @@ def run_tick(
         )
         if live_hotkey != state.king.hotkey:
             logger.warning(
-                "King UID %d hotkey changed on chain (%s -> %s). Clearing throne.",
+                "👑  King UID %d hotkey changed on chain (%s -> %s). Clearing throne.",
                 state.king.uid,
                 state.king.hotkey[:16],
                 (live_hotkey or "<gone>")[:16],
@@ -188,7 +205,7 @@ def run_tick(
     reason = _needs_weight_set(state, current_block)
     if reason:
         logger.info(
-            "Setting weights: king=UID %d (score=%.4f), reason=%s",
+            "⚖️  Setting weights: king=UID %d (score=%.4f), reason=%s",
             state.king.uid,
             state.king.score,
             reason,
@@ -221,7 +238,7 @@ def run_tick(
         state.record_precheck_failure(com.hotkey, com.commit_block, rej_reason)
 
     logger.info(
-        "Challengers: %d new, %d rejected, %d deferred, %d known",
+        "⚔️  Challengers: %d new, %d rejected, %d deferred, %d known",
         len(challenger_set.challengers),
         len(challenger_set.newly_rejected),
         len(challenger_set.deferred),
@@ -259,7 +276,7 @@ def run_tick(
             state.save(state_dir)
             _try_upload(state_dir)
             logger.info(
-                "%d challenger(s) ready for GPU eval (eval_job.json uploaded)",
+                "📤 %d challenger(s) ready for GPU eval (eval_job.json uploaded)",
                 n_challengers,
             )
     else:
@@ -325,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     _configure_logging(args.verbose, args.state_dir)
 
     logger.info(
-        "CPU validator starting: network=%s netuid=%d wallet=%s/%s poll=%ds",
+        "🕗 CPU validator starting: network=%s netuid=%d wallet=%s/%s poll=%ds",
         args.network,
         args.netuid,
         args.wallet_name,
@@ -368,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
                     dry_run=args.dry_run,
                 )
                 logger.info(
-                    "Tick OK in %.1fs: block=%d commits=%d challengers=%d "
+                    "☑️ Tick completed in %.1fs: block=%d commits=%d challengers=%d "
                     "weights=%s king=%s",
                     time.time() - tick_start,
                     summary["block"],
@@ -379,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except Exception as exc:
                 logger.exception(
-                    "Tick failed after %.1fs: %s", time.time() - tick_start, exc
+                    "❌ Tick failed after %.1fs: %s", time.time() - tick_start, exc
                 )
 
             time.sleep(args.poll_interval)
