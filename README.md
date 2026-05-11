@@ -5,11 +5,11 @@
 **Inference optimization. Fastest server wins.**
 
 [![Discord](https://img.shields.io/discord/308323056592486420.svg)](https://discord.gg/bittensor)
-[![Docs](https://img.shields.io/badge/docs-cacheon.io-blue)](https://cacheon.io/docs)
+[![Docs](https://img.shields.io/badge/docs-cacheon.ai-blue)](https://cacheon.ai/docs)
 [![TAO.app](https://img.shields.io/badge/TAO.app-SN14-purple)](https://tao.app/subnets/14)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[Website](https://cacheon.io) | [Docs](https://cacheon.io/docs) | [Discord](https://discord.gg/bittensor) | [TAO.app](https://tao.app/subnets/14)
+[Website](https://cacheon.ai) | [Docs](https://cacheon.ai/docs) | [Discord](https://discord.gg/bittensor) | [TAO.app](https://tao.app/subnets/14)
 
 ---
 
@@ -59,7 +59,7 @@ python miner/commit.py \
   --netuid 14
 ```
 
-Full guide: [cacheon.io/docs/miners/overview](https://cacheon.io/docs/miners/overview)
+Full guide: [cacheon.ai/docs/miners/overview](https://cacheon.ai/docs/miners/overview)
 
 ## For Validators
 
@@ -79,16 +79,16 @@ bash scripts/gpu_setup/setup.sh
 docker compose -f docker-compose.gpu.yml up --build
 ```
 
-Full guide: [cacheon.io/docs/validators/overview](https://cacheon.io/docs/validators/overview)
+Full guide: [cacheon.ai/docs/validators/overview](https://cacheon.ai/docs/validators/overview)
 
 ## Documentation
 
 | | Miners | Validators | Evaluation |
 |---|---|---|---|
-| **Start here** | [Overview](https://cacheon.io/docs/miners/overview) | [Overview](https://cacheon.io/docs/validators/overview) | [Scoring](https://cacheon.io/docs/evaluation/scoring) |
-| **Reference** | [API contract](https://cacheon.io/docs/miners/api-contract) | [Architecture](https://cacheon.io/docs/validators/architecture) | [Harness](https://cacheon.io/docs/evaluation/harness) |
-| **Setup** | [Registration](https://cacheon.io/docs/miners/registration) | [GPU pod setup](https://cacheon.io/docs/validators/gpu-pod-setup) | [Prompts](https://cacheon.io/docs/evaluation/prompts) |
-| **Rules** | [Rules](https://cacheon.io/docs/miners/rules) | [CPU host setup](https://cacheon.io/docs/validators/cpu-host-setup) | [Roadmap](https://cacheon.io/docs/roadmap) |
+| **Start here** | [Overview](https://cacheon.ai/docs/miners/overview) | [Overview](https://cacheon.ai/docs/validators/overview) | [Scoring](https://cacheon.ai/docs/evaluation/scoring) |
+| **Reference** | [API contract](https://cacheon.ai/docs/miners/api-contract) | [Architecture](https://cacheon.ai/docs/validators/architecture) | [Harness](https://cacheon.ai/docs/evaluation/harness) |
+| **Setup** | [Registration](https://cacheon.ai/docs/miners/registration) | [GPU pod setup](https://cacheon.ai/docs/validators/gpu-pod-setup) | [Prompts](https://cacheon.ai/docs/evaluation/prompts) |
+| **Rules** | [Rules](https://cacheon.ai/docs/miners/rules) | [CPU host setup](https://cacheon.ai/docs/validators/cpu-host-setup) | [Roadmap](https://cacheon.ai/docs/roadmap) |
 
 ## License
 
