@@ -7,6 +7,7 @@
 [![Discord](https://img.shields.io/discord/308323056592486420.svg)](https://discord.gg/bittensor)
 [![Docs](https://img.shields.io/badge/docs-cacheon.ai-blue)](https://cacheon.ai/docs)
 [![TAO.app](https://img.shields.io/badge/TAO.app-SN14-purple)](https://tao.app/subnets/14)
+[![X](https://img.shields.io/badge/X-@cacheon__ai-000000?logo=x&logoColor=white)](https://x.com/cacheon_ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [Website](https://cacheon.ai) | [Docs](https://cacheon.ai/docs) | [Discord](https://discord.gg/bittensor) | [TAO.app](https://tao.app/subnets/14)
@@ -21,7 +22,7 @@ Cacheon is a Bittensor subnet (SN14) that runs an open competition for **product
 
 ## How It Works
 
-1. **Miners** build an inference server, package it as a Docker image, and commit the image digest on-chain.
+1. **Miners** build an inference server, package it as a Docker image, and then commit the image reference and image digest on-chain.
 2. **Validators** scan the chain for new commitments, pull the image, and run it with model weights mounted at `/models`.
 3. **Scoring** measures TTFT and throughput improvement over the vLLM baseline. Correctness is checked first -- fail it and the score is zero.
 4. **The fastest correct server** becomes king and earns all subnet emission until someone beats it.
@@ -40,7 +41,7 @@ else:
 
 ## For Miners
 
-Build an inference server that serves `Qwen2.5-72B-Instruct` via `/v1/chat/completions` with streaming and logprobs. Package it as a Docker image (max 20 GB -- weights are mounted, not baked in). Push it to a public registry and commit on-chain.
+Build an inference server that serves `Qwen2.5-72B-Instruct` via `/v1/chat/completions` with streaming and logprobs. Package it as a Docker image (maximum 20 GB; model weights are mounted at runtime, not baked into the image). Push it to a public registry and commit on-chain.
 
 **Requirements:** public container registry, Bittensor wallet registered on SN14. GPU hardware is only needed for local testing.
 
@@ -83,12 +84,12 @@ Full guide: [cacheon.ai/docs/validators/overview](https://cacheon.ai/docs/valida
 
 ## Documentation
 
-| | Miners | Validators | Evaluation |
-|---|---|---|---|
-| **Start here** | [Overview](https://cacheon.ai/docs/miners/overview) | [Overview](https://cacheon.ai/docs/validators/overview) | [Scoring](https://cacheon.ai/docs/evaluation/scoring) |
-| **Reference** | [API contract](https://cacheon.ai/docs/miners/api-contract) | [Architecture](https://cacheon.ai/docs/validators/architecture) | [Harness](https://cacheon.ai/docs/evaluation/harness) |
-| **Setup** | [Registration](https://cacheon.ai/docs/miners/registration) | [GPU pod setup](https://cacheon.ai/docs/validators/gpu-pod-setup) | [Prompts](https://cacheon.ai/docs/evaluation/prompts) |
-| **Rules** | [Rules](https://cacheon.ai/docs/miners/rules) | [CPU host setup](https://cacheon.ai/docs/validators/cpu-host-setup) | [Roadmap](https://cacheon.ai/docs/roadmap) |
+|                | Miners                                                      | Validators                                                          | Evaluation                                            |
+| -------------- | ----------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------- |
+| **Start here** | [Overview](https://cacheon.ai/docs/miners/overview)         | [Overview](https://cacheon.ai/docs/validators/overview)             | [Scoring](https://cacheon.ai/docs/evaluation/scoring) |
+| **Reference**  | [API contract](https://cacheon.ai/docs/miners/api-contract) | [Architecture](https://cacheon.ai/docs/validators/architecture)     | [Harness](https://cacheon.ai/docs/evaluation/harness) |
+| **Setup**      | [Quickstart](https://cacheon.ai/docs/miners/registration)   | [GPU pod setup](https://cacheon.ai/docs/validators/gpu-pod-setup)   | [Prompts](https://cacheon.ai/docs/evaluation/prompts) |
+| **Rules**      | [Rules](https://cacheon.ai/docs/miners/rules)               | [CPU host setup](https://cacheon.ai/docs/validators/cpu-host-setup) | [Roadmap](https://cacheon.ai/docs/roadmap)            |
 
 ## License
 
