@@ -59,13 +59,13 @@ if ! docker --version >/dev/null 2>&1; then
   exit 1
 fi
 
-# -- tear down existing cpu-validator if running --
-if docker ps -q -f name=cacheon-cpu-validator 2>/dev/null | grep -q .; then
-  echo "Stopping existing cacheon-cpu-validator container..."
+# -- tear down existing validator if running --
+if docker ps -q -f name=cacheon-validator 2>/dev/null | grep -q .; then
+  echo "Stopping existing cacheon-validator container..."
   docker compose -f "$COMPOSE_FILE" down
   echo "Container stopped."
 else
-  echo "No running cacheon-cpu-validator found."
+  echo "No running cacheon-validator found."
 fi
 
 # -- start --

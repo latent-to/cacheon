@@ -3,6 +3,7 @@ services:
     build:
       context: ..
       dockerfile: validator/Dockerfile.cpu
+    image: cacheon-validator:latest
     container_name: cacheon-validator
     restart: unless-stopped
     volumes:
