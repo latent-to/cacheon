@@ -1,8 +1,11 @@
 """Cacheon monitoring API. Read-only surface over on-disk validator state."""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from api.config import ALLOWED_ORIGINS
 from api.routes.health import router as health_router
@@ -10,6 +13,8 @@ from api.routes.king import router as king_router
 from api.routes.evaluations import router as evaluations_router
 from api.routes.logs import router as logs_router
 from api.routes.rounds import router as rounds_router
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 app = FastAPI(
     title="Cacheon Monitoring API",
@@ -33,6 +38,8 @@ app = FastAPI(
     ],
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,

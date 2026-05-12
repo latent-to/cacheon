@@ -1,4 +1,5 @@
-"""GET /api/health -- validator status at a glance."""
+"""GET /api/health -- lightweight liveness check.
+GET /api/status -- detailed validator overview."""
 
 import time
 
@@ -14,13 +15,26 @@ router = APIRouter()
 @router.get(
     "/api/health",
     tags=["Overview"],
-    summary="Validator health and status",
-    description=(
-        "Quick status check. Returns the current king, evaluation counts, "
-        "and time since the last eval round."
-    ),
+    summary="Liveness check",
+    description="Returns 200 if the API is up. Use for uptime monitors.",
 )
 def health():
+    return JSONResponse(
+        content={"status": "ok"},
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get(
+    "/api/status",
+    tags=["Overview"],
+    summary="Validator status overview",
+    description=(
+        "Current king, evaluation counts, time since last eval, "
+        "and chain scan / weight-set block numbers."
+    ),
+)
+def status():
     state = safe_json_load(STATE_DIR / "state.json", {})
     evals = state.get("evaluations", {})
     king = state.get("king")
@@ -34,20 +48,17 @@ def health():
     )
 
     return JSONResponse(
-        content=sanitize_floats(
-            {
-                "status": "ok",
-                "king_uid": king.get("uid") if king else None,
-                "king_score": king.get("score") if king else None,
-                "king_image": king.get("image") if king else None,
-                "n_evaluated": len(evals),
-                "n_active": n_active,
-                "n_disqualified": n_dq,
-                "last_eval_ts": last_eval_ts or None,
-                "last_eval_age_min": last_eval_age_min,
-                "last_scan_block": state.get("last_scan_block"),
-                "last_weights_set_block": state.get("last_weights_set_block"),
-            }
-        ),
+        content=sanitize_floats({
+            "king_uid": king.get("uid") if king else None,
+            "king_score": king.get("score") if king else None,
+            "king_image": king.get("image") if king else None,
+            "n_evaluated": len(evals),
+            "n_active": n_active,
+            "n_disqualified": n_dq,
+            "last_eval_ts": last_eval_ts or None,
+            "last_eval_age_min": last_eval_age_min,
+            "last_scan_block": state.get("last_scan_block"),
+            "last_weights_set_block": state.get("last_weights_set_block"),
+        }),
         headers={"Cache-Control": "public, max-age=30"},
     )
