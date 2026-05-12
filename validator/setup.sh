@@ -5,7 +5,6 @@
 # Installs Docker CE, NVIDIA Container Toolkit, Python venv, model weights, PG19 prefetch,
 # and pulls the vLLM baseline image.
 #
-# Optional: export GITHUB_PAT for authenticated clone of private forks (never printed).
 # Optional: export HF_TOKEN for huggingface-cli login (large model download).
 #
 # Usage:
@@ -138,12 +137,7 @@ if [[ -d "$REPO_DIR/.git" ]]; then
   git -C "$REPO_DIR" pull
 else
   echo "Cloning into $REPO_DIR (branch: $CACHEON_BRANCH)"
-  if [[ -n "${GITHUB_PAT:-}" ]] && [[ "$REPO_URL" == https://github.com/* ]]; then
-    CLONE_URL="${REPO_URL/https:\/\/github.com\//https://${GITHUB_PAT}@github.com/}"
-    git clone -b "$CACHEON_BRANCH" "$CLONE_URL" "$REPO_DIR"
-  else
-    git clone -b "$CACHEON_BRANCH" "$REPO_URL" "$REPO_DIR"
-  fi
+  git clone -b "$CACHEON_BRANCH" "$REPO_URL" "$REPO_DIR"
 fi
 
 # -- Python venv --
