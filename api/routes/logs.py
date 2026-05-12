@@ -1,6 +1,7 @@
 """GET /api/container-logs -- list available container logs.
 GET /api/container-log/{label} -- raw container log text."""
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -11,6 +12,7 @@ from api.config import STATE_DIR
 router = APIRouter()
 
 LOG_DIR = STATE_DIR / "container_logs"
+LABEL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @router.get(
@@ -52,8 +54,23 @@ def list_container_logs():
     ),
 )
 def get_container_log(label: str):
-    safe_label = Path(label).name
-    log_path = LOG_DIR / f"{safe_label}.log"
+    if not LABEL_RE.fullmatch(label):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid log label"},
+        )
+
+    safe_label = label
+    base_dir = LOG_DIR.resolve()
+    log_path = (base_dir / f"{safe_label}.log").resolve()
+
+    try:
+        log_path.relative_to(base_dir)
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid log path"},
+        )
 
     if not log_path.is_file():
         return JSONResponse(
