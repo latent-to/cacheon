@@ -13,7 +13,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_DIR="${VENV_DIR:-$HOME/venv-cacheon}"
 COMPOSE_FILE="$SCRIPT_DIR/cpu-compose.yml"
 ENV_FILE="$SCRIPT_DIR/.env"
