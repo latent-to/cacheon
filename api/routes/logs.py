@@ -60,25 +60,22 @@ def get_container_log(label: str):
             content={"detail": "Invalid log label"},
         )
 
-    safe_label = label
-    base_dir = LOG_DIR.resolve()
-    log_path = (base_dir / f"{safe_label}.log").resolve()
-
-    try:
-        log_path.relative_to(base_dir)
-    except ValueError:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Invalid log path"},
-        )
-
-    if not log_path.is_file():
+    if not LOG_DIR.is_dir():
         return JSONResponse(
             status_code=404,
-            content={"detail": f"Container log '{safe_label}' not found"},
+            content={"detail": f"Container log '{label}' not found"},
         )
 
-    text = log_path.read_text(encoding="utf-8", errors="replace")
+    target = f"{label}.log"
+    match = next((f for f in LOG_DIR.iterdir() if f.name == target), None)
+
+    if match is None or not match.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"detail": f"Container log '{label}' not found"},
+        )
+
+    text = match.read_text(encoding="utf-8", errors="replace")
     return PlainTextResponse(
         content=text,
         headers={"Cache-Control": "public, max-age=300"},
