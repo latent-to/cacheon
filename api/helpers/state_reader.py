@@ -23,9 +23,13 @@ def safe_jsonl_load(path: Path) -> list[dict]:
         with open(path) as f:
             for line in f:
                 line = line.strip()
-                if line:
+                if not line:
+                    continue
+                try:
                     entries.append(json.loads(line))
-    except (OSError, json.JSONDecodeError, ValueError):
+                except (json.JSONDecodeError, ValueError):
+                    continue
+    except OSError:
         pass
     return entries
 

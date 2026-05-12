@@ -17,5 +17,3 @@ ALLOWED_ORIGINS: list[str] = [
     ).split(",")
     if o.strip()
 ]
-
-API_PORT: int = int(os.environ.get("CACHEON_API_PORT", "8080"))

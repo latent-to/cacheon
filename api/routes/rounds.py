@@ -26,6 +26,7 @@ def list_rounds():
     evals = (state.get("evaluations") or {}).values()
 
     by_block: dict[int, list[dict]] = defaultdict(list)
+    ts_by_block: dict[int, float] = {}
     for e in evals:
         block = e.get("evaluation_block", 0)
         by_block[block].append(
@@ -38,19 +39,18 @@ def list_rounds():
                 "disqualify_reason": e.get("disqualify_reason"),
             }
         )
+        ts = e.get("evaluated_at", 0)
+        if ts > ts_by_block.get(block, 0):
+            ts_by_block[block] = ts
 
     rounds = []
     for block in sorted(by_block, reverse=True):
         challengers = by_block[block]
-        ts_list = [
-            e.get("evaluated_at", 0)
-            for e in (state.get("evaluations") or {}).values()
-            if e.get("evaluation_block") == block
-        ]
+        latest_ts = ts_by_block.get(block)
         rounds.append(
             {
                 "evaluation_block": block,
-                "evaluated_at": max(ts_list) if ts_list else None,
+                "evaluated_at": latest_ts or None,
                 "n_challengers": len(challengers),
                 "challengers": challengers,
             }
