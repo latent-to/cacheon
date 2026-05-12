@@ -6,9 +6,22 @@ from fastapi.responses import RedirectResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 
 from api.config import ALLOWED_ORIGINS
+
+TRUSTED_PROXIES = {"127.0.0.1", "::1"}
+
+
+def _client_ip(request: Request) -> str:
+    """Use X-Forwarded-For when the direct peer is the local reverse proxy."""
+    peer = request.client.host if request.client else "127.0.0.1"
+    if peer in TRUSTED_PROXIES:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return peer
+
+
 from api.routes.health import router as health_router
 from api.routes.status import router as status_router
 from api.routes.king import router as king_router
@@ -16,7 +29,7 @@ from api.routes.evaluations import router as evaluations_router
 from api.routes.logs import router as logs_router
 from api.routes.rounds import router as rounds_router
 
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+limiter = Limiter(key_func=_client_ip, default_limits=["60/minute"])
 
 app = FastAPI(
     title="Cacheon Monitoring API",
