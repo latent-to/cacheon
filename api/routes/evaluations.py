@@ -13,7 +13,7 @@ router = APIRouter()
 def _load_evals() -> list[dict]:
     state = safe_json_load(STATE_DIR / "state.json", {})
     evals = list((state.get("evaluations") or {}).values())
-    evals.sort(key=lambda e: e.get("evaluated_at", 0), reverse=True)
+    evals.sort(key=lambda e: e.get("evaluated_at") or 0, reverse=True)
     return evals
 
 

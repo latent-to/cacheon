@@ -39,7 +39,7 @@ def list_rounds():
                 "disqualify_reason": e.get("disqualify_reason"),
             }
         )
-        ts = e.get("evaluated_at", 0)
+        ts = e.get("evaluated_at") or 0
         if ts > ts_by_block.get(block, 0):
             ts_by_block[block] = ts
 

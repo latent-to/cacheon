@@ -22,13 +22,13 @@ router = APIRouter()
 )
 def status():
     state = safe_json_load(STATE_DIR / "state.json", {})
-    evals = state.get("evaluations", {})
+    evals = state.get("evaluations") or {}
     king = state.get("king")
 
     n_dq = sum(1 for e in evals.values() if e.get("disqualified"))
     n_active = sum(1 for e in evals.values() if not e.get("disqualified"))
 
-    last_eval_ts = max((e.get("evaluated_at", 0) for e in evals.values()), default=0)
+    last_eval_ts = max((e.get("evaluated_at") or 0 for e in evals.values()), default=0)
     last_eval_age_min = (
         round((time.time() - last_eval_ts) / 60, 1) if last_eval_ts else None
     )
