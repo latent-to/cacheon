@@ -9,6 +9,7 @@ from slowapi.util import get_remote_address
 
 from api.config import ALLOWED_ORIGINS
 from api.routes.health import router as health_router
+from api.routes.status import router as status_router
 from api.routes.king import router as king_router
 from api.routes.evaluations import router as evaluations_router
 from api.routes.logs import router as logs_router
@@ -48,6 +49,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(status_router)
 app.include_router(king_router)
 app.include_router(evaluations_router)
 app.include_router(logs_router)
