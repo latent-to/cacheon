@@ -35,6 +35,7 @@ source "$VENV_DIR/bin/activate"
 
 "$VENV_DIR/bin/pip" install --upgrade pip -q
 "$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements-cpu.txt" -q
+"$VENV_DIR/bin/pip" install --no-deps lium.io -q
 echo "Dependencies installed."
 
 # -- .env --

@@ -2,7 +2,7 @@ services:
   gpu-eval:
     build:
       context: ..
-      dockerfile: validator/Dockerfile
+      dockerfile: validator/Dockerfile.gpu
     container_name: cacheon-gpu-eval
     networks:
       - cacheon-internal

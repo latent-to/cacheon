@@ -1,7 +1,6 @@
 # Unified validator requirements: chain + GPU orchestration.
 bittensor>=10
 boto3
-lium.io
 targon-sdk
 paramiko
 requests

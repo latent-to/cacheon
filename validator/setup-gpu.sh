@@ -41,7 +41,7 @@ if [[ "$PULL_ONLY" == true ]]; then
   # shellcheck source=/dev/null
   source "$VENV_DIR/bin/activate"
   "$VENV_DIR/bin/pip" install --upgrade pip
-  "$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements.txt"
+  "$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements-gpu.txt"
   echo "=== Pull-only run complete ==="
   exit 0
 fi
@@ -153,7 +153,7 @@ fi
 source "$VENV_DIR/bin/activate"
 export PATH="$VENV_DIR/bin:$PATH"
 "$VENV_DIR/bin/pip" install --upgrade pip
-"$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements.txt"
+"$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements-gpu.txt"
 
 # Hugging Face cache (all HF operations below use this)
 export HF_HOME="/workspace/.cache/huggingface"

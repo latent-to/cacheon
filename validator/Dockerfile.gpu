@@ -15,8 +15,8 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-COPY validator/requirements.txt /app/validator/requirements.txt
-RUN pip install --no-cache-dir -r /app/validator/requirements.txt
+COPY validator/requirements-gpu.txt /app/validator/requirements-gpu.txt
+RUN pip install --no-cache-dir -r /app/validator/requirements-gpu.txt
 
 COPY validator/ /app/validator/
 

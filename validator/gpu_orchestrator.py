@@ -22,7 +22,7 @@ from .providers import GpuInstance, GpuProvider, PodHandle, search_all_providers
 logger = logging.getLogger(__name__)
 
 SETUP_SCRIPT_URL = (
-    "https://raw.githubusercontent.com/latent-to/cacheon/main/validator/setup.sh"
+    "https://raw.githubusercontent.com/latent-to/cacheon/main/validator/setup-gpu.sh"
 )
 
 
