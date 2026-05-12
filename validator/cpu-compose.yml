@@ -1,9 +1,9 @@
 services:
-  cpu-validator:
+  validator:
     build:
       context: ..
       dockerfile: validator/Dockerfile.cpu
-    container_name: cacheon-cpu-validator
+    container_name: cacheon-validator
     restart: unless-stopped
     volumes:
       - ${BITTENSOR_DIR:-~/.bittensor}:/root/.bittensor:ro
@@ -20,3 +20,9 @@ services:
       - HIPPIUS_SECRET_KEY=${HIPPIUS_SECRET_KEY}
       - CACHEON_S3_BUCKET=${CACHEON_S3_BUCKET:-cacheon-validator}
       - CACHEON_S3_PREFIX=${CACHEON_S3_PREFIX:-state}
+      - CACHEON_AUTO_RENT=${CACHEON_AUTO_RENT:-0}
+      - LIUM_API_KEY=${LIUM_API_KEY:-}
+      - TARGON_API_KEY=${TARGON_API_KEY:-}
+      - CACHEON_MAX_HOURLY_PRICE=${CACHEON_MAX_HOURLY_PRICE:-800}
+      - CACHEON_GPU_TIMEOUT_MIN=${CACHEON_GPU_TIMEOUT_MIN:-120}
+      - HF_TOKEN=${HF_TOKEN:-}

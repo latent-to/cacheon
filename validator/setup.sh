@@ -221,6 +221,6 @@ test -d "$MODEL_DIR"
 
 echo ""
 echo "=== Setup complete ==="
-echo "Next: copy validator/.env.validator.example to your .env, set wallet vars, and paste CACHEON_BASELINE_DIGEST from above."
+echo "Next: copy validator/.env.example to your .env, set wallet vars, and paste CACHEON_BASELINE_DIGEST from above."
 echo "Docs: https://cacheon.io/docs/validators/overview"
 echo "Run the validator: https://cacheon.io/docs/architecture/validator"

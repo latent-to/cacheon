@@ -888,7 +888,7 @@ def make_eval_fn(
     per_prompt_timeout_s: int = 120,
     n_warmup: int = 2,
 ) -> Callable:
-    """Return an ``EvalFn`` compatible with ``validator.loop``.
+    """Return an ``EvalFn`` that runs Docker eval per challenger.
 
     For each challenger, runs the full Docker lifecycle sequentially.
     Baseline is run once (or loaded from cache) per block hash.

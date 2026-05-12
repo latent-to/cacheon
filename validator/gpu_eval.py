@@ -179,6 +179,10 @@ def main() -> int:
 
     # Evaluate challengers
     for ci in eval_job.challengers:
+        if state.is_known(ci.hotkey, ci.commit_block):
+            logger.info("Skipping UID %d (already evaluated)", ci.uid)
+            continue
+
         com = CommitmentRecord(
             uid=ci.uid,
             hotkey=ci.hotkey,
@@ -229,13 +233,12 @@ def main() -> int:
                 outcome.dethrone_threshold,
             )
 
-    state.save(state_dir)
+        state.save(state_dir)
+        _upload_state(state_dir)
+
     logger.info(
         "State saved. King: %s", f"UID {state.king.uid}" if state.king else "none"
     )
-
-    # S3 upload
-    _upload_state(state_dir)
     logger.info("GPU eval complete")
     return 0
 

@@ -42,7 +42,7 @@ echo ""
 echo "=== Environment ==="
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "ERROR: $ENV_FILE not found."
-  echo "Copy .env.cpu.example to .env and fill in credentials before running this script."
+  echo "Copy .env.example to .env and fill in credentials before running this script."
   exit 1
 fi
 set -a

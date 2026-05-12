@@ -42,7 +42,7 @@ def _client():
     if not ACCESS_KEY or not SECRET_KEY:
         raise RuntimeError(
             "HIPPIUS_ACCESS_KEY and HIPPIUS_SECRET_KEY must be set "
-            "for S3 sync. See .env.gpu.example."
+            "for S3 sync. See .env.example."
         )
 
     return boto3.client(

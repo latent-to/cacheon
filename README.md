@@ -88,8 +88,8 @@ Full guide: [cacheon.ai/docs/validators/overview](https://cacheon.ai/docs/valida
 | -------------- | ----------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------- |
 | **Start here** | [Overview](https://cacheon.ai/docs/miners/overview)         | [Overview](https://cacheon.ai/docs/validators/overview)             | [Scoring](https://cacheon.ai/docs/evaluation/scoring) |
 | **Reference**  | [API contract](https://cacheon.ai/docs/miners/api-contract) | [Architecture](https://cacheon.ai/docs/validators/architecture)     | [Harness](https://cacheon.ai/docs/evaluation/harness) |
-| **Setup**      | [Quickstart](https://cacheon.ai/docs/miners/registration)   | [GPU pod setup](https://cacheon.ai/docs/validators/gpu-pod-setup)   | [Prompts](https://cacheon.ai/docs/evaluation/prompts) |
-| **Rules**      | [Rules](https://cacheon.ai/docs/miners/rules)               | [CPU host setup](https://cacheon.ai/docs/validators/cpu-host-setup) | [Roadmap](https://cacheon.ai/docs/roadmap)            |
+| **Setup**      | [Quickstart](https://cacheon.ai/docs/miners/registration)   | [Validator setup](https://cacheon.ai/docs/validators/setup)         | [Prompts](https://cacheon.ai/docs/evaluation/prompts) |
+| **Rules**      | [Rules](https://cacheon.ai/docs/miners/rules)               | [Manual GPU setup](https://cacheon.ai/docs/validators/gpu-pod-setup) | [Roadmap](https://cacheon.ai/docs/roadmap)            |
 
 ## License
 

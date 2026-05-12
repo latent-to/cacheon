@@ -279,6 +279,19 @@ def run_tick(
                 "📤 %d challenger(s) ready for GPU eval (eval_job.json uploaded)",
                 n_challengers,
             )
+
+            if validator_config.AUTO_RENT:
+                from .gpu_orchestrator import run_gpu_eval
+
+                success = run_gpu_eval(state_dir, eval_job)
+                if success:
+                    try:
+                        from .sync import download
+
+                        download(state_dir)
+                    except Exception as exc:
+                        logger.error("Post-eval S3 download failed: %s", exc)
+                    _reload_state(state, state_dir)
     else:
         state.save(state_dir)
 
