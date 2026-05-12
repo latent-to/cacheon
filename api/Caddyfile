@@ -20,13 +20,4 @@ api.cacheon.io {
         X-Frame-Options DENY
         Referrer-Policy strict-origin-when-cross-origin
     }
-
-    # Per-IP rate limit: 60 requests per minute
-    rate_limit {
-        zone api_zone {
-            key {remote_host}
-            events 60
-            window 1m
-        }
-    }
 }
