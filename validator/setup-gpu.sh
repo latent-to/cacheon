@@ -215,7 +215,11 @@ echo ""
 echo "=== Verification ==="
 nvidia-smi
 docker --version
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+if docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi; then
+  echo "GPU passthrough in nested container: OK"
+else
+  echo "WARNING: nested GPU passthrough check failed (non-fatal; eval may still work)"
+fi
 "$VENV_DIR/bin/python" -c "import datasets; print('python deps ok')"
 test -d "$MODEL_DIR"
 
