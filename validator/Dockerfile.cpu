@@ -3,8 +3,11 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY validator/requirements-cpu.txt /app/validator/requirements-cpu.txt
+# Install lium.io alone first (it pins scalecodec==1.2.11); then upgrade to
+# 1.2.12 so bittensor's requirement is satisfied without ResolutionImpossible.
 RUN pip install --no-cache-dir -r /app/validator/requirements-cpu.txt && \
-    pip install --no-cache-dir lium.io scalecodec==1.2.12
+    pip install --no-cache-dir lium.io && \
+    pip install --no-cache-dir scalecodec==1.2.12
 
 COPY validator/ /app/validator/
 

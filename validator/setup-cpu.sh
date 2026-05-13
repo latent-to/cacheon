@@ -35,7 +35,8 @@ source "$VENV_DIR/bin/activate"
 
 "$VENV_DIR/bin/pip" install --upgrade pip -q
 "$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements-cpu.txt" -q
-"$VENV_DIR/bin/pip" install lium.io scalecodec==1.2.12 -q
+"$VENV_DIR/bin/pip" install lium.io -q
+"$VENV_DIR/bin/pip" install scalecodec==1.2.12 -q
 echo "Dependencies installed."
 
 # -- .env --
