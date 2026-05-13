@@ -9,6 +9,8 @@ from . import GpuInstance, GpuProvider, PodHandle
 
 logger = logging.getLogger(__name__)
 
+VOLUME_NAME = "cacheon-sn14-volume"
+
 _VRAM_GB: dict[str, int] = {
     "H200": 141,
     "H100": 80,
@@ -26,6 +28,7 @@ class LiumProvider:
         from lium.sdk import Lium, Config
 
         self._client = Lium(config=Config(api_key=api_key))
+        self._volume_id: str | None = None
 
     def search(self) -> list[GpuInstance]:
         executors = self._client.ls(gpu_count=None)
@@ -57,10 +60,35 @@ class LiumProvider:
             )
         return out
 
+    def _ensure_volume(self) -> str | None:
+        """Find or create the persistent model volume. Returns volume ID."""
+        if self._volume_id is not None:
+            return self._volume_id
+
+        try:
+            for vol in self._client.volumes():
+                if vol.name == VOLUME_NAME:
+                    self._volume_id = vol.id
+                    logger.info("Reusing Lium volume %s (id=%s)", VOLUME_NAME, vol.id)
+                    return self._volume_id
+
+            vol = self._client.volume_create(
+                VOLUME_NAME,
+                description="Cacheon SN14 model weights, dataset cache, and Docker layers",
+            )
+            self._volume_id = vol.id
+            logger.info("Created Lium volume %s (id=%s)", VOLUME_NAME, vol.id)
+            return self._volume_id
+        except Exception as exc:
+            logger.warning("Could not ensure Lium volume: %s (continuing without)", exc)
+            return None
+
     def rent(self, instance: GpuInstance) -> PodHandle:
+        volume_id = self._ensure_volume()
         pod_data = self._client.up(
             executor_id=instance.instance_id,
             name="cacheon-eval",
+            volume_id=volume_id,
         )
         pod_id = pod_data.get("id") if isinstance(pod_data, dict) else str(pod_data)
         return PodHandle(
