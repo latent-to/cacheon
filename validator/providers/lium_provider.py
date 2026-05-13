@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Generator
 
 from . import GpuInstance, GpuProvider, PodHandle
@@ -10,6 +11,11 @@ from . import GpuInstance, GpuProvider, PodHandle
 logger = logging.getLogger(__name__)
 
 VOLUME_NAME = "cacheon-sn14-volume"
+SSH_KEY_NAME = "cacheon-cpu-validator"
+SSH_KEY_PATHS = [
+    Path.home() / ".ssh" / "id_ed25519.pub",
+    Path.home() / ".ssh" / "id_rsa.pub",
+]
 
 _VRAM_GB: dict[str, int] = {
     "B300": 288,
@@ -93,13 +99,44 @@ class LiumProvider:
             logger.warning("Could not ensure Lium volume: %s (continuing without)", exc)
             return None
 
+    def _ensure_ssh_key(self) -> str | None:
+        """Ensure our SSH public key is registered with Lium. Returns the key string."""
+        pub_key = None
+        for path in SSH_KEY_PATHS:
+            if path.exists():
+                pub_key = path.read_text().strip()
+                break
+
+        if not pub_key:
+            logger.warning(
+                "No SSH public key found at %s",
+                " or ".join(str(p) for p in SSH_KEY_PATHS),
+            )
+            return None
+
+        existing = self._client.list_ssh_keys()
+        for key in existing:
+            if key.public_key.strip() == pub_key:
+                logger.info("SSH key already registered with Lium (id=%s)", key.id)
+                return pub_key
+
+        self._client.register_ssh_key(name=SSH_KEY_NAME, public_key=pub_key)
+        logger.info("Registered SSH key %s with Lium", SSH_KEY_NAME)
+        return pub_key
+
     def rent(self, instance: GpuInstance) -> PodHandle:
         volume_id = self._ensure_volume()
-        pod_data = self._client.up(
-            executor_id=instance.instance_id,
-            name="cacheon-eval",
-            volume_id=volume_id,
-        )
+        ssh_pub = self._ensure_ssh_key()
+
+        up_kwargs: dict[str, Any] = {
+            "executor_id": instance.instance_id,
+            "name": "cacheon-eval",
+            "volume_id": volume_id,
+        }
+        if ssh_pub:
+            up_kwargs["ssh_keys"] = [ssh_pub]
+
+        pod_data = self._client.up(**up_kwargs)
         pod_id = pod_data.get("id") if isinstance(pod_data, dict) else str(pod_data)
         return PodHandle(
             provider="lium",

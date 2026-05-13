@@ -9,6 +9,7 @@ services:
     volumes:
       - ${BITTENSOR_DIR:-~/.bittensor}:/root/.bittensor:ro
       - ${CACHEON_STATE_DIR:-./state}:/app/state
+      - ~/.ssh:/root/.ssh:ro
     environment:
       - CACHEON_NETWORK=${CACHEON_NETWORK:-finney}
       - CACHEON_NETUID=${CACHEON_NETUID:-14}
