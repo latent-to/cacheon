@@ -43,7 +43,18 @@ class LiumProvider:
     def __init__(self, api_key: str) -> None:
         from lium.sdk import Lium, Config
 
-        self._client = Lium(config=Config(api_key=api_key))
+        ssh_key_path = None
+        for name in ("id_ed25519", "id_rsa", "id_ecdsa"):
+            p = Path.home() / ".ssh" / name
+            if p.exists():
+                ssh_key_path = p
+                break
+
+        self._client = Lium(config=Config(api_key=api_key, ssh_key_path=ssh_key_path))
+        if ssh_key_path:
+            logger.info("Lium SSH private key: %s", ssh_key_path)
+        else:
+            logger.warning("No SSH private key found in ~/.ssh")
         self._volume_id: str | None = None
 
     def search(self) -> list[GpuInstance]:

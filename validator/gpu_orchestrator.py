@@ -51,61 +51,62 @@ def _find_provider_for_instance(
     return None
 
 
-def _shell_escape(value: str) -> str:
-    """Escape a value for safe use inside single-quoted shell strings."""
-    return value.replace("'", "'\\''")
+def _dq_escape(v: str) -> str:
+    """Escape a value for safe use inside double-quoted shell strings."""
+    return (
+        v.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+    )
+
+
+def _build_env_exports(handle: PodHandle) -> str:
+    """Build 'export K=V && ...' prefix for remote shell commands."""
+    env: dict[str, str] = {
+        "HIPPIUS_ACCESS_KEY": validator_config.HIPPIUS_ACCESS_KEY,
+        "HIPPIUS_SECRET_KEY": validator_config.HIPPIUS_SECRET_KEY,
+        "CACHEON_S3_BUCKET": validator_config.S3_BUCKET,
+        "CACHEON_S3_PREFIX": validator_config.S3_PREFIX,
+        "CACHEON_GPU_COUNT": str(handle.gpu_count),
+        "CACHEON_MODEL_VOLUME": "/workspace/models/Qwen2.5-72B-Instruct",
+        "CACHEON_BASELINE_IMAGE": "vllm/vllm-openai:latest",
+    }
+    hf_token = validator_config.HF_TOKEN
+    if hf_token:
+        env["HF_TOKEN"] = hf_token
+
+    return " && ".join(f'export {k}="{_dq_escape(v)}"' for k, v in env.items())
+
+
+def _log_tail(label: str, result: dict, n: int = 30) -> None:
+    """Log the last *n* lines of stdout from a remote exec result."""
+    stdout = result.get("stdout", "")
+    if stdout:
+        for line in stdout.splitlines()[-n:]:
+            logger.info("  [%s] %s", label, line)
 
 
 def _remote_setup(provider: GpuProvider, handle: PodHandle) -> bool:
-    """Run setup.sh on the remote pod. Returns True on success."""
-    logger.info("Running setup.sh on remote pod %s", handle.pod_id)
+    """Run setup-gpu.sh on the remote pod. Returns True on success."""
+    logger.info("Running setup-gpu.sh on remote pod %s", handle.pod_id)
 
-    hf_token = validator_config.HF_TOKEN
-    hf_export = f"export HF_TOKEN='{_shell_escape(hf_token)}' && " if hf_token else ""
-
-    setup_cmd = (
-        f"{hf_export}"
-        f"apt-get update -qq && apt-get install -y -qq curl git > /dev/null 2>&1 && "
-        f'curl -fsSL "{SETUP_SCRIPT_URL}" | bash'
-    )
+    env_exports = _build_env_exports(handle)
+    setup_cmd = f'{env_exports} && curl -fsSL "{SETUP_SCRIPT_URL}" | sudo -E bash'
 
     result = provider.exec(handle, setup_cmd)
+    _log_tail("setup", result)
+
     if not result.get("success", False):
         logger.error(
-            "setup.sh failed on pod %s (exit=%s): %s",
+            "setup-gpu.sh failed on pod %s (exit=%s): %s",
             handle.pod_id,
             result.get("exit_code"),
-            result.get("stderr", "")[:500],
+            result.get("stderr", "")[:1000],
         )
         return False
 
-    logger.info("setup.sh completed on pod %s", handle.pod_id)
-    return True
-
-
-def _remote_configure_env(
-    provider: GpuProvider,
-    handle: PodHandle,
-) -> bool:
-    """Write .env on the remote pod with S3 credentials and GPU config."""
-    env_lines = [
-        f"HIPPIUS_ACCESS_KEY={validator_config.HIPPIUS_ACCESS_KEY}",
-        f"HIPPIUS_SECRET_KEY={validator_config.HIPPIUS_SECRET_KEY}",
-        f"CACHEON_S3_BUCKET={validator_config.S3_BUCKET}",
-        f"CACHEON_S3_PREFIX={validator_config.S3_PREFIX}",
-        f"CACHEON_GPU_COUNT={handle.gpu_count}",
-        "CACHEON_MODEL_VOLUME=/workspace/models/Qwen2.5-72B-Instruct",
-        "CACHEON_BASELINE_IMAGE=vllm/vllm-openai:latest",
-    ]
-
-    env_body = "\n".join(env_lines)
-    cmd = f"cat > ~/cacheon/validator/.env <<'CACHEON_ENV_EOF'\n{env_body}\nCACHEON_ENV_EOF"
-    result = provider.exec(handle, cmd)
-    if not result.get("success", False):
-        logger.error("Failed to write .env on pod %s", handle.pod_id)
-        return False
-
-    logger.info(".env configured on pod %s", handle.pod_id)
+    logger.info("setup-gpu.sh completed on pod %s", handle.pod_id)
     return True
 
 
@@ -114,21 +115,23 @@ def _remote_run_eval(
     handle: PodHandle,
     timeout_min: int,
 ) -> bool:
-    """Run docker compose eval on the remote pod. Returns True on success."""
+    """cd into the cloned repo and run docker compose up --build."""
     logger.info(
         "Starting GPU eval on pod %s (timeout=%d min)", handle.pod_id, timeout_min
     )
 
+    env_exports = _build_env_exports(handle)
     timeout_s = timeout_min * 60
     cmd = (
-        f"timeout --signal=KILL {timeout_s} bash -c '"
-        "cd ~/cacheon && "
-        "set -a && . validator/.env && set +a && "
-        "docker compose -f validator/docker-compose.yml up --build 2>&1"
-        "'"
+        f"{env_exports} && "
+        f"cd ~/cacheon/validator && "
+        f"timeout --signal=KILL {timeout_s} "
+        f"docker compose up --build 2>&1"
     )
 
     result = provider.exec(handle, cmd)
+    _log_tail("eval", result)
+
     exit_code = result.get("exit_code", -1)
 
     if exit_code == 137:
@@ -147,7 +150,7 @@ def _remote_run_eval(
         "GPU eval failed on pod %s (exit=%d): %s",
         handle.pod_id,
         exit_code,
-        result.get("stderr", "")[:500],
+        result.get("stderr", "")[:1000],
     )
     return False
 
@@ -205,15 +208,11 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         handle = provider.wait_ready(handle, timeout_s=600)
         logger.info("Pod %s is ready", handle.pod_id)
 
-        # Setup
+        # Step 1: curl setup-gpu.sh | sudo -E bash
         if not _remote_setup(provider, handle):
             return False
 
-        # Configure .env
-        if not _remote_configure_env(provider, handle):
-            return False
-
-        # Run eval
+        # Step 2: cd ~/cacheon/validator && docker compose up --build
         return _remote_run_eval(provider, handle, timeout_min)
 
     except TimeoutError as exc:

@@ -369,7 +369,7 @@ class TargonProvider:
     def exec(self, handle: PodHandle, command: str) -> dict[str, Any]:
         client = self._ssh_connect(handle)
         try:
-            _stdin, stdout, stderr = client.exec_command(command, timeout=3600)
+            _stdin, stdout, stderr = client.exec_command(command, timeout=10800)
             exit_code = stdout.channel.recv_exit_status()
             return {
                 "stdout": stdout.read().decode("utf-8", errors="replace"),
