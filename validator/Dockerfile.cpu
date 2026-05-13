@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY validator/requirements-cpu.txt /app/validator/requirements-cpu.txt
 RUN pip install --no-cache-dir -r /app/validator/requirements-cpu.txt && \
-    pip install --no-cache-dir --no-deps lium.io
+    pip install --no-cache-dir lium.io scalecodec==1.2.12
 
 COPY validator/ /app/validator/
 
