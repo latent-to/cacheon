@@ -7,7 +7,7 @@ auto-generated SSH keypair for paramiko exec.
 
 from __future__ import annotations
 
-import io
+
 import logging
 import time
 from typing import Any, Generator
@@ -106,8 +106,6 @@ class TargonProvider:
             return self._ssh_key_uid
 
         self._ssh_private_key = paramiko.RSAKey.generate(4096)
-        buf = io.StringIO()
-        self._ssh_private_key.write_private_key(buf)
         pub_key = f"ssh-rsa {self._ssh_private_key.get_base64()} cacheon-eval"
 
         existing = self._get("/ssh-keys")

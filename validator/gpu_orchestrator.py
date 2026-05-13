@@ -13,7 +13,6 @@ after teardown.
 from __future__ import annotations
 
 import logging
-import time
 
 from . import config as validator_config
 from .eval_schema import EvalJob
@@ -52,12 +51,17 @@ def _find_provider_for_instance(
     return None
 
 
+def _shell_escape(value: str) -> str:
+    """Escape a value for safe use inside single-quoted shell strings."""
+    return value.replace("'", "'\\''")
+
+
 def _remote_setup(provider: GpuProvider, handle: PodHandle) -> bool:
     """Run setup.sh on the remote pod. Returns True on success."""
     logger.info("Running setup.sh on remote pod %s", handle.pod_id)
 
     hf_token = validator_config.HF_TOKEN
-    hf_export = f"export HF_TOKEN={hf_token} && " if hf_token else ""
+    hf_export = f"export HF_TOKEN='{_shell_escape(hf_token)}' && " if hf_token else ""
 
     setup_cmd = (
         f"{hf_export}"
@@ -94,8 +98,8 @@ def _remote_configure_env(
         "CACHEON_BASELINE_IMAGE=vllm/vllm-openai:latest",
     ]
 
-    env_content = "\\n".join(env_lines)
-    cmd = f'printf "{env_content}\\n" > ~/cacheon/validator/.env'
+    env_body = "\n".join(env_lines)
+    cmd = f"cat > ~/cacheon/validator/.env <<'CACHEON_ENV_EOF'\n{env_body}\nCACHEON_ENV_EOF"
     result = provider.exec(handle, cmd)
     if not result.get("success", False):
         logger.error("Failed to write .env on pod %s", handle.pod_id)
@@ -115,14 +119,25 @@ def _remote_run_eval(
         "Starting GPU eval on pod %s (timeout=%d min)", handle.pod_id, timeout_min
     )
 
+    timeout_s = timeout_min * 60
     cmd = (
+        f"timeout --signal=KILL {timeout_s} bash -c '"
         "cd ~/cacheon && "
         "set -a && . validator/.env && set +a && "
         "docker compose -f validator/docker-compose.yml up --build 2>&1"
+        "'"
     )
 
     result = provider.exec(handle, cmd)
     exit_code = result.get("exit_code", -1)
+
+    if exit_code == 137:
+        logger.error(
+            "GPU eval KILLED by timeout (%d min) on pod %s",
+            timeout_min,
+            handle.pod_id,
+        )
+        return False
 
     if exit_code == 0:
         logger.info("GPU eval completed successfully on pod %s", handle.pod_id)
