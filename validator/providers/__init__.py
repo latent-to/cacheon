@@ -160,6 +160,15 @@ def search_all_providers(
             instances = prov.search()
             all_candidates.extend(instances)
             logger.info("%s: %d instance(s) found", prov.name, len(instances))
+            for inst in instances:
+                logger.info(
+                    "\t%s  %dx %s  %dGB VRAM  $%.2f/hr",
+                    inst.instance_id,
+                    inst.num_gpus,
+                    inst.gpu_type,
+                    inst.total_vram_gb,
+                    inst.hourly_price_cents / 100,
+                )
         except Exception as exc:
             logger.error("%s search failed: %s", prov.name, exc)
 

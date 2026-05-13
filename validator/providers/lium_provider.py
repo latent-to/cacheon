@@ -100,6 +100,11 @@ class LiumProvider:
         )
 
     def wait_ready(self, handle: PodHandle, timeout_s: int = 600) -> PodHandle:
+        logger.info(
+            "⏳ Waiting for Lium pod %s to be ready (timeout=%ds)...",
+            handle.pod_id,
+            timeout_s,
+        )
         pod = self._client.wait_ready(handle.pod_id, timeout=timeout_s)
         if pod is None:
             raise TimeoutError(f"Lium pod {handle.pod_id} not ready after {timeout_s}s")

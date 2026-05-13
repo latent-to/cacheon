@@ -137,29 +137,39 @@ class TargonProvider:
         try:
             volumes = self._get("/volumes")
             for vol in volumes.get("items", []):
-                if (
-                    vol.get("name") == VOLUME_NAME
-                    and vol.get("resource_name") == resource_name
-                ):
-                    uid = vol["uid"]
-                    self._volume_ids[resource_name] = uid
-                    logger.info(
-                        "Reusing Targon volume %s on %s (uid=%s)",
-                        VOLUME_NAME,
-                        resource_name,
-                        uid,
-                    )
-                    return uid
+                if vol.get("name") == VOLUME_NAME:
+                    vol_size_mb = vol.get("size", 0)
+                    if vol_size_mb >= VOLUME_SIZE_MB:
+                        uid = vol["uid"]
+                        self._volume_ids[resource_name] = uid
+                        logger.info(
+                            "Reusing Targon volume %s (%d GB, uid=%s)",
+                            VOLUME_NAME,
+                            vol_size_mb // 1024,
+                            uid,
+                        )
+                        return uid
 
-            resp = self._post(
-                "/volumes",
-                json={
-                    "name": VOLUME_NAME,
-                    "size_in_mb": VOLUME_SIZE_MB,
-                    "resource_name": resource_name,
-                },
+            payload = {
+                "name": VOLUME_NAME,
+                "size_in_mb": VOLUME_SIZE_MB,
+                "resource_name": resource_name,
+            }
+            resp = requests.post(
+                f"{API_BASE}/volumes",
+                headers=self._headers,
+                json=payload,
+                timeout=30,
             )
-            uid = resp["uid"]
+            if not resp.ok:
+                logger.warning(
+                    "Targon volume create failed (%d): %s",
+                    resp.status_code,
+                    resp.text[:300],
+                )
+                return None
+            data = resp.json()
+            uid = data["uid"]
             self._volume_ids[resource_name] = uid
             logger.info(
                 "Created Targon volume %s on %s (uid=%s)",
@@ -171,7 +181,9 @@ class TargonProvider:
             deadline = time.monotonic() + 120
             while time.monotonic() < deadline:
                 state = self._get(f"/volumes/{uid}/state")
-                if state.get("status") == "READY":
+                status = state.get("status", "")
+                logger.info("Volume %s status: %s", uid, status)
+                if status == "READY":
                     return uid
                 time.sleep(5)
             logger.warning(
@@ -273,9 +285,19 @@ class TargonProvider:
 
     def wait_ready(self, handle: PodHandle, timeout_s: int = 600) -> PodHandle:
         deadline = time.monotonic() + timeout_s
+        poll_count = 0
         while time.monotonic() < deadline:
             state = self._get(f"/workloads/{handle.pod_id}/state")
             status = state.get("status", "")
+            elapsed = int(time.monotonic() - (deadline - timeout_s))
+            poll_count += 1
+            if poll_count % 3 == 1:
+                logger.info(
+                    "⏳ Waiting for workload %s: status=%s (%ds elapsed)",
+                    handle.pod_id,
+                    status,
+                    elapsed,
+                )
 
             if status == "RUNNING":
                 for url_entry in state.get("urls", []):

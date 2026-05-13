@@ -186,7 +186,7 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         return False
 
     logger.info(
-        "Best GPU match: %s %s (%dx %s) $%.2f/hr",
+        "🎯 Best GPU match: %s %s (%dx %s) $%.2f/hr",
         best.provider,
         best.instance_id,
         best.num_gpus,
