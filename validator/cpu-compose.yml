@@ -29,3 +29,17 @@ services:
       - CACHEON_MAX_HOURLY_PRICE=${CACHEON_MAX_HOURLY_PRICE:-2000}
       - CACHEON_GPU_TIMEOUT_MIN=${CACHEON_GPU_TIMEOUT_MIN:-120}
       - HF_TOKEN=${HF_TOKEN:-}
+
+  monitor-api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    container_name: cacheon-monitor-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ${CACHEON_STATE_DIR:-./state}:/app/state:ro
+    environment:
+      - CACHEON_STATE_DIR=/app/state
+      - CACHEON_ALLOWED_ORIGINS=${CACHEON_ALLOWED_ORIGINS:-https://cacheon.io,https://www.cacheon.io}

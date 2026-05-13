@@ -1,0 +1,23 @@
+# Cacheon monitoring API reverse proxy.
+#
+# Install:  apt install -y caddy
+# Deploy:   cp Caddyfile /etc/caddy/Caddyfile && systemctl reload caddy
+#
+# Caddy auto-provisions TLS via Let's Encrypt. The API container
+# binds to 127.0.0.1:8080, so the only public ingress is through Caddy
+# on ports 80/443.
+#
+# Prerequisites:
+#   - DNS A record: api.cacheon.io -> <your CPU VPS IP>
+#   - Firewall: allow 80, 443, 22; block everything else inbound
+
+api.cacheon.io {
+    reverse_proxy localhost:8080
+    encode gzip
+
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+}
