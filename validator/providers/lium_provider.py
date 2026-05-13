@@ -12,11 +12,21 @@ logger = logging.getLogger(__name__)
 VOLUME_NAME = "cacheon-sn14-volume"
 
 _VRAM_GB: dict[str, int] = {
+    "B300": 288,
+    "B200": 180,
     "H200": 141,
     "H100": 80,
     "A100": 80,
-    "B200": 180,
 }
+
+
+def _lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
+    """Return (canonical_type, vram_gb). Handles variants like 'H200 NVL'."""
+    t = gpu_type_raw.upper()
+    for canon, vram in _VRAM_GB.items():
+        if canon in t:
+            return canon, vram
+    return "", 0
 
 
 class LiumProvider:
@@ -34,8 +44,8 @@ class LiumProvider:
         executors = self._client.ls(gpu_count=None)
         out: list[GpuInstance] = []
         for ex in executors:
-            gpu_type = ex.gpu_type or ""
-            vram = _VRAM_GB.get(gpu_type.upper(), 0)
+            gpu_type_raw = ex.gpu_type or ""
+            canon, vram = _lookup_vram(gpu_type_raw)
             if not vram:
                 continue
             if not ex.docker_in_docker:
@@ -48,7 +58,7 @@ class LiumProvider:
                     description=ex.machine_name,
                     hourly_price_cents=int(round(ex.price_per_hour * 100)),
                     num_gpus=ex.gpu_count,
-                    gpu_type=gpu_type,
+                    gpu_type=canon,
                     vram_per_gpu_gb=vram,
                     total_vram_gb=ex.gpu_count * vram,
                     storage_gb=0,

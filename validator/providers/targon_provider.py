@@ -1,8 +1,9 @@
 """Targon GPU cloud provider using the v2 REST API.
 
-Supports persistent volumes (cacheon-sn14-volume) so model weights survive
-across eval cycles.  Uses a register-then-deploy workload pattern with an
-auto-generated SSH keypair for paramiko exec.
+Uses a register-then-deploy workload pattern with an auto-generated SSH
+keypair for paramiko exec. Attaches a pre-created persistent volume
+(cacheon-sn14-volume, >= 500 GB) when available so model weights survive
+across eval cycles.
 """
 
 from __future__ import annotations
@@ -21,14 +22,15 @@ from . import GpuInstance, GpuProvider, PodHandle
 logger = logging.getLogger(__name__)
 
 VOLUME_NAME = "cacheon-sn14-volume"
-VOLUME_SIZE_MB = 500 * 1024  # 500 GB
+VOLUME_MIN_MB = 500 * 1024  # 500 GB
 API_BASE = "https://api.targon.com/tha/v2"
 
 _VRAM_GB: dict[str, int] = {
+    "B300": 288,
+    "B200": 180,
     "H200": 141,
     "H100": 80,
     "A100": 80,
-    "B200": 180,
 }
 
 
@@ -37,6 +39,15 @@ def _normalize_gpu_type(raw: str) -> str:
         if raw.startswith(prefix):
             return raw[len(prefix) :]
     return raw
+
+
+def _lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
+    """Return (canonical_type, vram_gb). Handles variants like 'H200-NVL'."""
+    t = gpu_type_raw.upper()
+    for canon, vram in _VRAM_GB.items():
+        if canon in t:
+            return canon, vram
+    return "", 0
 
 
 def _parse_ssh_url(url: str) -> tuple[str, int]:
@@ -67,9 +78,9 @@ class TargonProvider:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        self._volume_ids: dict[str, str] = {}
         self._ssh_key_uid: str | None = None
         self._ssh_private_key: paramiko.RSAKey | None = None
+        self._volume_uid: str | None = None
 
     # -- HTTP helpers ------------------------------------------------------
 
@@ -127,74 +138,45 @@ class TargonProvider:
         logger.info("Registered Targon SSH key: %s", self._ssh_key_uid)
         return self._ssh_key_uid
 
-    # -- Volume management -------------------------------------------------
+    # -- Volume lookup -----------------------------------------------------
 
-    def _ensure_volume(self, resource_name: str) -> str | None:
-        """Find or create the cacheon-sn14-volume volume for *resource_name*."""
-        if resource_name in self._volume_ids:
-            return self._volume_ids[resource_name]
+    def _find_volume(self) -> str | None:
+        """Look up a pre-created volume named cacheon-sn14-volume (>= 500 GB)."""
+        if self._volume_uid is not None:
+            return self._volume_uid
 
         try:
-            volumes = self._get("/volumes")
-            for vol in volumes.get("items", []):
+            data = self._get("/volumes")
+            for vol in data.get("items", []):
                 if vol.get("name") == VOLUME_NAME:
-                    vol_size_mb = vol.get("size", 0)
-                    if vol_size_mb >= VOLUME_SIZE_MB:
-                        uid = vol["uid"]
-                        self._volume_ids[resource_name] = uid
+                    size_mb = vol.get("size", 0)
+                    status = vol.get("state", {}).get("status", "")
+                    if size_mb >= VOLUME_MIN_MB and status.upper() in (
+                        "READY",
+                        "RUNNING",
+                    ):
+                        self._volume_uid = vol["uid"]
                         logger.info(
-                            "Reusing Targon volume %s (%d GB, uid=%s)",
+                            "Found Targon volume %s (%d GB, uid=%s)",
                             VOLUME_NAME,
-                            vol_size_mb // 1024,
-                            uid,
+                            size_mb // 1024,
+                            self._volume_uid,
                         )
-                        return uid
-
-            payload = {
-                "name": VOLUME_NAME,
-                "size_in_mb": VOLUME_SIZE_MB,
-                "resource_name": resource_name,
-            }
-            resp = requests.post(
-                f"{API_BASE}/volumes",
-                headers=self._headers,
-                json=payload,
-                timeout=30,
-            )
-            if not resp.ok:
-                logger.warning(
-                    "Targon volume create failed (%d): %s",
-                    resp.status_code,
-                    resp.text[:300],
-                )
-                return None
-            data = resp.json()
-            uid = data["uid"]
-            self._volume_ids[resource_name] = uid
-            logger.info(
-                "Created Targon volume %s on %s (uid=%s)",
-                VOLUME_NAME,
-                resource_name,
-                uid,
-            )
-
-            deadline = time.monotonic() + 120
-            while time.monotonic() < deadline:
-                state = self._get(f"/volumes/{uid}/state")
-                status = state.get("status", "")
-                logger.info("Volume %s status: %s", uid, status)
-                if status == "READY":
-                    return uid
-                time.sleep(5)
-            logger.warning(
-                "Volume %s still provisioning after 120s, attaching anyway", uid
-            )
-            return uid
+                        return self._volume_uid
+                    logger.warning(
+                        "Targon volume %s exists but not usable (size=%dMB, status=%s)",
+                        VOLUME_NAME,
+                        size_mb,
+                        status,
+                    )
         except Exception as exc:
-            logger.warning(
-                "Could not ensure Targon volume: %s (continuing without)", exc
-            )
-            return None
+            logger.warning("Could not look up Targon volumes: %s", exc)
+
+        logger.info(
+            "No ready %s volume found on Targon; using ephemeral disk",
+            VOLUME_NAME,
+        )
+        return None
 
     # -- GpuProvider interface ---------------------------------------------
 
@@ -210,14 +192,14 @@ class TargonProvider:
         out: list[GpuInstance] = []
         for item in resp.json():
             spec = item.get("spec", {})
-            gpu_type = _normalize_gpu_type(spec.get("gpu_type", ""))
+            gpu_type_raw = _normalize_gpu_type(spec.get("gpu_type", ""))
             gpu_count = spec.get("gpu_count", 0)
             available = item.get("available", 0)
 
             if available <= 0:
                 continue
 
-            vram = _VRAM_GB.get(gpu_type, 0)
+            canon, vram = _lookup_vram(gpu_type_raw)
             if not vram:
                 continue
 
@@ -234,7 +216,7 @@ class TargonProvider:
                     description=item.get("display_name", ""),
                     hourly_price_cents=price_cents,
                     num_gpus=gpu_count,
-                    gpu_type=gpu_type,
+                    gpu_type=canon,
                     vram_per_gpu_gb=vram,
                     total_vram_gb=gpu_count * vram,
                     storage_gb=storage_gb,
@@ -249,7 +231,7 @@ class TargonProvider:
     def rent(self, instance: GpuInstance) -> PodHandle:
         resource_name = instance.instance_id
         ssh_key_uid = self._ensure_ssh_key()
-        volume_uid = self._ensure_volume(resource_name)
+        volume_uid = self._find_volume()
 
         body: dict[str, Any] = {
             "name": "cacheon-eval",
@@ -272,7 +254,7 @@ class TargonProvider:
             "Targon workload %s created and deploying (resource=%s, volume=%s)",
             workload_uid,
             resource_name,
-            volume_uid or "none",
+            volume_uid or "ephemeral",
         )
 
         return PodHandle(
@@ -299,7 +281,7 @@ class TargonProvider:
                     elapsed,
                 )
 
-            if status == "RUNNING":
+            if status.upper() == "RUNNING":
                 for url_entry in state.get("urls", []):
                     if url_entry.get("port") == 22:
                         host, port = _parse_ssh_url(url_entry.get("url", ""))
@@ -329,7 +311,7 @@ class TargonProvider:
                     )
                 return handle
 
-            if status in ("FAILED", "ERROR", "TERMINATED"):
+            if status.upper() in ("FAILED", "ERROR", "TERMINATED"):
                 raise RuntimeError(
                     f"Targon workload {handle.pod_id} entered {status}: "
                     f"{state.get('message', '')}"
@@ -340,7 +322,8 @@ class TargonProvider:
             f"Targon workload {handle.pod_id} not ready after {timeout_s}s"
         )
 
-    def exec(self, handle: PodHandle, command: str) -> dict[str, Any]:
+    def _ssh_connect(self, handle: PodHandle) -> paramiko.SSHClient:
+        """Open an SSH connection, retrying up to 6 times (90s total) for auth propagation."""
         ssh_info = handle.raw.get("ssh", {})
         host = ssh_info.get("host", "")
         port = ssh_info.get("port", 22)
@@ -349,9 +332,10 @@ class TargonProvider:
         if not host:
             raise RuntimeError(f"No SSH host for workload {handle.pod_id}")
 
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        try:
+        max_retries = 6
+        for attempt in range(1, max_retries + 1):
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             connect_kwargs: dict[str, Any] = {
                 "hostname": host,
                 "port": port,
@@ -360,7 +344,31 @@ class TargonProvider:
             }
             if self._ssh_private_key:
                 connect_kwargs["pkey"] = self._ssh_private_key
-            client.connect(**connect_kwargs)
+            try:
+                client.connect(**connect_kwargs)
+                if attempt > 1:
+                    logger.info("SSH connected on attempt %d", attempt)
+                return client
+            except paramiko.AuthenticationException:
+                client.close()
+                if attempt == max_retries:
+                    raise
+                wait = 15
+                logger.info(
+                    "SSH auth failed (attempt %d/%d), retrying in %ds...",
+                    attempt,
+                    max_retries,
+                    wait,
+                )
+                time.sleep(wait)
+            except Exception:
+                client.close()
+                raise
+        raise RuntimeError("unreachable")
+
+    def exec(self, handle: PodHandle, command: str) -> dict[str, Any]:
+        client = self._ssh_connect(handle)
+        try:
             _stdin, stdout, stderr = client.exec_command(command, timeout=3600)
             exit_code = stdout.channel.recv_exit_status()
             return {

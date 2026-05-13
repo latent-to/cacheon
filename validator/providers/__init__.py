@@ -80,33 +80,19 @@ class GpuProvider(Protocol):
 # ---------------------------------------------------------------------------
 
 TIER_A: list[dict] = [
-    {
-        "label": "4x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 4,
-        "min_vram_per_gpu": 141,
-    },
-    {"label": "8x H100 SXM", "gpu_type": "H100", "num_gpus": 8, "min_vram_per_gpu": 80},
-    {
-        "label": "8x A100 80GB",
-        "gpu_type": "A100",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 80,
-    },
-    {
-        "label": "8x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 141,
-    },
+    {"label": "1x B300", "gpu_type": "B300", "num_gpus": 1, "min_vram_per_gpu": 288},
     {"label": "2x B200", "gpu_type": "B200", "num_gpus": 2, "min_vram_per_gpu": 180},
-]
-
-TIER_B: list[dict] = [
+    {"label": "2x B300", "gpu_type": "B300", "num_gpus": 2, "min_vram_per_gpu": 288},
     {
         "label": "2x H200 SXM",
         "gpu_type": "H200",
         "num_gpus": 2,
+        "min_vram_per_gpu": 141,
+    },
+    {
+        "label": "4x H200 SXM",
+        "gpu_type": "H200",
+        "num_gpus": 4,
         "min_vram_per_gpu": 141,
     },
     {"label": "4x H100 SXM", "gpu_type": "H100", "num_gpus": 4, "min_vram_per_gpu": 80},
@@ -116,8 +102,26 @@ TIER_B: list[dict] = [
         "num_gpus": 4,
         "min_vram_per_gpu": 80,
     },
+]
+
+TIER_B: list[dict] = [
+    {"label": "4x B300", "gpu_type": "B300", "num_gpus": 4, "min_vram_per_gpu": 288},
     {"label": "4x B200", "gpu_type": "B200", "num_gpus": 4, "min_vram_per_gpu": 180},
+    {
+        "label": "8x H200 SXM",
+        "gpu_type": "H200",
+        "num_gpus": 8,
+        "min_vram_per_gpu": 141,
+    },
+    {"label": "8x H100 SXM", "gpu_type": "H100", "num_gpus": 8, "min_vram_per_gpu": 80},
+    {
+        "label": "8x A100 80GB",
+        "gpu_type": "A100",
+        "num_gpus": 8,
+        "min_vram_per_gpu": 80,
+    },
     {"label": "8x B200", "gpu_type": "B200", "num_gpus": 8, "min_vram_per_gpu": 180},
+    {"label": "8x B300", "gpu_type": "B300", "num_gpus": 8, "min_vram_per_gpu": 288},
 ]
 
 TIERS = [("A", TIER_A), ("B", TIER_B)]
@@ -148,6 +152,15 @@ def rank_tiers(candidates: list[GpuInstance]) -> GpuInstance | None:
     return None
 
 
+def _matches_any_tier(instance: GpuInstance) -> bool:
+    """Check whether an instance matches at least one tier config."""
+    for _tier_name, configs in TIERS:
+        for config in configs:
+            if _matches_config(instance, config):
+                return True
+    return False
+
+
 def search_all_providers(
     providers: list[GpuProvider],
     *,
@@ -158,9 +171,15 @@ def search_all_providers(
     for prov in providers:
         try:
             instances = prov.search()
-            all_candidates.extend(instances)
-            logger.info("%s: %d instance(s) found", prov.name, len(instances))
-            for inst in instances:
+            eligible = [i for i in instances if _matches_any_tier(i)]
+            all_candidates.extend(eligible)
+            logger.info(
+                "%s: %d instance(s) found, %d eligible",
+                prov.name,
+                len(instances),
+                len(eligible),
+            )
+            for inst in eligible:
                 logger.info(
                     "\t%s  %dx %s  %dGB VRAM  $%.2f/hr",
                     inst.instance_id,

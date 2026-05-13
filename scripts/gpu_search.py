@@ -13,11 +13,11 @@ Importable:
     results = search_provider("targon", api_key="...")
 
 Conditions (applied to every provider):
-    - VRAM/GPU: H200 >= 141 GB, H100 >= 80 GB, A100 >= 80 GB, B200 >= 180 GB
+    - VRAM/GPU: B300 >= 288 GB, B200 >= 180 GB, H200 >= 141 GB, H100 >= 80 GB, A100 >= 80 GB
 
 Tier selection (cross-provider, cheapest wins):
-    Tier A (preferred): 4x H200, 8x H100, 8x A100 80GB, 8x H200, 2x B200
-    Tier B (fallback):  2x H200, 4x H100, 4x A100 80GB, 4x B200, 8x B200
+    Tier A (preferred): 1x B300, 2x B200, 2x B300, 2x H200, 4x H200, 4x H100, 4x A100
+    Tier B (fallback):  4x B300, 4x B200, 8x H200, 8x H100, 8x A100, 8x B200, 8x B300
     Tier B is only considered when Tier A has zero availability.
 
 Providers: targon, lium
@@ -37,33 +37,19 @@ import requests
 # ---------------------------------------------------------------------------
 
 TIER_A: list[dict] = [
-    {
-        "label": "4x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 4,
-        "min_vram_per_gpu": 141,
-    },
-    {"label": "8x H100 SXM", "gpu_type": "H100", "num_gpus": 8, "min_vram_per_gpu": 80},
-    {
-        "label": "8x A100 80GB",
-        "gpu_type": "A100",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 80,
-    },
-    {
-        "label": "8x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 141,
-    },
+    {"label": "1x B300", "gpu_type": "B300", "num_gpus": 1, "min_vram_per_gpu": 288},
     {"label": "2x B200", "gpu_type": "B200", "num_gpus": 2, "min_vram_per_gpu": 180},
-]
-
-TIER_B: list[dict] = [
+    {"label": "2x B300", "gpu_type": "B300", "num_gpus": 2, "min_vram_per_gpu": 288},
     {
         "label": "2x H200 SXM",
         "gpu_type": "H200",
         "num_gpus": 2,
+        "min_vram_per_gpu": 141,
+    },
+    {
+        "label": "4x H200 SXM",
+        "gpu_type": "H200",
+        "num_gpus": 4,
         "min_vram_per_gpu": 141,
     },
     {"label": "4x H100 SXM", "gpu_type": "H100", "num_gpus": 4, "min_vram_per_gpu": 80},
@@ -73,8 +59,26 @@ TIER_B: list[dict] = [
         "num_gpus": 4,
         "min_vram_per_gpu": 80,
     },
+]
+
+TIER_B: list[dict] = [
+    {"label": "4x B300", "gpu_type": "B300", "num_gpus": 4, "min_vram_per_gpu": 288},
     {"label": "4x B200", "gpu_type": "B200", "num_gpus": 4, "min_vram_per_gpu": 180},
+    {
+        "label": "8x H200 SXM",
+        "gpu_type": "H200",
+        "num_gpus": 8,
+        "min_vram_per_gpu": 141,
+    },
+    {"label": "8x H100 SXM", "gpu_type": "H100", "num_gpus": 8, "min_vram_per_gpu": 80},
+    {
+        "label": "8x A100 80GB",
+        "gpu_type": "A100",
+        "num_gpus": 8,
+        "min_vram_per_gpu": 80,
+    },
     {"label": "8x B200", "gpu_type": "B200", "num_gpus": 8, "min_vram_per_gpu": 180},
+    {"label": "8x B300", "gpu_type": "B300", "num_gpus": 8, "min_vram_per_gpu": 288},
 ]
 
 TIERS = [("A", TIER_A), ("B", TIER_B)]
@@ -97,11 +101,21 @@ TIERS = [("A", TIER_A), ("B", TIER_B)]
 # ---------------------------------------------------------------------------
 
 _VRAM_GB: dict[str, int] = {
+    "B300": 288,
+    "B200": 180,
     "H200": 141,
     "H100": 80,
     "A100": 80,
-    "B200": 180,
 }
+
+
+def _lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
+    """Return (canonical_type, vram_gb). Handles variants like 'H200 NVL'."""
+    t = gpu_type_raw.upper()
+    for canon, vram in _VRAM_GB.items():
+        if canon in t:
+            return canon, vram
+    return "", 0
 
 
 # ---------------------------------------------------------------------------
@@ -129,15 +143,14 @@ def _fetch_targon(api_key: str) -> list[dict]:
     out: list[dict] = []
     for item in resp.json():
         spec = item.get("spec", {})
-        gpu_type_raw = spec.get("gpu_type", "")
-        gpu_type = _targon_normalize_gpu_type(gpu_type_raw)
+        gpu_type_raw = _targon_normalize_gpu_type(spec.get("gpu_type", ""))
         gpu_count = spec.get("gpu_count", 0)
         available = item.get("available", 0)
 
         if available <= 0:
             continue
 
-        vram = _VRAM_GB.get(gpu_type, 0)
+        canon, vram = _lookup_vram(gpu_type_raw)
         if not vram:
             continue
 
@@ -154,7 +167,7 @@ def _fetch_targon(api_key: str) -> list[dict]:
                 "description": item.get("display_name", ""),
                 "hourly_price_cents": price_cents,
                 "num_gpus": gpu_count,
-                "gpu_type": gpu_type,
+                "gpu_type": canon,
                 "vram_per_gpu_gb": vram,
                 "total_vram_gb": gpu_count * vram,
                 "storage_gb": storage_gb,
@@ -179,8 +192,8 @@ def _fetch_lium(api_key: str) -> list[dict]:
 
     out: list[dict] = []
     for ex in executors:
-        gpu_type = ex.gpu_type or ""
-        vram = _VRAM_GB.get(gpu_type.upper(), 0)
+        gpu_type_raw = ex.gpu_type or ""
+        canon, vram = _lookup_vram(gpu_type_raw)
         if not vram:
             continue
         if not ex.docker_in_docker:
@@ -193,7 +206,7 @@ def _fetch_lium(api_key: str) -> list[dict]:
                 "description": ex.machine_name,
                 "hourly_price_cents": int(round(ex.price_per_hour * 100)),
                 "num_gpus": ex.gpu_count,
-                "gpu_type": gpu_type,
+                "gpu_type": canon,
                 "vram_per_gpu_gb": vram,
                 "total_vram_gb": ex.gpu_count * vram,
                 "storage_gb": 0,
