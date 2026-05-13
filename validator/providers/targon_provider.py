@@ -1,9 +1,8 @@
 """Targon GPU cloud provider using the v2 REST API.
 
-Uses a register-then-deploy workload pattern with an auto-generated SSH
-keypair for paramiko exec. Attaches a pre-created persistent volume
-(cacheon-sn14-volume, >= 500 GB) when available so model weights survive
-across eval cycles.
+Registers the host's existing SSH key with Targon and uses it for
+paramiko exec. Requires TARGON_VOLUME_UID (e.g. vol-xxx) to attach
+a persistent volume for model weights.
 """
 
 from __future__ import annotations
@@ -11,27 +10,20 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Any, Generator
-from urllib.parse import urlparse
+
 
 import paramiko
 import requests
 
-from . import GpuInstance, GpuProvider, PodHandle
+from . import GpuInstance, GpuProvider, PodHandle, lookup_vram
 
 logger = logging.getLogger(__name__)
 
-VOLUME_NAME = "cacheon-sn14-volume"
-VOLUME_MIN_MB = 500 * 1024  # 500 GB
 API_BASE = "https://api.targon.com/tha/v2"
-
-_VRAM_GB: dict[str, int] = {
-    "B300": 288,
-    "B200": 180,
-    "H200": 141,
-    "H100": 80,
-    "A100": 80,
-}
+TARGON_SSH_HOST = "ssh.deployments.targon.com"
+TARGON_DASHBOARD = "https://targon.com/rentals"
 
 
 def _normalize_gpu_type(raw: str) -> str:
@@ -39,32 +31,6 @@ def _normalize_gpu_type(raw: str) -> str:
         if raw.startswith(prefix):
             return raw[len(prefix) :]
     return raw
-
-
-def _lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
-    """Return (canonical_type, vram_gb). Handles variants like 'H200-NVL'."""
-    t = gpu_type_raw.upper()
-    for canon, vram in _VRAM_GB.items():
-        if canon in t:
-            return canon, vram
-    return "", 0
-
-
-def _parse_ssh_url(url: str) -> tuple[str, int]:
-    """Extract (host, port) from a DIRECT-routed Targon URL.
-
-    Handles formats like:
-      tcp://1.2.3.4:22222
-      ssh://1.2.3.4:22
-      https://wrk-abc.caas.targon.com
-      1.2.3.4:22222
-    """
-    if "://" not in url:
-        url = f"tcp://{url}"
-    parsed = urlparse(url)
-    host = parsed.hostname or ""
-    port = parsed.port or 22
-    return host, port
 
 
 class TargonProvider:
@@ -79,8 +45,13 @@ class TargonProvider:
             "Content-Type": "application/json",
         }
         self._ssh_key_uid: str | None = None
-        self._ssh_private_key: paramiko.RSAKey | None = None
-        self._volume_uid: str | None = None
+        self._ssh_key_path: Path | None = None
+
+        for name in ("id_ed25519", "id_rsa", "id_ecdsa"):
+            p = Path.home() / ".ssh" / name
+            if p.exists():
+                self._ssh_key_path = p
+                break
 
     # -- HTTP helpers ------------------------------------------------------
 
@@ -111,72 +82,43 @@ class TargonProvider:
 
     # -- SSH key management ------------------------------------------------
 
+    @staticmethod
+    def _key_fingerprint(pub_key_line: str) -> str:
+        """Extract 'type base64' from a public key line, ignoring the comment."""
+        parts = pub_key_line.strip().split()
+        return " ".join(parts[:2]) if len(parts) >= 2 else pub_key_line.strip()
+
     def _ensure_ssh_key(self) -> str:
-        """Register a temporary RSA keypair with Targon and return the key UID."""
+        """Find or register the host's public key with Targon. Returns the key UID."""
         if self._ssh_key_uid:
             return self._ssh_key_uid
 
-        self._ssh_private_key = paramiko.RSAKey.generate(4096)
-        pub_key = f"ssh-rsa {self._ssh_private_key.get_base64()} cacheon-eval"
+        if not self._ssh_key_path:
+            raise RuntimeError("No SSH private key found in ~/.ssh")
+
+        pub_path = self._ssh_key_path.with_suffix(".pub")
+        if not pub_path.exists():
+            raise RuntimeError(f"No public key at {pub_path}")
+        pub_key = pub_path.read_text().strip()
+        local_fp = self._key_fingerprint(pub_key)
 
         existing = self._get("/ssh-keys")
         for key in existing.get("items", []):
-            if key.get("name") == "cacheon-eval":
-                try:
-                    self._delete(f"/ssh-keys/{key['uid']}")
-                except Exception:
-                    pass
+            remote_fp = self._key_fingerprint(key.get("ssh_key", ""))
+            if remote_fp == local_fp:
+                self._ssh_key_uid = key["uid"]
+                logger.info(
+                    "SSH key already registered with Targon (uid=%s)", self._ssh_key_uid
+                )
+                return self._ssh_key_uid
 
         resp = self._post(
             "/ssh-keys",
-            json={
-                "name": "cacheon-eval",
-                "ssh_key": pub_key,
-            },
+            json={"name": "cacheon-cpu-validator", "ssh_key": pub_key},
         )
         self._ssh_key_uid = resp["uid"]
-        logger.info("Registered Targon SSH key: %s", self._ssh_key_uid)
+        logger.info("Registered SSH key with Targon: %s", self._ssh_key_uid)
         return self._ssh_key_uid
-
-    # -- Volume lookup -----------------------------------------------------
-
-    def _find_volume(self) -> str | None:
-        """Look up a pre-created volume named cacheon-sn14-volume (>= 500 GB)."""
-        if self._volume_uid is not None:
-            return self._volume_uid
-
-        try:
-            data = self._get("/volumes")
-            for vol in data.get("items", []):
-                if vol.get("name") == VOLUME_NAME:
-                    size_mb = vol.get("size", 0)
-                    status = vol.get("state", {}).get("status", "")
-                    if size_mb >= VOLUME_MIN_MB and status.upper() in (
-                        "READY",
-                        "RUNNING",
-                    ):
-                        self._volume_uid = vol["uid"]
-                        logger.info(
-                            "Found Targon volume %s (%d GB, uid=%s)",
-                            VOLUME_NAME,
-                            size_mb // 1024,
-                            self._volume_uid,
-                        )
-                        return self._volume_uid
-                    logger.warning(
-                        "Targon volume %s exists but not usable (size=%dMB, status=%s)",
-                        VOLUME_NAME,
-                        size_mb,
-                        status,
-                    )
-        except Exception as exc:
-            logger.warning("Could not look up Targon volumes: %s", exc)
-
-        logger.info(
-            "No ready %s volume found on Targon; using ephemeral disk",
-            VOLUME_NAME,
-        )
-        return None
 
     # -- GpuProvider interface ---------------------------------------------
 
@@ -199,7 +141,7 @@ class TargonProvider:
             if available <= 0:
                 continue
 
-            canon, vram = _lookup_vram(gpu_type_raw)
+            canon, vram = lookup_vram(gpu_type_raw)
             if not vram:
                 continue
 
@@ -229,9 +171,17 @@ class TargonProvider:
         return out
 
     def rent(self, instance: GpuInstance) -> PodHandle:
+        from .. import config as validator_config
+
         resource_name = instance.instance_id
         ssh_key_uid = self._ensure_ssh_key()
-        volume_uid = self._find_volume()
+
+        volume_uid = validator_config.TARGON_VOLUME_UID
+        if not volume_uid or not volume_uid.startswith("vol-"):
+            raise RuntimeError(
+                "TARGON_VOLUME_UID is required and must start with 'vol-' "
+                "(create one at https://targon.com/volumes)"
+            )
 
         body: dict[str, Any] = {
             "name": "cacheon-eval",
@@ -242,20 +192,20 @@ class TargonProvider:
                 {"port": 22, "protocol": "TCP", "routing": "DIRECT"},
             ],
             "ssh_keys": [ssh_key_uid],
+            "volumes": [{"uid": volume_uid, "mount_path": "/workspace"}],
         }
-        if volume_uid:
-            body["volumes"] = [{"uid": volume_uid, "mount_path": "/workspace"}]
 
         workload = self._post("/workloads", json=body)
         workload_uid = workload["uid"]
 
         self._post(f"/workloads/{workload_uid}/deploy")
         logger.info(
-            "Targon workload %s created and deploying (resource=%s, volume=%s)",
+            "Targon workload %s created (resource=%s, volume=%s)",
             workload_uid,
             resource_name,
-            volume_uid or "ephemeral",
+            volume_uid,
         )
+        logger.info("  Dashboard: %s/%s", TARGON_DASHBOARD, workload_uid)
 
         return PodHandle(
             provider="targon",
@@ -282,33 +232,11 @@ class TargonProvider:
                 )
 
             if status.upper() == "RUNNING":
-                for url_entry in state.get("urls", []):
-                    if url_entry.get("port") == 22:
-                        host, port = _parse_ssh_url(url_entry.get("url", ""))
-                        handle.raw["ssh"] = {
-                            "host": host,
-                            "port": port,
-                            "user": "root",
-                        }
-                        break
-
-                if "ssh" not in handle.raw:
-                    wl = self._get(f"/workloads/{handle.pod_id}")
-                    for url_entry in wl.get("state", {}).get("urls", []):
-                        if url_entry.get("port") == 22:
-                            host, port = _parse_ssh_url(url_entry["url"])
-                            handle.raw["ssh"] = {
-                                "host": host,
-                                "port": port,
-                                "user": "root",
-                            }
-                            break
-
-                if "ssh" not in handle.raw:
-                    logger.warning(
-                        "Workload RUNNING but no SSH URL for port 22; "
-                        "SSH exec will fail"
-                    )
+                handle.raw["ssh"] = {
+                    "host": TARGON_SSH_HOST,
+                    "port": 22,
+                    "user": handle.pod_id,
+                }
                 return handle
 
             if status.upper() in ("FAILED", "ERROR", "TERMINATED"):
@@ -322,8 +250,19 @@ class TargonProvider:
             f"Targon workload {handle.pod_id} not ready after {timeout_s}s"
         )
 
+    def _load_private_key(self) -> paramiko.PKey:
+        """Load the host's private key via paramiko."""
+        if not self._ssh_key_path:
+            raise RuntimeError("No SSH private key found in ~/.ssh")
+        for key_type in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
+            try:
+                return key_type.from_private_key_file(str(self._ssh_key_path))
+            except (paramiko.SSHException, FileNotFoundError, PermissionError):
+                continue
+        raise RuntimeError(f"Could not load private key from {self._ssh_key_path}")
+
     def _ssh_connect(self, handle: PodHandle) -> paramiko.SSHClient:
-        """Open an SSH connection, retrying up to 6 times (90s total) for auth propagation."""
+        """Open an SSH connection, retrying up to 3 times for key propagation."""
         ssh_info = handle.raw.get("ssh", {})
         host = ssh_info.get("host", "")
         port = ssh_info.get("port", 22)
@@ -332,20 +271,16 @@ class TargonProvider:
         if not host:
             raise RuntimeError(f"No SSH host for workload {handle.pod_id}")
 
-        max_retries = 6
+        pkey = self._load_private_key()
+
+        max_retries = 3
         for attempt in range(1, max_retries + 1):
             client = paramiko.SSHClient()
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            connect_kwargs: dict[str, Any] = {
-                "hostname": host,
-                "port": port,
-                "username": user,
-                "timeout": 30,
-            }
-            if self._ssh_private_key:
-                connect_kwargs["pkey"] = self._ssh_private_key
             try:
-                client.connect(**connect_kwargs)
+                client.connect(
+                    hostname=host, port=port, username=user, pkey=pkey, timeout=30
+                )
                 if attempt > 1:
                     logger.info("SSH connected on attempt %d", attempt)
                 return client
@@ -353,14 +288,12 @@ class TargonProvider:
                 client.close()
                 if attempt == max_retries:
                     raise
-                wait = 15
                 logger.info(
-                    "SSH auth failed (attempt %d/%d), retrying in %ds...",
+                    "SSH auth failed (attempt %d/%d), retrying in 15s...",
                     attempt,
                     max_retries,
-                    wait,
                 )
-                time.sleep(wait)
+                time.sleep(15)
             except Exception:
                 client.close()
                 raise

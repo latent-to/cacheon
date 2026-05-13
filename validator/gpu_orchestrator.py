@@ -20,9 +20,8 @@ from .providers import GpuInstance, GpuProvider, PodHandle, search_all_providers
 
 logger = logging.getLogger(__name__)
 
-SETUP_SCRIPT_URL = (
-    "https://raw.githubusercontent.com/latent-to/cacheon/main/validator/setup-gpu.sh"
-)
+SETUP_BRANCH = "feat/unified-validator-gpu-orchestrator"
+SETUP_SCRIPT_URL = f"https://raw.githubusercontent.com/latent-to/cacheon/{SETUP_BRANCH}/validator/setup-gpu.sh"
 
 
 def _build_providers() -> list[GpuProvider]:
@@ -64,6 +63,7 @@ def _dq_escape(v: str) -> str:
 def _build_env_exports(handle: PodHandle) -> str:
     """Build 'export K=V && ...' prefix for remote shell commands."""
     env: dict[str, str] = {
+        "CACHEON_BRANCH": SETUP_BRANCH,
         "HIPPIUS_ACCESS_KEY": validator_config.HIPPIUS_ACCESS_KEY,
         "HIPPIUS_SECRET_KEY": validator_config.HIPPIUS_SECRET_KEY,
         "CACHEON_S3_BUCKET": validator_config.S3_BUCKET,
@@ -89,24 +89,24 @@ def _log_tail(label: str, result: dict, n: int = 30) -> None:
 
 def _remote_setup(provider: GpuProvider, handle: PodHandle) -> bool:
     """Run setup-gpu.sh on the remote pod. Returns True on success."""
-    logger.info("Running setup-gpu.sh on remote pod %s", handle.pod_id)
+    logger.info("Running setup.sh on remote pod %s", handle.pod_id)
 
     env_exports = _build_env_exports(handle)
-    setup_cmd = f'{env_exports} && curl -fsSL "{SETUP_SCRIPT_URL}" | sudo -E bash'
+    setup_cmd = f'{env_exports} && curl -fsSL "{SETUP_SCRIPT_URL}" | bash'
 
     result = provider.exec(handle, setup_cmd)
     _log_tail("setup", result)
 
     if not result.get("success", False):
         logger.error(
-            "setup-gpu.sh failed on pod %s (exit=%s): %s",
+            "setup.sh failed on pod %s (exit=%s): %s",
             handle.pod_id,
             result.get("exit_code"),
             result.get("stderr", "")[:1000],
         )
         return False
 
-    logger.info("setup-gpu.sh completed on pod %s", handle.pod_id)
+    logger.info("setup.sh completed on pod %s", handle.pod_id)
     return True
 
 

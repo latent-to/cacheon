@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Generator
 
-from . import GpuInstance, GpuProvider, PodHandle
+from . import GpuInstance, GpuProvider, PodHandle, lookup_vram
 
 logger = logging.getLogger(__name__)
 
@@ -16,23 +16,6 @@ SSH_KEY_PATHS = [
     Path.home() / ".ssh" / "id_ed25519.pub",
     Path.home() / ".ssh" / "id_rsa.pub",
 ]
-
-_VRAM_GB: dict[str, int] = {
-    "B300": 288,
-    "B200": 180,
-    "H200": 141,
-    "H100": 80,
-    "A100": 80,
-}
-
-
-def _lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
-    """Return (canonical_type, vram_gb). Handles variants like 'H200 NVL'."""
-    t = gpu_type_raw.upper()
-    for canon, vram in _VRAM_GB.items():
-        if canon in t:
-            return canon, vram
-    return "", 0
 
 
 class LiumProvider:
@@ -62,7 +45,7 @@ class LiumProvider:
         out: list[GpuInstance] = []
         for ex in executors:
             gpu_type_raw = ex.gpu_type or ""
-            canon, vram = _lookup_vram(gpu_type_raw)
+            canon, vram = lookup_vram(gpu_type_raw)
             if not vram:
                 continue
             if not ex.docker_in_docker:
@@ -128,7 +111,11 @@ class LiumProvider:
         existing = self._client.list_ssh_keys()
         for key in existing:
             if key.public_key.strip() == pub_key:
-                logger.info("SSH key already registered with Lium (id=%s)", key.id)
+                logger.info(
+                    "SSH key already registered with Lium (name=%s, id=%s)",
+                    key.name,
+                    key.id,
+                )
                 return pub_key
 
         self._client.register_ssh_key(name=SSH_KEY_NAME, public_key=pub_key)

@@ -76,23 +76,52 @@ class GpuProvider(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# GPU VRAM table (single source of truth)
+# ---------------------------------------------------------------------------
+
+VRAM_GB: dict[str, int] = {
+    "B300": 288,
+    "B200": 180,
+    "H200": 141,
+    "H100": 80,
+    "A100": 80,
+}
+
+
+def lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
+    """Return (canonical_type, vram_gb) for a raw GPU type string.
+
+    Handles variants like 'H200 NVL', 'H200-NVL', 'NVIDIA-H200', etc.
+    Returns ("", 0) if unrecognized.
+    """
+    t = gpu_type_raw.upper()
+    for canon, vram in VRAM_GB.items():
+        if canon in t:
+            return canon, vram
+    return "", 0
+
+
+# ---------------------------------------------------------------------------
 # Tier ranking (shared with gpu_search.py)
 # ---------------------------------------------------------------------------
 
 TIER_A: list[dict] = [
-    {"label": "1x B300", "gpu_type": "B300", "num_gpus": 1, "min_vram_per_gpu": 288},
     {"label": "2x B200", "gpu_type": "B200", "num_gpus": 2, "min_vram_per_gpu": 180},
     {"label": "2x B300", "gpu_type": "B300", "num_gpus": 2, "min_vram_per_gpu": 288},
-    {
-        "label": "2x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 2,
-        "min_vram_per_gpu": 141,
-    },
     {
         "label": "4x H200 SXM",
         "gpu_type": "H200",
         "num_gpus": 4,
+        "min_vram_per_gpu": 141,
+    },
+]
+
+TIER_B: list[dict] = [
+    {"label": "1x B300", "gpu_type": "B300", "num_gpus": 1, "min_vram_per_gpu": 288},
+    {
+        "label": "2x H200 SXM",
+        "gpu_type": "H200",
+        "num_gpus": 2,
         "min_vram_per_gpu": 141,
     },
     {"label": "4x H100 SXM", "gpu_type": "H100", "num_gpus": 4, "min_vram_per_gpu": 80},
@@ -102,9 +131,6 @@ TIER_A: list[dict] = [
         "num_gpus": 4,
         "min_vram_per_gpu": 80,
     },
-]
-
-TIER_B: list[dict] = [
     {"label": "4x B300", "gpu_type": "B300", "num_gpus": 4, "min_vram_per_gpu": 288},
     {"label": "4x B200", "gpu_type": "B200", "num_gpus": 4, "min_vram_per_gpu": 180},
     {

@@ -66,6 +66,7 @@ are detected, runs eval, and tears it down."""
 
 LIUM_API_KEY: str = os.environ.get("LIUM_API_KEY", "")
 TARGON_API_KEY: str = os.environ.get("TARGON_API_KEY", "")
+TARGON_VOLUME_UID: str = os.environ.get("TARGON_VOLUME_UID", "")
 
 MAX_HOURLY_PRICE: int = int(os.environ.get("CACHEON_MAX_HOURLY_PRICE", "2000"))
 """Maximum hourly price in US cents. Refuse to rent above this."""
