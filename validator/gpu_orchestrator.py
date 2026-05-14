@@ -26,18 +26,29 @@ SETUP_SCRIPT_URL = f"https://raw.githubusercontent.com/latent-to/cacheon/{SETUP_
 
 
 def _build_providers() -> list[GpuProvider]:
-    """Instantiate providers that have API keys configured."""
+    """Instantiate providers that have API keys configured.
+
+    When ``CACHEON_PREFERRED_PROVIDER`` is set (e.g. 'targon' or 'lium'),
+    only that provider is instantiated even if both keys exist.
+    """
+    pref = validator_config.PREFERRED_PROVIDER.lower().strip()
     providers: list[GpuProvider] = []
 
-    if validator_config.LIUM_API_KEY:
+    if validator_config.LIUM_API_KEY and pref in ("", "lium"):
         from .providers.lium_provider import LiumProvider
 
         providers.append(LiumProvider(validator_config.LIUM_API_KEY))
 
-    if validator_config.TARGON_API_KEY:
+    if validator_config.TARGON_API_KEY and pref in ("", "targon"):
         from .providers.targon_provider import TargonProvider
 
         providers.append(TargonProvider(validator_config.TARGON_API_KEY))
+
+    if pref and not providers:
+        logger.warning(
+            "CACHEON_PREFERRED_PROVIDER=%s but no matching API key is configured",
+            pref,
+        )
 
     return providers
 

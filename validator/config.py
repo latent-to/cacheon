@@ -64,6 +64,10 @@ AUTO_RENT: bool = os.environ.get("CACHEON_AUTO_RENT", "0") == "1"
 """When True, the validator automatically rents a GPU pod when challengers
 are detected, runs eval, and tears it down."""
 
+PREFERRED_PROVIDER: str = os.environ.get("CACHEON_PREFERRED_PROVIDER", "")
+"""If set to 'lium' or 'targon', only that provider is used for GPU rental
+even when both API keys are configured. Empty means cheapest-wins."""
+
 LIUM_API_KEY: str = os.environ.get("LIUM_API_KEY", "")
 TARGON_API_KEY: str = os.environ.get("TARGON_API_KEY", "")
 TARGON_VOLUME_UID: str = os.environ.get("TARGON_VOLUME_UID", "")
