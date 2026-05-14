@@ -13,7 +13,7 @@ ALLOWED_ORIGINS: list[str] = [
     o.strip()
     for o in os.environ.get(
         "CACHEON_ALLOWED_ORIGINS",
-        "https://cacheon.io,https://www.cacheon.io",
+        "https://cacheon.ai,https://www.cacheon.ai",
     ).split(",")
     if o.strip()
 ]
