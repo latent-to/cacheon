@@ -204,6 +204,7 @@ def run_tick(
 
     # Weight setting
     weights_set = False
+    dirty = False  # track whether local state needs uploading to S3
     reason = _needs_weight_set(state, current_block)
     if reason:
         logger.info(
@@ -232,7 +233,7 @@ def run_tick(
                 logger.error("set_weights failed: %s", exc)
         if weights_set:
             state.save(state_dir)
-            _try_upload(state_dir)
+            dirty = True
 
     # Challenger selection
     challenger_set = select_challengers(state, commitments.values())
@@ -276,26 +277,33 @@ def run_tick(
             )
             eval_job.save(state_dir)
             state.save(state_dir)
-            _try_upload(state_dir)
-            logger.info(
-                "📤 %d challenger(s) ready for GPU eval (eval_job.json uploaded)",
-                n_challengers,
-            )
+            dirty = True
 
-            if validator_config.AUTO_RENT:
-                from .gpu_orchestrator import run_gpu_eval
-
-                success = run_gpu_eval(state_dir, eval_job)
-                if success:
-                    try:
-                        from .sync import download
-
-                        download(state_dir)
-                    except Exception as exc:
-                        logger.error("Post-eval S3 download failed: %s", exc)
-                    _reload_state(state, state_dir)
-    else:
+    if not challenger_set.challengers:
         state.save(state_dir)
+
+    # Single S3 upload per tick (covers weight-set + eval_job if both changed)
+    if dirty:
+        _try_upload(state_dir)
+
+    if challenger_set.challengers and block_hash is not None:
+        logger.info(
+            "📤 %d challenger(s) ready for GPU eval (eval_job.json uploaded)",
+            n_challengers,
+        )
+
+        if validator_config.AUTO_RENT:
+            from .gpu_orchestrator import run_gpu_eval
+
+            success = run_gpu_eval(state_dir, eval_job)
+            if success:
+                try:
+                    from .sync import download
+
+                    download(state_dir)
+                except Exception as exc:
+                    logger.error("Post-eval S3 download failed: %s", exc)
+                _reload_state(state, state_dir)
 
     return {
         "block": current_block,
