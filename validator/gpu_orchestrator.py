@@ -247,7 +247,7 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         logger.info("☑️ Pod rented: %s (id=%s)", provider.name, handle.pod_id)
 
         # Wait ready
-        handle = provider.wait_ready(handle, timeout_s=600)
+        handle = provider.wait_ready(handle, timeout_s=120)
         logger.info("☑️ Pod %s is ready", handle.pod_id)
 
         # Step 1: curl setup-gpu.sh | sudo -E bash
