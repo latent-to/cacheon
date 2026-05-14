@@ -1,6 +1,6 @@
 # Mining on Cacheon
 
-Full docs: https://cacheon.io/docs/miners/overview
+Full docs: https://cacheon.ai/docs/miners/overview
 
 ## Quick start
 
@@ -17,4 +17,4 @@ This commits your Docker image reference on-chain. The validator picks it up wit
 
 ## What do miners build?
 
-A Docker container that serves Qwen2.5-72B-Instruct via an OpenAI-compatible `/v1/chat/completions` endpoint. See the [miner overview](https://cacheon.io/docs/miners/overview) for the full spec.
+A Docker container that serves Qwen2.5-72B-Instruct via an OpenAI-compatible `/v1/chat/completions` endpoint. See the [miner overview](https://cacheon.ai/docs/miners/overview) for the full spec.

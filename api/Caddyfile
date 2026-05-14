@@ -8,10 +8,10 @@
 # on ports 80/443.
 #
 # Prerequisites:
-#   - DNS A record: api.cacheon.io -> <your CPU VPS IP>
+#   - DNS A record: api.cacheon.ai -> <your CPU VPS IP>
 #   - Firewall: allow 80, 443, 22; block everything else inbound
 
-api.cacheon.io {
+api.cacheon.ai {
     reverse_proxy localhost:8080
     encode gzip
 
