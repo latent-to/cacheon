@@ -3,7 +3,7 @@ set -e
 GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
 GPU_COUNT=${GPU_COUNT:-1}
 [ "$GPU_COUNT" -lt 1 ] && GPU_COUNT=1
-exec python -m vllm.entrypoints.openai.api_server \
+exec python3 -m vllm.entrypoints.openai.api_server \
   --model /models \
   --served-model-name Qwen2.5-72B-Instruct \
   --generation-config vllm \
