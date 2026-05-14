@@ -10,6 +10,8 @@ from . import GpuInstance, GpuProvider, PodHandle, lookup_vram
 
 logger = logging.getLogger(__name__)
 
+LIUM_DASHBOARD = "https://lium.io/your-pods"
+
 VOLUME_NAME = "cacheon-sn14-volume"
 SSH_KEY_NAME = "cacheon-cpu-validator"
 SSH_KEY_PATHS = [
@@ -136,6 +138,7 @@ class LiumProvider:
 
         pod_data = self._client.up(**up_kwargs)
         pod_id = pod_data.get("id") if isinstance(pod_data, dict) else str(pod_data)
+        logger.info("🔗 Dashboard: %s/%s", LIUM_DASHBOARD, pod_id)
         return PodHandle(
             provider="lium",
             pod_id=pod_id,

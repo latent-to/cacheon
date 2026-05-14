@@ -88,6 +88,8 @@ def _configure_logging(verbose: bool, state_dir: str) -> None:
         "substrateinterface",
         "urllib3",
         "async_substrate_interface",
+        "paramiko",
+        "paramiko.transport",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 

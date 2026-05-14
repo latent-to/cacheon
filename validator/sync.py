@@ -113,7 +113,7 @@ def upload(
         s3.upload_file(str(local_file), bucket, key)
         count += 1
 
-    logger.info("☁️  S3 upload: %d file(s) -> s3://%s/%s", count, bucket, prefix)
+    logger.info("☁️ S3 upload: %d file(s) -> s3://%s/%s", count, bucket, prefix)
     return count
 
 

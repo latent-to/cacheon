@@ -205,7 +205,7 @@ class TargonProvider:
             resource_name,
             volume_uid,
         )
-        logger.info("  Dashboard: %s/%s", TARGON_DASHBOARD, workload_uid)
+        logger.info("🔗 Dashboard: %s/%s", TARGON_DASHBOARD, workload_uid)
 
         return PodHandle(
             provider="targon",

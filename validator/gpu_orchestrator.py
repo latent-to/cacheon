@@ -13,6 +13,7 @@ after teardown.
 from __future__ import annotations
 
 import logging
+import time
 
 from . import config as validator_config
 from .eval_schema import EvalJob
@@ -87,26 +88,55 @@ def _log_tail(label: str, result: dict, n: int = 30) -> None:
             logger.info("  [%s] %s", label, line)
 
 
+def _extract_chunk_text(chunk: dict[str, str]) -> str:
+    """Pull text from a stream_exec chunk regardless of provider format."""
+    return chunk.get("data", "") or chunk.get("stdout", "") or chunk.get("stderr", "")
+
+
+_HEARTBEAT_INTERVAL = 30  # seconds
+
+
 def _remote_setup(provider: GpuProvider, handle: PodHandle) -> bool:
-    """Run setup-gpu.sh on the remote pod. Returns True on success."""
-    logger.info("Running setup.sh on remote pod %s", handle.pod_id)
+    """Run setup-gpu.sh on the remote pod, streaming progress to logs."""
+    logger.info("⏳ Running setup.sh on remote pod %s", handle.pod_id)
 
     env_exports = _build_env_exports(handle)
     setup_cmd = f'{env_exports} && curl -fsSL "{SETUP_SCRIPT_URL}" | bash'
 
-    result = provider.exec(handle, setup_cmd)
-    _log_tail("setup", result)
+    t0 = time.monotonic()
+    last_heartbeat = t0
+    full_output: list[str] = []
 
-    if not result.get("success", False):
+    for chunk in provider.stream_exec(handle, setup_cmd):
+        text = _extract_chunk_text(chunk)
+        if not text:
+            continue
+        full_output.append(text)
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("==="):
+                logger.info("  [setup] %s", stripped)
+            elif stripped.startswith("ERROR"):
+                logger.warning("  [setup] %s", stripped)
+        now = time.monotonic()
+        if now - last_heartbeat >= _HEARTBEAT_INTERVAL:
+            logger.info("  [setup] still running (%.0fs elapsed)...", now - t0)
+            last_heartbeat = now
+
+    elapsed = time.monotonic() - t0
+    output = "".join(full_output)
+
+    if "Setup complete" not in output:
         logger.error(
-            "setup.sh failed on pod %s (exit=%s): %s",
+            "setup.sh did not reach 'Setup complete' on pod %s (%.0fs elapsed)",
             handle.pod_id,
-            result.get("exit_code"),
-            result.get("stderr", "")[:1000],
+            elapsed,
         )
+        for line in output.splitlines()[-30:]:
+            logger.info("  [setup] %s", line)
         return False
 
-    logger.info("setup.sh completed on pod %s", handle.pod_id)
+    logger.info("🛠 setup.sh completed on pod %s (%.0fs)", handle.pod_id, elapsed)
     return True
 
 
@@ -117,7 +147,7 @@ def _remote_run_eval(
 ) -> bool:
     """cd into the cloned repo and run docker compose up --build."""
     logger.info(
-        "Starting GPU eval on pod %s (timeout=%d min)", handle.pod_id, timeout_min
+        "⏳ Starting GPU eval on pod %s (timeout=%d min)", handle.pod_id, timeout_min
     )
 
     env_exports = _build_env_exports(handle)
@@ -130,7 +160,7 @@ def _remote_run_eval(
     )
 
     result = provider.exec(handle, cmd)
-    _log_tail("eval", result)
+    _log_tail("eval", result, n=50)
 
     exit_code = result.get("exit_code", -1)
 
@@ -143,14 +173,15 @@ def _remote_run_eval(
         return False
 
     if exit_code == 0:
-        logger.info("GPU eval completed successfully on pod %s", handle.pod_id)
+        logger.info("🎉 GPU eval completed successfully on pod %s", handle.pod_id)
         return True
 
+    stderr = result.get("stderr", "")
     logger.error(
-        "GPU eval failed on pod %s (exit=%d): %s",
+        "❌ GPU eval failed on pod %s (exit=%d)\nstderr (last 2000 chars):\n%s",
         handle.pod_id,
         exit_code,
-        result.get("stderr", "")[:1000],
+        stderr[-2000:],
     )
     return False
 
@@ -163,7 +194,7 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
     providers = _build_providers()
     if not providers:
         logger.error(
-            "No GPU provider API keys configured (LIUM_API_KEY / TARGON_API_KEY)"
+            "❌ No GPU provider API keys configured (LIUM_API_KEY / TARGON_API_KEY)"
         )
         return False
 
@@ -174,7 +205,7 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
     best = search_all_providers(providers, max_hourly_price_cents=max_price)
     if best is None:
         logger.warning(
-            "No GPU instances available matching tier requirements (max $%.2f/hr)",
+            "⚠️ No GPU instances available matching tier requirements (max $%.2f/hr)",
             max_price / 100,
         )
         return False
@@ -202,11 +233,11 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         # Rent
         logger.info("Renting pod from %s...", provider.name)
         handle = provider.rent(best)
-        logger.info("Pod rented: %s (id=%s)", provider.name, handle.pod_id)
+        logger.info("☑️ Pod rented: %s (id=%s)", provider.name, handle.pod_id)
 
         # Wait ready
         handle = provider.wait_ready(handle, timeout_s=600)
-        logger.info("Pod %s is ready", handle.pod_id)
+        logger.info("☑️ Pod %s is ready", handle.pod_id)
 
         # Step 1: curl setup-gpu.sh | sudo -E bash
         if not _remote_setup(provider, handle):

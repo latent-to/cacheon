@@ -42,4 +42,4 @@ services:
       - ${CACHEON_STATE_DIR:-./state}:/app/state:ro
     environment:
       - CACHEON_STATE_DIR=/app/state
-      - CACHEON_ALLOWED_ORIGINS=${CACHEON_ALLOWED_ORIGINS:-https://cacheon.io,https://www.cacheon.io}
+      - CACHEON_ALLOWED_ORIGINS=${CACHEON_ALLOWED_ORIGINS:-https://cacheon.ai,https://www.cacheon.ai}
