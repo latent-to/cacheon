@@ -75,9 +75,6 @@ TARGON_VOLUME_UID: str = os.environ.get("TARGON_VOLUME_UID", "")
 MAX_HOURLY_PRICE: int = int(os.environ.get("CACHEON_MAX_HOURLY_PRICE", "2000"))
 """Maximum hourly price in US cents. Refuse to rent above this."""
 
-GPU_TIMEOUT_MIN: int = int(os.environ.get("CACHEON_GPU_TIMEOUT_MIN", "120"))
-"""Kill the GPU pod if eval hasn't finished in this many minutes."""
-
 HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
 """Hugging Face token passed to the remote pod for model download."""
 

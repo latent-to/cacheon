@@ -151,6 +151,16 @@ def _remote_setup(provider: GpuProvider, handle: PodHandle) -> bool:
     return True
 
 
+def _calculate_eval_timeout_minutes(num_challengers: int) -> int:
+    """
+    Calculate the GPU eval timeout in minutes.
+    """
+    BASE_TIMEOUT_MINUTES = 20
+    TIMEOUT_PER_CHALLENGER_MINUTES = 12
+
+    timeout = BASE_TIMEOUT_MINUTES + num_challengers * TIMEOUT_PER_CHALLENGER_MINUTES
+    return max(timeout, 30)
+
 def _remote_run_eval(
     provider: GpuProvider,
     handle: PodHandle,
@@ -210,7 +220,12 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         return False
 
     max_price = validator_config.MAX_HOURLY_PRICE
-    timeout_min = validator_config.GPU_TIMEOUT_MIN
+    timeout_min = _eval_timeout_min(len(eval_job.challengers))
+    logger.info(
+        "\t Dynamic timeout: %d min (%d challengers)",
+        timeout_min,
+        len(eval_job.challengers),
+    )
 
     # Search
     best = search_all_providers(providers, max_hourly_price_cents=max_price)
