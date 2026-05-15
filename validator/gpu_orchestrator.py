@@ -156,7 +156,7 @@ def _remote_run_eval(
     handle: PodHandle,
     timeout_min: int,
 ) -> bool:
-    """cd into the cloned repo and run docker compose up --build."""
+    """cd into the cloned repo and run docker compose -f gpu-compose.yml up --build."""
     logger.info(
         "⏳ Starting GPU eval on pod %s (timeout=%d min)", handle.pod_id, timeout_min
     )
@@ -167,7 +167,7 @@ def _remote_run_eval(
         f"{env_exports} && "
         f"cd ~/cacheon/validator && "
         f"timeout --signal=KILL {timeout_s} "
-        f"docker compose up --build 2>&1"
+        f"docker compose -f gpu-compose.yml up --build 2>&1"
     )
 
     result = provider.exec(handle, cmd)
@@ -254,7 +254,7 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         if not _remote_setup(provider, handle):
             return False
 
-        # Step 2: cd ~/cacheon/validator && docker compose up --build
+        # Step 2: cd ~/cacheon/validator && docker compose -f gpu-compose.yml up --build
         return _remote_run_eval(provider, handle, timeout_min)
 
     except TimeoutError as exc:

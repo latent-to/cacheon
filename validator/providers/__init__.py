@@ -106,7 +106,7 @@ def lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 TIER_A: list[dict] = [
-    # {"label": "2x B200", "gpu_type": "B200", "num_gpus": 2, "min_vram_per_gpu": 180},
+    {"label": "2x B200", "gpu_type": "B200", "num_gpus": 2, "min_vram_per_gpu": 180},
     {"label": "2x B300", "gpu_type": "B300", "num_gpus": 2, "min_vram_per_gpu": 288},
     {
         "label": "4x H200 SXM",
