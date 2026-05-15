@@ -86,8 +86,10 @@ def compute_correctness(
 
     Instead we check only the **first** divergence point:
       1. No divergence at all -> pass.
-      2. Divergence exists but logprobs are unavailable -> pass (can't
-         disprove correctness without evidence).
+      2. Divergence exists but logprobs are unavailable -> fail. Without
+         logprobs we can't apply the TP-noise tolerance check, and the
+         API contract requires miners to stream ``top_logprobs`` so any
+         divergence can be justified.
       3. Divergence with logprobs -> ``check_logprob_sanity``.  If the
          baseline token is in the miner's top-5 with a small gap, the
          flip is explainable by TP noise -> pass.  Otherwise -> fail.
