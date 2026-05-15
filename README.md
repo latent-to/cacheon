@@ -77,18 +77,18 @@ docker compose up --build
 
 # GPU pod (on-demand, run when challengers appear)
 bash scripts/gpu_setup/setup.sh
-docker compose -f docker-compose.gpu.yml up --build
+docker compose -f validator/gpu-compose.yml up --build -d
 ```
 
 Full guide: [cacheon.ai/docs/validators/overview](https://cacheon.ai/docs/validators/overview)
 
 ## Documentation
 
-|                | Miners                                                      | Validators                                                          | Evaluation                                            |
-| -------------- | ----------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------- |
-| **Start here** | [Overview](https://cacheon.ai/docs/miners/overview)         | [Overview](https://cacheon.ai/docs/validators/overview)             | [Scoring](https://cacheon.ai/docs/evaluation/scoring) |
-| **Reference**  | [API contract](https://cacheon.ai/docs/miners/api-contract) | [Architecture](https://cacheon.ai/docs/validators/architecture)     | [Harness](https://cacheon.ai/docs/evaluation/harness) |
-| **Setup**      | [Quickstart](https://cacheon.ai/docs/miners/registration)   | [Validator setup](https://cacheon.ai/docs/validators/setup)         | [Prompts](https://cacheon.ai/docs/evaluation/prompts) |
+|                | Miners                                                      | Validators                                                           | Evaluation                                            |
+| -------------- | ----------------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------- |
+| **Start here** | [Overview](https://cacheon.ai/docs/miners/overview)         | [Overview](https://cacheon.ai/docs/validators/overview)              | [Scoring](https://cacheon.ai/docs/evaluation/scoring) |
+| **Reference**  | [API contract](https://cacheon.ai/docs/miners/api-contract) | [Architecture](https://cacheon.ai/docs/validators/architecture)      | [Harness](https://cacheon.ai/docs/evaluation/harness) |
+| **Setup**      | [Quickstart](https://cacheon.ai/docs/miners/registration)   | [Validator setup](https://cacheon.ai/docs/validators/setup)          | [Prompts](https://cacheon.ai/docs/evaluation/prompts) |
 | **Rules**      | [Rules](https://cacheon.ai/docs/miners/rules)               | [Manual GPU setup](https://cacheon.ai/docs/validators/gpu-pod-setup) | [Roadmap](https://cacheon.ai/docs/roadmap)            |
 
 ## License

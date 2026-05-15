@@ -567,22 +567,56 @@ def _detect_gpu_count() -> int:
     return 0
 
 
-def _max_model_len(gpu_count: int) -> int:
-    """Choose vLLM max_model_len based on available KV cache (GPU count).
+def _read_max_position_embeddings(model_path: str) -> int | None:
+    """Read max_position_embeddings from a local model's config.json."""
+    import json
+
+    cfg_path = Path(model_path) / "config.json"
+    try:
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        val = cfg.get("max_position_embeddings")
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    except Exception as exc:
+        logger.debug("Could not read %s: %s", cfg_path, exc)
+    return None
+
+
+def _max_model_len(gpu_count: int, model_path: str = "") -> int:
+    """Choose vLLM max_model_len based on GPU count, capped by the model.
 
     More GPUs = more memory after TP-sharding the 72B model = room for
-    longer KV caches.  Values are conservative.
+    longer KV caches.  The heuristic is then capped by the model's
+    ``max_position_embeddings`` (from config.json) so vLLM never refuses
+    to start.
     """
     if gpu_count >= 8:
-        return 131_072
-    if gpu_count >= 4:
-        return 65_536
-    return 32_768
+        heuristic = 131_072
+    elif gpu_count >= 4:
+        heuristic = 65_536
+    else:
+        heuristic = 32_768
+
+    if model_path:
+        model_max = _read_max_position_embeddings(model_path)
+        if model_max is not None and model_max < heuristic:
+            heuristic_k = int(round(heuristic / 1000))
+            model_max_k = int(round(model_max / 1000))
+            logger.info(
+                "Capping max_model_len from %dk to %dk (model max_position_embeddings)",
+                heuristic_k,
+                model_max_k,
+            )
+       
+            return model_max
+
+    return heuristic
 
 
-def _baseline_cmd_args(gpu_count: int) -> list[str]:
+def _baseline_cmd_args(gpu_count: int, model_volume: str = "") -> list[str]:
     """Build the vLLM server command args for the baseline container."""
-    mml = _max_model_len(gpu_count)
+    mml = _max_model_len(gpu_count, model_path=model_volume)
     args = [
         "--model",
         "/models",
@@ -623,7 +657,7 @@ def run_baseline_if_needed(
 
     logger.info("Baseline cache miss for key=%s -- running baseline", cache_key)
 
-    baseline_args = _baseline_cmd_args(gpu_count)
+    baseline_args = _baseline_cmd_args(gpu_count, model_volume=model_volume)
     logger.info("Baseline cmd args: %s", baseline_args)
 
     container_name = "cacheon-baseline"

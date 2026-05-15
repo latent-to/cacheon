@@ -143,7 +143,7 @@ def main() -> int:
     # Generate prompts
     from .prompts import sample_prompts
 
-    mml = _max_model_len(gpu_count)
+    mml = _max_model_len(gpu_count, model_path=model_volume)
     prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
     logger.info("Generated %d prompts (max_model_len=%d)", len(prompts), mml)
 
