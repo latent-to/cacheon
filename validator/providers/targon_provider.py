@@ -316,11 +316,13 @@ class TargonProvider:
     def stream_exec(
         self, handle: PodHandle, command: str
     ) -> Generator[dict[str, str], None, None]:
-        result = self.exec(handle, command)
-        if result["stdout"]:
-            yield {"type": "stdout", "data": result["stdout"]}
-        if result["stderr"]:
-            yield {"type": "stderr", "data": result["stderr"]}
+        client = self._ssh_connect(handle)
+        try:
+            _stdin, stdout, _stderr = client.exec_command(command, timeout=10800)
+            for line in iter(stdout.readline, ""):
+                yield {"type": "stdout", "data": line}
+        finally:
+            client.close()
 
     def teardown(self, handle: PodHandle) -> None:
         try:
