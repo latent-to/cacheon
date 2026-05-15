@@ -260,16 +260,66 @@ def reset_gpu_state() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _container_status(container_id: str) -> str | None:
+    """Return the container's status string ('running', 'exited', etc.).
+
+    Returns None if the inspect call fails (container removed, Docker
+    unavailable, etc.).
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Status}}", container_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _container_exit_code(container_id: str) -> int | None:
+    """Return the container's exit code, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.ExitCode}}", container_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
 def wait_for_health(
     base_url: str,
     timeout_s: float = 600,
     poll_interval_s: float = 5,
+    container_id: str | None = None,
 ) -> None:
-    """Poll GET /health until 200. Raises TimeoutError on expiry."""
+    """Poll GET /health until 200. Raises TimeoutError on expiry.
+
+    If *container_id* is provided, checks whether the container is still
+    running on every iteration and bails immediately when it has exited.
+    """
     url = f"{base_url}/health"
     deadline = time.monotonic() + timeout_s
     last_err: str = ""
     while time.monotonic() < deadline:
+        if container_id:
+            status = _container_status(container_id)
+            if status and status != "running":
+                exit_code = _container_exit_code(container_id)
+                raise RuntimeError(
+                    f"Container {container_id[:12]} exited "
+                    f"(status={status}, exit_code={exit_code}) "
+                    f"before /health became ready"
+                )
         try:
             resp = urlopen(url, timeout=5)
             if resp.status == 200:
@@ -671,7 +721,7 @@ def run_baseline_if_needed(
             cmd_args=baseline_args,
             container_name=container_name,
         )
-        wait_for_health(base_url, timeout_s=startup_timeout_s)
+        wait_for_health(base_url, timeout_s=startup_timeout_s, container_id=cid)
 
         results = _run_prompts_on_server(
             base_url,
@@ -739,7 +789,7 @@ def evaluate_challenger(
             model_volume=model_volume,
             container_name=container_name,
         )
-        wait_for_health(base_url, timeout_s=startup_timeout_s)
+        wait_for_health(base_url, timeout_s=startup_timeout_s, container_id=cid)
 
         results = _run_prompts_on_server(
             base_url,

@@ -15,9 +15,10 @@ Importable:
 Conditions (applied to every provider):
     - VRAM/GPU: B300 >= 288 GB, B200 >= 180 GB, H200 >= 141 GB, H100 >= 80 GB, A100 >= 80 GB
 
-Tier selection (cross-provider, cheapest wins):
-    Tier A (preferred): 1x B300, 2x B200, 2x B300, 2x H200, 4x H200, 4x H100, 4x A100
-    Tier B (fallback):  4x B300, 4x B200, 8x H200, 8x H100, 8x A100, 8x B200, 8x B300
+Tier selection (cross-provider, cheapest wins; same order as ``validator.providers.TIERS``):
+    Tier A (preferred): 2x B200, 2x B300, 4x H200 SXM, 8x H200 SXM, 4x B200
+    Tier B (fallback):  2x H200 SXM, 4x H100 SXM, 4x A100 80GB, 4x B300, 8x H100 SXM,
+                        8x A100 80GB, 8x B200, 8x B300
     Tier B is only considered when Tier A has zero availability.
 
 Providers: targon, lium
@@ -29,59 +30,15 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import requests
 
-# ---------------------------------------------------------------------------
-# Shared config
-# ---------------------------------------------------------------------------
-
-TIER_A: list[dict] = [
-    {"label": "1x B300", "gpu_type": "B300", "num_gpus": 1, "min_vram_per_gpu": 288},
-    {"label": "2x B200", "gpu_type": "B200", "num_gpus": 2, "min_vram_per_gpu": 180},
-    {"label": "2x B300", "gpu_type": "B300", "num_gpus": 2, "min_vram_per_gpu": 288},
-    {
-        "label": "2x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 2,
-        "min_vram_per_gpu": 141,
-    },
-    {
-        "label": "4x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 4,
-        "min_vram_per_gpu": 141,
-    },
-    {"label": "4x H100 SXM", "gpu_type": "H100", "num_gpus": 4, "min_vram_per_gpu": 80},
-    {
-        "label": "4x A100 80GB",
-        "gpu_type": "A100",
-        "num_gpus": 4,
-        "min_vram_per_gpu": 80,
-    },
-]
-
-TIER_B: list[dict] = [
-    {"label": "4x B300", "gpu_type": "B300", "num_gpus": 4, "min_vram_per_gpu": 288},
-    {"label": "4x B200", "gpu_type": "B200", "num_gpus": 4, "min_vram_per_gpu": 180},
-    {
-        "label": "8x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 141,
-    },
-    {"label": "8x H100 SXM", "gpu_type": "H100", "num_gpus": 8, "min_vram_per_gpu": 80},
-    {
-        "label": "8x A100 80GB",
-        "gpu_type": "A100",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 80,
-    },
-    {"label": "8x B200", "gpu_type": "B200", "num_gpus": 8, "min_vram_per_gpu": 180},
-    {"label": "8x B300", "gpu_type": "B300", "num_gpus": 8, "min_vram_per_gpu": 288},
-]
-
-TIERS = [("A", TIER_A), ("B", TIER_B)]
+from validator.providers import TIERS, lookup_vram
 
 # ---------------------------------------------------------------------------
 # Normalized instance format returned by every provider fetch function:
@@ -99,23 +56,6 @@ TIERS = [("A", TIER_A), ("B", TIER_B)]
 #   vcpus              int
 #   available_regions  list[str]
 # ---------------------------------------------------------------------------
-
-_VRAM_GB: dict[str, int] = {
-    "B300": 288,
-    "B200": 180,
-    "H200": 141,
-    "H100": 80,
-    "A100": 80,
-}
-
-
-def _lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
-    """Return (canonical_type, vram_gb). Handles variants like 'H200 NVL'."""
-    t = gpu_type_raw.upper()
-    for canon, vram in _VRAM_GB.items():
-        if canon in t:
-            return canon, vram
-    return "", 0
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +90,7 @@ def _fetch_targon(api_key: str) -> list[dict]:
         if available <= 0:
             continue
 
-        canon, vram = _lookup_vram(gpu_type_raw)
+        canon, vram = lookup_vram(gpu_type_raw)
         if not vram:
             continue
 
@@ -193,7 +133,7 @@ def _fetch_lium(api_key: str) -> list[dict]:
     out: list[dict] = []
     for ex in executors:
         gpu_type_raw = ex.gpu_type or ""
-        canon, vram = _lookup_vram(gpu_type_raw)
+        canon, vram = lookup_vram(gpu_type_raw)
         if not vram:
             continue
         if not ex.docker_in_docker:

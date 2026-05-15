@@ -21,7 +21,7 @@ from .providers import GpuInstance, GpuProvider, PodHandle, search_all_providers
 
 logger = logging.getLogger(__name__)
 
-SETUP_BRANCH = "feat/unified-validator-gpu-orchestrator"
+SETUP_BRANCH = "main"
 SETUP_SCRIPT_URL = f"https://raw.githubusercontent.com/latent-to/cacheon/{SETUP_BRANCH}/validator/setup-gpu.sh"
 
 
