@@ -14,7 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$HOME/venv-cacheon}"
-COMPOSE_FILE="$SCRIPT_DIR/cpu-compose.yml"
+COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 ENV_FILE="$SCRIPT_DIR/.env"
 
 DETACH=false
@@ -35,6 +35,8 @@ source "$VENV_DIR/bin/activate"
 
 "$VENV_DIR/bin/pip" install --upgrade pip -q
 "$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements-cpu.txt" -q
+"$VENV_DIR/bin/pip" install --no-deps lium.io -q
+"$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements-lium-deps.txt" -q
 echo "Dependencies installed."
 
 # -- .env --
@@ -42,7 +44,7 @@ echo ""
 echo "=== Environment ==="
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "ERROR: $ENV_FILE not found."
-  echo "Copy .env.cpu.example to .env and fill in credentials before running this script."
+  echo "Copy .env.example to .env and fill in credentials before running this script."
   exit 1
 fi
 set -a
@@ -59,13 +61,13 @@ if ! docker --version >/dev/null 2>&1; then
   exit 1
 fi
 
-# -- tear down existing cpu-validator if running --
-if docker ps -q -f name=cacheon-cpu-validator 2>/dev/null | grep -q .; then
-  echo "Stopping existing cacheon-cpu-validator container..."
+# -- tear down existing validator if running --
+if docker ps -q -f name=cacheon-validator 2>/dev/null | grep -q .; then
+  echo "Stopping existing cacheon-validator container..."
   docker compose -f "$COMPOSE_FILE" down
   echo "Container stopped."
 else
-  echo "No running cacheon-cpu-validator found."
+  echo "No running cacheon-validator found."
 fi
 
 # -- start --

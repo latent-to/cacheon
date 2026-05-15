@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,8 @@ ACCESS_KEY: str = os.environ.get("HIPPIUS_ACCESS_KEY", "")
 SECRET_KEY: str = os.environ.get("HIPPIUS_SECRET_KEY", "")
 BUCKET: str = os.environ.get("CACHEON_S3_BUCKET", "cacheon-validator")
 S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state")
+
+_S3_WORKERS: int = int(os.environ.get("CACHEON_S3_WORKERS", "8"))
 
 SKIP_PATTERNS: set[str] = {
     ".tmp",
@@ -42,7 +45,7 @@ def _client():
     if not ACCESS_KEY or not SECRET_KEY:
         raise RuntimeError(
             "HIPPIUS_ACCESS_KEY and HIPPIUS_SECRET_KEY must be set "
-            "for S3 sync. See .env.gpu.example."
+            "for S3 sync. See .env.example."
         )
 
     return boto3.client(
@@ -99,7 +102,8 @@ def upload(
         )
 
     s3 = _client()
-    count = 0
+
+    files: list[tuple[str, str]] = []
     for local_file in sorted(state_path.rglob("*")):
         if not local_file.is_file():
             continue
@@ -109,12 +113,19 @@ def upload(
         if only and not any(rel == o or rel.startswith(o) for o in only):
             continue
         key = f"{prefix}/{rel}" if prefix else rel
-        logger.debug("Uploading %s -> s3://%s/%s", local_file, bucket, key)
-        s3.upload_file(str(local_file), bucket, key)
-        count += 1
+        files.append((str(local_file), key))
 
-    logger.info("☁️  S3 upload: %d file(s) -> s3://%s/%s", count, bucket, prefix)
-    return count
+    def _put(item: tuple[str, str]) -> None:
+        local, key = item
+        s3.upload_file(local, bucket, key)
+
+    with ThreadPoolExecutor(max_workers=_S3_WORKERS) as pool:
+        futs = {pool.submit(_put, f): f for f in files}
+        for fut in as_completed(futs):
+            fut.result()
+
+    logger.info("☁️ S3 upload: %d file(s) -> s3://%s/%s", len(files), bucket, prefix)
+    return len(files)
 
 
 def download(
@@ -137,8 +148,8 @@ def download(
 
     s3 = _client()
     paginator = s3.get_paginator("list_objects_v2")
-    count = 0
 
+    files: list[tuple[str, str]] = []
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
             key = obj["Key"]
@@ -150,12 +161,19 @@ def download(
                 continue
             local_file = state_path / rel
             local_file.parent.mkdir(parents=True, exist_ok=True)
-            logger.debug("Downloading s3://%s/%s -> %s", bucket, key, local_file)
-            s3.download_file(bucket, key, str(local_file))
-            count += 1
+            files.append((key, str(local_file)))
 
-    logger.info("☁️  S3 download: %d file(s) <- s3://%s/%s", count, bucket, prefix)
-    return count
+    def _get(item: tuple[str, str]) -> None:
+        key, local = item
+        s3.download_file(bucket, key, local)
+
+    with ThreadPoolExecutor(max_workers=_S3_WORKERS) as pool:
+        futs = {pool.submit(_get, f): f for f in files}
+        for fut in as_completed(futs):
+            fut.result()
+
+    logger.info("☁️  S3 download: %d file(s) <- s3://%s/%s", len(files), bucket, prefix)
+    return len(files)
 
 
 def _cli() -> None:

@@ -1,0 +1,18 @@
+# Transitive deps of lium.io that bittensor does not already provide.
+# lium.io is installed with --no-deps because it pins scalecodec==1.2.11,
+# which conflicts with bittensor 10.3+'s cyscale (same namespace).
+async-property==0.2.2
+asyncssh>=2.14
+backoff~=2.2.1
+bittensor-cli>=9.1.0
+docker>=7.1.0
+fuzzywuzzy~=0.18.0
+gitpython>=3.0.0
+jinja2
+loguru>=0.7.0
+plotille>=5.0.0
+plotly>=6.0.0
+pyjwt~=2.8
+python-dotenv>=1.1.1
+python-levenshtein
+rich>=13.7

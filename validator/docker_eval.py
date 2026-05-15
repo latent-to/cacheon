@@ -260,16 +260,66 @@ def reset_gpu_state() -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _container_status(container_id: str) -> str | None:
+    """Return the container's status string ('running', 'exited', etc.).
+
+    Returns None if the inspect call fails (container removed, Docker
+    unavailable, etc.).
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Status}}", container_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _container_exit_code(container_id: str) -> int | None:
+    """Return the container's exit code, or None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.ExitCode}}", container_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
 def wait_for_health(
     base_url: str,
     timeout_s: float = 600,
     poll_interval_s: float = 5,
+    container_id: str | None = None,
 ) -> None:
-    """Poll GET /health until 200. Raises TimeoutError on expiry."""
+    """Poll GET /health until 200. Raises TimeoutError on expiry.
+
+    If *container_id* is provided, checks whether the container is still
+    running on every iteration and bails immediately when it has exited.
+    """
     url = f"{base_url}/health"
     deadline = time.monotonic() + timeout_s
     last_err: str = ""
     while time.monotonic() < deadline:
+        if container_id:
+            status = _container_status(container_id)
+            if status and status != "running":
+                exit_code = _container_exit_code(container_id)
+                raise RuntimeError(
+                    f"Container {container_id[:12]} exited "
+                    f"(status={status}, exit_code={exit_code}) "
+                    f"before /health became ready"
+                )
         try:
             resp = urlopen(url, timeout=5)
             if resp.status == 200:
@@ -567,22 +617,56 @@ def _detect_gpu_count() -> int:
     return 0
 
 
-def _max_model_len(gpu_count: int) -> int:
-    """Choose vLLM max_model_len based on available KV cache (GPU count).
+def _read_max_position_embeddings(model_path: str) -> int | None:
+    """Read max_position_embeddings from a local model's config.json."""
+    import json
+
+    cfg_path = Path(model_path) / "config.json"
+    try:
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        val = cfg.get("max_position_embeddings")
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    except Exception as exc:
+        logger.debug("Could not read %s: %s", cfg_path, exc)
+    return None
+
+
+def _max_model_len(gpu_count: int, model_path: str = "") -> int:
+    """Choose vLLM max_model_len based on GPU count, capped by the model.
 
     More GPUs = more memory after TP-sharding the 72B model = room for
-    longer KV caches.  Values are conservative.
+    longer KV caches.  The heuristic is then capped by the model's
+    ``max_position_embeddings`` (from config.json) so vLLM never refuses
+    to start.
     """
     if gpu_count >= 8:
-        return 131_072
-    if gpu_count >= 4:
-        return 65_536
-    return 32_768
+        heuristic = 131_072
+    elif gpu_count >= 4:
+        heuristic = 65_536
+    else:
+        heuristic = 32_768
+
+    if model_path:
+        model_max = _read_max_position_embeddings(model_path)
+        if model_max is not None and model_max < heuristic:
+            heuristic_k = int(round(heuristic / 1000))
+            model_max_k = int(round(model_max / 1000))
+            logger.info(
+                "Capping max_model_len from %dk to %dk (model max_position_embeddings)",
+                heuristic_k,
+                model_max_k,
+            )
+
+            return model_max
+
+    return heuristic
 
 
-def _baseline_cmd_args(gpu_count: int) -> list[str]:
+def _baseline_cmd_args(gpu_count: int, model_volume: str = "") -> list[str]:
     """Build the vLLM server command args for the baseline container."""
-    mml = _max_model_len(gpu_count)
+    mml = _max_model_len(gpu_count, model_path=model_volume)
     args = [
         "--model",
         "/models",
@@ -623,7 +707,7 @@ def run_baseline_if_needed(
 
     logger.info("Baseline cache miss for key=%s -- running baseline", cache_key)
 
-    baseline_args = _baseline_cmd_args(gpu_count)
+    baseline_args = _baseline_cmd_args(gpu_count, model_volume=model_volume)
     logger.info("Baseline cmd args: %s", baseline_args)
 
     container_name = "cacheon-baseline"
@@ -637,7 +721,7 @@ def run_baseline_if_needed(
             cmd_args=baseline_args,
             container_name=container_name,
         )
-        wait_for_health(base_url, timeout_s=startup_timeout_s)
+        wait_for_health(base_url, timeout_s=startup_timeout_s, container_id=cid)
 
         results = _run_prompts_on_server(
             base_url,
@@ -705,7 +789,7 @@ def evaluate_challenger(
             model_volume=model_volume,
             container_name=container_name,
         )
-        wait_for_health(base_url, timeout_s=startup_timeout_s)
+        wait_for_health(base_url, timeout_s=startup_timeout_s, container_id=cid)
 
         results = _run_prompts_on_server(
             base_url,
@@ -888,7 +972,7 @@ def make_eval_fn(
     per_prompt_timeout_s: int = 120,
     n_warmup: int = 2,
 ) -> Callable:
-    """Return an ``EvalFn`` compatible with ``validator.loop``.
+    """Return an ``EvalFn`` that runs Docker eval per challenger.
 
     For each challenger, runs the full Docker lifecycle sequentially.
     Baseline is run once (or loaded from cache) per block hash.
@@ -921,7 +1005,7 @@ def make_eval_fn(
 
         from .prompts import sample_prompts
 
-        mml = _max_model_len(resolved_gpu_count)
+        mml = _max_model_len(resolved_gpu_count, model_path=model_volume)
         prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
 
         baseline = run_baseline_if_needed(

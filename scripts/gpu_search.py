@@ -5,24 +5,23 @@ Usage:
     python scripts/gpu_search.py                # pretty-print results from all providers
     python scripts/gpu_search.py --json          # raw JSON to stdout
     python scripts/gpu_search.py --best          # print only the single cheapest viable match
-    python scripts/gpu_search.py --provider lambda  # query only Lambda
+    python scripts/gpu_search.py --provider targon  # query only Targon
 
 Importable:
     from scripts.gpu_search import search_all, search_provider
-    results = search_all()                       # queries every provider with a configured key
-    results = search_provider("lambda", api_key="...")
+    results = search_all()
+    results = search_provider("targon", api_key="...")
 
 Conditions (applied to every provider):
-    - Storage: >= 400 GB
-    - NVLink / SXM: required
-    - VRAM/GPU: H200 >= 141 GB, H100 >= 80 GB, A100 >= 80 GB, B200 >= 180 GB
+    - VRAM/GPU: B300 >= 288 GB, B200 >= 180 GB, H200 >= 141 GB, H100 >= 80 GB, A100 >= 80 GB
 
-Tier selection (cross-provider, cheapest wins):
-    Tier A (preferred): 4x H200, 8x H100, 8x A100 80GB, 8x H200, 2x B200
-    Tier B (fallback):  4x H100, 4x A100 80GB, 4x B200, 8x B200
+Tier selection (cross-provider, cheapest wins; same order as ``validator.providers.TIERS``):
+    Tier A (preferred): 2x B200, 2x B300, 4x H200 SXM, 8x H200 SXM, 4x B200
+    Tier B (fallback):  2x H200 SXM, 4x H100 SXM, 4x A100 80GB, 4x B300, 8x H100 SXM,
+                        8x A100 80GB, 8x B200, 8x B300
     Tier B is only considered when Tier A has zero availability.
 
-Providers: shadeform, lambda, targon   (extend PROVIDERS to add more)
+Providers: targon, lium
 """
 
 from __future__ import annotations
@@ -30,65 +29,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
-from typing import Callable
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import requests
 
-# ---------------------------------------------------------------------------
-# Shared config
-# ---------------------------------------------------------------------------
-
-TIER_A: list[dict] = [
-    {
-        "label": "4x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 4,
-        "min_vram_per_gpu": 141,
-    },
-    {"label": "8x H100 SXM", "gpu_type": "H100", "num_gpus": 8, "min_vram_per_gpu": 80},
-    {
-        "label": "8x A100 80GB",
-        "gpu_type": "A100",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 80,
-    },
-    {
-        "label": "8x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 141,
-    },
-    {"label": "2x B200", "gpu_type": "B200", "num_gpus": 2, "min_vram_per_gpu": 180},
-]
-
-TIER_B: list[dict] = [
-    {
-        "label": "2x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 2,
-        "min_vram_per_gpu": 141,
-    },
-    {"label": "4x H100 SXM", "gpu_type": "H100", "num_gpus": 4, "min_vram_per_gpu": 80},
-    {
-        "label": "4x A100 80GB",
-        "gpu_type": "A100",
-        "num_gpus": 4,
-        "min_vram_per_gpu": 80,
-    },
-    {"label": "4x B200", "gpu_type": "B200", "num_gpus": 4, "min_vram_per_gpu": 180},
-    {"label": "8x B200", "gpu_type": "B200", "num_gpus": 8, "min_vram_per_gpu": 180},
-]
-
-TIERS = [("A", TIER_A), ("B", TIER_B)]
-
-MIN_STORAGE_GB = 400
+from validator.providers import TIERS, lookup_vram
 
 # ---------------------------------------------------------------------------
 # Normalized instance format returned by every provider fetch function:
 #
-#   provider           str      "shadeform", "lambda", ...
+#   provider           str      "targon", "lium"
 #   instance_type      str      provider-specific instance name
 #   description        str      human-readable description
 #   hourly_price_cents int      US cents
@@ -104,132 +59,8 @@ MIN_STORAGE_GB = 400
 
 
 # ---------------------------------------------------------------------------
-# Provider: Shadeform
-# ---------------------------------------------------------------------------
-
-
-def _fetch_shadeform(api_key: str) -> list[dict]:
-    resp = requests.get(
-        "https://api.shadeform.ai/v1/instances/types",
-        headers={"X-API-KEY": api_key},
-        params={"available": "true"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-
-    out: list[dict] = []
-    for inst in resp.json().get("instance_types", []):
-        cfg = inst.get("configuration", {})
-
-        if not cfg.get("nvlink", False):
-            continue
-        if cfg.get("storage_in_gb", 0) < MIN_STORAGE_GB:
-            continue
-        if not any(r.get("available") for r in inst.get("availability", [])):
-            continue
-
-        num_gpus = cfg.get("num_gpus", 0)
-        vram = cfg.get("vram_per_gpu_in_gb", 0)
-        regions = [
-            r["region"] for r in inst.get("availability", []) if r.get("available")
-        ]
-
-        out.append(
-            {
-                "provider": "shadeform",
-                "instance_type": inst.get("shade_instance_type", ""),
-                "description": inst.get("cloud_instance_type", ""),
-                "hourly_price_cents": inst.get("hourly_price", 0),
-                "num_gpus": num_gpus,
-                "gpu_type": cfg.get("gpu_type", ""),
-                "vram_per_gpu_gb": vram,
-                "total_vram_gb": num_gpus * vram,
-                "storage_gb": cfg.get("storage_in_gb", 0),
-                "memory_gb": cfg.get("memory_in_gb", 0),
-                "vcpus": cfg.get("vcpus", 0),
-                "available_regions": regions,
-            }
-        )
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Provider: Lambda
-# ---------------------------------------------------------------------------
-
-_VRAM_RE = re.compile(r"\((\d+)\s*GB")
-
-
-def _lambda_parse_vram(gpu_description: str) -> int:
-    m = _VRAM_RE.search(gpu_description)
-    return int(m.group(1)) if m else 0
-
-
-def _lambda_parse_gpu_type(gpu_description: str) -> str:
-    token = gpu_description.split("(")[0].strip().split()
-    return token[0] if token else ""
-
-
-def _lambda_is_sxm(gpu_description: str, name: str) -> bool:
-    return "sxm" in f"{gpu_description} {name}".lower()
-
-
-def _fetch_lambda(api_key: str) -> list[dict]:
-    resp = requests.get(
-        "https://cloud.lambdalabs.com/api/v1/instance-types",
-        auth=(api_key, ""),
-        timeout=30,
-    )
-    resp.raise_for_status()
-
-    out: list[dict] = []
-    for name, entry in resp.json().get("data", {}).items():
-        itype = entry.get("instance_type", {})
-        specs = itype.get("specs", {})
-        gpu_desc = itype.get("gpu_description", "")
-        regions = entry.get("regions_with_capacity_available", [])
-
-        if not _lambda_is_sxm(gpu_desc, name):
-            continue
-        if specs.get("storage_gib", 0) < MIN_STORAGE_GB:
-            continue
-        if not regions:
-            continue
-
-        num_gpus = specs.get("gpus", 0)
-        vram = _lambda_parse_vram(gpu_desc)
-        region_names = [r["name"] for r in regions]
-
-        out.append(
-            {
-                "provider": "lambda",
-                "instance_type": name,
-                "description": itype.get("description", ""),
-                "hourly_price_cents": itype.get("price_cents_per_hour", 0),
-                "num_gpus": num_gpus,
-                "gpu_type": _lambda_parse_gpu_type(gpu_desc),
-                "vram_per_gpu_gb": vram,
-                "total_vram_gb": num_gpus * vram,
-                "storage_gb": specs.get("storage_gib", 0),
-                "memory_gb": specs.get("memory_gib", 0),
-                "vcpus": specs.get("vcpus", 0),
-                "available_regions": region_names,
-            }
-        )
-    return out
-
-
-# ---------------------------------------------------------------------------
 # Provider: Targon
 # ---------------------------------------------------------------------------
-
-# Targon does not expose per-GPU VRAM; use well-known values.
-_TARGON_VRAM_GB: dict[str, int] = {
-    "H200": 141,
-    "H100": 80,
-    "A100": 80,
-    "B200": 180,
-}
 
 
 def _targon_normalize_gpu_type(raw: str) -> str:
@@ -252,26 +83,21 @@ def _fetch_targon(api_key: str) -> list[dict]:
     out: list[dict] = []
     for item in resp.json():
         spec = item.get("spec", {})
-        gpu_type_raw = spec.get("gpu_type", "")
-        gpu_type = _targon_normalize_gpu_type(gpu_type_raw)
+        gpu_type_raw = _targon_normalize_gpu_type(spec.get("gpu_type", ""))
         gpu_count = spec.get("gpu_count", 0)
         available = item.get("available", 0)
 
         if available <= 0:
             continue
 
-        vram = _TARGON_VRAM_GB.get(gpu_type, 0)
+        canon, vram = lookup_vram(gpu_type_raw)
         if not vram:
             continue
 
-        # Targon storage comes from attached persistent volumes, not the
-        # instance spec (which often reports 0). Skip the storage filter.
         storage_mb = spec.get("storage", 0)
         storage_gb = storage_mb // 1024 if storage_mb else 0
-
         price_dollars = item.get("cost_per_hour", 0)
         price_cents = int(round(price_dollars * 100))
-
         memory_mb = spec.get("memory", 0)
 
         out.append(
@@ -281,7 +107,7 @@ def _fetch_targon(api_key: str) -> list[dict]:
                 "description": item.get("display_name", ""),
                 "hourly_price_cents": price_cents,
                 "num_gpus": gpu_count,
-                "gpu_type": gpu_type,
+                "gpu_type": canon,
                 "vram_per_gpu_gb": vram,
                 "total_vram_gb": gpu_count * vram,
                 "storage_gb": storage_gb,
@@ -294,13 +120,51 @@ def _fetch_targon(api_key: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Provider registry -- add new providers here
+# Provider: Lium
+# ---------------------------------------------------------------------------
+
+
+def _fetch_lium(api_key: str) -> list[dict]:
+    from lium.sdk import Lium, Config
+
+    client = Lium(config=Config(api_key=api_key))
+    executors = client.ls(gpu_count=None)
+
+    out: list[dict] = []
+    for ex in executors:
+        gpu_type_raw = ex.gpu_type or ""
+        canon, vram = lookup_vram(gpu_type_raw)
+        if not vram:
+            continue
+        if not ex.docker_in_docker:
+            continue
+
+        out.append(
+            {
+                "provider": "lium",
+                "instance_type": ex.id,
+                "description": ex.machine_name,
+                "hourly_price_cents": int(round(ex.price_per_hour * 100)),
+                "num_gpus": ex.gpu_count,
+                "gpu_type": canon,
+                "vram_per_gpu_gb": vram,
+                "total_vram_gb": ex.gpu_count * vram,
+                "storage_gb": 0,
+                "memory_gb": 0,
+                "vcpus": 0,
+                "available_regions": ["lium"],
+            }
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Provider registry
 # ---------------------------------------------------------------------------
 
 PROVIDERS: dict[str, dict] = {
-    "shadeform": {"env_key": "SHADEFORM_API_KEY", "fetch": _fetch_shadeform},
-    "lambda": {"env_key": "LAMBDA_API_KEY", "fetch": _fetch_lambda},
     "targon": {"env_key": "TARGON_API_KEY", "fetch": _fetch_targon},
+    "lium": {"env_key": "LIUM_API_KEY", "fetch": _fetch_lium},
 }
 
 
@@ -320,10 +184,7 @@ def _matches_config(instance: dict, config: dict) -> bool:
 
 
 def _rank_tiers(candidates: list[dict]) -> dict:
-    """Apply tier logic to a flat list of normalized candidates.
-
-    Returns the same shape as search_all / search_provider.
-    """
+    """Apply tier logic to a flat list of normalized candidates."""
     tier_results: list[dict] = []
     best_match: dict | None = None
     best_tier: str | None = None
@@ -380,11 +241,7 @@ def search_provider(name: str, api_key: str | None = None) -> dict:
 
 
 def search_all(keys: dict[str, str] | None = None) -> dict:
-    """Query every provider that has a configured API key, merge, and rank.
-
-    Args:
-        keys: optional {provider_name: api_key} overrides.
-    """
+    """Query every provider that has a configured API key, merge, and rank."""
     keys = keys or {}
     candidates: list[dict] = []
     queried: list[str] = []

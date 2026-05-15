@@ -57,6 +57,33 @@ GPU_COUNT: int = int(os.environ.get("CACHEON_GPU_COUNT", "0"))
 """Number of GPUs on the host. Set to 4 for 4x H200, etc."""
 
 # --------------------------------------------------------------------------- #
+# GPU orchestration (auto-rent)
+# --------------------------------------------------------------------------- #
+
+AUTO_RENT: bool = os.environ.get("CACHEON_AUTO_RENT", "0") == "1"
+"""When True, the validator automatically rents a GPU pod when challengers
+are detected, runs eval, and tears it down."""
+
+PREFERRED_PROVIDER: str = os.environ.get("CACHEON_PREFERRED_PROVIDER", "")
+"""If set to 'lium' or 'targon', only that provider is used for GPU rental
+even when both API keys are configured. Empty means cheapest-wins."""
+
+LIUM_API_KEY: str = os.environ.get("LIUM_API_KEY", "")
+TARGON_API_KEY: str = os.environ.get("TARGON_API_KEY", "")
+TARGON_VOLUME_UID: str = os.environ.get("TARGON_VOLUME_UID", "")
+
+MAX_HOURLY_PRICE: int = int(os.environ.get("CACHEON_MAX_HOURLY_PRICE", "2000"))
+"""Maximum hourly price in US cents. Refuse to rent above this."""
+
+HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
+"""Hugging Face token passed to the remote pod for model download."""
+
+HIPPIUS_ACCESS_KEY: str = os.environ.get("HIPPIUS_ACCESS_KEY", "")
+HIPPIUS_SECRET_KEY: str = os.environ.get("HIPPIUS_SECRET_KEY", "")
+S3_BUCKET: str = os.environ.get("CACHEON_S3_BUCKET", "cacheon-validator")
+S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state")
+
+# --------------------------------------------------------------------------- #
 # King defender-advantage window
 # --------------------------------------------------------------------------- #
 

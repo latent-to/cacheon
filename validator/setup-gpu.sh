@@ -41,7 +41,7 @@ if [[ "$PULL_ONLY" == true ]]; then
   # shellcheck source=/dev/null
   source "$VENV_DIR/bin/activate"
   "$VENV_DIR/bin/pip" install --upgrade pip
-  "$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements.txt"
+  "$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements-gpu.txt"
   echo "=== Pull-only run complete ==="
   exit 0
 fi
@@ -153,7 +153,7 @@ fi
 source "$VENV_DIR/bin/activate"
 export PATH="$VENV_DIR/bin:$PATH"
 "$VENV_DIR/bin/pip" install --upgrade pip
-"$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements.txt"
+"$VENV_DIR/bin/pip" install -r "$REPO_DIR/validator/requirements-gpu.txt"
 
 # Hugging Face cache (all HF operations below use this)
 export HF_HOME="/workspace/.cache/huggingface"
@@ -187,17 +187,44 @@ fi
 # -- model weights --
 echo ""
 echo "=== Model weights ($MODEL_NAME) ==="
-"$VENV_DIR/bin/hf" download "$MODEL_NAME" --local-dir "$MODEL_DIR"
+if [ -f "$MODEL_DIR/config.json" ] && [ -f "$MODEL_DIR/tokenizer.json" ] && \
+   ls "$MODEL_DIR"/model-*.safetensors >/dev/null 2>&1; then
+  echo "Model already present at $MODEL_DIR, skipping download."
+else
+  MAX_DL_ATTEMPTS=2
+  DL_TIMEOUT=1200
+  for attempt in $(seq 1 $MAX_DL_ATTEMPTS); do
+    echo "Download attempt $attempt/$MAX_DL_ATTEMPTS (timeout=${DL_TIMEOUT}s)..."
+    if timeout "$DL_TIMEOUT" "$VENV_DIR/bin/hf" download "$MODEL_NAME" --local-dir "$MODEL_DIR"; then
+      break
+    fi
+    if [ "$attempt" -eq "$MAX_DL_ATTEMPTS" ]; then
+      echo "ERROR: model download failed after $MAX_DL_ATTEMPTS attempts"
+      exit 1
+    fi
+    echo "Download interrupted, retrying in 10s..."
+    sleep 10
+  done
+fi
 
 # -- PG19 (matches validator/prompts.py DATASET_NAME) --
 echo ""
 echo "=== PG19 dataset ==="
-"$VENV_DIR/bin/python" -c "from datasets import load_dataset; load_dataset('emozilla/pg19', split='train'); print('PG19 cached')"
+PG19_CACHE="$HF_HOME/datasets/emozilla___pg19"
+if [ -d "$PG19_CACHE" ] && find "$PG19_CACHE" -name "*.arrow" -print -quit 2>/dev/null | grep -q .; then
+  echo "PG19 already cached at $PG19_CACHE, skipping."
+else
+  "$VENV_DIR/bin/python" -c "from datasets import load_dataset; load_dataset('emozilla/pg19', split='train'); print('PG19 cached')"
+fi
 
 # -- vLLM baseline image --
 echo ""
 echo "=== vLLM baseline Docker image ==="
-docker pull vllm/vllm-openai:latest
+if docker image inspect vllm/vllm-openai:latest >/dev/null 2>&1; then
+  echo "vLLM baseline image already present, skipping pull."
+else
+  docker pull vllm/vllm-openai:latest
+fi
 REPO_DIGEST="$(docker image inspect vllm/vllm-openai:latest --format '{{index .RepoDigests 0}}' 2>/dev/null || true)"
 DIGEST=""
 if [[ -n "$REPO_DIGEST" ]] && [[ "$REPO_DIGEST" == *"@"* ]]; then
@@ -215,12 +242,16 @@ echo ""
 echo "=== Verification ==="
 nvidia-smi
 docker --version
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+if docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi; then
+  echo "GPU passthrough in nested container: OK"
+else
+  echo "WARNING: nested GPU passthrough check failed (non-fatal; eval may still work)"
+fi
 "$VENV_DIR/bin/python" -c "import datasets; print('python deps ok')"
 test -d "$MODEL_DIR"
 
 echo ""
 echo "=== Setup complete ==="
-echo "Next: copy validator/.env.validator.example to your .env, set wallet vars, and paste CACHEON_BASELINE_DIGEST from above."
+echo "Next: copy validator/.env.example to your .env, set wallet vars, and paste CACHEON_BASELINE_DIGEST from above."
 echo "Docs: https://cacheon.ai/docs/validators/overview"
 echo "Run the validator: https://cacheon.ai/docs/architecture/validator"

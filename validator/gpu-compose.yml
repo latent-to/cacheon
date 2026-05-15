@@ -1,0 +1,30 @@
+services:
+  gpu-eval:
+    build:
+      context: ..
+      dockerfile: validator/Dockerfile.gpu
+    container_name: cacheon-gpu-eval
+    networks:
+      - cacheon-internal
+      - cacheon-egress
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CACHEON_STATE_DIR:-./state}:/app/state
+    environment:
+      - CACHEON_MODEL_VOLUME=${CACHEON_MODEL_VOLUME:-/workspace/models/Qwen2.5-72B-Instruct}
+      - CACHEON_BASELINE_IMAGE=${CACHEON_BASELINE_IMAGE:-vllm/vllm-openai:latest}
+      - CACHEON_BASELINE_DIGEST=${CACHEON_BASELINE_DIGEST:-}
+      - CACHEON_GPU_COUNT=${CACHEON_GPU_COUNT:-4}
+      - CACHEON_STATE_DIR=/app/state
+      - HIPPIUS_ACCESS_KEY=${HIPPIUS_ACCESS_KEY}
+      - HIPPIUS_SECRET_KEY=${HIPPIUS_SECRET_KEY}
+      - CACHEON_S3_BUCKET=${CACHEON_S3_BUCKET:-cacheon-validator}
+      - CACHEON_S3_PREFIX=${CACHEON_S3_PREFIX:-state}
+
+networks:
+  cacheon-internal:
+    name: cacheon-internal
+    internal: true
+  cacheon-egress:
+    name: cacheon-egress
+    driver: bridge

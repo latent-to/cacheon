@@ -22,7 +22,7 @@ pytestmark = pytest.mark.unit
 
 
 # --------------------------------------------------------------------------- #
-# Fakes (same pattern as test_validator_loop.py)
+# Fakes (in-memory subtensor + metagraph stubs)
 # --------------------------------------------------------------------------- #
 
 
