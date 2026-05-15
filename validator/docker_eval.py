@@ -608,7 +608,7 @@ def _max_model_len(gpu_count: int, model_path: str = "") -> int:
                 heuristic_k,
                 model_max_k,
             )
-       
+
             return model_max
 
     return heuristic
