@@ -1005,7 +1005,7 @@ def make_eval_fn(
 
         from .prompts import sample_prompts
 
-        mml = _max_model_len(resolved_gpu_count)
+        mml = _max_model_len(resolved_gpu_count, model_path=model_volume)
         prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
 
         baseline = run_baseline_if_needed(
