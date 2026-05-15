@@ -50,7 +50,7 @@ def list_container_logs():
     summary="Raw container log",
     description=(
         "Full Docker stdout/stderr from a miner or baseline container. "
-        "Returns plain text. Label format: uid{N}_{hotkey8}_{block} or baseline_{hash}."
+        "Returns plain text. Label format: uid{N}\\_{hotkey8}\\_{eval\\_block} or baseline\\_{hash}."
     ),
 )
 def get_container_log(label: str):
