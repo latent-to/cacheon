@@ -187,7 +187,25 @@ fi
 # -- model weights --
 echo ""
 echo "=== Model weights ($MODEL_NAME) ==="
-"$VENV_DIR/bin/hf" download "$MODEL_NAME" --local-dir "$MODEL_DIR"
+if [ -f "$MODEL_DIR/config.json" ] && [ -f "$MODEL_DIR/tokenizer.json" ] && \
+   ls "$MODEL_DIR"/model-*.safetensors >/dev/null 2>&1; then
+  echo "Model already present at $MODEL_DIR, skipping download."
+else
+  MAX_DL_ATTEMPTS=2
+  DL_TIMEOUT=1200
+  for attempt in $(seq 1 $MAX_DL_ATTEMPTS); do
+    echo "Download attempt $attempt/$MAX_DL_ATTEMPTS (timeout=${DL_TIMEOUT}s)..."
+    if timeout "$DL_TIMEOUT" "$VENV_DIR/bin/hf" download "$MODEL_NAME" --local-dir "$MODEL_DIR"; then
+      break
+    fi
+    if [ "$attempt" -eq "$MAX_DL_ATTEMPTS" ]; then
+      echo "ERROR: model download failed after $MAX_DL_ATTEMPTS attempts"
+      exit 1
+    fi
+    echo "Download interrupted, retrying in 10s..."
+    sleep 10
+  done
+fi
 
 # -- PG19 (matches validator/prompts.py DATASET_NAME) --
 echo ""
