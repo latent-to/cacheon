@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import config as validator_config
@@ -137,6 +139,74 @@ def _try_upload(state_dir: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Housekeeping helpers
+# --------------------------------------------------------------------------- #
+
+_LOG_TS_RE = re.compile(r"_(\d{8})_\d{6}\.log$")
+
+
+def purge_old_logs(state_dir: str | os.PathLike) -> int:
+    """Delete log files in ``state/logs/`` whose filename date is older than
+    ``LOG_RETENTION_DAYS``. Returns the number of files removed."""
+    retention = validator_config.LOG_RETENTION_DAYS
+    if retention <= 0:
+        return 0
+    logs_dir = Path(state_dir) / "logs"
+    if not logs_dir.is_dir():
+        return 0
+    cutoff = datetime.now() - timedelta(days=retention)
+    removed = 0
+    for p in logs_dir.iterdir():
+        m = _LOG_TS_RE.search(p.name)
+        if not m:
+            continue
+        try:
+            file_date = datetime.strptime(m.group(1), "%Y%m%d")
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        logger.info("🧹 Purged %d old log file(s) from %s", removed, logs_dir)
+    return removed
+
+
+def _clean_stale_eval_job(state: ValidatorState, state_dir: str) -> bool:
+    """Remove ``eval_job.json`` if every challenger in it is already known.
+
+    Returns True if the file was deleted."""
+    from .eval_schema import EVAL_JOB_FILE, EvalJob
+
+    path = Path(state_dir) / EVAL_JOB_FILE
+    if not path.exists():
+        return False
+    job = EvalJob.load(state_dir)
+    if job is None:
+        return False
+    if all(state.is_known(c.hotkey, c.commit_block) for c in job.challengers):
+        try:
+            path.unlink()
+            logger.info(
+                "🧹 Removed stale eval_job.json (%d challenger(s) all known)",
+                len(job.challengers),
+            )
+        except OSError:
+            return False
+        try:
+            from .sync import delete_remote_keys
+
+            delete_remote_keys([EVAL_JOB_FILE])
+        except Exception:
+            logger.debug("Failed to delete eval_job.json from S3", exc_info=True)
+        return True
+    return False
+
+
+# --------------------------------------------------------------------------- #
 # Tick
 # --------------------------------------------------------------------------- #
 
@@ -162,6 +232,8 @@ def run_tick(
         logger.error("S3 download failed: %s -- using local state", exc)
 
     _reload_state(state, state_dir)
+    _clean_stale_eval_job(state, state_dir)
+    purge_old_logs(state_dir)
 
     king_desc = (
         f"UID {state.king.uid} score={state.king.score:.4f}" if state.king else "none"

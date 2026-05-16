@@ -12,10 +12,12 @@ import pytest
 from validator.chain import CommitmentRecord
 from validator.cpu_validator import (
     WEIGHTS_REFRESH_BLOCKS,
+    _clean_stale_eval_job,
     _needs_weight_set,
+    purge_old_logs,
     run_tick,
 )
-from validator.eval_schema import EVAL_JOB_FILE, EvalJob
+from validator.eval_schema import EVAL_JOB_FILE, ChallengerInfo, EvalJob
 from validator.state import EvaluationRecord, ValidatorState
 
 pytestmark = pytest.mark.unit
@@ -457,3 +459,134 @@ class TestRunTickS3Failure:
         )
 
         assert summary["block"] == 1000
+
+
+# --------------------------------------------------------------------------- #
+# _clean_stale_eval_job
+# --------------------------------------------------------------------------- #
+
+
+class TestCleanStaleEvalJob:
+    def test_removes_when_all_challengers_known(self, tmp_path):
+        state = ValidatorState()
+        rec = _make_eval_record(1, "hk1", 200, 0.5, eval_block=500)
+        state.record_evaluation(rec, current_block=500)
+
+        job = EvalJob(
+            block=1000,
+            block_hash="0xabc",
+            challengers=[
+                ChallengerInfo(
+                    uid=1,
+                    hotkey="hk1",
+                    commit_block=200,
+                    image="u/r:v1",
+                    digest=_DIGEST,
+                ),
+            ],
+            created_at=1700000000.0,
+        )
+        job.save(str(tmp_path))
+        assert (tmp_path / EVAL_JOB_FILE).exists()
+
+        removed = _clean_stale_eval_job(state, str(tmp_path))
+        assert removed is True
+        assert not (tmp_path / EVAL_JOB_FILE).exists()
+
+    def test_keeps_when_challenger_unknown(self, tmp_path):
+        state = ValidatorState()
+
+        job = EvalJob(
+            block=1000,
+            block_hash="0xabc",
+            challengers=[
+                ChallengerInfo(
+                    uid=1,
+                    hotkey="hk1",
+                    commit_block=200,
+                    image="u/r:v1",
+                    digest=_DIGEST,
+                ),
+            ],
+            created_at=1700000000.0,
+        )
+        job.save(str(tmp_path))
+
+        removed = _clean_stale_eval_job(state, str(tmp_path))
+        assert removed is False
+        assert (tmp_path / EVAL_JOB_FILE).exists()
+
+    def test_noop_when_no_file(self, tmp_path):
+        state = ValidatorState()
+        assert _clean_stale_eval_job(state, str(tmp_path)) is False
+
+    def test_mixed_known_and_unknown(self, tmp_path):
+        state = ValidatorState()
+        rec = _make_eval_record(1, "hk1", 200, 0.5, eval_block=500)
+        state.record_evaluation(rec, current_block=500)
+
+        job = EvalJob(
+            block=1000,
+            block_hash="0xabc",
+            challengers=[
+                ChallengerInfo(
+                    uid=1,
+                    hotkey="hk1",
+                    commit_block=200,
+                    image="u/r:v1",
+                    digest=_DIGEST,
+                ),
+                ChallengerInfo(
+                    uid=2,
+                    hotkey="hk2",
+                    commit_block=300,
+                    image="u/r:v2",
+                    digest="sha256:" + "b" * 64,
+                ),
+            ],
+            created_at=1700000000.0,
+        )
+        job.save(str(tmp_path))
+
+        removed = _clean_stale_eval_job(state, str(tmp_path))
+        assert removed is False
+        assert (tmp_path / EVAL_JOB_FILE).exists()
+
+
+# --------------------------------------------------------------------------- #
+# purge_old_logs
+# --------------------------------------------------------------------------- #
+
+
+class TestPurgeOldLogs:
+    def test_removes_old_logs(self, tmp_path):
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        (logs / "cpu_validator_20260101_120000.log").write_text("old")
+        (logs / "cpu_validator_20260516_120000.log").write_text("recent")
+        (logs / "gpu_eval_20260102_090000.log").write_text("old gpu")
+        (logs / "random_file.txt").write_text("ignore me")
+
+        with patch("validator.config.LOG_RETENTION_DAYS", 10):
+            removed = purge_old_logs(str(tmp_path))
+
+        assert removed == 2
+        assert not (logs / "cpu_validator_20260101_120000.log").exists()
+        assert not (logs / "gpu_eval_20260102_090000.log").exists()
+        assert (logs / "cpu_validator_20260516_120000.log").exists()
+        assert (logs / "random_file.txt").exists()
+
+    def test_noop_when_disabled(self, tmp_path):
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        (logs / "cpu_validator_20200101_120000.log").write_text("old")
+
+        with patch("validator.config.LOG_RETENTION_DAYS", 0):
+            removed = purge_old_logs(str(tmp_path))
+
+        assert removed == 0
+        assert (logs / "cpu_validator_20200101_120000.log").exists()
+
+    def test_noop_when_no_logs_dir(self, tmp_path):
+        removed = purge_old_logs(str(tmp_path))
+        assert removed == 0

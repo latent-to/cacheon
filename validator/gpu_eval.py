@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import config as validator_config
 from .chain import CommitmentRecord
+from .cpu_validator import purge_old_logs
 from .docker_eval import (
     _dq_record,
     _max_model_len,
@@ -34,7 +35,7 @@ from .docker_eval import (
     run_baseline_if_needed,
 )
 from .eval_progress import clear_progress, update_challenger_status, update_progress
-from .eval_schema import EvalJob
+from .eval_schema import EVAL_JOB_FILE, EvalJob
 from .state import ValidatorState, append_king_history
 
 logger = logging.getLogger(__name__)
@@ -59,9 +60,21 @@ def _configure_logging(state_dir: str) -> None:
     logger.info("Logging to %s", log_path)
 
 
+def _delete_eval_job(state_dir: str) -> None:
+    """Remove eval_job.json locally after the GPU eval has finished."""
+    path = Path(state_dir) / EVAL_JOB_FILE
+    try:
+        if path.exists():
+            path.unlink()
+            logger.info("Deleted %s (eval complete)", EVAL_JOB_FILE)
+    except OSError as exc:
+        logger.warning("Could not delete %s: %s", EVAL_JOB_FILE, exc)
+
+
 def main() -> int:
     state_dir = str(validator_config.STATE_DIR)
     _configure_logging(state_dir)
+    purge_old_logs(state_dir)
 
     model_volume = validator_config.MODEL_VOLUME
     baseline_image = validator_config.BASELINE_IMAGE
@@ -268,6 +281,8 @@ def main() -> int:
         "State saved. King: %s", f"UID {state.king.uid}" if state.king else "none"
     )
     logger.info("GPU eval complete")
+    _delete_eval_job(state_dir)
+    _upload_state(state_dir)
     update_progress(state_dir, phase="eval_complete")
     clear_progress(state_dir)
     return 0
