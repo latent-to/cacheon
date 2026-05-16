@@ -13,11 +13,48 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_LOG_TS_RE = re.compile(r"_(\d{8})_\d{6}\.log$")
+
+
+def purge_old_logs(state_dir: str | os.PathLike) -> int:
+    """Delete log files in ``state/logs/`` whose filename date is older than
+    ``LOG_RETENTION_DAYS``. Returns the number of files removed."""
+    from . import config as validator_config
+
+    retention = validator_config.LOG_RETENTION_DAYS
+    if retention <= 0:
+        return 0
+    logs_dir = Path(state_dir) / "logs"
+    if not logs_dir.is_dir():
+        return 0
+    cutoff = datetime.now() - timedelta(days=retention)
+    removed = 0
+    for p in logs_dir.iterdir():
+        m = _LOG_TS_RE.search(p.name)
+        if not m:
+            continue
+        try:
+            file_date = datetime.strptime(m.group(1), "%Y%m%d")
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        logger.info("🧹 Purged %d old log file(s) from %s", removed, logs_dir)
+    return removed
+
 
 PROGRESS_FILE = "eval_progress.json"
 

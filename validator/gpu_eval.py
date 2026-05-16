@@ -27,14 +27,18 @@ from pathlib import Path
 
 from . import config as validator_config
 from .chain import CommitmentRecord
-from .cpu_validator import purge_old_logs
 from .docker_eval import (
     _dq_record,
     _max_model_len,
     evaluate_challenger,
     run_baseline_if_needed,
 )
-from .eval_progress import clear_progress, update_challenger_status, update_progress
+from .eval_progress import (
+    clear_progress,
+    purge_old_logs,
+    update_challenger_status,
+    update_progress,
+)
 from .eval_schema import EVAL_JOB_FILE, EvalJob
 from .state import ValidatorState, append_king_history
 

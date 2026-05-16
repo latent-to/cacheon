@@ -14,9 +14,9 @@ from validator.cpu_validator import (
     WEIGHTS_REFRESH_BLOCKS,
     _clean_stale_eval_job,
     _needs_weight_set,
-    purge_old_logs,
     run_tick,
 )
+from validator.eval_progress import purge_old_logs
 from validator.eval_schema import EVAL_JOB_FILE, ChallengerInfo, EvalJob
 from validator.state import EvaluationRecord, ValidatorState
 
