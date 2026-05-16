@@ -122,7 +122,7 @@ def _reload_state(state: ValidatorState, state_dir: str) -> None:
     state.last_weights_set_block = fresh.last_weights_set_block
 
 
-_CPU_UPLOAD_ONLY = ["eval_job.json", "logs/"]
+_CPU_UPLOAD_ONLY = ["eval_job.json", "eval_progress.json", "logs/"]
 """CPU never uploads state.json -- the GPU is the sole writer of eval
 results and king. Prevents the CPU from overwriting GPU results on S3."""
 
@@ -275,6 +275,17 @@ def run_tick(
                 ],
                 created_at=time.time(),
             )
+            from .eval_progress import update_progress
+
+            update_progress(
+                state_dir,
+                phase="challengers_found",
+                round_block=current_block,
+                challengers=[
+                    {"uid": c.uid, "hotkey": c.hotkey, "image": c.image}
+                    for c in challenger_set.challengers
+                ],
+            )
             eval_job.save(state_dir)
             state.save(state_dir)
             dirty = True
@@ -304,6 +315,10 @@ def run_tick(
                 except Exception as exc:
                     logger.error("Post-eval S3 download failed: %s", exc)
                 _reload_state(state, state_dir)
+
+            from .eval_progress import clear_progress
+
+            clear_progress(state_dir)
 
     return {
         "block": current_block,

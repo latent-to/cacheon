@@ -33,6 +33,7 @@ from .docker_eval import (
     evaluate_challenger,
     run_baseline_if_needed,
 )
+from .eval_progress import clear_progress, update_challenger_status, update_progress
 from .eval_schema import EvalJob
 from .state import ValidatorState, append_king_history
 
@@ -146,9 +147,11 @@ def main() -> int:
     mml = _max_model_len(gpu_count, model_path=model_volume)
     prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
     logger.info("Generated %d prompts (max_model_len=%d)", len(prompts), mml)
+    update_progress(state_dir, phase="prompts_generated", n=len(prompts))
 
     # Run baseline
     cache_dir = Path(state_dir) / "baseline_cache"
+    update_progress(state_dir, phase="baseline_running", image=baseline_image)
     try:
         baseline = run_baseline_if_needed(
             prompts,
@@ -177,10 +180,15 @@ def main() -> int:
         _upload_state(state_dir)
         return 4
 
+    update_progress(state_dir, phase="baseline_complete")
+
     # Evaluate challengers
-    for ci in eval_job.challengers:
+    for challenger_idx, ci in enumerate(eval_job.challengers):
         if state.is_known(ci.hotkey, ci.commit_block):
             logger.info("Skipping UID %d (already evaluated)", ci.uid)
+            update_challenger_status(
+                state_dir, challenger_idx, status="skipped", detail="already_known"
+            )
             continue
 
         com = CommitmentRecord(
@@ -196,6 +204,9 @@ def main() -> int:
             com.uid,
             com.hotkey[:16],
             com.image,
+        )
+        update_challenger_status(
+            state_dir, challenger_idx, status="pulling", detail="pulling_image"
         )
         record = evaluate_challenger(
             com,
@@ -219,6 +230,23 @@ def main() -> int:
             outcome.stored.disqualify_reason or "no",
             outcome.dethroned,
         )
+        if outcome.stored.disqualified:
+            update_challenger_status(
+                state_dir,
+                challenger_idx,
+                status="dq",
+                score=outcome.stored.score,
+                dq_reason=outcome.stored.disqualify_reason,
+                detail="disqualified",
+            )
+        else:
+            update_challenger_status(
+                state_dir,
+                challenger_idx,
+                status="scored",
+                score=outcome.stored.score,
+                detail="scored",
+            )
         if outcome.dethroned:
             logger.info(
                 "👑 New king: UID %d (score=%.4f)",
@@ -240,6 +268,8 @@ def main() -> int:
         "State saved. King: %s", f"UID {state.king.uid}" if state.king else "none"
     )
     logger.info("GPU eval complete")
+    update_progress(state_dir, phase="eval_complete")
+    clear_progress(state_dir)
     return 0
 
 

@@ -12,6 +12,7 @@ from api.routes.health import router as health_router
 from api.routes.status import router as status_router
 from api.routes.king import router as king_router
 from api.routes.evaluations import router as evaluations_router
+from api.routes.eval_progress import router as eval_progress_router
 from api.routes.logs import router as logs_router
 from api.routes.rounds import router as rounds_router
 
@@ -66,6 +67,7 @@ app.include_router(health_router)
 app.include_router(status_router)
 app.include_router(king_router)
 app.include_router(evaluations_router)
+app.include_router(eval_progress_router)
 app.include_router(logs_router)
 app.include_router(rounds_router)
 
