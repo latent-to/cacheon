@@ -128,6 +128,29 @@ def upload(
     return len(files)
 
 
+def delete_remote_keys(
+    relative_keys: list[str],
+    *,
+    bucket: str = "",
+    prefix: str = "",
+) -> None:
+    """Delete specific keys from S3.
+
+    *relative_keys* are paths relative to ``state/``
+    (e.g. ``["eval_progress.json"]``).
+    """
+    if not relative_keys:
+        return
+    bucket = bucket or BUCKET
+    prefix = prefix or S3_PREFIX
+    s3 = _client()
+    for rel in relative_keys:
+        rel = rel.lstrip("/")
+        key = f"{prefix}/{rel}" if prefix else rel
+        logger.info("Deleting s3://%s/%s", bucket, key)
+        s3.delete_object(Bucket=bucket, Key=key)
+
+
 def download(
     state_dir: str | Path,
     bucket: str = "",
