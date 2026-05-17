@@ -13,9 +13,12 @@ after teardown.
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from pathlib import Path
 
 from . import config as validator_config
+from .eval_progress import PROGRESS_FILE, update_progress
 from .eval_schema import EvalJob
 from .providers import GpuInstance, GpuProvider, PodHandle, search_all_providers
 
@@ -107,7 +110,7 @@ def _extract_chunk_text(chunk: dict[str, str]) -> str:
 _HEARTBEAT_INTERVAL = 30  # seconds
 
 
-def _remote_setup(provider: GpuProvider, handle: PodHandle) -> bool:
+def _remote_setup(provider: GpuProvider, handle: PodHandle, state_dir: str) -> bool:
     """Run setup-gpu.sh on the remote pod, streaming progress to logs."""
     logger.info("⏳ Running setup.sh on remote pod %s", handle.pod_id)
 
@@ -127,6 +130,8 @@ def _remote_setup(provider: GpuProvider, handle: PodHandle) -> bool:
             stripped = line.strip()
             if stripped.startswith("==="):
                 logger.info("  [setup] %s", stripped)
+                step_name = stripped.strip("= ")
+                update_progress(state_dir, phase="gpu_setup", step=step_name)
             elif stripped.startswith("ERROR"):
                 logger.warning("  [setup] %s", stripped)
         now = time.monotonic()
@@ -148,6 +153,7 @@ def _remote_setup(provider: GpuProvider, handle: PodHandle) -> bool:
         return False
 
     logger.info("🛠 setup.sh completed on pod %s (%.0fs)", handle.pod_id, elapsed)
+    update_progress(state_dir, phase="gpu_setup_complete", elapsed_s=int(elapsed))
     return True
 
 
@@ -208,6 +214,25 @@ def _remote_run_eval(
     return False
 
 
+def _mirror_progress_loop(
+    state_dir: str, stop_event: threading.Event, interval: float = 15
+) -> None:
+    """Background thread: poll S3 for eval_progress.json while GPU runs."""
+    try:
+        from .sync import BUCKET, S3_PREFIX, _client
+
+        s3 = _client()
+    except Exception:
+        return
+    key = f"{S3_PREFIX}/{PROGRESS_FILE}" if S3_PREFIX else PROGRESS_FILE
+    local = str(Path(state_dir) / PROGRESS_FILE)
+    while not stop_event.wait(interval):
+        try:
+            s3.download_file(BUCKET, key, local)
+        except Exception:
+            pass
+
+
 def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
     """Search for a GPU pod, rent it, run eval, tear it down.
 
@@ -229,6 +254,7 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
     )
 
     # Search
+    update_progress(state_dir, phase="gpu_searching")
     best = search_all_providers(providers, max_hourly_price_cents=max_price)
     if best is None:
         logger.warning(
@@ -254,6 +280,19 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         best.gpu_type,
         best.hourly_price_cents / 100,
     )
+    gpu_info = {
+        "provider": best.provider,
+        "gpu_type": best.gpu_type,
+        "num_gpus": best.num_gpus,
+        "cost_per_hr": best.hourly_price_cents / 100,
+    }
+    update_progress(
+        state_dir,
+        phase="gpu_match_found",
+        gpu=gpu_info,
+        provider=best.provider,
+        instance_id=best.instance_id,
+    )
 
     handle: PodHandle | None = None
     try:
@@ -261,17 +300,46 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         logger.info("Renting pod from %s...", provider.name)
         handle = provider.rent(best)
         logger.info("☑️ Pod rented: %s (id=%s)", provider.name, handle.pod_id)
+        gpu_info["pod_id"] = handle.pod_id
+        update_progress(
+            state_dir, phase="gpu_renting", gpu=gpu_info, pod_id=handle.pod_id
+        )
 
         # Wait ready
         handle = provider.wait_ready(handle, timeout_s=120)
         logger.info("☑️ Pod %s is ready", handle.pod_id)
+        update_progress(state_dir, phase="gpu_ready", pod_id=handle.pod_id)
 
         # Step 1: curl setup-gpu.sh | sudo -E bash
-        if not _remote_setup(provider, handle):
+        if not _remote_setup(provider, handle, state_dir):
             return False
 
         # Step 2: cd ~/cacheon/validator && docker compose -f gpu-compose.yml up --build
-        return _remote_run_eval(provider, handle, timeout_min)
+        update_progress(state_dir, phase="gpu_eval_started", timeout_min=timeout_min)
+
+        # Push progress to S3 so the GPU's read-modify-write preserves CPU steps
+        try:
+            from .sync import upload as s3_upload
+
+            s3_upload(state_dir, only=[PROGRESS_FILE])
+        except Exception:
+            logger.debug(
+                "Failed to upload eval_progress before mirror start", exc_info=True
+            )
+
+        stop_event = threading.Event()
+        mirror = threading.Thread(
+            target=_mirror_progress_loop,
+            args=(state_dir, stop_event),
+            daemon=True,
+        )
+        mirror.start()
+        try:
+            success = _remote_run_eval(provider, handle, timeout_min)
+        finally:
+            stop_event.set()
+            mirror.join(timeout=5)
+        return success
 
     except TimeoutError as exc:
         logger.error("GPU orchestration timed out: %s", exc)

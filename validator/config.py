@@ -105,3 +105,11 @@ KING_EPSILON_DECAY_BLOCKS: int = int(
 """Number of chain blocks over which `KING_EPSILON_INITIAL` decays to 0.
 50 400 blocks ~ 7 days at ~12 s / block. After this window any strict
 improvement dethrones."""
+
+# --------------------------------------------------------------------------- #
+# Housekeeping
+# --------------------------------------------------------------------------- #
+
+LOG_RETENTION_DAYS: int = int(os.environ.get("CACHEON_LOG_RETENTION_DAYS", "10"))
+"""Delete log files in ``state/logs/`` older than this many days (by filename
+timestamp). 0 disables pruning."""

@@ -33,7 +33,13 @@ from .docker_eval import (
     evaluate_challenger,
     run_baseline_if_needed,
 )
-from .eval_schema import EvalJob
+from .eval_progress import (
+    clear_progress,
+    purge_old_logs,
+    update_challenger_status,
+    update_progress,
+)
+from .eval_schema import EVAL_JOB_FILE, EvalJob
 from .state import ValidatorState, append_king_history
 
 logger = logging.getLogger(__name__)
@@ -58,9 +64,21 @@ def _configure_logging(state_dir: str) -> None:
     logger.info("Logging to %s", log_path)
 
 
+def _delete_eval_job(state_dir: str) -> None:
+    """Remove eval_job.json locally after the GPU eval has finished."""
+    path = Path(state_dir) / EVAL_JOB_FILE
+    try:
+        if path.exists():
+            path.unlink()
+            logger.info("Deleted %s (eval complete)", EVAL_JOB_FILE)
+    except OSError as exc:
+        logger.warning("Could not delete %s: %s", EVAL_JOB_FILE, exc)
+
+
 def main() -> int:
     state_dir = str(validator_config.STATE_DIR)
     _configure_logging(state_dir)
+    purge_old_logs(state_dir)
 
     model_volume = validator_config.MODEL_VOLUME
     baseline_image = validator_config.BASELINE_IMAGE
@@ -146,9 +164,13 @@ def main() -> int:
     mml = _max_model_len(gpu_count, model_path=model_volume)
     prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
     logger.info("Generated %d prompts (max_model_len=%d)", len(prompts), mml)
+    update_progress(state_dir, phase="prompts_generated", n=len(prompts))
+    _upload_progress(state_dir)
 
     # Run baseline
     cache_dir = Path(state_dir) / "baseline_cache"
+    update_progress(state_dir, phase="baseline_running", image=baseline_image)
+    _upload_progress(state_dir)
     try:
         baseline = run_baseline_if_needed(
             prompts,
@@ -177,10 +199,16 @@ def main() -> int:
         _upload_state(state_dir)
         return 4
 
+    update_progress(state_dir, phase="baseline_complete")
+    _upload_state(state_dir)
+
     # Evaluate challengers
-    for ci in eval_job.challengers:
+    for challenger_idx, ci in enumerate(eval_job.challengers):
         if state.is_known(ci.hotkey, ci.commit_block):
             logger.info("Skipping UID %d (already evaluated)", ci.uid)
+            update_challenger_status(
+                state_dir, challenger_idx, status="skipped", detail="already_known"
+            )
             continue
 
         com = CommitmentRecord(
@@ -197,6 +225,10 @@ def main() -> int:
             com.hotkey[:16],
             com.image,
         )
+        update_challenger_status(
+            state_dir, challenger_idx, status="pulling", detail="pulling_image"
+        )
+        _upload_progress(state_dir)
         record = evaluate_challenger(
             com,
             prompts,
@@ -219,6 +251,23 @@ def main() -> int:
             outcome.stored.disqualify_reason or "no",
             outcome.dethroned,
         )
+        if outcome.stored.disqualified:
+            update_challenger_status(
+                state_dir,
+                challenger_idx,
+                status="dq",
+                score=outcome.stored.score,
+                dq_reason=outcome.stored.disqualify_reason,
+                detail="disqualified",
+            )
+        else:
+            update_challenger_status(
+                state_dir,
+                challenger_idx,
+                status="scored",
+                score=outcome.stored.score,
+                detail="scored",
+            )
         if outcome.dethroned:
             logger.info(
                 "👑 New king: UID %d (score=%.4f)",
@@ -240,6 +289,10 @@ def main() -> int:
         "State saved. King: %s", f"UID {state.king.uid}" if state.king else "none"
     )
     logger.info("GPU eval complete")
+    _delete_eval_job(state_dir)
+    _upload_state(state_dir)
+    update_progress(state_dir, phase="eval_complete")
+    clear_progress(state_dir)
     return 0
 
 
@@ -250,6 +303,17 @@ def _upload_state(state_dir: str) -> None:
         upload(state_dir)
     except Exception as exc:
         logger.error("S3 upload failed: %s", exc)
+
+
+def _upload_progress(state_dir: str) -> None:
+    """Push only eval_progress.json to S3 (< 1 KB vs full state)."""
+    try:
+        from .eval_progress import PROGRESS_FILE
+        from .sync import upload
+
+        upload(state_dir, only=[PROGRESS_FILE])
+    except Exception:
+        logger.debug("Progress-only upload failed", exc_info=True)
 
 
 if __name__ == "__main__":

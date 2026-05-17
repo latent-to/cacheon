@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -122,7 +123,7 @@ def _reload_state(state: ValidatorState, state_dir: str) -> None:
     state.last_weights_set_block = fresh.last_weights_set_block
 
 
-_CPU_UPLOAD_ONLY = ["eval_job.json", "logs/"]
+_CPU_UPLOAD_ONLY = ["eval_job.json", "eval_progress.json", "logs/"]
 """CPU never uploads state.json -- the GPU is the sole writer of eval
 results and king. Prevents the CPU from overwriting GPU results on S3."""
 
@@ -134,6 +135,37 @@ def _try_upload(state_dir: str) -> None:
         upload(state_dir, only=_CPU_UPLOAD_ONLY)
     except Exception as exc:
         logger.error("S3 upload failed: %s", exc)
+
+
+def _clean_stale_eval_job(state: ValidatorState, state_dir: str) -> bool:
+    """Remove ``eval_job.json`` if every challenger in it is already known.
+
+    Returns True if the file was deleted."""
+    from .eval_schema import EVAL_JOB_FILE, EvalJob
+
+    path = Path(state_dir) / EVAL_JOB_FILE
+    if not path.exists():
+        return False
+    job = EvalJob.load(state_dir)
+    if job is None:
+        return False
+    if all(state.is_known(c.hotkey, c.commit_block) for c in job.challengers):
+        try:
+            path.unlink()
+            logger.info(
+                "🧹 Removed stale eval_job.json (%d challenger(s) all known)",
+                len(job.challengers),
+            )
+        except OSError:
+            return False
+        try:
+            from .sync import delete_remote_keys
+
+            delete_remote_keys([EVAL_JOB_FILE])
+        except Exception:
+            logger.debug("Failed to delete eval_job.json from S3", exc_info=True)
+        return True
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -162,6 +194,10 @@ def run_tick(
         logger.error("S3 download failed: %s -- using local state", exc)
 
     _reload_state(state, state_dir)
+    _clean_stale_eval_job(state, state_dir)
+    from .eval_progress import purge_old_logs
+
+    purge_old_logs(state_dir)
 
     king_desc = (
         f"UID {state.king.uid} score={state.king.score:.4f}" if state.king else "none"
@@ -275,6 +311,17 @@ def run_tick(
                 ],
                 created_at=time.time(),
             )
+            from .eval_progress import update_progress
+
+            update_progress(
+                state_dir,
+                phase="challengers_found",
+                round_block=current_block,
+                challengers=[
+                    {"uid": c.uid, "hotkey": c.hotkey, "image": c.image}
+                    for c in challenger_set.challengers
+                ],
+            )
             eval_job.save(state_dir)
             state.save(state_dir)
             dirty = True
@@ -304,6 +351,10 @@ def run_tick(
                 except Exception as exc:
                     logger.error("Post-eval S3 download failed: %s", exc)
                 _reload_state(state, state_dir)
+
+            from .eval_progress import clear_progress
+
+            clear_progress(state_dir)
 
     return {
         "block": current_block,
@@ -351,6 +402,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+
+    def _handle_sigterm(*_: object) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     try:
         import bittensor as bt
@@ -425,6 +481,9 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(args.poll_interval)
     except KeyboardInterrupt:
         logger.info("Interrupted, shutting down.")
+        from .eval_progress import clear_progress
+
+        clear_progress(args.state_dir)
         return 0
 
     return 0
