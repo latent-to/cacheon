@@ -106,47 +106,18 @@ def lookup_vram(gpu_type_raw: str) -> tuple[str, int]:
 # ---------------------------------------------------------------------------
 
 TIER_A: list[dict] = [
-    {"label": "2x B200", "gpu_type": "B200", "num_gpus": 2, "min_vram_per_gpu": 180},
-    {"label": "2x B300", "gpu_type": "B300", "num_gpus": 2, "min_vram_per_gpu": 288},
-    {
-        "label": "4x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 4,
-        "min_vram_per_gpu": 141,
-    },
     {
         "label": "8x H200 SXM",
         "gpu_type": "H200",
         "num_gpus": 8,
         "min_vram_per_gpu": 141,
     },
-    {"label": "4x B200", "gpu_type": "B200", "num_gpus": 4, "min_vram_per_gpu": 180},
+    {"label": "8x B200", "gpu_type": "B200", "num_gpus": 8, "min_vram_per_gpu": 180},
+    {"label": "8x B300", "gpu_type": "B300", "num_gpus": 8, "min_vram_per_gpu": 288},
 ]
 
 TIER_B: list[dict] = [
-    {
-        "label": "2x H200 SXM",
-        "gpu_type": "H200",
-        "num_gpus": 2,
-        "min_vram_per_gpu": 141,
-    },
-    {"label": "4x H100 SXM", "gpu_type": "H100", "num_gpus": 4, "min_vram_per_gpu": 80},
-    {
-        "label": "4x A100 80GB",
-        "gpu_type": "A100",
-        "num_gpus": 4,
-        "min_vram_per_gpu": 80,
-    },
-    {"label": "4x B300", "gpu_type": "B300", "num_gpus": 4, "min_vram_per_gpu": 288},
     {"label": "8x H100 SXM", "gpu_type": "H100", "num_gpus": 8, "min_vram_per_gpu": 80},
-    {
-        "label": "8x A100 80GB",
-        "gpu_type": "A100",
-        "num_gpus": 8,
-        "min_vram_per_gpu": 80,
-    },
-    {"label": "8x B200", "gpu_type": "B200", "num_gpus": 8, "min_vram_per_gpu": 180},
-    {"label": "8x B300", "gpu_type": "B300", "num_gpus": 8, "min_vram_per_gpu": 288},
 ]
 
 TIERS = [("A", TIER_A), ("B", TIER_B)]

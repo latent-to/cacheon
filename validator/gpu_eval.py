@@ -13,7 +13,7 @@ Env vars:
     CACHEON_MODEL_VOLUME       (default: /models)
     CACHEON_BASELINE_IMAGE     (default: vllm/vllm-openai:latest)
     CACHEON_BASELINE_DIGEST    (required)
-    CACHEON_GPU_COUNT          (default: 0, auto-detect via nvidia-smi)
+    CACHEON_GPU_COUNT          (default: 8, auto-detect via nvidia-smi)
     HIPPIUS_ACCESS_KEY         (required for S3)
     HIPPIUS_SECRET_KEY         (required for S3)
     CACHEON_S3_BUCKET          (default: cacheon-validator)
