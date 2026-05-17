@@ -18,7 +18,7 @@
 
 Cacheon is a Bittensor subnet (SN14) that runs an open competition for **production-grade LLM inference optimization**. Miners submit containerized inference servers. Validators evaluate them against a vLLM baseline on the same hardware. The fastest correct server takes all emission.
 
-**V1 arena:** `Qwen2.5-72B-Instruct` on 4x H200 or equivalent GPUs. Beat the pinned vLLM baseline on TTFT and throughput while passing a greedy-decoding correctness gate.
+**V1 arena:** `Qwen2.5-72B-Instruct` on 8-GPU TP=8 pods (8x H200, 8x B200, or 8x B300). Beat the pinned vLLM baseline on TTFT and throughput while passing a greedy-decoding correctness gate.
 
 ## How It Works
 
@@ -66,7 +66,7 @@ Full guide: [cacheon.ai/docs/miners/overview](https://cacheon.ai/docs/miners/ove
 
 The validator has two components: an always-on CPU host (chain scanning, weight setting) and an ephemeral GPU pod (eval). The GPU pod is rented on-demand only when challengers are queued.
 
-**GPU requirements:** NVLink/SXM interconnect, 4x H200 or equivalent, 400 GB storage, model weights at `/workspace/models/Qwen2.5-72B-Instruct`.
+**GPU requirements:** NVLink/SXM 8-GPU pod (8x H200, 8x B200, or 8x B300 are Tier A; 8x H100 is Tier B fallback), 400 GB storage, model weights at `/workspace/models/Qwen2.5-72B-Instruct`. See [GPU requirements](https://cacheon.ai/docs/validators/overview#gpu-requirements).
 
 ```bash
 # CPU host (always-on)
