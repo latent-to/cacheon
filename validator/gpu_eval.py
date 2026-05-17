@@ -124,11 +124,11 @@ def main() -> int:
             )
             return 1
 
-    # S3 download
+    # S3 download (skip eval_progress.json; the CPU maintains it)
     try:
         from .sync import download
 
-        download(state_dir)
+        download(state_dir, exclude=["eval_progress.json"])
     except Exception as exc:
         logger.error("S3 download failed: %s", exc)
         return 2
@@ -198,6 +198,7 @@ def main() -> int:
         return 4
 
     update_progress(state_dir, phase="baseline_complete")
+    _upload_state(state_dir)
 
     # Evaluate challengers
     for challenger_idx, ci in enumerate(eval_job.challengers):

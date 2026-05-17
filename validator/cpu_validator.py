@@ -475,6 +475,9 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(args.poll_interval)
     except KeyboardInterrupt:
         logger.info("Interrupted, shutting down.")
+        from .eval_progress import clear_progress
+
+        clear_progress(args.state_dir)
         return 0
 
     return 0

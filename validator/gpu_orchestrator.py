@@ -317,6 +317,16 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         # Step 2: cd ~/cacheon/validator && docker compose -f gpu-compose.yml up --build
         update_progress(state_dir, phase="gpu_eval_started", timeout_min=timeout_min)
 
+        # Push progress to S3 so the GPU's read-modify-write preserves CPU steps
+        try:
+            from .sync import upload as s3_upload
+
+            s3_upload(state_dir, only=[PROGRESS_FILE])
+        except Exception:
+            logger.debug(
+                "Failed to upload eval_progress before mirror start", exc_info=True
+            )
+
         stop_event = threading.Event()
         mirror = threading.Thread(
             target=_mirror_progress_loop,

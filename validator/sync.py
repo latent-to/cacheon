@@ -155,8 +155,13 @@ def download(
     state_dir: str | Path,
     bucket: str = "",
     prefix: str = "",
+    exclude: list[str] | None = None,
 ) -> int:
-    """Download all files from S3 prefix into ``state_dir``. Returns file count."""
+    """Download all files from S3 prefix into ``state_dir``. Returns file count.
+
+    When *exclude* is provided, relative paths matching any entry are
+    skipped. E.g. ``exclude=["eval_progress.json"]``.
+    """
     bucket = bucket or BUCKET
     prefix = prefix or S3_PREFIX
     state_path = Path(state_dir)
@@ -181,6 +186,8 @@ def download(
             else:
                 rel = key
             if not rel or _should_skip(rel):
+                continue
+            if exclude and any(rel == e or rel.startswith(e) for e in exclude):
                 continue
             local_file = state_path / rel
             local_file.parent.mkdir(parents=True, exist_ok=True)
