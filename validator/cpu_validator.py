@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -401,6 +402,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+
+    def _handle_sigterm(*_: object) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     try:
         import bittensor as bt

@@ -124,11 +124,11 @@ def main() -> int:
             )
             return 1
 
-    # S3 download (skip eval_progress.json; the CPU maintains it)
+    # S3 download
     try:
         from .sync import download
 
-        download(state_dir, exclude=["eval_progress.json"])
+        download(state_dir)
     except Exception as exc:
         logger.error("S3 download failed: %s", exc)
         return 2
@@ -165,10 +165,12 @@ def main() -> int:
     prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
     logger.info("Generated %d prompts (max_model_len=%d)", len(prompts), mml)
     update_progress(state_dir, phase="prompts_generated", n=len(prompts))
+    _upload_progress(state_dir)
 
     # Run baseline
     cache_dir = Path(state_dir) / "baseline_cache"
     update_progress(state_dir, phase="baseline_running", image=baseline_image)
+    _upload_progress(state_dir)
     try:
         baseline = run_baseline_if_needed(
             prompts,
@@ -226,6 +228,7 @@ def main() -> int:
         update_challenger_status(
             state_dir, challenger_idx, status="pulling", detail="pulling_image"
         )
+        _upload_progress(state_dir)
         record = evaluate_challenger(
             com,
             prompts,
@@ -300,6 +303,17 @@ def _upload_state(state_dir: str) -> None:
         upload(state_dir)
     except Exception as exc:
         logger.error("S3 upload failed: %s", exc)
+
+
+def _upload_progress(state_dir: str) -> None:
+    """Push only eval_progress.json to S3 (< 1 KB vs full state)."""
+    try:
+        from .eval_progress import PROGRESS_FILE
+        from .sync import upload
+
+        upload(state_dir, only=[PROGRESS_FILE])
+    except Exception:
+        logger.debug("Progress-only upload failed", exc_info=True)
 
 
 if __name__ == "__main__":
