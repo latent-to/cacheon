@@ -23,7 +23,7 @@ ENDPOINT_URL: str = os.environ.get("HIPPIUS_ENDPOINT_URL", "https://s3.hippius.c
 ACCESS_KEY: str = os.environ.get("HIPPIUS_ACCESS_KEY", "")
 SECRET_KEY: str = os.environ.get("HIPPIUS_SECRET_KEY", "")
 BUCKET: str = os.environ.get("CACHEON_S3_BUCKET", "cacheon-validator")
-S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state")
+S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state-mainnet")
 
 _S3_WORKERS: int = int(os.environ.get("CACHEON_S3_WORKERS", "8"))
 
@@ -209,7 +209,7 @@ def _cli() -> None:
     )
     p = argparse.ArgumentParser(description="Hippius S3 state sync")
     p.add_argument("action", choices=["download", "upload"])
-    p.add_argument("--state-dir", default="state")
+    p.add_argument("--state-dir", default="state-mainnet")
     p.add_argument("--bucket", default="")
     p.add_argument("--prefix", default="")
     args = p.parse_args()

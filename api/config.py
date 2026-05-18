@@ -5,7 +5,7 @@ from pathlib import Path
 
 STATE_DIR: Path = Path(
     os.environ.get(
-        "CACHEON_STATE_DIR", str(Path(__file__).resolve().parent.parent / "state")
+        "CACHEON_STATE_DIR", str(Path(__file__).resolve().parent.parent / "state-mainnet")
     )
 ).resolve()
 

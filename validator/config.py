@@ -28,7 +28,7 @@ CHAIN_RETRY_ATTEMPTS: int = int(os.environ.get("CACHEON_CHAIN_RETRY_ATTEMPTS", "
 CHAIN_RETRY_DELAY_S: int = int(os.environ.get("CACHEON_CHAIN_RETRY_DELAY_S", "30"))
 
 STATE_DIR: Path = Path(
-    os.environ.get("CACHEON_STATE_DIR", str(REPO_ROOT / "state"))
+    os.environ.get("CACHEON_STATE_DIR", str(REPO_ROOT / "state-mainnet"))
 ).resolve()
 """Where local JSON state files live. Gitignored."""
 

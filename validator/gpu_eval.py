@@ -9,7 +9,7 @@ Usage (inside Docker):
     python -m validator.gpu_eval
 
 Env vars:
-    CACHEON_STATE_DIR          (default: /app/state)
+    CACHEON_STATE_DIR          (default: /app/state-mainnet)
     CACHEON_MODEL_VOLUME       (default: /models)
     CACHEON_BASELINE_IMAGE     (default: vllm/vllm-openai:latest)
     CACHEON_BASELINE_DIGEST    (required)
@@ -191,6 +191,7 @@ def main() -> int:
             error=str(exc),
             challengers_affected=len(eval_job.challengers),
         )
+        _upload_state(state_dir)
         _upload_progress(state_dir)
         return 4
 

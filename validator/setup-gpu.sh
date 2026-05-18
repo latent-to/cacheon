@@ -192,7 +192,7 @@ if [ -f "$MODEL_DIR/config.json" ] && [ -f "$MODEL_DIR/tokenizer.json" ] && \
   echo "Model already present at $MODEL_DIR, skipping download."
 else
   MAX_DL_ATTEMPTS=2
-  DL_TIMEOUT=1200
+  DL_TIMEOUT=600
   for attempt in $(seq 1 $MAX_DL_ATTEMPTS); do
     echo "Download attempt $attempt/$MAX_DL_ATTEMPTS (timeout=${DL_TIMEOUT}s)..."
     if timeout "$DL_TIMEOUT" "$VENV_DIR/bin/hf" download "$MODEL_NAME" --local-dir "$MODEL_DIR"; then
