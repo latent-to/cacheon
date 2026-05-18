@@ -48,7 +48,10 @@ app = FastAPI(
             "name": "Evaluations",
             "description": "Completed evaluation records and per-UID history",
         },
-        {"name": "Logs", "description": "Raw Docker container logs from eval runs"},
+        {
+            "name": "Logs",
+            "description": "Raw Docker container logs from eval runs and validator process logs",
+        },
         {"name": "Rounds", "description": "Eval rounds and pending eval jobs"},
     ],
 )
