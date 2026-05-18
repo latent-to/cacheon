@@ -8,20 +8,20 @@ services:
     restart: unless-stopped
     volumes:
       - ${BITTENSOR_DIR:-~/.bittensor}:/root/.bittensor:ro
-      - ${CACHEON_STATE_DIR:-./state}:/app/state
+      - ${CACHEON_STATE_DIR:-./state-mainnet}:/app/state-mainnet
       - ~/.ssh:/root/.ssh:ro
     environment:
       - CACHEON_NETWORK=${CACHEON_NETWORK:-finney}
       - CACHEON_NETUID=${CACHEON_NETUID:-14}
       - CACHEON_WALLET_NAME=${CACHEON_WALLET_NAME:-default}
       - CACHEON_WALLET_HOTKEY=${CACHEON_WALLET_HOTKEY:-default}
-      - CACHEON_POLL_INTERVAL_S=${CACHEON_POLL_INTERVAL_S:-300}
-      - CACHEON_STATE_DIR=/app/state
+      - CACHEON_POLL_INTERVAL_S=${CACHEON_POLL_INTERVAL_S:-600}
+      - CACHEON_STATE_DIR=/app/state-mainnet
       - CACHEON_DRY_RUN=${CACHEON_DRY_RUN:-0}
       - HIPPIUS_ACCESS_KEY=${HIPPIUS_ACCESS_KEY}
       - HIPPIUS_SECRET_KEY=${HIPPIUS_SECRET_KEY}
       - CACHEON_S3_BUCKET=${CACHEON_S3_BUCKET:-cacheon-validator}
-      - CACHEON_S3_PREFIX=${CACHEON_S3_PREFIX:-state}
+      - CACHEON_S3_PREFIX=${CACHEON_S3_PREFIX:-state-mainnet}
       - CACHEON_AUTO_RENT=${CACHEON_AUTO_RENT:-0}
       - CACHEON_PREFERRED_PROVIDER=${CACHEON_PREFERRED_PROVIDER:-}
       - LIUM_API_KEY=${LIUM_API_KEY:-}
@@ -39,7 +39,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - ${CACHEON_STATE_DIR:-./state}:/app/state:ro
+      - ${CACHEON_STATE_DIR:-./state-mainnet}:/app/state-mainnet:ro
     environment:
-      - CACHEON_STATE_DIR=/app/state
+      - CACHEON_STATE_DIR=/app/state-mainnet
       - CACHEON_ALLOWED_ORIGINS=${CACHEON_ALLOWED_ORIGINS:-https://cacheon.ai,https://www.cacheon.ai}

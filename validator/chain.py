@@ -1,7 +1,7 @@
 """Everything that talks to Bittensor from the validator.
 
 **Pure helpers** -- `parse_commitment_data`, `build_commitments`,
-`build_winner_take_all_weights`, etc. These only need plain data structures
+`build_competition_weights`, etc. These only need plain data structures
 and are easy to unit test with a fake metagraph.
 
 **RPC wrappers** -- `fetch_metagraph`, `fetch_revealed_commitments`,
@@ -170,13 +170,60 @@ def build_commitments(
     return out
 
 
-def build_winner_take_all_weights(n_uids: int, winner_uid: int) -> list[float]:
-    """One-hot weight vector. All mass on `winner_uid`, everyone else 0."""
+def build_competition_weights(
+    n_uids: int,
+    winner_uid: int,
+    winner_score: float,
+    runner_up_uid: int | None = None,
+    *,
+    burn_uid: int = validator_config.BURN_UID,
+    winner_share: float = validator_config.WINNER_WEIGHT_SHARE,
+    runner_up_share: float = validator_config.RUNNER_UP_WEIGHT_SHARE,
+    score_target: float = validator_config.SCORE_EMISSION_TARGET,
+) -> list[float]:
+    """Score-scaled weight vector with winner, optional runner-up, and burn UID.
+
+    ``comp_frac = min(1.0, winner_score / score_target)`` controls how much
+    of total emission goes to the competition pool. The remainder goes to
+    ``burn_uid``. Within the competition pool, ``winner_share`` and
+    ``runner_up_share`` split the allocation.
+
+    When there is no valid runner-up, the winner receives 100% of the
+    competition pool. If ``burn_uid`` collides with the winner or runner-up,
+    the burn fraction folds into the winner.
+    """
     if winner_uid < 0:
         raise ValueError(f"winner_uid must be non-negative, got {winner_uid}")
-    size = max(n_uids, winner_uid + 1)
+
+    comp = min(1.0, winner_score / score_target) if score_target > 0 else 1.0
+    burn = 1.0 - comp
+
+    has_runner_up = runner_up_uid is not None and runner_up_uid != winner_uid
+    if has_runner_up:
+        w_winner = comp * winner_share
+        w_runner = comp * runner_up_share
+    else:
+        w_winner = comp
+        w_runner = 0.0
+        runner_up_uid = None
+
+    size = max(n_uids, winner_uid + 1, burn_uid + 1)
+    if runner_up_uid is not None:
+        size = max(size, runner_up_uid + 1)
     weights = [0.0] * size
-    weights[winner_uid] = 1.0
+
+    weights[winner_uid] = w_winner
+    if runner_up_uid is not None:
+        weights[runner_up_uid] = w_runner
+
+    if burn > 0:
+        if burn_uid != winner_uid and (
+            runner_up_uid is None or burn_uid != runner_up_uid
+        ):
+            weights[burn_uid] = burn
+        else:
+            weights[winner_uid] += burn
+
     return weights
 
 
@@ -372,25 +419,23 @@ def set_weights(
     subtensor: bt.Subtensor,
     wallet: bt.Wallet,
     netuid: int,
-    n_uids: int,
-    winner_uid: int,
+    uids: list[int],
+    weights: list[float],
     *,
     version_key: int = validator_config.VERSION_KEY,
     attempts: int = 3,
     delay_s: float = 30.0,
 ) -> None:
-    """Push a one-hot weight vector on-chain. Raises `ChainError` if every
-    attempt is rejected — the main loop should sleep and retry next cycle.
+    """Push a pre-built weight vector on-chain. Raises `ChainError` if every
+    attempt is rejected -- the main loop should sleep and retry next cycle.
 
     `version_key` tags the weight vector with the validator's mechanism
     version; consensus only trust-weights validators that agree on it.
     """
-    weights = build_winner_take_all_weights(n_uids, winner_uid)
-    uids = list(range(len(weights)))
-
+    n_nonzero = sum(1 for w in weights if w > 0)
     logger.info(
-        "Setting weights: winner_uid=%d, n_uids=%d, version_key=%d",
-        winner_uid,
+        "Setting weights: %d non-zero uid(s) of %d total, version_key=%d",
+        n_nonzero,
         len(weights),
         version_key,
     )
@@ -414,7 +459,7 @@ def set_weights(
                 ok = bool(result)
                 last_reason = None
             if ok:
-                logger.info("✓ Weights set on-chain (winner_uid=%d)", winner_uid)
+                logger.info("Weights set on-chain")
                 return
             logger.warning(
                 "set_weights attempt %d/%d rejected: %s",

@@ -1,6 +1,6 @@
 """On-disk memory for the validator: who is winning and what we already scored.
 
-`ValidatorState` holds the current king (best-scoring miner), a set of
+`ValidatorState` holds the current winner (best-scoring miner), a set of
 `(hotkey, commit_block)` pairs that have finished evaluation, per-miner
 score history, and reasons for pre-rejects. The loop loads this from
 `state.json`, updates it each tick, and saves again.
@@ -11,8 +11,8 @@ file. `SCHEMA_VERSION` applies to this file only.
 Scoring convention: **higher = better**. A miner's score is
 `0.5 * max(0, ttft_improvement) + 0.5 * max(0, throughput_improvement)`,
 where improvements are relative to the vLLM baseline (median across
-prompts). The king is the miner with the highest score. Disqualified
-runs store score `0.0` and cannot take the crown.
+prompts). The winner is the miner with the highest score. Disqualified
+runs store score `0.0` and cannot win.
 """
 
 from __future__ import annotations
@@ -125,13 +125,13 @@ class EvaluationRecord:
 
 
 @dataclass(frozen=True)
-class KingRecord:
+class WinnerRecord:
     """The reigning champion. Exactly the fields needed to set weights,
-    apply defender's-advantage on dethrone attempts, and report publicly.
+    apply defender's-advantage on overtake attempts, and report publicly.
 
-    `crowned_at_block` is the chain block at which this miner took the
-    throne; used to compute the decaying epsilon moat in
-    `_effective_dethrone_threshold`.
+    `won_at_block` is the chain block at which this miner became the
+    winner; used to compute the decaying epsilon moat in
+    `_effective_overtake_threshold`.
     """
 
     uid: int
@@ -145,14 +145,17 @@ class KingRecord:
     token_match_rate: float
     evaluated_at: float
     evaluation_block: int
-    crowned_at_block: int
+    won_at_block: int
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> KingRecord:
-        known = {f: data[f] for f in cls.__dataclass_fields__ if f in data}
+    def from_dict(cls, data: dict[str, Any]) -> WinnerRecord:
+        mapped = dict(data)
+        if "crowned_at_block" in mapped and "won_at_block" not in mapped:
+            mapped["won_at_block"] = mapped.pop("crowned_at_block")
+        known = {f: mapped[f] for f in cls.__dataclass_fields__ if f in mapped}
         return cls(**known)
 
     @classmethod
@@ -160,8 +163,8 @@ class KingRecord:
         cls,
         ev: EvaluationRecord,
         *,
-        crowned_at_block: int,
-    ) -> KingRecord:
+        won_at_block: int,
+    ) -> WinnerRecord:
         return cls(
             uid=ev.uid,
             hotkey=ev.hotkey,
@@ -174,16 +177,16 @@ class KingRecord:
             token_match_rate=ev.token_match_rate,
             evaluated_at=ev.evaluated_at,
             evaluation_block=ev.evaluation_block,
-            crowned_at_block=crowned_at_block,
+            won_at_block=won_at_block,
         )
 
 
 # --------------------------------------------------------------------------- #
-# Dethrone threshold -- decaying defender's-advantage
+# Overtake threshold -- decaying defender's-advantage
 # --------------------------------------------------------------------------- #
 
 
-DUPLICATE_OF_KING_REASON: str = "duplicate_of_king"
+DUPLICATE_OF_WINNER_REASON: str = "duplicate_of_winner"
 
 
 @dataclass(frozen=True)
@@ -191,44 +194,44 @@ class RecordResult:
     """Outcome of `ValidatorState.record_evaluation`.
 
     * ``stored`` is the record actually written to state -- it can differ
-      from the input when the duplicate-of-king DQ rule fires.
-    * ``dethroned`` is True iff this call made ``stored`` the new king.
-    * ``dethrone_threshold`` is the score the challenger needed to beat
-      (``king.score * (1 + effective_epsilon)``) at ``current_block``.
-      ``0.0`` when there was no king to dethrone.
+      from the input when the duplicate-of-winner DQ rule fires.
+    * ``overtook`` is True iff this call made ``stored`` the new winner.
+    * ``overtake_threshold`` is the score the challenger needed to beat
+      (``winner.score * (1 + effective_epsilon)``) at ``current_block``.
+      ``0.0`` when there was no winner to overtake.
     """
 
     stored: EvaluationRecord
-    dethroned: bool
-    dethrone_threshold: float
+    overtook: bool
+    overtake_threshold: float
 
 
-def _effective_dethrone_threshold(
-    king_score: float,
-    king_crowned_at_block: int,
+def _effective_overtake_threshold(
+    winner_score: float,
+    winner_won_at_block: int,
     current_block: int,
     *,
-    epsilon_initial: float = validator_config.KING_EPSILON_INITIAL,
-    decay_blocks: int = validator_config.KING_EPSILON_DECAY_BLOCKS,
+    epsilon_initial: float = validator_config.WINNER_EPSILON_INITIAL,
+    decay_blocks: int = validator_config.WINNER_EPSILON_DECAY_BLOCKS,
 ) -> float:
-    """Score a challenger must strictly exceed to dethrone the king.
+    """Score a challenger must strictly exceed to overtake the winner.
 
-    Starts at `king_score * (1 + epsilon_initial)` the block the king is
-    crowned and decays linearly to `king_score` over `decay_blocks`.
+    Starts at `winner_score * (1 + epsilon_initial)` the block the winner
+    won and decays linearly to `winner_score` over `decay_blocks`.
     """
     if decay_blocks <= 0 or epsilon_initial <= 0.0:
-        return king_score
-    age = max(0, current_block - king_crowned_at_block)
+        return winner_score
+    age = max(0, current_block - winner_won_at_block)
     decay = max(0.0, 1.0 - age / decay_blocks)
     epsilon = epsilon_initial * decay
-    return king_score * (1.0 + epsilon)
+    return winner_score * (1.0 + epsilon)
 
 
 @dataclass
 class ValidatorState:
     """The validator's durable state. All fields are JSON-serializable."""
 
-    king: KingRecord | None = None
+    winner: WinnerRecord | None = None
     evaluations: dict[str, EvaluationRecord] = field(default_factory=dict)
     """Keyed by `"{hotkey}:{commit_block}"`."""
 
@@ -268,6 +271,30 @@ class ValidatorState:
         matches = [e for e in self.evaluations.values() if e.hotkey == hotkey]
         return sorted(matches, key=lambda e: e.commit_block)
 
+    @property
+    def runner_up(self) -> EvaluationRecord | None:
+        """Highest-scoring non-winner hotkey from completed evaluations.
+
+        Groups by hotkey (best score per hotkey), excludes the winner's
+        hotkey, excludes DQ'd / zero / non-finite scores. Returns None
+        when there is no valid runner-up.
+        """
+        if not self.evaluations:
+            return None
+        winner_hotkey = self.winner.hotkey if self.winner else None
+        best_per_hotkey: dict[str, EvaluationRecord] = {}
+        for ev in self.evaluations.values():
+            if ev.disqualified or ev.score <= 0.0 or not math.isfinite(ev.score):
+                continue
+            if ev.hotkey == winner_hotkey:
+                continue
+            prev = best_per_hotkey.get(ev.hotkey)
+            if prev is None or ev.score > prev.score:
+                best_per_hotkey[ev.hotkey] = ev
+        if not best_per_hotkey:
+            return None
+        return max(best_per_hotkey.values(), key=lambda e: e.score)
+
     # ------------------------------------------------------------------ #
     # Mutators -- all side-effect-free w.r.t. disk; caller calls save()
     # ------------------------------------------------------------------ #
@@ -285,36 +312,36 @@ class ValidatorState:
     ) -> RecordResult:
         """Store an eval; return the record as actually stored.
 
-        Two-stage dethronement rule:
-          1. **Duplicate-of-king DQ.** If `ev.digest` matches the current
-             king's digest, the hotkeys differ, and `ev.commit_block` is
-             strictly later than the king's, the incoming record is
-             rewritten to DQ with reason ``duplicate_of_king`` before
+        Two-stage overtake rule:
+          1. **Duplicate-of-winner DQ.** If `ev.digest` matches the current
+             winner's digest, the hotkeys differ, and `ev.commit_block` is
+             strictly later than the winner's, the incoming record is
+             rewritten to DQ with reason ``duplicate_of_winner`` before
              being stored (score zeroed). Byte-identical Docker images
-             can never tie or dethrone -- earliest-block-wins.
+             can never tie or overtake -- earliest-block-wins.
           2. **Decaying-epsilon threshold.** A non-DQ'd challenger must
-             strictly exceed `_effective_dethrone_threshold(king, block)`
-             to take the crown.
+             strictly exceed `_effective_overtake_threshold(winner, block)`
+             to take the top spot.
         """
         stored = ev
         if (
-            self.king is not None
+            self.winner is not None
             and ev.digest
-            and ev.digest == self.king.digest
-            and ev.hotkey != self.king.hotkey
-            and ev.commit_block > self.king.commit_block
+            and ev.digest == self.winner.digest
+            and ev.hotkey != self.winner.hotkey
+            and ev.commit_block > self.winner.commit_block
         ):
             stored = replace(
                 ev,
                 score=0.0,
                 disqualified=True,
-                disqualify_reason=DUPLICATE_OF_KING_REASON,
+                disqualify_reason=DUPLICATE_OF_WINNER_REASON,
             )
             logger.info(
-                "UID %d (%s) DQ'd: %s (matches king digest=%s)",
+                "UID %d (%s) DQ'd: %s (matches winner digest=%s)",
                 ev.uid,
                 ev.hotkey[:16],
-                DUPLICATE_OF_KING_REASON,
+                DUPLICATE_OF_WINNER_REASON,
                 (ev.digest or "")[:24],
             )
 
@@ -323,10 +350,10 @@ class ValidatorState:
         self.precheck_failures.pop(stored.eval_key, None)
 
         threshold = 0.0
-        if self.king is not None:
-            threshold = _effective_dethrone_threshold(
-                self.king.score,
-                self.king.crowned_at_block,
+        if self.winner is not None:
+            threshold = _effective_overtake_threshold(
+                self.winner.score,
+                self.winner.won_at_block,
                 current_block,
             )
 
@@ -337,24 +364,24 @@ class ValidatorState:
         ):
             return RecordResult(
                 stored=stored,
-                dethroned=False,
-                dethrone_threshold=threshold,
+                overtook=False,
+                overtake_threshold=threshold,
             )
 
-        if self.king is None or stored.score > threshold:
-            self.king = KingRecord.from_evaluation(
+        if self.winner is None or stored.score > threshold:
+            self.winner = WinnerRecord.from_evaluation(
                 stored,
-                crowned_at_block=current_block,
+                won_at_block=current_block,
             )
             return RecordResult(
                 stored=stored,
-                dethroned=True,
-                dethrone_threshold=threshold,
+                overtook=True,
+                overtake_threshold=threshold,
             )
         return RecordResult(
             stored=stored,
-            dethroned=False,
-            dethrone_threshold=threshold,
+            overtook=False,
+            overtake_threshold=threshold,
         )
 
     # ------------------------------------------------------------------ #
@@ -364,7 +391,7 @@ class ValidatorState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
-            "king": self.king.to_dict() if self.king is not None else None,
+            "winner": self.winner.to_dict() if self.winner is not None else None,
             "evaluations": {k: v.to_dict() for k, v in self.evaluations.items()},
             "precheck_failures": dict(self.precheck_failures),
             "last_scan_block": self.last_scan_block,
@@ -381,8 +408,8 @@ class ValidatorState:
                 f"upgrade the validator before proceeding."
             )
 
-        king_data = data.get("king")
-        king = KingRecord.from_dict(king_data) if king_data else None
+        winner_data = data.get("winner") or data.get("king")
+        winner = WinnerRecord.from_dict(winner_data) if winner_data else None
 
         evaluations = {
             k: EvaluationRecord.from_dict(v)
@@ -390,7 +417,7 @@ class ValidatorState:
         }
 
         return cls(
-            king=king,
+            winner=winner,
             evaluations=evaluations,
             precheck_failures=dict(data.get("precheck_failures") or {}),
             last_scan_block=int(data.get("last_scan_block", 0) or 0),
@@ -462,35 +489,35 @@ def current_timestamp() -> float:
     return time.time()
 
 
-def append_king_history(
+def append_winner_history(
     state_dir: str | os.PathLike,
-    new_king: EvaluationRecord,
-    dethroned_king: KingRecord | None,
+    new_winner: EvaluationRecord,
+    prev_winner: WinnerRecord | None,
     current_block: int,
-    dethrone_threshold: float,
+    overtake_threshold: float,
 ) -> None:
-    """Append a single JSON line to ``king-history.jsonl`` on dethronement."""
-    path = Path(state_dir) / "king-history.jsonl"
+    """Append a single JSON line to ``winner-history.jsonl`` on overtake."""
+    path = Path(state_dir) / "winner-history.jsonl"
     entry = {
         "ts": time.time(),
         "block": current_block,
-        "new_king_uid": new_king.uid,
-        "new_king_hotkey": new_king.hotkey,
-        "new_king_score": new_king.score,
-        "new_king_image": new_king.image,
-        "new_king_digest": new_king.digest,
-        "dethrone_threshold": dethrone_threshold,
+        "new_winner_uid": new_winner.uid,
+        "new_winner_hotkey": new_winner.hotkey,
+        "new_winner_score": new_winner.score,
+        "new_winner_image": new_winner.image,
+        "new_winner_digest": new_winner.digest,
+        "overtake_threshold": overtake_threshold,
     }
-    if dethroned_king is not None:
-        entry["prev_king_uid"] = dethroned_king.uid
-        entry["prev_king_hotkey"] = dethroned_king.hotkey
-        entry["prev_king_score"] = dethroned_king.score
+    if prev_winner is not None:
+        entry["prev_winner_uid"] = prev_winner.uid
+        entry["prev_winner_hotkey"] = prev_winner.hotkey
+        entry["prev_winner_score"] = prev_winner.score
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, sort_keys=True) + "\n")
     except Exception:
-        logger.warning("failed to append king history to %s", path)
+        logger.warning("failed to append winner history to %s", path)
 
 
 def unknown_commits(

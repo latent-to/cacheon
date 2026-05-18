@@ -9,7 +9,7 @@ Usage (inside Docker):
     python -m validator.gpu_eval
 
 Env vars:
-    CACHEON_STATE_DIR          (default: /app/state)
+    CACHEON_STATE_DIR          (default: /app/state-mainnet)
     CACHEON_MODEL_VOLUME       (default: /models)
     CACHEON_BASELINE_IMAGE     (default: vllm/vllm-openai:latest)
     CACHEON_BASELINE_DIGEST    (required)
@@ -28,7 +28,6 @@ from pathlib import Path
 from . import config as validator_config
 from .chain import CommitmentRecord
 from .docker_eval import (
-    _dq_record,
     _max_model_len,
     evaluate_challenger,
     run_baseline_if_needed,
@@ -40,7 +39,7 @@ from .eval_progress import (
     update_progress,
 )
 from .eval_schema import EVAL_JOB_FILE, EvalJob
-from .state import ValidatorState, append_king_history
+from .state import ValidatorState, append_winner_history
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +80,17 @@ def main() -> int:
     purge_old_logs(state_dir)
 
     model_volume = validator_config.MODEL_VOLUME
+    model_path = validator_config.MODEL_PATH
     baseline_image = validator_config.BASELINE_IMAGE
     baseline_digest = validator_config.BASELINE_DIGEST
     gpu_count = validator_config.GPU_COUNT
 
     logger.info(
-        "GPU eval starting: state_dir=%s, model_volume=%s, "
+        "GPU eval starting: state_dir=%s, model_volume=%s, model_path=%s, "
         "baseline_image=%s, gpu_count=%d",
         state_dir,
         model_volume,
+        model_path,
         baseline_image,
         gpu_count,
     )
@@ -161,7 +162,7 @@ def main() -> int:
     # Generate prompts
     from .prompts import sample_prompts
 
-    mml = _max_model_len(gpu_count, model_path=model_volume)
+    mml = _max_model_len(gpu_count, model_path=model_path)
     prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
     logger.info("Generated %d prompts (max_model_len=%d)", len(prompts), mml)
     update_progress(state_dir, phase="prompts_generated", n=len(prompts))
@@ -184,19 +185,14 @@ def main() -> int:
         )
     except Exception as exc:
         logger.exception("Baseline failed: %s", exc)
-        for ci in eval_job.challengers:
-            com = CommitmentRecord(
-                uid=ci.uid,
-                hotkey=ci.hotkey,
-                commit_block=ci.commit_block,
-                image=ci.image,
-                digest=ci.digest,
-                raw="",
-            )
-            record = _dq_record(com, block, f"baseline_failed: {exc}")
-            state.record_evaluation(record, current_block=block)
-        state.save(state_dir)
+        update_progress(
+            state_dir,
+            phase="baseline_failed",
+            error=str(exc),
+            challengers_affected=len(eval_job.challengers),
+        )
         _upload_state(state_dir)
+        _upload_progress(state_dir)
         return 4
 
     update_progress(state_dir, phase="baseline_complete")
@@ -240,16 +236,16 @@ def main() -> int:
             current_block=block,
             state_dir=state_dir,
         )
-        prev_king = state.king
+        prev_winner = state.winner
         outcome = state.record_evaluation(record, current_block=block)
         icon = "❌" if outcome.stored.disqualify_reason else "📊"
         logger.info(
-            "%s UID %d score=%.4f (dq=%s, dethroned=%s)",
+            "%s UID %d score=%.4f (dq=%s, overtook=%s)",
             icon,
             outcome.stored.uid,
             outcome.stored.score,
             outcome.stored.disqualify_reason or "no",
-            outcome.dethroned,
+            outcome.overtook,
         )
         if outcome.stored.disqualified:
             update_challenger_status(
@@ -268,25 +264,25 @@ def main() -> int:
                 score=outcome.stored.score,
                 detail="scored",
             )
-        if outcome.dethroned:
+        if outcome.overtook:
             logger.info(
-                "👑 New king: UID %d (score=%.4f)",
+                "👑 New winner: UID %d (score=%.4f)",
                 outcome.stored.uid,
                 outcome.stored.score,
             )
-            append_king_history(
+            append_winner_history(
                 state_dir,
                 outcome.stored,
-                prev_king,
+                prev_winner,
                 block,
-                outcome.dethrone_threshold,
+                outcome.overtake_threshold,
             )
 
         state.save(state_dir)
         _upload_state(state_dir)
 
     logger.info(
-        "State saved. King: %s", f"UID {state.king.uid}" if state.king else "none"
+        "State saved. Winner: %s", f"UID {state.winner.uid}" if state.winner else "none"
     )
     logger.info("GPU eval complete")
     _delete_eval_job(state_dir)

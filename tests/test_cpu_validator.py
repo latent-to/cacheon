@@ -108,7 +108,7 @@ def _noop(*_a, **_k):
 
 
 class TestNeedsWeightSet:
-    def test_no_king(self):
+    def test_no_winner(self):
         state = ValidatorState()
         assert _needs_weight_set(state, 1000) is None
 
@@ -116,7 +116,7 @@ class TestNeedsWeightSet:
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=500)
         state.record_evaluation(rec, current_block=500)
-        assert state.king is not None
+        assert state.winner is not None
         assert state.last_weights_set_block == 0
         reason = _needs_weight_set(state, 1000)
         assert reason is not None
@@ -158,7 +158,7 @@ class TestNeedsWeightSet:
 class TestRunTickNoChallengers:
     @patch("validator.cpu_validator._try_upload", _noop)
     @patch("validator.sync.download", _noop)
-    def test_empty_chain_no_king(self, tmp_path):
+    def test_empty_chain_no_winner(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0", "hk1"], revealed={})
         state = ValidatorState()
         state.save(tmp_path)
@@ -175,12 +175,12 @@ class TestRunTickNoChallengers:
         assert summary["commitments"] == 0
         assert summary["challengers"] == 0
         assert summary["weights_set"] is False
-        assert summary["king_uid"] is None
+        assert summary["winner_uid"] is None
         assert state.last_scan_block == 1000
 
     @patch("validator.cpu_validator._try_upload", _noop)
     @patch("validator.sync.download", _noop)
-    def test_king_with_new_evals_sets_weights_dry_run(self, tmp_path):
+    def test_winner_with_new_evals_sets_weights_dry_run(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0"], revealed={})
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=800)
@@ -198,13 +198,13 @@ class TestRunTickNoChallengers:
         )
 
         assert summary["weights_set"] is True
-        assert summary["king_uid"] == 0
+        assert summary["winner_uid"] == 0
         assert state.last_weights_set_block == 1000
         assert st.set_weights_calls == []
 
     @patch("validator.cpu_validator._try_upload", _noop)
     @patch("validator.sync.download", _noop)
-    def test_king_with_new_evals_sets_weights_live(self, tmp_path):
+    def test_winner_with_new_evals_sets_weights_live(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0", "hk1"], revealed={})
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=800)
@@ -224,8 +224,9 @@ class TestRunTickNoChallengers:
         assert summary["weights_set"] is True
         assert len(st.set_weights_calls) == 1
         call = st.set_weights_calls[0]
-        assert call["weights"] == [1.0, 0.0]
-        assert call["uids"] == [0, 1]
+        w = call["weights"]
+        assert w[0] > 0
+        assert sum(w) == pytest.approx(1.0)
 
     @patch("validator.cpu_validator._try_upload", _noop)
     @patch("validator.sync.download", _noop)
@@ -363,20 +364,20 @@ class TestRunTickWithChallengers:
 
 
 # --------------------------------------------------------------------------- #
-# run_tick -- king UID recycling
+# run_tick -- winner UID recycling / deregistration
 # --------------------------------------------------------------------------- #
 
 
-class TestRunTickKingRecycled:
+class TestRunTickWinnerDereg:
     @patch("validator.cpu_validator._try_upload", _noop)
     @patch("validator.sync.download", _noop)
-    def test_recycled_hotkey_clears_king(self, tmp_path):
+    def test_recycled_hotkey_clears_winner(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0", "hk_new"], revealed={})
         state = ValidatorState()
-        rec = _make_eval_record(1, "hk_old_king", 100, 0.5, eval_block=500)
+        rec = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
         state.record_evaluation(rec, current_block=500)
         state.save(tmp_path)
-        assert state.king is not None
+        assert state.winner is not None
 
         summary = run_tick(
             subtensor=st,
@@ -387,19 +388,19 @@ class TestRunTickKingRecycled:
             dry_run=True,
         )
 
-        assert summary["king_uid"] is None
+        assert summary["winner_uid"] is None
         assert summary["weights_set"] is False
-        assert state.king is None
+        assert state.winner is None
 
     @patch("validator.cpu_validator._try_upload", _noop)
     @patch("validator.sync.download", _noop)
-    def test_king_uid_out_of_range_clears_king(self, tmp_path):
+    def test_winner_uid_out_of_range_clears_winner(self, tmp_path):
         st = FakeSubtensor(hotkeys=["hk0"], revealed={})
         state = ValidatorState()
         rec = _make_eval_record(5, "hk_far", 100, 0.5, eval_block=500)
         state.record_evaluation(rec, current_block=500)
         state.save(tmp_path)
-        assert state.king is not None
+        assert state.winner is not None
 
         summary = run_tick(
             subtensor=st,
@@ -410,15 +411,15 @@ class TestRunTickKingRecycled:
             dry_run=True,
         )
 
-        assert summary["king_uid"] is None
-        assert state.king is None
+        assert summary["winner_uid"] is None
+        assert state.winner is None
 
     @patch("validator.cpu_validator._try_upload", _noop)
     @patch("validator.sync.download", _noop)
-    def test_matching_hotkey_keeps_king(self, tmp_path):
-        st = FakeSubtensor(hotkeys=["hk0", "hk_king"], revealed={})
+    def test_matching_hotkey_keeps_winner(self, tmp_path):
+        st = FakeSubtensor(hotkeys=["hk0", "hk_winner"], revealed={})
         state = ValidatorState()
-        rec = _make_eval_record(1, "hk_king", 100, 0.5, eval_block=500)
+        rec = _make_eval_record(1, "hk_winner", 100, 0.5, eval_block=500)
         state.record_evaluation(rec, current_block=500)
         state.save(tmp_path)
 
@@ -431,9 +432,115 @@ class TestRunTickKingRecycled:
             dry_run=True,
         )
 
-        assert summary["king_uid"] == 1
-        assert state.king is not None
-        assert state.king.hotkey == "hk_king"
+        assert summary["winner_uid"] == 1
+        assert state.winner is not None
+        assert state.winner.hotkey == "hk_winner"
+
+    @patch("validator.cpu_validator._try_upload", _noop)
+    @patch("validator.sync.download", _noop)
+    def test_winner_dereg_promotes_runner_up(self, tmp_path):
+        """When the winner deregisters, the runner-up (if registered) gets promoted."""
+        st = FakeSubtensor(hotkeys=["hk0", "hk_new", "hk_ru"], revealed={})
+        state = ValidatorState()
+        rec_w = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
+        state.record_evaluation(rec_w, current_block=500)
+        rec_ru = EvaluationRecord(
+            uid=2,
+            hotkey="hk_ru",
+            commit_block=200,
+            image="user/repo:v2",
+            digest="sha256:" + "b" * 64,
+            score=0.3,
+            ttft_improvement=0.15,
+            throughput_improvement=0.15,
+            token_match_rate=0.99,
+            disqualified=False,
+            disqualify_reason=None,
+            evaluated_at=1700000000.0,
+            evaluation_block=600,
+        )
+        state.record_evaluation(rec_ru, current_block=600)
+        state.save(tmp_path)
+
+        assert state.winner.uid == 1
+        assert state.runner_up is not None
+        assert state.runner_up.uid == 2
+
+        summary = run_tick(
+            subtensor=st,
+            wallet=FAKE_WALLET,
+            state=state,
+            netuid=14,
+            state_dir=str(tmp_path),
+            dry_run=True,
+        )
+
+        assert state.winner is not None
+        assert state.winner.uid == 2
+        assert state.winner.hotkey == "hk_ru"
+        assert summary["winner_uid"] == 2
+
+    @patch("validator.cpu_validator._try_upload", _noop)
+    @patch("validator.sync.download", _noop)
+    def test_winner_dereg_runner_up_also_dereg_clears(self, tmp_path):
+        """When both the winner and runner-up deregister, winner is cleared."""
+        st = FakeSubtensor(hotkeys=["hk0", "hk_new1", "hk_new2"], revealed={})
+        state = ValidatorState()
+        rec_w = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
+        state.record_evaluation(rec_w, current_block=500)
+        rec_ru = EvaluationRecord(
+            uid=2,
+            hotkey="hk_old_ru",
+            commit_block=200,
+            image="user/repo:v2",
+            digest="sha256:" + "b" * 64,
+            score=0.3,
+            ttft_improvement=0.15,
+            throughput_improvement=0.15,
+            token_match_rate=0.99,
+            disqualified=False,
+            disqualify_reason=None,
+            evaluated_at=1700000000.0,
+            evaluation_block=600,
+        )
+        state.record_evaluation(rec_ru, current_block=600)
+        state.save(tmp_path)
+
+        summary = run_tick(
+            subtensor=st,
+            wallet=FAKE_WALLET,
+            state=state,
+            netuid=14,
+            state_dir=str(tmp_path),
+            dry_run=True,
+        )
+
+        assert state.winner is None
+        assert summary["winner_uid"] is None
+
+    @patch("validator.cpu_validator._try_upload", _noop)
+    @patch("validator.sync.download", _noop)
+    def test_winner_dereg_no_runner_up_clears(self, tmp_path):
+        """When the winner deregisters and there is no runner-up, winner is cleared."""
+        st = FakeSubtensor(hotkeys=["hk0", "hk_new"], revealed={})
+        state = ValidatorState()
+        rec_w = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
+        state.record_evaluation(rec_w, current_block=500)
+        state.save(tmp_path)
+
+        assert state.runner_up is None
+
+        summary = run_tick(
+            subtensor=st,
+            wallet=FAKE_WALLET,
+            state=state,
+            netuid=14,
+            state_dir=str(tmp_path),
+            dry_run=True,
+        )
+
+        assert state.winner is None
+        assert summary["winner_uid"] is None
 
 
 # --------------------------------------------------------------------------- #

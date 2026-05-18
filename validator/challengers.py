@@ -127,6 +127,8 @@ def select_challengers(
 
         challengers.append(com)
 
+    challengers.sort(key=lambda c: c.commit_block)
+
     return ChallengerSet(
         challengers=challengers,
         newly_rejected=newly_rejected,

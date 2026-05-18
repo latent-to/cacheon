@@ -12,7 +12,7 @@ from validator.chain import (
     NotRegisteredError,
     _decode_raw_commitment,
     build_commitments,
-    build_winner_take_all_weights,
+    build_competition_weights,
     parse_commitment_data,
     preflight_check,
     unique_hotkeys,
@@ -302,24 +302,73 @@ class TestBuildCommitments:
         assert rec.as_eval_key() == ("hk1", 100)
 
 
-class TestBuildWinnerTakeAllWeights:
-    def test_basic(self):
-        w = build_winner_take_all_weights(5, 2)
-        assert w == [0.0, 0.0, 1.0, 0.0, 0.0]
+class TestBuildCompetitionWeights:
+    def test_basic_winner_only(self):
+        w = build_competition_weights(5, 2, 0.10, score_target=0.10)
+        assert w[2] > 0
+        assert sum(w) == pytest.approx(1.0)
 
-    def test_winner_at_edge(self):
-        w = build_winner_take_all_weights(3, 0)
-        assert w == [1.0, 0.0, 0.0]
+    def test_winner_at_half_target(self):
+        w = build_competition_weights(5, 0, 0.05, score_target=0.10)
+        comp = 0.5
+        assert w[0] == pytest.approx(comp)
 
-    def test_winner_uid_beyond_n_uids(self):
-        w = build_winner_take_all_weights(3, 5)
-        assert len(w) == 6
-        assert w[5] == 1.0
-        assert sum(w) == 1.0
+    def test_winner_and_runner_up(self):
+        w = build_competition_weights(
+            5,
+            0,
+            0.10,
+            runner_up_uid=1,
+            score_target=0.10,
+            winner_share=0.80,
+            runner_up_share=0.20,
+        )
+        assert w[0] == pytest.approx(0.80)
+        assert w[1] == pytest.approx(0.20)
+        assert sum(w) == pytest.approx(1.0)
+
+    def test_burn_uid_receives_remainder(self):
+        w = build_competition_weights(
+            5,
+            0,
+            0.05,
+            score_target=0.10,
+            burn_uid=4,
+        )
+        assert w[4] == pytest.approx(0.5)
+        assert w[0] == pytest.approx(0.5)
+
+    def test_burn_uid_collision_folds_into_winner(self):
+        w = build_competition_weights(
+            5,
+            0,
+            0.05,
+            score_target=0.10,
+            burn_uid=0,
+        )
+        assert w[0] == pytest.approx(1.0)
 
     def test_negative_winner_rejected(self):
         with pytest.raises(ValueError):
-            build_winner_take_all_weights(5, -1)
+            build_competition_weights(5, -1, 0.10)
+
+    def test_winner_uid_beyond_n_uids(self):
+        w = build_competition_weights(3, 5, 0.10, score_target=0.10)
+        assert len(w) > 5
+        assert w[5] > 0
+        assert sum(w) == pytest.approx(1.0)
+
+    def test_no_runner_up_winner_gets_full_comp_pool(self):
+        w = build_competition_weights(
+            5,
+            0,
+            0.10,
+            runner_up_uid=None,
+            score_target=0.10,
+            winner_share=0.80,
+            runner_up_share=0.20,
+        )
+        assert w[0] == pytest.approx(1.0)
 
 
 class TestUniqueHotkeys:

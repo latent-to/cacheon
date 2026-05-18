@@ -10,7 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from api.config import ALLOWED_ORIGINS
 from api.routes.health import router as health_router
 from api.routes.status import router as status_router
-from api.routes.king import router as king_router
+from api.routes.winner import router as winner_router
 from api.routes.evaluations import router as evaluations_router
 from api.routes.eval_progress import router as eval_progress_router
 from api.routes.logs import router as logs_router
@@ -35,7 +35,7 @@ app = FastAPI(
     title="Cacheon Monitoring API",
     description=(
         "Read-only status surface for the Cacheon subnet (SN14). "
-        "Serves evaluation results, king status, container logs, and round history "
+        "Serves evaluation results, winner status, container logs, and round history "
         "from the validator's on-disk state files."
     ),
     version="0.1.0",
@@ -43,12 +43,15 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_tags=[
         {"name": "Overview", "description": "Health check and validator status"},
-        {"name": "King", "description": "Current king and dethronement history"},
+        {"name": "Winner", "description": "Current winner and overtake history"},
         {
             "name": "Evaluations",
             "description": "Completed evaluation records and per-UID history",
         },
-        {"name": "Logs", "description": "Raw Docker container logs from eval runs"},
+        {
+            "name": "Logs",
+            "description": "Raw Docker container logs from eval runs and validator process logs",
+        },
         {"name": "Rounds", "description": "Eval rounds and pending eval jobs"},
     ],
 )
@@ -65,7 +68,7 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(status_router)
-app.include_router(king_router)
+app.include_router(winner_router)
 app.include_router(evaluations_router)
 app.include_router(eval_progress_router)
 app.include_router(logs_router)
