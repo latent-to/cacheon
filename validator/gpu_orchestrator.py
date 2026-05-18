@@ -306,7 +306,7 @@ def run_gpu_eval(state_dir: str, eval_job: EvalJob) -> bool:
         )
 
         # Wait ready
-        handle = provider.wait_ready(handle, timeout_s=120)
+        handle = provider.wait_ready(handle, timeout_s=240)
         logger.info("☑️ Pod %s is ready", handle.pod_id)
         update_progress(state_dir, phase="gpu_ready", pod_id=handle.pod_id)
 

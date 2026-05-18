@@ -256,6 +256,7 @@ def run_tick(
                 state.winner = WinnerRecord.from_evaluation(
                     ru, won_at_block=current_block
                 )
+                state.last_weights_set_block = 0  # force immediate weight update
             else:
                 reason = "runner-up also gone" if ru is not None else "no runner-up"
                 logger.warning(
