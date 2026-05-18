@@ -9,7 +9,7 @@ services:
       - cacheon-egress
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${CACHEON_STATE_DIR:-./state-mainnet}:/app/state
+      - ${CACHEON_STATE_DIR:-./state-mainnet}:/app/state-mainnet
       - ${CACHEON_MODEL_VOLUME:-/workspace/models/Qwen2.5-72B-Instruct}:/models:ro
     environment:
       - CACHEON_MODEL_VOLUME=${CACHEON_MODEL_VOLUME:-/workspace/models/Qwen2.5-72B-Instruct}
