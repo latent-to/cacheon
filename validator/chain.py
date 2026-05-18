@@ -198,9 +198,7 @@ def build_competition_weights(
     comp = min(1.0, winner_score / score_target) if score_target > 0 else 1.0
     burn = 1.0 - comp
 
-    has_runner_up = (
-        runner_up_uid is not None and runner_up_uid != winner_uid
-    )
+    has_runner_up = runner_up_uid is not None and runner_up_uid != winner_uid
     if has_runner_up:
         w_winner = comp * winner_share
         w_runner = comp * runner_up_share
@@ -219,7 +217,9 @@ def build_competition_weights(
         weights[runner_up_uid] = w_runner
 
     if burn > 0:
-        if burn_uid != winner_uid and (runner_up_uid is None or burn_uid != runner_up_uid):
+        if burn_uid != winner_uid and (
+            runner_up_uid is None or burn_uid != runner_up_uid
+        ):
             weights[burn_uid] = burn
         else:
             weights[winner_uid] += burn
@@ -432,8 +432,10 @@ def set_weights(
     `version_key` tags the weight vector with the validator's mechanism
     version; consensus only trust-weights validators that agree on it.
     """
+    n_nonzero = sum(1 for w in weights if w > 0)
     logger.info(
-        "Setting weights: %d uid(s), version_key=%d",
+        "Setting weights: %d non-zero uid(s) of %d total, version_key=%d",
+        n_nonzero,
         len(weights),
         version_key,
     )

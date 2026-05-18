@@ -289,10 +289,37 @@ def run_tick(
         uid_list = list(range(len(w)))
 
         if dry_run:
-            logger.info("[dry-run] would set_weights (winner_uid=%d)", state.winner.uid)
+            burn_uid = validator_config.BURN_UID
+            logger.info(
+                "🧪 [DRY-RUN] would set_weights: winner=%d (%.4f), runner_up=%s (%.4f),"
+                " burn_uid=%d (%.4f), n_uids=%d",
+                state.winner.uid,
+                w[state.winner.uid] if state.winner.uid < len(w) else 0.0,
+                runner_up_uid,
+                w[runner_up_uid]
+                if runner_up_uid is not None and runner_up_uid < len(w)
+                else 0.0,
+                burn_uid,
+                w[burn_uid] if burn_uid < len(w) else 0.0,
+                len(w),
+            )
             state.last_weights_set_block = current_block
             weights_set = True
         else:
+            burn_uid = validator_config.BURN_UID
+            logger.info(
+                "⚖️  weight vector: winner=%d (%.4f), runner_up=%s (%.4f),"
+                " burn_uid=%d (%.4f), n_uids=%d",
+                state.winner.uid,
+                w[state.winner.uid] if state.winner.uid < len(w) else 0.0,
+                runner_up_uid,
+                w[runner_up_uid]
+                if runner_up_uid is not None and runner_up_uid < len(w)
+                else 0.0,
+                burn_uid,
+                w[burn_uid] if burn_uid < len(w) else 0.0,
+                len(w),
+            )
             try:
                 set_weights(
                     subtensor,

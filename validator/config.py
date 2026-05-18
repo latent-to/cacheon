@@ -48,6 +48,9 @@ stake has upgraded."""
 MODEL_VOLUME: str = os.environ.get("CACHEON_MODEL_VOLUME", "/models")
 """Host path mounted read-only into miner/baseline containers at ``/models``."""
 
+MODEL_PATH: str = os.environ.get("CACHEON_MODEL_PATH", "/models")
+"""Path to read model config.json inside the gpu-eval container (mounted model dir)."""
+
 BASELINE_IMAGE: str = os.environ.get(
     "CACHEON_BASELINE_IMAGE", "vllm/vllm-openai:latest"
 )

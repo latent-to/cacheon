@@ -315,8 +315,13 @@ class TestBuildCompetitionWeights:
 
     def test_winner_and_runner_up(self):
         w = build_competition_weights(
-            5, 0, 0.10, runner_up_uid=1, score_target=0.10,
-            winner_share=0.80, runner_up_share=0.20,
+            5,
+            0,
+            0.10,
+            runner_up_uid=1,
+            score_target=0.10,
+            winner_share=0.80,
+            runner_up_share=0.20,
         )
         assert w[0] == pytest.approx(0.80)
         assert w[1] == pytest.approx(0.20)
@@ -324,14 +329,22 @@ class TestBuildCompetitionWeights:
 
     def test_burn_uid_receives_remainder(self):
         w = build_competition_weights(
-            5, 0, 0.05, score_target=0.10, burn_uid=4,
+            5,
+            0,
+            0.05,
+            score_target=0.10,
+            burn_uid=4,
         )
         assert w[4] == pytest.approx(0.5)
         assert w[0] == pytest.approx(0.5)
 
     def test_burn_uid_collision_folds_into_winner(self):
         w = build_competition_weights(
-            5, 0, 0.05, score_target=0.10, burn_uid=0,
+            5,
+            0,
+            0.05,
+            score_target=0.10,
+            burn_uid=0,
         )
         assert w[0] == pytest.approx(1.0)
 
@@ -347,8 +360,13 @@ class TestBuildCompetitionWeights:
 
     def test_no_runner_up_winner_gets_full_comp_pool(self):
         w = build_competition_weights(
-            5, 0, 0.10, runner_up_uid=None, score_target=0.10,
-            winner_share=0.80, runner_up_share=0.20,
+            5,
+            0,
+            0.10,
+            runner_up_uid=None,
+            score_target=0.10,
+            winner_share=0.80,
+            runner_up_share=0.20,
         )
         assert w[0] == pytest.approx(1.0)
 

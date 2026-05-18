@@ -10,8 +10,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CACHEON_STATE_DIR:-./state}:/app/state
+      - ${CACHEON_MODEL_VOLUME:-/workspace/models/Qwen2.5-72B-Instruct}:/models:ro
     environment:
       - CACHEON_MODEL_VOLUME=${CACHEON_MODEL_VOLUME:-/workspace/models/Qwen2.5-72B-Instruct}
+      - CACHEON_MODEL_PATH=/models
       - CACHEON_BASELINE_IMAGE=${CACHEON_BASELINE_IMAGE:-vllm/vllm-openai:latest}
       - CACHEON_BASELINE_DIGEST=${CACHEON_BASELINE_DIGEST:-}
       - CACHEON_GPU_COUNT=${CACHEON_GPU_COUNT:-8}

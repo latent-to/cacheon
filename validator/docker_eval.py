@@ -113,6 +113,7 @@ def start_container(
     shm_size: str = "16g",
     cmd_args: list[str] | None = None,
     container_name: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     """Start an isolated container and return ``(container_id, base_url)``.
 
@@ -156,6 +157,9 @@ def start_container(
         "--gpus",
         "all",
     ]
+    if extra_env:
+        for k, v in extra_env.items():
+            cmd.extend(["-e", f"{k}={v}"])
     if container_name:
         cmd.extend(["--name", container_name])
     cmd.append(ref)
@@ -618,7 +622,13 @@ def _detect_gpu_count() -> int:
 
 
 def _read_max_position_embeddings(model_path: str) -> int | None:
-    """Read max_position_embeddings from a local model's config.json."""
+    """Read effective max_position_embeddings from a local model's config.json.
+
+    For YARN-scaled models (like Qwen2.5-72B), vLLM uses
+    ``rope_scaling.original_max_position_embeddings`` as the validation floor
+    rather than the full ``max_position_embeddings``. We return the minimum of
+    both to match vLLM's behavior.
+    """
     import json
 
     cfg_path = Path(model_path) / "config.json"
@@ -626,10 +636,28 @@ def _read_max_position_embeddings(model_path: str) -> int | None:
         with open(cfg_path) as f:
             cfg = json.load(f)
         val = cfg.get("max_position_embeddings")
-        if isinstance(val, (int, float)) and val > 0:
-            return int(val)
+        if not isinstance(val, (int, float)) or val <= 0:
+            logger.warning(
+                "config.json at %s missing valid max_position_embeddings", cfg_path
+            )
+            return None
+
+        effective = int(val)
+
+        rope = cfg.get("rope_scaling") or {}
+        original = rope.get("original_max_position_embeddings")
+        if isinstance(original, (int, float)) and original > 0:
+            effective = min(effective, int(original))
+            logger.info(
+                "YARN rope_scaling detected: original_max_position_embeddings=%d, "
+                "effective max=%d",
+                int(original),
+                effective,
+            )
+
+        return effective
     except Exception as exc:
-        logger.debug("Could not read %s: %s", cfg_path, exc)
+        logger.warning("Could not read %s: %s", cfg_path, exc)
     return None
 
 
@@ -638,8 +666,10 @@ def _max_model_len(gpu_count: int, model_path: str = "") -> int:
 
     More GPUs = more memory after TP-sharding the 72B model = room for
     longer KV caches.  The heuristic is then capped by the model's
-    ``max_position_embeddings`` (from config.json) so vLLM never refuses
-    to start.
+    effective ``max_position_embeddings`` (from config.json) so vLLM never
+    refuses to start. For YARN-scaled models, we also consider
+    ``rope_scaling.original_max_position_embeddings`` which vLLM uses as
+    its validation floor.
     """
     if gpu_count >= 8:
         heuristic = 131_072
@@ -720,6 +750,7 @@ def run_baseline_if_needed(
             model_volume=model_volume,
             cmd_args=baseline_args,
             container_name=container_name,
+            extra_env={"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"},
         )
         wait_for_health(base_url, timeout_s=startup_timeout_s, container_id=cid)
 

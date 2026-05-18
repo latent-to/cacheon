@@ -445,11 +445,19 @@ class TestRunTickWinnerDereg:
         rec_w = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
         state.record_evaluation(rec_w, current_block=500)
         rec_ru = EvaluationRecord(
-            uid=2, hotkey="hk_ru", commit_block=200, image="user/repo:v2",
-            digest="sha256:" + "b" * 64, score=0.3,
-            ttft_improvement=0.15, throughput_improvement=0.15,
-            token_match_rate=0.99, disqualified=False, disqualify_reason=None,
-            evaluated_at=1700000000.0, evaluation_block=600,
+            uid=2,
+            hotkey="hk_ru",
+            commit_block=200,
+            image="user/repo:v2",
+            digest="sha256:" + "b" * 64,
+            score=0.3,
+            ttft_improvement=0.15,
+            throughput_improvement=0.15,
+            token_match_rate=0.99,
+            disqualified=False,
+            disqualify_reason=None,
+            evaluated_at=1700000000.0,
+            evaluation_block=600,
         )
         state.record_evaluation(rec_ru, current_block=600)
         state.save(tmp_path)
@@ -481,11 +489,19 @@ class TestRunTickWinnerDereg:
         rec_w = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
         state.record_evaluation(rec_w, current_block=500)
         rec_ru = EvaluationRecord(
-            uid=2, hotkey="hk_old_ru", commit_block=200, image="user/repo:v2",
-            digest="sha256:" + "b" * 64, score=0.3,
-            ttft_improvement=0.15, throughput_improvement=0.15,
-            token_match_rate=0.99, disqualified=False, disqualify_reason=None,
-            evaluated_at=1700000000.0, evaluation_block=600,
+            uid=2,
+            hotkey="hk_old_ru",
+            commit_block=200,
+            image="user/repo:v2",
+            digest="sha256:" + "b" * 64,
+            score=0.3,
+            ttft_improvement=0.15,
+            throughput_improvement=0.15,
+            token_match_rate=0.99,
+            disqualified=False,
+            disqualify_reason=None,
+            evaluated_at=1700000000.0,
+            evaluation_block=600,
         )
         state.record_evaluation(rec_ru, current_block=600)
         state.save(tmp_path)
