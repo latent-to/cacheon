@@ -8,7 +8,7 @@ services:
     restart: unless-stopped
     volumes:
       - ${BITTENSOR_DIR:-~/.bittensor}:/root/.bittensor:ro
-      - ${CACHEON_STATE_DIR:-./state-mainnet}:/app/state
+      - ${CACHEON_STATE_DIR:-./state-mainnet}:/app/state-mainnet
       - ~/.ssh:/root/.ssh:ro
     environment:
       - CACHEON_NETWORK=${CACHEON_NETWORK:-finney}
@@ -39,7 +39,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - ${CACHEON_STATE_DIR:-./state-mainnet}:/app/state:ro
+      - ${CACHEON_STATE_DIR:-./state-mainnet}:/app/state-mainnet:ro
     environment:
       - CACHEON_STATE_DIR=/app/state-mainnet
       - CACHEON_ALLOWED_ORIGINS=${CACHEON_ALLOWED_ORIGINS:-https://cacheon.ai,https://www.cacheon.ai}
