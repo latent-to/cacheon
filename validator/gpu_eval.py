@@ -40,7 +40,7 @@ from .eval_progress import (
     update_progress,
 )
 from .eval_schema import EVAL_JOB_FILE, EvalJob
-from .state import ValidatorState, append_king_history
+from .state import ValidatorState, append_winner_history
 
 logger = logging.getLogger(__name__)
 
@@ -240,16 +240,16 @@ def main() -> int:
             current_block=block,
             state_dir=state_dir,
         )
-        prev_king = state.king
+        prev_winner = state.winner
         outcome = state.record_evaluation(record, current_block=block)
         icon = "❌" if outcome.stored.disqualify_reason else "📊"
         logger.info(
-            "%s UID %d score=%.4f (dq=%s, dethroned=%s)",
+            "%s UID %d score=%.4f (dq=%s, overtook=%s)",
             icon,
             outcome.stored.uid,
             outcome.stored.score,
             outcome.stored.disqualify_reason or "no",
-            outcome.dethroned,
+            outcome.overtook,
         )
         if outcome.stored.disqualified:
             update_challenger_status(
@@ -268,25 +268,25 @@ def main() -> int:
                 score=outcome.stored.score,
                 detail="scored",
             )
-        if outcome.dethroned:
+        if outcome.overtook:
             logger.info(
-                "👑 New king: UID %d (score=%.4f)",
+                "👑 New winner: UID %d (score=%.4f)",
                 outcome.stored.uid,
                 outcome.stored.score,
             )
-            append_king_history(
+            append_winner_history(
                 state_dir,
                 outcome.stored,
-                prev_king,
+                prev_winner,
                 block,
-                outcome.dethrone_threshold,
+                outcome.overtake_threshold,
             )
 
         state.save(state_dir)
         _upload_state(state_dir)
 
     logger.info(
-        "State saved. King: %s", f"UID {state.king.uid}" if state.king else "none"
+        "State saved. Winner: %s", f"UID {state.winner.uid}" if state.winner else "none"
     )
     logger.info("GPU eval complete")
     _delete_eval_job(state_dir)

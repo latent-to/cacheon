@@ -3,10 +3,10 @@
 Runs continuously on a lightweight VPS. Does NOT evaluate miners; that
 happens on an ephemeral GPU pod reading ``eval_job.json`` from S3.
 
-Loop (every CACHEON_POLL_INTERVAL_S, default 300s):
+Loop (every CACHEON_POLL_INTERVAL_S, default 36s):
     1. Download latest state from Hippius S3
     2. Chain scan: fetch metagraph + commitments
-    3. If king's hotkey deregistered, clear throne
+    3. If winner's hotkey deregistered, promote runner-up or clear
     4. If new GPU eval results or weights stale: set_weights
     5. Select new challengers not yet evaluated
     6. If challengers found: write eval_job.json, upload to S3
@@ -31,6 +31,7 @@ from .chain import (
     ChainError,
     NotRegisteredError,
     build_commitments,
+    build_competition_weights,
     fetch_metagraph,
     fetch_revealed_commitments,
     preflight_check,
@@ -38,7 +39,7 @@ from .chain import (
 )
 from .challengers import select_challengers
 from .eval_schema import ChallengerInfo, EvalJob
-from .state import ValidatorState
+from .state import ValidatorState, WinnerRecord
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ def _configure_logging(verbose: bool, state_dir: str) -> None:
 
 def _needs_weight_set(state: ValidatorState, current_block: int) -> str | None:
     """Return a reason string if weights should be (re-)set, else None."""
-    if state.king is None:
+    if state.winner is None:
         return None
     if state.last_weights_set_block == 0:
         return "first weight set"
@@ -116,7 +117,7 @@ def _needs_weight_set(state: ValidatorState, current_block: int) -> str | None:
 def _reload_state(state: ValidatorState, state_dir: str) -> None:
     """Reload state from disk into the existing object (GPU may have updated it)."""
     fresh = ValidatorState.load(state_dir)
-    state.king = fresh.king
+    state.winner = fresh.winner
     state.evaluations = fresh.evaluations
     state.precheck_failures = fresh.precheck_failures
     state.last_scan_block = fresh.last_scan_block
@@ -125,7 +126,7 @@ def _reload_state(state: ValidatorState, state_dir: str) -> None:
 
 _CPU_UPLOAD_ONLY = ["eval_job.json", "eval_progress.json", "logs/"]
 """CPU never uploads state.json -- the GPU is the sole writer of eval
-results and king. Prevents the CPU from overwriting GPU results on S3."""
+results and winner. Prevents the CPU from overwriting GPU results on S3."""
 
 
 def _try_upload(state_dir: str) -> None:
@@ -153,7 +154,7 @@ def _clean_stale_eval_job(state: ValidatorState, state_dir: str) -> bool:
         try:
             path.unlink()
             logger.info(
-                "🧹 Removed stale eval_job.json (%d challenger(s) all known)",
+                "Removed stale eval_job.json (%d challenger(s) all known)",
                 len(job.challengers),
             )
         except OSError:
@@ -166,6 +167,23 @@ def _clean_stale_eval_job(state: ValidatorState, state_dir: str) -> bool:
             logger.debug("Failed to delete eval_job.json from S3", exc_info=True)
         return True
     return False
+
+
+def _hotkey_is_registered(metagraph, uid: int, hotkey: str) -> bool:
+    """True if `uid` is in range and the on-chain hotkey matches."""
+    if uid < 0 or uid >= len(metagraph.hotkeys):
+        return False
+    return metagraph.hotkeys[uid] == hotkey
+
+
+def _resolve_runner_up_uid(state: ValidatorState, metagraph) -> int | None:
+    """Return the runner-up's UID if one exists and is still registered."""
+    ru = state.runner_up
+    if ru is None:
+        return None
+    if _hotkey_is_registered(metagraph, ru.uid, ru.hotkey):
+        return ru.uid
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -199,12 +217,14 @@ def run_tick(
 
     purge_old_logs(state_dir)
 
-    king_desc = (
-        f"UID {state.king.uid} score={state.king.score:.4f}" if state.king else "none"
+    winner_desc = (
+        f"UID {state.winner.uid} score={state.winner.score:.4f}"
+        if state.winner
+        else "none"
     )
     logger.info(
-        "📋 State: king=%s | %d eval(s) | last_weights_block=%d",
-        king_desc,
+        "📋 State: winner=%s | %d eval(s) | last_weights_block=%d",
+        winner_desc,
         len(state.evaluations),
         state.last_weights_set_block,
     )
@@ -216,41 +236,60 @@ def run_tick(
     state.last_scan_block = current_block
 
     logger.info(
-        "🔍 Scan block %d: %d hotkey(s), %d commitment(s)",
+        "Scan block %d: %d hotkey(s), %d commitment(s)",
         current_block,
         len(metagraph.hotkeys),
         len(commitments),
     )
 
-    # UID recycling guard
-    if state.king is not None:
-        live_hotkey = (
-            metagraph.hotkeys[state.king.uid]
-            if state.king.uid < len(metagraph.hotkeys)
-            else None
-        )
-        if live_hotkey != state.king.hotkey:
-            logger.warning(
-                "👑  King UID %d hotkey changed on chain (%s -> %s). Clearing throne.",
-                state.king.uid,
-                state.king.hotkey[:16],
-                (live_hotkey or "<gone>")[:16],
-            )
-            state.king = None
+    # Winner UID recycling / deregistration guard
+    if state.winner is not None:
+        if not _hotkey_is_registered(metagraph, state.winner.uid, state.winner.hotkey):
+            ru = state.runner_up
+            if ru is not None and _hotkey_is_registered(metagraph, ru.uid, ru.hotkey):
+                logger.warning(
+                    "Winner UID %d deregistered (%s). Promoting runner-up UID %d.",
+                    state.winner.uid,
+                    state.winner.hotkey[:16],
+                    ru.uid,
+                )
+                state.winner = WinnerRecord.from_evaluation(
+                    ru, won_at_block=current_block
+                )
+            else:
+                reason = "runner-up also gone" if ru is not None else "no runner-up"
+                logger.warning(
+                    "Winner UID %d deregistered (%s). Clearing winner (%s).",
+                    state.winner.uid,
+                    state.winner.hotkey[:16],
+                    reason,
+                )
+                state.winner = None
 
     # Weight setting
     weights_set = False
-    dirty = False  # track whether local state needs uploading to S3
+    dirty = False
     reason = _needs_weight_set(state, current_block)
     if reason:
+        runner_up_uid = _resolve_runner_up_uid(state, metagraph)
         logger.info(
-            "⚖️  Setting weights: king=UID %d (score=%.4f), reason=%s",
-            state.king.uid,
-            state.king.score,
+            "⚖️  Setting weights: winner=UID %d (score=%.4f), runner_up=%s, reason=%s",
+            state.winner.uid,
+            state.winner.score,
+            runner_up_uid,
             reason,
         )
+
+        w = build_competition_weights(
+            n_uids=len(metagraph.hotkeys),
+            winner_uid=state.winner.uid,
+            winner_score=state.winner.score,
+            runner_up_uid=runner_up_uid,
+        )
+        uid_list = list(range(len(w)))
+
         if dry_run:
-            logger.info("[dry-run] would set_weights(winner_uid=%d)", state.king.uid)
+            logger.info("[dry-run] would set_weights (winner_uid=%d)", state.winner.uid)
             state.last_weights_set_block = current_block
             weights_set = True
         else:
@@ -259,8 +298,8 @@ def run_tick(
                     subtensor,
                     wallet,
                     netuid,
-                    n_uids=len(metagraph.hotkeys),
-                    winner_uid=state.king.uid,
+                    uids=uid_list,
+                    weights=w,
                     version_key=version_key,
                 )
                 state.last_weights_set_block = current_block
@@ -361,7 +400,7 @@ def run_tick(
         "commitments": len(commitments),
         "challengers": n_challengers,
         "weights_set": weights_set,
-        "king_uid": state.king.uid if state.king else None,
+        "winner_uid": state.winner.uid if state.winner else None,
     }
 
 
@@ -439,14 +478,14 @@ def main(argv: list[str] | None = None) -> int:
         return 4
 
     state = ValidatorState.load(args.state_dir)
-    king_desc = (
-        f"king=UID {state.king.uid} (score={state.king.score:.4f})"
-        if state.king
-        else "no king yet"
+    winner_desc = (
+        f"winner=UID {state.winner.uid} (score={state.winner.score:.4f})"
+        if state.winner
+        else "no winner yet"
     )
     logger.info(
         "Loaded state: %s | %d eval(s) | last_weights_block=%d",
-        king_desc,
+        winner_desc,
         len(state.evaluations),
         state.last_weights_set_block,
     )
@@ -465,13 +504,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 logger.info(
                     "☑️ Tick completed in %.1fs: block=%d commits=%d challengers=%d "
-                    "weights=%s king=%s",
+                    "weights=%s winner=%s",
                     time.time() - tick_start,
                     summary["block"],
                     summary["commitments"],
                     summary["challengers"],
                     summary["weights_set"],
-                    summary["king_uid"],
+                    summary["winner_uid"],
                 )
             except Exception as exc:
                 logger.exception(

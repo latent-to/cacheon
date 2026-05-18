@@ -39,7 +39,7 @@ Useful for testing the loop without touching the chain."""
 VERSION_KEY: int = int(os.environ.get("CACHEON_VERSION_KEY", "1"))
 """Version tag passed as `version_key` to `subtensor.set_weights(...)`. Bump
 whenever the scoring mechanism or evaluation rules change in a way that would
-produce different king selections on identical commits.
+produce different winner selections on identical commits.
 
 Yuma consensus only trust-weights validators that agree on the version, so
 bumping this effectively rolls consensus to the new version once a quorum of
@@ -84,27 +84,57 @@ S3_BUCKET: str = os.environ.get("CACHEON_S3_BUCKET", "cacheon-validator")
 S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state")
 
 # --------------------------------------------------------------------------- #
-# King defender-advantage window
+# Winner defender-advantage window
 # --------------------------------------------------------------------------- #
 
-KING_EPSILON_INITIAL: float = float(
-    os.environ.get("CACHEON_KING_EPSILON_INITIAL", "0.01")
+WINNER_EPSILON_INITIAL: float = float(
+    os.environ.get("CACHEON_WINNER_EPSILON_INITIAL", "0.01")
 )
-"""Initial moat a fresh king holds: a challenger must beat
-`king.score * (1 + KING_EPSILON_INITIAL)` to dethrone on the block the king
-was crowned. Linearly decays to 0 over `KING_EPSILON_DECAY_BLOCKS`.
+"""Initial moat a fresh winner holds: a challenger must beat
+`winner.score * (1 + WINNER_EPSILON_INITIAL)` to overtake on the block the
+winner won. Linearly decays to 0 over `WINNER_EPSILON_DECAY_BLOCKS`.
 
-1% is small enough to not protect truly weak kings, large enough to swallow
-float noise and discourage copycat submissions that match king byte-for-byte
-(a byte-identical copy also trips the `duplicate_of_king` DQ path in
-`state.record_evaluation`; the epsilon covers near-duplicates / scoring noise)."""
+1% is small enough to not protect truly weak winners, large enough to swallow
+float noise and discourage copycat submissions that match the winner
+byte-for-byte (a byte-identical copy also trips the `duplicate_of_winner` DQ
+path in `state.record_evaluation`; the epsilon covers near-duplicates /
+scoring noise)."""
 
-KING_EPSILON_DECAY_BLOCKS: int = int(
-    os.environ.get("CACHEON_KING_EPSILON_DECAY_BLOCKS", "50400")
+WINNER_EPSILON_DECAY_BLOCKS: int = int(
+    os.environ.get("CACHEON_WINNER_EPSILON_DECAY_BLOCKS", "50400")
 )
-"""Number of chain blocks over which `KING_EPSILON_INITIAL` decays to 0.
+"""Number of chain blocks over which `WINNER_EPSILON_INITIAL` decays to 0.
 50 400 blocks ~ 7 days at ~12 s / block. After this window any strict
-improvement dethrones."""
+improvement overtakes."""
+
+# --------------------------------------------------------------------------- #
+# Competition weight distribution
+# --------------------------------------------------------------------------- #
+
+WINNER_WEIGHT_SHARE: float = float(
+    os.environ.get("CACHEON_WINNER_WEIGHT_SHARE", "0.80")
+)
+"""Fraction of the competition pool allocated to the winner."""
+
+RUNNER_UP_WEIGHT_SHARE: float = float(
+    os.environ.get("CACHEON_RUNNER_UP_WEIGHT_SHARE", "0.20")
+)
+"""Fraction of the competition pool allocated to the runner-up.
+When no runner-up exists, the winner receives 100% of the pool."""
+
+SCORE_EMISSION_TARGET: float = float(
+    os.environ.get("CACHEON_SCORE_EMISSION_TARGET", "0.10")
+)
+"""Improvement score at which the competition pool earns 100% of emission.
+Below this threshold, emission scales linearly; the remainder goes to the
+burn UID. Example: with target 0.10, a winner scoring 0.05 earns 50% of
+emission for the competition pool."""
+
+BURN_UID: int = int(os.environ.get("CACHEON_BURN_UID", "22"))
+"""UID that receives the unused portion of emission when the winner's score
+is below SCORE_EMISSION_TARGET. Must not collide with the winner or
+runner-up UID; the weight builder folds burn weight into the winner on
+collision."""
 
 # --------------------------------------------------------------------------- #
 # Housekeeping

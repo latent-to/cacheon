@@ -9,7 +9,7 @@ shapes and selection logic.
 
 from .state import (
     EvaluationRecord,
-    KingRecord,
+    WinnerRecord,
     ValidatorState,
 )
 from .eval_schema import (
@@ -23,7 +23,7 @@ from .challengers import select_challengers
 from .chain import (
     CommitmentRecord,
     build_commitments,
-    build_winner_take_all_weights,
+    build_competition_weights,
     parse_commitment_data,
 )
 
@@ -33,12 +33,12 @@ __all__ = [
     "EvaluationJob",
     "EvaluationRecord",
     "EvaluationResult",
-    "KingRecord",
     "PerPromptResult",
     "Prompt",
     "ValidatorState",
+    "WinnerRecord",
     "build_commitments",
-    "build_winner_take_all_weights",
+    "build_competition_weights",
     "parse_commitment_data",
     "select_challengers",
 ]

@@ -6,18 +6,18 @@ import json
 
 import pytest
 
-from validator.config import KING_EPSILON_DECAY_BLOCKS, KING_EPSILON_INITIAL
+from validator.config import WINNER_EPSILON_DECAY_BLOCKS, WINNER_EPSILON_INITIAL
 from validator.state import (
-    DUPLICATE_OF_KING_REASON,
+    DUPLICATE_OF_WINNER_REASON,
     EvaluationRecord,
-    KingRecord,
+    WinnerRecord,
     RecordResult,
     SCHEMA_VERSION,
     STATE_FILE_NAME,
     ValidatorState,
     _atomic_write_json,
-    _effective_dethrone_threshold,
-    append_king_history,
+    _effective_overtake_threshold,
+    append_winner_history,
     current_timestamp,
     unknown_commits,
 )
@@ -147,69 +147,88 @@ class TestEvaluationRecord:
         assert restored.per_prompt is None
 
 
-class TestKingRecord:
+class TestWinnerRecord:
     def test_from_evaluation(self):
         ev = _make_eval(score=0.5)
-        king = KingRecord.from_evaluation(ev, crowned_at_block=500)
-        assert king.uid == ev.uid
-        assert king.score == ev.score
-        assert king.hotkey == ev.hotkey
-        assert king.crowned_at_block == 500
-        assert king.ttft_improvement == ev.ttft_improvement
-        assert king.throughput_improvement == ev.throughput_improvement
-        assert king.token_match_rate == ev.token_match_rate
+        winner = WinnerRecord.from_evaluation(ev, won_at_block=500)
+        assert winner.uid == ev.uid
+        assert winner.score == ev.score
+        assert winner.hotkey == ev.hotkey
+        assert winner.won_at_block == 500
+        assert winner.ttft_improvement == ev.ttft_improvement
+        assert winner.throughput_improvement == ev.throughput_improvement
+        assert winner.token_match_rate == ev.token_match_rate
 
     def test_round_trip(self):
         ev = _make_eval()
-        king = KingRecord.from_evaluation(ev, crowned_at_block=123)
-        restored = KingRecord.from_dict(king.to_dict())
-        assert restored == king
+        winner = WinnerRecord.from_evaluation(ev, won_at_block=123)
+        restored = WinnerRecord.from_dict(winner.to_dict())
+        assert restored == winner
 
     def test_image_digest_preserved(self):
         digest = "sha256:" + "b" * 64
         ev = _make_eval(digest=digest)
-        king = KingRecord.from_evaluation(ev, crowned_at_block=123)
-        assert king.digest == digest
+        winner = WinnerRecord.from_evaluation(ev, won_at_block=123)
+        assert winner.digest == digest
+
+    def test_from_dict_legacy_crowned_at_block(self):
+        """Old state files use `crowned_at_block`; ensure migration works."""
+        data = {
+            "uid": 1,
+            "hotkey": "hk1",
+            "commit_block": 100,
+            "image": "img:v1",
+            "digest": "sha256:" + "a" * 64,
+            "score": 0.5,
+            "ttft_improvement": 0.1,
+            "throughput_improvement": 0.2,
+            "token_match_rate": 0.99,
+            "evaluated_at": 1.0,
+            "evaluation_block": 110,
+            "crowned_at_block": 500,
+        }
+        winner = WinnerRecord.from_dict(data)
+        assert winner.won_at_block == 500
 
 
 class TestValidatorStateRecording:
     def test_empty_state(self):
         state = ValidatorState()
-        assert state.king is None
+        assert state.winner is None
         assert state.evaluations == {}
         assert state.schema_version == SCHEMA_VERSION
 
-    def test_record_first_eval_becomes_king(self):
+    def test_record_first_eval_becomes_winner(self):
         state = ValidatorState()
         ev = _make_eval(score=0.3)
         out = _record(state, ev)
-        assert out.dethroned is True
-        assert out.dethrone_threshold == 0.0
-        assert state.king is not None
-        assert state.king.uid == ev.uid
-        assert state.king.score == ev.score
+        assert out.overtook is True
+        assert out.overtake_threshold == 0.0
+        assert state.winner is not None
+        assert state.winner.uid == ev.uid
+        assert state.winner.score == ev.score
         assert state.has_evaluation(ev.hotkey, ev.commit_block)
 
-    def test_higher_score_dethrones_king(self):
+    def test_higher_score_overtakes_winner(self):
         state = ValidatorState()
         _record(state, _make_eval(uid=1, hotkey="hk1", score=0.2))
         out = _record(
             state,
             _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.5),
         )
-        assert out.dethroned is True
-        assert state.king.uid == 2
-        assert state.king.score == 0.5
+        assert out.overtook is True
+        assert state.winner.uid == 2
+        assert state.winner.score == 0.5
 
-    def test_lower_score_does_not_dethrone(self):
+    def test_lower_score_does_not_overtake(self):
         state = ValidatorState()
         _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
         out = _record(
             state,
             _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.4),
         )
-        assert out.dethroned is False
-        assert state.king.uid == 1
+        assert out.overtook is False
+        assert state.winner.uid == 1
 
     def test_equal_score_keeps_defender(self):
         state = ValidatorState()
@@ -218,8 +237,8 @@ class TestValidatorStateRecording:
             state,
             _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.3),
         )
-        assert out.dethroned is False
-        assert state.king.uid == 1
+        assert out.overtook is False
+        assert state.winner.uid == 1
 
     def test_epsilon_moat_blocks_tiny_improvement(self):
         state = ValidatorState()
@@ -233,9 +252,9 @@ class TestValidatorStateRecording:
             _make_eval(uid=2, hotkey="hk2", score=0.5025, commit_block=110),
             current_block=110,
         )
-        assert out.dethroned is False
-        assert out.dethrone_threshold > 0.5
-        assert state.king.uid == 1
+        assert out.overtook is False
+        assert out.overtake_threshold > 0.5
+        assert state.winner.uid == 1
 
     def test_epsilon_fully_decayed_allows_strict_improvement(self):
         state = ValidatorState()
@@ -244,17 +263,17 @@ class TestValidatorStateRecording:
             _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100),
             current_block=100,
         )
-        far_future = 100 + KING_EPSILON_DECAY_BLOCKS + 1
+        far_future = 100 + WINNER_EPSILON_DECAY_BLOCKS + 1
         out = _record(
             state,
             _make_eval(uid=2, hotkey="hk2", score=0.5001, commit_block=far_future),
             current_block=far_future,
         )
-        assert out.dethroned is True
-        assert out.dethrone_threshold == pytest.approx(0.5)
-        assert state.king.uid == 2
+        assert out.overtook is True
+        assert out.overtake_threshold == pytest.approx(0.5)
+        assert state.winner.uid == 2
 
-    def test_disqualified_cannot_become_king(self):
+    def test_disqualified_cannot_become_winner(self):
         state = ValidatorState()
         out = _record(
             state,
@@ -262,10 +281,10 @@ class TestValidatorStateRecording:
                 score=0.0, disqualified=True, reason="token_match_below_threshold"
             ),
         )
-        assert out.dethroned is False
-        assert state.king is None
+        assert out.overtook is False
+        assert state.winner is None
 
-    def test_disqualified_cannot_dethrone_king(self):
+    def test_disqualified_cannot_overtake_winner(self):
         state = ValidatorState()
         _record(state, _make_eval(uid=1, hotkey="hk1", score=0.2))
         out = _record(
@@ -279,43 +298,43 @@ class TestValidatorStateRecording:
                 reason="nan",
             ),
         )
-        assert out.dethroned is False
-        assert state.king.uid == 1
+        assert out.overtook is False
+        assert state.winner.uid == 1
 
-    def test_zero_score_non_dq_cannot_become_king(self):
+    def test_zero_score_non_dq_cannot_become_winner(self):
         state = ValidatorState()
         out = _record(state, _make_eval(score=0.0))
-        assert out.dethroned is False
-        assert state.king is None
+        assert out.overtook is False
+        assert state.winner is None
 
-    def test_negative_score_cannot_become_king(self):
+    def test_negative_score_cannot_become_winner(self):
         state = ValidatorState()
         out = _record(state, _make_eval(score=-0.1))
-        assert out.dethroned is False
-        assert state.king is None
+        assert out.overtook is False
+        assert state.winner is None
 
-    def test_nan_score_cannot_become_king(self):
+    def test_nan_score_cannot_become_winner(self):
         state = ValidatorState()
         out = _record(state, _make_eval(score=float("nan")))
-        assert out.dethroned is False
-        assert state.king is None
+        assert out.overtook is False
+        assert state.winner is None
 
-    def test_nan_score_cannot_dethrone_existing_king(self):
+    def test_nan_score_cannot_overtake_existing_winner(self):
         state = ValidatorState()
         _record(state, _make_eval(uid=1, hotkey="hk1", score=0.3))
         out = _record(
             state,
             _make_eval(uid=2, hotkey="hk2", score=float("nan")),
         )
-        assert out.dethroned is False
-        assert state.king is not None
-        assert state.king.uid == 1
+        assert out.overtook is False
+        assert state.winner is not None
+        assert state.winner.uid == 1
 
-    def test_inf_score_cannot_become_king(self):
+    def test_inf_score_cannot_become_winner(self):
         state = ValidatorState()
         out = _record(state, _make_eval(score=float("inf")))
-        assert out.dethroned is False
-        assert state.king is None
+        assert out.overtook is False
+        assert state.winner is None
 
     def test_record_precheck_failure(self):
         state = ValidatorState()
@@ -340,9 +359,9 @@ class TestValidatorStateRecording:
         assert state.has_evaluation("hk1", 100)
 
 
-class TestDuplicateOfKingDQ:
-    """Byte-identical Docker image (same digest) cannot tie or dethrone the
-    earlier-committed king -- whoever committed first holds the throne."""
+class TestDuplicateOfWinnerDQ:
+    """Byte-identical Docker image (same digest) cannot tie or overtake the
+    earlier-committed winner -- whoever committed first holds position."""
 
     _DIGEST_A = "sha256:" + "a" * 64
     _DIGEST_B = "sha256:" + "b" * 64
@@ -367,13 +386,13 @@ class TestDuplicateOfKingDQ:
             digest=self._DIGEST_A,
         )
         out = _record(state, ev_copy)
-        assert out.dethroned is False
+        assert out.overtook is False
         assert out.stored.disqualified is True
-        assert out.stored.disqualify_reason == DUPLICATE_OF_KING_REASON
+        assert out.stored.disqualify_reason == DUPLICATE_OF_WINNER_REASON
         assert out.stored.score == 0.0
         persisted = state.evaluations[ev_copy.eval_key]
         assert persisted.disqualified is True
-        assert state.king.uid == 1
+        assert state.winner.uid == 1
 
     def test_later_duplicate_with_higher_score_still_dqd(self):
         state = ValidatorState()
@@ -397,9 +416,9 @@ class TestDuplicateOfKingDQ:
                 digest=self._DIGEST_A,
             ),
         )
-        assert out.dethroned is False
+        assert out.overtook is False
         assert out.stored.disqualified is True
-        assert state.king.uid == 1
+        assert state.winner.uid == 1
 
     def test_same_digest_same_hotkey_not_dqd(self):
         """Re-committing your own winning image at a later block is fine --
@@ -428,8 +447,8 @@ class TestDuplicateOfKingDQ:
         assert out.stored.disqualified is False
 
     def test_earlier_commit_not_dqd(self):
-        """A submission at a commit_block before the king's own commit
-        never gets duplicate-of-king DQ."""
+        """A submission at a commit_block before the winner's own commit
+        never gets duplicate-of-winner DQ."""
         state = ValidatorState()
         _record(
             state,
@@ -503,41 +522,109 @@ class TestDuplicateOfKingDQ:
         assert out.stored.disqualified is False
 
 
-class TestEffectiveDethroneThreshold:
-    def test_no_king_returns_zero_call_site_convention(self):
-        assert _effective_dethrone_threshold(0.0, 0, 100) == 0.0
+class TestEffectiveOvertakeThreshold:
+    def test_no_winner_returns_zero_call_site_convention(self):
+        assert _effective_overtake_threshold(0.0, 0, 100) == 0.0
 
-    def test_at_crowning_block_full_epsilon(self):
-        th = _effective_dethrone_threshold(0.5, 1000, 1000)
-        assert th == pytest.approx(0.5 * (1 + KING_EPSILON_INITIAL))
+    def test_at_winning_block_full_epsilon(self):
+        th = _effective_overtake_threshold(0.5, 1000, 1000)
+        assert th == pytest.approx(0.5 * (1 + WINNER_EPSILON_INITIAL))
 
     def test_half_window_half_epsilon(self):
-        half = KING_EPSILON_DECAY_BLOCKS // 2
-        th = _effective_dethrone_threshold(0.5, 0, half)
+        half = WINNER_EPSILON_DECAY_BLOCKS // 2
+        th = _effective_overtake_threshold(0.5, 0, half)
         expected = 0.5 * (
-            1 + KING_EPSILON_INITIAL * (1 - half / KING_EPSILON_DECAY_BLOCKS)
+            1 + WINNER_EPSILON_INITIAL * (1 - half / WINNER_EPSILON_DECAY_BLOCKS)
         )
         assert th == pytest.approx(expected)
 
     def test_at_window_end_no_moat(self):
-        th = _effective_dethrone_threshold(0.5, 0, KING_EPSILON_DECAY_BLOCKS)
+        th = _effective_overtake_threshold(0.5, 0, WINNER_EPSILON_DECAY_BLOCKS)
         assert th == pytest.approx(0.5)
 
     def test_past_window_clamped_to_score(self):
-        th = _effective_dethrone_threshold(0.5, 0, KING_EPSILON_DECAY_BLOCKS * 10)
+        th = _effective_overtake_threshold(0.5, 0, WINNER_EPSILON_DECAY_BLOCKS * 10)
         assert th == pytest.approx(0.5)
 
     def test_negative_age_clamped_to_zero(self):
-        th = _effective_dethrone_threshold(0.5, 1000, 500)
-        assert th == pytest.approx(0.5 * (1 + KING_EPSILON_INITIAL))
+        th = _effective_overtake_threshold(0.5, 1000, 500)
+        assert th == pytest.approx(0.5 * (1 + WINNER_EPSILON_INITIAL))
 
     def test_zero_decay_blocks_disables_moat(self):
-        th = _effective_dethrone_threshold(0.5, 100, 200, decay_blocks=0)
+        th = _effective_overtake_threshold(0.5, 100, 200, decay_blocks=0)
         assert th == 0.5
 
     def test_zero_initial_disables_moat(self):
-        th = _effective_dethrone_threshold(0.5, 100, 100, epsilon_initial=0.0)
+        th = _effective_overtake_threshold(0.5, 100, 100, epsilon_initial=0.0)
         assert th == 0.5
+
+
+class TestRunnerUp:
+    def test_no_evaluations_returns_none(self):
+        state = ValidatorState()
+        assert state.runner_up is None
+
+    def test_single_eval_is_winner_returns_none(self):
+        state = ValidatorState()
+        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        assert state.winner is not None
+        assert state.runner_up is None
+
+    def test_two_hotkeys_returns_non_winner(self):
+        state = ValidatorState()
+        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record(state, _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.3))
+        assert state.runner_up is not None
+        assert state.runner_up.uid == 2
+        assert state.runner_up.hotkey == "hk2"
+
+    def test_dq_eval_excluded(self):
+        state = ValidatorState()
+        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record(
+            state,
+            _make_eval(
+                uid=2,
+                hotkey="hk2",
+                commit_block=200,
+                score=0.0,
+                disqualified=True,
+                reason="bad",
+            ),
+        )
+        assert state.runner_up is None
+
+    def test_same_hotkey_multiple_commits_grouped(self):
+        """Winner's hotkey excluded even with multiple commits."""
+        state = ValidatorState()
+        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100))
+        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.3, commit_block=200))
+        _record(state, _make_eval(uid=2, hotkey="hk2", score=0.2, commit_block=300))
+        assert state.runner_up is not None
+        assert state.runner_up.hotkey == "hk2"
+
+    def test_best_score_per_hotkey_selected(self):
+        state = ValidatorState()
+        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100))
+        _record(state, _make_eval(uid=2, hotkey="hk2", score=0.2, commit_block=200))
+        _record(state, _make_eval(uid=2, hotkey="hk2", score=0.4, commit_block=300))
+        _record(state, _make_eval(uid=3, hotkey="hk3", score=0.35, commit_block=400))
+        ru = state.runner_up
+        assert ru is not None
+        assert ru.hotkey == "hk2"
+        assert ru.score == 0.4
+
+    def test_zero_score_excluded(self):
+        state = ValidatorState()
+        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record(state, _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.0))
+        assert state.runner_up is None
+
+    def test_negative_score_excluded(self):
+        state = ValidatorState()
+        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record(state, _make_eval(uid=2, hotkey="hk2", commit_block=200, score=-0.1))
+        assert state.runner_up is None
 
 
 class TestScoreHistory:
@@ -579,11 +666,11 @@ class TestPersistence:
         state.save(tmp_path)
         reloaded = ValidatorState.load(tmp_path)
 
-        assert reloaded.king is not None
-        assert reloaded.king.uid == 2
-        assert reloaded.king.score == 0.6
-        assert reloaded.king.digest == "sha256:" + "b" * 64
-        assert reloaded.king.crowned_at_block == 210
+        assert reloaded.winner is not None
+        assert reloaded.winner.uid == 2
+        assert reloaded.winner.score == 0.6
+        assert reloaded.winner.digest == "sha256:" + "b" * 64
+        assert reloaded.winner.won_at_block == 210
         assert reloaded.has_evaluation("hk1", 100)
         assert reloaded.has_evaluation("hk2", 200)
         assert reloaded.has_precheck_failure("hk3", 300)
@@ -593,23 +680,52 @@ class TestPersistence:
 
     def test_load_missing_file_returns_empty_state(self, tmp_path):
         loaded = ValidatorState.load(tmp_path)
-        assert loaded.king is None
+        assert loaded.winner is None
         assert loaded.evaluations == {}
 
     def test_load_corrupt_file_returns_empty_state(self, tmp_path):
         (tmp_path / STATE_FILE_NAME).write_text("{not valid json")
         loaded = ValidatorState.load(tmp_path)
-        assert loaded.king is None
+        assert loaded.winner is None
 
     def test_load_corrupt_file_is_quarantined(self, tmp_path):
         state_path = tmp_path / STATE_FILE_NAME
         state_path.write_text("{not valid json")
         loaded = ValidatorState.load(tmp_path)
-        assert loaded.king is None
+        assert loaded.winner is None
         assert not state_path.exists()
         quarantined = list(tmp_path.glob(f"{STATE_FILE_NAME}.corrupt.*"))
         assert len(quarantined) == 1
         assert quarantined[0].read_text() == "{not valid json"
+
+    def test_load_legacy_king_key_fallback(self, tmp_path):
+        """State files with the old `king` key should load correctly."""
+        old_payload = {
+            "schema_version": 1,
+            "king": {
+                "uid": 7,
+                "hotkey": "hk_legacy",
+                "commit_block": 100,
+                "image": "img:v1",
+                "digest": "sha256:" + "c" * 64,
+                "score": 0.42,
+                "ttft_improvement": 0.1,
+                "throughput_improvement": 0.2,
+                "token_match_rate": 0.99,
+                "evaluated_at": 123.0,
+                "evaluation_block": 110,
+                "crowned_at_block": 105,
+            },
+            "evaluations": {},
+            "precheck_failures": {},
+            "last_scan_block": 0,
+            "last_weights_set_block": 0,
+        }
+        (tmp_path / STATE_FILE_NAME).write_text(json.dumps(old_payload))
+        loaded = ValidatorState.load(tmp_path)
+        assert loaded.winner is not None
+        assert loaded.winner.uid == 7
+        assert loaded.winner.won_at_block == 105
 
     def test_load_stale_field_names_does_not_crash(self, tmp_path):
         """A state file with old KV-cache field names must fall back to
@@ -652,7 +768,7 @@ class TestPersistence:
         }
         (tmp_path / STATE_FILE_NAME).write_text(json.dumps(old_payload))
         loaded = ValidatorState.load(tmp_path)
-        assert loaded.king is None
+        assert loaded.winner is None
         assert loaded.evaluations == {}
 
     def test_load_malformed_record_does_not_crash(self, tmp_path):
@@ -668,7 +784,7 @@ class TestPersistence:
         }
         (tmp_path / STATE_FILE_NAME).write_text(json.dumps(bad_payload))
         loaded = ValidatorState.load(tmp_path)
-        assert loaded.king is None
+        assert loaded.winner is None
         assert loaded.evaluations == {}
 
     def test_newer_schema_rejected(self, tmp_path):
@@ -720,16 +836,16 @@ class TestCloneAndTimestamp:
             clone,
             _make_eval(uid=99, hotkey="hk_new", commit_block=999, score=0.9),
         )
-        assert state.king.uid == 1
-        assert clone.king.uid == 99
+        assert state.winner.uid == 1
+        assert clone.winner.uid == 99
 
     def test_current_timestamp_is_monotonic_enough(self):
         assert current_timestamp() > 0
 
 
-class TestAppendKingHistory:
-    def _king(self, uid=1, score=0.5) -> KingRecord:
-        return KingRecord(
+class TestAppendWinnerHistory:
+    def _winner(self, uid=1, score=0.5) -> WinnerRecord:
+        return WinnerRecord(
             uid=uid,
             hotkey=f"hk{uid}",
             commit_block=100,
@@ -741,47 +857,47 @@ class TestAppendKingHistory:
             token_match_rate=0.995,
             evaluated_at=1700000000.0,
             evaluation_block=1000,
-            crowned_at_block=1000,
+            won_at_block=1000,
         )
 
-    def test_first_king_no_prev(self, tmp_path):
+    def test_first_winner_no_prev(self, tmp_path):
         ev = _make_eval(uid=1, score=0.5)
-        append_king_history(
-            tmp_path, ev, None, current_block=1000, dethrone_threshold=0.0
+        append_winner_history(
+            tmp_path, ev, None, current_block=1000, overtake_threshold=0.0
         )
-        lines = (tmp_path / "king-history.jsonl").read_text().strip().splitlines()
+        lines = (tmp_path / "winner-history.jsonl").read_text().strip().splitlines()
         assert len(lines) == 1
         entry = json.loads(lines[0])
-        assert entry["new_king_uid"] == 1
+        assert entry["new_winner_uid"] == 1
         assert entry["block"] == 1000
-        assert "prev_king_uid" not in entry
+        assert "prev_winner_uid" not in entry
 
-    def test_dethronement_includes_prev_king(self, tmp_path):
+    def test_overtake_includes_prev_winner(self, tmp_path):
         ev = _make_eval(uid=2, hotkey="hk2", score=0.6)
-        prev = self._king(uid=1, score=0.4)
-        append_king_history(
-            tmp_path, ev, prev, current_block=2000, dethrone_threshold=0.404
+        prev = self._winner(uid=1, score=0.4)
+        append_winner_history(
+            tmp_path, ev, prev, current_block=2000, overtake_threshold=0.404
         )
-        entry = json.loads((tmp_path / "king-history.jsonl").read_text().strip())
-        assert entry["prev_king_uid"] == 1
-        assert entry["prev_king_hotkey"] == "hk1"
-        assert entry["prev_king_score"] == 0.4
-        assert entry["new_king_score"] == 0.6
+        entry = json.loads((tmp_path / "winner-history.jsonl").read_text().strip())
+        assert entry["prev_winner_uid"] == 1
+        assert entry["prev_winner_hotkey"] == "hk1"
+        assert entry["prev_winner_score"] == 0.4
+        assert entry["new_winner_score"] == 0.6
 
     def test_multiple_appends(self, tmp_path):
         for i in range(3):
             ev = _make_eval(uid=i, hotkey=f"hk{i}", score=0.1 * (i + 1))
-            append_king_history(
-                tmp_path, ev, None, current_block=1000 + i, dethrone_threshold=0.0
+            append_winner_history(
+                tmp_path, ev, None, current_block=1000 + i, overtake_threshold=0.0
             )
-        lines = (tmp_path / "king-history.jsonl").read_text().strip().splitlines()
+        lines = (tmp_path / "winner-history.jsonl").read_text().strip().splitlines()
         assert len(lines) == 3
-        assert json.loads(lines[2])["new_king_uid"] == 2
+        assert json.loads(lines[2])["new_winner_uid"] == 2
 
     def test_write_failure_does_not_raise(self, tmp_path):
         ro_dir = tmp_path / "readonly"
         ro_dir.mkdir()
-        (ro_dir / "king-history.jsonl").write_text("")
-        (ro_dir / "king-history.jsonl").chmod(0o000)
+        (ro_dir / "winner-history.jsonl").write_text("")
+        (ro_dir / "winner-history.jsonl").chmod(0o000)
         ev = _make_eval()
-        append_king_history(ro_dir, ev, None, current_block=1, dethrone_threshold=0.0)
+        append_winner_history(ro_dir, ev, None, current_block=1, overtake_threshold=0.0)

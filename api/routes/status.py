@@ -16,14 +16,14 @@ router = APIRouter()
     tags=["Overview"],
     summary="Validator status overview",
     description=(
-        "Current king, evaluation counts, time since last eval, "
+        "Current winner, evaluation counts, time since last eval, "
         "and chain scan / weight-set block numbers."
     ),
 )
 def status():
     state = safe_json_load(STATE_DIR / "state.json", {})
     evals = state.get("evaluations") or {}
-    king = state.get("king")
+    winner = state.get("winner") or state.get("king")
 
     n_dq = sum(1 for e in evals.values() if e.get("disqualified"))
     n_active = sum(1 for e in evals.values() if not e.get("disqualified"))
@@ -36,9 +36,9 @@ def status():
     return JSONResponse(
         content=sanitize_floats(
             {
-                "king_uid": king.get("uid") if king else None,
-                "king_score": king.get("score") if king else None,
-                "king_image": king.get("image") if king else None,
+                "winner_uid": winner.get("uid") if winner else None,
+                "winner_score": winner.get("score") if winner else None,
+                "winner_image": winner.get("image") if winner else None,
                 "n_evaluated": len(evals),
                 "n_active": n_active,
                 "n_disqualified": n_dq,
