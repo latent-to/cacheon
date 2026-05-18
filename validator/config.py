@@ -20,7 +20,7 @@ SUBTENSOR_NETWORK: str = os.environ.get("CACHEON_NETWORK", "finney")
 WALLET_NAME: str = os.environ.get("CACHEON_WALLET_NAME", "default")
 WALLET_HOTKEY: str = os.environ.get("CACHEON_WALLET_HOTKEY", "default")
 
-POLL_INTERVAL_S: int = int(os.environ.get("CACHEON_POLL_INTERVAL_S", "36"))
+POLL_INTERVAL_S: int = int(os.environ.get("CACHEON_POLL_INTERVAL_S", "600"))
 """Seconds to sleep when there's nothing new to evaluate. Docker eval takes
 minutes; reacting faster than this buys nothing."""
 
@@ -84,7 +84,7 @@ HF_TOKEN: str = os.environ.get("HF_TOKEN", "")
 HIPPIUS_ACCESS_KEY: str = os.environ.get("HIPPIUS_ACCESS_KEY", "")
 HIPPIUS_SECRET_KEY: str = os.environ.get("HIPPIUS_SECRET_KEY", "")
 S3_BUCKET: str = os.environ.get("CACHEON_S3_BUCKET", "cacheon-validator")
-S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state")
+S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state-mainnet")
 
 # --------------------------------------------------------------------------- #
 # Winner defender-advantage window

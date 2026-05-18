@@ -3,7 +3,7 @@
 Runs continuously on a lightweight VPS. Does NOT evaluate miners; that
 happens on an ephemeral GPU pod reading ``eval_job.json`` from S3.
 
-Loop (every CACHEON_POLL_INTERVAL_S, default 36s):
+Loop (every CACHEON_POLL_INTERVAL_S, default 600s):
     1. Download latest state from Hippius S3
     2. Chain scan: fetch metagraph + commitments
     3. If winner's hotkey deregistered, promote runner-up or clear
