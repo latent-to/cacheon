@@ -24,7 +24,8 @@ from .providers import GpuInstance, GpuProvider, PodHandle, search_all_providers
 
 logger = logging.getLogger(__name__)
 
-SETUP_BRANCH = "main"
+# TODO: revert to "main" before merging this branch
+SETUP_BRANCH = "feat/incentive-rework-runner-up-emission"
 SETUP_SCRIPT_URL = f"https://raw.githubusercontent.com/latent-to/cacheon/{SETUP_BRANCH}/validator/setup-gpu.sh"
 
 
