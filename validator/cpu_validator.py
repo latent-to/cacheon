@@ -257,6 +257,7 @@ def run_tick(
                 state.winner = WinnerRecord.from_evaluation(
                     ru, won_at_block=current_block
                 )
+                state.runner_up_record = None  # promoted; no runner-up until next eval
                 state.last_weights_set_block = 0  # force immediate weight update
             else:
                 reason = "runner-up also gone" if ru is not None else "no runner-up"
@@ -267,6 +268,7 @@ def run_tick(
                     reason,
                 )
                 state.winner = None
+                state.runner_up_record = None
 
     # Weight setting
     weights_set = False
