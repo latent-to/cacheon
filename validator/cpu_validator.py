@@ -373,6 +373,12 @@ def run_tick(
                     image=state.winner.image,
                     digest=state.winner.digest,
                 )
+                logger.info(
+                    "  Leader (re-eval): UID %d  %s  %s",
+                    state.winner.uid,
+                    state.winner.hotkey[:16],
+                    state.winner.image,
+                )
 
             ru = state.runner_up
             ru_info = None
@@ -383,6 +389,12 @@ def run_tick(
                     commit_block=ru.commit_block,
                     image=ru.image,
                     digest=ru.digest,
+                )
+                logger.info(
+                    "  Runner-up (re-eval): UID %d  %s  %s",
+                    ru.uid,
+                    ru.hotkey[:16],
+                    ru.image,
                 )
 
             eval_job = EvalJob(
@@ -412,6 +424,24 @@ def run_tick(
                     {"uid": c.uid, "hotkey": c.hotkey, "image": c.image}
                     for c in challenger_set.challengers
                 ],
+                leader=(
+                    {
+                        "uid": state.winner.uid,
+                        "hotkey": state.winner.hotkey,
+                        "image": state.winner.image,
+                    }
+                    if state.winner is not None
+                    else None
+                ),
+                runner_up=(
+                    {
+                        "uid": ru.uid,
+                        "hotkey": ru.hotkey,
+                        "image": ru.image,
+                    }
+                    if ru is not None
+                    else None
+                ),
             )
             eval_job.save(state_dir)
             state.save(state_dir)

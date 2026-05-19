@@ -82,6 +82,8 @@ def update_progress(
     round_block: int | None = None,
     detail: str | None = None,
     challengers: list[dict[str, Any]] | None = None,
+    leader: dict[str, Any] | None = None,
+    runner_up: dict[str, Any] | None = None,
     gpu: dict[str, Any] | None = None,
     **extra: Any,
 ) -> None:
@@ -114,6 +116,8 @@ def update_progress(
                 "detail": detail,
                 "current_idx": None,
                 "challengers": entries,
+                "leader": leader,
+                "runner_up": runner_up,
                 "gpu": None,
                 "steps": [step],
                 "started_at": now,
