@@ -73,16 +73,23 @@ class BaselineCache:
         )
 
 
-def derive_cache_key(block_hash: str, baseline_digest: str = "") -> str:
-    """SHA-256 of block_hash + baseline_digest + prompt engine version.
+def derive_cache_key(
+    block_hash: str,
+    baseline_digest: str = "",
+    session_nonce: str | None = None,
+) -> str:
+    """SHA-256 of block_hash + baseline_digest + nonce + prompt engine version.
 
     Including the baseline digest ensures a cache miss when the pinned
     vLLM image changes. Including the prompt engine version invalidates
-    the cache when templates or sampling logic change.
+    the cache when templates or sampling logic change. Including the
+    per-eval-session nonce ensures the cached baseline output is only
+    reused within the same eval session — defeating prompt-prediction
+    replay attacks that pre-compute baseline outputs for known block hashes.
     """
     from .prompts import PROMPT_ENGINE_VERSION
 
-    raw = f"{block_hash}:{baseline_digest}:v{PROMPT_ENGINE_VERSION}"
+    raw = f"{block_hash}:{baseline_digest}:{session_nonce or 'legacy'}:v{PROMPT_ENGINE_VERSION}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
