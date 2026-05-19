@@ -49,14 +49,6 @@ WEIGHTS_REFRESH_BLOCKS: int = int(
 """Re-affirm weights at least once per tempo (~72 min at 12s/block) so the
 validator stays active in consensus even when no new GPU eval results arrive."""
 
-# TODO: Remove this once the ranking round is confirmed stable in production.
-# Set to [] to resume normal challenger selection.
-_FORCE_EVAL_IMAGES: list[tuple[int, str]] = [
-    (119, "20031108/qwen-ttft-inference:v5"),
-    (105, "docker.io/donate110/cacheon-sglang:v2"),
-    (1,   "docker.io/elginarda/uid218-runtime:v5"),
-    (127, "docker.io/sloddlos1231/cacheon-miner:v11-batched-98k"),
-]
 
 
 # --------------------------------------------------------------------------- #
@@ -297,7 +289,8 @@ def run_tick(
             winner_score=state.winner.score,
             runner_up_uid=runner_up_uid,
         )
-        uid_list = list(range(len(w)))
+        uid_list = [u for u, wt in enumerate(w) if wt > 0]
+        w = [wt for wt in w if wt > 0]
 
         if dry_run:
             burn_uid = validator_config.BURN_UID
@@ -360,70 +353,6 @@ def run_tick(
         len(challenger_set.deferred),
         len(challenger_set.already_known),
     )
-
-    # TODO: Remove this override once ranking round is confirmed stable — see _FORCE_EVAL_IMAGES.
-    if _FORCE_EVAL_IMAGES and block_hash is not None:
-        uid_to_com = {c.uid: c for c in commitments.values()}
-        forced: list[ChallengerInfo] = []
-        for uid, image in _FORCE_EVAL_IMAGES:
-            com = uid_to_com.get(uid)
-            hotkey = com.hotkey if com else (
-                metagraph.hotkeys[uid] if uid < len(metagraph.hotkeys) else ""
-            )
-            commit_block = com.commit_block if com else current_block
-            digest = com.digest if com else ""
-            forced.append(
-                ChallengerInfo(
-                    uid=uid,
-                    hotkey=hotkey,
-                    commit_block=commit_block,
-                    image=image,
-                    digest=digest,
-                )
-            )
-            logger.info("  Force: UID %d  %s  %s", uid, hotkey[:16], image)
-        eval_job = EvalJob(
-            block=current_block,
-            block_hash=block_hash,
-            challengers=forced,
-            created_at=time.time(),
-        )
-        from .eval_progress import update_progress
-
-        update_progress(
-            state_dir,
-            phase="challengers_found",
-            round_block=current_block,
-            challengers=[
-                {"uid": c.uid, "hotkey": c.hotkey, "image": c.image} for c in forced
-            ],
-        )
-        eval_job.save(state_dir)
-        state.save(state_dir)
-        _try_upload(state_dir)
-        logger.info("🔧 Force-eval: %d hardcoded challenger(s) written to eval_job.json", len(forced))
-        if validator_config.AUTO_RENT:
-            from .gpu_orchestrator import run_gpu_eval
-
-            success = run_gpu_eval(state_dir, eval_job)
-            if success:
-                try:
-                    from .sync import download
-
-                    download(state_dir)
-                except Exception as exc:
-                    logger.error("Post-eval S3 download failed: %s", exc)
-                _reload_state(state, state_dir)
-            from .eval_progress import clear_progress
-
-            clear_progress(state_dir)
-        return {
-            "block": current_block,
-            "commitments": len(commitments),
-            "challengers": len(forced),
-            "weights_set": weights_set,
-            "winner_uid": state.winner.uid if state.winner else None,
-        }
 
     n_challengers = len(challenger_set.challengers)
     if challenger_set.challengers:

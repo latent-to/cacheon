@@ -36,7 +36,7 @@ DRY_RUN: bool = os.environ.get("CACHEON_DRY_RUN", "0") == "1"
 """When True, skip `subtensor.set_weights()` and do not run Docker eval.
 Useful for testing the loop without touching the chain."""
 
-VERSION_KEY: int = int(os.environ.get("CACHEON_VERSION_KEY", "1"))
+VERSION_KEY: int = int(os.environ.get("CACHEON_VERSION_KEY", "28"))
 """Version tag passed as `version_key` to `subtensor.set_weights(...)`. Bump
 whenever the scoring mechanism or evaluation rules change in a way that would
 produce different winner selections on identical commits.
@@ -146,3 +146,7 @@ collision."""
 LOG_RETENTION_DAYS: int = int(os.environ.get("CACHEON_LOG_RETENTION_DAYS", "10"))
 """Delete log files in ``state/logs/`` older than this many days (by filename
 timestamp). 0 disables pruning."""
+
+"""
+5CcSHeTqYghvMgTUtiXF7rbUuc8q9xuNtCo72rn4oeCmg6UX
+"""
