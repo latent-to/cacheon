@@ -146,7 +146,3 @@ collision."""
 LOG_RETENTION_DAYS: int = int(os.environ.get("CACHEON_LOG_RETENTION_DAYS", "10"))
 """Delete log files in ``state/logs/`` older than this many days (by filename
 timestamp). 0 disables pruning."""
-
-"""
-5CcSHeTqYghvMgTUtiXF7rbUuc8q9xuNtCo72rn4oeCmg6UX
-"""
