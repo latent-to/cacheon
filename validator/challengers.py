@@ -80,6 +80,14 @@ class ChallengerSet:
         return len(self.challengers)
 
 
+# TODO: this is a temporary testing..
+_SKIPPED_IMAGE_PREFIXES: tuple[str, ...] = ("brandonminion/",)
+
+
+def _is_skipped_image(image: str) -> bool:
+    return any(image.startswith(prefix) for prefix in _SKIPPED_IMAGE_PREFIXES)
+
+
 def select_challengers(
     state: ValidatorState,
     commitments: Iterable[CommitmentRecord],
@@ -100,6 +108,17 @@ def select_challengers(
     for com in commitments:
         if state.is_known(com.hotkey, com.commit_block):
             already_known.append(com)
+            continue
+
+        if _is_skipped_image(com.image):
+            reason = f"image skipped (temporary testing skip): {com.image}"
+            logger.info(
+                "UID %d (%s) skipped: %s",
+                com.uid,
+                com.hotkey[:16] + "...",
+                reason,
+            )
+            newly_rejected.append((com, reason))
             continue
 
         result = precheck(com)

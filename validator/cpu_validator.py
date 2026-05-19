@@ -118,6 +118,7 @@ def _reload_state(state: ValidatorState, state_dir: str) -> None:
     """Reload state from disk into the existing object (GPU may have updated it)."""
     fresh = ValidatorState.load(state_dir)
     state.winner = fresh.winner
+    state.runner_up_record = fresh.runner_up_record
     state.evaluations = fresh.evaluations
     state.precheck_failures = fresh.precheck_failures
     state.last_scan_block = fresh.last_scan_block
@@ -363,6 +364,27 @@ def run_tick(
                 logger.info(
                     "  New: UID %d  %s  %s", com.uid, com.hotkey[:16], com.image
                 )
+            leader_info = None
+            if state.winner is not None:
+                leader_info = ChallengerInfo(
+                    uid=state.winner.uid,
+                    hotkey=state.winner.hotkey,
+                    commit_block=state.winner.commit_block,
+                    image=state.winner.image,
+                    digest=state.winner.digest,
+                )
+
+            ru = state.runner_up
+            ru_info = None
+            if ru is not None:
+                ru_info = ChallengerInfo(
+                    uid=ru.uid,
+                    hotkey=ru.hotkey,
+                    commit_block=ru.commit_block,
+                    image=ru.image,
+                    digest=ru.digest,
+                )
+
             eval_job = EvalJob(
                 block=current_block,
                 block_hash=block_hash,
@@ -377,6 +399,8 @@ def run_tick(
                     for c in challenger_set.challengers
                 ],
                 created_at=time.time(),
+                leader=leader_info,
+                runner_up=ru_info,
             )
             from .eval_progress import update_progress
 

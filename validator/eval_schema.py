@@ -208,15 +208,18 @@ class ChallengerInfo:
 class EvalJob:
     """What the CPU writes to ``eval_job.json`` for the GPU entrypoint.
 
-    Contains block context and a list of challengers. The GPU pod reads
-    this file, runs eval for each challenger, and writes results into
-    ``state.json``.
+    Contains block context, a list of challengers, and optionally the
+    current leader and runner-up to re-evaluate on the same hardware.
+    The GPU pod reads this file, runs eval for each entry, and writes
+    results into ``state.json``.
     """
 
     block: int
     block_hash: str
     challengers: list[ChallengerInfo]
     created_at: float = 0.0
+    leader: ChallengerInfo | None = None
+    runner_up: ChallengerInfo | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -224,10 +227,14 @@ class EvalJob:
             "block_hash": self.block_hash,
             "challengers": [c.to_dict() for c in self.challengers],
             "created_at": self.created_at,
+            "leader": self.leader.to_dict() if self.leader else None,
+            "runner_up": self.runner_up.to_dict() if self.runner_up else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EvalJob:
+        leader_data = data.get("leader")
+        ru_data = data.get("runner_up")
         return cls(
             block=int(data["block"]),
             block_hash=str(data["block_hash"]),
@@ -235,6 +242,8 @@ class EvalJob:
                 ChallengerInfo.from_dict(c) for c in data.get("challengers", [])
             ],
             created_at=float(data.get("created_at", 0.0)),
+            leader=ChallengerInfo.from_dict(leader_data) if leader_data else None,
+            runner_up=ChallengerInfo.from_dict(ru_data) if ru_data else None,
         )
 
     def save(self, state_dir: str | Path) -> None:
@@ -243,7 +252,11 @@ class EvalJob:
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
         logger.info(
-            "Wrote eval job: %d challenger(s) to %s", len(self.challengers), path
+            "Wrote eval job: %d challenger(s), leader=%s, runner_up=%s to %s",
+            len(self.challengers),
+            self.leader.hotkey[:16] if self.leader else "none",
+            self.runner_up.hotkey[:16] if self.runner_up else "none",
+            path,
         )
 
     @classmethod

@@ -29,6 +29,11 @@ from typing import Any, Iterable
 
 from . import config as validator_config
 
+OVERTAKE_EPSILON: float = 0.01
+"""Fixed 1% moat: a challenger must strictly exceed
+``leader.score * (1 + OVERTAKE_EPSILON)`` to dethrone the leader
+within the same round."""
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION: int = 1
@@ -206,25 +211,26 @@ class RecordResult:
     overtake_threshold: float
 
 
-def _effective_overtake_threshold(
-    winner_score: float,
-    winner_won_at_block: int,
-    current_block: int,
-    *,
-    epsilon_initial: float = validator_config.WINNER_EPSILON_INITIAL,
-    decay_blocks: int = validator_config.WINNER_EPSILON_DECAY_BLOCKS,
-) -> float:
-    """Score a challenger must strictly exceed to overtake the winner.
+def _effective_overtake_threshold(winner_score: float) -> float:
+    """Score a challenger must strictly exceed to dethrone the leader.
 
-    Starts at `winner_score * (1 + epsilon_initial)` the block the winner
-    won and decays linearly to `winner_score` over `decay_blocks`.
+    Fixed 1% moat (no decay). Fresh leader scores are collected each
+    round, so the time-based decay is no longer needed.
     """
-    if decay_blocks <= 0 or epsilon_initial <= 0.0:
-        return winner_score
-    age = max(0, current_block - winner_won_at_block)
-    decay = max(0.0, 1.0 - age / decay_blocks)
-    epsilon = epsilon_initial * decay
-    return winner_score * (1.0 + epsilon)
+    return winner_score * (1.0 + OVERTAKE_EPSILON)
+
+
+def _pick_runner_up(
+    sorted_candidates: list[EvaluationRecord],
+    winner_hotkey: str,
+    current_block: int,
+) -> WinnerRecord | None:
+    """From a descending-score list, return the best candidate whose
+    hotkey differs from the winner's. Returns None when no such candidate."""
+    for rec in sorted_candidates:
+        if rec.hotkey != winner_hotkey:
+            return WinnerRecord.from_evaluation(rec, won_at_block=current_block)
+    return None
 
 
 @dataclass
@@ -232,6 +238,9 @@ class ValidatorState:
     """The validator's durable state. All fields are JSON-serializable."""
 
     winner: WinnerRecord | None = None
+    runner_up_record: WinnerRecord | None = None
+    """Persisted runner-up, set by ``rerank_round()`` alongside winner."""
+
     evaluations: dict[str, EvaluationRecord] = field(default_factory=dict)
     """Keyed by `"{hotkey}:{commit_block}"`."""
 
@@ -272,13 +281,17 @@ class ValidatorState:
         return sorted(matches, key=lambda e: e.commit_block)
 
     @property
-    def runner_up(self) -> EvaluationRecord | None:
-        """Highest-scoring non-winner hotkey from completed evaluations.
-
-        Groups by hotkey (best score per hotkey), excludes the winner's
-        hotkey, excludes DQ'd / zero / non-finite scores. Returns None
-        when there is no valid runner-up.
+    def runner_up(self) -> EvaluationRecord | WinnerRecord | None:
+        """The runner-up. Returns the persisted ``runner_up_record`` when
+        set (populated by ``rerank_round``), otherwise falls back to
+        scanning ``evaluations`` for the highest-scoring non-winner hotkey.
         """
+        if self.runner_up_record is not None:
+            return self.runner_up_record
+        return self._compute_runner_up()
+
+    def _compute_runner_up(self) -> EvaluationRecord | None:
+        """Scan evaluations for the best non-winner hotkey (fallback)."""
         if not self.evaluations:
             return None
         winner_hotkey = self.winner.hotkey if self.winner else None
@@ -310,18 +323,11 @@ class ValidatorState:
         *,
         current_block: int,
     ) -> RecordResult:
-        """Store an eval; return the record as actually stored.
+        """Store an eval and apply duplicate-of-winner DQ.
 
-        Two-stage overtake rule:
-          1. **Duplicate-of-winner DQ.** If `ev.digest` matches the current
-             winner's digest, the hotkeys differ, and `ev.commit_block` is
-             strictly later than the winner's, the incoming record is
-             rewritten to DQ with reason ``duplicate_of_winner`` before
-             being stored (score zeroed). Byte-identical Docker images
-             can never tie or overtake -- earliest-block-wins.
-          2. **Decaying-epsilon threshold.** A non-DQ'd challenger must
-             strictly exceed `_effective_overtake_threshold(winner, block)`
-             to take the top spot.
+        Ranking and throne changes are handled separately by
+        ``rerank_round()`` after all participants have been evaluated.
+        This method only stores the record (with optional DQ annotation).
         """
         stored = ev
         if (
@@ -346,43 +352,79 @@ class ValidatorState:
             )
 
         self.evaluations[stored.eval_key] = stored
-
         self.precheck_failures.pop(stored.eval_key, None)
 
-        threshold = 0.0
-        if self.winner is not None:
-            threshold = _effective_overtake_threshold(
-                self.winner.score,
-                self.winner.won_at_block,
-                current_block,
-            )
-
-        if (
-            stored.disqualified
-            or not math.isfinite(stored.score)
-            or stored.score <= 0.0
-        ):
-            return RecordResult(
-                stored=stored,
-                overtook=False,
-                overtake_threshold=threshold,
-            )
-
-        if self.winner is None or stored.score > threshold:
-            self.winner = WinnerRecord.from_evaluation(
-                stored,
-                won_at_block=current_block,
-            )
-            return RecordResult(
-                stored=stored,
-                overtook=True,
-                overtake_threshold=threshold,
-            )
+        threshold = (
+            _effective_overtake_threshold(self.winner.score)
+            if self.winner is not None
+            else 0.0
+        )
         return RecordResult(
             stored=stored,
             overtook=False,
             overtake_threshold=threshold,
         )
+
+    # ------------------------------------------------------------------ #
+    # Round-level ranking
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def rerank_round(
+        *,
+        leader_record: EvaluationRecord | None,
+        ru_record: EvaluationRecord | None,
+        challenger_records: list[EvaluationRecord],
+        current_block: int,
+    ) -> tuple[WinnerRecord | None, WinnerRecord | None]:
+        """Pick the new winner and runner-up from all fresh same-round scores.
+
+        The leader keeps the throne if no other participant strictly
+        exceeds ``leader.score * (1 + OVERTAKE_EPSILON)``.
+
+        Returns ``(winner, runner_up)`` -- either or both can be ``None``
+        when participants are DQ'd or scored <= 0.
+        """
+
+        def _eligible(rec: EvaluationRecord | None) -> bool:
+            return (
+                rec is not None
+                and not rec.disqualified
+                and math.isfinite(rec.score)
+                and rec.score > 0.0
+            )
+
+        candidates: list[EvaluationRecord] = []
+        if _eligible(leader_record):
+            assert leader_record is not None
+            candidates.append(leader_record)
+        if _eligible(ru_record):
+            assert ru_record is not None
+            candidates.append(ru_record)
+        for rec in challenger_records:
+            if _eligible(rec):
+                candidates.append(rec)
+
+        if not candidates:
+            return None, None
+
+        candidates.sort(key=lambda r: r.score, reverse=True)
+        best = candidates[0]
+
+        if best is not leader_record and _eligible(leader_record):
+            assert leader_record is not None
+            threshold = _effective_overtake_threshold(leader_record.score)
+            if best.score <= threshold:
+                winner_rec = leader_record
+                winner = WinnerRecord.from_evaluation(
+                    winner_rec, won_at_block=current_block
+                )
+                ru = _pick_runner_up(candidates, winner.hotkey, current_block)
+                return winner, ru
+
+        winner = WinnerRecord.from_evaluation(best, won_at_block=current_block)
+        ru = _pick_runner_up(candidates, winner.hotkey, current_block)
+        return winner, ru
 
     # ------------------------------------------------------------------ #
     # Serialization
@@ -392,6 +434,11 @@ class ValidatorState:
         return {
             "schema_version": self.schema_version,
             "winner": self.winner.to_dict() if self.winner is not None else None,
+            "runner_up": (
+                self.runner_up_record.to_dict()
+                if self.runner_up_record is not None
+                else None
+            ),
             "evaluations": {k: v.to_dict() for k, v in self.evaluations.items()},
             "precheck_failures": dict(self.precheck_failures),
             "last_scan_block": self.last_scan_block,
@@ -411,6 +458,9 @@ class ValidatorState:
         winner_data = data.get("winner") or data.get("king")
         winner = WinnerRecord.from_dict(winner_data) if winner_data else None
 
+        ru_data = data.get("runner_up")
+        runner_up_record = WinnerRecord.from_dict(ru_data) if ru_data else None
+
         evaluations = {
             k: EvaluationRecord.from_dict(v)
             for k, v in (data.get("evaluations") or {}).items()
@@ -418,6 +468,7 @@ class ValidatorState:
 
         return cls(
             winner=winner,
+            runner_up_record=runner_up_record,
             evaluations=evaluations,
             precheck_failures=dict(data.get("precheck_failures") or {}),
             last_scan_block=int(data.get("last_scan_block", 0) or 0),

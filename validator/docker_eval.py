@@ -805,6 +805,7 @@ def evaluate_challenger(
     n_warmup: int,
     current_block: int,
     state_dir: str | Path = "",
+    log_label: str = "",
 ) -> EvaluationRecord:
     """Full lifecycle for one challenger. Returns an EvaluationRecord."""
     container_name = f"cacheon-uid{com.uid}-{com.hotkey[:8]}"
@@ -835,8 +836,8 @@ def evaluate_challenger(
         eval_error = exc
     finally:
         if state_dir:
-            log_label = f"uid{com.uid}_{com.hotkey[:8]}_{current_block}"
-            capture_container_logs(cid or container_name, state_dir, log_label)
+            _label = log_label or f"uid{com.uid}_{com.hotkey[:8]}_{current_block}"
+            capture_container_logs(cid or container_name, state_dir, _label)
         stop_and_remove(cid or container_name)
         reset_gpu_state()
 
