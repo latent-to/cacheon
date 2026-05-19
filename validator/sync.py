@@ -172,14 +172,13 @@ def download(
     s3 = _client()
     paginator = s3.get_paginator("list_objects_v2")
 
+    prefix_dir = (prefix.rstrip("/") + "/") if prefix else ""
+
     files: list[tuple[str, str]] = []
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix_dir):
         for obj in page.get("Contents", []):
             key = obj["Key"]
-            if prefix:
-                rel = key[len(prefix) :].lstrip("/")
-            else:
-                rel = key
+            rel = key[len(prefix_dir) :] if prefix_dir else key
             if not rel or _should_skip(rel):
                 continue
             local_file = state_path / rel

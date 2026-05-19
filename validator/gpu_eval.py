@@ -137,17 +137,22 @@ def main() -> int:
     # Load state and eval job
     state = ValidatorState.load(state_dir)
     eval_job = EvalJob.load(state_dir)
-    if eval_job is None or not eval_job.challengers:
-        logger.info("No challengers in eval job, nothing to do")
+    has_work = eval_job is not None and (
+        eval_job.challengers or eval_job.leader or eval_job.runner_up
+    )
+    if not has_work:
+        logger.info("No challengers/leader/runner_up in eval job, nothing to do")
         return 0
 
     block = eval_job.block
     block_hash = eval_job.block_hash
     logger.info(
-        "Eval job: block=%d, block_hash=%s, %d challenger(s)",
+        "Eval job: block=%d, block_hash=%s, %d challenger(s), leader=%s, runner_up=%s",
         block,
         block_hash[:16] if block_hash else "None",
         len(eval_job.challengers),
+        eval_job.leader.hotkey[:16] if eval_job.leader else "none",
+        eval_job.runner_up.hotkey[:16] if eval_job.runner_up else "none",
     )
 
     if gpu_count <= 0:
@@ -198,7 +203,62 @@ def main() -> int:
     update_progress(state_dir, phase="baseline_complete")
     _upload_state(state_dir)
 
+    # ------------------------------------------------------------------ #
+    # Evaluate leader and runner-up (fresh scores on same hardware)
+    # ------------------------------------------------------------------ #
+
+    def _eval_incumbent(ci, label: str):
+        """Run a leader or runner-up container; return EvaluationRecord or None."""
+        if ci is None:
+            return None
+        com = CommitmentRecord(
+            uid=ci.uid,
+            hotkey=ci.hotkey,
+            commit_block=ci.commit_block,
+            image=ci.image,
+            digest=ci.digest,
+            raw="",
+        )
+        logger.info(
+            "Re-evaluating %s UID %d (%s) image=%s",
+            label,
+            com.uid,
+            com.hotkey[:16],
+            com.image,
+        )
+        update_progress(state_dir, phase=f"{label}_running")
+        _upload_progress(state_dir)
+        record = evaluate_challenger(
+            com,
+            prompts,
+            baseline,
+            model_volume=model_volume,
+            startup_timeout_s=600,
+            per_prompt_timeout_s=120,
+            n_warmup=2,
+            current_block=block,
+            state_dir=state_dir,
+            log_label=label,
+        )
+        icon = "❌" if record.disqualified else "📊"
+        logger.info(
+            "%s %s UID %d score=%.4f (dq=%s)",
+            icon,
+            label,
+            record.uid,
+            record.score,
+            record.disqualify_reason or "no",
+        )
+        return record
+
+    leader_record = _eval_incumbent(eval_job.leader, "leader")
+    ru_record = _eval_incumbent(eval_job.runner_up, "runner_up")
+
+    # ------------------------------------------------------------------ #
     # Evaluate challengers
+    # ------------------------------------------------------------------ #
+
+    challenger_records: list = []
     for challenger_idx, ci in enumerate(eval_job.challengers):
         if state.is_known(ci.hotkey, ci.commit_block):
             logger.info("Skipping UID %d (already evaluated)", ci.uid)
@@ -216,7 +276,7 @@ def main() -> int:
             raw="",
         )
         logger.info(
-            "⚔️  Evaluating challenger UID %d (%s) image=%s",
+            "Evaluating challenger UID %d (%s) image=%s",
             com.uid,
             com.hotkey[:16],
             com.image,
@@ -236,16 +296,14 @@ def main() -> int:
             current_block=block,
             state_dir=state_dir,
         )
-        prev_winner = state.winner
         outcome = state.record_evaluation(record, current_block=block)
         icon = "❌" if outcome.stored.disqualify_reason else "📊"
         logger.info(
-            "%s UID %d score=%.4f (dq=%s, overtook=%s)",
+            "%s UID %d score=%.4f (dq=%s)",
             icon,
             outcome.stored.uid,
             outcome.stored.score,
             outcome.stored.disqualify_reason or "no",
-            outcome.overtook,
         )
         if outcome.stored.disqualified:
             update_challenger_status(
@@ -264,22 +322,60 @@ def main() -> int:
                 score=outcome.stored.score,
                 detail="scored",
             )
-        if outcome.overtook:
-            logger.info(
-                "👑 New winner: UID %d (score=%.4f)",
-                outcome.stored.uid,
-                outcome.stored.score,
-            )
-            append_winner_history(
-                state_dir,
-                outcome.stored,
-                prev_winner,
-                block,
-                outcome.overtake_threshold,
-            )
+        challenger_records.append(outcome.stored)
 
         state.save(state_dir)
         _upload_state(state_dir)
+
+    # ------------------------------------------------------------------ #
+    # Upsert leader/RU fresh scores and rerank
+    # ------------------------------------------------------------------ #
+
+    if leader_record is not None:
+        state.evaluations[leader_record.eval_key] = leader_record
+    if ru_record is not None:
+        state.evaluations[ru_record.eval_key] = ru_record
+
+    prev_winner = state.winner
+    from .state import OVERTAKE_EPSILON
+
+    new_winner, new_ru = state.rerank_round(
+        leader_record=leader_record,
+        ru_record=ru_record,
+        challenger_records=challenger_records,
+        current_block=block,
+    )
+    state.winner = new_winner
+    state.runner_up_record = new_ru
+
+    winner_changed = (new_winner is None) != (prev_winner is None) or (
+        new_winner is not None
+        and prev_winner is not None
+        and (
+            new_winner.hotkey != prev_winner.hotkey
+            or new_winner.score != prev_winner.score
+        )
+    )
+    if winner_changed:
+        winner_ev = None
+        if new_winner is not None:
+            winner_ev = state.evaluations.get(
+                f"{new_winner.hotkey}:{new_winner.commit_block}"
+            )
+        if winner_ev is not None:
+            threshold = (
+                new_winner.score * (1.0 + OVERTAKE_EPSILON) if prev_winner else 0.0
+            )
+            append_winner_history(state_dir, winner_ev, prev_winner, block, threshold)
+        if new_winner is not None:
+            logger.info(
+                "New winner: UID %d (score=%.4f)", new_winner.uid, new_winner.score
+            )
+        else:
+            logger.info("No eligible winner this round")
+
+    state.save(state_dir)
+    _upload_state(state_dir)
 
     logger.info(
         "State saved. Winner: %s", f"UID {state.winner.uid}" if state.winner else "none"

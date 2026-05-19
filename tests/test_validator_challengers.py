@@ -39,9 +39,9 @@ class TestSelectChallengers:
     def test_all_new_commitments_become_challengers(self):
         state = ValidatorState()
         commits = [
-            _commit(0, "hk0", 10),
-            _commit(1, "hk1", 20),
-            _commit(2, "hk2", 30),
+            _commit(0, "hk0", 10, image="user/a:v1"),
+            _commit(1, "hk1", 20, image="user/b:v1"),
+            _commit(2, "hk2", 30, image="user/c:v1"),
         ]
         result = select_challengers(state, commits)
         assert len(result) == 3
@@ -173,6 +173,76 @@ class TestSelectChallengers:
 
     def test_len_dunder(self):
         state = ValidatorState()
-        commits = [_commit(0, "hk0", 10), _commit(1, "hk1", 20)]
+        commits = [
+            _commit(0, "hk0", 10, image="user/a:v1"),
+            _commit(1, "hk1", 20, image="user/b:v1"),
+        ]
         result = select_challengers(state, commits)
         assert len(result) == 2
+
+
+class TestDuplicateImageDedup:
+    def test_same_base_different_tags_keeps_latest(self):
+        state = ValidatorState()
+        commits = [
+            _commit(0, "hk0", 10, image="docker.io/user/miner:v2"),
+            _commit(1, "hk1", 20, image="docker.io/user/miner:v3"),
+            _commit(2, "hk2", 30, image="docker.io/user/miner:v1"),
+        ]
+        result = select_challengers(state, commits)
+        assert len(result.challengers) == 1
+        assert result.challengers[0].uid == 1  # v3 wins
+        assert len(result.newly_rejected) == 2
+
+    def test_same_base_same_tag_keeps_earliest_committer(self):
+        state = ValidatorState()
+        commits = [
+            _commit(0, "hk0", 10, image="user/miner:v1"),
+            _commit(1, "hk1", 20, image="user/miner:v1"),
+        ]
+        result = select_challengers(state, commits)
+        assert len(result.challengers) == 1
+        assert result.challengers[0].uid == 0  # commit_block=10 wins
+        assert len(result.newly_rejected) == 1
+
+    def test_no_tag_treated_as_lowest_version(self):
+        state = ValidatorState()
+        commits = [
+            _commit(0, "hk0", 10, image="user/miner"),
+            _commit(1, "hk1", 20, image="user/miner:v1"),
+        ]
+        result = select_challengers(state, commits)
+        assert len(result.challengers) == 1
+        assert result.challengers[0].uid == 1  # :v1 beats no tag
+
+    def test_registry_prefix_stripped_for_base_comparison(self):
+        state = ValidatorState()
+        commits = [
+            _commit(0, "hk0", 10, image="docker.io/user/miner:v1"),
+            _commit(1, "hk1", 20, image="docker.io/user/miner:v2"),
+        ]
+        result = select_challengers(state, commits)
+        assert len(result.challengers) == 1
+        assert result.challengers[0].uid == 1  # v2 wins
+
+    def test_different_base_images_all_pass(self):
+        state = ValidatorState()
+        commits = [
+            _commit(0, "hk0", 10, image="user/alpha:v1"),
+            _commit(1, "hk1", 20, image="user/beta:v1"),
+            _commit(2, "hk2", 30, image="user/gamma:v1"),
+        ]
+        result = select_challengers(state, commits)
+        assert len(result.challengers) == 3
+        assert result.newly_rejected == []
+
+    def test_complex_tag_version_parsed_correctly(self):
+        # v11-batched-98k should beat v9-attn
+        state = ValidatorState()
+        commits = [
+            _commit(0, "hk0", 10, image="user/miner:v9-attn"),
+            _commit(1, "hk1", 20, image="user/miner:v11-batched-98k"),
+        ]
+        result = select_challengers(state, commits)
+        assert len(result.challengers) == 1
+        assert result.challengers[0].uid == 1  # v11 beats v9

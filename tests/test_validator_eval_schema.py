@@ -330,3 +330,63 @@ class TestEvalJob:
     def test_default_created_at(self):
         job = EvalJob(block=1, block_hash="0x0", challengers=[])
         assert job.created_at == 0.0
+
+    def test_leader_runner_up_defaults_none(self):
+        job = EvalJob(block=1, block_hash="0x0", challengers=[])
+        assert job.leader is None
+        assert job.runner_up is None
+
+    def test_leader_runner_up_round_trip(self):
+        leader = ChallengerInfo(
+            uid=10,
+            hotkey="hk_leader",
+            commit_block=50,
+            image="leader:v1",
+            digest="sha256:" + "l" * 64,
+        )
+        ru = ChallengerInfo(
+            uid=20,
+            hotkey="hk_ru",
+            commit_block=60,
+            image="ru:v1",
+            digest="sha256:" + "r" * 64,
+        )
+        job = EvalJob(
+            block=1000,
+            block_hash="0xabc",
+            challengers=[],
+            leader=leader,
+            runner_up=ru,
+        )
+        restored = EvalJob.from_dict(job.to_dict())
+        assert restored.leader == leader
+        assert restored.runner_up == ru
+
+    def test_leader_none_runner_up_present(self):
+        ru = ChallengerInfo(
+            uid=20,
+            hotkey="hk_ru",
+            commit_block=60,
+            image="ru:v1",
+            digest="sha256:" + "r" * 64,
+        )
+        job = EvalJob(
+            block=1000,
+            block_hash="0xabc",
+            challengers=[],
+            runner_up=ru,
+        )
+        restored = EvalJob.from_dict(job.to_dict())
+        assert restored.leader is None
+        assert restored.runner_up == ru
+
+    def test_backward_compat_no_leader_runner_up_keys(self):
+        data = {
+            "block": 1000,
+            "block_hash": "0xabc",
+            "challengers": [],
+            "created_at": 0.0,
+        }
+        job = EvalJob.from_dict(data)
+        assert job.leader is None
+        assert job.runner_up is None

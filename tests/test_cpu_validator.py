@@ -18,7 +18,7 @@ from validator.cpu_validator import (
 )
 from validator.eval_progress import purge_old_logs
 from validator.eval_schema import EVAL_JOB_FILE, ChallengerInfo, EvalJob
-from validator.state import EvaluationRecord, ValidatorState
+from validator.state import EvaluationRecord, ValidatorState, WinnerRecord
 
 pytestmark = pytest.mark.unit
 
@@ -98,6 +98,14 @@ def _make_eval_record(
     )
 
 
+def _set_winner(
+    state: ValidatorState, rec: EvaluationRecord, *, current_block: int
+) -> None:
+    """Store eval and crown as winner (record_evaluation no longer promotes)."""
+    state.record_evaluation(rec, current_block=current_block)
+    state.winner = WinnerRecord.from_evaluation(rec, won_at_block=current_block)
+
+
 def _noop(*_a, **_k):
     return 0
 
@@ -115,7 +123,7 @@ class TestNeedsWeightSet:
     def test_first_weight_set(self):
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=500)
-        state.record_evaluation(rec, current_block=500)
+        _set_winner(state, rec, current_block=500)
         assert state.winner is not None
         assert state.last_weights_set_block == 0
         reason = _needs_weight_set(state, 1000)
@@ -125,7 +133,7 @@ class TestNeedsWeightSet:
     def test_new_evals_detected(self):
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=800)
-        state.record_evaluation(rec, current_block=800)
+        _set_winner(state, rec, current_block=800)
         state.last_weights_set_block = 500
         reason = _needs_weight_set(state, 1000)
         assert reason is not None
@@ -134,7 +142,7 @@ class TestNeedsWeightSet:
     def test_no_new_evals_not_stale(self):
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=400)
-        state.record_evaluation(rec, current_block=400)
+        _set_winner(state, rec, current_block=400)
         state.last_weights_set_block = 500
         reason = _needs_weight_set(state, 600)
         assert reason is None
@@ -142,7 +150,7 @@ class TestNeedsWeightSet:
     def test_stale_weights_triggers_refresh(self):
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=400)
-        state.record_evaluation(rec, current_block=400)
+        _set_winner(state, rec, current_block=400)
         state.last_weights_set_block = 500
         stale_block = 500 + WEIGHTS_REFRESH_BLOCKS + 1
         reason = _needs_weight_set(state, stale_block)
@@ -184,7 +192,7 @@ class TestRunTickNoChallengers:
         st = FakeSubtensor(hotkeys=["hk0"], revealed={})
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=800)
-        state.record_evaluation(rec, current_block=800)
+        _set_winner(state, rec, current_block=800)
         state.last_weights_set_block = 0
         state.save(tmp_path)
 
@@ -208,7 +216,7 @@ class TestRunTickNoChallengers:
         st = FakeSubtensor(hotkeys=["hk0", "hk1"], revealed={})
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=800)
-        state.record_evaluation(rec, current_block=800)
+        _set_winner(state, rec, current_block=800)
         state.last_weights_set_block = 0
         state.save(tmp_path)
 
@@ -234,7 +242,7 @@ class TestRunTickNoChallengers:
         st = FakeSubtensor(hotkeys=["hk0"], revealed={}, current_block=700)
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=400)
-        state.record_evaluation(rec, current_block=400)
+        _set_winner(state, rec, current_block=400)
         state.last_weights_set_block = 500
         state.save(tmp_path)
 
@@ -294,7 +302,7 @@ class TestRunTickWithChallengers:
         )
         state = ValidatorState()
         rec = _make_eval_record(0, "hk0", 100, 0.5, eval_block=500)
-        state.record_evaluation(rec, current_block=500)
+        _set_winner(state, rec, current_block=500)
         state.last_weights_set_block = 600
         state.save(tmp_path)
 
@@ -375,7 +383,7 @@ class TestRunTickWinnerDereg:
         st = FakeSubtensor(hotkeys=["hk0", "hk_new"], revealed={})
         state = ValidatorState()
         rec = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
-        state.record_evaluation(rec, current_block=500)
+        _set_winner(state, rec, current_block=500)
         state.save(tmp_path)
         assert state.winner is not None
 
@@ -398,7 +406,7 @@ class TestRunTickWinnerDereg:
         st = FakeSubtensor(hotkeys=["hk0"], revealed={})
         state = ValidatorState()
         rec = _make_eval_record(5, "hk_far", 100, 0.5, eval_block=500)
-        state.record_evaluation(rec, current_block=500)
+        _set_winner(state, rec, current_block=500)
         state.save(tmp_path)
         assert state.winner is not None
 
@@ -420,7 +428,7 @@ class TestRunTickWinnerDereg:
         st = FakeSubtensor(hotkeys=["hk0", "hk_winner"], revealed={})
         state = ValidatorState()
         rec = _make_eval_record(1, "hk_winner", 100, 0.5, eval_block=500)
-        state.record_evaluation(rec, current_block=500)
+        _set_winner(state, rec, current_block=500)
         state.save(tmp_path)
 
         summary = run_tick(
@@ -443,7 +451,7 @@ class TestRunTickWinnerDereg:
         st = FakeSubtensor(hotkeys=["hk0", "hk_new", "hk_ru"], revealed={})
         state = ValidatorState()
         rec_w = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
-        state.record_evaluation(rec_w, current_block=500)
+        _set_winner(state, rec_w, current_block=500)
         rec_ru = EvaluationRecord(
             uid=2,
             hotkey="hk_ru",
@@ -487,7 +495,7 @@ class TestRunTickWinnerDereg:
         st = FakeSubtensor(hotkeys=["hk0", "hk_new1", "hk_new2"], revealed={})
         state = ValidatorState()
         rec_w = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
-        state.record_evaluation(rec_w, current_block=500)
+        _set_winner(state, rec_w, current_block=500)
         rec_ru = EvaluationRecord(
             uid=2,
             hotkey="hk_old_ru",
@@ -525,7 +533,7 @@ class TestRunTickWinnerDereg:
         st = FakeSubtensor(hotkeys=["hk0", "hk_new"], revealed={})
         state = ValidatorState()
         rec_w = _make_eval_record(1, "hk_old_winner", 100, 0.5, eval_block=500)
-        state.record_evaluation(rec_w, current_block=500)
+        _set_winner(state, rec_w, current_block=500)
         state.save(tmp_path)
 
         assert state.runner_up is None
@@ -577,7 +585,7 @@ class TestCleanStaleEvalJob:
     def test_removes_when_all_challengers_known(self, tmp_path):
         state = ValidatorState()
         rec = _make_eval_record(1, "hk1", 200, 0.5, eval_block=500)
-        state.record_evaluation(rec, current_block=500)
+        _set_winner(state, rec, current_block=500)
 
         job = EvalJob(
             block=1000,
@@ -630,7 +638,7 @@ class TestCleanStaleEvalJob:
     def test_mixed_known_and_unknown(self, tmp_path):
         state = ValidatorState()
         rec = _make_eval_record(1, "hk1", 200, 0.5, eval_block=500)
-        state.record_evaluation(rec, current_block=500)
+        _set_winner(state, rec, current_block=500)
 
         job = EvalJob(
             block=1000,

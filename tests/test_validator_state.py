@@ -6,9 +6,9 @@ import json
 
 import pytest
 
-from validator.config import WINNER_EPSILON_DECAY_BLOCKS, WINNER_EPSILON_INITIAL
 from validator.state import (
     DUPLICATE_OF_WINNER_REASON,
+    OVERTAKE_EPSILON,
     EvaluationRecord,
     WinnerRecord,
     RecordResult,
@@ -65,6 +65,17 @@ def _record(
     if current_block is None:
         current_block = ev.commit_block + 10
     return state.record_evaluation(ev, current_block=current_block)
+
+
+def _record_as_winner(
+    state: ValidatorState, ev: EvaluationRecord, *, current_block: int | None = None
+) -> None:
+    """Record an eval AND crown it as winner (record_evaluation no longer
+    does overtake, so tests that need a winner must set it explicitly)."""
+    if current_block is None:
+        current_block = ev.commit_block + 10
+    state.record_evaluation(ev, current_block=current_block)
+    state.winner = WinnerRecord.from_evaluation(ev, won_at_block=current_block)
 
 
 class TestEvaluationRecord:
@@ -192,149 +203,37 @@ class TestWinnerRecord:
 
 
 class TestValidatorStateRecording:
+    """record_evaluation stores the record and applies duplicate-of-winner DQ
+    but does NOT update state.winner (ranking is done by rerank_round)."""
+
     def test_empty_state(self):
         state = ValidatorState()
         assert state.winner is None
         assert state.evaluations == {}
         assert state.schema_version == SCHEMA_VERSION
 
-    def test_record_first_eval_becomes_winner(self):
+    def test_record_stores_eval(self):
         state = ValidatorState()
         ev = _make_eval(score=0.3)
         out = _record(state, ev)
-        assert out.overtook is True
-        assert out.overtake_threshold == 0.0
-        assert state.winner is not None
-        assert state.winner.uid == ev.uid
-        assert state.winner.score == ev.score
+        assert out.overtook is False
+        assert state.winner is None
         assert state.has_evaluation(ev.hotkey, ev.commit_block)
 
-    def test_higher_score_overtakes_winner(self):
-        state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.2))
-        out = _record(
-            state,
-            _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.5),
-        )
-        assert out.overtook is True
-        assert state.winner.uid == 2
-        assert state.winner.score == 0.5
-
-    def test_lower_score_does_not_overtake(self):
+    def test_record_does_not_set_winner(self):
         state = ValidatorState()
         _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        assert state.winner is None
+        assert len(state.evaluations) == 1
+
+    def test_threshold_reflects_current_winner(self):
+        state = ValidatorState()
+        _record_as_winner(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
         out = _record(
             state,
             _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.4),
         )
-        assert out.overtook is False
-        assert state.winner.uid == 1
-
-    def test_equal_score_keeps_defender(self):
-        state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.3))
-        out = _record(
-            state,
-            _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.3),
-        )
-        assert out.overtook is False
-        assert state.winner.uid == 1
-
-    def test_epsilon_moat_blocks_tiny_improvement(self):
-        state = ValidatorState()
-        _record(
-            state,
-            _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100),
-            current_block=100,
-        )
-        out = _record(
-            state,
-            _make_eval(uid=2, hotkey="hk2", score=0.5025, commit_block=110),
-            current_block=110,
-        )
-        assert out.overtook is False
-        assert out.overtake_threshold > 0.5
-        assert state.winner.uid == 1
-
-    def test_epsilon_fully_decayed_allows_strict_improvement(self):
-        state = ValidatorState()
-        _record(
-            state,
-            _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100),
-            current_block=100,
-        )
-        far_future = 100 + WINNER_EPSILON_DECAY_BLOCKS + 1
-        out = _record(
-            state,
-            _make_eval(uid=2, hotkey="hk2", score=0.5001, commit_block=far_future),
-            current_block=far_future,
-        )
-        assert out.overtook is True
-        assert out.overtake_threshold == pytest.approx(0.5)
-        assert state.winner.uid == 2
-
-    def test_disqualified_cannot_become_winner(self):
-        state = ValidatorState()
-        out = _record(
-            state,
-            _make_eval(
-                score=0.0, disqualified=True, reason="token_match_below_threshold"
-            ),
-        )
-        assert out.overtook is False
-        assert state.winner is None
-
-    def test_disqualified_cannot_overtake_winner(self):
-        state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.2))
-        out = _record(
-            state,
-            _make_eval(
-                uid=2,
-                hotkey="hk2",
-                commit_block=200,
-                score=0.9,
-                disqualified=True,
-                reason="nan",
-            ),
-        )
-        assert out.overtook is False
-        assert state.winner.uid == 1
-
-    def test_zero_score_non_dq_cannot_become_winner(self):
-        state = ValidatorState()
-        out = _record(state, _make_eval(score=0.0))
-        assert out.overtook is False
-        assert state.winner is None
-
-    def test_negative_score_cannot_become_winner(self):
-        state = ValidatorState()
-        out = _record(state, _make_eval(score=-0.1))
-        assert out.overtook is False
-        assert state.winner is None
-
-    def test_nan_score_cannot_become_winner(self):
-        state = ValidatorState()
-        out = _record(state, _make_eval(score=float("nan")))
-        assert out.overtook is False
-        assert state.winner is None
-
-    def test_nan_score_cannot_overtake_existing_winner(self):
-        state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.3))
-        out = _record(
-            state,
-            _make_eval(uid=2, hotkey="hk2", score=float("nan")),
-        )
-        assert out.overtook is False
-        assert state.winner is not None
-        assert state.winner.uid == 1
-
-    def test_inf_score_cannot_become_winner(self):
-        state = ValidatorState()
-        out = _record(state, _make_eval(score=float("inf")))
-        assert out.overtook is False
-        assert state.winner is None
+        assert out.overtake_threshold == pytest.approx(0.5 * (1 + OVERTAKE_EPSILON))
 
     def test_record_precheck_failure(self):
         state = ValidatorState()
@@ -368,7 +267,7 @@ class TestDuplicateOfWinnerDQ:
 
     def test_later_duplicate_is_dqd_and_doesnt_tie(self):
         state = ValidatorState()
-        _record(
+        _record_as_winner(
             state,
             _make_eval(
                 uid=1,
@@ -396,7 +295,7 @@ class TestDuplicateOfWinnerDQ:
 
     def test_later_duplicate_with_higher_score_still_dqd(self):
         state = ValidatorState()
-        _record(
+        _record_as_winner(
             state,
             _make_eval(
                 uid=1,
@@ -424,7 +323,7 @@ class TestDuplicateOfWinnerDQ:
         """Re-committing your own winning image at a later block is fine --
         the DQ rule targets cross-hotkey copies only."""
         state = ValidatorState()
-        _record(
+        _record_as_winner(
             state,
             _make_eval(
                 uid=1,
@@ -450,7 +349,7 @@ class TestDuplicateOfWinnerDQ:
         """A submission at a commit_block before the winner's own commit
         never gets duplicate-of-winner DQ."""
         state = ValidatorState()
-        _record(
+        _record_as_winner(
             state,
             _make_eval(
                 uid=1,
@@ -474,7 +373,7 @@ class TestDuplicateOfWinnerDQ:
 
     def test_different_digest_not_dqd(self):
         state = ValidatorState()
-        _record(
+        _record_as_winner(
             state,
             _make_eval(
                 uid=1,
@@ -499,7 +398,7 @@ class TestDuplicateOfWinnerDQ:
     def test_empty_digest_does_not_trigger_dq(self):
         """Empty digest = unknown; never trips the DQ rule."""
         state = ValidatorState()
-        _record(
+        _record_as_winner(
             state,
             _make_eval(
                 uid=1,
@@ -523,56 +422,224 @@ class TestDuplicateOfWinnerDQ:
 
 
 class TestEffectiveOvertakeThreshold:
-    def test_no_winner_returns_zero_call_site_convention(self):
-        assert _effective_overtake_threshold(0.0, 0, 100) == 0.0
+    def test_zero_score(self):
+        assert _effective_overtake_threshold(0.0) == 0.0
 
-    def test_at_winning_block_full_epsilon(self):
-        th = _effective_overtake_threshold(0.5, 1000, 1000)
-        assert th == pytest.approx(0.5 * (1 + WINNER_EPSILON_INITIAL))
+    def test_flat_epsilon(self):
+        th = _effective_overtake_threshold(0.5)
+        assert th == pytest.approx(0.5 * (1 + OVERTAKE_EPSILON))
 
-    def test_half_window_half_epsilon(self):
-        half = WINNER_EPSILON_DECAY_BLOCKS // 2
-        th = _effective_overtake_threshold(0.5, 0, half)
-        expected = 0.5 * (
-            1 + WINNER_EPSILON_INITIAL * (1 - half / WINNER_EPSILON_DECAY_BLOCKS)
+    def test_high_score(self):
+        th = _effective_overtake_threshold(1.0)
+        assert th == pytest.approx(1.0 + OVERTAKE_EPSILON)
+
+
+class TestRerankRound:
+    """Tests for ValidatorState.rerank_round -- batch ranking after all evals."""
+
+    def test_no_candidates_returns_none(self):
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=None,
+            ru_record=None,
+            challenger_records=[],
+            current_block=1000,
         )
-        assert th == pytest.approx(expected)
+        assert winner is None
+        assert ru is None
 
-    def test_at_window_end_no_moat(self):
-        th = _effective_overtake_threshold(0.5, 0, WINNER_EPSILON_DECAY_BLOCKS)
-        assert th == pytest.approx(0.5)
+    def test_single_challenger_wins_open_seat(self):
+        ev = _make_eval(uid=1, hotkey="hk1", score=0.3)
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=None,
+            ru_record=None,
+            challenger_records=[ev],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 1
+        assert winner.score == 0.3
+        assert ru is None
 
-    def test_past_window_clamped_to_score(self):
-        th = _effective_overtake_threshold(0.5, 0, WINNER_EPSILON_DECAY_BLOCKS * 10)
-        assert th == pytest.approx(0.5)
+    def test_leader_defends_with_epsilon(self):
+        leader = _make_eval(uid=1, hotkey="hk1", score=0.50)
+        challenger = _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.5025)
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=leader,
+            ru_record=None,
+            challenger_records=[challenger],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 1
+        assert ru is not None
+        assert ru.uid == 2
 
-    def test_negative_age_clamped_to_zero(self):
-        th = _effective_overtake_threshold(0.5, 1000, 500)
-        assert th == pytest.approx(0.5 * (1 + WINNER_EPSILON_INITIAL))
+    def test_challenger_dethrones_leader(self):
+        leader = _make_eval(uid=1, hotkey="hk1", score=0.50)
+        challenger = _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.60)
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=leader,
+            ru_record=None,
+            challenger_records=[challenger],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 2
+        assert winner.score == 0.60
+        assert ru is not None
+        assert ru.uid == 1
 
-    def test_zero_decay_blocks_disables_moat(self):
-        th = _effective_overtake_threshold(0.5, 100, 200, decay_blocks=0)
-        assert th == 0.5
+    def test_leader_dqd_opens_seat(self):
+        leader = _make_eval(
+            uid=1, hotkey="hk1", score=0.0, disqualified=True, reason="crash"
+        )
+        challenger = _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.10)
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=leader,
+            ru_record=None,
+            challenger_records=[challenger],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 2
+        assert ru is None
 
-    def test_zero_initial_disables_moat(self):
-        th = _effective_overtake_threshold(0.5, 100, 100, epsilon_initial=0.0)
-        assert th == 0.5
+    def test_all_dqd_returns_none(self):
+        leader = _make_eval(
+            uid=1, hotkey="hk1", score=0.0, disqualified=True, reason="crash"
+        )
+        challenger = _make_eval(
+            uid=2,
+            hotkey="hk2",
+            commit_block=200,
+            score=0.0,
+            disqualified=True,
+            reason="crash",
+        )
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=leader,
+            ru_record=None,
+            challenger_records=[challenger],
+            current_block=1000,
+        )
+        assert winner is None
+        assert ru is None
+
+    def test_ru_can_win_when_leader_dqd(self):
+        leader = _make_eval(
+            uid=1, hotkey="hk1", score=0.0, disqualified=True, reason="crash"
+        )
+        ru = _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.40)
+        challenger = _make_eval(uid=3, hotkey="hk3", commit_block=300, score=0.30)
+        winner, new_ru = ValidatorState.rerank_round(
+            leader_record=leader,
+            ru_record=ru,
+            challenger_records=[challenger],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 2
+        assert new_ru is not None
+        assert new_ru.uid == 3
+
+    def test_best_challenger_wins_among_many(self):
+        leader = _make_eval(uid=1, hotkey="hk1", score=0.20)
+        c1 = _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.50)
+        c2 = _make_eval(uid=3, hotkey="hk3", commit_block=300, score=0.40)
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=leader,
+            ru_record=None,
+            challenger_records=[c1, c2],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 2
+        assert ru is not None
+        assert ru.uid == 3
+
+    def test_leader_keeps_throne_when_only_slightly_behind_best(self):
+        leader = _make_eval(uid=1, hotkey="hk1", score=0.50)
+        challenger = _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.505)
+        winner, _ = ValidatorState.rerank_round(
+            leader_record=leader,
+            ru_record=None,
+            challenger_records=[challenger],
+            current_block=1000,
+        )
+        assert winner.uid == 1
+
+    def test_nan_score_excluded(self):
+        leader = _make_eval(uid=1, hotkey="hk1", score=float("nan"))
+        challenger = _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.10)
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=leader,
+            ru_record=None,
+            challenger_records=[challenger],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 2
+        assert ru is None
+
+    def test_zero_score_excluded(self):
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=None,
+            ru_record=None,
+            challenger_records=[_make_eval(uid=1, hotkey="hk1", score=0.0)],
+            current_block=1000,
+        )
+        assert winner is None
+        assert ru is None
+
+    def test_leader_none_ru_present(self):
+        ru_in = _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.40)
+        challenger = _make_eval(uid=3, hotkey="hk3", commit_block=300, score=0.30)
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=None,
+            ru_record=ru_in,
+            challenger_records=[challenger],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 2
+        assert ru is not None
+        assert ru.uid == 3
+
+    def test_runner_up_none_when_single_hotkey(self):
+        ev = _make_eval(uid=1, hotkey="hk1", score=0.5)
+        winner, ru = ValidatorState.rerank_round(
+            leader_record=ev,
+            ru_record=None,
+            challenger_records=[],
+            current_block=1000,
+        )
+        assert winner is not None
+        assert winner.uid == 1
+        assert ru is None
 
 
 class TestRunnerUp:
+    def test_persisted_runner_up_preferred(self):
+        """When runner_up_record is set, the property returns it directly."""
+        state = ValidatorState()
+        ev = _make_eval(uid=5, hotkey="hk5", score=0.4, commit_block=500)
+        state.runner_up_record = WinnerRecord.from_evaluation(ev, won_at_block=510)
+        assert state.runner_up is not None
+        assert state.runner_up.uid == 5
+
     def test_no_evaluations_returns_none(self):
         state = ValidatorState()
         assert state.runner_up is None
 
     def test_single_eval_is_winner_returns_none(self):
         state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record_as_winner(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
         assert state.winner is not None
         assert state.runner_up is None
 
     def test_two_hotkeys_returns_non_winner(self):
         state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record_as_winner(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
         _record(state, _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.3))
         assert state.runner_up is not None
         assert state.runner_up.uid == 2
@@ -580,7 +647,7 @@ class TestRunnerUp:
 
     def test_dq_eval_excluded(self):
         state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record_as_winner(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
         _record(
             state,
             _make_eval(
@@ -597,7 +664,9 @@ class TestRunnerUp:
     def test_same_hotkey_multiple_commits_grouped(self):
         """Winner's hotkey excluded even with multiple commits."""
         state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100))
+        _record_as_winner(
+            state, _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100)
+        )
         _record(state, _make_eval(uid=1, hotkey="hk1", score=0.3, commit_block=200))
         _record(state, _make_eval(uid=2, hotkey="hk2", score=0.2, commit_block=300))
         assert state.runner_up is not None
@@ -605,7 +674,9 @@ class TestRunnerUp:
 
     def test_best_score_per_hotkey_selected(self):
         state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100))
+        _record_as_winner(
+            state, _make_eval(uid=1, hotkey="hk1", score=0.5, commit_block=100)
+        )
         _record(state, _make_eval(uid=2, hotkey="hk2", score=0.2, commit_block=200))
         _record(state, _make_eval(uid=2, hotkey="hk2", score=0.4, commit_block=300))
         _record(state, _make_eval(uid=3, hotkey="hk3", score=0.35, commit_block=400))
@@ -616,13 +687,13 @@ class TestRunnerUp:
 
     def test_zero_score_excluded(self):
         state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record_as_winner(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
         _record(state, _make_eval(uid=2, hotkey="hk2", commit_block=200, score=0.0))
         assert state.runner_up is None
 
     def test_negative_score_excluded(self):
         state = ValidatorState()
-        _record(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
+        _record_as_winner(state, _make_eval(uid=1, hotkey="hk1", score=0.5))
         _record(state, _make_eval(uid=2, hotkey="hk2", commit_block=200, score=-0.1))
         assert state.runner_up is None
 
@@ -648,17 +719,16 @@ class TestPersistence:
             state,
             _make_eval(uid=1, hotkey="hk1", score=0.4, digest="sha256:" + "a" * 64),
         )
-        _record(
-            state,
-            _make_eval(
-                uid=2,
-                hotkey="hk2",
-                commit_block=200,
-                score=0.6,
-                digest="sha256:" + "b" * 64,
-            ),
-            current_block=210,
+        ev2 = _make_eval(
+            uid=2,
+            hotkey="hk2",
+            commit_block=200,
+            score=0.6,
+            digest="sha256:" + "b" * 64,
         )
+        _record_as_winner(state, ev2, current_block=210)
+        ev_ru = _make_eval(uid=1, hotkey="hk1", score=0.4, digest="sha256:" + "a" * 64)
+        state.runner_up_record = WinnerRecord.from_evaluation(ev_ru, won_at_block=210)
         state.record_precheck_failure("hk3", 300, "container startup timeout")
         state.last_scan_block = 1234
         state.last_weights_set_block = 1234
@@ -677,6 +747,9 @@ class TestPersistence:
         assert reloaded.last_scan_block == 1234
         assert reloaded.last_weights_set_block == 1234
         assert reloaded.schema_version == SCHEMA_VERSION
+        assert reloaded.runner_up_record is not None
+        assert reloaded.runner_up_record.uid == 1
+        assert reloaded.runner_up_record.score == 0.4
 
     def test_load_missing_file_returns_empty_state(self, tmp_path):
         loaded = ValidatorState.load(tmp_path)
@@ -830,12 +903,10 @@ class TestUnknownCommits:
 class TestCloneAndTimestamp:
     def test_clone_is_deep(self):
         state = ValidatorState()
-        _record(state, _make_eval())
+        _record_as_winner(state, _make_eval())
         clone = state.clone()
-        _record(
-            clone,
-            _make_eval(uid=99, hotkey="hk_new", commit_block=999, score=0.9),
-        )
+        ev2 = _make_eval(uid=99, hotkey="hk_new", commit_block=999, score=0.9)
+        _record_as_winner(clone, ev2)
         assert state.winner.uid == 1
         assert clone.winner.uid == 99
 

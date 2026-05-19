@@ -21,13 +21,14 @@ def get_leader():
     winner = state.get("winner") or state.get("king")
     if winner is None:
         return JSONResponse(
-            content={"leader": None, "message": "No leader yet"},
+            content={"leader": None, "runner_up": None, "message": "No leader yet"},
             headers={"Cache-Control": "public, max-age=30"},
         )
     if "crowned_at_block" in winner and "won_at_block" not in winner:
         winner = {**winner, "won_at_block": winner["crowned_at_block"]}
+    runner_up = state.get("runner_up")
     return JSONResponse(
-        content=sanitize_floats({"leader": winner}),
+        content=sanitize_floats({"leader": winner, "runner_up": runner_up}),
         headers={"Cache-Control": "public, max-age=30"},
     )
 

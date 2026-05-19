@@ -118,6 +118,7 @@ def _reload_state(state: ValidatorState, state_dir: str) -> None:
     """Reload state from disk into the existing object (GPU may have updated it)."""
     fresh = ValidatorState.load(state_dir)
     state.winner = fresh.winner
+    state.runner_up_record = fresh.runner_up_record
     state.evaluations = fresh.evaluations
     state.precheck_failures = fresh.precheck_failures
     state.last_scan_block = fresh.last_scan_block
@@ -256,6 +257,7 @@ def run_tick(
                 state.winner = WinnerRecord.from_evaluation(
                     ru, won_at_block=current_block
                 )
+                state.runner_up_record = None  # promoted; no runner-up until next eval
                 state.last_weights_set_block = 0  # force immediate weight update
             else:
                 reason = "runner-up also gone" if ru is not None else "no runner-up"
@@ -266,6 +268,7 @@ def run_tick(
                     reason,
                 )
                 state.winner = None
+                state.runner_up_record = None
 
     # Weight setting
     weights_set = False
@@ -281,46 +284,35 @@ def run_tick(
             reason,
         )
 
-        w = build_competition_weights(
+        w_dense = build_competition_weights(
             n_uids=len(metagraph.hotkeys),
             winner_uid=state.winner.uid,
             winner_score=state.winner.score,
             runner_up_uid=runner_up_uid,
         )
-        uid_list = list(range(len(w)))
+        burn_uid = validator_config.BURN_UID
+        logger.info(
+            "⚖️  weight vector: winner=%d (%.4f), runner_up=%s (%.4f),"
+            " burn_uid=%d (%.4f), n_uids=%d",
+            state.winner.uid,
+            w_dense[state.winner.uid] if state.winner.uid < len(w_dense) else 0.0,
+            runner_up_uid,
+            w_dense[runner_up_uid]
+            if runner_up_uid is not None and runner_up_uid < len(w_dense)
+            else 0.0,
+            burn_uid,
+            w_dense[burn_uid] if burn_uid < len(w_dense) else 0.0,
+            len(w_dense),
+        )
+
+        uid_list = [u for u, wt in enumerate(w_dense) if wt > 0]
+        w = [wt for wt in w_dense if wt > 0]
 
         if dry_run:
-            burn_uid = validator_config.BURN_UID
-            logger.info(
-                "🧪 [DRY-RUN] would set_weights: winner=%d (%.4f), runner_up=%s (%.4f),"
-                " burn_uid=%d (%.4f), n_uids=%d",
-                state.winner.uid,
-                w[state.winner.uid] if state.winner.uid < len(w) else 0.0,
-                runner_up_uid,
-                w[runner_up_uid]
-                if runner_up_uid is not None and runner_up_uid < len(w)
-                else 0.0,
-                burn_uid,
-                w[burn_uid] if burn_uid < len(w) else 0.0,
-                len(w),
-            )
+            logger.info("🧪 [DRY-RUN] would set_weights (see weight vector above)")
             state.last_weights_set_block = current_block
             weights_set = True
         else:
-            burn_uid = validator_config.BURN_UID
-            logger.info(
-                "⚖️  weight vector: winner=%d (%.4f), runner_up=%s (%.4f),"
-                " burn_uid=%d (%.4f), n_uids=%d",
-                state.winner.uid,
-                w[state.winner.uid] if state.winner.uid < len(w) else 0.0,
-                runner_up_uid,
-                w[runner_up_uid]
-                if runner_up_uid is not None and runner_up_uid < len(w)
-                else 0.0,
-                burn_uid,
-                w[burn_uid] if burn_uid < len(w) else 0.0,
-                len(w),
-            )
             try:
                 set_weights(
                     subtensor,
@@ -363,6 +355,39 @@ def run_tick(
                 logger.info(
                     "  New: UID %d  %s  %s", com.uid, com.hotkey[:16], com.image
                 )
+            leader_info = None
+            if state.winner is not None:
+                leader_info = ChallengerInfo(
+                    uid=state.winner.uid,
+                    hotkey=state.winner.hotkey,
+                    commit_block=state.winner.commit_block,
+                    image=state.winner.image,
+                    digest=state.winner.digest,
+                )
+                logger.info(
+                    "  Leader (re-eval): UID %d  %s  %s",
+                    state.winner.uid,
+                    state.winner.hotkey[:16],
+                    state.winner.image,
+                )
+
+            ru = state.runner_up
+            ru_info = None
+            if ru is not None:
+                ru_info = ChallengerInfo(
+                    uid=ru.uid,
+                    hotkey=ru.hotkey,
+                    commit_block=ru.commit_block,
+                    image=ru.image,
+                    digest=ru.digest,
+                )
+                logger.info(
+                    "  Runner-up (re-eval): UID %d  %s  %s",
+                    ru.uid,
+                    ru.hotkey[:16],
+                    ru.image,
+                )
+
             eval_job = EvalJob(
                 block=current_block,
                 block_hash=block_hash,
@@ -377,6 +402,8 @@ def run_tick(
                     for c in challenger_set.challengers
                 ],
                 created_at=time.time(),
+                leader=leader_info,
+                runner_up=ru_info,
             )
             from .eval_progress import update_progress
 
@@ -388,6 +415,24 @@ def run_tick(
                     {"uid": c.uid, "hotkey": c.hotkey, "image": c.image}
                     for c in challenger_set.challengers
                 ],
+                leader=(
+                    {
+                        "uid": state.winner.uid,
+                        "hotkey": state.winner.hotkey,
+                        "image": state.winner.image,
+                    }
+                    if state.winner is not None
+                    else None
+                ),
+                runner_up=(
+                    {
+                        "uid": ru.uid,
+                        "hotkey": ru.hotkey,
+                        "image": ru.image,
+                    }
+                    if ru is not None
+                    else None
+                ),
             )
             eval_job.save(state_dir)
             state.save(state_dir)
