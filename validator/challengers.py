@@ -85,7 +85,7 @@ _SKIPPED_IMAGE_PREFIXES: tuple[str, ...] = ("brandonminion/",)
 
 
 def _is_skipped_image(image: str) -> bool:
-    return any(image.startswith(prefix) for prefix in _SKIPPED_IMAGE_PREFIXES)
+    return any(prefix in image for prefix in _SKIPPED_IMAGE_PREFIXES)
 
 
 def select_challengers(
