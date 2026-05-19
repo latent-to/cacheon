@@ -18,6 +18,7 @@ tests and early wiring.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Iterable
@@ -88,6 +89,20 @@ def _is_skipped_image(image: str) -> bool:
     return any(prefix in image for prefix in _SKIPPED_IMAGE_PREFIXES)
 
 
+def _image_base(image: str) -> str:
+    """Image name without the tag (everything before the last ':')."""
+    return image.rsplit(":", 1)[0]
+
+
+def _tag_version_key(image: str) -> tuple[int, ...]:
+    """Sortable version tuple extracted from the image tag.
+    'v11-batched-98k' -> (11,), 'v3' -> (3,), no tag -> (0,).
+    Higher tuple = newer."""
+    tag = image.rsplit(":", 1)[1] if ":" in image else ""
+    nums = tuple(int(n) for n in re.findall(r"\d+", tag))
+    return nums if nums else (0,)
+
+
 def select_challengers(
     state: ValidatorState,
     commitments: Iterable[CommitmentRecord],
@@ -145,6 +160,37 @@ def select_challengers(
             continue
 
         challengers.append(com)
+
+    # Deduplicate by base image: when multiple challengers share the same image
+    # name (ignoring tag), keep only the one with the highest version tag.
+    # Tiebreaker: earliest commit_block (first committer wins).
+    base_groups: dict[str, list[CommitmentRecord]] = {}
+    for com in challengers:
+        base_groups.setdefault(_image_base(com.image), []).append(com)
+
+    challengers = []
+    for base, group in base_groups.items():
+        if len(group) > 1:
+            # Descending by version, then ascending by commit_block for ties
+            group.sort(
+                key=lambda c: (_tag_version_key(c.image), -c.commit_block),
+                reverse=True,
+            )
+            winner = group[0]
+            for dup in group[1:]:
+                reason = (
+                    f"duplicate image {base}: older tag superseded by {winner.image}"
+                )
+                logger.info(
+                    "UID %d (%s) skipped: %s",
+                    dup.uid,
+                    dup.hotkey[:16] + "...",
+                    reason,
+                )
+                newly_rejected.append((dup, reason))
+            challengers.append(winner)
+        else:
+            challengers.append(group[0])
 
     challengers.sort(key=lambda c: c.commit_block)
 
