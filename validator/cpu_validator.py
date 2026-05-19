@@ -388,6 +388,16 @@ def run_tick(
             challengers=forced,
             created_at=time.time(),
         )
+        from .eval_progress import update_progress
+
+        update_progress(
+            state_dir,
+            phase="challengers_found",
+            round_block=current_block,
+            challengers=[
+                {"uid": c.uid, "hotkey": c.hotkey, "image": c.image} for c in forced
+            ],
+        )
         eval_job.save(state_dir)
         state.save(state_dir)
         _try_upload(state_dir)
