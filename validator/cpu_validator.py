@@ -284,47 +284,35 @@ def run_tick(
             reason,
         )
 
-        w = build_competition_weights(
+        w_dense = build_competition_weights(
             n_uids=len(metagraph.hotkeys),
             winner_uid=state.winner.uid,
             winner_score=state.winner.score,
             runner_up_uid=runner_up_uid,
         )
-        uid_list = [u for u, wt in enumerate(w) if wt > 0]
-        w = [wt for wt in w if wt > 0]
+        burn_uid = validator_config.BURN_UID
+        logger.info(
+            "⚖️  weight vector: winner=%d (%.4f), runner_up=%s (%.4f),"
+            " burn_uid=%d (%.4f), n_uids=%d",
+            state.winner.uid,
+            w_dense[state.winner.uid] if state.winner.uid < len(w_dense) else 0.0,
+            runner_up_uid,
+            w_dense[runner_up_uid]
+            if runner_up_uid is not None and runner_up_uid < len(w_dense)
+            else 0.0,
+            burn_uid,
+            w_dense[burn_uid] if burn_uid < len(w_dense) else 0.0,
+            len(w_dense),
+        )
+
+        uid_list = [u for u, wt in enumerate(w_dense) if wt > 0]
+        w = [wt for wt in w_dense if wt > 0]
 
         if dry_run:
-            burn_uid = validator_config.BURN_UID
-            logger.info(
-                "🧪 [DRY-RUN] would set_weights: winner=%d (%.4f), runner_up=%s (%.4f),"
-                " burn_uid=%d (%.4f), n_uids=%d",
-                state.winner.uid,
-                w[state.winner.uid] if state.winner.uid < len(w) else 0.0,
-                runner_up_uid,
-                w[runner_up_uid]
-                if runner_up_uid is not None and runner_up_uid < len(w)
-                else 0.0,
-                burn_uid,
-                w[burn_uid] if burn_uid < len(w) else 0.0,
-                len(w),
-            )
+            logger.info("🧪 [DRY-RUN] would set_weights (see weight vector above)")
             state.last_weights_set_block = current_block
             weights_set = True
         else:
-            burn_uid = validator_config.BURN_UID
-            logger.info(
-                "⚖️  weight vector: winner=%d (%.4f), runner_up=%s (%.4f),"
-                " burn_uid=%d (%.4f), n_uids=%d",
-                state.winner.uid,
-                w[state.winner.uid] if state.winner.uid < len(w) else 0.0,
-                runner_up_uid,
-                w[runner_up_uid]
-                if runner_up_uid is not None and runner_up_uid < len(w)
-                else 0.0,
-                burn_uid,
-                w[burn_uid] if burn_uid < len(w) else 0.0,
-                len(w),
-            )
             try:
                 set_weights(
                     subtensor,
