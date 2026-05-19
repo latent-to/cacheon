@@ -50,7 +50,6 @@ WEIGHTS_REFRESH_BLOCKS: int = int(
 validator stays active in consensus even when no new GPU eval results arrive."""
 
 
-
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
