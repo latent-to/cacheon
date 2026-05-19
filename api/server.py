@@ -29,7 +29,7 @@ def _client_ip(request: Request) -> str:
     return peer
 
 
-limiter = Limiter(key_func=_client_ip, default_limits=["60/minute"])
+limiter = Limiter(key_func=_client_ip, default_limits=["600/minute"])
 
 app = FastAPI(
     title="Cacheon Monitoring API",
