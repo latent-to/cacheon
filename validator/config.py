@@ -133,7 +133,7 @@ Below this threshold, emission scales linearly; the remainder goes to the
 burn UID. Example: with target 0.10, a winner scoring 0.05 earns 50% of
 emission for the competition pool."""
 
-BURN_UID: int = int(os.environ.get("CACHEON_BURN_UID", "22"))
+BURN_UID: int = int(os.environ.get("CACHEON_BURN_UID", "29"))
 """UID that receives the unused portion of emission when the winner's score
 is below SCORE_EMISSION_TARGET. Must not collide with the winner or
 runner-up UID; the weight builder folds burn weight into the winner on
