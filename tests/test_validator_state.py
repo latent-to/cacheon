@@ -250,6 +250,16 @@ class TestValidatorStateRecording:
         assert state.is_known("hk_eval", 2)
         assert not state.is_known("hk_other", 3)
 
+    def test_is_known_any_block_after_eval(self):
+        state = ValidatorState()
+        _record(state, _make_eval(hotkey="hk1", commit_block=20))
+        assert state.is_known("hk1", 999)
+
+    def test_is_known_any_block_after_precheck_failure(self):
+        state = ValidatorState()
+        state.record_precheck_failure("hk1", 20, "bad")
+        assert state.is_known("hk1", 999)
+
     def test_recording_eval_clears_stale_precheck_entry(self):
         state = ValidatorState()
         state.record_precheck_failure("hk1", 100, "stale")
@@ -893,7 +903,7 @@ class TestUnknownCommits:
             ("hk1", 150),
         ]
         result = unknown_commits(state, incoming)
-        assert result == [("hk3", 300), ("hk1", 150)]
+        assert result == [("hk3", 300)]
 
     def test_empty_input(self):
         state = ValidatorState()

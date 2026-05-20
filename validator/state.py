@@ -135,8 +135,7 @@ class WinnerRecord:
     apply defender's-advantage on overtake attempts, and report publicly.
 
     `won_at_block` is the chain block at which this miner became the
-    winner; used to compute the decaying epsilon moat in
-    `_effective_overtake_threshold`.
+    winner; recorded for history and weight-staleness checks.
     """
 
     uid: int
@@ -187,7 +186,7 @@ class WinnerRecord:
 
 
 # --------------------------------------------------------------------------- #
-# Overtake threshold -- decaying defender's-advantage
+# Overtake threshold -- fixed defender's-advantage
 # --------------------------------------------------------------------------- #
 
 
@@ -202,7 +201,7 @@ class RecordResult:
       from the input when the duplicate-of-winner DQ rule fires.
     * ``overtook`` is True iff this call made ``stored`` the new winner.
     * ``overtake_threshold`` is the score the challenger needed to beat
-      (``winner.score * (1 + effective_epsilon)``) at ``current_block``.
+      (``winner.score * (1 + OVERTAKE_EPSILON)``).
       ``0.0`` when there was no winner to overtake.
     """
 
@@ -267,10 +266,10 @@ class ValidatorState:
         return _eval_key(hotkey, commit_block) in self.precheck_failures
 
     def is_known(self, hotkey: str, commit_block: int) -> bool:
-        """Either evaluated or pre-rejected. Either way we've already
-        formed an opinion and shouldn't re-run eval."""
-        key = _eval_key(hotkey, commit_block)
-        return key in self.evaluations or key in self.precheck_failures
+        """One shot per hotkey: once evaluated or rejected, skip forever."""
+        return any(e.hotkey == hotkey for e in self.evaluations.values()) or any(
+            k.startswith(f"{hotkey}:") for k in self.precheck_failures
+        )
 
     def get_evaluation(self, hotkey: str, commit_block: int) -> EvaluationRecord | None:
         return self.evaluations.get(_eval_key(hotkey, commit_block))
