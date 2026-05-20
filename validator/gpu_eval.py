@@ -22,6 +22,7 @@ Env vars:
 from __future__ import annotations
 
 import logging
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -168,7 +169,16 @@ def main() -> int:
     from .prompts import sample_prompts
 
     mml = _max_model_len(gpu_count, model_path=model_path)
-    prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
+    # Per-eval-session nonce — defeats baseline-echo replay attacks. See
+    # docker_eval.make_eval_fn for the rationale.
+    session_nonce = secrets.token_hex(8)
+    logger.info("Eval session nonce=%s", session_nonce)
+    prompts = sample_prompts(
+        block_hash,
+        n=10,
+        session_nonce=session_nonce,
+        max_context_tokens=mml,
+    )
     logger.info("Generated %d prompts (max_model_len=%d)", len(prompts), mml)
     update_progress(state_dir, phase="prompts_generated", n=len(prompts))
     _upload_progress(state_dir)
@@ -186,6 +196,7 @@ def main() -> int:
             gpu_count=gpu_count,
             cache_dir=cache_dir,
             block_hash=block_hash,
+            session_nonce=session_nonce,
             state_dir=state_dir,
         )
     except Exception as exc:

@@ -189,6 +189,7 @@ def sample_prompts(
     block_hash: str,
     n: int = 10,
     *,
+    session_nonce: str | None = None,
     max_context_tokens: int | None = None,
     _rows: list[str] | None = None,
 ) -> list[Prompt]:
@@ -196,6 +197,14 @@ def sample_prompts(
 
     Each prompt pairs a random PG19 passage with a random instruction
     template, formatted as an OpenAI chat message.
+
+    ``session_nonce`` is a per-eval-session unguessable hex string prepended
+    to each prompt's user message. Defeats prompt-prediction replay attacks:
+    block_hash is public and PG19 + templates are deterministic, so without
+    a nonce a miner can pre-run the baseline image off-chain, cache the token
+    streams, and stream them back at arbitrary speed. The nonce changes
+    every eval session so cached outputs no longer match. When None, no
+    nonce is injected (legacy behavior for tests).
 
     ``max_context_tokens`` is the vLLM ``--max-model-len``.  When
     provided, passage length is capped to fit inside the context window.
@@ -212,6 +221,8 @@ def sample_prompts(
         passage = _sample_passage(rng, rows, max_chars=mc)
         template = rng.choice(TEMPLATES)
         content = template.format(context=passage)
+        if session_nonce:
+            content = f"[req:{session_nonce}]\n\n{content}"
         prompts.append(
             Prompt(
                 messages=[ChatMessage(role="user", content=content)],

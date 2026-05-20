@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import subprocess
 import time
 from dataclasses import dataclass
@@ -721,13 +722,14 @@ def run_baseline_if_needed(
     gpu_count: int,
     cache_dir: Path,
     block_hash: str,
+    session_nonce: str | None = None,
     state_dir: str | Path = "",
     startup_timeout_s: int = 600,
     per_prompt_timeout_s: int = 120,
     n_warmup: int = 2,
 ) -> BaselineCache:
     """Load cached baseline or run the vLLM baseline container, measure, and cache."""
-    cache_key = derive_cache_key(block_hash, baseline_digest)
+    cache_key = derive_cache_key(block_hash, baseline_digest, session_nonce)
     cached = load_cached_baseline(cache_dir, cache_key)
     if cached is not None:
         logger.info(
@@ -1038,7 +1040,17 @@ def make_eval_fn(
         from .prompts import sample_prompts
 
         mml = _max_model_len(resolved_gpu_count, model_path=model_volume)
-        prompts = sample_prompts(block_hash, n=10, max_context_tokens=mml)
+        # Per-eval-session nonce — 64 bits of entropy injected into every
+        # prompt body. Defeats baseline-echo replay attacks that pre-compute
+        # outputs for the deterministic (block_hash → prompt) mapping.
+        session_nonce = secrets.token_hex(8)
+        logger.info("Eval session nonce=%s", session_nonce)
+        prompts = sample_prompts(
+            block_hash,
+            n=10,
+            session_nonce=session_nonce,
+            max_context_tokens=mml,
+        )
 
         baseline = run_baseline_if_needed(
             prompts,
@@ -1048,6 +1060,7 @@ def make_eval_fn(
             gpu_count=resolved_gpu_count,
             cache_dir=cache_dir,
             block_hash=block_hash,
+            session_nonce=session_nonce,
             state_dir=state_dir,
             startup_timeout_s=startup_timeout_s,
             per_prompt_timeout_s=per_prompt_timeout_s,

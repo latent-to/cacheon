@@ -36,14 +36,19 @@ DRY_RUN: bool = os.environ.get("CACHEON_DRY_RUN", "0") == "1"
 """When True, skip `subtensor.set_weights()` and do not run Docker eval.
 Useful for testing the loop without touching the chain."""
 
-VERSION_KEY: int = int(os.environ.get("CACHEON_VERSION_KEY", "28"))
+VERSION_KEY: int = int(os.environ.get("CACHEON_VERSION_KEY", "29"))
 """Version tag passed as `version_key` to `subtensor.set_weights(...)`. Bump
 whenever the scoring mechanism or evaluation rules change in a way that would
 produce different winner selections on identical commits.
 
 Yuma consensus only trust-weights validators that agree on the version, so
 bumping this effectively rolls consensus to the new version once a quorum of
-stake has upgraded."""
+stake has upgraded.
+
+v29 (2026-05-20): per-eval-session prompt nonce injected via
+`sample_prompts(session_nonce=...)`. Defeats baseline-echo replay attacks
+that pre-compute outputs for the deterministic (block_hash → prompt) mapping.
+Pre-v29 cached miner responses no longer match the prompt the miner sees."""
 
 MODEL_VOLUME: str = os.environ.get("CACHEON_MODEL_VOLUME", "/models")
 """Host path mounted read-only into miner/baseline containers at ``/models``."""
