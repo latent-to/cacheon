@@ -135,8 +135,7 @@ class WinnerRecord:
     apply defender's-advantage on overtake attempts, and report publicly.
 
     `won_at_block` is the chain block at which this miner became the
-    winner; used to compute the decaying epsilon moat in
-    `_effective_overtake_threshold`.
+    winner; recorded for history and weight-staleness checks.
     """
 
     uid: int
@@ -187,7 +186,7 @@ class WinnerRecord:
 
 
 # --------------------------------------------------------------------------- #
-# Overtake threshold -- decaying defender's-advantage
+# Overtake threshold -- fixed defender's-advantage
 # --------------------------------------------------------------------------- #
 
 
@@ -202,7 +201,7 @@ class RecordResult:
       from the input when the duplicate-of-winner DQ rule fires.
     * ``overtook`` is True iff this call made ``stored`` the new winner.
     * ``overtake_threshold`` is the score the challenger needed to beat
-      (``winner.score * (1 + effective_epsilon)``) at ``current_block``.
+      (``winner.score * (1 + OVERTAKE_EPSILON)``).
       ``0.0`` when there was no winner to overtake.
     """
 

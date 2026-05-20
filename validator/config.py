@@ -93,22 +93,15 @@ S3_PREFIX: str = os.environ.get("CACHEON_S3_PREFIX", "state-mainnet")
 WINNER_EPSILON_INITIAL: float = float(
     os.environ.get("CACHEON_WINNER_EPSILON_INITIAL", "0.01")
 )
-"""Initial moat a fresh winner holds: a challenger must beat
-`winner.score * (1 + WINNER_EPSILON_INITIAL)` to overtake on the block the
-winner won. Linearly decays to 0 over `WINNER_EPSILON_DECAY_BLOCKS`.
+"""Fixed 1% moat: a challenger must strictly beat
+`winner.score * (1 + WINNER_EPSILON_INITIAL)` to overtake the leader.
 
 1% is small enough to not protect truly weak winners, large enough to swallow
 float noise and discourage copycat submissions that match the winner
 byte-for-byte (a byte-identical copy also trips the `duplicate_of_winner` DQ
 path in `state.record_evaluation`; the epsilon covers near-duplicates /
-scoring noise)."""
-
-WINNER_EPSILON_DECAY_BLOCKS: int = int(
-    os.environ.get("CACHEON_WINNER_EPSILON_DECAY_BLOCKS", "50400")
-)
-"""Number of chain blocks over which `WINNER_EPSILON_INITIAL` decays to 0.
-50 400 blocks ~ 7 days at ~12 s / block. After this window any strict
-improvement overtakes."""
+scoring noise). Leader and runner-up are re-evaluated each round, so the moat
+is always applied against a fresh score."""
 
 # --------------------------------------------------------------------------- #
 # Competition weight distribution

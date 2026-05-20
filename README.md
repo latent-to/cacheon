@@ -26,7 +26,7 @@ Cacheon is a Bittensor subnet (SN14) that runs an open competition for **product
 2. **Validators** scan the chain for new commitments, pull the image, and run it with model weights mounted at `/models`.
 3. **Scoring** measures TTFT and throughput improvement over the vLLM baseline. Correctness is checked first; fail it and the score is zero.
 4. **The fastest correct server** becomes the winner and earns 80% of the competition pool. The runner-up earns 20%. Total pool scales with the winner's score relative to a target improvement.
-5. **Challengers** must exceed the winner's score by a small decaying margin (~1% initially, decaying to 0 over ~7 days) to prevent noise-driven churn.
+5. **Challengers** must exceed the winner's fresh score by a fixed 1% margin to prevent noise-driven churn.
 
 Score formula:
 
