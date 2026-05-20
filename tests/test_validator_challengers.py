@@ -75,6 +75,15 @@ class TestSelectChallengers:
         assert len(result.challengers) == 0
         assert len(result.already_known) == 1
 
+    def test_precheck_failed_hotkey_blocked_at_new_block(self):
+        """Precheck failure on one block blocks the same hotkey at any later block."""
+        state = ValidatorState()
+        state.record_precheck_failure("hk1", 20, "blocked import: os")
+        commits = [_commit(1, "hk1", 50)]  # same hotkey, new block
+        result = select_challengers(state, commits)
+        assert len(result.challengers) == 0
+        assert len(result.already_known) == 1
+
     def test_precheck_rejects_commitment(self):
         state = ValidatorState()
         commits = [_commit(0, "hk0", 10), _commit(1, "hk1", 20)]
