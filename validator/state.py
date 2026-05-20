@@ -267,10 +267,10 @@ class ValidatorState:
         return _eval_key(hotkey, commit_block) in self.precheck_failures
 
     def is_known(self, hotkey: str, commit_block: int) -> bool:
-        """Either evaluated or pre-rejected. Either way we've already
-        formed an opinion and shouldn't re-run eval."""
-        key = _eval_key(hotkey, commit_block)
-        return key in self.evaluations or key in self.precheck_failures
+        """One shot per hotkey: once evaluated or rejected, skip forever."""
+        return any(e.hotkey == hotkey for e in self.evaluations.values()) or any(
+            k.startswith(f"{hotkey}:") for k in self.precheck_failures
+        )
 
     def get_evaluation(self, hotkey: str, commit_block: int) -> EvaluationRecord | None:
         return self.evaluations.get(_eval_key(hotkey, commit_block))

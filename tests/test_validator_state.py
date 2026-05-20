@@ -893,7 +893,7 @@ class TestUnknownCommits:
             ("hk1", 150),
         ]
         result = unknown_commits(state, incoming)
-        assert result == [("hk3", 300), ("hk1", 150)]
+        assert result == [("hk3", 300)]
 
     def test_empty_input(self):
         state = ValidatorState()
