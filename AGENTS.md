@@ -26,6 +26,9 @@ This repo is the **validator harness** (the referee), plus example miner bundles
    plumbing, services, DB, copy detection, isolation. The production roadmap.
 4. `docs/DEV_ENVIRONMENT.md` — the GPU pods (lium), the `sn120` toolchain env, and
    how to push code + run evals on them.
+5. `docs/SGLANG_TRACKING.md` — how we stay current with sglang (it's both our
+   baseline and our runtime): a pinned version for consensus, the bump+re-baseline
+   process, and the `optima compat` canary.
 
 ## Current state (keep this honest)
 
@@ -70,6 +73,10 @@ matters — sglang uses `mp spawn`).
   `bootstrap._TARGETS`).
 - Don't claim a kernel "drifts" without measuring the **stock-vs-stock KL noise
   floor** first (we got burned on this).
+- **sglang is pinned** (`PINNED_SGLANG` in `optima/compat.py`) — all validators
+  must run the same version (consensus). After any sglang change run `optima
+  compat` (static seam canary) + the broken-bundle smoke; bump deliberately and
+  re-baseline the champion. See `docs/SGLANG_TRACKING.md`.
 
 ## Persistence note for future agents
 
