@@ -28,19 +28,37 @@ def _dist_from_topk(topk: TopK) -> dict[int, float]:
     d: dict[int, float] = {}
     for entry in topk:
         lp = float(entry[0])
+        if not math.isfinite(lp):
+            # NaN / +inf top-k entries (the deterministic pytorch sampling backend
+            # emits them in the tail) carry no usable mass; -inf is prob 0 anyway.
+            # Drop them rather than poison the whole position's sum.
+            continue
         tid = int(entry[1])
         d[tid] = d.get(tid, 0.0) + math.exp(lp)
     return d
 
 
+# A degenerate candidate distribution — a broken kernel that drives the logits to
+# inf/NaN, so sglang returns non-finite logprobs — is MAXIMAL divergence, not zero.
+# Mapping it to a large finite sentinel (instead of letting `max(0.0, nan)` silently
+# return 0.0) keeps aggregation finite while making it unmistakably fail any gate.
+DEGENERATE_KL = 1e3
+
+
 def kl_position(ref_topk: TopK, cand_topk: TopK, *, eps: float = 1e-8) -> float:
-    """KL(ref || cand) over the union of the two top-k supports."""
+    """KL(ref || cand) over the union of the two (sanitized) top-k supports."""
     P = _dist_from_topk(ref_topk)
     Q = _dist_from_topk(cand_topk)
-    support = set(P) | set(Q)
-    if not support:
+    if not P and not Q:
         return 0.0
+    if not Q:
+        # The reference has a distribution but the candidate produced NONE — every
+        # candidate logprob was non-finite (a blown-up model). Maximal divergence,
+        # never 0 (the old `max(0.0, nan)` silently returned 0.0 here). This fires
+        # only on a genuinely degenerate candidate, not on a shared NaN tail.
+        return DEGENERATE_KL
     # Renormalize each over the shared support with a floor for missing mass.
+    support = set(P) | set(Q)
     pz = sum(P.get(t, 0.0) + eps for t in support)
     qz = sum(Q.get(t, 0.0) + eps for t in support)
     kl = 0.0
@@ -48,7 +66,7 @@ def kl_position(ref_topk: TopK, cand_topk: TopK, *, eps: float = 1e-8) -> float:
         p = (P.get(t, 0.0) + eps) / pz
         q = (Q.get(t, 0.0) + eps) / qz
         kl += p * math.log(p / q)
-    return max(0.0, kl)
+    return max(0.0, kl) if math.isfinite(kl) else DEGENERATE_KL
 
 
 @dataclass

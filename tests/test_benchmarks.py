@@ -116,3 +116,51 @@ def test_aligned_kl_stops_at_first_divergence_but_scores_position_zero():
     assert rep.num_positions == 1
     assert rep.mean_kl > 0.0
     assert rep.argmax_disagreements == 1
+
+
+# ---- KL degenerate/NaN guard (a broken kernel that blows up the logits) ------
+
+
+def test_kl_position_nan_candidate_is_max_not_zero():
+    import math
+
+    from optima.eval.kl import DEGENERATE_KL, kl_position
+
+    ref = [(-0.05, 5, None), (-3.0, 9, None)]
+    cand = [(float("nan"), 7, None)]  # blown-up model -> NaN logprob
+    v = kl_position(ref, cand)
+    assert v == DEGENERATE_KL  # the old `max(0.0, nan)` returned 0.0 here
+    assert math.isfinite(v)
+
+
+def test_kl_position_inf_candidate_is_max_not_zero():
+    from optima.eval.kl import DEGENERATE_KL, kl_position
+
+    assert kl_position([(-0.05, 5, None)], [(float("inf"), 7, None)]) == DEGENERATE_KL
+
+
+def test_kl_position_confident_mismatch_is_large():
+    from optima.eval.kl import kl_position
+
+    # two near-certain but different tokens -> large finite KL, not ~0
+    assert kl_position([(-1e-6, 5, None)], [(-1e-6, 7, None)]) > 1.0
+
+
+def test_kl_position_shared_nan_tail_is_not_flagged():
+    from optima.eval.kl import kl_position
+
+    # the deterministic backend emits NaN tail entries; an otherwise-identical
+    # candidate must read as KL 0, not a false "degenerate" divergence.
+    ref = [(-0.05, 5, None), (float("nan"), 9, None)]
+    cand = [(-0.05, 5, None), (float("nan"), 9, None)]
+    assert kl_position(ref, cand) == 0.0
+
+
+def test_aligned_kl_flags_nan_candidate():
+    from optima.eval.kl import DEGENERATE_KL, aligned_kl, extract_per_prompt
+
+    base = extract_per_prompt([_out([5], [[(-0.05, 5, None), (-3.0, 9, None)]])])
+    cand = extract_per_prompt([_out([7], [[(float("nan"), 7, None)]])])
+    rep = aligned_kl(base, cand)
+    assert rep.num_positions == 1
+    assert rep.mean_kl >= DEGENERATE_KL  # the NaN->0 bug would report 0.0 here

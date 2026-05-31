@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 import torch
 
+from optima.eval._launch import call_in_subprocess
 from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt
 from optima.eval.prompts import sample_prompts
 
@@ -44,7 +45,9 @@ class EvalConfig:
     temperature: float = 0.0  # greedy -> deterministic alignment
     warmup_iters: int = 1
     deterministic: bool = False
-    kl_threshold: float = 5e-3
+    # None -> advisory (KL reported but not gated; for big MoE where the
+    # nondeterminism floor exceeds any sane threshold and accuracy carries quality).
+    kl_threshold: Optional[float] = 5e-3
     seed: int = 0  # model seed
     prompt_seed: int = 0  # per-epoch prompt sampling seed
     # speedup must clear this margin over 1.0 to count as a real improvement,
@@ -187,12 +190,14 @@ def _aligned_kl(baseline: ModeResult, candidate: ModeResult) -> KLReport:
 def evaluate(cfg: EvalConfig, bundle_path: str, prompts: Optional[list[str]] = None) -> EvalReport:
     prompts = list(prompts) if prompts else sample_prompts(cfg.num_prompts, cfg.prompt_seed)
 
-    baseline = _run_launch(cfg, prompts, bundle_path="", active=False)
-    candidate = _run_launch(cfg, prompts, bundle_path=bundle_path, active=True)
+    # Fresh process per launch (see _launch.call_in_subprocess): isolates the
+    # baseline's deterministic/CUDA global state from the candidate.
+    baseline = call_in_subprocess(_run_launch, cfg, prompts, bundle_path="", active=False)
+    candidate = call_in_subprocess(_run_launch, cfg, prompts, bundle_path=bundle_path, active=True)
 
     kl = _aligned_kl(baseline, candidate)
     speedup = (candidate.tok_per_s / baseline.tok_per_s) if baseline.tok_per_s > 0 else 0.0
-    passed_quality = kl.mean_kl <= cfg.kl_threshold and kl.num_positions > 0
+    passed_quality = (cfg.kl_threshold is None or kl.mean_kl <= cfg.kl_threshold) and kl.num_positions > 0
     passed_speedup = speedup >= (1.0 + cfg.speedup_margin)
     # Score: the speedup, but only counted as positive when BOTH quality holds and
     # the speedup clears the noise margin. A faithful-but-not-faster kernel scores

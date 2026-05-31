@@ -79,6 +79,18 @@ caught a *subtle* real drift a per-op check missed.
 3. **For a quantized model there's no fp32 ground truth** (gpt-oss is MXFP4), so the
    KL reference is the stock-kernel run; the threshold must tolerate benign
    rounding in either direction.
+4. **Big MoE models need per-launch process isolation + deterministic scoring.**
+   The two launches must each run in their **own process** (`call_in_subprocess`):
+   on gpt-oss-120b in deterministic mode, running baseline then candidate in one
+   driver process corrupted the candidate (NaN outputs → a *no-op* kernel "regressed"
+   to 0%). With isolation, deterministic mode works and the stock-vs-stock KL floor
+   is **~0** (a clean gate — validated: a no-op scores KL `0.0`, PASS). In
+   **non-deterministic** mode the floor on the realistic long-generation workload is
+   **1.17e-2** — *above* a 5e-3 gate — so a faithful kernel false-fails. Takeaway:
+   **score big MoE in deterministic mode**; where that's unavailable, run
+   `--kl-advisory` and let the **accuracy gate** carry quality. (KL is also now
+   hardened: a genuinely degenerate candidate — all-non-finite logprobs — reads as
+   maximal divergence, not 0.)
 
 ## Repo layout
 

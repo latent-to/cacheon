@@ -423,6 +423,16 @@ candidate = _run_launch(cfg, prompts, bundle_path=bundle_path, active=True)   # 
 Same weights, same seed, same sampler, same prompts — the **only** difference is
 the one op. So any delta is attributable to the kernel.
 
+> **Each launch runs in its own fresh process** (`_launch.call_in_subprocess`).
+> sglang + deterministic mode set process-global CUDA/torch state (deterministic
+> algorithms, the cuBLAS workspace, the sampling backend); in a *shared* driver the
+> baseline's state corrupted the candidate launch on big MoE models (observed on
+> gpt-oss-120b: a no-op kernel "regressed" to 0%). Isolated processes make the two
+> launches independent and free all GPU memory between them. On a 120B MoE the
+> KL noise floor is also workload-dependent — score in `enable_deterministic_inference`
+> mode (floor ~0) or run KL **advisory** (`--kl-advisory`) and rely on the accuracy
+> gate; see README "Calibration findings".
+
 ### 6.2 Throughput (robust)
 
 `_measure` does, per launch:

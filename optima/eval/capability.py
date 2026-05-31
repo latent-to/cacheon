@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from optima.eval._launch import launched_engine
+from optima.eval._launch import call_in_subprocess, launched_engine
 from optima.eval.benchmarks import Problem, get_benchmark
 from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt
 from optima.eval.throughput_kl import EvalConfig
@@ -139,8 +139,12 @@ def evaluate_capability(
         max_new = max(max_new, bench.max_new_tokens)
         flat.extend((name, p) for p in probs)
 
-    base_tok_s, base_texts, base_pp = _run_launch(cfg, flat, bundle_path="", active=False, max_new_tokens=max_new)
-    cand_tok_s, cand_texts, cand_pp = _run_launch(cfg, flat, bundle_path=bundle_path, active=True, max_new_tokens=max_new)
+    # Each launch runs in its own fresh process so the baseline's deterministic /
+    # CUDA global state can't corrupt the candidate (see _launch.call_in_subprocess).
+    base_tok_s, base_texts, base_pp = call_in_subprocess(
+        _run_launch, cfg, flat, bundle_path="", active=False, max_new_tokens=max_new)
+    cand_tok_s, cand_texts, cand_pp = call_in_subprocess(
+        _run_launch, cfg, flat, bundle_path=bundle_path, active=True, max_new_tokens=max_new)
 
     base_correct = _accuracy_by_benchmark(flat, base_texts)
     cand_correct = _accuracy_by_benchmark(flat, cand_texts)
@@ -158,10 +162,16 @@ def evaluate_capability(
             regressions.append(f"{name}: {bs.baseline_acc:.1%} -> {bs.candidate_acc:.1%}")
 
     # Dense fidelity gate on the SAME realistic prompts: KL between the two runs.
-    # If logprobs are unavailable (num_positions == 0) we fall back to the accuracy
-    # floor alone rather than failing spuriously.
+    #  * kl_threshold is None  -> advisory: report KL but don't gate on it. Use on
+    #    big MoE models where the nondeterminism floor is above any sane threshold;
+    #    the accuracy gate carries quality there.
+    #  * num_positions == 0    -> no logprobs returned; fall back to the accuracy
+    #    floor rather than failing spuriously.
     kl = aligned_kl(base_pp, cand_pp)
-    kl_ok = kl.num_positions == 0 or kl.mean_kl <= cfg.kl_threshold
+    if cfg.kl_threshold is None:
+        kl_ok = True
+    else:
+        kl_ok = kl.num_positions == 0 or kl.mean_kl <= cfg.kl_threshold
 
     speedup = (cand_tok_s / base_tok_s) if base_tok_s > 0 else 0.0
     passed_quality = len(regressions) == 0 and kl_ok
