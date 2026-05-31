@@ -59,8 +59,15 @@ class EvalConfig:
     # speedup must clear this margin over 1.0 to count as a real improvement,
     # absorbing measurement noise (see settle/champion logic too).
     speedup_margin: float = 0.02
-    attention_backend: str = "triton"
-    disable_cuda_graph: bool = True
+    # None -> sglang auto-picks the best backend for the hardware (fa3 on Hopper,
+    # etc.). Don't hard-code a weak backend: a production-strong baseline is required,
+    # or miners optimize against a slow reference. Override per-HW only if needed.
+    attention_backend: Optional[str] = None
+    # Graphs ON by default. Disabling CUDA graphs cripples the baseline (~6.5x slower
+    # on 0.5B decode, measured on an H100), so a faithful kernel would "win" against a
+    # weak reference. The seam is CUDA-graph-safe (validated). Set True only for quick
+    # eager debugging, never for scoring.
+    disable_cuda_graph: bool = False
     mem_fraction_static: float = 0.6
     log_level: str = "warning"
     # multi-GPU knobs (gpt-oss TP=4 on Blackwell sm_120a needs moe_runner_backend

@@ -36,12 +36,17 @@ def engine_kwargs(cfg) -> dict[str, Any]:
     kwargs: dict[str, Any] = dict(
         model_path=cfg.model_path,
         dtype=cfg.dtype,
-        attention_backend=cfg.attention_backend,
-        disable_cuda_graph=cfg.disable_cuda_graph,
         mem_fraction_static=cfg.mem_fraction_static,
         random_seed=cfg.seed,
         log_level=cfg.log_level,
     )
+    # Only pass these when explicitly set so sglang keeps its strong production
+    # defaults otherwise (auto attention backend + CUDA graphs ON). A weak baseline
+    # lets miners win against a crippled reference.
+    if getattr(cfg, "attention_backend", None):
+        kwargs["attention_backend"] = cfg.attention_backend
+    if getattr(cfg, "disable_cuda_graph", False):
+        kwargs["disable_cuda_graph"] = True
     if getattr(cfg, "deterministic", False):
         kwargs["enable_deterministic_inference"] = True
     if getattr(cfg, "tp_size", None):

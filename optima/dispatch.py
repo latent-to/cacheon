@@ -114,6 +114,110 @@ def make_rmsnorm_dispatcher(
     return dispatched
 
 
+def make_attention_dispatcher(
+    baseline_forward: Callable[..., object],
+    *,
+    registry: KernelRegistry = REGISTRY,
+    slot: str = "attention.decode",
+) -> Callable[..., object]:
+    """Build a replacement for ``RadixAttention.forward`` — the single chokepoint
+    every attention call funnels through (so it is backend-agnostic).
+
+    Attention is a *block* slot. At **decode** (one query token per request) we
+    extract the request's paged KV out of ``forward_batch`` and hand the miner kernel
+    a dense ``(q, k, v, seq_lens)`` view; the validator keeps the backend metadata,
+    owns the KV-cache **write** (``set_kv_buffer``), and only ever lets the miner
+    *read* q/k/v. The kernel output feeds the residual stream -> downstream layers ->
+    sampler (all stock), so there is no final output to substitute — the same
+    property that makes the op slots safe.
+
+    SCOPE: this routes **decode** attention through the ``attention.decode`` slot, and
+    only when ``OPTIMA_ATTENTION_SEAM=1`` (opt-in until paged-direct lands). It is a
+    *gather* MVP — it pulls the paged KV into a dense padded tensor so the miner writes
+    an ordinary attention kernel, but the gather is variable-shape, hence
+    **eager-only** (a per-step ``max_len`` is not CUDA-graph-capturable). The
+    production rung is a paged-direct contract (the miner consumes the page table +
+    pool buffers, graph-safe). Prefill / MLA / cross-attention / windowed paths fall
+    back to the trusted backend. Conservative by construction: when in doubt, trust
+    the baseline.
+    """
+
+    def dispatched(self, q, k, v, forward_batch, save_kv_cache: bool = True, **kwargs):
+        if _attention_seam_active():
+            try:
+                if forward_batch.forward_mode.is_decode() and _decode_supported(self, k, v, kwargs):
+                    impl = registry.lookup(
+                        slot,
+                        dtype_name=_dtype_name(q.dtype),
+                        last_dim=getattr(self, "qk_head_dim", q.shape[-1]),
+                        arch=_arch_tag(q.device.index or 0) if q.is_cuda else None,
+                    )
+                    if impl is not None:
+                        return _run_decode_kernel(self, q, k, v, forward_batch, save_kv_cache, impl)
+            except Exception:
+                if registry.strict:
+                    raise
+                # any mismatch with this sglang's internals -> trust the baseline
+        return baseline_forward(self, q, k, v, forward_batch, save_kv_cache, **kwargs)
+
+    return dispatched
+
+
+def _attention_seam_active() -> bool:
+    # Opt-in until the paged-direct (graph-safe) contract lands; keeps the attention
+    # seam from engaging in production before it is validated end-to-end.
+    import os
+
+    return os.environ.get("OPTIMA_ATTENTION_SEAM") == "1"
+
+
+def _decode_supported(self, k, v, kwargs) -> bool:
+    # The gather MVP supports standard MHA decode only: real k/v, uniform head dim,
+    # no MLA-rope-split / cross-attention / sliding window. Anything else -> baseline.
+    if k is None or v is None or "k_rope" in kwargs:
+        return False
+    if getattr(self, "is_cross_attention", False):
+        return False
+    if getattr(self, "sliding_window_size", -1) not in (-1, 0):
+        return False
+    return getattr(self, "qk_head_dim", None) == getattr(self, "v_head_dim", None)
+
+
+def _run_decode_kernel(self, q, k, v, forward_batch, save_kv_cache, impl):
+    """Extract this decode step's paged KV, gather it dense, run the miner kernel.
+
+    Mirrors what a stock backend does: store the new token's k/v at ``out_cache_loc``
+    (validator-owned write), then gather each request's context via
+    ``req_to_token[req_pool_idx, :seq_len]`` and let the miner compute attention.
+    """
+    Hq = self.tp_q_head_num
+    Hkv = self.tp_k_head_num
+    D = self.qk_head_dim
+    pool = forward_batch.token_to_kv_pool
+
+    # Validator owns the KV-cache write (miner only reads). Store BEFORE gathering so
+    # the gathered context includes the current token.
+    if save_kv_cache and k is not None:
+        pool.set_kv_buffer(self, forward_batch.out_cache_loc,
+                           k.view(-1, Hkv, D), v.view(-1, Hkv, D))
+
+    seq_lens = forward_batch.seq_lens
+    B = seq_lens.shape[0]
+    max_len = int(seq_lens.max().item())  # variable shape -> eager only (see docstring)
+    req_to_token = forward_batch.req_to_token_pool.req_to_token
+    slots = req_to_token[forward_batch.req_pool_indices][:, :max_len].long()  # (B, max_len)
+
+    k_cache = pool.get_key_buffer(self.layer_id)   # (pool_size, Hkv, D)
+    v_cache = pool.get_value_buffer(self.layer_id)
+    k_pad = k_cache[slots]                          # (B, max_len, Hkv, D)
+    v_pad = v_cache[slots]
+    q3 = q.view(B, Hq, D)
+
+    out = torch.empty((B, Hq, D), dtype=q.dtype, device=q.device)
+    impl.entry(q3, k_pad, v_pad, seq_lens, float(self.scaling), out)  # miner fills out
+    return out.reshape(B, Hq * D)
+
+
 def _dtype_name(dtype: torch.dtype) -> str:
     return {
         torch.bfloat16: "bfloat16",

@@ -1,0 +1,6 @@
+{
+  "op": "attention.decode",
+  "dtypes": ["float32", "bfloat16", "float16"],
+  "max_last_dim": 256,
+  "notes": "CPU/GPU dry-run paged-decode block; head_dim<=256, no architecture gate."
+}

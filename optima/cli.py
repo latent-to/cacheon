@@ -42,7 +42,7 @@ def cmd_slots(_: argparse.Namespace) -> int:
     print("Registered op-slots (the submission ABI):")
     for name in list_slots():
         spec = SLOTS[name]
-        print(f"  {name}")
+        print(f"  {name}  [{spec.kind}]")
         print(f"      {spec.summary}")
     return 0
 
@@ -140,13 +140,16 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         argmax_disagree_rate_threshold=args.argmax_disagree_rate,
         p99_kl_threshold=args.p99_kl_threshold,
         deterministic=not args.no_deterministic,
+        attention_backend=args.attention_backend,
+        disable_cuda_graph=args.disable_cuda_graph,
         mem_fraction_static=args.mem_fraction,
         tp_size=args.tp_size,
         moe_runner_backend=args.moe_runner_backend,
         disable_custom_all_reduce=args.disable_custom_all_reduce,
     )
     print(f"\nrunning two launches of {args.model} (dtype={args.dtype}, "
-          f"deterministic={cfg.deterministic}): baseline then candidate ...")
+          f"deterministic={cfg.deterministic}, cuda_graph={not cfg.disable_cuda_graph}, "
+          f"attn_backend={cfg.attention_backend or 'auto'}): baseline then candidate ...")
     report = evaluate(cfg, str(args.bundle))
 
     b, c = report.baseline, report.candidate
@@ -209,6 +212,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
         argmax_disagree_rate_threshold=args.argmax_disagree_rate,
         p99_kl_threshold=args.p99_kl_threshold,
         deterministic=not args.no_deterministic,
+        attention_backend=args.attention_backend,
+        disable_cuda_graph=args.disable_cuda_graph,
         mem_fraction_static=args.mem_fraction,
         tp_size=args.tp_size,
         moe_runner_backend=args.moe_runner_backend,
@@ -364,6 +369,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--mem-fraction", type=float, default=0.6,
                     help="sglang mem_fraction_static (use ~0.9 for big models like gpt-oss-120b)")
     sp.add_argument("--no-deterministic", action="store_true")
+    sp.add_argument("--attention-backend", default=None,
+                    help="sglang attention backend (default: auto-pick best per-HW, e.g. fa3/flashinfer)")
+    sp.add_argument("--disable-cuda-graph", action="store_true",
+                    help="eager mode for quick debugging; DEGRADES the baseline — never score with this")
     sp.add_argument("--tp-size", type=int, default=None, help="tensor-parallel size (multi-GPU)")
     sp.add_argument("--moe-runner-backend", default=None,
                     help="sglang MoE backend (e.g. 'triton' for gpt-oss TP on Blackwell sm_120a)")
@@ -396,6 +405,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--mem-fraction", type=float, default=0.6,
                     help="sglang mem_fraction_static (use ~0.9 for big models like gpt-oss-120b)")
     sp.add_argument("--no-deterministic", action="store_true")
+    sp.add_argument("--attention-backend", default=None,
+                    help="sglang attention backend (default: auto-pick best per-HW, e.g. fa3/flashinfer)")
+    sp.add_argument("--disable-cuda-graph", action="store_true",
+                    help="eager mode for quick debugging; DEGRADES the baseline — never score with this")
     sp.add_argument("--tp-size", type=int, default=None, help="tensor-parallel size (multi-GPU)")
     sp.add_argument("--moe-runner-backend", default=None,
                     help="sglang MoE backend (e.g. 'triton' for gpt-oss TP on Blackwell sm_120a)")

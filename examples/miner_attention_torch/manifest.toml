@@ -1,0 +1,15 @@
+# CPU dry-run bundle: a trivially-correct pure-torch implementation of the
+# attention.sdpa BLOCK slot. Its only purpose is to exercise the full pipeline
+# (manifest -> scan -> load -> op-correctness) for a *multi-input, block* slot on a
+# machine without a GPU or a flash kernel. Not a real competitive submission — it
+# just mirrors the reference, so it passes the matched-ratio gate trivially.
+
+bundle_id = "example-attention-torch-cpu"
+abi_version = "optima-op-abi-v0"
+
+[[ops]]
+slot = "attention.sdpa"
+source = "kernels/attention.py"
+entry = "attention"
+dtypes = ["float32", "bfloat16", "float16"]
+metadata = "metadata/attention.json"
