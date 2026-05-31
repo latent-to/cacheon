@@ -39,7 +39,11 @@ This repo is the **validator harness** (the referee), plus example miner bundles
 - **Mechanism: done & validated on real GPUs** (H100, up to gpt-oss-120b). Typed
   op-slots, the `.pth`+post-import seam, op-correctness, two-launch throughput+KL,
   a GSM8K capability gate, commit-reveal + king-of-the-hill, tamper-resistant
-  timing. Two slots: `activation.silu_and_mul`, `norm.rmsnorm`.
+  timing. A slot is a single **op** *or* a fused **block** (same cheat-resistant
+  contract — validator allocates outputs, miner fills them, the kernel never reaches
+  the sampler — just a wider boundary): `activation.silu_and_mul`, `norm.rmsnorm`
+  (ops), and `attention.sdpa` (a block: QK^T+softmax+·V; CPU op-correctness verified,
+  the GPU `RadixAttention.forward` seam wiring is the next integration step).
 - **Not done: any actual throughput improvement.** The example kernels are toy
   demos and are *slower* than sglang's tuned kernels. We built the referee, not
   optimizations.
@@ -78,9 +82,21 @@ matters — sglang uses `mp spawn`).
   `sm_120a` by padding GPT-OSS shards, using plain packed FP4 weights, interleaving
   only MXFP4 block scales, and disabling PDL for that call. See
   `docs/DEV_ENVIRONMENT.md`.
-- Adding a slot = a `SlotSpec` in `optima/slots.py` + a seam patch in
+- Adding a slot = a `SlotSpec` in `optima/slots.py` (set `kind="op"` or `"block"`;
+  use `Correctness("matched_ratio", ...)` for kernels that legitimately differ from
+  the reference — attention / fp8 / MLA weight-absorption — gated against
+  high-precision ground truth, never the stock kernel) + a seam patch in
   `optima/integrations/` (installed from `seam.activate()`, module added to
   `bootstrap._TARGETS`).
+- **The seam patches a pinned, unmodified sglang at runtime** — we never fork,
+  commit, or reconfigure sglang, so the gitignored `sglang/` clone is a dev
+  reference only. Runtime injection is how a miner changes a *backend* (e.g.
+  attention via the `RadixAttention.forward` chokepoint) while every validator runs
+  the same pinned package (consensus via `PINNED_SGLANG` + `optima compat`). This is
+  strictly better than the `--attention-backend` flag: it accepts *novel* kernels and
+  needs no per-submission reconfigure. **Hard line: a slot must stay upstream of the
+  logprobs/sampler**, or the output-substitution attack (run gibberish, fetch the
+  real answer from an API) reappears — that line is what keeps op/block slots safe.
 - Miner submissions are Triton/CuteDSL source, not raw CUDA extensions. That
   narrows the attack surface and keeps submissions inspectable, but the host
   Python launch code still runs in-process, so isolation remains required.

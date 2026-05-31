@@ -20,8 +20,15 @@ import importlib.abc
 import sys
 
 # Modules whose import should trigger seam installation. activation -> SiluAndMul,
-# layernorm -> RMSNorm. seam.activate() installs whatever is loaded.
-_TARGETS = frozenset({"sglang.srt.layers.activation", "sglang.srt.layers.layernorm"})
+# layernorm -> RMSNorm, radix_attention -> RadixAttention (the attention BLOCK slot
+# chokepoint, backend-agnostic). seam.activate() installs whatever is loaded.
+_TARGETS = frozenset(
+    {
+        "sglang.srt.layers.activation",
+        "sglang.srt.layers.layernorm",
+        "sglang.srt.layers.radix_attention",
+    }
+)
 
 
 def _run_activate() -> None:

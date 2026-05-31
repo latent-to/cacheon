@@ -1,17 +1,37 @@
 """Typed op-slot catalog — the submission ABI.
 
-A *slot* is a single, narrowly-typed replaceable operation in the fixed model
-graph. The validator owns this catalog; a miner may only target a slot that
-exists here, and may only provide the small ``entry`` callable described by the
-slot's contract. Everything else around the op (tensor allocation, the call
-site, the rest of the model) stays validator-owned.
+A *slot* is a replaceable, narrowly-typed region of the fixed model graph. The
+validator owns this catalog; a miner may only target a slot that exists here, and
+provides the small ``entry`` callable described by the slot's contract. Everything
+around the slot (tensor allocation, the call site, the rest of the model) stays
+validator-owned.
+
+A slot comes in two ``kind``s, and the difference is only the *breadth* of the
+typed boundary — the cheat-resistance story is identical for both: the validator
+allocates the outputs, the miner only fills them, and the miner never produces the
+final tokens/logprobs (so there is nothing to substitute, the attack that bites
+whole-model submissions).
+
+* ``"op"`` — a single fused op. ``silu_and_mul`` (``entry(x, out)``), ``rmsnorm``
+  (``entry(x, weight, out, eps)``).
+* ``"block"`` — a region that fuses several ops behind one tensor-in/tensor-out
+  contract, for bigger wins. ``attention.sdpa`` (``entry(q, k, v, out, sm_scale,
+  causal)``) is the first: it subsumes QK^T + softmax + (·)V. A block has the *same
+  shape* of contract as an op (named tensor inputs -> validator-allocated outputs),
+  just wider — which is exactly why the seam / verify / registry machinery is
+  unchanged. The breadth is bounded: a slot must stay strictly upstream of the
+  logprobs/sampler, or the output-substitution attack reappears.
 
 Each slot carries everything the validator needs to verify a submission without
-trusting it: a trusted ``reference``, a deterministic input generator, the
-standard shapes, per-dtype tolerances, and — because different ops have different
-call shapes — explicit ``invoke_reference`` / ``invoke_entry`` so verification
-doesn't hard-code one signature. (silu is ``entry(x, out)``; rmsnorm is
-``entry(x, weight, out, eps)``.)
+trusting it: a trusted high-precision ``invoke_reference``, a deterministic input
+generator, the standard shapes, per-dtype tolerances, explicit
+``invoke_reference`` / ``invoke_entry`` (so non-uniform call shapes work), and a
+``Correctness`` policy. The policy matters once a kernel legitimately changes
+numerics (flash-style softmax reductions, fp8, MLA weight absorption): such kernels
+are NOT bit-exact to the reference, so the gate is a *matched ratio* (>= rho of
+elements within tolerance against high-precision ground truth) rather than
+all-close — the deterministic-vs-low-precision tiering from FlashInfer-Bench. The
+reference is always high-precision ground truth, never the stock kernel.
 
 Adding a slot is a validator action (a code change here), never a miner action.
 """
@@ -19,7 +39,7 @@ Adding a slot is a validator action (a code change here), never a miner action.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -32,16 +52,35 @@ class Tolerance:
 
 
 @dataclass(frozen=True)
+class Correctness:
+    """How ``verify`` compares the miner output to the reference.
+
+    * ``"allclose"`` — every element must satisfy ``|a-e| <= atol + rtol*|e|``.
+      Right for kernels meant to be numerically equivalent (a faster silu).
+    * ``"matched_ratio"`` — at least ``min_ratio`` of elements must satisfy that
+      bound. Right for kernels that legitimately differ from the reference at the
+      ULP level (attention reorders the softmax reduction; fp8 / weight-absorbed
+      forms shift a few elements). Calibrate ``min_ratio`` to the stock-vs-stock
+      noise floor — the same discipline as the KL gate.
+    """
+
+    mode: str = "allclose"  # "allclose" | "matched_ratio"
+    min_ratio: float = 1.0
+
+
+@dataclass(frozen=True)
 class SlotSpec:
     name: str  # dotted slot id, e.g. "activation.silu_and_mul"
     entry: str  # required callable name the miner module must expose
     summary: str  # human-readable contract
+    kind: str  # "op" (single fused op) | "block" (a region of several fused ops)
 
     make_inputs: Callable[..., dict]  # (**shape, dtype, device, seed) -> {name: tensor|scalar}
-    out_shape: Callable[[dict], tuple]  # (inputs) -> output shape
-    invoke_reference: Callable[[dict], torch.Tensor]  # (inputs) -> expected tensor
-    invoke_entry: Callable[..., None]  # (entry, inputs, out) -> None (writes out)
+    out_shapes: Callable[[dict], Sequence[tuple]]  # (inputs) -> one shape per output the validator allocates
+    invoke_reference: Callable[[dict], Sequence[torch.Tensor]]  # (inputs) -> expected outputs (HIGH PRECISION)
+    invoke_entry: Callable[..., None]  # (entry, inputs, outs) -> None; writes each tensor in `outs`
     shapes: tuple[dict, ...]
+    correctness: Correctness = field(default_factory=Correctness)
     tolerances: dict[torch.dtype, Tolerance] = field(default_factory=dict)
 
     def tolerance_for(self, dtype: torch.dtype) -> Tolerance:
@@ -60,7 +99,7 @@ _BF16_TOL = {
 
 
 # ---------------------------------------------------------------------------
-# Slot: activation.silu_and_mul   (Qwen/Llama-class MLP)
+# Slot (op): activation.silu_and_mul   (Qwen/Llama-class MLP)
 #   x:(...,2d) -> out:(...,d) = silu(x[...,:d]) * x[...,d:]
 #   contract: entry(x, out)
 # ---------------------------------------------------------------------------
@@ -81,10 +120,11 @@ SILU_AND_MUL = SlotSpec(
     name="activation.silu_and_mul",
     entry="silu_and_mul",
     summary="out = silu(x[...,:d]) * x[...,d:];  x:(...,2d) -> out:(...,d);  entry(x, out)",
+    kind="op",
     make_inputs=_silu_inputs,
-    out_shape=lambda i: (*i["x"].shape[:-1], i["x"].shape[-1] // 2),
-    invoke_reference=lambda i: _silu_reference(i["x"]),
-    invoke_entry=lambda entry, i, out: entry(i["x"], out),
+    out_shapes=lambda i: [(*i["x"].shape[:-1], i["x"].shape[-1] // 2)],
+    invoke_reference=lambda i: [_silu_reference(i["x"])],
+    invoke_entry=lambda entry, i, outs: entry(i["x"], outs[0]),
     shapes=(
         {"num_tokens": 1, "d": 1024},
         {"num_tokens": 8, "d": 1024},
@@ -92,17 +132,15 @@ SILU_AND_MUL = SlotSpec(
         {"num_tokens": 4096, "d": 4096},
         {"num_tokens": 333, "d": 2880},
     ),
+    correctness=Correctness("allclose"),
     tolerances=_BF16_TOL,
 )
 
 
 # ---------------------------------------------------------------------------
-# Slot: norm.rmsnorm   (universal — every transformer, incl. GPT-OSS)
+# Slot (op): norm.rmsnorm   (universal — every transformer, incl. GPT-OSS)
 #   out = x / sqrt(mean(x^2, -1) + eps) * weight
-#   x:(...,H), weight:(H,) -> out:(...,H)
-#   contract: entry(x, weight, out, eps)
-# The validator owns the residual add (fused add+norm) and only ever asks the
-# miner to compute the pure normalization.
+#   contract: entry(x, weight, out, eps).  Validator owns the residual add.
 # ---------------------------------------------------------------------------
 
 
@@ -124,10 +162,11 @@ RMSNORM = SlotSpec(
     name="norm.rmsnorm",
     entry="rmsnorm",
     summary="out = x*rsqrt(mean(x^2,-1)+eps)*weight;  x:(...,H),weight:(H,) -> out:(...,H);  entry(x, weight, out, eps)",
+    kind="op",
     make_inputs=_rmsnorm_inputs,
-    out_shape=lambda i: tuple(i["x"].shape),
-    invoke_reference=lambda i: _rmsnorm_reference(i["x"], i["weight"], i["eps"]),
-    invoke_entry=lambda entry, i, out: entry(i["x"], i["weight"], out, i["eps"]),
+    out_shapes=lambda i: [tuple(i["x"].shape)],
+    invoke_reference=lambda i: [_rmsnorm_reference(i["x"], i["weight"], i["eps"])],
+    invoke_entry=lambda entry, i, outs: entry(i["x"], i["weight"], outs[0], i["eps"]),
     shapes=(
         {"num_tokens": 1, "hidden": 2880},
         {"num_tokens": 8, "hidden": 2880},
@@ -135,6 +174,154 @@ RMSNORM = SlotSpec(
         {"num_tokens": 4096, "hidden": 4096},
         {"num_tokens": 333, "hidden": 1536},
     ),
+    correctness=Correctness("allclose"),
+    tolerances=_BF16_TOL,
+)
+
+
+# ---------------------------------------------------------------------------
+# Slot (BLOCK): attention.sdpa   (scaled-dot-product attention, GQA/MQA-capable)
+#   q:(T,Hq,D)  k,v:(S,Hkv,D) -> o:(T,Hq,D) = softmax(qk^T*scale + causal) v
+#   contract: entry(q, k, v, out, sm_scale, causal)
+#
+# This is the first *block* slot — the attention compute core every backend
+# (FlashAttention / FlashInfer / FlashMLA / Triton) implements. It demonstrates the
+# generalization: several fused ops behind one typed boundary, multiple tensor
+# inputs, and a matched-ratio gate (a real flash/online-softmax/fp8 kernel is not
+# bit-exact). The seam (optima/integrations/sglang_attention.py) routes the model's
+# attention through this contract at the RadixAttention chokepoint; the paged-decode
+# / MLA-latent variants are sibling slots that reuse the same dispatcher with a wider
+# input tuple (compressed KV + page table). See dispatch.make_attention_dispatcher.
+# ---------------------------------------------------------------------------
+
+
+def _sdpa_reference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, sm_scale: float, causal: bool) -> torch.Tensor:
+    # q:(T,Hq,D)  k,v:(S,Hkv,Dv) -> o:(T,Hq,Dv).  GQA/MQA via Hq % Hkv == 0.
+    T, Hq, D = q.shape
+    S, Hkv, Dv = v.shape
+    g = Hq // Hkv
+    q32 = q.float()
+    k32 = k.float().repeat_interleave(g, dim=1)  # (S,Hq,D)
+    v32 = v.float().repeat_interleave(g, dim=1)  # (S,Hq,Dv)
+    scores = torch.matmul(q32.permute(1, 0, 2), k32.permute(1, 2, 0)) * sm_scale  # (Hq,T,S)
+    if causal:
+        offset = S - T  # the cached prefix length (0 in the self-contained case)
+        ti = torch.arange(T, device=q.device).view(T, 1)
+        si = torch.arange(S, device=q.device).view(1, S)
+        scores = scores.masked_fill((si > ti + offset).view(1, T, S), float("-inf"))
+    p = torch.softmax(scores, dim=-1)
+    o = torch.matmul(p, v32.permute(1, 0, 2)).permute(1, 0, 2)  # (T,Hq,Dv)
+    return o.to(q.dtype)
+
+
+def _sdpa_inputs(*, num_tokens: int, num_q_heads: int, num_kv_heads: int, head_dim: int,
+                 dtype: torch.dtype, device: str, seed: int) -> dict:
+    g = torch.Generator(device=device).manual_seed(seed)
+
+    def rnd(*shape: int) -> torch.Tensor:
+        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
+
+    return {
+        "q": rnd(num_tokens, num_q_heads, head_dim),
+        "k": rnd(num_tokens, num_kv_heads, head_dim),
+        "v": rnd(num_tokens, num_kv_heads, head_dim),
+        "sm_scale": 1.0 / (head_dim ** 0.5),
+        "causal": True,
+    }
+
+
+ATTENTION_SDPA = SlotSpec(
+    name="attention.sdpa",
+    entry="attention",
+    summary=(
+        "o = softmax(q k^T * scale + causal_mask) v  (GQA/MQA);  "
+        "q:(T,Hq,D) k,v:(S,Hkv,D) -> o:(T,Hq,D);  entry(q, k, v, out, sm_scale, causal)"
+    ),
+    kind="block",
+    make_inputs=_sdpa_inputs,
+    out_shapes=lambda i: [tuple(i["q"].shape)],
+    invoke_reference=lambda i: [_sdpa_reference(i["q"], i["k"], i["v"], i["sm_scale"], i["causal"])],
+    invoke_entry=lambda entry, i, outs: entry(i["q"], i["k"], i["v"], outs[0], i["sm_scale"], i["causal"]),
+    shapes=(
+        {"num_tokens": 1, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64},
+        {"num_tokens": 16, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128},   # GQA
+        {"num_tokens": 64, "num_q_heads": 16, "num_kv_heads": 16, "head_dim": 128},
+        {"num_tokens": 128, "num_q_heads": 8, "num_kv_heads": 1, "head_dim": 128},  # MQA
+    ),
+    # A real attention kernel reorders the softmax reduction (flash / online softmax)
+    # and may run in fp8, so it is NOT bit-exact: gate on a matched ratio against the
+    # fp32 reference, not all-close. 0.99 tolerates a thin tail of ULP-level diffs.
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
+)
+
+
+# ---------------------------------------------------------------------------
+# Slot (BLOCK): attention.decode   (paged-decode attention — the runtime-wired one)
+#   q:(B,Hq,D)  k,v:(B,S,Hkv,D)  seq_lens:(B,) -> o:(B,Hq,D)
+#   Each request's single query attends to its first seq_lens[i] cached k/v.
+#   contract: entry(q, k, v, seq_lens, sm_scale, out)
+#
+# This is the slot the attention seam routes *decode* attention to: the validator
+# gathers each request's paged KV out of forward_batch into the padded (B,S,Hkv,D)
+# view, the miner fills `out`. See dispatch.make_attention_dispatcher / _run_decode_kernel.
+# ---------------------------------------------------------------------------
+
+
+def _decode_attn_reference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                           seq_lens: torch.Tensor, sm_scale: float) -> torch.Tensor:
+    # q:(B,Hq,D)  k,v:(B,S,Hkv,D)  seq_lens:(B,) -> o:(B,Hq,D).  GQA/MQA via Hq % Hkv == 0.
+    B, Hq, D = q.shape
+    S, Hkv = k.shape[1], k.shape[2]
+    g = Hq // Hkv
+    q32 = q.float()
+    k32 = k.float().repeat_interleave(g, dim=2)  # (B,S,Hq,D)
+    v32 = v.float().repeat_interleave(g, dim=2)  # (B,S,Hq,D)
+    scores = torch.einsum("bhd,bshd->bhs", q32, k32) * sm_scale  # (B,Hq,S)
+    sidx = torch.arange(S, device=q.device).view(1, 1, S)
+    scores = scores.masked_fill(sidx >= seq_lens.view(B, 1, 1), float("-inf"))  # mask padding/beyond-context
+    p = torch.softmax(scores, dim=-1)
+    o = torch.einsum("bhs,bshd->bhd", p, v32)  # (B,Hq,D)
+    return o.to(q.dtype)
+
+
+def _decode_attn_inputs(*, batch: int, num_q_heads: int, num_kv_heads: int, head_dim: int, ctx: int,
+                        dtype: torch.dtype, device: str, seed: int) -> dict:
+    g = torch.Generator(device=device).manual_seed(seed)
+
+    def rnd(*shape: int) -> torch.Tensor:
+        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
+
+    seq_lens = torch.randint(1, ctx + 1, (batch,), generator=g, device=device).to(torch.int32)
+    seq_lens[0] = ctx  # ensure one full-length request (exercises the whole window + the mask)
+    return {
+        "q": rnd(batch, num_q_heads, head_dim),
+        "k": rnd(batch, ctx, num_kv_heads, head_dim),
+        "v": rnd(batch, ctx, num_kv_heads, head_dim),
+        "seq_lens": seq_lens,
+        "sm_scale": 1.0 / (head_dim ** 0.5),
+    }
+
+
+ATTENTION_DECODE = SlotSpec(
+    name="attention.decode",
+    entry="attention_decode",
+    summary=(
+        "decode attention: each request's query attends to its first seq_lens[i] cached k/v;  "
+        "q:(B,Hq,D) k,v:(B,S,Hkv,D) seq_lens:(B,) -> o:(B,Hq,D);  entry(q, k, v, seq_lens, sm_scale, out)"
+    ),
+    kind="block",
+    make_inputs=_decode_attn_inputs,
+    out_shapes=lambda i: [tuple(i["q"].shape)],
+    invoke_reference=lambda i: [_decode_attn_reference(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"])],
+    invoke_entry=lambda entry, i, outs: entry(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"], outs[0]),
+    shapes=(
+        {"batch": 4, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64, "ctx": 16},
+        {"batch": 2, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128, "ctx": 32},   # GQA
+        {"batch": 8, "num_q_heads": 16, "num_kv_heads": 16, "head_dim": 128, "ctx": 64},
+        {"batch": 3, "num_q_heads": 8, "num_kv_heads": 1, "head_dim": 128, "ctx": 48},   # MQA
+    ),
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
 )
 
@@ -146,6 +333,8 @@ RMSNORM = SlotSpec(
 SLOTS: dict[str, SlotSpec] = {
     SILU_AND_MUL.name: SILU_AND_MUL,
     RMSNORM.name: RMSNORM,
+    ATTENTION_SDPA.name: ATTENTION_SDPA,
+    ATTENTION_DECODE.name: ATTENTION_DECODE,
 }
 
 

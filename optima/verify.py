@@ -1,14 +1,23 @@
-"""Op-level correctness — the cheap gate before any end-to-end eval.
+"""Op-correctness — the cheap gate before any end-to-end eval.
 
-Given a slot and a miner ``entry`` callable, generate deterministic inputs over
-the slot's standard shapes, run the miner kernel and the trusted reference, and
-compare with an allclose-style tolerance.
+Given a slot and a miner ``entry`` callable, generate deterministic inputs over the
+slot's standard shapes, run the miner kernel and the trusted *high-precision*
+reference, and compare under the slot's ``Correctness`` policy:
 
-This is the per-op analogue of a unit test. It is necessary but NOT sufficient:
-small per-op errors that pass here can compound into large end-to-end KL, which
-is exactly why the pipeline still runs the end-to-end KL gate afterwards. The
-seeds and shapes here are also re-randomized per epoch by the caller so a kernel
-cannot special-case the fixed verification inputs.
+* ``allclose`` — every element within ``atol + rtol*|e|`` (numerically-equivalent
+  ops, e.g. a faster silu).
+* ``matched_ratio`` — at least ``min_ratio`` of elements within that bound (kernels
+  that legitimately differ from the reference: attention's reordered softmax, fp8,
+  MLA weight absorption). The reference is always high-precision ground truth, never
+  the stock kernel — so a faster *and slightly different* kernel can still pass.
+
+Multi-output slots (blocks) are supported: the validator allocates one ``out`` per
+declared output shape and the miner fills them.
+
+This is the per-op analogue of a unit test: necessary but NOT sufficient — small
+per-op errors that pass here can compound into large end-to-end KL, which is why the
+pipeline still runs the end-to-end gate. The seeds/shapes are re-randomizable per
+epoch by the caller so a kernel cannot special-case the fixed verification inputs.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ class ShapeResult:
     passed: bool
     max_abs_err: float
     max_rel_err: float
+    pass_ratio: float = 1.0  # fraction of elements within tolerance (informative; == 1.0 for allclose passes)
     detail: str = ""
 
 
@@ -43,22 +53,38 @@ class VerifyResult:
         return sum(1 for r in self.shape_results if not r.passed)
 
 
+def _as_list(x) -> list:
+    """Normalize a slot's reference/out_shapes return to a list.
+
+    Accepts a bare tensor or bare shape-tuple (single-output slots may return one
+    directly) as well as an explicit sequence (multi-output blocks)."""
+    if isinstance(x, (list, tuple)) and (len(x) == 0 or not isinstance(x[0], int)):
+        return list(x)
+    return [x]
+
+
 def _compare(
-    actual: torch.Tensor, expected: torch.Tensor, *, atol: float, rtol: float
-) -> tuple[bool, float, float, str]:
-    # Returns (passed, max_abs, max_rel, detail) — allclose-style + non-finite guard.
+    actual: torch.Tensor, expected: torch.Tensor, *, atol: float, rtol: float, mode: str, min_ratio: float
+) -> tuple[bool, float, float, float, str]:
+    # Returns (passed, max_abs, max_rel, ratio_within_tol, detail).
     if actual.shape != expected.shape:
-        return False, float("inf"), float("inf"), f"shape mismatch {tuple(actual.shape)} vs {tuple(expected.shape)}"
+        return False, float("inf"), float("inf"), 0.0, f"shape mismatch {tuple(actual.shape)} vs {tuple(expected.shape)}"
     a = actual.float()
     e = expected.float()
     if not torch.isfinite(a).all():
-        return False, float("inf"), float("inf"), "actual has non-finite values"
+        return False, float("inf"), float("inf"), 0.0, "actual has non-finite values"
     abs_err = (a - e).abs()
     rel_err = abs_err / (e.abs() + 1e-12)
-    # allclose: |a-e| <= atol + rtol*|e|
-    slack = atol + rtol * e.abs()
-    passed = bool((abs_err <= slack).all())
-    return passed, float(abs_err.max()), float(rel_err.max()), ""
+    slack = atol + rtol * e.abs()  # allclose: |a-e| <= atol + rtol*|e|
+    within = abs_err <= slack
+    ratio = float(within.float().mean())
+    if mode == "matched_ratio":
+        passed = ratio >= min_ratio
+        detail = "" if passed else f"matched {ratio:.4f} < min_ratio {min_ratio}"
+    else:
+        passed = bool(within.all())
+        detail = ""
+    return passed, float(abs_err.max()), float(rel_err.max()), ratio, detail
 
 
 def verify_entry(
@@ -72,33 +98,49 @@ def verify_entry(
 ) -> VerifyResult:
     """Verify a miner ``entry`` against the slot's reference.
 
-    ``entry`` is called as ``entry(*inputs_in_order, out)`` — the same contract
-    the dispatcher uses — and must write its result into ``out``.
+    ``entry`` is called via ``slot.invoke_entry(entry, inputs, outs)`` — the same
+    contract the dispatcher uses — and must write its result into the validator-
+    allocated tensors in ``outs``.
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     tol = slot.tolerance_for(dtype)
+    mode = slot.correctness.mode
+    min_ratio = slot.correctness.min_ratio
     test_shapes = shapes if shapes is not None else list(slot.shapes)
 
     results: list[ShapeResult] = []
     for i, shape in enumerate(test_shapes):
         inputs = slot.make_inputs(dtype=dtype, device=device, seed=seed + i, **shape)
-
-        expected = slot.invoke_reference(inputs)
-        out = torch.empty(slot.out_shape(inputs), dtype=dtype, device=device)
+        expected = _as_list(slot.invoke_reference(inputs))
+        out_shapes = _as_list(slot.out_shapes(inputs))
+        outs = [torch.empty(s, dtype=dtype, device=device) for s in out_shapes]
         try:
-            slot.invoke_entry(entry, inputs, out)
+            slot.invoke_entry(entry, inputs, outs)
         except Exception as exc:  # noqa: BLE001 - report kernel failure as a fail
             results.append(
                 ShapeResult(shape=shape, dtype=_name(dtype), passed=False,
-                            max_abs_err=float("inf"), max_rel_err=float("inf"),
+                            max_abs_err=float("inf"), max_rel_err=float("inf"), pass_ratio=0.0,
                             detail=f"kernel raised: {type(exc).__name__}: {exc}")
             )
             continue
 
-        passed, max_abs, max_rel, detail = _compare(out, expected, atol=tol.atol, rtol=tol.rtol)
+        passed = True
+        max_abs = 0.0
+        max_rel = 0.0
+        min_ratio_seen = 1.0
+        details: list[str] = []
+        for j, (o, e) in enumerate(zip(outs, expected)):
+            p, ma, mr, ratio, detail = _compare(o, e, atol=tol.atol, rtol=tol.rtol, mode=mode, min_ratio=min_ratio)
+            passed = passed and p
+            max_abs = max(max_abs, ma)
+            max_rel = max(max_rel, mr)
+            min_ratio_seen = min(min_ratio_seen, ratio)
+            if detail:
+                details.append(f"out[{j}]: {detail}" if len(outs) > 1 else detail)
         results.append(
             ShapeResult(shape=shape, dtype=_name(dtype), passed=passed,
-                        max_abs_err=max_abs, max_rel_err=max_rel, detail=detail)
+                        max_abs_err=max_abs, max_rel_err=max_rel, pass_ratio=min_ratio_seen,
+                        detail="; ".join(details))
         )
 
     return VerifyResult(
@@ -117,8 +159,9 @@ def format_verify(result: VerifyResult) -> str:
     lines = [f"[{'PASS' if result.passed else 'FAIL'}] {result.slot} dtype={result.dtype}"]
     for r in result.shape_results:
         status = "ok " if r.passed else "FAIL"
+        ratio = "" if r.pass_ratio >= 1.0 else f" ratio={r.pass_ratio:.4f}"
         lines.append(
-            f"  {status} shape={r.shape} max_abs={r.max_abs_err:.3e} max_rel={r.max_rel_err:.3e}"
+            f"  {status} shape={r.shape} max_abs={r.max_abs_err:.3e} max_rel={r.max_rel_err:.3e}{ratio}"
             + (f"  {r.detail}" if r.detail else "")
         )
     return "\n".join(lines)

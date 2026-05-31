@@ -1,0 +1,6 @@
+{
+  "op": "attention.sdpa",
+  "dtypes": ["float32", "bfloat16", "float16"],
+  "max_last_dim": 256,
+  "notes": "CPU dry-run BLOCK slot; head_dim<=256, no architecture gate so it runs anywhere torch runs."
+}

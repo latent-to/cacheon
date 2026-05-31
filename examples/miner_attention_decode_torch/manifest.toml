@@ -1,0 +1,16 @@
+# CPU/GPU dry-run bundle for the attention.decode BLOCK slot (paged-decode
+# attention) — the slot the runtime attention seam routes decode through. It mirrors
+# the reference (so it passes the gate trivially); its purpose is to exercise the
+# manifest -> scan -> load -> op-correctness path and the decode seam end-to-end, not
+# to be competitive. Run the e2e in eager mode (OPTIMA_ATTENTION_SEAM=1,
+# --disable-cuda-graph) — the gather is variable-shape, so not CUDA-graph-capturable.
+
+bundle_id = "example-attention-decode-torch"
+abi_version = "optima-op-abi-v0"
+
+[[ops]]
+slot = "attention.decode"
+source = "kernels/attention_decode.py"
+entry = "attention_decode"
+dtypes = ["float32", "bfloat16", "float16"]
+metadata = "metadata/attention_decode.json"

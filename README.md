@@ -19,13 +19,18 @@ per-token **KL** against a reference run, and **task accuracy** on real benchmar
 
 ## What is and isn't done
 
-**Done & validated on a real GPU (H100, sglang 0.5.9):** the whole *mechanism* —
-typed op-slots, the seam that swaps an untrusted kernel into a spawned model
-process, op-correctness, two-launch throughput measurement, the KL gate, a
-real-task capability gate (GSM8K + MMLU), commit-reveal + king-of-the-hill
-scoring, and
-tamper-resistant timing. Two slots exist (`activation.silu_and_mul`,
-`norm.rmsnorm`), proven on models from Qwen2.5-0.5B up to **gpt-oss-120b**.
+**Done & validated on a real GPU (H100, sglang 0.5.12.post1 / CUDA 13):** the whole
+*mechanism* — typed op-slots **and fused-*block* slots** (a slot can be one op or a
+whole region behind one typed tensor boundary), the seam that swaps an untrusted
+kernel into a spawned model process, op-correctness, two-launch throughput
+measurement, the KL gate, a real-task capability gate (GSM8K + MMLU), commit-reveal +
+king-of-the-hill scoring, and tamper-resistant timing. Slots: `activation.silu_and_mul`,
+`norm.rmsnorm` (ops) and `attention.sdpa` / `attention.decode` (blocks). The
+**attention-decode swap is proven end-to-end on a live Qwen** — the validator extracts
+the running model's paged KV and routes decode attention to the miner kernel; a
+faithful kernel reproduces the model, a broken one is caught ~20×. Proven on models
+from Qwen2.5-0.5B up to **gpt-oss-120b**, and **scored with CUDA graphs ON + the
+hardware's best attention backend** (auto), never a graphs-off/triton weak baseline.
 
 **Explicitly NOT done:** we have **not improved on base sglang throughput at all**
 — the example kernels are toy demos and are *slower* than sglang's tuned kernels.
@@ -98,6 +103,14 @@ caught a *subtle* real drift a per-op check missed.
    noise floor: in deterministic mode a faithful kernel sits at **0 flips**, so the
    default is safe; in advisory mode (big MoE) all KL checks are off and accuracy
    carries quality.
+6. **Attention has a higher intrinsic KL floor than elementwise ops** (measured on
+   the decode-attention swap). A faithful decode kernel — *any* reference SDPA — sits
+   at **~6e-3 mean KL vs fa3's flash attention** (flash's online-softmax reduction
+   rounds differently, and it compounds over layers), stable across kernel precisions
+   and backends. So the **default 5e-3 gate (tuned for silu/rmsnorm) is too strict for
+   attention** — the slot needs its own calibrated threshold (~k×6e-3). A broken
+   decode kernel sits at **0.126 (20× higher)** and is caught either way; the floor is
+   real, not a bug (op-correctness is exact). Per-slot KL thresholds are the fix.
 
 ## Repo layout
 
@@ -195,10 +208,19 @@ A bundle is a directory: `manifest.toml` (data — which slots, where the source
 + kernel **source** + optional eligibility `metadata/`. The miner provides only the
 slot's `entry` callable; the **validator** allocates outputs, owns the dispatch and
 fallback, and does the registration. Adding a slot is a validator action in
-`optima/slots.py` (+ a seam patch). Two slots today:
+`optima/slots.py` (+ a seam patch). A slot's `kind` is `op` (one fused op) or `block`
+(a region of several ops behind one typed boundary); correctness is `allclose` for
+bit-faithful ops or `matched_ratio` (≥ρ of elements within tol vs high-precision
+ground truth) for kernels that legitimately differ (attention/fp8/absorbed). Four
+slots today:
 
-- `activation.silu_and_mul` — `entry(x, out)` — Qwen/Llama-class MLP.
-- `norm.rmsnorm` — `entry(x, weight, out, eps)` — universal; fires on gpt-oss.
+- `activation.silu_and_mul` — `entry(x, out)` — Qwen/Llama-class MLP (op).
+- `norm.rmsnorm` — `entry(x, weight, out, eps)` — universal; fires on gpt-oss (op).
+- `attention.sdpa` — `entry(q, k, v, out, sm_scale, causal)` — scaled-dot-product
+  attention (block; the op-correctness demo of the wider boundary).
+- `attention.decode` — `entry(q, k, v, seq_lens, sm_scale, out)` — paged-decode
+  attention; the seam extracts the running model's paged KV and routes decode through
+  it (block; eager-only gather MVP — a paged-direct, CUDA-graph-safe contract is next).
 
 ## Anti-copy & scoring: commit-reveal + king of the hill
 
