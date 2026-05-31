@@ -6,8 +6,10 @@ model's accuracy on real benchmark problems survive the kernel?" We run the same
 fixed benchmark sample through two launches (kernel off = baseline, kernel on =
 candidate), measure throughput and per-benchmark accuracy for each, and gate:
 
-* **quality**: the candidate must not regress on ANY benchmark beyond a small
-  tolerance (Affine's "strictly not worse across all envs", applied to accuracy).
+* **quality**: two gates on the SAME realistic run — (1) no accuracy regression on
+  ANY benchmark beyond a small tolerance (Affine's "strictly not worse across all
+  envs"), and (2) per-token KL vs the baseline under threshold (the dense,
+  low-variance check; accuracy at small n is noisy, so KL is the primary gate).
 * **score**: the single thing maximized is THROUGHPUT speedup. The benchmarks are
   pass/fail GATES, not score components — so there's nothing to aggregate with a
   geometric mean. Our objective is scalar (speed); correctness is a constraint.
@@ -27,6 +29,7 @@ import torch
 
 from optima.eval._launch import launched_engine
 from optima.eval.benchmarks import Problem, get_benchmark
+from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt
 from optima.eval.throughput_kl import EvalConfig
 
 
@@ -59,10 +62,12 @@ class CapabilityReport:
     passed_quality: bool
     passed_speedup: bool
     score: float
+    kl: KLReport
     regressions: list[str] = field(default_factory=list)
 
 
-def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed_iters: int):
+def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed_iters: int,
+                       top_logprobs_num: int = 0):
     sp = {"temperature": 0.0, "max_new_tokens": max_new_tokens}
     # warmup (JIT/compile off the clock)
     engine.generate(prompt=prompts, sampling_params=sp)
@@ -70,10 +75,15 @@ def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed
     samples: list[float] = []
     outputs = None
     for i in range(max(1, timed_iters)):
+        # Capture top-k logprobs on the last timed iter only (cheaper) so KL is
+        # computed on the SAME realistic run we time and answer-check.
+        with_lp = top_logprobs_num > 0 and i == timed_iters - 1
+        kwargs = (dict(return_logprob=True, logprob_start_len=-1, top_logprobs_num=top_logprobs_num)
+                  if with_lp else {})
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         t0 = time.perf_counter()
-        outs = engine.generate(prompt=prompts, sampling_params=sp)
+        outs = engine.generate(prompt=prompts, sampling_params=sp, **kwargs)
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         elapsed = time.perf_counter() - t0
@@ -82,10 +92,11 @@ def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed
         tokens = sum(int(o.get("meta_info", {}).get("completion_tokens", 0)) for o in outs)
         if elapsed > 0:
             samples.append(tokens / elapsed)
-        outputs = outs  # keep last for answer-checking
+        outputs = outs  # keep last for answer-checking + KL
     tok_s = statistics.median(samples) if samples else 0.0
     texts = [o.get("text", "") for o in (outputs or [])]
-    return tok_s, texts
+    per_prompt = extract_per_prompt(outputs or [])
+    return tok_s, texts, per_prompt
 
 
 def _run_launch(cfg: EvalConfig, flat: list[tuple[str, Problem]], *, bundle_path: str, active: bool,
@@ -93,7 +104,8 @@ def _run_launch(cfg: EvalConfig, flat: list[tuple[str, Problem]], *, bundle_path
     prompts = [p.prompt for _, p in flat]
     with launched_engine(cfg, bundle_path=bundle_path, active=active) as engine:
         return _generate_and_time(engine, prompts, max_new_tokens=max_new_tokens,
-                                  timed_iters=cfg.timed_iters)
+                                  timed_iters=cfg.timed_iters,
+                                  top_logprobs_num=cfg.top_logprobs_num)
 
 
 def _accuracy_by_benchmark(flat: list[tuple[str, Problem]], texts: list[str]) -> dict[str, int]:
@@ -127,8 +139,8 @@ def evaluate_capability(
         max_new = max(max_new, bench.max_new_tokens)
         flat.extend((name, p) for p in probs)
 
-    base_tok_s, base_texts = _run_launch(cfg, flat, bundle_path="", active=False, max_new_tokens=max_new)
-    cand_tok_s, cand_texts = _run_launch(cfg, flat, bundle_path=bundle_path, active=True, max_new_tokens=max_new)
+    base_tok_s, base_texts, base_pp = _run_launch(cfg, flat, bundle_path="", active=False, max_new_tokens=max_new)
+    cand_tok_s, cand_texts, cand_pp = _run_launch(cfg, flat, bundle_path=bundle_path, active=True, max_new_tokens=max_new)
 
     base_correct = _accuracy_by_benchmark(flat, base_texts)
     cand_correct = _accuracy_by_benchmark(flat, cand_texts)
@@ -145,8 +157,14 @@ def evaluate_capability(
         if bs.delta < -acc_tolerance:  # regressed beyond tolerance
             regressions.append(f"{name}: {bs.baseline_acc:.1%} -> {bs.candidate_acc:.1%}")
 
+    # Dense fidelity gate on the SAME realistic prompts: KL between the two runs.
+    # If logprobs are unavailable (num_positions == 0) we fall back to the accuracy
+    # floor alone rather than failing spuriously.
+    kl = aligned_kl(base_pp, cand_pp)
+    kl_ok = kl.num_positions == 0 or kl.mean_kl <= cfg.kl_threshold
+
     speedup = (cand_tok_s / base_tok_s) if base_tok_s > 0 else 0.0
-    passed_quality = len(regressions) == 0
+    passed_quality = len(regressions) == 0 and kl_ok
     passed_speedup = speedup >= (1.0 + cfg.speedup_margin)
     score = speedup if (passed_quality and passed_speedup) else (0.0 if not passed_quality else speedup)
 
@@ -158,5 +176,6 @@ def evaluate_capability(
         passed_quality=passed_quality,
         passed_speedup=passed_speedup,
         score=score,
+        kl=kl,
         regressions=regressions,
     )

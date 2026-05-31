@@ -90,6 +90,27 @@ def numbers_equal(a: float | None, b: float | None, tol: float = 1e-4) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# multiple-choice answer extraction (shared by MMLU / GPQA / ARC-style)
+# ---------------------------------------------------------------------------
+
+
+def extract_choice_letter(text: str, num_choices: int = 4) -> str | None:
+    """Pull the selected option letter from a chain-of-thought answer.
+
+    Prefer an explicit 'the answer is (X)' / 'answer: X' cue; else fall back to the
+    last clearly-delimited '(X)'. Only letters in A..(A+num_choices-1) count, so a
+    stray capital in the reasoning isn't misread as the answer.
+    """
+    hi = chr(ord("A") + max(1, num_choices) - 1)
+    cue = re.compile(rf"(?:answer\s+is|answer:|####)\s*\(?([A-{hi}])\)?", re.IGNORECASE)
+    m = list(cue.finditer(text))
+    if m:
+        return m[-1].group(1).upper()
+    paren = re.findall(rf"\(([A-{hi}])\)", text)
+    return paren[-1].upper() if paren else None
+
+
+# ---------------------------------------------------------------------------
 # GSM8K
 # ---------------------------------------------------------------------------
 
@@ -155,11 +176,75 @@ class GSM8K:
 
 
 # ---------------------------------------------------------------------------
+# MMLU  (knowledge, multiple choice) — prompted for chain-of-thought so it is a
+# *long-generation* workload, not a 1-token logit rank. Adds domain diversity to
+# the eval distribution next to GSM8K's math.
+# ---------------------------------------------------------------------------
+
+
+class MMLU:
+    name = "mmlu"
+    _max_new_tokens = 512
+
+    def __init__(self, subject: str = "all") -> None:
+        self.subject = subject
+
+    @property
+    def max_new_tokens(self) -> int:
+        return self._max_new_tokens
+
+    @staticmethod
+    def _letter(i: int) -> str:
+        return chr(ord("A") + int(i))
+
+    @classmethod
+    def _format_question(cls, question: str, choices) -> str:
+        opts = "\n".join(f"({cls._letter(j)}) {c}" for j, c in enumerate(choices))
+        return f"Question: {question}\n{opts}"
+
+    def load(self, n: int, seed: int) -> list[Problem]:
+        from datasets import load_dataset  # lazy; `uv pip install datasets`
+
+        try:
+            ds = load_dataset("cais/mmlu", self.subject)
+        except Exception:  # noqa: BLE001 - fall back to the legacy alias
+            ds = load_dataset("hendrycks_test", self.subject)
+        test = ds["test"]
+
+        rng = random.Random(seed)
+        idxs = rng.sample(range(len(test)), min(n, len(test)))
+        problems: list[Problem] = []
+        for i in idxs:
+            ex = test[i]
+            choices = list(ex["choices"])
+            prompt = (
+                "Answer the multiple-choice question. Reason step by step, then end "
+                "with 'The answer is (X).' where X is the correct option letter.\n\n"
+                f"{self._format_question(ex['question'], choices)}\nAnswer:"
+            )
+            problems.append(
+                Problem(
+                    id=f"mmlu-{i}",
+                    prompt=prompt,
+                    answer=self._letter(int(ex["answer"])),
+                    meta={"num_choices": len(choices)},
+                )
+            )
+        return problems
+
+    def check(self, problem: Problem, output_text: str) -> bool:
+        n = int(problem.meta.get("num_choices", 4))
+        got = extract_choice_letter(output_text, num_choices=n)
+        return got is not None and got == problem.answer.strip().upper()
+
+
+# ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
 
 BENCHMARKS: dict[str, Benchmark] = {
     "gsm8k": GSM8K(),
+    "mmlu": MMLU(),
 }
 
 

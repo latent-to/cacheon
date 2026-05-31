@@ -481,16 +481,39 @@ Read that carefully — it encodes the whole philosophy:
   the title (Part 7), but it isn't punished.
 - **pass both → score = the speedup.**
 
-### 6.5 The second quality gate: benchmark task accuracy
+### 6.5 The realistic workload + the capability gate
 
-KL is a *distributional* fidelity check. We also gate on **real task accuracy** —
-"did the model still solve real problems?" — because that's what ultimately
-matters and it's harder to game. [../optima/eval/capability.py](../optima/eval/capability.py)
-runs a fixed sample of real benchmark problems
-([../optima/eval/benchmarks.py](../optima/eval/benchmarks.py): GSM8K today; the
-same `Benchmark` protocol takes SWE-bench / Tau-bench / KernelBench later, where
-`check()` runs tests in a sandbox) through both launches and gates on **no accuracy
-regression on any benchmark**. CLI: `optima bench`.
+The `evaluate` path above times throughput on a generic prompt corpus — fine as a
+cheap KL/calibration smoke, but a *toy* workload (short generations on filler
+prompts). The **scoring** path is `optima bench`
+([../optima/eval/capability.py](../optima/eval/capability.py)): it drives both
+launches with a few samples from **real benchmarks** at realistic generation
+lengths, so the throughput we score reflects the decode-heavy work production
+actually does — not a 64-token toy task.
+
+Two benchmarks today
+([../optima/eval/benchmarks.py](../optima/eval/benchmarks.py)): **GSM8K** (math,
+chain-of-thought, ~256 tokens) and **MMLU** (knowledge, CoT-prompted to ~512). The
+same `Benchmark` protocol takes SWE-bench / Tau-bench / KernelBench later (only
+`check()` changes — run tests/tools in a sandbox instead of extracting an answer).
+
+On that one realistic run we gate on **both**:
+
+- **per-token KL** vs the baseline — the dense, low-variance *primary* gate, on the
+  same prompts (a faithful kernel sits at the noise floor; a cheat blows up).
+- **task accuracy** — no regression on any benchmark beyond a tolerance ("did the
+  model still solve real problems?"); a capability *floor*, but noisy at small n,
+  which is exactly why KL is primary (Part 6.6).
+
+A faithful kernel preserves both; a kernel that secretly degrades the model drops
+accuracy and/or blows up KL and scores zero, even if it looked fast. CLI:
+`optima bench`.
+
+> Honest scope: this fixes the *regime* (real tasks, decode-heavy lengths). It does
+> **not** change that a single small op (silu/rmsnorm) is a tiny fraction of
+> end-to-end runtime, so its *throughput* contribution can sit below the
+> measurement noise floor — that is a slot-size problem (bigger slots like
+> attention/MoE + op-isolated microbenchmarks), tracked separately from the gate.
 
 Why this *simplifies* the design: our objective is **scalar** (throughput), so the
 benchmarks are **AND-gates**, not score components — there is nothing to aggregate
@@ -738,10 +761,10 @@ The harness package, [../optima/](../optima):
 | [integrations/sglang_plugin.py](../optima/integrations/sglang_plugin.py) | Entry-point shim for sglang builds that *have* the plugin framework (not 0.5.9). |
 | [verify.py](../optima/verify.py) | `verify_entry` — op-correctness vs the slot reference, allclose-style. |
 | [eval/throughput_kl.py](../optima/eval/throughput_kl.py) | `evaluate` — the two-launch throughput + KL run, median-of-K, gates, score. |
-| [eval/capability.py](../optima/eval/capability.py) | `evaluate_capability` — two-launch throughput + **benchmark accuracy** gate (`optima bench`). |
-| [eval/benchmarks.py](../optima/eval/benchmarks.py) | `Benchmark` protocol + `Problem` + **GSM8K** (HF datasets, numeric answer extraction) + registry. |
-| [eval/_launch.py](../optima/eval/_launch.py) | Shared spawn-safe, tamper-resistant `launched_engine` used by both eval paths. |
-| [eval/kl.py](../optima/eval/kl.py) | `kl_over_positions` — per-position top-k KL + argmax disagreements. |
+| [eval/capability.py](../optima/eval/capability.py) | `evaluate_capability` — the real-task scoring path: two-launch throughput + **KL + benchmark accuracy** on real prompts (`optima bench`). |
+| [eval/benchmarks.py](../optima/eval/benchmarks.py) | `Benchmark` protocol + `Problem` + **GSM8K & MMLU** (HF datasets, numeric + multiple-choice answer extraction) + registry. |
+| [eval/_launch.py](../optima/eval/_launch.py) | Shared spawn-safe, tamper-resistant `launched_engine` + `engine_kwargs` (incl. `tp_size` / `moe_runner_backend`) used by both eval paths. |
+| [eval/kl.py](../optima/eval/kl.py) | `kl_over_positions` / `aligned_kl` / `extract_per_prompt` — per-position top-k KL, per-prompt alignment, and sglang-output parsing shared by both eval paths. |
 | [eval/prompts.py](../optima/eval/prompts.py) | `CORPUS` + `sample_prompts(n, seed)` — per-epoch prompt sampling. |
 | [bundle_hash.py](../optima/bundle_hash.py) | `content_hash` — deterministic bundle identity. |
 | [commit_reveal.py](../optima/commit_reveal.py) | `Ledger` — commit/reveal, copy detection, king-of-the-hill `settle`, persistence. |

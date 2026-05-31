@@ -99,3 +99,46 @@ def kl_over_positions(
         p99_kl=p99,
         argmax_disagreements=disagree,
     )
+
+
+# A single prompt's run, as KL consumes it: (generated token ids, per-position top-k).
+PromptRun = tuple[Sequence[int], Sequence[TopK]]
+
+
+def extract_per_prompt(outputs: Sequence[dict]) -> list[tuple[list[int], list]]:
+    """Pull ``(output_ids, per-position top-k)`` out of sglang's generate() outputs.
+
+    Shared by the throughput+KL eval and the benchmark eval so both build the exact
+    same structure for ``aligned_kl``.
+    """
+    per_prompt: list[tuple[list[int], list]] = []
+    for o in outputs:
+        meta = o.get("meta_info", {})
+        output_ids = o.get("output_ids") or meta.get("output_ids") or []
+        topk = meta.get("output_top_logprobs") or []
+        per_prompt.append(([int(t) for t in output_ids], topk))
+    return per_prompt
+
+
+def aligned_kl(
+    baseline: Sequence[PromptRun], candidate: Sequence[PromptRun], *, eps: float = 1e-8
+) -> KLReport:
+    """KL between two runs, aligned per prompt up to the first token divergence.
+
+    Greedy decoding means the candidate can diverge from the baseline mid-sequence;
+    once the generated token at position ``i`` differs, the two runs no longer share
+    a context and later positions aren't comparable. So we compare position ``i``
+    and then stop at the first mismatch. Position 0 always shares the prompt, so a
+    kernel that derails the very first token still gets scored (a large KL) instead
+    of silently contributing zero comparable positions.
+    """
+    ref_positions: list = []
+    cand_positions: list = []
+    for (b_ids, b_topk), (c_ids, c_topk) in zip(baseline, candidate):
+        n = min(len(b_topk), len(c_topk))
+        for i in range(n):
+            ref_positions.append(b_topk[i])
+            cand_positions.append(c_topk[i])
+            if i < len(b_ids) and i < len(c_ids) and b_ids[i] != c_ids[i]:
+                break
+    return kl_over_positions(ref_positions, cand_positions, eps=eps)

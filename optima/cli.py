@@ -139,6 +139,9 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         kl_threshold=args.kl_threshold,
         deterministic=not args.no_deterministic,
         mem_fraction_static=args.mem_fraction,
+        tp_size=args.tp_size,
+        moe_runner_backend=args.moe_runner_backend,
+        disable_custom_all_reduce=args.disable_custom_all_reduce,
     )
     print(f"\nrunning two launches of {args.model} (dtype={args.dtype}, "
           f"deterministic={cfg.deterministic}): baseline then candidate ...")
@@ -199,8 +202,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
         dtype=args.dtype,
         timed_iters=args.timed_iters,
         prompt_seed=args.prompt_seed,
+        top_logprobs_num=args.top_logprobs,
+        kl_threshold=args.kl_threshold,
         deterministic=not args.no_deterministic,
         mem_fraction_static=args.mem_fraction,
+        tp_size=args.tp_size,
+        moe_runner_backend=args.moe_runner_backend,
+        disable_custom_all_reduce=args.disable_custom_all_reduce,
     )
     names = [b.strip() for b in args.benchmarks.split(",") if b.strip()]
     print(f"\nbenchmark eval of {args.model} on {names} "
@@ -219,7 +227,11 @@ def cmd_bench(args: argparse.Namespace) -> int:
               f"Δ{bs.delta:+.1%}{flag}")
     print(f"throughput baseline {report.baseline_tok_s:8.1f} tok/s  candidate {report.candidate_tok_s:8.1f} tok/s")
     print(f"speedup    {report.speedup:8.3f}x  -> {'PASS' if report.passed_speedup else 'below margin'}")
-    print(f"quality    no-accuracy-regression -> {'PASS' if report.passed_quality else 'FAIL'}")
+    kl = report.kl
+    kl_note = "n/a (no logprobs)" if kl.num_positions == 0 else f"<= {args.kl_threshold:.1e}"
+    print(f"quality    no-accuracy-regression + KL mean_kl={kl.mean_kl:.3e} ({kl_note}), "
+          f"argmax_disagree={kl.argmax_disagreements}/{kl.num_positions} -> "
+          f"{'PASS' if report.passed_quality else 'FAIL'}")
     print(f"SCORE      {report.score:.3f}")
 
     if getattr(args, "ledger", None) and getattr(args, "hotkey", None):
@@ -228,10 +240,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
 
         ch = content_hash(args.bundle)
         led = Ledger.load(args.ledger)
-        # use mean candidate accuracy as the kl_mean stand-in for the record
-        mean_acc = (sum(b.candidate_acc for b in report.benchmarks) / len(report.benchmarks)
-                    if report.benchmarks else 0.0)
-        led.record_score(args.hotkey, ch, args.round, report.score, mean_acc, report.passed_quality)
+        led.record_score(args.hotkey, ch, args.round, report.score, report.kl.mean_kl, report.passed_quality)
         led.save(args.ledger)
         print(f"recorded -> {args.ledger} (hotkey={args.hotkey}, round={args.round})")
     return 0 if report.passed_quality else 3
@@ -340,24 +349,38 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--mem-fraction", type=float, default=0.6,
                     help="sglang mem_fraction_static (use ~0.9 for big models like gpt-oss-120b)")
     sp.add_argument("--no-deterministic", action="store_true")
+    sp.add_argument("--tp-size", type=int, default=None, help="tensor-parallel size (multi-GPU)")
+    sp.add_argument("--moe-runner-backend", default=None,
+                    help="sglang MoE backend (e.g. 'triton' for gpt-oss TP on Blackwell sm_120a)")
+    sp.add_argument("--disable-custom-all-reduce", action="store_true",
+                    help="needed for TP>2 over PCIe (no NVLink)")
     # optional: record the result into a commit-reveal ledger
     sp.add_argument("--ledger", default=None, help="ledger json to record the score into")
     sp.add_argument("--hotkey", default=None, help="miner hotkey (with --ledger)")
     sp.add_argument("--round", type=int, default=0, help="round id (with --ledger)")
     sp.set_defaults(func=cmd_evaluate)
 
-    sp = sub.add_parser("bench", help="benchmark-based eval: throughput gated by task accuracy")
+    sp = sub.add_parser("bench",
+                        help="realistic eval: throughput on real benchmark prompts, gated by task accuracy + KL")
     sp.add_argument("bundle")
     sp.add_argument("--model", required=True)
-    sp.add_argument("--benchmarks", default="gsm8k", help="comma-separated benchmark names")
+    sp.add_argument("--benchmarks", default="gsm8k",
+                    help="comma-separated: gsm8k, mmlu (real tasks; long CoT generation)")
     sp.add_argument("--samples", type=int, default=32, help="problems per benchmark")
     sp.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     sp.add_argument("--timed-iters", type=int, default=2)
     sp.add_argument("--prompt-seed", type=int, default=0)
     sp.add_argument("--acc-tolerance", type=float, default=0.02)
+    sp.add_argument("--kl-threshold", type=float, default=5e-3, help="dense KL gate on the benchmark prompts")
+    sp.add_argument("--top-logprobs", type=int, default=20, help="top-k logprobs for the KL gate (0 disables)")
     sp.add_argument("--mem-fraction", type=float, default=0.6,
                     help="sglang mem_fraction_static (use ~0.9 for big models like gpt-oss-120b)")
     sp.add_argument("--no-deterministic", action="store_true")
+    sp.add_argument("--tp-size", type=int, default=None, help="tensor-parallel size (multi-GPU)")
+    sp.add_argument("--moe-runner-backend", default=None,
+                    help="sglang MoE backend (e.g. 'triton' for gpt-oss TP on Blackwell sm_120a)")
+    sp.add_argument("--disable-custom-all-reduce", action="store_true",
+                    help="needed for TP>2 over PCIe (no NVLink)")
     sp.add_argument("--ledger", default=None)
     sp.add_argument("--hotkey", default=None)
     sp.add_argument("--round", type=int, default=0)

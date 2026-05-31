@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 import torch
 
-from optima.eval.kl import KLReport, kl_over_positions
+from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt
 from optima.eval.prompts import sample_prompts
 
 
@@ -54,6 +54,12 @@ class EvalConfig:
     disable_cuda_graph: bool = True
     mem_fraction_static: float = 0.6
     log_level: str = "warning"
+    # multi-GPU knobs (gpt-oss TP=4 on Blackwell sm_120a needs moe_runner_backend
+    # "triton" + custom-allreduce off; see docs/DEV_ENVIRONMENT.md). Left unset by
+    # default so single-GPU runs are byte-for-byte unchanged.
+    tp_size: Optional[int] = None
+    moe_runner_backend: Optional[str] = None
+    disable_custom_all_reduce: bool = False
     extra_engine_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
@@ -103,16 +109,6 @@ def _sampling_params(cfg: EvalConfig) -> dict:
     return {"temperature": cfg.temperature, "max_new_tokens": cfg.max_new_tokens}
 
 
-def _extract_per_prompt(outputs: list[dict]) -> list[tuple[list[int], list]]:
-    per_prompt: list[tuple[list[int], list]] = []
-    for o in outputs:
-        meta = o.get("meta_info", {})
-        output_ids = o.get("output_ids") or meta.get("output_ids") or []
-        topk = meta.get("output_top_logprobs") or []
-        per_prompt.append(([int(t) for t in output_ids], topk))
-    return per_prompt
-
-
 def _timed_generate(engine, prompts: list[str], cfg: EvalConfig, *, with_logprobs: bool):
     sp = _sampling_params(cfg)
     kwargs: dict[str, Any] = {}
@@ -152,7 +148,7 @@ def _measure(engine, prompts: list[str], cfg: EvalConfig) -> ModeResult:
         tok_per_s=statistics.median(samples) if samples else 0.0,
         tok_per_s_samples=samples,
         tokens=last_tokens,
-        per_prompt=_extract_per_prompt(last_outputs or []),
+        per_prompt=extract_per_prompt(last_outputs or []),
     )
 
 
@@ -171,19 +167,9 @@ def _run_launch(cfg: EvalConfig, prompts: list[str], *, bundle_path: str, active
     ):
         import sglang as sgl
 
-        kwargs: dict[str, Any] = dict(
-            model_path=cfg.model_path,
-            dtype=cfg.dtype,
-            attention_backend=cfg.attention_backend,
-            disable_cuda_graph=cfg.disable_cuda_graph,
-            mem_fraction_static=cfg.mem_fraction_static,
-            random_seed=cfg.seed,
-            log_level=cfg.log_level,
-        )
-        if cfg.deterministic:
-            kwargs["enable_deterministic_inference"] = True
-        kwargs.update(cfg.extra_engine_kwargs)
-        engine = sgl.Engine(**kwargs)
+        from optima.eval._launch import engine_kwargs
+
+        engine = sgl.Engine(**engine_kwargs(cfg))
         try:
             return _measure(engine, prompts, cfg)
         finally:
@@ -194,20 +180,8 @@ def _run_launch(cfg: EvalConfig, prompts: list[str], *, bundle_path: str, active
 
 
 def _aligned_kl(baseline: ModeResult, candidate: ModeResult) -> KLReport:
-    ref_positions: list = []
-    cand_positions: list = []
-    for (b_ids, b_topk), (c_ids, c_topk) in zip(baseline.per_prompt, candidate.per_prompt):
-        n = min(len(b_topk), len(c_topk))
-        for i in range(n):
-            # Position i is comparable iff the generated prefix 0..i-1 matched
-            # (guaranteed here since we break right after the first mismatch).
-            # Position 0 always matches (identical prompt), so a kernel that
-            # derails the first token still gets scored — compare i, THEN stop.
-            ref_positions.append(b_topk[i])
-            cand_positions.append(c_topk[i])
-            if i < len(b_ids) and i < len(c_ids) and b_ids[i] != c_ids[i]:
-                break
-    return kl_over_positions(ref_positions, cand_positions)
+    # Per-prompt alignment up to the first token divergence; see kl.aligned_kl.
+    return aligned_kl(baseline.per_prompt, candidate.per_prompt)
 
 
 def evaluate(cfg: EvalConfig, bundle_path: str, prompts: Optional[list[str]] = None) -> EvalReport:

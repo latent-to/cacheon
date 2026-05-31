@@ -26,6 +26,34 @@ def env(**overrides: str):
                 os.environ[k] = v
 
 
+def engine_kwargs(cfg) -> dict[str, Any]:
+    """Translate an ``EvalConfig`` into ``sglang.Engine`` kwargs.
+
+    Shared by both eval paths so multi-GPU knobs (``tp_size`` / ``moe_runner_backend``
+    / ``disable_custom_all_reduce``) and deterministic mode apply identically. New
+    fields are read with ``getattr`` so an older/duck-typed cfg still works.
+    """
+    kwargs: dict[str, Any] = dict(
+        model_path=cfg.model_path,
+        dtype=cfg.dtype,
+        attention_backend=cfg.attention_backend,
+        disable_cuda_graph=cfg.disable_cuda_graph,
+        mem_fraction_static=cfg.mem_fraction_static,
+        random_seed=cfg.seed,
+        log_level=cfg.log_level,
+    )
+    if getattr(cfg, "deterministic", False):
+        kwargs["enable_deterministic_inference"] = True
+    if getattr(cfg, "tp_size", None):
+        kwargs["tp_size"] = int(cfg.tp_size)
+    if getattr(cfg, "moe_runner_backend", None):
+        kwargs["moe_runner_backend"] = cfg.moe_runner_backend
+    if getattr(cfg, "disable_custom_all_reduce", False):
+        kwargs["disable_custom_all_reduce"] = True
+    kwargs.update(getattr(cfg, "extra_engine_kwargs", {}) or {})
+    return kwargs
+
+
 @contextmanager
 def launched_engine(cfg, *, bundle_path: str, active: bool):
     """Launch a sglang Engine with the Optima seam configured.
@@ -44,19 +72,7 @@ def launched_engine(cfg, *, bundle_path: str, active: bool):
     ):
         import sglang as sgl
 
-        kwargs: dict[str, Any] = dict(
-            model_path=cfg.model_path,
-            dtype=cfg.dtype,
-            attention_backend=cfg.attention_backend,
-            disable_cuda_graph=cfg.disable_cuda_graph,
-            mem_fraction_static=cfg.mem_fraction_static,
-            random_seed=cfg.seed,
-            log_level=cfg.log_level,
-        )
-        if cfg.deterministic:
-            kwargs["enable_deterministic_inference"] = True
-        kwargs.update(cfg.extra_engine_kwargs)
-        engine = sgl.Engine(**kwargs)
+        engine = sgl.Engine(**engine_kwargs(cfg))
         try:
             yield engine
         finally:
