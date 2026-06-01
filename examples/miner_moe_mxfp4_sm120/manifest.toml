@@ -1,0 +1,17 @@
+# GPT-OSS / RTX Blackwell framework-mode bundle for the MXFP4 fused MoE slot.
+# The rebuild plan applies the SM120 FlashInfer/SGLang source patch inside the
+# isolated candidate process before SGLang imports. The candidate is then launched
+# with `moe_runner_backend=flashinfer_mxfp4` while the baseline can stay on stock
+# `triton`, so `optima bench --framework-mode` scores the real backend win.
+
+bundle_id = "example-moe-mxfp4-sm120"
+abi_version = "optima-op-abi-v0"
+
+[[ops]]
+slot = "moe.fused_experts_mxfp4"
+source = "kernels/moe_mxfp4.py"
+entry = "fused_experts_mxfp4"
+prepare = "prepare"
+dtypes = ["bfloat16", "float16", "float32"]
+architectures = ["sm120"]
+metadata = "metadata/moe_mxfp4.json"

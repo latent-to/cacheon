@@ -10,6 +10,8 @@ l.json
 
 # Private working log — candid history, live pod access, strategy. NOT for GitHub.
 WORKLOG.md
+
 # Local miner-workbench experiments; keep out of the eventual public validator repo.
+experiments/
 scripts/gptoss_tp_bench.py
 scripts/moe_config_microbench.py

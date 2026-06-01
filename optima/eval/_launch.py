@@ -73,7 +73,20 @@ def isolate_network() -> bool:
         return True
 
 
-def engine_kwargs(cfg) -> dict[str, Any]:
+def prepare_candidate_environment(cfg, *, bundle_path: str, active: bool) -> None:
+    """Apply candidate-only process isolation/rebuild work before importing SGLang."""
+    if not active:
+        return
+    if getattr(cfg, "isolate", False):
+        isolate_network()
+    if bundle_path:
+        from optima.rebuild import apply_rebuild_plan
+
+        if apply_rebuild_plan(bundle_path):
+            logger.warning("optima: applied rebuild plan for %s", bundle_path)
+
+
+def engine_kwargs(cfg, *, active: bool = False) -> dict[str, Any]:
     """Translate an ``EvalConfig`` into ``sglang.Engine`` kwargs.
 
     Shared by both eval paths so multi-GPU knobs (``tp_size`` / ``moe_runner_backend``
@@ -90,19 +103,30 @@ def engine_kwargs(cfg) -> dict[str, Any]:
     # Only pass these when explicitly set so sglang keeps its strong production
     # defaults otherwise (auto attention backend + CUDA graphs ON). A weak baseline
     # lets miners win against a crippled reference.
-    if getattr(cfg, "attention_backend", None):
-        kwargs["attention_backend"] = cfg.attention_backend
+    attention_backend = getattr(cfg, "attention_backend", None)
+    if active and getattr(cfg, "candidate_attention_backend", None):
+        attention_backend = cfg.candidate_attention_backend
+    if attention_backend:
+        kwargs["attention_backend"] = attention_backend
     if getattr(cfg, "disable_cuda_graph", False):
         kwargs["disable_cuda_graph"] = True
     if getattr(cfg, "deterministic", False):
         kwargs["enable_deterministic_inference"] = True
     if getattr(cfg, "tp_size", None):
         kwargs["tp_size"] = int(cfg.tp_size)
-    if getattr(cfg, "moe_runner_backend", None):
-        kwargs["moe_runner_backend"] = cfg.moe_runner_backend
-    if getattr(cfg, "disable_custom_all_reduce", False):
+    moe_runner_backend = getattr(cfg, "moe_runner_backend", None)
+    if active and getattr(cfg, "candidate_moe_runner_backend", None):
+        moe_runner_backend = cfg.candidate_moe_runner_backend
+    if moe_runner_backend:
+        kwargs["moe_runner_backend"] = moe_runner_backend
+    disable_custom_all_reduce = getattr(cfg, "disable_custom_all_reduce", False)
+    if active and getattr(cfg, "candidate_disable_custom_all_reduce", None) is not None:
+        disable_custom_all_reduce = cfg.candidate_disable_custom_all_reduce
+    if disable_custom_all_reduce:
         kwargs["disable_custom_all_reduce"] = True
     kwargs.update(getattr(cfg, "extra_engine_kwargs", {}) or {})
+    if active:
+        kwargs.update(getattr(cfg, "candidate_extra_engine_kwargs", {}) or {})
     return kwargs
 
 
@@ -117,6 +141,7 @@ def launched_engine(cfg, *, bundle_path: str, active: bool):
     from optima import seam
 
     seam.mark_driver()
+    prepare_candidate_environment(cfg, bundle_path=bundle_path, active=active)
     with env(
         OPTIMA_BUNDLE_PATH=bundle_path or "",
         OPTIMA_ACTIVE="1" if active else "0",
@@ -124,7 +149,7 @@ def launched_engine(cfg, *, bundle_path: str, active: bool):
     ):
         import sglang as sgl
 
-        engine = sgl.Engine(**engine_kwargs(cfg))
+        engine = sgl.Engine(**engine_kwargs(cfg, active=active))
         try:
             yield engine
         finally:

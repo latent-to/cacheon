@@ -420,6 +420,27 @@ MOE_FUSED_EXPERTS = SlotSpec(
 )
 
 
+MOE_FUSED_EXPERTS_MXFP4 = SlotSpec(
+    name="moe.fused_experts_mxfp4",
+    entry="fused_experts_mxfp4",
+    prepare="prepare",
+    summary=(
+        "MXFP4 fused MoE experts — a (prepare, forward) PAIR for GPT-OSS/Blackwell-style "
+        "expert kernels.  prepare(...) owns weight/scale layout once at load;  "
+        "forward(x, topk_ids, topk_weights, prepared, out) owns the fused expert call."
+    ),
+    kind="block",
+    make_inputs=_moe_inputs,
+    out_shapes=lambda i: [(i["x"].shape[0], i["x"].shape[1])],
+    invoke_reference=lambda i: [_moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"])],
+    invoke_prepare=lambda prepare_fn, i: prepare_fn(i["w13"], i["w2"]),
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], i["topk_ids"], i["topk_weights"], prepared, outs[0]),
+    shapes=MOE_FUSED_EXPERTS.shapes,
+    correctness=Correctness("matched_ratio", min_ratio=0.97),
+    tolerances=_BF16_TOL,
+)
+
+
 # ---------------------------------------------------------------------------
 # Catalog
 # ---------------------------------------------------------------------------
@@ -430,6 +451,7 @@ SLOTS: dict[str, SlotSpec] = {
     ATTENTION_SDPA.name: ATTENTION_SDPA,
     ATTENTION_DECODE.name: ATTENTION_DECODE,
     MOE_FUSED_EXPERTS.name: MOE_FUSED_EXPERTS,
+    MOE_FUSED_EXPERTS_MXFP4.name: MOE_FUSED_EXPERTS_MXFP4,
 }
 
 

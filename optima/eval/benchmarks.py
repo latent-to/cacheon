@@ -239,11 +239,93 @@ class MMLU:
 
 
 # ---------------------------------------------------------------------------
+# Long-context fixed-answer math sanity benchmark.
+#
+# This mirrors the dev helper under experiments/sm120_flashinfer_moe closely enough
+# to run the same long-context / long-decode shape through ``optima bench``:
+# a small batch, irrelevant context padding, fixed arithmetic answers, and a
+# 1024-token decode budget. It is a throughput/coherence sanity check, not a
+# statistically meaningful math benchmark.
+# ---------------------------------------------------------------------------
+
+
+_FINAL_RE = re.compile(r"\bFINAL(?:_FIRST|_LAST)?\s*:\s*([-+]?\d+)", re.IGNORECASE)
+_PADDING_SENTENCE = (
+    "This benchmark padding sentence is deliberately irrelevant to the arithmetic "
+    "problem. Keep it in context, ignore it for the calculation, and do not infer "
+    "any hidden constants from it. "
+)
+
+
+class LongMath:
+    name = "long_math"
+    _max_new_tokens = 1024
+
+    _tasks = (
+        ("sum_1_to_1000", "Compute the exact value of 1 + 2 + ... + 1000.", "500500"),
+        ("sum_squares_100", "Compute the exact value of 1^2 + 2^2 + ... + 100^2.", "338350"),
+        (
+            "arithmetic_series",
+            "An arithmetic sequence has 75 terms, first term 17, and common difference 13. Compute the sum of all 75 terms.",
+            "37350",
+        ),
+        ("mixed_products", "Compute (37 times 42) plus (58 times 63) minus 999.", "4209"),
+    )
+
+    @property
+    def max_new_tokens(self) -> int:
+        return self._max_new_tokens
+
+    def _prompt(self, question: str, task_id: str) -> str:
+        header = (
+            "You are running a long-context arithmetic sanity benchmark.\n"
+            "The context block below is padding and is unrelated to the problem.\n"
+            "Ignore the padding for the calculation.\n\n"
+            "Context block:\n"
+        )
+        padding = "\n".join(
+            f"Padding note {i}: {_PADDING_SENTENCE}" for i in range(52)
+        )
+        footer = (
+            "\n\nArithmetic problem:\n"
+            f"{question}\n\n"
+            "Response requirements:\n"
+            "- The first line must be: FINAL_FIRST: <integer answer>\n"
+            "- Then write a detailed consistency check and explanation. Keep going; "
+            "this is intentionally a long decode benchmark.\n"
+            "- Near the end, write: FINAL_LAST: <integer answer>\n"
+            "- Do not use commas in the integer answer.\n"
+            f"\nTask id: {task_id}\n"
+        )
+        return header + padding + footer
+
+    def load(self, n: int, seed: int) -> list[Problem]:
+        rng = random.Random(seed)
+        offset = rng.randrange(len(self._tasks)) if self._tasks else 0
+        problems: list[Problem] = []
+        for j in range(n):
+            task_id, question, answer = self._tasks[(offset + j) % len(self._tasks)]
+            problems.append(
+                Problem(
+                    id=f"long-math-{task_id}-{j}",
+                    prompt=self._prompt(question, f"{task_id}-{j}"),
+                    answer=answer,
+                )
+            )
+        return problems
+
+    def check(self, problem: Problem, output_text: str) -> bool:
+        answers = [match.group(1) for match in _FINAL_RE.finditer(output_text)]
+        return problem.answer in answers or problem.answer in output_text
+
+
+# ---------------------------------------------------------------------------
 # registry
 # ---------------------------------------------------------------------------
 
 BENCHMARKS: dict[str, Benchmark] = {
     "gsm8k": GSM8K(),
+    "long_math": LongMath(),
     "mmlu": MMLU(),
 }
 

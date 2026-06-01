@@ -43,6 +43,7 @@ class EvalConfig:
     timed_iters: int = 3  # median-of-K timed passes per launch
     top_logprobs_num: int = 20
     temperature: float = 0.0  # greedy -> deterministic alignment
+    ignore_eos: bool = False
     warmup_iters: int = 1
     deterministic: bool = False
     # None -> advisory (KL reported but not gated; for big MoE where the
@@ -87,7 +88,11 @@ class EvalConfig:
     tp_size: Optional[int] = None
     moe_runner_backend: Optional[str] = None
     disable_custom_all_reduce: bool = False
+    candidate_attention_backend: Optional[str] = None
+    candidate_moe_runner_backend: Optional[str] = None
+    candidate_disable_custom_all_reduce: Optional[bool] = None
     extra_engine_kwargs: dict[str, Any] = field(default_factory=dict)
+    candidate_extra_engine_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -134,7 +139,10 @@ def _env(**overrides: str):
 
 
 def _sampling_params(cfg: EvalConfig) -> dict:
-    return {"temperature": cfg.temperature, "max_new_tokens": cfg.max_new_tokens}
+    sp = {"temperature": cfg.temperature, "max_new_tokens": cfg.max_new_tokens}
+    if cfg.ignore_eos:
+        sp["ignore_eos"] = True
+    return sp
 
 
 def _timed_generate(engine, prompts: list[str], cfg: EvalConfig, *, with_logprobs: bool):
@@ -188,13 +196,9 @@ def _run_launch(cfg: EvalConfig, prompts: list[str], *, bundle_path: str, active
 
     seam.mark_driver()
 
-    # Isolate ONLY the candidate (the untrusted side): a fresh no-egress network
-    # namespace, inherited by the sglang scheduler child where the miner code runs. The
-    # baseline (trusted stock reference) and the parent driver stay un-isolated.
-    if active and getattr(cfg, "isolate", False):
-        from optima.eval._launch import isolate_network
+    from optima.eval._launch import engine_kwargs, prepare_candidate_environment
 
-        isolate_network()
+    prepare_candidate_environment(cfg, bundle_path=bundle_path, active=active)
 
     with _env(
         OPTIMA_BUNDLE_PATH=bundle_path or "",
@@ -203,9 +207,7 @@ def _run_launch(cfg: EvalConfig, prompts: list[str], *, bundle_path: str, active
     ):
         import sglang as sgl
 
-        from optima.eval._launch import engine_kwargs
-
-        engine = sgl.Engine(**engine_kwargs(cfg))
+        engine = sgl.Engine(**engine_kwargs(cfg, active=active))
         try:
             return _measure(engine, prompts, cfg)
         finally:

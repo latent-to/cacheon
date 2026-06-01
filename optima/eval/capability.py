@@ -29,7 +29,7 @@ import torch
 
 from optima.eval._launch import call_in_subprocess, launched_engine
 from optima.eval.benchmarks import Problem, get_benchmark
-from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt, kl_gate_ok
+from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt, kl_gate_ok, token_match_rate
 from optima.eval.throughput_kl import EvalConfig
 
 
@@ -63,12 +63,20 @@ class CapabilityReport:
     passed_speedup: bool
     score: float
     kl: KLReport
+    token_match: float = 1.0
     regressions: list[str] = field(default_factory=list)
 
 
-def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed_iters: int,
-                       top_logprobs_num: int = 0):
+def _sampling_params(cfg: EvalConfig, *, max_new_tokens: int) -> dict:
     sp = {"temperature": 0.0, "max_new_tokens": max_new_tokens}
+    if getattr(cfg, "ignore_eos", False):
+        sp["ignore_eos"] = True
+    return sp
+
+
+def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed_iters: int,
+                       cfg: EvalConfig, top_logprobs_num: int = 0):
+    sp = _sampling_params(cfg, max_new_tokens=max_new_tokens)
     # warmup (JIT/compile off the clock)
     engine.generate(prompt=prompts, sampling_params=sp)
 
@@ -105,7 +113,8 @@ def _run_launch(cfg: EvalConfig, flat: list[tuple[str, Problem]], *, bundle_path
     with launched_engine(cfg, bundle_path=bundle_path, active=active) as engine:
         return _generate_and_time(engine, prompts, max_new_tokens=max_new_tokens,
                                   timed_iters=cfg.timed_iters,
-                                  top_logprobs_num=cfg.top_logprobs_num)
+                                  top_logprobs_num=cfg.top_logprobs_num,
+                                  cfg=cfg)
 
 
 def _accuracy_by_benchmark(flat: list[tuple[str, Problem]], texts: list[str]) -> dict[str, int]:
@@ -126,6 +135,7 @@ def evaluate_capability(
     *,
     samples_per_benchmark: int = 32,
     acc_tolerance: float = 0.02,
+    max_new_tokens: int | None = None,
 ) -> CapabilityReport:
     # Build one flat, ordered list of (benchmark, problem); max_new_tokens is the
     # max any benchmark needs (they're generated together).
@@ -138,6 +148,8 @@ def evaluate_capability(
         counts[name] = len(probs)
         max_new = max(max_new, bench.max_new_tokens)
         flat.extend((name, p) for p in probs)
+    if max_new_tokens is not None:
+        max_new = int(max_new_tokens)
 
     # Each launch runs in its own fresh process so the baseline's deterministic /
     # CUDA global state can't corrupt the candidate (see _launch.call_in_subprocess).
@@ -167,6 +179,8 @@ def evaluate_capability(
     #    where the nondeterminism floor exceeds any sane threshold; accuracy carries it.
     #  * num_positions == 0    -> no logprobs; fall back to the accuracy floor.
     kl = aligned_kl(base_pp, cand_pp)
+    matched, total = token_match_rate(base_pp, cand_pp)
+    token_match = (matched / total) if total else 1.0
     kl_ok = kl_gate_ok(
         kl,
         kl_threshold=cfg.kl_threshold,
@@ -175,7 +189,11 @@ def evaluate_capability(
     )
 
     speedup = (cand_tok_s / base_tok_s) if base_tok_s > 0 else 0.0
-    passed_quality = len(regressions) == 0 and kl_ok
+    if getattr(cfg, "framework_mode", False):
+        fidelity_ok = total > 0 and token_match >= cfg.token_match_threshold
+    else:
+        fidelity_ok = kl_ok
+    passed_quality = len(regressions) == 0 and fidelity_ok
     passed_speedup = speedup >= (1.0 + cfg.speedup_margin)
     score = speedup if (passed_quality and passed_speedup) else (0.0 if not passed_quality else speedup)
 
@@ -188,5 +206,6 @@ def evaluate_capability(
         passed_speedup=passed_speedup,
         score=score,
         kl=kl,
+        token_match=token_match,
         regressions=regressions,
     )

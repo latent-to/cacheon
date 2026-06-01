@@ -1,0 +1,6 @@
+{
+  "op": "moe.fused_experts_mxfp4",
+  "dtypes": ["bfloat16", "float16", "float32"],
+  "architectures": ["sm120"],
+  "notes": "Framework-mode GPT-OSS MXFP4 MoE backend swap for RTX PRO 6000 Blackwell. rebuild.json applies the SM120 FlashInfer/SGLang source patch; optima bench launches the candidate with flashinfer_mxfp4."
+}

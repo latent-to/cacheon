@@ -20,10 +20,20 @@ Do not run this on a machine you care about without that isolation. See
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from optima.manifest import load_manifest, resolve_source
 from optima.sandbox import load_entry, scan_path
+
+
+def _json_obj(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    out = json.loads(raw)
+    if not isinstance(out, dict):
+        raise argparse.ArgumentTypeError("JSON value must be an object")
+    return out
 
 
 def _dtype(name: str):
@@ -135,10 +145,12 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         max_new_tokens=args.max_new_tokens,
         num_prompts=args.num_prompts,
         framework_mode=args.framework_mode,
+        token_match_threshold=args.token_match_threshold,
         isolate=args.isolate or args.framework_mode,  # framework-mode implies no-egress isolation
         timed_iters=args.timed_iters,
         prompt_seed=args.prompt_seed,
         top_logprobs_num=args.top_logprobs,
+        ignore_eos=args.ignore_eos,
         kl_threshold=None if args.kl_advisory else args.kl_threshold,
         argmax_disagree_rate_threshold=args.argmax_disagree_rate,
         p99_kl_threshold=args.p99_kl_threshold,
@@ -149,6 +161,11 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         tp_size=args.tp_size,
         moe_runner_backend=args.moe_runner_backend,
         disable_custom_all_reduce=args.disable_custom_all_reduce,
+        candidate_attention_backend=args.candidate_attention_backend,
+        candidate_moe_runner_backend=args.candidate_moe_runner_backend,
+        candidate_disable_custom_all_reduce=args.candidate_disable_custom_all_reduce,
+        extra_engine_kwargs=_json_obj(args.engine_kwargs_json),
+        candidate_extra_engine_kwargs=_json_obj(args.candidate_engine_kwargs_json),
     )
     print(f"\nrunning two launches of {args.model} (dtype={args.dtype}, "
           f"deterministic={cfg.deterministic}, cuda_graph={not cfg.disable_cuda_graph}, "
@@ -214,9 +231,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
         timed_iters=args.timed_iters,
         prompt_seed=args.prompt_seed,
         top_logprobs_num=args.top_logprobs,
+        ignore_eos=args.ignore_eos,
         kl_threshold=None if args.kl_advisory else args.kl_threshold,
         argmax_disagree_rate_threshold=args.argmax_disagree_rate,
         p99_kl_threshold=args.p99_kl_threshold,
+        framework_mode=args.framework_mode,
+        token_match_threshold=args.token_match_threshold,
+        isolate=args.isolate or args.framework_mode,
         deterministic=not args.no_deterministic,
         attention_backend=args.attention_backend,
         disable_cuda_graph=args.disable_cuda_graph,
@@ -224,13 +245,20 @@ def cmd_bench(args: argparse.Namespace) -> int:
         tp_size=args.tp_size,
         moe_runner_backend=args.moe_runner_backend,
         disable_custom_all_reduce=args.disable_custom_all_reduce,
+        candidate_attention_backend=args.candidate_attention_backend,
+        candidate_moe_runner_backend=args.candidate_moe_runner_backend,
+        candidate_disable_custom_all_reduce=args.candidate_disable_custom_all_reduce,
+        extra_engine_kwargs=_json_obj(args.engine_kwargs_json),
+        candidate_extra_engine_kwargs=_json_obj(args.candidate_engine_kwargs_json),
     )
     names = [b.strip() for b in args.benchmarks.split(",") if b.strip()]
     print(f"\nbenchmark eval of {args.model} on {names} "
-          f"({args.samples}/bench): baseline then candidate ...")
+          f"({args.samples}/bench; framework_mode={cfg.framework_mode}, "
+          f"isolate_candidate={cfg.isolate}): baseline then candidate ...")
     report = evaluate_capability(
         cfg, str(args.bundle), names,
         samples_per_benchmark=args.samples, acc_tolerance=args.acc_tolerance,
+        max_new_tokens=args.max_new_tokens,
     )
 
     print("\n=== Optima capability report ===")
@@ -252,7 +280,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
     rate_note = "" if args.kl_advisory else f" (<= {args.argmax_disagree_rate:.1%})"
     print(f"quality    no-accuracy-regression + KL mean_kl={kl.mean_kl:.3e} ({kl_note}), "
           f"argmax_disagree={kl.argmax_disagreements}/{kl.num_positions} "
-          f"({kl.argmax_disagree_rate:.2%}{rate_note}) -> "
+          f"({kl.argmax_disagree_rate:.2%}{rate_note}), "
+          f"token_match={report.token_match:.4f}{' (GATE)' if cfg.framework_mode else ''} -> "
           f"{'PASS' if report.passed_quality else 'FAIL'}")
     print(f"SCORE      {report.score:.3f}")
 
@@ -367,6 +396,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timed-iters", type=int, default=3, help="median-of-K timed passes per launch")
     sp.add_argument("--prompt-seed", type=int, default=0, help="per-epoch prompt sampling seed")
     sp.add_argument("--top-logprobs", type=int, default=20)
+    sp.add_argument("--ignore-eos", action="store_true",
+                    help="force generation to the max token budget; useful for long-decode throughput probes")
     sp.add_argument("--kl-threshold", type=float, default=5e-3)
     sp.add_argument("--argmax-disagree-rate", type=float, default=0.01,
                     help="max fraction of positions whose top token may flip (sparse-cheat guard)")
@@ -377,19 +408,31 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-deterministic", action="store_true")
     sp.add_argument("--attention-backend", default=None,
                     help="sglang attention backend (default: auto-pick best per-HW, e.g. fa3/flashinfer)")
+    sp.add_argument("--candidate-attention-backend", default=None,
+                    help="candidate-only attention backend override")
     sp.add_argument("--disable-cuda-graph", action="store_true",
                     help="eager mode for quick debugging; DEGRADES the baseline — never score with this")
     sp.add_argument("--tp-size", type=int, default=None, help="tensor-parallel size (multi-GPU)")
     sp.add_argument("--moe-runner-backend", default=None,
                     help="sglang MoE backend (e.g. 'triton' for gpt-oss TP on Blackwell sm_120a)")
+    sp.add_argument("--candidate-moe-runner-backend", default=None,
+                    help="candidate-only MoE backend override (framework-mode backend swaps)")
     sp.add_argument("--disable-custom-all-reduce", action="store_true",
                     help="needed for TP>2 over PCIe (no NVLink)")
+    sp.add_argument("--candidate-disable-custom-all-reduce", action=argparse.BooleanOptionalAction, default=None,
+                    help="candidate-only custom-all-reduce override")
+    sp.add_argument("--engine-kwargs-json", default=None,
+                    help="JSON object merged into both SGLang Engine kwargs")
+    sp.add_argument("--candidate-engine-kwargs-json", default=None,
+                    help="JSON object merged into candidate SGLang Engine kwargs")
     # optional: record the result into a commit-reveal ledger
     sp.add_argument("--ledger", default=None, help="ledger json to record the score into")
     sp.add_argument("--hotkey", default=None, help="miner hotkey (with --ledger)")
     sp.add_argument("--round", type=int, default=0, help="round id (with --ledger)")
     sp.add_argument("--framework-mode", action="store_true",
                     help="miner may patch the engine (setup()); gate on token-match vs the stock baseline, not in-process KL")
+    sp.add_argument("--token-match-threshold", type=float, default=0.99,
+                    help="framework-mode minimum token match fraction")
     sp.add_argument("--isolate", action="store_true",
                     help="run the candidate in a no-egress network namespace (auto-on with --framework-mode); needs root")
     sp.set_defaults(func=cmd_evaluate)
@@ -399,9 +442,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("bundle")
     sp.add_argument("--model", required=True)
     sp.add_argument("--benchmarks", default="gsm8k",
-                    help="comma-separated: gsm8k, mmlu (real tasks; long CoT generation)")
+                    help="comma-separated: gsm8k, mmlu, long_math")
     sp.add_argument("--samples", type=int, default=32, help="problems per benchmark")
     sp.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
+    sp.add_argument("--max-new-tokens", type=int, default=None,
+                    help="override the benchmark decode budget")
     sp.add_argument("--timed-iters", type=int, default=2)
     sp.add_argument("--prompt-seed", type=int, default=0)
     sp.add_argument("--acc-tolerance", type=float, default=0.02)
@@ -412,18 +457,36 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kl-advisory", action="store_true",
                     help="report KL but don't gate on it (big MoE: noise-dominated; rely on accuracy)")
     sp.add_argument("--top-logprobs", type=int, default=20, help="top-k logprobs for the KL gate (0 disables)")
+    sp.add_argument("--ignore-eos", action="store_true",
+                    help="force generation to the max token budget; useful for long-decode throughput probes")
     sp.add_argument("--mem-fraction", type=float, default=0.6,
                     help="sglang mem_fraction_static (use ~0.9 for big models like gpt-oss-120b)")
     sp.add_argument("--no-deterministic", action="store_true")
     sp.add_argument("--attention-backend", default=None,
                     help="sglang attention backend (default: auto-pick best per-HW, e.g. fa3/flashinfer)")
+    sp.add_argument("--candidate-attention-backend", default=None,
+                    help="candidate-only attention backend override")
     sp.add_argument("--disable-cuda-graph", action="store_true",
                     help="eager mode for quick debugging; DEGRADES the baseline — never score with this")
     sp.add_argument("--tp-size", type=int, default=None, help="tensor-parallel size (multi-GPU)")
     sp.add_argument("--moe-runner-backend", default=None,
                     help="sglang MoE backend (e.g. 'triton' for gpt-oss TP on Blackwell sm_120a)")
+    sp.add_argument("--candidate-moe-runner-backend", default=None,
+                    help="candidate-only MoE backend override (framework-mode backend swaps)")
     sp.add_argument("--disable-custom-all-reduce", action="store_true",
                     help="needed for TP>2 over PCIe (no NVLink)")
+    sp.add_argument("--candidate-disable-custom-all-reduce", action=argparse.BooleanOptionalAction, default=None,
+                    help="candidate-only custom-all-reduce override")
+    sp.add_argument("--engine-kwargs-json", default=None,
+                    help="JSON object merged into both SGLang Engine kwargs")
+    sp.add_argument("--candidate-engine-kwargs-json", default=None,
+                    help="JSON object merged into candidate SGLang Engine kwargs")
+    sp.add_argument("--framework-mode", action="store_true",
+                    help="miner may patch/swap the engine; gate on token-match vs the stock baseline, not in-process KL")
+    sp.add_argument("--token-match-threshold", type=float, default=0.99,
+                    help="framework-mode minimum token match fraction")
+    sp.add_argument("--isolate", action="store_true",
+                    help="run the candidate in a no-egress network namespace (auto-on with --framework-mode); needs root")
     sp.add_argument("--ledger", default=None)
     sp.add_argument("--hotkey", default=None)
     sp.add_argument("--round", type=int, default=0)
