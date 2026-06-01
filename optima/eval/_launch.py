@@ -7,9 +7,12 @@ Engine, and clean it up. Both the KL eval and the benchmark eval use this.
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from typing import Any
+
+logger = logging.getLogger("optima.eval")
 
 
 @contextmanager
@@ -24,6 +27,50 @@ def env(**overrides: str):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+def isolate_network() -> bool:
+    """Put THIS process (and every child it spawns) into a fresh network namespace with
+    NO egress, so untrusted miner code can't reach an external API to fake the output.
+    Loopback is brought up so sglang's localhost IPC still works; the model is forced
+    offline (it must already be cached). Self-checks that egress is actually gone.
+
+    This is the boundary that makes the framework-mode token-match gate cheat-PROOF: the
+    candidate must compute the right tokens — it can't see the trusted reference
+    (separate process) and now can't fetch it either. Requires CAP_SYS_ADMIN (run the
+    GPU box privileged; chain/cloud secrets live on a separate CPU control box). Returns
+    True iff the candidate is confirmed no-egress; logs loudly and returns False if not.
+    """
+    import subprocess
+
+    clone_newnet = getattr(os, "CLONE_NEWNET", None)
+    if clone_newnet is None or not hasattr(os, "unshare"):
+        logger.warning("optima: os.unshare/CLONE_NEWNET unavailable (need py>=3.12); candidate NOT isolated")
+        return False
+    try:
+        os.unshare(clone_newnet)  # fresh netns: only `lo`, which starts DOWN
+    except OSError as exc:
+        logger.warning("optima: network isolation failed (%s); candidate NOT no-egress", exc)
+        return False
+    # Bring up loopback (the sglang scheduler<->detokenizer IPC uses localhost); external
+    # stays unreachable because the netns has no route off-box.
+    try:
+        subprocess.run(["ip", "link", "set", "lo", "up"], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("optima: could not bring up netns loopback (%s); sglang IPC may fail", exc)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    # Self-check: prove egress is actually gone (a fail-closed signal in the log).
+    import socket
+
+    try:
+        socket.create_connection(("1.1.1.1", 443), timeout=2).close()
+        logger.error("optima: ISOLATION FAILED — candidate still has network egress!")
+        return False
+    except OSError:
+        logger.warning("optima: candidate network-isolated (no egress; loopback only)")
+        return True
 
 
 def engine_kwargs(cfg) -> dict[str, Any]:

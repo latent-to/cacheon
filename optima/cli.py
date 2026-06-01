@@ -135,6 +135,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         max_new_tokens=args.max_new_tokens,
         num_prompts=args.num_prompts,
         framework_mode=args.framework_mode,
+        isolate=args.isolate or args.framework_mode,  # framework-mode implies no-egress isolation
         timed_iters=args.timed_iters,
         prompt_seed=args.prompt_seed,
         top_logprobs_num=args.top_logprobs,
@@ -151,7 +152,9 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     )
     print(f"\nrunning two launches of {args.model} (dtype={args.dtype}, "
           f"deterministic={cfg.deterministic}, cuda_graph={not cfg.disable_cuda_graph}, "
-          f"attn_backend={cfg.attention_backend or 'auto'}): baseline then candidate ...")
+          f"attn_backend={cfg.attention_backend or 'auto'}, "
+          f"framework_mode={cfg.framework_mode}, isolate_candidate={cfg.isolate}): "
+          f"baseline then candidate ...")
     report = evaluate(cfg, str(args.bundle))
 
     b, c = report.baseline, report.candidate
@@ -387,6 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--round", type=int, default=0, help="round id (with --ledger)")
     sp.add_argument("--framework-mode", action="store_true",
                     help="miner may patch the engine (setup()); gate on token-match vs the stock baseline, not in-process KL")
+    sp.add_argument("--isolate", action="store_true",
+                    help="run the candidate in a no-egress network namespace (auto-on with --framework-mode); needs root")
     sp.set_defaults(func=cmd_evaluate)
 
     sp = sub.add_parser("bench",

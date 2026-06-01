@@ -61,6 +61,10 @@ class EvalConfig:
     # cheat-resistance also needs no-egress isolation (see the threat model docs).
     framework_mode: bool = False
     token_match_threshold: float = 0.99  # min fraction of generated tokens matching baseline
+    # No-egress isolation for the CANDIDATE launch (the untrusted side): run it in a
+    # fresh network namespace so miner code can't fetch the reference output. Required
+    # for framework_mode to be cheat-PROOF (the cli turns it on with --framework-mode).
+    isolate: bool = False
     seed: int = 0  # model seed
     prompt_seed: int = 0  # per-epoch prompt sampling seed
     # speedup must clear this margin over 1.0 to count as a real improvement,
@@ -183,6 +187,14 @@ def _run_launch(cfg: EvalConfig, prompts: list[str], *, bundle_path: str, active
     from optima import seam
 
     seam.mark_driver()
+
+    # Isolate ONLY the candidate (the untrusted side): a fresh no-egress network
+    # namespace, inherited by the sglang scheduler child where the miner code runs. The
+    # baseline (trusted stock reference) and the parent driver stay un-isolated.
+    if active and getattr(cfg, "isolate", False):
+        from optima.eval._launch import isolate_network
+
+        isolate_network()
 
     with _env(
         OPTIMA_BUNDLE_PATH=bundle_path or "",
