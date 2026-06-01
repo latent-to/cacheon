@@ -30,7 +30,7 @@ from typing import Any, Optional
 import torch
 
 from optima.eval._launch import call_in_subprocess
-from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt, kl_gate_ok
+from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt, kl_gate_ok, token_match_rate
 from optima.eval.prompts import sample_prompts
 
 
@@ -54,6 +54,13 @@ class EvalConfig:
     #   in deterministic mode a faithful kernel sits at 0 flips (see README).
     argmax_disagree_rate_threshold: Optional[float] = 0.01
     p99_kl_threshold: Optional[float] = None  # opt-in (needs per-model calibration)
+    # FRAMEWORK MODE: when the miner may patch the engine (a setup() callable), its
+    # self-reported logprobs are NOT trustworthy, so the quality gate switches from
+    # in-process KL to TOKEN-MATCH vs the trusted stock baseline — the candidate's
+    # emitted tokens are only correct if it actually computed correctly. Full
+    # cheat-resistance also needs no-egress isolation (see the threat model docs).
+    framework_mode: bool = False
+    token_match_threshold: float = 0.99  # min fraction of generated tokens matching baseline
     seed: int = 0  # model seed
     prompt_seed: int = 0  # per-epoch prompt sampling seed
     # speedup must clear this margin over 1.0 to count as a real improvement,
@@ -103,6 +110,7 @@ class EvalReport:
     passed_quality: bool
     passed_speedup: bool
     score: float
+    token_match: float = 1.0  # fraction of tokens matching baseline (the framework-mode gate)
 
 
 @contextmanager
@@ -209,17 +217,24 @@ def evaluate(cfg: EvalConfig, bundle_path: str, prompts: Optional[list[str]] = N
     candidate = call_in_subprocess(_run_launch, cfg, prompts, bundle_path=bundle_path, active=True)
 
     kl = _aligned_kl(baseline, candidate)
+    matched, total = token_match_rate(baseline.per_prompt, candidate.per_prompt)
+    token_match = (matched / total) if total else 1.0
     speedup = (candidate.tok_per_s / baseline.tok_per_s) if baseline.tok_per_s > 0 else 0.0
-    passed_quality = kl.num_positions > 0 and kl_gate_ok(
-        kl,
-        kl_threshold=cfg.kl_threshold,
-        p99_kl_threshold=cfg.p99_kl_threshold,
-        argmax_disagree_rate_threshold=cfg.argmax_disagree_rate_threshold,
-    )
+    if getattr(cfg, "framework_mode", False):
+        # The miner may have patched the engine (setup()), so its self-reported logprobs
+        # are not trusted: gate on token-match vs the trusted stock baseline, not KL.
+        passed_quality = total > 0 and token_match >= cfg.token_match_threshold
+    else:
+        passed_quality = kl.num_positions > 0 and kl_gate_ok(
+            kl,
+            kl_threshold=cfg.kl_threshold,
+            p99_kl_threshold=cfg.p99_kl_threshold,
+            argmax_disagree_rate_threshold=cfg.argmax_disagree_rate_threshold,
+        )
     passed_speedup = speedup >= (1.0 + cfg.speedup_margin)
     # Score: the speedup, but only counted as positive when BOTH quality holds and
     # the speedup clears the noise margin. A faithful-but-not-faster kernel scores
     # ~1.0 (no improvement); a cheat scores 0.
     score = speedup if (passed_quality and passed_speedup) else (0.0 if not passed_quality else speedup)
 
-    return EvalReport(baseline, candidate, speedup, kl, passed_quality, passed_speedup, score)
+    return EvalReport(baseline, candidate, speedup, kl, passed_quality, passed_speedup, score, token_match)

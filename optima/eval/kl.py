@@ -202,3 +202,23 @@ def aligned_kl(
             if i < len(b_ids) and i < len(c_ids) and b_ids[i] != c_ids[i]:
                 break
     return kl_over_positions(ref_positions, cand_positions, eps=eps)
+
+
+def token_match_rate(baseline: Sequence[PromptRun], candidate: Sequence[PromptRun]) -> tuple[int, int]:
+    """Fraction of generated positions where the candidate emits the SAME token as the
+    (trusted) baseline. The FRAMEWORK-MODE correctness check: when the miner can patch
+    the engine, its self-reported logprobs aren't trustworthy — but its emitted tokens
+    are only correct if it actually computed correctly (and, under no-egress isolation,
+    it can't fetch them). So we compare tokens, not KL. Returns ``(matched, total)``; a
+    length mismatch counts the extra/missing positions as non-matches.
+    """
+    matched = 0
+    total = 0
+    for (b_ids, _), (c_ids, _) in zip(baseline, candidate):
+        n = min(len(b_ids), len(c_ids))
+        for i in range(n):
+            total += 1
+            if int(b_ids[i]) == int(c_ids[i]):
+                matched += 1
+        total += abs(len(b_ids) - len(c_ids))
+    return matched, total

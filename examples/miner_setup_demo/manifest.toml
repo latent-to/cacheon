@@ -1,0 +1,16 @@
+# Framework-mode demo bundle. A FAITHFUL silu forward + a setup() that patches the
+# engine (monkeypatches RMSNorm to corrupt it). Run with `optima evaluate
+# --framework-mode`: the validator gates on token-match vs the trusted stock baseline,
+# so this corrupt framework patch is caught (tokens diverge -> FAIL) even though the
+# slot kernel is faithful. A real surface-opening setup() (e.g. the sm120 flashinfer
+# fixes) keeps tokens matching the baseline -> PASS. Not a real submission.
+
+bundle_id = "example-setup-demo"
+abi_version = "optima-op-abi-v0"
+
+[[ops]]
+slot = "activation.silu_and_mul"
+source = "kernels/k.py"
+entry = "silu_and_mul"
+setup = "setup"
+dtypes = ["float32", "bfloat16", "float16"]

@@ -134,6 +134,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         dtype=args.dtype,
         max_new_tokens=args.max_new_tokens,
         num_prompts=args.num_prompts,
+        framework_mode=args.framework_mode,
         timed_iters=args.timed_iters,
         prompt_seed=args.prompt_seed,
         top_logprobs_num=args.top_logprobs,
@@ -165,7 +166,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     print(f"speedup    {report.speedup:8.3f}x  (needs >= {1 + cfg.speedup_margin:.2f} -> "
           f"{'PASS' if report.passed_speedup else 'below margin'})")
     print(f"quality    mean_kl={report.kl.mean_kl:.3e} max_kl={report.kl.max_kl:.3e} "
-          f"argmax_disagree={report.kl.argmax_disagreements}/{report.kl.num_positions} -> "
+          f"argmax_disagree={report.kl.argmax_disagreements}/{report.kl.num_positions}  "
+          f"token_match={report.token_match:.4f}{' (GATE)' if cfg.framework_mode else ''} -> "
           f"{'PASS' if report.passed_quality else 'FAIL'}")
     print(f"SCORE      {report.score:.3f}")
 
@@ -383,6 +385,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--ledger", default=None, help="ledger json to record the score into")
     sp.add_argument("--hotkey", default=None, help="miner hotkey (with --ledger)")
     sp.add_argument("--round", type=int, default=0, help="round id (with --ledger)")
+    sp.add_argument("--framework-mode", action="store_true",
+                    help="miner may patch the engine (setup()); gate on token-match vs the stock baseline, not in-process KL")
     sp.set_defaults(func=cmd_evaluate)
 
     sp = sub.add_parser("bench",
