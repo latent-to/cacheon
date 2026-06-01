@@ -66,6 +66,9 @@ class EvalConfig:
     # fresh network namespace so miner code can't fetch the reference output. Required
     # for framework_mode to be cheat-PROOF (the cli turns it on with --framework-mode).
     isolate: bool = False
+    # Dev-only escape hatch for pods that cannot create a netns. Production scoring
+    # must leave this False so failed isolation is a hard error.
+    allow_unsafe_no_isolation: bool = False
     seed: int = 0  # model seed
     prompt_seed: int = 0  # per-epoch prompt sampling seed
     # speedup must clear this margin over 1.0 to count as a real improvement,

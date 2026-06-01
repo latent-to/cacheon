@@ -30,6 +30,13 @@ is configured (`~/.lium`). **Pod names/IPs change on redeploy — always run
 | `brave-orbit-7c` | **4× RTX PRO 6000 Blackwell** (4×96 GB, GDDR7, no NVLink) | 13.0 | `154.54.100.130` | the **dev box** — TP / PD-disagg / EP / bigger models / Blackwell (FA4, nvfp4) |
 | `golden-lion-b6` | H100 (80 GB HBM) | 13.0 | `216.81.245.218:40309` | where the harness was validated |
 
+Current lium pods run without `CAP_SYS_ADMIN`, so in-process
+`unshare(CLONE_NEWNET)` no-egress isolation fails with `EPERM` there. Use
+`--allow-unsafe-no-isolation` only for dev throughput replication. Production
+validator scoring should run the eval worker in a privileged namespace-capable
+container/VM, or launch the candidate side under Docker/OCI with `--network=none`
+and the required GPU mounts.
+
 ### Driving a pod programmatically
 
 All from the `sn120` env (`lium` on PATH there):

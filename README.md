@@ -260,6 +260,12 @@ how you run it (and the model is public, so there's no IP to steal):
 - timing is already out-of-process (`mark_driver`); the static scan
   (`sandbox.scan_source`) is a tripwire, not the boundary.
 
+`--framework-mode` and `--isolate` now fail closed if the candidate process
+cannot prove no-egress network isolation. Use `--allow-unsafe-no-isolation` only
+for local throughput debugging on dev pods that lack `CAP_SYS_ADMIN`; production
+scoring should run the eval worker with real namespace support, or inside a
+container/VM whose candidate side has `--network=none`.
+
 Worst case for a fully-compromised kernel is one wrong score for itself;
 cross-validator consensus catches a rogue validator.
 

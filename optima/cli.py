@@ -147,6 +147,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         framework_mode=args.framework_mode,
         token_match_threshold=args.token_match_threshold,
         isolate=args.isolate or args.framework_mode,  # framework-mode implies no-egress isolation
+        allow_unsafe_no_isolation=args.allow_unsafe_no_isolation,
         timed_iters=args.timed_iters,
         prompt_seed=args.prompt_seed,
         top_logprobs_num=args.top_logprobs,
@@ -170,7 +171,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     print(f"\nrunning two launches of {args.model} (dtype={args.dtype}, "
           f"deterministic={cfg.deterministic}, cuda_graph={not cfg.disable_cuda_graph}, "
           f"attn_backend={cfg.attention_backend or 'auto'}, "
-          f"framework_mode={cfg.framework_mode}, isolate_candidate={cfg.isolate}): "
+          f"framework_mode={cfg.framework_mode}, isolate_candidate={cfg.isolate}, "
+          f"unsafe_no_isolation={cfg.allow_unsafe_no_isolation}): "
           f"baseline then candidate ...")
     report = evaluate(cfg, str(args.bundle))
 
@@ -238,6 +240,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         framework_mode=args.framework_mode,
         token_match_threshold=args.token_match_threshold,
         isolate=args.isolate or args.framework_mode,
+        allow_unsafe_no_isolation=args.allow_unsafe_no_isolation,
         deterministic=not args.no_deterministic,
         attention_backend=args.attention_backend,
         disable_cuda_graph=args.disable_cuda_graph,
@@ -254,7 +257,8 @@ def cmd_bench(args: argparse.Namespace) -> int:
     names = [b.strip() for b in args.benchmarks.split(",") if b.strip()]
     print(f"\nbenchmark eval of {args.model} on {names} "
           f"({args.samples}/bench; framework_mode={cfg.framework_mode}, "
-          f"isolate_candidate={cfg.isolate}): baseline then candidate ...")
+          f"isolate_candidate={cfg.isolate}, "
+          f"unsafe_no_isolation={cfg.allow_unsafe_no_isolation}): baseline then candidate ...")
     report = evaluate_capability(
         cfg, str(args.bundle), names,
         samples_per_benchmark=args.samples, acc_tolerance=args.acc_tolerance,
@@ -435,6 +439,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="framework-mode minimum token match fraction")
     sp.add_argument("--isolate", action="store_true",
                     help="run the candidate in a no-egress network namespace (auto-on with --framework-mode); needs root")
+    sp.add_argument("--allow-unsafe-no-isolation", action="store_true",
+                    help="DEV ONLY: continue if candidate no-egress isolation is unavailable")
     sp.set_defaults(func=cmd_evaluate)
 
     sp = sub.add_parser("bench",
@@ -487,6 +493,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="framework-mode minimum token match fraction")
     sp.add_argument("--isolate", action="store_true",
                     help="run the candidate in a no-egress network namespace (auto-on with --framework-mode); needs root")
+    sp.add_argument("--allow-unsafe-no-isolation", action="store_true",
+                    help="DEV ONLY: continue if candidate no-egress isolation is unavailable")
     sp.add_argument("--ledger", default=None)
     sp.add_argument("--hotkey", default=None)
     sp.add_argument("--round", type=int, default=0)

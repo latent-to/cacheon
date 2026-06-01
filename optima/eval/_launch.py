@@ -15,6 +15,10 @@ from typing import Any
 logger = logging.getLogger("optima.eval")
 
 
+class IsolationError(RuntimeError):
+    """Raised when candidate isolation was requested but could not be proven."""
+
+
 @contextmanager
 def env(**overrides: str):
     saved = {k: os.environ.get(k) for k in overrides}
@@ -73,12 +77,43 @@ def isolate_network() -> bool:
         return True
 
 
+def _offline_env() -> None:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+
 def prepare_candidate_environment(cfg, *, bundle_path: str, active: bool) -> None:
     """Apply candidate-only process isolation/rebuild work before importing SGLang."""
     if not active:
         return
-    if getattr(cfg, "isolate", False):
-        isolate_network()
+    framework_mode = getattr(cfg, "framework_mode", False)
+    isolate = getattr(cfg, "isolate", False)
+    allow_unsafe = getattr(cfg, "allow_unsafe_no_isolation", False)
+    if framework_mode and not isolate:
+        if not allow_unsafe:
+            raise IsolationError(
+                "framework_mode requires no-egress candidate isolation. "
+                "Use --allow-unsafe-no-isolation only for local throughput debugging."
+            )
+        logger.error(
+            "optima: UNSAFE dev override: framework-mode candidate is running without "
+            "requested network isolation"
+        )
+        _offline_env()
+    if isolate:
+        if not isolate_network():
+            if not allow_unsafe:
+                raise IsolationError(
+                    "candidate network isolation was requested but could not be proven. "
+                    "Run the eval worker with CAP_SYS_ADMIN/CAP_NET_ADMIN, or inside a "
+                    "container/VM whose candidate process has no network egress. "
+                    "Use --allow-unsafe-no-isolation only for local throughput debugging."
+                )
+            logger.error(
+                "optima: UNSAFE dev override: candidate network isolation failed; "
+                "continuing with egress possible"
+            )
+            _offline_env()
     if bundle_path:
         from optima.rebuild import apply_rebuild_plan
 
