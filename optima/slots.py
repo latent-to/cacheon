@@ -33,13 +33,22 @@ elements within tolerance against high-precision ground truth) rather than
 all-close — the deterministic-vs-low-precision tiering from FlashInfer-Bench. The
 reference is always high-precision ground truth, never the stock kernel.
 
+Some slots are a **(prepare, forward) pair**: a quantized / layout-sensitive kernel
+(MoE experts, a quant GEMM) needs the *weights* in a custom layout, and that layout
+transform is part of the kernel. Such a slot names a second miner callable via
+``prepare`` — it runs ONCE at load on the raw checkpoint weights, the validator holds
+the result, and ``entry`` (forward) consumes it each step as ``prepared``. This is how
+a win like the GPT-OSS sm120 MoE (repack W13, interleave the FP4 block scales, then a
+fused CUTLASS call) fits *one* slot: the repack/interleave is ``prepare``, the kernel
+is ``forward``.
+
 Adding a slot is a validator action (a code change here), never a miner action.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
+from typing import Callable, Optional, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -78,8 +87,13 @@ class SlotSpec:
     make_inputs: Callable[..., dict]  # (**shape, dtype, device, seed) -> {name: tensor|scalar}
     out_shapes: Callable[[dict], Sequence[tuple]]  # (inputs) -> one shape per output the validator allocates
     invoke_reference: Callable[[dict], Sequence[torch.Tensor]]  # (inputs) -> expected outputs (HIGH PRECISION)
-    invoke_entry: Callable[..., None]  # (entry, inputs, outs) -> None; writes each tensor in `outs`
+    invoke_entry: Callable[..., None]  # (entry, inputs, outs, prepared) -> None; writes each tensor in `outs`
     shapes: tuple[dict, ...]
+    # Optional 2nd miner callable for (prepare, forward) slots: `prepare` runs ONCE at
+    # load on the raw weights (quant/layout transform); the validator holds the result
+    # and passes it to `entry` each step as `prepared`. None -> a plain forward-only slot.
+    prepare: Optional[str] = None
+    invoke_prepare: Optional[Callable] = None  # (prepare_fn, inputs) -> prepared (None for forward-only)
     correctness: Correctness = field(default_factory=Correctness)
     tolerances: dict[torch.dtype, Tolerance] = field(default_factory=dict)
 
@@ -124,7 +138,7 @@ SILU_AND_MUL = SlotSpec(
     make_inputs=_silu_inputs,
     out_shapes=lambda i: [(*i["x"].shape[:-1], i["x"].shape[-1] // 2)],
     invoke_reference=lambda i: [_silu_reference(i["x"])],
-    invoke_entry=lambda entry, i, outs: entry(i["x"], outs[0]),
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], outs[0]),
     shapes=(
         {"num_tokens": 1, "d": 1024},
         {"num_tokens": 8, "d": 1024},
@@ -166,7 +180,7 @@ RMSNORM = SlotSpec(
     make_inputs=_rmsnorm_inputs,
     out_shapes=lambda i: [tuple(i["x"].shape)],
     invoke_reference=lambda i: [_rmsnorm_reference(i["x"], i["weight"], i["eps"])],
-    invoke_entry=lambda entry, i, outs: entry(i["x"], i["weight"], outs[0], i["eps"]),
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], i["weight"], outs[0], i["eps"]),
     shapes=(
         {"num_tokens": 1, "hidden": 2880},
         {"num_tokens": 8, "hidden": 2880},
@@ -241,7 +255,7 @@ ATTENTION_SDPA = SlotSpec(
     make_inputs=_sdpa_inputs,
     out_shapes=lambda i: [tuple(i["q"].shape)],
     invoke_reference=lambda i: [_sdpa_reference(i["q"], i["k"], i["v"], i["sm_scale"], i["causal"])],
-    invoke_entry=lambda entry, i, outs: entry(i["q"], i["k"], i["v"], outs[0], i["sm_scale"], i["causal"]),
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["q"], i["k"], i["v"], outs[0], i["sm_scale"], i["causal"]),
     shapes=(
         {"num_tokens": 1, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64},
         {"num_tokens": 16, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128},   # GQA
@@ -314,7 +328,7 @@ ATTENTION_DECODE = SlotSpec(
     make_inputs=_decode_attn_inputs,
     out_shapes=lambda i: [tuple(i["q"].shape)],
     invoke_reference=lambda i: [_decode_attn_reference(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"])],
-    invoke_entry=lambda entry, i, outs: entry(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"], outs[0]),
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"], outs[0]),
     shapes=(
         {"batch": 4, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64, "ctx": 16},
         {"batch": 2, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128, "ctx": 32},   # GQA
@@ -322,6 +336,86 @@ ATTENTION_DECODE = SlotSpec(
         {"batch": 3, "num_q_heads": 8, "num_kv_heads": 1, "head_dim": 128, "ctx": 48},   # MQA
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
+)
+
+
+# ---------------------------------------------------------------------------
+# Slot (BLOCK, prepare+forward): moe.fused_experts   (the headroom slot)
+#   prepare(w13, w2) -> prepared              (weight layout; runs ONCE at load)
+#   forward(x, topk_ids, topk_weights, prepared, out)   (per step)
+#   x:(M,H)  w13:(E,2I,H)[gate;up]  w2:(E,H,I)  topk_ids/weights:(M,K) -> out:(M,H)
+#   SwiGLU-MLP experts: out = sum_k topk_w * (silu(gate)*up) @ w2.T over each token's
+#   top-k experts. This is the slot the GPT-OSS sm120 MoE win fits: the W13 repack +
+#   FP4 block-scale interleave are `prepare`; the fused CUTLASS call is `forward`. The
+#   pure-torch example reorders [gate;up]->[up;gate] in prepare to prove the contract; a
+#   real Blackwell submission carries MXFP4 weights + scales and calls flashinfer
+#   cutlass_fused_moe in forward (a sibling moe.fused_experts_mxfp4 slot, sm_100/sm_120).
+# ---------------------------------------------------------------------------
+
+
+def _moe_reference(x, w13, w2, topk_ids, topk_weights):
+    # x:(M,H) w13:(E,2I,H)[gate;up] w2:(E,H,I) topk_ids:(M,K) topk_weights:(M,K) -> (M,H)
+    M, H = x.shape
+    I = w13.shape[1] // 2
+    K = topk_ids.shape[1]
+    x32 = x.float()
+    out = torch.zeros(M, H, device=x.device, dtype=torch.float32)
+    for k in range(K):
+        e = topk_ids[:, k].long()
+        wk = topk_weights[:, k].float()
+        w13_e = w13[e].float()                          # (M,2I,H)
+        w2_e = w2[e].float()                            # (M,H,I)
+        fc1 = torch.einsum("mh,mih->mi", x32, w13_e)    # (M,2I)
+        gate, up = fc1[:, :I], fc1[:, I:]
+        act = F.silu(gate) * up                         # (M,I)
+        out += wk[:, None] * torch.einsum("mi,mhi->mh", act, w2_e)
+    return out
+
+
+def _moe_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter: int, topk: int,
+                dtype: torch.dtype, device: str, seed: int) -> dict:
+    g = torch.Generator(device=device).manual_seed(seed)
+
+    def rnd(*shape: int, scale: float = 1.0) -> torch.Tensor:
+        return (torch.randn(*shape, generator=g, device=device, dtype=torch.float32) * scale).to(dtype)
+
+    ids = torch.randint(0, num_experts, (num_tokens, topk), generator=g, device=device).to(torch.int32)
+    scores = torch.rand(num_tokens, topk, generator=g, device=device)
+    weights = (scores / scores.sum(dim=1, keepdim=True)).to(torch.float32)  # normalize per token
+    return {
+        "x": rnd(num_tokens, hidden, scale=0.1),
+        "w13": rnd(num_experts, 2 * inter, hidden, scale=0.05),
+        "w2": rnd(num_experts, hidden, inter, scale=0.05),
+        "topk_ids": ids,
+        "topk_weights": weights,
+    }
+
+
+MOE_FUSED_EXPERTS = SlotSpec(
+    name="moe.fused_experts",
+    entry="fused_experts",
+    prepare="prepare",
+    summary=(
+        "fused MoE experts — a (prepare, forward) PAIR.  prepare(w13, w2) -> prepared "
+        "(weight layout, once at load);  forward(x, topk_ids, topk_weights, prepared, out).  "
+        "x:(M,H) w13:(E,2I,H)[gate;up] w2:(E,H,I) -> out:(M,H);  SwiGLU-MLP experts."
+    ),
+    kind="block",
+    make_inputs=_moe_inputs,
+    out_shapes=lambda i: [(i["x"].shape[0], i["x"].shape[1])],
+    invoke_reference=lambda i: [_moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"])],
+    invoke_prepare=lambda prepare_fn, i: prepare_fn(i["w13"], i["w2"]),
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], i["topk_ids"], i["topk_weights"], prepared, outs[0]),
+    shapes=(
+        {"num_tokens": 4, "num_experts": 8, "hidden": 256, "inter": 128, "topk": 2},
+        {"num_tokens": 16, "num_experts": 32, "hidden": 512, "inter": 256, "topk": 4},
+        {"num_tokens": 8, "num_experts": 4, "hidden": 384, "inter": 192, "topk": 1},
+        {"num_tokens": 33, "num_experts": 16, "hidden": 320, "inter": 160, "topk": 4},
+    ),
+    # A real fused-MoE kernel runs in fp8/fp4 with reordered reductions -> not bit-exact;
+    # gate on a matched ratio vs the fp32 reference, calibrated to the stock noise floor.
+    correctness=Correctness("matched_ratio", min_ratio=0.97),
     tolerances=_BF16_TOL,
 )
 
@@ -335,6 +429,7 @@ SLOTS: dict[str, SlotSpec] = {
     RMSNORM.name: RMSNORM,
     ATTENTION_SDPA.name: ATTENTION_SDPA,
     ATTENTION_DECODE.name: ATTENTION_DECODE,
+    MOE_FUSED_EXPERTS.name: MOE_FUSED_EXPERTS,
 }
 
 

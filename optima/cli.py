@@ -93,8 +93,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
             continue
 
         entry = load_entry(src, op.entry)  # SECURITY: isolate in production
+        prepare_fn = load_entry(src, op.prepare) if op.prepare else None  # (prepare, forward) slots
         result = verify_entry(
-            slot, entry, dtype=_dtype(args.dtype), device=args.device, seed=args.seed
+            slot, entry, prepare=prepare_fn, dtype=_dtype(args.dtype), device=args.device, seed=args.seed
         )
         print(format_verify(result))
         if not result.passed:

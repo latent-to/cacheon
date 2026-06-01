@@ -91,6 +91,7 @@ def verify_entry(
     slot: SlotSpec,
     entry: Callable[..., None],
     *,
+    prepare: Optional[Callable] = None,
     dtype: torch.dtype = torch.bfloat16,
     device: Optional[str] = None,
     seed: int = 0,
@@ -98,9 +99,11 @@ def verify_entry(
 ) -> VerifyResult:
     """Verify a miner ``entry`` against the slot's reference.
 
-    ``entry`` is called via ``slot.invoke_entry(entry, inputs, outs)`` — the same
-    contract the dispatcher uses — and must write its result into the validator-
-    allocated tensors in ``outs``.
+    ``entry`` is called via ``slot.invoke_entry(entry, inputs, outs, prepared)`` and
+    must write its result into the validator-allocated tensors in ``outs``. For a
+    *(prepare, forward)* slot (``slot.prepare`` set, e.g. ``moe.fused_experts``) pass
+    the miner's ``prepare`` callable too — it runs once on the raw weights and its
+    result is handed to ``entry`` as ``prepared`` (otherwise ``prepared`` is None).
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     tol = slot.tolerance_for(dtype)
@@ -115,7 +118,14 @@ def verify_entry(
         out_shapes = _as_list(slot.out_shapes(inputs))
         outs = [torch.empty(s, dtype=dtype, device=device) for s in out_shapes]
         try:
-            slot.invoke_entry(entry, inputs, outs)
+            prepared = None
+            if slot.invoke_prepare is not None:
+                if prepare is None:
+                    raise RuntimeError(
+                        f"slot {slot.name!r} is a (prepare, forward) slot but no 'prepare' callable was provided"
+                    )
+                prepared = slot.invoke_prepare(prepare, inputs)  # runs the miner's weight-prep
+            slot.invoke_entry(entry, inputs, outs, prepared)
         except Exception as exc:  # noqa: BLE001 - report kernel failure as a fail
             results.append(
                 ShapeResult(shape=shape, dtype=_name(dtype), passed=False,

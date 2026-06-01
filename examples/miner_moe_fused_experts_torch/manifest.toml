@@ -1,0 +1,16 @@
+# CPU/GPU dry-run bundle for the moe.fused_experts PREPARE+FORWARD slot. Two miner
+# callables: `prepare` (weight layout, runs once at load) + `fused_experts` (forward,
+# per step). prepare reorders w13 [gate;up]->[up;gate] (the GPT-OSS sm120 repack
+# shape); forward consumes it. Pure torch — proves the (prepare, forward) mechanism; a
+# real Blackwell submission does MXFP4 layout in prepare + a fused CUTLASS MoE in forward.
+
+bundle_id = "example-moe-fused-experts-torch"
+abi_version = "optima-op-abi-v0"
+
+[[ops]]
+slot = "moe.fused_experts"
+source = "kernels/moe.py"
+entry = "fused_experts"
+prepare = "prepare"
+dtypes = ["float32", "bfloat16", "float16"]
+metadata = "metadata/moe.json"

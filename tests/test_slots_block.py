@@ -19,6 +19,7 @@ from optima.verify import verify_entry  # noqa: E402
 
 ATTN_BUNDLE = "examples/miner_attention_torch/kernels/attention.py"
 ATTN_DECODE_BUNDLE = "examples/miner_attention_decode_torch/kernels/attention_decode.py"
+MOE_BUNDLE = "examples/miner_moe_fused_experts_torch/kernels/moe.py"
 
 
 def test_slot_kind_discriminator():
@@ -74,6 +75,41 @@ def test_broken_decode_fails_matched_ratio_cpu():
     assert not result.passed
 
 
+def test_moe_prepare_forward_passes_correctness_cpu():
+    # The (prepare, forward) PAIR: load BOTH miner callables; verify runs prepare (the
+    # weight layout) then forward, and compares to the fp32 MoE reference.
+    fwd = load_entry(MOE_BUNDLE, "fused_experts")
+    prep = load_entry(MOE_BUNDLE, "prepare")
+    slot = get_slot("moe.fused_experts")
+    result = verify_entry(slot, fwd, prepare=prep, dtype=torch.float32, device="cpu", seed=0)
+    assert result.passed, "\n".join(
+        f"{r.shape}: ratio={r.pass_ratio} {r.detail}" for r in result.shape_results
+    )
+
+
+def test_moe_broken_prepare_fails_cpu():
+    # A `prepare` that forgets the [gate;up]->[up;gate] reorder -> forward swaps the
+    # halves -> silu(up)*gate != silu(gate)*up -> wrong. The slot is only correct when
+    # BOTH callables agree, so a bad prepare must fail just like a bad forward would.
+    def broken_prepare(w13, w2):
+        return {"w13": w13.contiguous(), "w2": w2.contiguous(), "inter": w13.shape[1] // 2}
+
+    fwd = load_entry(MOE_BUNDLE, "fused_experts")
+    slot = get_slot("moe.fused_experts")
+    result = verify_entry(slot, fwd, prepare=broken_prepare, dtype=torch.float32, device="cpu", seed=0)
+    assert not result.passed
+
+
+def test_moe_is_prepare_forward_slot():
+    slot = get_slot("moe.fused_experts")
+    assert slot.kind == "block"
+    assert slot.prepare == "prepare"          # names the 2nd miner callable
+    assert slot.invoke_prepare is not None
+    # forward-only slots have no prepare:
+    assert get_slot("activation.silu_and_mul").prepare is None
+    assert get_slot("activation.silu_and_mul").invoke_prepare is None
+
+
 def test_silu_op_still_verifies_under_generalized_spec():
     # Backward-compat: the single-op path is unchanged by the multi-output/block work.
     def silu(x, out):
@@ -92,3 +128,4 @@ def test_matched_ratio_is_active_only_for_the_block_slot():
     assert get_slot("norm.rmsnorm").correctness.mode == "allclose"
     assert get_slot("attention.sdpa").correctness.mode == "matched_ratio"
     assert get_slot("attention.decode").correctness.mode == "matched_ratio"
+    assert get_slot("moe.fused_experts").correctness.mode == "matched_ratio"

@@ -1,0 +1,5 @@
+{
+  "op": "moe.fused_experts",
+  "dtypes": ["float32", "bfloat16", "float16"],
+  "notes": "CPU/GPU dry-run prepare+forward MoE (SwiGLU-MLP experts). The MXFP4/sm120 variant is a Blackwell-only sibling slot (raw FP4 weights + block scales in prepare, flashinfer cutlass_fused_moe in forward)."
+}

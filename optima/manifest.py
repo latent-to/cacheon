@@ -67,6 +67,7 @@ class OpEntry:
     dtypes: tuple[str, ...]
     architectures: tuple[str, ...]
     metadata: str | None
+    prepare: str | None = None  # optional 2nd callable (weight-prep) for (prepare, forward) slots
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -152,6 +153,11 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
         _require(bool(source), f"ops[{i}] ({slot}) missing 'source'")
         _require(bool(entry) and entry.isidentifier(), f"ops[{i}] ({slot}) 'entry' must be a python identifier")
 
+        prepare = op.get("prepare")
+        if prepare is not None:
+            prepare = str(prepare).strip()
+            _require(prepare.isidentifier(), f"ops[{i}] ({slot}) 'prepare' must be a python identifier")
+
         # Path-safety check now (existence + containment); content scanning later.
         _safe_relpath(root, source, kind="source")
 
@@ -163,7 +169,7 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
         dtypes = tuple(str(d) for d in op.get("dtypes", ()))
         archs = tuple(str(a) for a in op.get("architectures", ()))
 
-        known = {"slot", "source", "entry", "dtypes", "architectures", "metadata"}
+        known = {"slot", "source", "entry", "prepare", "dtypes", "architectures", "metadata"}
         extra = {k: v for k, v in op.items() if k not in known}
 
         ops.append(
@@ -174,6 +180,7 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
                 dtypes=dtypes,
                 architectures=archs,
                 metadata=metadata,
+                prepare=prepare,
                 extra=extra,
             )
         )
