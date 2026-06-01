@@ -108,3 +108,13 @@ def _load_bundle_into_registry(bundle: str) -> None:
                 eligibility=eligibility_from_metadata(meta, op.dtypes),
             )
         )
+        # FRAMEWORK MODE: an optional setup() runs ONCE here (candidate scheduler only —
+        # the driver/timer process returns before this). It may patch the engine
+        # (monkeypatch a backend, register a custom op, set flags) — that is how a
+        # surface-opening win like the sm120 flashinfer fixes is expressed. It is
+        # untrusted, so correctness is gated by token-match vs the stock baseline
+        # (framework_mode) and it MUST run in the no-egress isolation worker before the
+        # subnet opens to untrusted miners.
+        if getattr(op, "setup", None):
+            load_entry(src, op.setup)()
+            logger.info("optima: ran setup() for %s", op.slot)
