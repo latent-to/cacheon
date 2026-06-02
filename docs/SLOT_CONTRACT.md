@@ -36,6 +36,28 @@ stage it in the escape hatch," never "rewrite everything."
 If a feature preserves all four, it is *bell-work* — safe to add. If it can't, it is not a
 core slot.
 
+## Collective slots (`kind="collective"`) — the wider surface
+
+Decode at TP/EP scale is **comms-bound** (the all-reduce / all-to-all is the single largest
+category, ~32–43% of GPU time, and it's *latency*-bound). Capturing that lever needs a slot
+that spans GPUs — so the kernel is handed the **process group** (a wider capability than the
+op/block "fill a tensor" contract). The four invariants still hold (validator owns the output
+buffer + the group + the call site; the reduce is mid-network, upstream of the sampler; gated
+vs the trusted fp32 cross-rank result; timing is out-of-process). But the larger surface makes
+two things **mandatory, not optional**:
+
+- **Distributed verification.** A collective can't be checked on one GPU. `verify_entry`
+  *refuses* `kind="collective"`; use `optima.verify_collective.verify_collective`, which spawns
+  `world_size` ranks, runs the miner kernel as the real collective, and compares each rank's
+  output to a `torch.distributed` reduce of the **fp32** partials (gloo/CPU for a numeric check,
+  nccl/GPU for the real path).
+- **The end-to-end gate.** Per-collective error compounds across every layer, so the op-level
+  cosine/matched_ratio is necessary-but-not-sufficient — the token/KL/accuracy gate is required.
+
+Overlap wins (hide the reduce behind the producer GEMM) are *not* a reduce-only slot — they need
+a **block that owns both** (the MoE block owning its trailing reduce; a row-parallel `linear+reduce`
+block). Same contract, wider boundary.
+
 ## Evolution rules
 
 - **Additive only.** `abi_version` gates the bundle format; new `SlotSpec` fields are

@@ -511,6 +511,61 @@ MOE_FUSED_EXPERTS_MXFP4 = SlotSpec(
 # Catalog
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Slot (COLLECTIVE): collective.all_reduce   (the TP comms waist)
+#   x:(M,H) on each of `world_size` ranks -> out:(M,H) = sum over ranks.
+#   contract: entry(x, out, group)  — miner owns the reduce algorithm + transport;
+#   validator owns `out`, the process group, and the call site.
+#
+# Unlike op/block slots, a collective spans GPUs: the kernel needs the TP process group
+# to move data across ranks, so it is verified DISTRIBUTED (optima.verify_collective,
+# NOT verify_entry) against the trusted fp32 cross-rank sum. The reduce is mid-network
+# (upstream of the sampler) — no output to substitute. Decode is comms-bound (~32–43%
+# of GPU time at TP/EP scale, the largest single category), and it is *latency*-bound,
+# so the win is a lower-latency reduce or compute-comm overlap — both expressible here
+# while staying inside the four invariants. WIDER SURFACE: handing the miner the
+# communicator is more capability than "fill a tensor"; the invariants still bound it,
+# but distributed verify + the end-to-end gate are MANDATORY (docs/SLOT_CONTRACT.md).
+# ---------------------------------------------------------------------------
+
+
+def _all_reduce_inputs(*, num_tokens: int, hidden: int, dtype: torch.dtype, device: str,
+                       seed: int, rank: int = 0, world_size: int = 1) -> dict:
+    # Each rank gets a DIFFERENT partial (seeded by rank); the all-reduce sums them.
+    g = torch.Generator(device=device).manual_seed(seed + 1_000_003 * rank)
+    x = (torch.randn(num_tokens, hidden, generator=g, device=device, dtype=torch.float32) * 0.1).to(dtype)
+    return {"x": x}
+
+
+COLLECTIVE_ALL_REDUCE = SlotSpec(
+    name="collective.all_reduce",
+    entry="all_reduce",
+    summary=(
+        "TP all-reduce (the comms waist): x:(M,H) per rank -> out:(M,H) = sum over ranks;  "
+        "entry(x, out, group).  Validator owns out + the process group; verified DISTRIBUTED "
+        "vs the fp32 cross-rank sum (optima.verify_collective)."
+    ),
+    kind="collective",
+    make_inputs=_all_reduce_inputs,
+    out_shapes=lambda i: [tuple(i["x"].shape)],
+    # Collectives are verified distributed: the real reference is the fp32 sum ACROSS
+    # ranks, which a single-process invoke_reference can't compute. These two are unused
+    # for kind="collective" (kept non-None to satisfy the dataclass); verify_collective
+    # drives the real verification.
+    invoke_reference=lambda i: [i["x"]],
+    invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], outs[0], i.get("__group__")),
+    shapes=(
+        {"num_tokens": 1, "hidden": 4096},
+        {"num_tokens": 8, "hidden": 4096},
+        {"num_tokens": 128, "hidden": 7168},
+    ),
+    # A different reduce algorithm/order (one-shot/NVLS/tree vs ring) is not bit-exact;
+    # gate on matched_ratio vs the fp32 sum, with the end-to-end token/KL gate mandatory.
+    correctness=Correctness("matched_ratio", min_ratio=0.99),
+    tolerances=_BF16_TOL,
+)
+
+
 SLOTS: dict[str, SlotSpec] = {
     SILU_AND_MUL.name: SILU_AND_MUL,
     RMSNORM.name: RMSNORM,
@@ -518,6 +573,7 @@ SLOTS: dict[str, SlotSpec] = {
     ATTENTION_DECODE.name: ATTENTION_DECODE,
     MOE_FUSED_EXPERTS.name: MOE_FUSED_EXPERTS,
     MOE_FUSED_EXPERTS_MXFP4.name: MOE_FUSED_EXPERTS_MXFP4,
+    COLLECTIVE_ALL_REDUCE.name: COLLECTIVE_ALL_REDUCE,
 }
 
 
