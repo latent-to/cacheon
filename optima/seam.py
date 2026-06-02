@@ -49,10 +49,22 @@ def activate() -> None:
     (activation / layernorm). Each install no-ops until its module is present, so
     calling activate twice patches whatever is available each time.
     """
-    from optima.integrations import sglang_attention, sglang_moe, sglang_norm, sglang_silu
+    from optima.integrations import (
+        sglang_allreduce,
+        sglang_attention,
+        sglang_moe,
+        sglang_norm,
+        sglang_silu,
+    )
     from optima.registry import REGISTRY
 
-    for install in (sglang_silu.install, sglang_norm.install, sglang_attention.install, sglang_moe.install):
+    for install in (
+        sglang_silu.install,
+        sglang_norm.install,
+        sglang_attention.install,
+        sglang_moe.install,
+        sglang_allreduce.install,
+    ):
         try:
             install(REGISTRY)
         except Exception:  # noqa: BLE001 - never break engine startup

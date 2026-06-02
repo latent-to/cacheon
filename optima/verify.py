@@ -122,6 +122,11 @@ def verify_entry(
     the miner's ``prepare`` callable too — it runs once on the raw weights and its
     result is handed to ``entry`` as ``prepared`` (otherwise ``prepared`` is None).
     """
+    if getattr(slot, "kind", None) == "collective":
+        raise ValueError(
+            f"slot {slot.name!r} is a collective slot — verify it distributed with "
+            "optima.verify_collective.verify_collective, not the single-process verify_entry"
+        )
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     tol = slot.tolerance_for(dtype)
     test_shapes = shapes if shapes is not None else list(slot.shapes)

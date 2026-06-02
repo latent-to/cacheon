@@ -100,6 +100,16 @@ def run_checks() -> list[Check]:
     except Exception as exc:  # noqa: BLE001
         add("seam: FusedMoE (moe.fused_experts)", False, repr(exc))
 
+    # collective seam (the TP-comms chokepoint: GroupCoordinator.all_reduce)
+    try:
+        from sglang.srt.distributed.parallel_state import GroupCoordinator
+
+        params = set(inspect.signature(GroupCoordinator.all_reduce).parameters)
+        ok = hasattr(GroupCoordinator, "all_reduce") and "input_" in params
+        add("seam: GroupCoordinator.all_reduce (collective)", ok, f"all_reduce params={tuple(sorted(params))}")
+    except Exception as exc:  # noqa: BLE001
+        add("seam: GroupCoordinator.all_reduce (collective)", False, repr(exc))
+
     # Engine logprob API (we read top-k logprobs for KL)
     try:
         gp = set(inspect.signature(sglang.Engine.generate).parameters)

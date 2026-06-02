@@ -459,6 +459,79 @@ def _run_moe_kernel(self, x, routed, impl, slot):
     return out
 
 
+_COLLECTIVE_LOGGED_ACTIVE = False
+_COLLECTIVE_LOGGED_FALLBACK = False
+
+
+def make_allreduce_dispatcher(
+    baseline_all_reduce: Callable[..., object],
+    *,
+    registry: KernelRegistry = REGISTRY,
+    slot: str = "collective.all_reduce",
+) -> Callable[..., object]:
+    """Build a replacement for ``GroupCoordinator.all_reduce`` — the single chokepoint
+    every tensor-parallel reduce funnels through (``sglang.srt.distributed.parallel_state``).
+
+    The TP all-reduce is the largest single category of decode time at scale (~32–43%),
+    and it is latency-bound — so the win is a lower-latency reduce or a compute-comm
+    overlap, both expressible here. The validator owns the output buffer, the process
+    group, and the call site; the miner only fills ``out`` with the cross-rank sum. The
+    reduce is mid-network (upstream of the sampler) → no output to substitute.
+
+    SCOPE (MVP, mirrors the other seams): only the multi-rank (``world_size > 1``)
+    default SUM all-reduce of a 2D tensor, eager-only, opt-in via ``OPTIMA_COLLECTIVE_SEAM=1``.
+    Extra args/kwargs, single-rank, or graph capture → trusted baseline. The miner gets
+    the process group (``self.device_group``) — a wider capability than op/block slots —
+    so this slot is verified DISTRIBUTED (optima.verify_collective) and the end-to-end
+    gate is mandatory (docs/SLOT_CONTRACT.md).
+    """
+
+    def dispatched(self, input_, *args, **kwargs):
+        if _collective_seam_active() and not args and not kwargs:
+            try:
+                if (torch.is_tensor(input_) and input_.dim() == 2
+                        and getattr(self, "world_size", 1) > 1 and not _in_cuda_graph()):
+                    impl = registry.lookup(
+                        slot,
+                        dtype_name=_dtype_name(input_.dtype),
+                        last_dim=input_.shape[-1],
+                        arch=_arch_tag(input_.device.index or 0) if input_.is_cuda else None,
+                    )
+                    if impl is not None:
+                        out = torch.empty_like(input_)
+                        group = getattr(self, "device_group", None)
+                        impl.entry(input_, out, group)  # miner fills out with sum-over-ranks
+                        _log_collective_active()
+                        return out
+            except Exception as exc:  # noqa: BLE001
+                if registry.strict:
+                    raise
+                _log_collective_fallback(exc)
+        return baseline_all_reduce(self, input_, *args, **kwargs)
+
+    return dispatched
+
+
+def _collective_seam_active() -> bool:
+    import os
+
+    return os.environ.get("OPTIMA_COLLECTIVE_SEAM") == "1"
+
+
+def _log_collective_active() -> None:
+    global _COLLECTIVE_LOGGED_ACTIVE
+    if not _COLLECTIVE_LOGGED_ACTIVE:
+        _COLLECTIVE_LOGGED_ACTIVE = True
+        logger.warning("optima: collective.all_reduce seam ACTIVE — TP reduce routed through miner kernel")
+
+
+def _log_collective_fallback(exc: Exception) -> None:
+    global _COLLECTIVE_LOGGED_FALLBACK
+    if not _COLLECTIVE_LOGGED_FALLBACK:
+        _COLLECTIVE_LOGGED_FALLBACK = True
+        logger.warning("optima: collective.all_reduce seam FELL BACK to baseline after kernel error: %r", exc)
+
+
 def _dtype_name(dtype: torch.dtype) -> str:
     return {
         torch.bfloat16: "bfloat16",

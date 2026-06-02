@@ -1,0 +1,14 @@
+# Faithful TP all-reduce baseline for the collective.all_reduce slot. Proves the
+# DISTRIBUTED contract: entry fills the validator-owned `out` with the cross-rank sum,
+# using the process group the validator hands it. Scores no win (it's stock torch
+# all-reduce); a real miner replaces it with a custom low-latency (one-shot / NVLS /
+# symmetric-memory) or compute-overlapped reduce. Verified with optima.verify_collective.
+
+bundle_id = "example-allreduce-torch"
+abi_version = "optima-op-abi-v0"
+
+[[ops]]
+slot = "collective.all_reduce"
+source = "kernels/all_reduce.py"
+entry = "all_reduce"
+dtypes = ["float32", "bfloat16", "float16"]

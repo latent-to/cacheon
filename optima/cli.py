@@ -102,6 +102,18 @@ def cmd_verify(args: argparse.Namespace) -> int:
             rc = 2
             continue
 
+        if slot.kind == "collective":
+            # Collectives span ranks -> distributed verify (spawns world_size ranks;
+            # gloo/CPU if device=cpu, nccl/GPU if cuda). No per-op single-process path.
+            from optima.verify_collective import verify_collective
+
+            ws = getattr(args, "world_size", None) or 2
+            result = verify_collective(slot, str(src), op.entry, world_size=ws, device=args.device, seed=args.seed)
+            print(format_verify(result))
+            if not result.passed:
+                rc = 2
+            continue
+
         entry = load_entry(src, op.entry)  # SECURITY: isolate in production
         prepare_fn = load_entry(src, op.prepare) if op.prepare else None  # (prepare, forward) slots
         result = verify_entry(
