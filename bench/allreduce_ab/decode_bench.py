@@ -73,6 +73,16 @@ def main() -> None:
         chunked_prefill_size=4096,
         disable_flashinfer_autotune=True,
     )
+    # Per-box base engine config merged over the defaults — e.g. B200 V4-Flash needs
+    # swa_full_tokens_ratio + moe_runner_backend=flashinfer_mxfp4 to even init. Point
+    # ENGINE_KWARGS_JSON at the same json the working run used; the swept all-reduce
+    # backend is applied LAST so it always wins.
+    ek_path = _env("ENGINE_KWARGS_JSON", "")
+    if ek_path:
+        import json
+
+        with open(ek_path) as f:
+            kw.update(json.load(f))
     kw.update(BACKENDS[backend])
     print(
         f"CONFIG backend={backend} applied={BACKENDS[backend]} | "
