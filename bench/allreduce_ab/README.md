@@ -13,8 +13,11 @@ This harness measures that ceiling with **zero source patches** — every backen
 flag, so one pinned package, consensus preserved.
 
 ## Files
-- `decode_bench.py` — measures DECODE tok/s for ONE backend, warmup-controlled (ramp clocks) and
-  prefill-isolated (two output lengths, subtract prefill). Backend chosen via `ALLREDUCE_BACKEND`.
+- `decode_bench.py` — measures SUSTAINED steady-state decode tok/s for ONE backend: K rounds of
+  BATCH×ROUND_TOKENS decode, discard the warmup rounds (clocks ramp), report the steady mean +
+  `spread%`. We don't trust transient/warmup numbers on unlockable-clock boxes — a tight steady
+  spread is the trust signal. Backend via `ALLREDUCE_BACKEND`; per-box engine config (B200 V4 needs
+  `swa_full_tokens_ratio` + `flashinfer_mxfp4`) via `ENGINE_KWARGS_JSON`.
 - `sweep.sh` — runs the backend matrix, `default` bookended first & last (warmup-drift control).
   With `NSYS=1`, profiles each and prints per-call latency via the parser.
 - `parse_allreduce_latency.py` — decode-only (graphId-split) per-call all-reduce latency from an
