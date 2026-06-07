@@ -9,7 +9,13 @@ diverse enough to exercise varied shapes and stabilize the KL estimate.
 
 from __future__ import annotations
 
+import hashlib
 import random
+
+PROMPT_ENGINE_VERSION: int = 1
+"""Bump when the corpus or sampling changes. Folded into the block seed so a version
+change reshuffles prompts even at the same block — old and new prompt sets never
+collide, and the engine version a score was produced under stays reproducible."""
 
 CORPUS: tuple[str, ...] = (
     "Write a Python function that returns the n-th Fibonacci number.",
@@ -65,3 +71,24 @@ def sample_prompts(n: int, seed: int) -> list[str]:
     if n <= len(CORPUS):
         return rng.sample(list(CORPUS), n)
     return [rng.choice(CORPUS) for _ in range(n)]
+
+
+def derive_seed(block_hash: str, *, version: int = PROMPT_ENGINE_VERSION) -> int:
+    """Map a chain block hash to a deterministic 64-bit epoch seed.
+
+    Two validators that score a submission at the same block derive the *same* seed,
+    so they draw the identical prompt set — a hard requirement for cross-validator
+    consensus (they must agree on weights for that submission). The seed also rotates
+    unpredictably per block, so a kernel cannot pre-bake answers for a known prompt
+    set. ``version`` is folded in so a prompt-engine bump reshuffles even at the same
+    block.
+    """
+    digest = hashlib.sha256(f"v{version}:{block_hash}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def sample_prompts_for_block(block_hash: str, n: int, *,
+                             version: int = PROMPT_ENGINE_VERSION) -> list[str]:
+    """Block-hash-seeded prompts: identical across validators at a given block,
+    unpredictable across blocks. Thin wrapper over ``sample_prompts``."""
+    return sample_prompts(n, derive_seed(block_hash, version=version))

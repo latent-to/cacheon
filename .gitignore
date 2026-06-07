@@ -11,6 +11,10 @@ l.json
 # Private working log — candid history, live pod access, strategy. NOT for GitHub.
 WORKLOG.md
 
+# Local planning / design docs (proposals; local-only, like WORKLOG.md).
+plan.md
+plan_*.md
+
 # Local miner-workbench experiments; keep out of the eventual public validator repo.
 experiments/
 scripts/gptoss_tp_bench.py
