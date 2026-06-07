@@ -37,8 +37,11 @@ class Check:
 _EXPECTED_SUBTENSOR_METHODS: tuple[tuple[str, str], ...] = (
     ("set_weights", "push king-of-the-hill weights on-chain"),
     ("metagraph", "read uids / hotkeys / stake / validator_permit"),
+    ("get_all_commitments", "read every hotkey's commitment (the salted commit hash)"),
+    ("set_commitment", "miner posts a commitment on-chain"),
     ("is_hotkey_registered", "preflight: this validator is registered"),
-    ("get_current_block", "current block height (feeds prompt seeding)"),
+    ("get_current_block", "current block height"),
+    ("get_block_hash", "block hash -> prompt seed (consensus + anti-prebake)"),
 )
 
 
