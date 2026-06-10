@@ -32,6 +32,7 @@ import torch
 from optima.eval._launch import call_in_subprocess
 from optima.eval.kl import KLReport, aligned_kl, extract_per_prompt, kl_gate_ok, token_match_rate
 from optima.eval.prompts import sample_prompts
+from optima.eval.scoring import score_speedup
 
 
 @dataclass
@@ -43,8 +44,13 @@ class EvalConfig:
     timed_iters: int = 3  # median-of-K timed passes per launch
     top_logprobs_num: int = 20
     temperature: float = 0.0  # greedy -> deterministic alignment
-    ignore_eos: bool = False
-    warmup_iters: int = 1
+    # Fixed token budget by default: with greedy decode this forces baseline AND
+    # candidate to emit EXACTLY max_new_tokens, so throughput is a pure per-token
+    # latency comparison and a kernel can't inflate tok/s by nudging EOS timing
+    # (the self-reported token count is no longer a lever). Turn off only for a
+    # natural-length probe, never for scoring.
+    ignore_eos: bool = True
+    warmup_iters: int = 2  # >=2 full rounds: 1 leaves the documented ±17-32% clock-ramp in-window
     deterministic: bool = False
     # None -> advisory (KL reported but not gated; for big MoE where the
     # nondeterminism floor exceeds any sane threshold and accuracy carries quality).
@@ -71,9 +77,22 @@ class EvalConfig:
     allow_unsafe_no_isolation: bool = False
     seed: int = 0  # model seed
     prompt_seed: int = 0  # per-epoch prompt sampling seed
-    # speedup must clear this margin over 1.0 to count as a real improvement,
-    # absorbing measurement noise (see settle/champion logic too).
+    # FLOOR on the required improvement (see optima/eval/scoring.py). The ACTUAL bar
+    # is max(speedup_margin, score_k * measured_baseline_noise) — derived from the box,
+    # not hand-picked — because a constant 2% sits an order of magnitude below the
+    # ±7-17% warmup/thermal noise on a pod whose clocks we can't lock.
     speedup_margin: float = 0.02
+    # Noise-robust scoring (we cannot lock GPU clocks on rented pods):
+    #  * bookend_baseline: measure stock BEFORE and AFTER the candidate (B,C,B') so the
+    #    candidate is bracketed; the two baseline reads bound the drift across it and
+    #    give a per-round noise estimate. Off -> the old single-baseline 2-launch (cheap
+    #    debug only; cannot be confident, so it never crowns).
+    #  * score_k: how many measured-noise-widths above 1.0 a speedup must clear.
+    #  * max_noise: if the bracketing baselines disagree by more than this, the round is
+    #    untrustworthy -> NO-DECISION (never crowns), the subnet re-queues it.
+    bookend_baseline: bool = True
+    score_k: float = 2.0
+    max_noise: float = 0.10
     # None -> sglang auto-picks the best backend for the hardware (fa3 on Hopper,
     # etc.). Don't hard-code a weak backend: a production-strong baseline is required,
     # or miners optimize against a slow reference. Override per-HW only if needed.
@@ -117,12 +136,16 @@ class ModeResult:
 class EvalReport:
     baseline: ModeResult
     candidate: ModeResult
-    speedup: float
+    speedup: float  # informational: candidate / mean(bracketing baselines)
     kl: KLReport
     passed_quality: bool
-    passed_speedup: bool
-    score: float
+    passed_speedup: bool  # NOISE-AWARE: cleared the measured bar AND the round was trustworthy
+    score: float  # the crownable speedup (>=bar, confident) or 0.0 — what the ledger records
     token_match: float = 1.0  # fraction of tokens matching baseline (the framework-mode gate)
+    noise: float = 0.0  # measured relative spread of the baseline reads
+    required_speedup: float = 1.0  # the bar the speedup had to clear this round
+    confident: bool = True  # False -> box too noisy this round; NO-DECISION, never crowns
+    baseline2: Optional[ModeResult] = None  # the trailing bookend baseline (B'), if measured
 
 
 @contextmanager
@@ -228,15 +251,27 @@ def _aligned_kl(baseline: ModeResult, candidate: ModeResult) -> KLReport:
 def evaluate(cfg: EvalConfig, bundle_path: str, prompts: Optional[list[str]] = None) -> EvalReport:
     prompts = list(prompts) if prompts else sample_prompts(cfg.num_prompts, cfg.prompt_seed)
 
-    # Fresh process per launch (see _launch.call_in_subprocess): isolates the
-    # baseline's deterministic/CUDA global state from the candidate.
+    # Bookended A/B (we cannot lock GPU clocks on rented pods): measure stock BEFORE
+    # and AFTER the candidate so the candidate is bracketed and the two baseline reads
+    # bound the warmup/thermal drift across it. Each launch runs in its own fresh
+    # process (call_in_subprocess) so the baseline's deterministic/CUDA global state
+    # can't corrupt the candidate. See optima/eval/scoring.py.
     baseline = call_in_subprocess(_run_launch, cfg, prompts, bundle_path="", active=False)
     candidate = call_in_subprocess(_run_launch, cfg, prompts, bundle_path=bundle_path, active=True)
+    baseline2 = (call_in_subprocess(_run_launch, cfg, prompts, bundle_path="", active=False)
+                 if cfg.bookend_baseline else None)
 
+    baseline_reads = [baseline.tok_per_s] + ([baseline2.tok_per_s] if baseline2 else [])
+    verdict = score_speedup(
+        baseline_reads, candidate.tok_per_s,
+        min_margin=cfg.speedup_margin, k=cfg.score_k, max_noise=cfg.max_noise,
+    )
+
+    # KL/token fidelity vs the (stock) baseline — any stock run is a valid reference;
+    # use the first so it's deterministic.
     kl = _aligned_kl(baseline, candidate)
     matched, total = token_match_rate(baseline.per_prompt, candidate.per_prompt)
     token_match = (matched / total) if total else 1.0
-    speedup = (candidate.tok_per_s / baseline.tok_per_s) if baseline.tok_per_s > 0 else 0.0
     if getattr(cfg, "framework_mode", False):
         # The miner may have patched the engine (setup()), so its self-reported logprobs
         # are not trusted: gate on token-match vs the trusted stock baseline, not KL.
@@ -248,10 +283,15 @@ def evaluate(cfg: EvalConfig, bundle_path: str, prompts: Optional[list[str]] = N
             p99_kl_threshold=cfg.p99_kl_threshold,
             argmax_disagree_rate_threshold=cfg.argmax_disagree_rate_threshold,
         )
-    passed_speedup = speedup >= (1.0 + cfg.speedup_margin)
-    # Score: the speedup, but only counted as positive when BOTH quality holds and
-    # the speedup clears the noise margin. A faithful-but-not-faster kernel scores
-    # ~1.0 (no improvement); a cheat scores 0.
-    score = speedup if (passed_quality and passed_speedup) else (0.0 if not passed_quality else speedup)
+    # Crownable only when quality holds AND the speedup is a noise-confident real win.
+    # The ledger records the speedup only when crownable, else 0.0 — so a cheat (quality
+    # fail), a faithful-but-not-faster kernel, OR a too-noisy round can never take the
+    # title. The raw speedup is still reported for the human read.
+    crownable = passed_quality and verdict.passed_speedup
+    score = verdict.speedup if crownable else 0.0
 
-    return EvalReport(baseline, candidate, speedup, kl, passed_quality, passed_speedup, score, token_match)
+    return EvalReport(
+        baseline, candidate, verdict.speedup, kl, passed_quality, verdict.passed_speedup, score,
+        token_match, noise=verdict.noise, required_speedup=verdict.required,
+        confident=verdict.confident, baseline2=baseline2,
+    )

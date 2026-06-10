@@ -14,9 +14,11 @@ This is the long-form explainer. By the end you should understand, with no gaps:
 It points at every file. Paths are relative to this doc (`docs/`), so
 `../optima/slots.py` is the harness module `optima/slots.py`.
 
-> **Current scope (kept in sync):** six slots — `activation.silu_and_mul`,
+> **Current scope (kept in sync):** seven slots — `activation.silu_and_mul`,
 > `norm.rmsnorm` (ops); `attention.sdpa` / `attention.decode`, `moe.fused_experts`
-> (blocks); `collective.all_reduce` (collective) — two quality gates (per-token **KL**
+> (blocks); `collective.all_reduce` and `moe.fused_experts_reduce` (collectives — the
+> latter the block that owns its trailing reduce, the compute-comm overlap lever) — two
+> quality gates (per-token **KL**
 > *and* real **benchmark accuracy** — Part 6), validated up to **gpt-oss-120b**.
 > `README.md` is the live state-of-record (results + calibration); if it disagrees with
 > this doc, README wins. **No submitted kernel has beaten sglang** — this validates the
@@ -293,10 +295,13 @@ interpreter — it re-imports sglang from scratch. So if you patch a class in th
 parent process, the child never sees it. The model runs in the child; your patch
 is in the parent. Naive monkeypatching silently does nothing.
 
-(We also learned the pinned sglang has **no** stable plugin framework — it only
-exists on bleeding-edge main — so the "register a plugin entry point" approach is
-dead on the version that actually installs from PyPI. `PINNED_SGLANG` is
-`0.5.12.post1`, in [../optima/compat.py](../optima/compat.py).)
+(Correction to an earlier note: the pinned sglang **does** ship a hook/plugin
+framework — `srt/plugins/hook_registry.py` (BEFORE/AFTER/AROUND/REPLACE hooks via
+`sglang.srt.plugins` entry points), added by PR #21388 and present at the pin
+`0.5.12.post1`. So an entry-point hook IS available; we keep the `.pth` path primary
+because it is version-independent and known spawn-safe, and track migrating to the
+sanctioned hook as future work. `PINNED_SGLANG` is in
+[../optima/compat.py](../optima/compat.py).)
 
 ### 5.2 The solution: a `.pth` + a post-import hook
 

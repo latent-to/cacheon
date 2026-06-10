@@ -140,7 +140,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             from optima.verify_collective import verify_collective
 
             ws = getattr(args, "world_size", None) or 2
-            result = verify_collective(slot, str(src), op.entry, world_size=ws, device=args.device, seed=args.seed)
+            result = verify_collective(slot, str(src), op.entry, prepare_name=op.prepare,
+                                       world_size=ws, device=args.device, seed=args.seed)
             print(format_verify(result))
             if not result.passed:
                 rc = 2
@@ -229,23 +230,34 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
           f"range {bmin:.0f}-{bmax:.0f}, sd {bsd:.1f})")
     print(f"candidate  {c.tok_per_s:8.1f} tok/s  (median of {len(c.tok_per_s_samples)}; "
           f"range {cmin:.0f}-{cmax:.0f}, sd {csd:.1f})")
-    print(f"speedup    {report.speedup:8.3f}x  (needs >= {1 + cfg.speedup_margin:.2f} -> "
-          f"{'PASS' if report.passed_speedup else 'below margin'})")
+    if report.baseline2 is not None:
+        b2 = report.baseline2
+        print(f"baseline'  {b2.tok_per_s:8.1f} tok/s  (trailing bookend; baseline noise {report.noise:.1%})")
+    if not report.confident:
+        verdict = "NO-DECISION (box too noisy / un-bracketed; re-queue, never crown)"
+    elif report.passed_speedup:
+        verdict = "PASS (noise-confident real win)"
+    else:
+        verdict = "below the noise-derived bar"
+    print(f"speedup    {report.speedup:8.3f}x  (needs >= {report.required_speedup:.3f} = "
+          f"1 + max({cfg.speedup_margin:.2f}, {cfg.score_k:g}*noise) -> {verdict})")
     print(f"quality    mean_kl={report.kl.mean_kl:.3e} max_kl={report.kl.max_kl:.3e} "
           f"argmax_disagree={report.kl.argmax_disagreements}/{report.kl.num_positions}  "
           f"token_match={report.token_match:.4f}{' (GATE)' if cfg.framework_mode else ''} -> "
           f"{'PASS' if report.passed_quality else 'FAIL'}")
-    print(f"SCORE      {report.score:.3f}")
+    print(f"SCORE      {report.score:.3f}  (crownable speedup, else 0.0)")
 
     if getattr(args, "ledger", None) and getattr(args, "hotkey", None):
         from optima.bundle_hash import content_hash
         from optima.commit_reveal import Ledger
+        from optima.compat import PINNED_SGLANG
 
         ch = content_hash(args.bundle)
         led = Ledger.load(args.ledger)
-        led.record_score(args.hotkey, ch, args.round, report.score, report.kl.mean_kl, report.passed_quality)
+        led.record_score(args.hotkey, ch, args.round, report.score, report.kl.mean_kl,
+                         report.passed_quality, sglang_version=PINNED_SGLANG)
         led.save(args.ledger)
-        print(f"recorded -> {args.ledger} (hotkey={args.hotkey}, round={args.round})")
+        print(f"recorded -> {args.ledger} (hotkey={args.hotkey}, round={args.round}, sglang={PINNED_SGLANG})")
     return 0 if report.passed_quality else 3
 
 
@@ -316,8 +328,16 @@ def cmd_bench(args: argparse.Namespace) -> int:
         print(f"  {bs.name:10s} baseline {bs.baseline_acc:6.1%} ({bs.baseline_correct}/{bs.n})  "
               f"candidate {bs.candidate_acc:6.1%} ({bs.candidate_correct}/{bs.n})  "
               f"Δ{bs.delta:+.1%}{flag}")
-    print(f"throughput baseline {report.baseline_tok_s:8.1f} tok/s  candidate {report.candidate_tok_s:8.1f} tok/s")
-    print(f"speedup    {report.speedup:8.3f}x  -> {'PASS' if report.passed_speedup else 'below margin'}")
+    b2 = f"  baseline' {report.baseline2_tok_s:8.1f}" if report.baseline2_tok_s > 0 else ""
+    print(f"throughput baseline {report.baseline_tok_s:8.1f} tok/s  candidate {report.candidate_tok_s:8.1f} tok/s{b2}")
+    if not report.confident:
+        sp_verdict = "NO-DECISION (box too noisy; re-queue)"
+    elif report.passed_speedup:
+        sp_verdict = "PASS (noise-confident)"
+    else:
+        sp_verdict = "below the noise-derived bar"
+    print(f"speedup    {report.speedup:8.3f}x  (needs >= {report.required_speedup:.3f}, "
+          f"baseline noise {report.noise:.1%}) -> {sp_verdict}")
     kl = report.kl
     if args.kl_advisory:
         kl_note = "advisory (not gated)"
@@ -337,11 +357,14 @@ def cmd_bench(args: argparse.Namespace) -> int:
         from optima.bundle_hash import content_hash
         from optima.commit_reveal import Ledger
 
+        from optima.compat import PINNED_SGLANG
+
         ch = content_hash(args.bundle)
         led = Ledger.load(args.ledger)
-        led.record_score(args.hotkey, ch, args.round, report.score, report.kl.mean_kl, report.passed_quality)
+        led.record_score(args.hotkey, ch, args.round, report.score, report.kl.mean_kl,
+                         report.passed_quality, sglang_version=PINNED_SGLANG)
         led.save(args.ledger)
-        print(f"recorded -> {args.ledger} (hotkey={args.hotkey}, round={args.round})")
+        print(f"recorded -> {args.ledger} (hotkey={args.hotkey}, round={args.round}, sglang={PINNED_SGLANG})")
     return 0 if report.passed_quality else 3
 
 
@@ -370,18 +393,21 @@ def cmd_commit(args: argparse.Namespace) -> int:
 def cmd_reveal(args: argparse.Namespace) -> int:
     from optima.bundle_hash import content_hash
     from optima.commit_reveal import Ledger, RevealError
+    from optima.copy_fingerprint import bundle_fingerprint
 
     ch = content_hash(args.bundle)
+    fp = bundle_fingerprint(args.bundle)  # reformat-invariant near-copy signal
     led = Ledger.load(args.ledger)
     try:
-        rev = led.reveal(args.hotkey, ch, args.salt, args.round)
+        rev = led.reveal(args.hotkey, ch, args.salt, args.round, fingerprint=fp)
     except RevealError as e:
         print(f"REJECTED: {e}")
         return 2
     led.save(args.ledger)
     print(f"revealed hotkey={args.hotkey} content={ch[:16]}... original={rev.original}")
     if not rev.original:
-        print("  -> flagged as a COPY (an earlier commitment to this content exists); earns 0")
+        print("  -> flagged as a COPY (an earlier commit to this exact content OR its "
+              "reformatted-but-identical structure exists); earns 0")
     return 0
 
 
@@ -401,13 +427,17 @@ def cmd_ledger(args: argparse.Namespace) -> int:
 
 def cmd_settle(args: argparse.Namespace) -> int:
     from optima.commit_reveal import Ledger
+    from optima.compat import PINNED_SGLANG
 
     led = Ledger.load(args.ledger)
-    res = led.settle(args.round, margin=args.margin)
+    res = led.settle(args.round, margin=args.margin, current_sglang_version=PINNED_SGLANG)
     led.save(args.ledger)
     print(f"title_changed={res.title_changed} challenger_score={res.challenger_score:.3f}")
     if res.champion:
         print(f"champion: {res.champion.hotkey} score={res.champion.score:.3f}")
+    if res.champion_stale:
+        print(f"  ⚠ champion was crowned under a DIFFERENT sglang pin than {PINNED_SGLANG}; "
+              "re-baseline it (re-evaluate the champion bundle on the current pin).")
     if res.rejected_copies:
         print(f"rejected copies: {', '.join(res.rejected_copies)}")
     print(f"weights: {res.weights}")
@@ -459,8 +489,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timed-iters", type=int, default=3, help="median-of-K timed passes per launch")
     sp.add_argument("--prompt-seed", type=int, default=0, help="per-epoch prompt sampling seed")
     sp.add_argument("--top-logprobs", type=int, default=20)
-    sp.add_argument("--ignore-eos", action="store_true",
-                    help="force generation to the max token budget; useful for long-decode throughput probes")
+    sp.add_argument("--ignore-eos", action=argparse.BooleanOptionalAction, default=True,
+                    help="force generation to the max token budget so baseline and candidate emit IDENTICAL "
+                         "token counts (pure latency comparison, no EOS-timing gaming). ON for scoring; "
+                         "--no-ignore-eos only for a natural-length probe")
     sp.add_argument("--kl-threshold", type=float, default=5e-3)
     sp.add_argument("--argmax-disagree-rate", type=float, default=0.01,
                     help="max fraction of positions whose top token may flip (sparse-cheat guard)")
@@ -522,8 +554,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kl-advisory", action="store_true",
                     help="report KL but don't gate on it (big MoE: noise-dominated; rely on accuracy)")
     sp.add_argument("--top-logprobs", type=int, default=20, help="top-k logprobs for the KL gate (0 disables)")
-    sp.add_argument("--ignore-eos", action="store_true",
-                    help="force generation to the max token budget; useful for long-decode throughput probes")
+    sp.add_argument("--ignore-eos", action=argparse.BooleanOptionalAction, default=True,
+                    help="force generation to the max token budget so baseline and candidate emit IDENTICAL "
+                         "token counts (pure latency comparison, no EOS-timing gaming). ON for scoring; "
+                         "--no-ignore-eos only for a natural-length probe")
     sp.add_argument("--mem-fraction", type=float, default=0.6,
                     help="sglang mem_fraction_static (use ~0.9 for big models like gpt-oss-120b)")
     sp.add_argument("--no-deterministic", action="store_true")
