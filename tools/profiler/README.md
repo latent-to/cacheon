@@ -8,12 +8,17 @@ possibly be, and where is there no win* — without manufacturing phantom wins.
 ```bash
 python3 tools/profiler/build.py ~/Downloads/github/temp/profiles_b300 -o profiler_out
 open profiler_out/report.html      # offline, zero-dependency, double-click to view
+python3 tools/profiler/plan.py profiler_out/dataset.json -o profiler_out/capture_plan.md
 ```
 
 That writes three files into `-o` (default `profiler_out/`):
 - `report.html` — the dashboard (all data inlined; opens with no server, no deps).
 - `dataset.json` — the normalized dataset (programmatic use / diffing runs).
 - `findings.json` — the derived verdicts.
+
+`plan.py` adds the next operational layer: it turns a report into a bounded
+capture plan (`capture_plan.md`) with concrete backend A/Bs and `ncu` target
+rows. Use it to avoid hand-editing a fresh profiler battery for every new model.
 
 No third-party Python, no NVIDIA CLIs, no network. Pure stdlib — because the Mac
 checkout has none of those.
@@ -85,11 +90,39 @@ the artifacts this tool ingests. The loop is always the same:
 capture on pod  →  pull to Mac  →  build.py <dir>  →  open report.html
 ```
 
+### The profile pack, not a profiling loop
+
+There is no single profiler invocation that gives every answer. `nsys` gives the
+timeline and attribution, `ncu` gives per-kernel counters but uses replay and can
+break on collectives/cluster kernels, and e2e serving is the only truth for
+throughput. Treat one **profile pack** as the unit:
+
+1. **Serving truth**: e2e sweep at the target concurrencies, plus a short torch
+   steady-decode trace from the same server config.
+2. **Timeline**: `nsys` decode at serving batch, bs1 control, max batch, prefill,
+   and the long-context point you care about; always export `cuda_gpu_kern_sum`
+   and `cuda_gpu_trace` on the GPU box.
+3. **Counters**: `ncu` only the categories from the report/plan at serving batch
+   plus bs1 where useful. Do not chase collectives with kernel replay by default.
+4. **Small backend matrix**: run only pre-declared flag A/Bs that the logs or
+   model code justify, e.g. `--linear-attn-decode-backend flashinfer` vs
+   `--linear-attn-decode-backend triton` for Qwen GDN.
+
+After `build.py`, run:
+
+```bash
+python3 tools/profiler/plan.py profiler_out/dataset.json -o profiler_out/capture_plan.md
+```
+
+If `capture_plan.md` is empty except stop conditions, stop profiling and
+optimize. If it lists rows, run only those rows. This keeps Qwen/Nemotron/Minimax
+profiling bounded: first pack finds the map, the generated plan closes the grey
+surface, then code work starts.
+
 ### A) New model on a new pod (e.g. Nemotron)
 
 1. **Capture** with `pod_scripts/profile_run.sh` (the V2 driver): point it at the
-   new model + serve args, and edit its **ncu kernel battery** to match the new
-   model's kernel names. Keep capture **labels** consistent — the analyzer reads
+   new model + serve args. Keep capture **labels** consistent — the analyzer reads
    regime/batch from them: a label containing `prefill` → prefill regime;
    `b32`/`b1` → that batch. (So `ncu_fp4gemm_b32`, `ncu_prefill`, etc.)
 2. **Pull** with `mac_pull.sh` → `~/Downloads/.../profiles_nemotron`.
@@ -99,6 +132,10 @@ capture on pod  →  pull to Mac  →  build.py <dir>  →  open report.html
 4. **Analyze**: `python3 tools/profiler/build.py ~/Downloads/.../profiles_nemotron
    -o nemotron_out` → open `nemotron_out/report.html`. You immediately get the
    winnable surface, the vendor floors, the Amdahl ceiling, and the config levers.
+5. **Plan closure**: `python3 tools/profiler/plan.py nemotron_out/dataset.json -o
+   nemotron_out/capture_plan.md`. Copy only the generated NCU rows/A-Bs into the
+   next pod pass. Do not invent extra rows unless the report names a category the
+   taxonomy cannot yet classify.
 
 ### B) Measuring your OWN fused kernels (the win/no-win question)
 
@@ -163,6 +200,7 @@ detection: a label containing `prefill` → prefill regime; `b32`/`b1` → batch
 - `findings.py` — dataset → verdicts (CLI: `python3 findings.py dataset.json`).
 - `report.py` — dataset + findings → `report.html` (template in `templates/`).
 - `build.py` — the one-command pipeline.
+- `plan.py` — `dataset.json` → bounded next-capture plan (`capture_plan.md`).
 - `compare.py` — A/B two `dataset.json` → one win/no-win verdict + `compare.html`
   (CLI: `python3 compare.py base/dataset.json patched/dataset.json -o compare.html`).
 - `tests/test_profiler.py` — synthetic fixtures encoding the guards above

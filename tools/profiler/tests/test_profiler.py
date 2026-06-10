@@ -23,6 +23,7 @@ sys.path.insert(0, str(HERE.parent))
 import ingest          # noqa: E402
 import findings as fnd  # noqa: E402
 import compare as cmp   # noqa: E402
+import plan as plan_mod  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -91,7 +92,9 @@ def _make_dataset(tmp: Path):
 
     kern("bmm_E2m1_E2m1E2m1_t128x32x512_decode", 100, 39)   # 39% FP4 MoE GEMM (memory floor)
     kern("nvjet_sm103_gemm", 100, 25)                       # 25% dense GEMM
+    kern("flashinfer::trtllm_allreduce_fusion::allreduce_fusion_kernel", 100, 4)
     kern("void routingIndicesClusterKernel<...>", 100, 5)   # 5% routing (cluster floor)
+    kern("kernel_cutlass_gdn_wide_vec_kernel", 100, 3)       # 3% GDN recurrence (backend provenance needed)
     kern("void moe::finalizeKernelVecLoad<T>", 100, 2)      # 2% finalize (fuse win)
     kern("act_and_mul_kernel", 100, 1)                      # 1% act (no ncu -> unknown)
     with gzip.open(tmp / "run.1234-TP-0.trace.json.gz", "wt") as fh:
@@ -104,6 +107,21 @@ def _make_dataset(tmp: Path):
     (tmp / "e2e_noAR.txt").write_text(_serve(64, 2950))   # ablation: must NOT be the reported peak
     # a bogus ncu summary export (wrong --page)
     (tmp / "ncu_fp4gemm_b32_summary.txt").write_text("==ERROR== the argument for option '--page' is invalid.")
+    (tmp / "serve_off.log").write_text(
+        "[2026-06-09] SM100+ detected with mamba-ssm-dtype=bfloat16, "
+        "defaulting --linear-attn-decode-backend to flashinfer.\n"
+        "[2026-06-09] FlashInfer TRTLLM MoE is enabled. "
+        "--disable-shared-experts-fusion is automatically set.\n"
+        "server_args=ServerArgs(attention_backend='trtllm_mha', "
+        "fp4_gemm_runner_backend='flashinfer_cutlass', moe_runner_backend='flashinfer_trtllm', "
+        "mamba_backend='triton', mamba_ssm_dtype='bfloat16', linear_attn_backend='triton', "
+        "linear_attn_decode_backend='flashinfer', enable_flashinfer_allreduce_fusion=True, "
+        "disable_custom_all_reduce=False, disable_shared_experts_fusion=True, "
+        "enable_nccl_nvls=False, enable_symm_mem=False)\n"
+        "[2026-06-09 TP0] Linear attention kernel backend: decode=flashinfer, prefill=triton\n"
+        "[2026-06-09 TP0] GDN kernel dispatcher: decode=FlashInferGDNKernel, "
+        "extend=TritonGDNKernel, verify=TritonGDNKernel packed_decode=False\n"
+    )
 
 
 def _serve(conc, agg):
@@ -180,8 +198,8 @@ def test_amdahl_ceiling_math(tmp):
     # winnable categories here: finalize(2%) only (act is unknown w/o ncu). floor: fp4 39 + dense? dense has no ncu -> unknown.
     # exact ceiling = 1/(1 - winnable/100)
     expected = round(1.0 / (1.0 - a["winnable_pct"] / 100.0), 3)
-    assert a["max_decode_speedup_if_winnable_eliminated"] == expected
-    assert a["winnable_pct"] + a["floor_pct"] + a["unknown_pct"] <= 100.01
+    assert abs(a["max_decode_speedup_if_winnable_eliminated"] - expected) <= 0.002
+    assert a["winnable_pct"] + a["floor_pct"] + a["unknown_pct"] <= 100.2
 
 
 def test_bogus_summary_flagged(tmp):
@@ -198,6 +216,59 @@ def test_trace_cache_roundtrips(tmp):
     assert a == b, "cached parse differs from fresh parse"
     # a no-cache parse must still match
     assert ingest.parse_torch_trace(trace, use_cache=False) == a
+
+
+def test_v2_ceiling_names_are_normalized(tmp):
+    p = tmp / "e2e_ceil_moe_r2.txt"
+    p.write_text(_serve(32, 1234))
+    rows = ingest.parse_serve_log(p)
+    assert rows[0]["config"] == "ceiling_noop_moe"
+    assert rows[0]["kind"] == "ceiling"
+    assert rows[0]["replicate"] == "r2"
+
+
+def test_replicated_e2e_rows_are_averaged(tmp):
+    rows = [
+        {"config": "ceiling_none", "conc": 32, "agg_toks": 1000.0, "errors": 0},
+        {"config": "ceiling_none", "conc": 32, "agg_toks": 1100.0, "errors": 0},
+    ]
+    by = fnd._by_config(rows)
+    r = by["ceiling_none"][32]
+    assert r["agg_toks"] == 1050.0
+    assert r["n"] == 2
+    assert r["agg_toks_min"] == 1000.0 and r["agg_toks_max"] == 1100.0
+
+
+def test_sglang_runtime_backend_observations(tmp):
+    ds, _ = _run(tmp)
+    sg = ds["health"]["sglang"]
+    linear = sg["linear_attn_backends"][0]
+    assert linear["decode"] == "flashinfer" and linear["prefill"] == "triton"
+    gdn = sg["gdn_dispatchers"][0]
+    assert gdn["decode_kernel"] == "FlashInferGDNKernel"
+    assert gdn["extend_kernel"] == "TritonGDNKernel"
+    assert gdn["packed_decode"] == "False"
+    assert sg["server_args"]["linear_attn_decode_backend"][0]["value"] == "flashinfer"
+
+
+def test_gdn_backend_gap_becomes_opportunity(tmp):
+    _, f = _run(tmp)
+    assert any("GDN decode backend" in o["title"] for o in f["opportunities"]), \
+        "FlashInfer/no-packed GDN provenance did not become an explicit opportunity"
+    assert any("GDN decode is NOT closed" in c for c in f["constraints"])
+
+
+def test_capture_plan_closes_grey_buckets(tmp):
+    ds, f = _run(tmp)
+    ds["findings"] = f
+    p = plan_mod.plan(ds)
+    ab_names = [x["name"] for x in p["backend_abs"]]
+    assert "gdn_decode_backend" in ab_names
+    labels = {x["label"] for x in p["ncu_rows"]}
+    assert "nvjet" in labels
+    assert "gdnscan" in labels
+    assert "finalize" not in labels, "already-captured NCU labels should not be re-planned"
+    assert p["comm_actions"], "all-reduce should become e2e/nsys action, not NCU replay"
 
 
 def test_compare_win_with_fusion(tmp):

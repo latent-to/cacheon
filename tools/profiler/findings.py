@@ -118,9 +118,26 @@ def _canonical_decode(decode: list[dict]) -> dict | None:
 # e2e levers
 # --------------------------------------------------------------------------- #
 def _by_config(e2e: list[dict]) -> dict[str, dict[int, dict]]:
-    out: dict[str, dict[int, dict]] = {}
+    grouped: dict[tuple[str, int], list[dict]] = {}
     for r in e2e:
-        out.setdefault(r["config"], {})[r["conc"]] = r
+        grouped.setdefault((r["config"], r["conc"]), []).append(r)
+    out: dict[str, dict[int, dict]] = {}
+    for (cfg, conc), rows in grouped.items():
+        row = dict(rows[-1])
+        row["n"] = len(rows)
+        for key in ("agg_toks", "ttft_p50", "ttft_p99", "decode_p50",
+                    "tokens_per_chunk", "steady_tokens", "errors"):
+            vals = [x.get(key) for x in rows if isinstance(x.get(key), (int, float))]
+            if vals:
+                row[key] = sum(vals) / len(vals)
+        if len(rows) > 1:
+            vals = [x.get("agg_toks") for x in rows if isinstance(x.get("agg_toks"), (int, float))]
+            if vals:
+                mu = sum(vals) / len(vals)
+                row["agg_toks_min"] = min(vals)
+                row["agg_toks_max"] = max(vals)
+                row["agg_toks_spread_pct"] = round(100 * (max(vals) - min(vals)) / mu, 2) if mu else None
+        out.setdefault(cfg, {})[conc] = row
     return out
 
 
@@ -172,6 +189,107 @@ def _levers(e2e: list[dict]) -> dict:
                     "apparent_share_pct": round(100 * (r1 - r0) / r1, 1) if r1 else None,
                 })
     return lev
+
+
+def _server_arg_values(dataset: dict, key: str) -> set[str]:
+    rows = dataset.get("health", {}).get("sglang", {}).get("server_args", {}).get(key, [])
+    return {str(r.get("value")) for r in rows}
+
+
+def _has_server_arg(dataset: dict, key: str, value: str) -> bool:
+    return value in _server_arg_values(dataset, key)
+
+
+def _gdn_flashinfer_without_packed_decode(dataset: dict) -> dict | None:
+    for row in dataset.get("health", {}).get("sglang", {}).get("gdn_dispatchers", []):
+        if row.get("decode_kernel") == "FlashInferGDNKernel" and str(row.get("packed_decode")) == "False":
+            return row
+    return None
+
+
+def _unknown_opportunity(e: dict, dataset: dict) -> dict:
+    """Specialize unknown buckets with SGLang/runtime provenance when available."""
+    cat = e["cat"]
+    if cat == "gdn_scan":
+        gdn = _gdn_flashinfer_without_packed_decode(dataset)
+        if gdn:
+            return {
+                "title": f"A/B GDN decode backend: FlashInfer vs Triton packed decode ({e['pct']:.1f}% of decode)",
+                "category": cat,
+                "est_decode_gain_pct": None,
+                "evidence": (
+                    "profile logs show decode=FlashInferGDNKernel with packed_decode=False; "
+                    "SGLang's TritonGDNKernel has a packed decode fast path, but this run did not exercise it"
+                ),
+                "action": (
+                    "run interleaved e2e with explicit --linear-attn-decode-backend triton vs flashinfer "
+                    "(same prefill/backend flags), then trace for the packed-decode kernel and apply KL/task gates"
+                ),
+            }
+    if cat == "elementwise":
+        return {
+            "title": f"Attribute elementwise misc by callsite ({e['pct']:.1f}% of decode)",
+            "category": cat,
+            "est_decode_gain_pct": None,
+            "evidence": "kernel names collapse real work into generic PyTorch elementwise/copy/add/sigmoid buckets",
+            "action": (
+                "add layer/function NVTX ranges around GDN, MoE, residual/norm, scheduler-state, and sampler paths; "
+                "name-only taxonomy is not enough to decide fuse-vs-floor"
+            ),
+        }
+    if cat == "splitk_reduce":
+        return {
+            "title": f"Profile splitKreduce ownership ({e['pct']:.1f}% of decode)",
+            "category": cat,
+            "est_decode_gain_pct": None,
+            "evidence": "splitKreduce is a cublasLt/nvjet epilogue/reduction, not a standalone op slot by default",
+            "action": (
+                "join each splitKreduce launch to its parent GEMM shape and test cublasLt/nvjet algo knobs; "
+                "do not count it as miner-fusible until that attribution is done"
+            ),
+        }
+    if cat == "all_reduce":
+        evidence = "no ncu capture; could be comm wall, overlap artifact, or batch-dependent"
+        if _has_server_arg(dataset, "enable_flashinfer_allreduce_fusion", "True"):
+            evidence = "SGLang logs show enable_flashinfer_allreduce_fusion=True, so the current path is already the FlashInfer fused all-reduce path"
+        return {
+            "title": f"Repeat all-reduce A/B under controlled conditions ({e['pct']:.1f}% of decode)",
+            "category": cat,
+            "est_decode_gain_pct": None,
+            "evidence": evidence,
+            "action": (
+                "run interleaved with/without custom/fused all-reduce at the target TP and concurrency; "
+                "only test symm_mem/NVLS/MSCCL variants if the rented pod topology supports them"
+            ),
+        }
+    if cat == "attention":
+        return {
+            "title": f"NCU TRT-LLM attention at real context lengths ({e['pct']:.1f}% of decode)",
+            "category": cat,
+            "est_decode_gain_pct": None,
+            "evidence": "trace shows vendor fmha/trtllm_mha kernels; no clean decode ncu capture in this artifact set",
+            "action": (
+                "capture serving-batch NCU for 16k and 64k contexts, then test attention-backend alternatives e2e; "
+                "treat as a vendor floor until counters or a flag A/B prove otherwise"
+            ),
+        }
+    if cat == "gdn_conv":
+        return {
+            "title": f"Profile GDN causal conv and surrounding copies ({e['pct']:.1f}% of decode)",
+            "category": cat,
+            "est_decode_gain_pct": None,
+            "evidence": "causal_conv1d_update is separate from the GDN recurrence; backend A/B may shift this boundary",
+            "action": (
+                "profile after the GDN decode-backend A/B; if it remains, inspect conv state layout and graph-captured launch cost"
+            ),
+        }
+    return {
+        "title": f"PROFILE {e['display']} ({e['pct']:.1f}% of decode) — bound-type unknown",
+        "category": cat,
+        "est_decode_gain_pct": None,
+        "evidence": "no ncu capture; could be a floor or a fusion target",
+        "action": "rent a 1h ncu box at the serving batch (>=32) + a bs=1 control before committing",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -260,12 +378,7 @@ def derive(dataset: dict) -> dict:
             })
     for e in categories:
         if e["winnable"] is None and e["pct"] >= 1.0:
-            opportunities.append({
-                "title": f"PROFILE {e['display']} ({e['pct']:.1f}% of decode) — bound-type unknown",
-                "category": e["cat"], "est_decode_gain_pct": None,
-                "evidence": "no ncu capture; could be a floor or a fusion target",
-                "action": "rent a 1h ncu box at the serving batch (>=32) + a bs=1 control before committing",
-            })
+            opportunities.append(_unknown_opportunity(e, dataset))
     opportunities.sort(key=lambda o: (o["est_decode_gain_pct"] is None, -(o["est_decode_gain_pct"] or 0)))
 
     constraints = []
@@ -283,6 +396,10 @@ def derive(dataset: dict) -> dict:
         small = all(abs(a["delta_pct"] or 0) < 5 for a in levers["all_reduce"])
         if small:
             constraints.append("Fused all-reduce ~neutral at this TP — comms is not a big e2e lever here (grows at TP4/8).")
+    if _has_server_arg(dataset, "enable_flashinfer_allreduce_fusion", "True"):
+        constraints.append("SGLang already had FlashInfer all-reduce fusion enabled in the captured runs — further comm wins need controlled TP/topology A/B, not just turning on the obvious flag.")
+    if _gdn_flashinfer_without_packed_decode(dataset):
+        constraints.append("GDN decode is NOT closed: captured runs used FlashInferGDNKernel with packed_decode=False, while SGLang has a Triton packed-decode path behind --linear-attn-decode-backend triton.")
 
     data_quality = list(dataset.get("health", {}).get("notes", []))
     if any(l for l in levers.get("ceiling", [])):

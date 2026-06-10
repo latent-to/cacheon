@@ -222,6 +222,7 @@ function section(id,title,sub){const s=el('section',{id});
   D.ncu.forEach(cap=>{
     const title=el('h3',{style:'margin:14px 0 4px;font-size:13.5px'},[
       cap.label+' ', el('span',{class:'pill gray',text:cap.n_valid+'/'+cap.n_kernels+' valid'}),
+      cap.log?.launchfailed?el('span',{class:'pill amber',text:' LaunchFailed'}):null,
       cap.all_nan?el('span',{class:'pill red',text:' all-NaN (cluster/CLC — uncountable)'}):null,
     ]);
     s.appendChild(title);
@@ -268,7 +269,7 @@ function section(id,title,sub){const s=el('section',{id});
       text:lab+(sortKey===key?(sortDir<0?' ↓':' ↑'):'')}))));
     data.slice(0,400).forEach(r=>tbl.appendChild(el('tr',{},[
       el('td',{class:'muted',text:r.src}),
-      el('td',{},[el('span',{class:'pill '+BOUND_COLOR[boundCat(r.cat)],text:DISPLAY[r.cat]||r.cat})]),
+      el('td',{},[el('span',{class:'pill '+boundCat(r.cat),text:DISPLAY[r.cat]||r.cat})]),
       el('td',{class:'kn',text:r.name}),
       el('td',{class:'num',text:fmt(r.pct,2)}),
       el('td',{class:'num',text:r.ms==null?'—':fmt(r.ms,2)}),
@@ -321,8 +322,31 @@ function section(id,title,sub){const s=el('section',{id});
     ['ncu captures parsed',h.ncu_captures_parsed],['e2e rows',h.e2e_rows]];
   counts.forEach(([k,v])=>g.appendChild(el('div',{class:'card'},[el('h3',{text:fmt0(v)}),el('p',{class:'muted',text:k})])));
   s.appendChild(g);
+  const sg=h.sglang||{};
+  if((sg.linear_attn_backends||[]).length||(sg.gdn_dispatchers||[]).length||(sg.warnings||[]).length){
+    const card=el('div',{class:'card',style:'margin-top:10px'});
+    card.appendChild(el('h3',{text:'SGLang runtime backends'}));
+    (sg.linear_attn_backends||[]).forEach(r=>card.appendChild(el('p',{class:'muted',
+      text:`linear attention: decode=${r.decode}, prefill=${r.prefill} (${r.count} files)`})));
+    (sg.gdn_dispatchers||[]).forEach(r=>card.appendChild(el('p',{class:'muted',
+      text:`GDN dispatcher: decode=${r.decode_kernel}, extend=${r.extend_kernel}, packed_decode=${r.packed_decode} (${r.count} files)`})));
+    const args=sg.server_args||{};
+    ['attention_backend','fp4_gemm_runner_backend','moe_runner_backend','linear_attn_backend','linear_attn_decode_backend','enable_flashinfer_allreduce_fusion','disable_custom_all_reduce','disable_shared_experts_fusion','enable_nccl_nvls','enable_symm_mem'].forEach(k=>{
+      if(!args[k]?.length)return;
+      card.appendChild(el('p',{class:'mono muted',style:'font-size:11.5px',
+        text:`${k}: `+args[k].map(r=>`${r.value} (${r.count})`).join(', ')}));
+    });
+    (sg.warnings||[]).forEach(r=>card.appendChild(el('div',{class:'warn',text:`${r.message} (${r.count} files)`})));
+    s.appendChild(card);
+  }
   if((h.ncu_all_nan_captures||[]).length)
     s.appendChild(el('div',{class:'warn',text:'All-NaN ncu captures (excluded): '+h.ncu_all_nan_captures.join(', ')}));
+  if((h.ncu_launchfailed_captures||[]).length)
+    s.appendChild(el('div',{class:'warn',text:'LaunchFailed ncu captures (some may be partial): '+h.ncu_launchfailed_captures.join(', ')}));
+  if((h.ncu_partial_captures||[]).length)
+    s.appendChild(el('div',{class:'warn',text:'Partial ncu captures with usable rows plus LaunchFailed: '+h.ncu_partial_captures.join(', ')}));
+  if((h.nsys_missing_kernsum_exports||[]).length)
+    s.appendChild(el('div',{class:'warn',text:'Missing nsys cuda_gpu_kern_sum exports: '+h.nsys_missing_kernsum_exports.join(', ')}));
   if((h.bogus_summary_exports||[]).length)
     s.appendChild(el('div',{class:'warn',text:'Bogus _summary.txt (==ERROR==, ignored): '+h.bogus_summary_exports.join(', ')}));
   (h.notes||[]).forEach(n=>s.appendChild(el('div',{class:'note muted',text:'• '+n})));

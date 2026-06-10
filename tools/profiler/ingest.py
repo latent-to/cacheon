@@ -231,7 +231,21 @@ def _ncu_metric_line(line: str, label: str) -> float | None:
     if not s.startswith(label):
         return None
     rest = s[len(label):]
-    return _num(rest.split()[-1]) if rest.split() else None
+    toks = rest.split()
+    if not toks:
+        return None
+    val = _num(toks[-1])
+    if val is None:
+        return None
+    if label == "Duration" and toks:
+        unit = toks[0].lower()
+        if unit == "ns":
+            return val / 1000.0
+        if unit == "ms":
+            return val * 1000.0
+        if unit == "s":
+            return val * 1_000_000.0
+    return val
 
 
 _CLUSTER_NAME = re.compile(r"ClusterKernel|cluster_launch|_cluster_", re.I)
@@ -333,11 +347,14 @@ def merge_ncu(details: list[dict], raw: list[dict]) -> list[dict]:
 
 def parse_ncu_log(path: Path) -> dict:
     txt = path.read_text(errors="replace")
+    exits = re.findall(r"\bEXIT=(\d+)", txt)
     return {
         "file": path.name,
         "profiles": len(re.findall(r"==PROF== Profiling", txt)),
         "launchfailed": "LaunchFailed" in txt,
-        "exit": (re.findall(r"EXIT=(\d+)", txt) or [""])[-1],
+        "errors": len(re.findall(r"^==ERROR==", txt, re.M)),
+        "report": (re.findall(r"==PROF== Report:\s+(\S+)", txt) or [""])[-1],
+        "exit": int(exits[-1]) if exits else None,
     }
 
 
@@ -399,20 +416,150 @@ _E2E_CONFIG = {
 }
 
 
+def _serve_config(stem: str) -> tuple[str, str, str | None]:
+    """Map historical and V2 serve_load2 filenames to a normalized config.
+
+    Historical files were named ``ceil_moe.txt``. The V2 pod driver calls the
+    generic ``sweep`` helper with tags like ``ceil_moe_r1``, which produces
+    ``e2e_ceil_moe_r1.txt``. Normalize both shapes so ceiling analysis does not
+    disappear on the next clean run.
+    """
+    if stem in _E2E_CONFIG:
+        cfg, kind = _E2E_CONFIG[stem]
+        return cfg, kind, None
+    m = re.match(r"(?:e2e_)?ceil_(base|none|moe|gdn|attn)(?:_(r\d+))?$", stem)
+    if m:
+        op, rep = m.groups()
+        cfg = "ceiling_none" if op in ("base", "none") else f"ceiling_noop_{op}"
+        return cfg, "ceiling", rep
+    return _E2E_CONFIG.get(stem, (stem, "sweep")) + (None,)
+
+
 def parse_serve_log(path: Path) -> list[dict]:
     stem = path.stem
-    tag, kind = _E2E_CONFIG.get(stem, (stem, "sweep"))
+    tag, kind, rep = _serve_config(stem)
     rows = []
     for m in _RESULT_RE.finditer(path.read_text(errors="replace")):
         g = m.groupdict()
         rows.append({
-            "file": path.name, "config": tag, "kind": kind,
+            "file": path.name, "config": tag, "kind": kind, "replicate": rep,
             "conc": int(g["conc"]), "in_len": int(g["inlen"]), "out_len": int(g["outlen"]),
             "agg_toks": float(g["agg"]), "ttft_p50": float(g["ttft50"]), "ttft_p99": float(g["ttft99"]),
             "decode_p50": float(g["dec50"]), "tokens_per_chunk": float(g["tpc"]),
             "steady_tokens": int(g["toks"]), "errors": int(g["errs"]),
         })
     return rows
+
+
+# --------------------------------------------------------------------------- #
+# 5. SGLang runtime provenance from logs
+# --------------------------------------------------------------------------- #
+_LINEAR_ATTN_BACKEND_RE = re.compile(
+    r"Linear attention kernel backend:\s*decode=([^,\s]+),\s*prefill=([^\s]+)"
+)
+_GDN_DISPATCHER_RE = re.compile(
+    r"GDN kernel dispatcher:\s*decode=([^,\s]+),\s*extend=([^,\s]+),\s*verify=([^,\s]+)\s+packed_decode=(True|False)"
+)
+_SERVER_ARG_KEYS = (
+    "attention_backend",
+    "decode_attention_backend",
+    "prefill_attention_backend",
+    "fp4_gemm_runner_backend",
+    "moe_runner_backend",
+    "mamba_backend",
+    "mamba_ssm_dtype",
+    "linear_attn_backend",
+    "linear_attn_decode_backend",
+    "linear_attn_prefill_backend",
+    "enable_flashinfer_allreduce_fusion",
+    "enforce_disable_flashinfer_allreduce_fusion",
+    "enable_aiter_allreduce_fusion",
+    "disable_custom_all_reduce",
+    "enable_nccl_nvls",
+    "enable_symm_mem",
+    "disable_shared_experts_fusion",
+    "enforce_shared_experts_fusion",
+    "enable_fused_moe_sum_all_reduce",
+    "disable_cuda_graph",
+    "disable_piecewise_cuda_graph",
+    "enable_deterministic_inference",
+)
+_SERVER_ARG_VALUE_RE = r"(?:'[^']*'|None|True|False|[-+]?\d+(?:\.\d+)?|[A-Za-z0-9_.:/+-]+)"
+_NORMALIZED_WARNINGS = (
+    (
+        "SM100+ defaulted --linear-attn-decode-backend to flashinfer",
+        "defaulting --linear-attn-decode-backend to flashinfer",
+    ),
+    (
+        "FlashInfer TRTLLM MoE auto-disabled shared-experts fusion",
+        "FlashInfer TRTLLM MoE is enabled. --disable-shared-experts-fusion is automatically set.",
+    ),
+)
+
+
+def _arg_value(raw: str) -> str:
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
+        return raw[1:-1]
+    return raw
+
+
+def _counter_entries(counter: dict, key_names: tuple[str, ...] | None = None) -> list[dict]:
+    rows = []
+    for key, files in counter.items():
+        if not isinstance(key, tuple):
+            key = (key,)
+        row = {"count": len(files), "files": sorted(files)[:6]}
+        if key_names:
+            row.update({name: val for name, val in zip(key_names, key)})
+        else:
+            row["value"] = key[0]
+        rows.append(row)
+    rows.sort(key=lambda r: (-r["count"], tuple(str(v) for k, v in sorted(r.items()) if k != "files")))
+    return rows
+
+
+def _parse_sglang_observations(datadir: Path) -> dict:
+    """Extract runtime backend choices from SGLang logs.
+
+    The profile math says what ran; these log lines explain *why* it ran. That
+    matters for frontier-style perf work because a 3% bucket can be a real
+    kernel opportunity or just a missed SGLang flag.
+    """
+    linear: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
+    gdn: dict[tuple[str, str, str, str], set[str]] = collections.defaultdict(set)
+    args: dict[str, dict[str, set[str]]] = {
+        k: collections.defaultdict(set) for k in _SERVER_ARG_KEYS
+    }
+    warnings: dict[str, set[str]] = collections.defaultdict(set)
+
+    for p in sorted(list(datadir.glob("*.log")) + list(datadir.glob("*.txt"))):
+        txt = p.read_text(errors="replace")
+        for m in _LINEAR_ATTN_BACKEND_RE.finditer(txt):
+            linear[(m.group(1), m.group(2))].add(p.name)
+        for m in _GDN_DISPATCHER_RE.finditer(txt):
+            gdn[(m.group(1), m.group(2), m.group(3), m.group(4))].add(p.name)
+        for key in _SERVER_ARG_KEYS:
+            rx = re.compile(rf"\b{re.escape(key)}=({_SERVER_ARG_VALUE_RE})")
+            for m in rx.finditer(txt):
+                args[key][_arg_value(m.group(1))].add(p.name)
+        for label, needle in _NORMALIZED_WARNINGS:
+            if needle in txt:
+                warnings[label].add(p.name)
+
+    server_args = {
+        k: _counter_entries(v)
+        for k, v in args.items()
+        if v
+    }
+    return {
+        "linear_attn_backends": _counter_entries(linear, ("decode", "prefill")),
+        "gdn_dispatchers": _counter_entries(
+            gdn, ("decode_kernel", "extend_kernel", "verify_kernel", "packed_decode")
+        ),
+        "server_args": server_args,
+        "warnings": _counter_entries(warnings, ("message",)),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -488,23 +635,51 @@ def ingest(datadir: Path, kernel_cats=KERNEL_CATS, use_cache: bool = True) -> Da
     bogus_summaries = [p.name for p in datadir.glob("*_summary.txt")
                        if "==ERROR==" in p.read_text(errors="replace")[:200]]
     nan_caps = [c["label"] for c in ds.ncu if c["all_nan"]]
+    failed_caps = [c["label"] for c in ds.ncu if (c.get("log") or {}).get("launchfailed")]
+    partial_caps = [c["label"] for c in ds.ncu
+                    if (c.get("log") or {}).get("launchfailed") and c.get("n_valid", 0) > 0]
+    missing_nsys_exports = sorted(
+        p.with_suffix("").name for p in datadir.glob("*.nsys-rep")
+        if not (datadir / f"{p.with_suffix('').name}_kernsum.txt").exists()
+    )
+    sglang_obs = _parse_sglang_observations(datadir)
+    sglang_notes = []
+    for row in sglang_obs.get("linear_attn_backends", []):
+        sglang_notes.append(
+            f"SGLang linear attention backend observed {row['count']} file(s): "
+            f"decode={row['decode']}, prefill={row['prefill']}."
+        )
+    for row in sglang_obs.get("gdn_dispatchers", []):
+        sglang_notes.append(
+            f"SGLang GDN dispatcher observed {row['count']} file(s): "
+            f"decode={row['decode_kernel']}, extend={row['extend_kernel']}, "
+            f"packed_decode={row['packed_decode']}."
+        )
     ds.health = {
         "torch_traces": len(ds.decode),
         "nsys_rep_binaries": len(list(datadir.glob("*.nsys-rep"))),
         "nsys_kernsum_exports": len(ds.nsys),
+        "nsys_missing_kernsum_exports": missing_nsys_exports,
         "ncu_rep_binaries": len(list(datadir.glob("*.ncu-rep"))),
         "ncu_captures_parsed": len(ds.ncu),
         "ncu_all_nan_captures": nan_caps,
+        "ncu_launchfailed_captures": failed_caps,
+        "ncu_partial_captures": partial_caps,
         "bogus_summary_exports": bogus_summaries,
+        "sglang": sglang_obs,
         "e2e_rows": len(ds.e2e),
         "notes": [
             "Mac-side: .nsys-rep/.ncu-rep binaries are opaque (no local NVIDIA CLI). "
             "Only their text exports are parsed.",
+            f"{len(missing_nsys_exports)} nsys report(s) are missing cuda_gpu_kern_sum exports: "
+            + (", ".join(missing_nsys_exports) or "none"),
             f"{len(nan_caps)} ncu capture(s) came back all-NaN (cluster/CLC kernels "
             "ncu kernel-replay cannot count): " + (", ".join(nan_caps) or "none"),
+            f"{len(failed_caps)} ncu capture(s) reported LaunchFailed: "
+            + (", ".join(failed_caps) or "none"),
             f"{len(bogus_summaries)} _summary.txt export(s) are ==ERROR== (wrong --page) "
             "and were ignored.",
-        ],
+        ] + sglang_notes,
     }
     ds.meta = {
         "datadir": str(datadir),
