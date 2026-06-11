@@ -370,13 +370,18 @@ def derive(dataset: dict) -> dict:
             else:
                 unknown_pct += row["pct"]
 
-    # Amdahl ceiling
+    # Amdahl ceilings. Two distinct levers with very different certainty:
+    #  - fusion: glue only, fully quantified, tiny.
+    #  - rewrite: the compute-bound kernels WE OWN; SIZE is known, GAIN is not (needs a
+    #    pipe roofline — fp16 ~halves a fully-fp32-ALU kernel but does nothing if it's
+    #    already tensor-bound). We bound it OPTIMISTICALLY at "fp16 halves a fully-ALU
+    #    surface" and label it a ceiling, not an estimate.
     wp = winnable_pct / 100.0
     max_decode_speedup = 1.0 / (1.0 - wp) if wp < 1 else float("inf")
-    realistic_decode_gain = winnable_pct * FUSION_EFFICIENCY      # %, if fusion recovers EFFICIENCY of glue
-    # compute/cache-bound kernels WE OWN — rewritable via precision/tensor (not fusion).
+    realistic_decode_gain = winnable_pct * FUSION_EFFICIENCY      # fusion-only
     rewritable_pct = sum(e["pct"] for e in categories
                          if e["cat"] in OURS_CATS and e["bound_type"] in ("compute", "mixed"))
+    rewrite_ceiling_pct = rewritable_pct * 0.5   # OPTIMISTIC: fp16 halves a fully-fp32-ALU surface
     amdahl = {
         "winnable_pct": round(winnable_pct, 1),
         "rewritable_pct": round(rewritable_pct, 1),
@@ -384,12 +389,16 @@ def derive(dataset: dict) -> dict:
         "unknown_pct": round(unknown_pct, 1),
         "max_decode_speedup_if_winnable_eliminated": round(max_decode_speedup, 3),
         "realistic_decode_gain_pct": round(realistic_decode_gain, 1),
+        "rewrite_ceiling_pct_optimistic": round(rewrite_ceiling_pct, 1),
+        "headline_lever": "rewrite" if rewritable_pct > 2 * winnable_pct else "fuse",
         "assumptions": (
-            f"'fuse' = ncu latency-bound glue ({winnable_pct:.1f}%); fusion recovers ~{FUSION_EFFICIENCY:.0%}. "
-            f"'rewrite' = compute/cache-bound kernels WE OWN ({rewritable_pct:.1f}%) — winnable via precision/tensor "
-            "reformulation (e.g. fp16 SSM), NOT fusion; needs a pipe roofline to size. "
-            f"'floor' = vendor cutlass/flashinfer/NCCL walls (memory/occupancy-bound) — not ours to rewrite. "
-            f"'unknown' = {unknown_pct:.1f}% not yet ncu-profiled."
+            f"'fuse' = ncu latency-bound glue ({winnable_pct:.1f}%); fusion recovers ~{FUSION_EFFICIENCY:.0%} → "
+            f"≈{realistic_decode_gain:.1f}% decode, hard-capped at {max_decode_speedup:.2f}×. "
+            f"'rewrite' = compute/cache-bound kernels WE OWN ({rewritable_pct:.1f}%): SIZE measured, GAIN needs a pipe "
+            f"roofline. OPTIMISTIC ceiling ≈{rewrite_ceiling_pct:.0f}% decode IF the surface is fully fp32-ALU and fp16 "
+            "halves it — could be far less if already tensor-bound. THIS is the lever, not the glue. "
+            f"'floor' = vendor cutlass/flashinfer/NCCL walls — not ours. 'unprofiled' = {unknown_pct:.1f}% (no ncu; "
+            "~14pp of it is collective/attention ≈ vendor floor, ~20pp genuinely needs ncu)."
         ),
     }
 

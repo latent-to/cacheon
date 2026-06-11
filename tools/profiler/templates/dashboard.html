@@ -119,9 +119,13 @@ function section(id,title,sub){const s=el('section',{id});
         text:`${lab} ${fmt(v,0)}%`}));});
   s.appendChild(bar);
   s.appendChild(el('div',{class:'note muted',text:a.assumptions||''}));
-  s.appendChild(el('div',{class:'note',html:`<b>Amdahl ceiling:</b> even if every winnable kernel vanished, max decode speedup = `
-    +`<span class="mono">${fmt(a.max_decode_speedup_if_winnable_eliminated,2)}×</span>. `
-    +`Realistic decode gain ≈ <span class="mono">${fmt(a.realistic_decode_gain_pct,1)}%</span>.`}));
+  s.appendChild(el('div',{class:'note',html:`<b>Two levers:</b> `
+    +`<b>fuse</b> the glue → ≈<span class="mono">${fmt(a.realistic_decode_gain_pct,1)}%</span> decode `
+    +`(hard-capped <span class="mono">${fmt(a.max_decode_speedup_if_winnable_eliminated,2)}×</span> — tiny). `
+    +`<b>rewrite</b> the <span class="mono">${fmt(a.rewritable_pct,0)}%</span> compute-bound surface WE OWN → `
+    +`OPTIMISTIC ceiling ≈<span class="mono">${fmt(a.rewrite_ceiling_pct_optimistic,0)}%</span> decode `
+    +`<i>if</i> it's fully fp32-ALU and fp16 halves it (could be far less if tensor-bound — `
+    +`<b>needs a pipe roofline to size</b>). The rewrite surface is the lever, not the glue.`}));
 
   if((F.constraints||[]).length){
     s.appendChild(el('h3',{style:'margin:16px 0 6px;font-size:13.5px',text:'Hard constraints'}));
