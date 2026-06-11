@@ -92,7 +92,7 @@ function el(tag, attrs={}, kids=[]){
 }
 const fmt=(n,d=1)=>n==null||isNaN(n)?'—':Number(n).toLocaleString('en',{maximumFractionDigits:d,minimumFractionDigits:d});
 const fmt0=n=>n==null?'—':Math.round(n).toLocaleString('en');
-const BOUND_COLOR={memory:'red',compute:'pink',latency:'green',mixed:'amber',cluster:'red',unknown:'gray'};
+const BOUND_COLOR={memory:'red',compute:'pink',latency:'green',occupancy:'amber',mixed:'amber',cluster:'red',unknown:'gray'};
 const WIN_COLOR=w=>w===true?'green':w===false?'red':'gray';
 const CSS={green:'#3fb950',red:'#f85149',amber:'#d29922',gray:'#8b949e',purple:'#bc8cff',pink:'#db61a2',accent:'#58a6ff'};
 
@@ -111,9 +111,9 @@ function section(id,title,sub){const s=el('section',{id});
   const a=F.amdahl||{};
   s.appendChild(el('div',{class:'note',text:'Decode kernel-time split by winnability (canonical trace: '
     +(F.decode_canonical?.label||'?')+' '+(F.decode_canonical?.rank||'')+'):'}));
-  const tot=Math.max(1,(a.winnable_pct||0)+(a.floor_pct||0)+(a.unknown_pct||0));
+  const tot=Math.max(1,(a.winnable_pct||0)+(a.rewritable_pct||0)+(a.floor_pct||0)+(a.unknown_pct||0));
   const bar=el('div',{class:'amdahl'});
-  [['winnable',a.winnable_pct,CSS.green],['floor',a.floor_pct,CSS.red],['unknown',a.unknown_pct,CSS.gray]]
+  [['fuse',a.winnable_pct,CSS.green],['rewrite (ours)',a.rewritable_pct,CSS.accent],['vendor floor',a.floor_pct,CSS.red],['unprofiled',a.unknown_pct,CSS.gray]]
     .forEach(([lab,v,c])=>{if(!v)return;
       bar.appendChild(el('div',{style:`width:${100*v/tot}%;background:${c}`,
         text:`${lab} ${fmt(v,0)}%`}));});
@@ -360,8 +360,13 @@ function boundOf(k){
   if(comp==null||k.mem==null)return{type:'unknown',text:'no valid metrics'};
   if(mem>=T.MEM_BOUND_PCT&&mem-comp>T.DOMINANCE_GAP)return{type:'memory',text:`memory/BW-bound (${fmt(mem,0)}% vs ${fmt(comp,0)}%) — vendor floor; fuse / fewer bytes / bigger batch`};
   if(comp>=T.COMPUTE_BOUND_PCT&&comp-mem>T.DOMINANCE_GAP)return{type:'compute',text:(k.occ!=null&&k.occ<20&&!k.clc)?`compute ${fmt(comp,0)}% but low occ ${fmt(k.occ,0)}% — occupancy-limited, uncertain`:`compute-bound (${fmt(comp,0)}%) — near peak, don't rewrite`};
-  if(Math.max(comp,mem)<T.LATENCY_CEIL)return k.clc?{type:'latency',text:`low util ${fmt(Math.max(comp,mem),0)}% but CLC corrupts occupancy — verify before trusting a fuse win`}:{type:'latency',text:`latency/occupancy-bound (peak ${fmt(Math.max(comp,mem),0)}%, waves ${fmt(k.waves,2)}) — FUSE`};
-  return{type:'mixed',text:`mixed (comp ${fmt(comp,0)} / mem ${fmt(mem,0)})`};
+  if(Math.max(comp,mem)<T.LATENCY_CEIL){
+    if(k.clc)return{type:'latency',text:`low util ${fmt(Math.max(comp,mem),0)}% but CLC corrupts occupancy — verify before trusting a fuse win`};
+    const tiny=k.waves!=null&&k.waves<T.LOW_WAVES;
+    if(!tiny&&k.waves!=null&&k.occ!=null&&k.occ<15)return{type:'occupancy',text:`occupancy-bound (occ ${fmt(k.occ,0)}%, util ${fmt(Math.max(comp,mem),0)}%) — under-filled skinny shape; batch/parallelism not fusion`};
+    return{type:'latency',text:`latency-bound (peak ${fmt(Math.max(comp,mem),0)}%, waves ${fmt(k.waves,2)}) — ${tiny?'FUSE':'fuse/parallelize'}`};
+  }
+  return{type:'mixed',text:`compute ${fmt(comp,0)}% / mem ${fmt(mem,0)}% — compute/cache-bound, inspect`};
 }
 function boundCat(cat){ // color kernel-explorer categories by their canonical verdict if known
   const e=(F.decode_canonical?.categories||[]).find(x=>x.cat===cat);

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 # ---- tunable thresholds (all explicit; argue with these, don't hide them) ---
@@ -24,6 +25,14 @@ LATENCY_CEIL = 50.0       # if max(comp,mem) below this => under-utilised launch
 LOW_WAVES = 0.5           # waves/SM below this => serialized tiny launch (fuse it)
 FUSION_EFFICIENCY = 0.6   # fraction of glue time fusion realistically recovers
 MIN_DECODE_PCT = 0.3      # ignore decode categories below this share
+
+# Categories we CONTROL (Triton/sglang source, rewritable) vs VENDOR (cutlass/
+# flashinfer/NCCL closed kernels). This is the difference that the fusion-centric
+# 'winnable' misses: a compute-bound VENDOR GEMM is a floor (don't rewrite), but a
+# compute-bound kernel WE OWN can still be won via a precision (fp16) / tensor-core
+# reformulation — the real lever on Mamba/SSM models.
+OURS_CATS = {"ssm_scan_decode", "ssm_chunk_prefill", "ssm_conv", "gdn_scan", "gdn_conv",
+             "act_mul", "rmsnorm", "nvfp4_quant", "fused_qkvzba"}
 
 
 # --------------------------------------------------------------------------- #
@@ -51,25 +60,36 @@ def bound_type(k: dict) -> tuple[str, str, bool]:
                     "occupancy-limited at this decode shape, not a clean wall; uncertain", False)
         return ("compute", f"COMPUTE-bound ({comp:.0f}%) — near vendor peak; don't rewrite", False)
     if hi < LATENCY_CEIL:
-        # Both pipes idle => latency/launch-bound. The conclusion holds under CLC
-        # (throughputs are real); only call it a FUSE win when not CLC-corrupted
-        # and the launch is genuinely tiny.
+        # Both pipes under peak => either a tiny serialized launch (FUSE it) or an
+        # occupancy-bound kernel doing real work that can't fill the GPU (a skinny
+        # GEMM at decode M — the vendor's problem, NOT fusible). Discriminate by
+        # waves: a genuinely tiny launch has waves < LOW_WAVES; a real kernel that's
+        # just under-occupied has waves >= LOW_WAVES + very low occupancy.
         extra = f", waves={waves:.2f}" if waves is not None else ""
         if clc:
             return ("latency", f"low util ({hi:.0f}%{extra}) but CLC corrupts occupancy — "
                     "verify without thread-block clusters before trusting a fuse win", False)
-        tag = "FUSE into adjacent GEMM" if (waves is not None and waves < LOW_WAVES) else "fuse / more parallelism"
-        return ("latency", f"LATENCY/OCCUPANCY-bound (peak util {hi:.0f}%{extra}) — {tag}", True)
-    return ("mixed", f"mixed (compute {comp:.0f}% / mem {memx:.0f}%) — inspect before committing", False)
+        tiny = waves is not None and waves < LOW_WAVES
+        if not tiny and waves is not None and occ is not None and occ < 15:
+            return ("occupancy", f"OCCUPANCY-bound (occ {occ:.0f}%, util {hi:.0f}%{extra}) — "
+                    "under-filled (skinny decode shape); lever is batch/parallelism, NOT fusion. "
+                    "If a vendor GEMM, it's the vendor's shape problem — don't rewrite", False)
+        tag = "FUSE into adjacent GEMM" if tiny else "fuse / more parallelism"
+        return ("latency", f"LATENCY-bound (peak util {hi:.0f}%{extra}) — {tag}", True)
+    return ("mixed", f"compute {comp:.0f}% / mem {memx:.0f}% (L1/L2 if DRAM low {dram or 0:.0f}%) — "
+            "likely compute/cache-bound; inspect", False)
 
 
-def _decode_ncu_for_cat(ncu: list[dict]) -> tuple[dict[str, dict], set[str]]:
+def _decode_ncu_for_cat(ncu: list[dict], allow_all_regimes: bool = False) -> tuple[dict[str, dict], set[str]]:
     """Pick a representative ncu kernel per category to characterize *decode*.
 
     Soundness rules (each one fixes a real phantom-win we hit):
-      * only **decode-regime** captures (a prefill big-M GEMM is compute-bound;
-        the decode skinny-M GEMM of the *same name* is memory-bound — never let
-        the prefill capture speak for decode);
+      * only **decode-regime** captures by default (a prefill big-M GEMM is
+        compute-bound; the decode skinny-M GEMM of the *same name* is memory-bound
+        — never let the prefill capture speak for decode). When the breakdown is a
+        **serving mix** (nsys continuous-batching, which legitimately contains both
+        prefill and decode kernels), pass ``allow_all_regimes=True`` so prefill-only
+        kernels (e.g. the SSM chunk-scan) get their measured bound-type too;
       * skip **cluster / CLC** kernels (their counters are depressed → fake
         "latency-bound"); those categories are flagged as cluster floors instead;
       * de-prioritise **bs=1** captures (phantom occupancy headroom that vanishes
@@ -80,7 +100,7 @@ def _decode_ncu_for_cat(ncu: list[dict]) -> tuple[dict[str, dict], set[str]]:
     cands: dict[str, list[dict]] = {}
     cluster_cats: set[str] = set()
     for cap in ncu:
-        if cap.get("regime") != "decode":
+        if not allow_all_regimes and cap.get("regime") != "decode":
             continue
         bs1 = cap.get("batch") == 1
         for k in cap.get("kernels", []):
@@ -302,7 +322,21 @@ def derive(dataset: dict) -> dict:
     display = dataset.get("display", {})
 
     canon = _canonical_decode(decode)
-    best_ncu, cluster_cats = _decode_ncu_for_cat(ncu)
+    # Fallback: no torch decode trace (e.g. a bench_one_batch + nsys run) — use the
+    # nsys kernel-summary as the breakdown source. Prefer a capture labelled
+    # decode/steady. This is a SERVING MIX (prefill+decode interleaved), so the ncu
+    # join is allowed to use both regimes.
+    nsys_mix = False
+    if canon is None and dataset.get("nsys"):
+        ns = sorted(dataset["nsys"], key=lambda n: (
+            0 if re.search(r"decode|steady", n.get("file", ""), re.I) else 1,
+            -n.get("total_ms", 0),
+        ))[0]
+        canon = {"label": "nsys:" + ns.get("file", "?"), "rank": "serving-mix",
+                 "file": ns.get("file"), "total_us": ns.get("total_ms", 0) * 1000.0,
+                 "cats": ns.get("cats", {}), "source": "nsys", "serving_mix": True}
+        nsys_mix = True
+    best_ncu, cluster_cats = _decode_ncu_for_cat(ncu, allow_all_regimes=nsys_mix)
 
     categories: list[dict] = []
     winnable_pct = floor_pct = unknown_pct = 0.0
@@ -340,16 +374,21 @@ def derive(dataset: dict) -> dict:
     wp = winnable_pct / 100.0
     max_decode_speedup = 1.0 / (1.0 - wp) if wp < 1 else float("inf")
     realistic_decode_gain = winnable_pct * FUSION_EFFICIENCY      # %, if fusion recovers EFFICIENCY of glue
+    # compute/cache-bound kernels WE OWN — rewritable via precision/tensor (not fusion).
+    rewritable_pct = sum(e["pct"] for e in categories
+                         if e["cat"] in OURS_CATS and e["bound_type"] in ("compute", "mixed"))
     amdahl = {
         "winnable_pct": round(winnable_pct, 1),
-        "floor_pct": round(floor_pct, 1),
+        "rewritable_pct": round(rewritable_pct, 1),
+        "floor_pct": round(max(0.0, floor_pct - rewritable_pct), 1),
         "unknown_pct": round(unknown_pct, 1),
         "max_decode_speedup_if_winnable_eliminated": round(max_decode_speedup, 3),
         "realistic_decode_gain_pct": round(realistic_decode_gain, 1),
         "assumptions": (
-            f"'winnable' = ncu latency/occupancy-bound categories ({winnable_pct:.1f}% of decode kernel time). "
-            f"Realistic gain assumes fusion recovers {FUSION_EFFICIENCY:.0%} of that glue time. "
-            f"'floor' = memory/compute-bound at a vendor wall ({floor_pct:.1f}%) — not winnable by a kernel rewrite. "
+            f"'fuse' = ncu latency-bound glue ({winnable_pct:.1f}%); fusion recovers ~{FUSION_EFFICIENCY:.0%}. "
+            f"'rewrite' = compute/cache-bound kernels WE OWN ({rewritable_pct:.1f}%) — winnable via precision/tensor "
+            "reformulation (e.g. fp16 SSM), NOT fusion; needs a pipe roofline to size. "
+            f"'floor' = vendor cutlass/flashinfer/NCCL walls (memory/occupancy-bound) — not ours to rewrite. "
             f"'unknown' = {unknown_pct:.1f}% not yet ncu-profiled."
         ),
     }
@@ -372,14 +411,31 @@ def derive(dataset: dict) -> dict:
         if e["winnable"] is True:
             opportunities.append({
                 "title": f"Fuse {e['display']} ({e['pct']:.1f}% of decode)",
-                "category": e["cat"], "est_decode_gain_pct": round(e["pct"] * FUSION_EFFICIENCY, 1),
+                "category": e["cat"], "pct": e["pct"], "kind": "fuse",
+                "est_decode_gain_pct": round(e["pct"] * FUSION_EFFICIENCY, 1),
                 "evidence": e["verdict"],
                 "action": "eliminate the kernel-launch boundary (fold into adjacent GEMM prologue/epilogue); stay graph-capturable",
             })
+    # compute/cache-bound kernels WE OWN → precision/tensor reformulation lever (the
+    # fusion-centric 'winnable' misses these; they're the biggest surface on SSM models).
+    for e in categories:
+        if e["cat"] in OURS_CATS and e["bound_type"] in ("compute", "mixed") and e["pct"] >= 1.0:
+            n = e.get("ncu") or {}
+            opportunities.append({
+                "title": f"Reformulate {e['display']} ({e['pct']:.1f}% of decode) — compute-bound, OURS",
+                "category": e["cat"], "pct": e["pct"], "kind": "rewrite", "est_decode_gain_pct": None,
+                "evidence": (f"compute/cache-bound (SM {n.get('comp','?')}%, DRAM {n.get('dram','?')}%) AND it's a "
+                             "Triton kernel we own — not a vendor floor. If the SM% is fp32-ALU (not tensor cores), "
+                             "a precision (fp16) / tensor-core reformulation is the lever."),
+                "action": ("pipe roofline (sm__pipe_fp32 vs sm__pipe_tensor) to confirm ALU-bound, then fp16/tensor "
+                           "rewrite — e.g. `--mamba-ssm-dtype float16` for SSM (TRT-LLM's Ultra config already does). "
+                           "Fidelity-gate (GPQA/GSM8K)."),
+            })
     for e in categories:
         if e["winnable"] is None and e["pct"] >= 1.0:
-            opportunities.append(_unknown_opportunity(e, dataset))
-    opportunities.sort(key=lambda o: (o["est_decode_gain_pct"] is None, -(o["est_decode_gain_pct"] or 0)))
+            o = _unknown_opportunity(e, dataset); o.setdefault("pct", e["pct"]); o.setdefault("kind", "profile")
+            opportunities.append(o)
+    opportunities.sort(key=lambda o: (o["est_decode_gain_pct"] is None, -(o["est_decode_gain_pct"] or 0), -o.get("pct", 0)))
 
     constraints = []
     if levers.get("cuda_graph"):
@@ -406,13 +462,16 @@ def derive(dataset: dict) -> dict:
         data_quality.append("Ceiling (noop-op) numbers are single-run and NOISY — treat as directional; "
                             "re-verify interleaved + clock-locked before trusting op-shares.")
 
-    headline = "no e2e data"
-    if peak and canon:
-        headline = (f"Peak {peak['tok_s']:.0f} tok/s @ conc{peak['conc']} ({peak['config']}). "
-                    f"Decode winnable surface ≈ {winnable_pct:.0f}% (fusion), "
-                    f"≈ {floor_pct:.0f}% is a vendor floor. "
-                    f"Realistic decode gain ≈ {realistic_decode_gain:.0f}%; "
-                    f"no 2× (Amdahl-capped at {max_decode_speedup:.2f}× even if all glue vanished).")
+    headline = "no data"
+    if canon:
+        src = (f"Peak {peak['tok_s']:.0f} tok/s @ conc{peak['conc']} ({peak['config']}). " if peak
+               else f"Breakdown from {canon.get('label', '?')}" + (" (serving mix). " if canon.get("serving_mix") else ". "))
+        rw = amdahl["rewritable_pct"]
+        headline = (src +
+                    f"Of decode GPU time: ≈{rw:.0f}% is compute-bound kernels WE OWN (Triton/SSM) — "
+                    f"the precision/tensor REWRITE lever; ≈{winnable_pct:.0f}% fusible glue; "
+                    f"≈{amdahl['floor_pct']:.0f}% vendor floor; ≈{amdahl['unknown_pct']:.0f}% un-profiled. "
+                    f"The win is the {rw:.0f}% rewrite surface (e.g. fp16 SSM), not the {winnable_pct:.0f}% glue.")
 
     return {
         "headline": headline,
