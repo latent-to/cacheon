@@ -32,7 +32,11 @@ MIN_DECODE_PCT = 0.3      # ignore decode categories below this share
 # compute-bound kernel WE OWN can still be won via a precision (fp16) / tensor-core
 # reformulation — the real lever on Mamba/SSM models.
 OURS_CATS = {"ssm_scan_decode", "ssm_chunk_prefill", "ssm_conv", "gdn_scan", "gdn_conv",
-             "act_mul", "rmsnorm", "nvfp4_quant", "fused_qkvzba"}
+             "act_mul", "rmsnorm", "nvfp4_quant", "fused_qkvzba",
+             # MiniMax-M3 / MSA: the A/B/C swap surfaces are ours to rewrite
+             # (sglang Triton/JIT source). msa_moe_gemm is NOT ours (vendor GEMM floor).
+             "msa_decode_attn", "msa_indexer_score", "msa_topk",
+             "msa_qknorm_rope", "msa_kv_insert"}
 
 
 # --------------------------------------------------------------------------- #

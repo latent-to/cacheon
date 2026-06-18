@@ -227,6 +227,30 @@ def test_v2_ceiling_names_are_normalized(tmp):
     assert rows[0]["replicate"] == "r2"
 
 
+def test_minimax_ceiling_names_are_normalized(tmp):
+    p = tmp / "e2e_ceil_base_long.txt"
+    p.write_text(_serve(16, 1000))
+    rows = ingest.parse_serve_log(p)
+    assert rows[0]["config"] == "ceiling_none"
+    assert rows[0]["kind"] == "ceiling"
+    assert rows[0]["replicate"] == "long"
+
+    p = tmp / "e2e_ceil_base2.txt"
+    p.write_text(_serve(256, 1100))
+    rows = ingest.parse_serve_log(p)
+    assert rows[0]["config"] == "ceiling_none"
+    assert rows[0]["kind"] == "ceiling"
+    assert rows[0]["replicate"] == "r2"
+
+
+def test_minimax_measure_sidecar_strips_e2e_prefix(tmp):
+    p = tmp / "e2e_retile_g256.txt"
+    p.write_text(_serve(256, 1200))
+    rows = ingest.parse_serve_log(p)
+    assert rows[0]["config"] == "retile_g256"
+    assert rows[0]["kind"] == "sweep"
+
+
 def test_replicated_e2e_rows_are_averaged(tmp):
     rows = [
         {"config": "ceiling_none", "conc": 32, "agg_toks": 1000.0, "errors": 0},

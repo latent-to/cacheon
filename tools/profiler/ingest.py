@@ -44,6 +44,24 @@ KERNEL_CATS: dict[str, re.Pattern] = {
     "moe_routing": re.compile(r"routingIndices|routingInit|routingCustom|moe.*topk", re.I),
     "all_reduce": re.compile(r"allreduce_fusion|all_reduce|AllReduce|ncclDevKernel_AllReduce|one_shot|lamport", re.I),
     "all_gather": re.compile(r"AllGather|_all_gather|all_gather", re.I),
+    # --- MiniMax-M3 / MSA sparse-decode kernels (sglang pr27944). Order: most
+    #     specific first; ALL listed before the generic `attention`, `token_gather`,
+    #     `kv_rope`, and `sampling` regexes below so the STEP-3 / indexer / topk /
+    #     glue kernels never fall into a catch-all bucket. msa_moe_gemm stays AFTER
+    #     dense_gemm so generic fp8/cutlass gemm in other datasets is unaffected
+    #     (M3-specific MoE names like m_grouped_gemm/fused_moe still land here). ---
+    "msa_decode_attn": re.compile(
+        r"_gqa_share_sparse_decode_kernel|_merge_topk_attn_out_kernel", re.I),
+    "msa_indexer_score": re.compile(
+        r"_decode_score_kernel|_decode_score_attn_kernel|_merge_attn_out_kernel", re.I),
+    "msa_topk": re.compile(
+        r"minimax_decode_topk|_topk_index_partial_kernel|_topk_index_merge_kernel", re.I),
+    "msa_qknorm_rope": re.compile(
+        r"fused_gemma_qknorm_rope|fused_qk_norm_rope|fused_parallel_qknorm", re.I),
+    "msa_kv_insert": re.compile(
+        r"store_kv_index_kernel|fused_store_kv", re.I),
+    "msa_moe_gemm": re.compile(
+        r"m_grouped_gemm|fp8_gemm|deep_gemm|mxfp8.*gemm|grouped_gemm_.*fp8|fused_moe_kernel", re.I),
     "delay_stream": re.compile(r"delayStreamKernel", re.I),
     "attention": re.compile(r"fmha|attention|mha|paged|flash_fwd|trtllm.*mha", re.I),
     # Mamba-2 / SSM kernels (Nemotron-H etc.) — more specific than gdn_*, so listed first.
@@ -72,6 +90,12 @@ DISPLAY: dict[str, str] = {
     "moe_routing": "MoE routing",
     "all_reduce": "all-reduce (collective)",
     "all_gather": "all-gather (collective)",
+    "msa_decode_attn": "MSA sparse decode attn (gqa_share / merge) — A target",
+    "msa_indexer_score": "MSA indexer score→pool (decode_score) — C target",
+    "msa_topk": "MSA top-k (radix / bitonic fallback) — B target",
+    "msa_qknorm_rope": "MSA fused qknorm+RoPE glue",
+    "msa_kv_insert": "MSA KV / index-K cache insert",
+    "msa_moe_gemm": "MoE grouped GEMM (mxfp8/deep_gemm/bf16)",
     "delay_stream": "delayStreamKernel",
     "attention": "attention",
     "ssm_scan_decode": "SSM scan — decode recurrence (selective_scan_update)",
@@ -434,12 +458,21 @@ def _serve_config(stem: str) -> tuple[str, str, str | None]:
     if stem in _E2E_CONFIG:
         cfg, kind = _E2E_CONFIG[stem]
         return cfg, kind, None
-    m = re.match(r"(?:e2e_)?ceil_(base|none|moe|gdn|attn)(?:_(r\d+))?$", stem)
+    if stem in ("ceil_base2", "e2e_ceil_base2"):
+        return "ceiling_none", "ceiling", "r2"
+    if stem in ("ceil_base_long", "e2e_ceil_base_long"):
+        return "ceiling_none", "ceiling", "long"
+    # base/none + Nemotron noop tags (moe/gdn/attn) + MiniMax-M3 noop tags
+    # (step3 = decode-attn / A, step1 = indexer / C, topk = B).
+    m = re.match(
+        r"(?:e2e_)?ceil_(base|none|moe|gdn|attn|step1|step3|topk|indexer|decode_attn)"
+        r"(?:_(r\d+))?$", stem)
     if m:
         op, rep = m.groups()
         cfg = "ceiling_none" if op in ("base", "none") else f"ceiling_noop_{op}"
         return cfg, "ceiling", rep
-    return _E2E_CONFIG.get(stem, (stem, "sweep")) + (None,)
+    cfg = stem[4:] if stem.startswith("e2e_") else stem
+    return _E2E_CONFIG.get(stem, (cfg, "sweep")) + (None,)
 
 
 def parse_serve_log(path: Path) -> list[dict]:
