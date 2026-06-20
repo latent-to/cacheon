@@ -26,101 +26,24 @@ import argparse
 import collections
 import csv
 import gzip
+import hashlib
+import io
 import json
 import math
 import re
+import sqlite3
+import tarfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterable
 
-# --------------------------------------------------------------------------- #
-# Kernel taxonomy. Order matters: first match wins (most-specific first).
-# Override by passing a different mapping to ingest(..., kernel_cats=...).
-# --------------------------------------------------------------------------- #
-KERNEL_CATS: dict[str, re.Pattern] = {
-    "fp4_moe_gemm": re.compile(r"^bmm_(?:E2m1|Bfloat16_E2m1)", re.I),
-    "dense_gemm": re.compile(r"nvjet|cutlass.*gemm|gemm_", re.I),
-    "splitk_reduce": re.compile(r"splitKreduce", re.I),
-    "moe_finalize": re.compile(r"finalizeKernel", re.I),
-    "moe_routing": re.compile(r"routingIndices|routingInit|routingCustom|moe.*topk", re.I),
-    "all_reduce": re.compile(r"allreduce_fusion|all_reduce|AllReduce|ncclDevKernel_AllReduce|one_shot|lamport", re.I),
-    "all_gather": re.compile(r"AllGather|_all_gather|all_gather", re.I),
-    # --- MiniMax-M3 / MSA sparse-decode kernels (sglang pr27944). Order: most
-    #     specific first; ALL listed before the generic `attention`, `token_gather`,
-    #     `kv_rope`, and `sampling` regexes below so the STEP-3 / indexer / topk /
-    #     glue kernels never fall into a catch-all bucket. msa_moe_gemm stays AFTER
-    #     dense_gemm so generic fp8/cutlass gemm in other datasets is unaffected
-    #     (M3-specific MoE names like m_grouped_gemm/fused_moe still land here). ---
-    "msa_decode_attn": re.compile(
-        r"_gqa_share_sparse_decode_kernel|_merge_topk_attn_out_kernel", re.I),
-    "msa_indexer_score": re.compile(
-        r"_decode_score_kernel|_decode_score_attn_kernel|_merge_attn_out_kernel", re.I),
-    "msa_topk": re.compile(
-        r"minimax_decode_topk|_topk_index_partial_kernel|_topk_index_merge_kernel", re.I),
-    "msa_qknorm_rope": re.compile(
-        r"fused_gemma_qknorm_rope|fused_qk_norm_rope|fused_parallel_qknorm", re.I),
-    "msa_kv_insert": re.compile(
-        r"store_kv_index_kernel|fused_store_kv", re.I),
-    "msa_moe_gemm": re.compile(
-        r"m_grouped_gemm|fp8_gemm|deep_gemm|mxfp8.*gemm|grouped_gemm_.*fp8|fused_moe_kernel", re.I),
-    "delay_stream": re.compile(r"delayStreamKernel", re.I),
-    "attention": re.compile(r"fmha|attention|mha|paged|flash_fwd|trtllm.*mha", re.I),
-    # Mamba-2 / SSM kernels (Nemotron-H etc.) — more specific than gdn_*, so listed first.
-    "ssm_scan_decode": re.compile(r"selective_scan_update|selective_state_update", re.I),
-    "ssm_chunk_prefill": re.compile(r"chunk_scan|chunk_state|state_passing|chunk_cumsum|bmm_chunk", re.I),
-    "ssm_conv": re.compile(r"causal_conv1d", re.I),
-    "gdn_scan": re.compile(r"gdn_wide_vec|gated_delta|fused_recurrent|chunk_gated", re.I),
-    "gdn_conv": re.compile(r"short_conv|conv1d_update", re.I),
-    "fused_qkvzba": re.compile(r"fused_qkvzba|qkvzba", re.I),
-    "act_mul": re.compile(r"act_and_mul|silu|swiglu|sigmoid_gate", re.I),
-    "rmsnorm": re.compile(r"rmsnorm|RMSNorm|layer_norm|LayerNorm|norm_fwd", re.I),
-    "nvfp4_quant": re.compile(r"nvfp4_quantize|NVFP4Quantize|quantize.*fp4|block_scale_interleave|scale.*interleave", re.I),
-    "token_gather": re.compile(r"vectorized_gather|gather_kernel|index_select|IndexKernel|gather", re.I),
-    "kv_rope": re.compile(r"mrope|rope|set_kv_buffer|fp8_set_kv|reshape_and_cache", re.I),
-    "sampling": re.compile(r"argmax|sample|softmax|penalt|resolve_future_token|logits", re.I),
-    "copy_memset": re.compile(r"Memcpy|Memset|memcpy|memset|\bcopy_|elementwise_copy", re.I),
-    "elementwise": re.compile(r"elementwise|triton_poi|FillFunctor|CUDAFunctor|float8_copy|add_kernel|mul_kernel", re.I),
-}
-
-# Human-readable labels for categories (UI + reports).
-DISPLAY: dict[str, str] = {
-    "fp4_moe_gemm": "FP4 MoE GEMM (bmm_*E2m1)",
-    "dense_gemm": "dense/projection GEMM (nvjet)",
-    "splitk_reduce": "splitKreduce GEMM epilogue",
-    "moe_finalize": "MoE finalize",
-    "moe_routing": "MoE routing",
-    "all_reduce": "all-reduce (collective)",
-    "all_gather": "all-gather (collective)",
-    "msa_decode_attn": "MSA sparse decode attn (gqa_share / merge) — A target",
-    "msa_indexer_score": "MSA indexer score→pool (decode_score) — C target",
-    "msa_topk": "MSA top-k (radix / bitonic fallback) — B target",
-    "msa_qknorm_rope": "MSA fused qknorm+RoPE glue",
-    "msa_kv_insert": "MSA KV / index-K cache insert",
-    "msa_moe_gemm": "MoE grouped GEMM (mxfp8/deep_gemm/bf16)",
-    "delay_stream": "delayStreamKernel",
-    "attention": "attention",
-    "ssm_scan_decode": "SSM scan — decode recurrence (selective_scan_update)",
-    "ssm_chunk_prefill": "SSM chunk — prefill scan (chunk_*)",
-    "ssm_conv": "SSM causal conv1d",
-    "gdn_scan": "GDN scan (recurrence)",
-    "gdn_conv": "GDN causal conv",
-    "fused_qkvzba": "GDN qkvzba split/reshape",
-    "act_mul": "act_and_mul / SiLU",
-    "rmsnorm": "norm (rms/layer)",
-    "nvfp4_quant": "NVFP4 quant / scale-interleave",
-    "token_gather": "token gather / index",
-    "kv_rope": "RoPE / KV write",
-    "sampling": "sampling / logits",
-    "copy_memset": "copy / memset",
-    "elementwise": "elementwise misc",
-    "other": "other / uncategorised",
-}
-
-
-def categorize(name: str, kernel_cats: dict[str, re.Pattern] = KERNEL_CATS) -> str:
-    for cat, rx in kernel_cats.items():
-        if rx.search(name):
-            return cat
-    return "other"
+try:
+    from taxonomy import DISPLAY, KERNEL_CATS, categorize, taxonomy_json
+    from architecture import infer_architecture
+except ImportError:  # pragma: no cover - package import fallback
+    from .taxonomy import DISPLAY, KERNEL_CATS, categorize, taxonomy_json
+    from .architecture import infer_architecture
 
 
 # --------------------------------------------------------------------------- #
@@ -142,6 +65,25 @@ def _num(tok: str) -> float | None:
 
 def _pct(num: float, den: float) -> float:
     return 0.0 if den <= 0 else 100.0 * num / den
+
+
+def _rel(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _mtime_iso(paths: Iterable[Path]) -> str | None:
+    mtimes = []
+    for p in paths:
+        try:
+            mtimes.append(p.stat().st_mtime)
+        except OSError:
+            pass
+    if not mtimes:
+        return None
+    return datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat()
 
 
 # --------------------------------------------------------------------------- #
@@ -282,7 +224,7 @@ def _ncu_metric_line(line: str, label: str) -> float | None:
 _CLUSTER_NAME = re.compile(r"ClusterKernel|cluster_launch|_cluster_", re.I)
 
 
-def parse_ncu_details(path: Path, kernel_cats=KERNEL_CATS) -> list[dict]:
+def parse_ncu_details_text(text: str, kernel_cats=KERNEL_CATS) -> list[dict]:
     """One row per profiled kernel.
 
     Flags two kinds of untrustworthy capture so the findings layer never
@@ -310,7 +252,7 @@ def parse_ncu_details(path: Path, kernel_cats=KERNEL_CATS) -> list[dict]:
             cur["cluster"] = bool(_CLUSTER_NAME.search(cur["kernel"]))
             rows.append(cur)
 
-    for line in path.read_text(errors="replace").splitlines():
+    for line in text.splitlines():
         h = _NCU_HDR.match(line)
         if h:
             _flush()
@@ -330,34 +272,75 @@ def parse_ncu_details(path: Path, kernel_cats=KERNEL_CATS) -> list[dict]:
     return rows
 
 
-def parse_ncu_raw(path: Path) -> list[dict]:
-    """Pull the extra launch metrics ncu details omits (waves, registers).
-    Keyed by row order so it can be merged onto parse_ncu_details output."""
-    out: list[dict] = []
+def parse_ncu_details(path: Path, kernel_cats=KERNEL_CATS) -> list[dict]:
+    return parse_ncu_details_text(path.read_text(errors="replace"), kernel_cats)
+
+
+# raw-CSV SpeedOfLight columns -> the same metric keys parse_ncu_details produces.
+# This lets a capture that only exported `--page raw --csv` (no `--page details`
+# text) still yield a full bound-type — which is the common case for our gate3
+# microbench batteries (MoE / glue / prefill), where only *_raw.csv exists.
+_NCU_RAW_SOL = {
+    "comp": "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+    "mem": "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+    "dram": "gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed",
+    "occ": "sm__warps_active.avg.pct_of_peak_sustained_active",
+    "dur_us": "gpu__time_duration.sum",
+    "warps": "sm__warps_active.avg.per_cycle_active",
+}
+_DUR_TO_US = {"us": 1.0, "usecond": 1.0, "ns": 1e-3, "nsecond": 1e-3,
+              "ms": 1e3, "msecond": 1e3, "s": 1e6, "second": 1e6}
+
+
+def parse_ncu_raw_text(text: str) -> list[dict]:
+    """Parse an ncu ``--page raw --csv`` export into one row PER KERNEL NAME.
+
+    Beyond the launch metrics ncu *details* omits (waves, registers), this also
+    pulls the SpeedOfLight ratios (compute/memory/DRAM throughput, achieved
+    occupancy, duration) straight from the raw CSV columns, so a raw-only capture
+    is self-sufficient for a bound-type — no ``_details.txt`` required. ncu emits
+    one row per profiled launch; we keep the longest-duration instance per kernel
+    name as the representative (decode steady state is the same shape every step).
+    """
+    by_name: dict[str, dict] = {}
     try:
-        with path.open(newline="", errors="replace") as fh:
+        with io.StringIO(text, newline="") as fh:
             reader = csv.reader(fh)
             header = next(reader, [])
-            units = next(reader, [])  # ncu raw csv has a units row we skip
+            units = next(reader, [])  # ncu raw csv has a units row
             idx = {name: i for i, name in enumerate(header)}
+            kname_i = idx.get("Kernel Name", 4)
+            dur_unit = (units[idx["gpu__time_duration.sum"]].strip().lower()
+                        if "gpu__time_duration.sum" in idx and idx["gpu__time_duration.sum"] < len(units) else "us")
 
             def col(row, name):
                 i = idx.get(name)
                 return _num(row[i]) if i is not None and i < len(row) else None
 
             for row in reader:
-                if not row or not row[idx.get("Kernel Name", 0)].strip():
+                if not row or kname_i >= len(row) or not row[kname_i].strip():
                     continue
-                out.append({
-                    "kernel": row[idx.get("Kernel Name", 4)][:160],
+                rec = {
+                    "kernel": row[kname_i][:160],
                     "waves": col(row, "launch__waves_per_multiprocessor"),
                     "regs": col(row, "launch__registers_per_thread"),
                     "grid": row[idx["Grid Size"]] if "Grid Size" in idx else "",
                     "block": row[idx["Block Size"]] if "Block Size" in idx else "",
-                })
+                }
+                for key, colname in _NCU_RAW_SOL.items():
+                    rec[key] = col(row, colname)
+                if rec.get("dur_us") is not None:
+                    rec["dur_us"] *= _DUR_TO_US.get(dur_unit, 1.0)
+                prev = by_name.get(rec["kernel"])
+                if prev is None or (rec.get("dur_us") or 0) > (prev.get("dur_us") or 0):
+                    by_name[rec["kernel"]] = rec
     except (OSError, StopIteration):
         return []
-    return out
+    return list(by_name.values())
+
+
+def parse_ncu_raw(path: Path) -> list[dict]:
+    return parse_ncu_raw_text(path.read_text(errors="replace"))
 
 
 def merge_ncu(details: list[dict], raw: list[dict]) -> list[dict]:
@@ -370,17 +353,18 @@ def merge_ncu(details: list[dict], raw: list[dict]) -> list[dict]:
         cand = raw_by_name.get(d["kernel"])
         rr = cand.pop(0) if cand else (raw[i] if i < len(raw) and len(raw) == len(details) else None)
         if rr:
-            for k in ("waves", "regs", "grid", "block"):
+            # details (the SoL text page) is authoritative for comp/mem/dram/occ;
+            # raw fills anything details lacks plus waves/regs/grid/block.
+            for k in ("waves", "regs", "grid", "block", "comp", "mem", "dram", "occ", "dur_us"):
                 if rr.get(k) is not None and rr.get(k) != "":
                     d.setdefault(k, rr[k])
     return details
 
 
-def parse_ncu_log(path: Path) -> dict:
-    txt = path.read_text(errors="replace")
+def parse_ncu_log_text(txt: str, file_name: str = "") -> dict:
     exits = re.findall(r"\bEXIT=(\d+)", txt)
     return {
-        "file": path.name,
+        "file": file_name,
         "profiles": len(re.findall(r"==PROF== Profiling", txt)),
         "launchfailed": "LaunchFailed" in txt,
         "errors": len(re.findall(r"^==ERROR==", txt, re.M)),
@@ -389,24 +373,19 @@ def parse_ncu_log(path: Path) -> dict:
     }
 
 
+def parse_ncu_log(path: Path) -> dict:
+    return parse_ncu_log_text(path.read_text(errors="replace"), path.name)
+
+
 # --------------------------------------------------------------------------- #
 # 3. nsys kernel summary text exports (*_kernsum.txt) — whole-run (mostly prefill)
 # --------------------------------------------------------------------------- #
-def parse_nsys_kernsum(path: Path, kernel_cats=KERNEL_CATS) -> dict:
+def _nsys_kernsum_from_rows(rows: list[tuple[float, float, int, str]], file_name: str,
+                            kernel_cats=KERNEL_CATS, note: str | None = None) -> dict:
     cats: dict[str, list] = collections.defaultdict(lambda: [0.0, 0])
     top: list[dict] = []
     total_ns = 0.0
-    for line in path.read_text(errors="replace").splitlines():
-        parts = line.strip().split(maxsplit=8)
-        if len(parts) < 9:
-            continue
-        try:
-            share = float(parts[0])
-            tot = float(parts[1].replace(",", ""))
-            inst = int(parts[2].replace(",", ""))
-        except ValueError:
-            continue
-        name = parts[8]
+    for share, tot, inst, name in rows:
         c = categorize(name, kernel_cats)
         cats[c][0] += tot
         cats[c][1] += inst
@@ -417,11 +396,149 @@ def parse_nsys_kernsum(path: Path, kernel_cats=KERNEL_CATS) -> dict:
         for c, v in cats.items()
     }
     return {
-        "file": path.name,
+        "file": file_name,
         "total_ms": total_ns / 1e6,
         "cats": cat_rows,
         "top_kernels": sorted(top, key=lambda r: -r["share"])[:40],
-        "note": "whole-run (~prefill-dominated); not steady-decode attribution",
+        "note": note or "whole-run (~prefill-dominated); not steady-decode attribution",
+    }
+
+
+def parse_nsys_kernsum_text(text: str, file_name: str, kernel_cats=KERNEL_CATS) -> dict:
+    rows = []
+    for line in text.splitlines():
+        parts = line.strip().split(maxsplit=8)
+        if len(parts) < 9:
+            continue
+        try:
+            share = float(parts[0])
+            tot = float(parts[1].replace(",", ""))
+            inst = int(parts[2].replace(",", ""))
+        except ValueError:
+            continue
+        name = parts[8]
+        rows.append((share, tot, inst, name))
+    return _nsys_kernsum_from_rows(rows, file_name, kernel_cats)
+
+
+def parse_nsys_kernsum(path: Path, kernel_cats=KERNEL_CATS) -> dict:
+    return parse_nsys_kernsum_text(path.read_text(errors="replace"), path.name, kernel_cats)
+
+
+def parse_nsys_kernsum_csv(path: Path, kernel_cats=KERNEL_CATS) -> dict:
+    lines = path.read_text(errors="replace").splitlines()
+    hdr_i = next((i for i, line in enumerate(lines) if line.startswith("Time (%)")), None)
+    if hdr_i is None:
+        return _nsys_kernsum_from_rows([], path.name, kernel_cats)
+    rows = []
+    for row in csv.DictReader(io.StringIO("\n".join(lines[hdr_i:]))):
+        try:
+            rows.append((
+                float(row["Time (%)"]),
+                float(row["Total Time (ns)"].replace(",", "")),
+                int(row["Instances"].replace(",", "")),
+                row["Name"],
+            ))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return _nsys_kernsum_from_rows(rows, path.name.replace("_cuda_gpu_kern_sum.csv", "_kernsum.txt"),
+                                  kernel_cats, note="nsys cuda_gpu_kern_sum CSV export")
+
+
+def parse_nsys_sqlite(path: Path, kernel_cats=KERNEL_CATS) -> tuple[dict | None, dict | None]:
+    """Parse an nsys SQLite export into kernsum + compact timeline summaries."""
+    try:
+        con = sqlite3.connect(str(path))
+    except sqlite3.Error:
+        return None, None
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(CUPTI_ACTIVITY_KIND_KERNEL)")}
+        if not cols:
+            return None, None
+        namecol = "demangledName" if "demangledName" in cols else "shortName"
+        grand = con.execute("SELECT SUM(end - start) FROM CUPTI_ACTIVITY_KIND_KERNEL").fetchone()[0] or 0
+        if grand <= 0:
+            return None, None
+        rows = []
+        q = (f"SELECT s.value, COUNT(*), SUM(k.end - k.start) "
+             f"FROM CUPTI_ACTIVITY_KIND_KERNEL k JOIN StringIds s ON s.id = k.{namecol} "
+             f"GROUP BY s.value ORDER BY 3 DESC")
+        for name, count, total in con.execute(q):
+            rows.append((100.0 * float(total) / grand, float(total), int(count), str(name)))
+        kernsum = _nsys_kernsum_from_rows(
+            rows, path.name.replace(".sqlite", "_kernsum.txt"), kernel_cats,
+            note="derived locally from nsys SQLite export",
+        )
+        timeline = _parse_nsys_sqlite_timeline(con, path.name, namecol, kernel_cats)
+        return kernsum, timeline
+    except sqlite3.Error:
+        return None, None
+    finally:
+        con.close()
+
+
+def _parse_nsys_sqlite_timeline(con: sqlite3.Connection, file_name: str, namecol: str,
+                                kernel_cats=KERNEL_CATS) -> dict:
+    by_device: dict[str, dict] = {}
+    by_stream: dict[str, dict] = {}
+    graph_ids: set[int] = set()
+    top_dims: dict[str, dict] = {}
+    q = (f"SELECT k.start, k.end, k.deviceId, k.streamId, k.globalPid, k.gridX, k.gridY, k.gridZ, "
+         f"k.blockX, k.blockY, k.blockZ, k.registersPerThread, k.dynamicSharedMemory, "
+         f"k.graphId, s.value "
+         f"FROM CUPTI_ACTIVITY_KIND_KERNEL k JOIN StringIds s ON s.id = k.{namecol}")
+    starts, ends = [], []
+    for row in con.execute(q):
+        start, end, dev, stream, pid, gx, gy, gz, bx, by, bz, regs, smem, graph_id, name = row
+        dur = max(0, int(end) - int(start))
+        starts.append(int(start)); ends.append(int(end))
+        dev_key = str(dev)
+        stream_key = f"d{dev}:s{stream}"
+        for bucket, key in ((by_device, dev_key), (by_stream, stream_key)):
+            rec = bucket.setdefault(key, {"kernel_ns": 0, "launches": 0})
+            rec["kernel_ns"] += dur
+            rec["launches"] += 1
+        if graph_id is not None:
+            graph_ids.add(int(graph_id))
+        cat = categorize(str(name), kernel_cats)
+        cur = top_dims.get(cat)
+        if cur is None or dur > cur.get("dur_ns", 0):
+            top_dims[cat] = {
+                "cat": cat,
+                "kernel": str(name)[:160],
+                "dur_ns": dur,
+                "grid": [gx, gy, gz],
+                "block": [bx, by, bz],
+                "regs": regs,
+                "dynamic_smem": smem,
+                "pid": pid,
+                "device": dev,
+                "stream": stream,
+            }
+    span_ns = max(ends) - min(starts) if starts and ends else 0
+    total_kernel_ns = sum(v["kernel_ns"] for v in by_device.values())
+    def finish(bucket):
+        out = []
+        for key, rec in sorted(bucket.items()):
+            span_gap = max(0, span_ns - rec["kernel_ns"]) if span_ns else 0
+            out.append({
+                "id": key,
+                "kernel_ms": rec["kernel_ns"] / 1e6,
+                "launches": rec["launches"],
+                "span_gap_ms": span_gap / 1e6,
+                "busy_pct_of_span": _pct(rec["kernel_ns"], span_ns),
+            })
+        return out
+    return {
+        "file": file_name,
+        "span_ms": span_ns / 1e6,
+        "kernel_ms_sum": total_kernel_ns / 1e6,
+        "devices": finish(by_device),
+        "streams": sorted(finish(by_stream), key=lambda r: -r["kernel_ms"])[:40],
+        "graph_ids": sorted(graph_ids)[:20],
+        "n_graph_ids": len(graph_ids),
+        "top_launch_dims": sorted(top_dims.values(), key=lambda r: -r["dur_ns"])[:40],
+        "note": "Derived from nsys SQLite; span gaps are per-device/stream wall-clock gaps, not proof of CPU idle by themselves.",
     }
 
 
@@ -501,6 +618,17 @@ _GDN_DISPATCHER_RE = re.compile(
     r"GDN kernel dispatcher:\s*decode=([^,\s]+),\s*extend=([^,\s]+),\s*verify=([^,\s]+)\s+packed_decode=(True|False)"
 )
 _SERVER_ARG_KEYS = (
+    "model_path",
+    "tokenizer_path",
+    "served_model_name",
+    "quantization",
+    "kv_cache_dtype",
+    "tp_size",
+    "ep_size",
+    "pp_size",
+    "context_length",
+    "page_size",
+    "chunked_prefill_size",
     "attention_backend",
     "decode_attention_backend",
     "prefill_attention_backend",
@@ -559,7 +687,7 @@ def _counter_entries(counter: dict, key_names: tuple[str, ...] | None = None) ->
     return rows
 
 
-def _parse_sglang_observations(datadir: Path) -> dict:
+def _parse_sglang_observations(datadir: Path, files: list[Path] | None = None) -> dict:
     """Extract runtime backend choices from SGLang logs.
 
     The profile math says what ran; these log lines explain *why* it ran. That
@@ -573,7 +701,8 @@ def _parse_sglang_observations(datadir: Path) -> dict:
     }
     warnings: dict[str, set[str]] = collections.defaultdict(set)
 
-    for p in sorted(list(datadir.glob("*.log")) + list(datadir.glob("*.txt"))):
+    log_files = [p for p in (files or list(datadir.iterdir())) if p.suffix in (".log", ".txt")]
+    for p in sorted(log_files):
         txt = p.read_text(errors="replace")
         for m in _LINEAR_ATTN_BACKEND_RE.finditer(txt):
             linear[(m.group(1), m.group(2))].add(p.name)
@@ -603,22 +732,410 @@ def _parse_sglang_observations(datadir: Path) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# 6. v2 metadata: manifests, recursive discovery, telemetry, context inference
+# --------------------------------------------------------------------------- #
+_PROFILE_ARTIFACT_RE = re.compile(
+    r"(\.trace\.json\.gz$|_kernsum\.txt$|_details\.txt$|_raw\.csv$|\.sqlite$|\.nsys-rep$|\.ncu-rep$|^e2e_|^ceil_|gpu_telemetry)",
+    re.I,
+)
+_SKIP_DIRS = {".git", ".profiler_cache", "__pycache__"}
+
+
+def _load_manifest(datadir: Path) -> dict:
+    p = datadir / "profile_manifest.json"
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {"_error": f"could not parse {p.name}"}
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for key, val in (override or {}).items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], val)
+        else:
+            out[key] = val
+    return out
+
+
+def _has_profile_artifacts(path: Path) -> bool:
+    try:
+        return any(p.is_file() and _PROFILE_ARTIFACT_RE.search(p.name) for p in path.iterdir())
+    except OSError:
+        return False
+
+
+def _discover_files(datadir: Path) -> list[Path]:
+    """Controlled recursive discovery.
+
+    Generated report/cache dirs are skipped. Child dirs that look like complete
+    independent profile packs are skipped when the root already has top-level
+    artifacts; this prevents ``profiles_b300/nemotron`` from being mixed into a
+    root report while still letting export/bundle dirs such as ``m3_export2`` be
+    read.
+    """
+    root_has_artifacts = _has_profile_artifacts(datadir)
+    out: list[Path] = []
+
+    def walk(d: Path, is_root: bool = False):
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            return
+        for p in entries:
+            if p.is_dir():
+                if p.name in _SKIP_DIRS or p.name.startswith("profiler_out"):
+                    continue
+                if not is_root and root_has_artifacts and _has_profile_artifacts(p):
+                    if not re.search(r"export|bundle|results|artifacts", p.name, re.I):
+                        continue
+                walk(p, False)
+            elif p.is_file():
+                out.append(p)
+
+    walk(datadir, True)
+    return out
+
+
+def _by_name(files: list[Path], suffix: str | None = None, pattern: str | None = None) -> list[Path]:
+    out = []
+    rx = re.compile(pattern, re.I) if pattern else None
+    for p in files:
+        if suffix and not p.name.endswith(suffix):
+            continue
+        if rx and not rx.search(p.name):
+            continue
+        out.append(p)
+    return sorted(out)
+
+
+def _first_server_arg(sglang_obs: dict, key: str) -> str | None:
+    rows = sglang_obs.get("server_args", {}).get(key, [])
+    if not rows:
+        return None
+    return str(rows[0].get("value"))
+
+
+def _infer_model_id(files: list[Path], sglang_obs: dict, manifest: dict) -> str:
+    m = (manifest.get("model") or {}).get("id") or (manifest.get("model") or {}).get("model_id")
+    if m:
+        return str(m)
+    model_path = _first_server_arg(sglang_obs, "model_path")
+    if model_path:
+        return model_path
+    # The server_args regex is intentionally conservative and does not list every
+    # possible SGLang field, so use a lightweight log scan for common shapes.
+    pats = [
+        re.compile(r"model_path='([^']+)'"),
+        re.compile(r"--model-path\s+(\S+)"),
+        re.compile(r"--model\s+(\S+)"),
+        re.compile(r"(?:MiniMaxAI|nvidia|Qwen|deepseek-ai|sgl-project)/[A-Za-z0-9_.:/+-]+"),
+    ]
+    for p in files:
+        if p.suffix not in (".log", ".txt"):
+            continue
+        txt = p.read_text(errors="replace")[:200_000]
+        for rx in pats:
+            mm = rx.search(txt)
+            if mm:
+                return mm.group(1) if mm.lastindex else mm.group(0)
+    low = " ".join(x.name for x in files).lower()
+    if "nemotron" in low:
+        return "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4"
+    if "minimax" in low or "m3_" in low:
+        return "MiniMaxAI/MiniMax-M3"
+    if "qwen35" in low or "397b" in low:
+        return "nvidia/Qwen3.5-397B-A17B-NVFP4"
+    if "deepseek" in low:
+        return "DeepSeek"
+    return "unknown"
+
+
+def _infer_runtime(datadir: Path, sglang_obs: dict, manifest: dict, files: list[Path], telemetry: dict) -> dict:
+    server_args = sglang_obs.get("server_args", {})
+    backends = {}
+    for key, rows in server_args.items():
+        if rows:
+            backends[key] = rows[0].get("value")
+    runtime = {
+        "engine": "sglang" if sglang_obs.get("server_args") or sglang_obs.get("warnings") else "unknown",
+        "versions": {"sglang": "unknown", "nccl": "unknown"},
+        "hardware": {
+            "gpus": telemetry.get("gpu_count"),
+            "gpu_names": telemetry.get("gpu_names", []),
+        },
+        "parallelism": {
+            "tp": _first_server_arg(sglang_obs, "tp_size") or _first_server_arg(sglang_obs, "tp"),
+            "ep": _first_server_arg(sglang_obs, "ep_size"),
+            "pp": _first_server_arg(sglang_obs, "pp_size"),
+        },
+        "graph_mode": "disabled" if _first_server_arg(sglang_obs, "disable_cuda_graph") == "True" else "unknown",
+        "backends": backends,
+        "source_dir": str(datadir),
+    }
+    for p in files:
+        if p.suffix not in (".log", ".txt"):
+            continue
+        txt = p.read_text(errors="replace")[:200_000]
+        m = re.search(r"sglang(?:==| is using | version[:=]\s*)([A-Za-z0-9_.+-]+)", txt, re.I)
+        if m and runtime["versions"]["sglang"] == "unknown":
+            runtime["versions"]["sglang"] = m.group(1)
+        m = re.search(r"nccl==([A-Za-z0-9_.+-]+)", txt, re.I)
+        if m and runtime["versions"]["nccl"] == "unknown":
+            runtime["versions"]["nccl"] = m.group(1)
+        if "disable_cuda_graph=False" in txt or "graphs_on" in p.name:
+            runtime["graph_mode"] = "enabled"
+        if "disable_cuda_graph=True" in txt or "graphs_off" in p.name or "nograph" in p.name:
+            runtime["graph_mode"] = "disabled" if runtime["graph_mode"] == "unknown" else runtime["graph_mode"]
+    return _deep_merge(runtime, manifest.get("runtime") or {})
+
+
+def parse_gpu_telemetry(path: Path) -> dict | None:
+    try:
+        with path.open(newline="", errors="replace") as fh:
+            reader = csv.DictReader(fh)
+            rows = list(reader)
+    except OSError:
+        return None
+    if not rows:
+        return None
+
+    def key(row, name):
+        for k, v in row.items():
+            if k.strip() == name:
+                return v
+        return None
+
+    by_gpu: dict[str, dict] = {}
+    for row in rows:
+        idx = (key(row, "index") or key(row, " index") or "?").strip()
+        rec = by_gpu.setdefault(idx, {
+            "index": idx,
+            "name": (key(row, "name") or key(row, " name") or "unknown").strip(),
+            "samples": 0,
+            "sm_clock_mhz": [],
+            "mem_clock_mhz": [],
+            "power_w": [],
+            "temp_c": [],
+            "pstates": collections.Counter(),
+            "throttle_flags": collections.Counter(),
+        })
+        rec["samples"] += 1
+        for field, out_key in (("clocks.current.sm [MHz]", "sm_clock_mhz"),
+                               ("clocks.current.memory [MHz]", "mem_clock_mhz"),
+                               ("power.draw [W]", "power_w"),
+                               ("temperature.gpu", "temp_c")):
+            v = _num(key(row, field) or "")
+            if v is not None:
+                rec[out_key].append(v)
+        pst = (key(row, "pstate") or "").strip()
+        if pst:
+            rec["pstates"][pst] += 1
+        thr = (key(row, "clocks_event_reasons.active") or "").strip()
+        if thr:
+            rec["throttle_flags"][thr] += 1
+
+    def stats(vals):
+        if not vals:
+            return {"min": None, "avg": None, "max": None}
+        return {"min": min(vals), "avg": sum(vals) / len(vals), "max": max(vals)}
+
+    gpus = []
+    for rec in by_gpu.values():
+        gpus.append({
+            "index": rec["index"],
+            "name": rec["name"],
+            "samples": rec["samples"],
+            "sm_clock_mhz": stats(rec["sm_clock_mhz"]),
+            "mem_clock_mhz": stats(rec["mem_clock_mhz"]),
+            "power_w": stats(rec["power_w"]),
+            "temp_c": stats(rec["temp_c"]),
+            "pstates": dict(rec["pstates"]),
+            "throttle_flags": dict(rec["throttle_flags"]),
+        })
+    return {"file": path.name, "gpus": sorted(gpus, key=lambda r: str(r["index"]))}
+
+
+def _parse_telemetry(files: list[Path]) -> dict:
+    rows = []
+    names = set()
+    for p in _by_name(files, pattern=r"gpu_telemetry.*\.csv$"):
+        rec = parse_gpu_telemetry(p)
+        if rec:
+            rows.append(rec)
+            for g in rec.get("gpus", []):
+                if g.get("name"):
+                    names.add(g["name"])
+    gpu_ids = set()
+    for rec in rows:
+        for g in rec.get("gpus", []):
+            gpu_ids.add(str(g.get("index")))
+    return {
+        "files": rows,
+        "gpu_count": len(gpu_ids) or None,
+        "gpu_names": sorted(names),
+    }
+
+
+def _workloads_from_dataset(ds: "Dataset") -> list[dict]:
+    out = []
+    seen = set()
+    for r in ds.e2e:
+        key = ("e2e", r.get("config"), r.get("conc"), r.get("in_len"), r.get("out_len"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "source": r.get("file"),
+            "kind": r.get("kind", "sweep"),
+            "phase": "decode",
+            "config": r.get("config"),
+            "concurrency": r.get("conc"),
+            "input_len": r.get("in_len"),
+            "output_len": r.get("out_len"),
+            "tokens_per_chunk": r.get("tokens_per_chunk"),
+            "graph_mode": "unknown",
+        })
+    for cap in ds.ncu:
+        label = cap.get("label", "")
+        bm = re.search(r"(?:^|_)(?:bs|b|m)(\d+)\b", label)
+        im = re.search(r"(?:^|_)(?:i|in|ctx)(\d+)\b", label)
+        om = re.search(r"(?:^|_)(?:o|out)(\d+)\b", label)
+        out.append({
+            "source": cap.get("details_file") or cap.get("raw_file") or label,
+            "kind": "ncu",
+            "phase": cap.get("regime"),
+            "config": label,
+            "batch": int(bm.group(1)) if bm else cap.get("batch"),
+            "input_len": int(im.group(1)) if im else None,
+            "output_len": int(om.group(1)) if om else None,
+            "graph_mode": "disabled" if "graphs_off" in label else "enabled" if "graphs_on" in label else "unknown",
+        })
+    for n in ds.nsys:
+        fn = n.get("file", "")
+        im = re.search(r"(?:^|_)(?:i|in)(\d+)", fn)
+        om = re.search(r"(?:^|_)(?:o|out)(\d+)", fn)
+        cm = re.search(r"(?:^|_)c(?:onc)?(\d+)", fn)
+        out.append({
+            "source": fn,
+            "kind": "nsys",
+            "phase": "prefill" if "prefill" in fn.lower() else "decode",
+            "config": fn.replace("_kernsum.txt", ""),
+            "concurrency": int(cm.group(1)) if cm else None,
+            "input_len": int(im.group(1)) if im else None,
+            "output_len": int(om.group(1)) if om else None,
+            "graph_mode": "disabled" if "graphs_off" in fn else "enabled" if "graphs_on" in fn else "unknown",
+        })
+    return out
+
+
+def _artifact_inventory(datadir: Path, files: list[Path], parsed: set[str], failures: list[dict]) -> dict:
+    rows = []
+    for p in sorted(files):
+        rel = _rel(p, datadir)
+        kind = "other"
+        if p.name.endswith((".tgz", ".tar.gz", ".tar")):
+            kind = "archive"
+        elif p.name.endswith(".trace.json.gz"):
+            kind = "torch_trace"
+        elif p.name.endswith("_kernsum.txt") or p.name.endswith("_cuda_gpu_kern_sum.csv") or p.suffix == ".sqlite":
+            kind = "nsys_export"
+        elif p.name.startswith("ncu_") or p.name.endswith(".ncu-rep"):
+            kind = "ncu"
+        elif p.name.endswith(".nsys-rep"):
+            kind = "nsys_binary"
+        elif p.name.startswith(("e2e_", "ceil_")):
+            kind = "e2e"
+        elif p.name.startswith("gpu_telemetry"):
+            kind = "telemetry"
+        rows.append({
+            "path": rel,
+            "name": p.name,
+            "kind": kind,
+            "size_bytes": p.stat().st_size if p.exists() else None,
+            "status": "parsed" if rel in parsed else "opaque",
+        })
+    return {
+        "root": str(datadir),
+        "files": rows,
+        "parsed": sorted(parsed),
+        "failures": failures,
+    }
+
+
+def _tar_text_members(path: Path) -> dict[str, str]:
+    out = {}
+    try:
+        with tarfile.open(path, "r:*") as tf:
+            for m in tf.getmembers():
+                if not m.isfile():
+                    continue
+                name = Path(m.name).name
+                if not re.search(r"(ncu_.*(_raw\.csv|_details\.txt|\.log)$|gpu_telemetry.*\.csv$)", name, re.I):
+                    continue
+                fh = tf.extractfile(m)
+                if fh is None:
+                    continue
+                out[name] = fh.read().decode("utf-8", errors="replace")
+    except (tarfile.TarError, OSError):
+        return {}
+    return out
+
+
+def _build_run(datadir: Path, manifest: dict, files: list[Path]) -> dict:
+    rels = sorted(_rel(p, datadir) for p in files)
+    h = hashlib.sha1()
+    h.update(str(datadir.resolve()).encode())
+    for rel in rels[:200]:
+        h.update(rel.encode())
+    run = {
+        "id": h.hexdigest()[:12],
+        "name": datadir.name,
+        "source_dir": str(datadir),
+        "created_at": _mtime_iso(files),
+        "tags": [],
+        "notes": [],
+    }
+    man_run = manifest.get("run") or {}
+    run = _deep_merge(run, man_run)
+    if manifest.get("tags") and not run.get("tags"):
+        run["tags"] = manifest.get("tags")
+    if manifest.get("notes") and not run.get("notes"):
+        run["notes"] = manifest.get("notes") if isinstance(manifest.get("notes"), list) else [manifest.get("notes")]
+    return run
+
+
+# --------------------------------------------------------------------------- #
 # top-level ingest
 # --------------------------------------------------------------------------- #
 @dataclass
 class Dataset:
     meta: dict = field(default_factory=dict)
+    run: dict = field(default_factory=dict)
+    model: dict = field(default_factory=dict)
+    runtime: dict = field(default_factory=dict)
+    workloads: list = field(default_factory=list)
+    artifacts: dict = field(default_factory=dict)
+    taxonomy: dict = field(default_factory=dict)
     health: dict = field(default_factory=dict)
     e2e: list = field(default_factory=list)
     decode: list = field(default_factory=list)   # torch traces
     nsys: list = field(default_factory=list)
+    timelines: list = field(default_factory=list)
     ncu: list = field(default_factory=list)       # one entry per ncu capture file
     findings: dict = field(default_factory=dict)  # filled by findings.py
 
     def to_dict(self) -> dict:
         return {
-            "meta": self.meta, "health": self.health, "e2e": self.e2e,
-            "decode": self.decode, "nsys": self.nsys, "ncu": self.ncu,
+            "meta": self.meta, "run": self.run, "model": self.model,
+            "runtime": self.runtime, "workloads": self.workloads,
+            "artifacts": self.artifacts, "taxonomy": self.taxonomy,
+            "health": self.health, "e2e": self.e2e,
+            "decode": self.decode, "nsys": self.nsys, "timelines": self.timelines, "ncu": self.ncu,
             "findings": self.findings, "display": DISPLAY,
         }
 
@@ -626,63 +1143,133 @@ class Dataset:
 def ingest(datadir: Path, kernel_cats=KERNEL_CATS, use_cache: bool = True) -> Dataset:
     datadir = Path(datadir).expanduser()
     ds = Dataset()
+    files = _discover_files(datadir)
+    manifest = _load_manifest(datadir)
+    parsed: set[str] = set()
+    failures: list[dict] = []
 
     # torch decode traces
-    for p in sorted(datadir.glob("*.trace.json.gz")):
-        ds.decode.append(parse_torch_trace(p, kernel_cats, use_cache=use_cache))
+    for p in _by_name(files, suffix=".trace.json.gz"):
+        try:
+            ds.decode.append(parse_torch_trace(p, kernel_cats, use_cache=use_cache))
+            parsed.add(_rel(p, datadir))
+        except Exception as exc:  # large traces should not blank the whole run
+            failures.append({"path": _rel(p, datadir), "error": f"trace parse failed: {exc}"})
 
     # nsys kernel summaries
-    for p in sorted(datadir.glob("*_kernsum.txt")):
+    seen_nsys_files: set[str] = set()
+    for p in _by_name(files, suffix="_kernsum.txt"):
         ds.nsys.append(parse_nsys_kernsum(p, kernel_cats))
+        seen_nsys_files.add(p.name)
+        parsed.add(_rel(p, datadir))
+    for p in _by_name(files, suffix="_cuda_gpu_kern_sum.csv"):
+        label_name = p.name.replace("_cuda_gpu_kern_sum.csv", "_kernsum.txt")
+        if label_name in seen_nsys_files:
+            continue
+        ds.nsys.append(parse_nsys_kernsum_csv(p, kernel_cats))
+        seen_nsys_files.add(label_name)
+        parsed.add(_rel(p, datadir))
+    for p in _by_name(files, suffix=".sqlite"):
+        kernsum, timeline = parse_nsys_sqlite(p, kernel_cats)
+        if kernsum:
+            label_name = kernsum.get("file")
+            if label_name not in seen_nsys_files:
+                ds.nsys.append(kernsum)
+                seen_nsys_files.add(label_name)
+            parsed.add(_rel(p, datadir))
+        if timeline:
+            ds.timelines.append(timeline)
 
     # e2e + ceiling
-    for p in sorted(datadir.glob("e2e_*.txt")) + sorted(datadir.glob("ceil_*.txt")):
-        ds.e2e.extend(parse_serve_log(p))
+    for p in sorted([p for p in files if p.name.startswith(("e2e_", "ceil_")) and p.suffix == ".txt"]):
+        rows = parse_serve_log(p)
+        if rows:
+            ds.e2e.extend(rows)
+            parsed.add(_rel(p, datadir))
 
     # ncu captures: group <stem>_details.txt + <stem>_raw.csv + <stem>.log
-    ncu_stems = sorted({p.name[: -len("_details.txt")] for p in datadir.glob("ncu_*_details.txt")}
-                       | {p.name[: -len("_raw.csv")] for p in datadir.glob("ncu_*_raw.csv")})
+    ncu_details_files = {p.name[: -len("_details.txt")]: p for p in _by_name(files, suffix="_details.txt")
+                         if p.name.startswith("ncu_")}
+    ncu_raw_files = {p.name[: -len("_raw.csv")]: p for p in _by_name(files, suffix="_raw.csv")
+                     if p.name.startswith("ncu_")}
+    ncu_log_files = {p.name[: -len(".log")]: p for p in _by_name(files, suffix=".log")
+                     if p.name.startswith("ncu_")}
+    tar_members: dict[str, dict[str, str]] = {}
+    for archive in [p for p in files if p.suffix in (".tgz", ".gz", ".tar") and "ncu_results" in p.name]:
+        members = _tar_text_members(archive)
+        if members:
+            parsed.add(_rel(archive, datadir))
+        for name, text in members.items():
+            stem = name
+            if stem.endswith("_details.txt"):
+                stem = stem[: -len("_details.txt")]
+                tar_members.setdefault(stem, {})["details"] = text
+            elif stem.endswith("_raw.csv"):
+                stem = stem[: -len("_raw.csv")]
+                tar_members.setdefault(stem, {})["raw"] = text
+            elif stem.endswith(".log"):
+                stem = stem[: -len(".log")]
+                tar_members.setdefault(stem, {})["log"] = text
+    ncu_stems = sorted(set(ncu_details_files) | set(ncu_raw_files) | set(tar_members))
     for stem in ncu_stems:
-        details_p = datadir / f"{stem}_details.txt"
-        raw_p = datadir / f"{stem}_raw.csv"
-        log_p = datadir / f"{stem}.log"
-        details = parse_ncu_details(details_p, kernel_cats) if details_p.exists() else []
-        raw = parse_ncu_raw(raw_p) if raw_p.exists() else []
-        kernels = merge_ncu(details, raw) if details else [
-            {"kernel": r["kernel"], "cat": categorize(r["kernel"], kernel_cats),
-             "valid": False, **r} for r in raw
-        ]
+        details_p = ncu_details_files.get(stem)
+        raw_p = ncu_raw_files.get(stem)
+        log_p = ncu_log_files.get(stem)
+        tar_rec = tar_members.get(stem, {})
+        details = (parse_ncu_details(details_p, kernel_cats) if details_p else
+                   parse_ncu_details_text(tar_rec["details"], kernel_cats) if "details" in tar_rec else [])
+        raw = (parse_ncu_raw(raw_p) if raw_p else
+               parse_ncu_raw_text(tar_rec["raw"]) if "raw" in tar_rec else [])
+        if details:
+            kernels = merge_ncu(details, raw)
+        else:
+            # raw-CSV-only capture: build full kernel rows from the SoL columns
+            # parse_ncu_raw now extracts. `valid` iff we got a real throughput
+            # reading (so a bound-type can be computed downstream).
+            kernels = []
+            for r in raw:
+                k = {"kernel": r["kernel"], "cat": categorize(r["kernel"], kernel_cats),
+                     "clc": False, "cluster": bool(_CLUSTER_NAME.search(r["kernel"])), **r}
+                k["valid"] = any(k.get(m) is not None for m in ("comp", "mem", "dram", "occ"))
+                kernels.append(k)
         n_valid = sum(1 for k in kernels if k.get("valid"))
         label = stem.replace("ncu_", "")
         regime = "prefill" if "prefill" in label.lower() else "decode"
-        bm = re.search(r"b(\d+)", label)
+        # batch / decode-token count: `bs64`/`b32` (serving batch) or `m64` (gate3
+        # decode-M microbench). ctx labels like `ctx131072` must NOT be read as batch.
+        bm = re.search(r"(?:^|_)(?:bs|b|m)(\d+)\b", label)
         batch = int(bm.group(1)) if bm else None
         ds.ncu.append({
             "label": label,
             "regime": regime,         # decode captures characterize the decode breakdown; prefill captures don't
             "batch": batch,           # serving batch (>=32) is trustworthy; bs1 shows phantom occupancy headroom
-            "details_file": details_p.name if details_p.exists() else None,
-            "raw_file": raw_p.name if raw_p.exists() else None,
+            "details_file": details_p.name if details_p else (f"{stem}_details.txt" if "details" in tar_rec else None),
+            "raw_file": raw_p.name if raw_p else (f"{stem}_raw.csv" if "raw" in tar_rec else None),
             "n_kernels": len(kernels),
             "n_valid": n_valid,
             "n_cluster": sum(1 for k in kernels if k.get("cluster")),
             "all_nan": len(kernels) > 0 and n_valid == 0,
-            "log": parse_ncu_log(log_p) if log_p.exists() else None,
+            "log": parse_ncu_log(log_p) if log_p else
+                   parse_ncu_log_text(tar_rec["log"], f"{stem}.log") if "log" in tar_rec else None,
             "kernels": kernels,
         })
+        for p in (details_p, raw_p, log_p):
+            if p:
+                parsed.add(_rel(p, datadir))
 
     # health: bogus summary.txt + nan captures + binary-only reps
-    bogus_summaries = [p.name for p in datadir.glob("*_summary.txt")
+    bogus_summaries = [p.name for p in _by_name(files, suffix="_summary.txt")
                        if "==ERROR==" in p.read_text(errors="replace")[:200]]
     nan_caps = [c["label"] for c in ds.ncu if c["all_nan"]]
     failed_caps = [c["label"] for c in ds.ncu if (c.get("log") or {}).get("launchfailed")]
     partial_caps = [c["label"] for c in ds.ncu
                     if (c.get("log") or {}).get("launchfailed") and c.get("n_valid", 0) > 0]
     missing_nsys_exports = sorted(
-        p.with_suffix("").name for p in datadir.glob("*.nsys-rep")
-        if not (datadir / f"{p.with_suffix('').name}_kernsum.txt").exists()
+        p.with_suffix("").name for p in _by_name(files, suffix=".nsys-rep")
+        if f"{p.with_suffix('').name}_kernsum.txt" not in seen_nsys_files
     )
-    sglang_obs = _parse_sglang_observations(datadir)
+    sglang_obs = _parse_sglang_observations(datadir, files)
+    telemetry = _parse_telemetry(files)
     sglang_notes = []
     for row in sglang_obs.get("linear_attn_backends", []):
         sglang_notes.append(
@@ -697,16 +1284,18 @@ def ingest(datadir: Path, kernel_cats=KERNEL_CATS, use_cache: bool = True) -> Da
         )
     ds.health = {
         "torch_traces": len(ds.decode),
-        "nsys_rep_binaries": len(list(datadir.glob("*.nsys-rep"))),
+        "nsys_rep_binaries": len(_by_name(files, suffix=".nsys-rep")),
         "nsys_kernsum_exports": len(ds.nsys),
+        "nsys_timelines": len(ds.timelines),
         "nsys_missing_kernsum_exports": missing_nsys_exports,
-        "ncu_rep_binaries": len(list(datadir.glob("*.ncu-rep"))),
+        "ncu_rep_binaries": len(_by_name(files, suffix=".ncu-rep")),
         "ncu_captures_parsed": len(ds.ncu),
         "ncu_all_nan_captures": nan_caps,
         "ncu_launchfailed_captures": failed_caps,
         "ncu_partial_captures": partial_caps,
         "bogus_summary_exports": bogus_summaries,
         "sglang": sglang_obs,
+        "telemetry": telemetry,
         "e2e_rows": len(ds.e2e),
         "notes": [
             "Mac-side: .nsys-rep/.ncu-rep binaries are opaque (no local NVIDIA CLI). "
@@ -721,10 +1310,28 @@ def ingest(datadir: Path, kernel_cats=KERNEL_CATS, use_cache: bool = True) -> Da
             "and were ignored.",
         ] + sglang_notes,
     }
+    if manifest.get("_error"):
+        ds.health["notes"].append(manifest["_error"])
+    model_id = _infer_model_id(files, sglang_obs, manifest)
+    ds.run = _build_run(datadir, manifest, files)
+    ds.model = infer_architecture(model_id, manifest.get("model") or {})
+    quant = _first_server_arg(sglang_obs, "quantization")
+    if quant and ds.model.get("quantization") in (None, "unknown"):
+        ds.model["quantization"] = quant
+    kv_dtype = _first_server_arg(sglang_obs, "kv_cache_dtype")
+    if kv_dtype:
+        ds.model.setdefault("kv_cache", {})["dtype"] = kv_dtype
+    ds.runtime = _infer_runtime(datadir, sglang_obs, manifest, files, telemetry)
+    ds.workloads = _workloads_from_dataset(ds)
+    if manifest.get("workload"):
+        ds.workloads.insert(0, _deep_merge({"source": "profile_manifest.json"}, manifest["workload"]))
+    ds.taxonomy = taxonomy_json()
+    ds.artifacts = _artifact_inventory(datadir, files, parsed, failures)
     ds.meta = {
         "datadir": str(datadir),
-        "n_files": len(list(datadir.iterdir())),
-        "schema_version": 1,
+        "n_files": len(files),
+        "schema_version": 2,
+        "schema_compat": [1],
     }
     return ds
 

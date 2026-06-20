@@ -31,9 +31,9 @@ missing or junk):
 | artifact | what it gives |
 |---|---|
 | `*.trace.json.gz` (torch profiler) | the **clean decode** kernel-time breakdown by category |
-| `ncu_*_details.txt` + `ncu_*_raw.csv` | per-kernel **bound-type** (compute/memory/latency) + waves/registers |
+| `ncu_*_details.txt` **or** `ncu_*_raw.csv` | per-kernel **bound-type** (compute/memory/latency/occupancy) + waves/registers. A raw-CSV-only capture is now self-sufficient — the SpeedOfLight ratios are read straight from its columns, so a `--page raw --csv`-only battery (the common gate3 case) still yields bound-types without a `_details.txt` export. |
 | `ncu_*.log` | capture health (profiles, LaunchFailed, exit) |
-| `*_kernsum.txt` (nsys `cuda_gpu_kern_sum`) | whole-run (≈prefill) kernel shares |
+| `<label>_kernsum.txt` (nsys `cuda_gpu_kern_sum`) | per-regime kernel shares. Put `decode`/`prefill` in `<label>` → the engine assigns the regime and **only joins same-regime ncu** (a prefill big-M kernel never characterizes a decode category). Generate one on the Mac from an nsys `.sqlite` with **`nsys_sqlite_kernsum.py`** (no nsys CLI needed). |
 | `e2e_*.txt`, `ceil_*.txt` (serve_load2) | throughput vs concurrency + A/B levers |
 
 **Binaries (`.nsys-rep` / `.ncu-rep`) are opaque on a Mac** — export their text
@@ -203,8 +203,25 @@ in `ingest.py`. Add patterns for the new model's kernel names; everything
 downstream (findings, dashboard) adapts. ncu capture labels drive regime/batch
 detection: a label containing `prefill` → prefill regime; `b32`/`b1` → batch.
 
+## The dashboard — regime breakdown
+
+Alongside the (decode) **Findings** Amdahl split, the report renders a **Regime
+breakdown** section: one colored share×bound-type table per nsys kernsum, so
+**every phase (prefill, decode, …) sits side by side**. Prefill and decode are
+different machines — the *same-named* kernel is a different bound-type in each (a
+big-M prefill GEMM is compute-bound; the skinny-M decode GEMM is memory/occupancy-
+bound), so each category is joined ONLY to an ncu capture of its own regime. An
+occupancy-bound **vendor** kernel is surfaced as a ranked **"decode-specialized
+replacement (HARD)"** opportunity rather than buried in "vendor floor" — idle
+silicon (very low occupancy at moderate util, ~1 block/SM) is a real, hard,
+from-scratch-kernel opening, distinct from a saturated wall. *(Example seen on
+MiniMax-M3: decode = an occupancy-bound NVFP4 grouped MoE GEMM; prefill =
+occupancy-bound sparse-attention — different kernels, different levers.)*
+
 ## Modules
 - `ingest.py` — artifact parsers → normalized dataset (CLI: `python3 ingest.py <dir> -o dataset.json`).
+- `nsys_sqlite_kernsum.py` — nsys `.sqlite` (or kern_sum CSV) → `<label>_kernsum.txt`
+  on the Mac, pure stdlib (CLI: `python3 nsys_sqlite_kernsum.py run.sqlite -o run_kernsum.txt`).
 - `findings.py` — dataset → verdicts (CLI: `python3 findings.py dataset.json`).
 - `report.py` — dataset + findings → `report.html` (template in `templates/`).
 - `build.py` — the one-command pipeline.

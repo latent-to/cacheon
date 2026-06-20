@@ -74,9 +74,24 @@
   All numbers derived from the raw artifacts in the dataset; thresholds are explicit and editable in <span class="mono">findings.py</span>.</footer>
 
 <script>
-const PAYLOAD = JSON.parse(document.getElementById('payload').textContent);
-const D = PAYLOAD.dataset, F = PAYLOAD.findings;
+// Parse the inlined payload. If this is the un-rendered TEMPLATE (placeholder
+// still present) or the JSON is malformed, show a clear message instead of a
+// silent blank page.
+let PAYLOAD;
+try {
+  PAYLOAD = JSON.parse(document.getElementById('payload').textContent);
+} catch (err) {
+  const h = document.getElementById('headline');
+  h.style.borderLeftColor = '#d29922';
+  h.textContent = 'No data loaded — this is the dashboard TEMPLATE, not a generated report. '
+    + 'Run:  python3 tools/profiler/build.py <datadir> -o out/   then open  out/report.html  '
+    + '(open the generated report.html, not templates/dashboard.html).';
+  throw err;
+}
+const D = PAYLOAD.dataset || {}, F = PAYLOAD.findings || {};
 const DISPLAY = D.display || {};
+// Isolate each section: a bad/absent field in one can never blank the whole page.
+function safe(fn){ try { fn(); } catch(e){ console.error('[profiler] section render error:', e); } }
 
 // ---------- tiny DOM helper ----------
 function el(tag, attrs={}, kids=[]){
@@ -105,8 +120,66 @@ function section(id,title,sub){const s=el('section',{id});
   s.appendChild(el('h2',{},[title, sub?el('span',{class:'sub',text:sub}):null]));
   main.appendChild(s); SECTIONS.push([id,title]); return s;}
 
+// ===================== RUN / MODEL CONTEXT =====================
+safe(function(){
+  const s=section('context','Run Context','schema v2 metadata, inferred when no manifest is present');
+  const model=D.model||{}, run=D.run||{}, rt=D.runtime||{};
+  const arch=model.features||{}, kv=model.kv_cache||{};
+  const cards=el('div',{class:'grid cards'});
+  cards.appendChild(el('div',{class:'card'},[
+    el('h3',{text:run.name||'run'}),
+    el('p',{class:'mono muted',text:run.id?`id ${run.id}`:'id unknown'}),
+    el('p',{class:'muted',text:run.created_at?`created ${run.created_at}`:'created unknown'}),
+    el('p',{class:'muted',text:(run.tags||[]).length?`tags: ${(run.tags||[]).join(', ')}`:'tags: none'}),
+  ]));
+  cards.appendChild(el('div',{class:'card'},[
+    el('h3',{text:model.id||'unknown model'}),
+    el('p',{class:'muted',text:`family: ${model.family||'unknown'} · ${model.scale||'scale unknown'}`}),
+    el('p',{class:'muted',text:`decoder: ${model.decoder_type||'unknown'}`}),
+    el('p',{class:'muted',text:`attention: ${model.attention||'unknown'}`}),
+    el('p',{class:'muted',text:`layer mix: ${model.layer_mix||'unknown'}`}),
+  ]));
+  cards.appendChild(el('div',{class:'card'},[
+    el('h3',{text:'Architecture Flags'}),
+    el('p',{class:'muted',text:Object.entries(arch).filter(([_,v])=>v===true).map(([k])=>k).join(' · ')||'unknown'}),
+    el('p',{class:'muted',text:`quantization: ${model.quantization||'unknown'}`}),
+    el('p',{class:'muted',text:`context: ${model.context_tokens?fmt0(model.context_tokens)+' tokens':'unknown'}`}),
+    el('p',{class:'muted',text:`KV: ${kv.dtype||'unknown'} · ${kv.note||'unknown'}`}),
+  ]));
+  cards.appendChild(el('div',{class:'card'},[
+    el('h3',{text:rt.engine||'runtime unknown'}),
+    el('p',{class:'muted',text:`graph mode: ${rt.graph_mode||'unknown'}`}),
+    el('p',{class:'muted',text:`TP/EP/PP: ${(rt.parallelism||{}).tp||'?'}/${(rt.parallelism||{}).ep||'?'}/${(rt.parallelism||{}).pp||'?'}`}),
+    el('p',{class:'muted',text:`hardware: ${((rt.hardware||{}).gpu_names||[]).join(', ')||'unknown'}`}),
+    el('p',{class:'mono muted',style:'font-size:11.5px',text:`sglang ${(rt.versions||{}).sglang||'unknown'} · nccl ${(rt.versions||{}).nccl||'unknown'}`}),
+  ]));
+  s.appendChild(cards);
+  if((F.architecture_notes||[]).length){
+    F.architecture_notes.forEach(n=>s.appendChild(el('div',{class:'warn',text:n})));
+  }
+  const b=rt.backends||{};
+  if(Object.keys(b).length){
+    const p=el('p',{class:'mono muted',style:'font-size:11.5px;margin-top:10px',
+      text:Object.entries(b).slice(0,18).map(([k,v])=>`${k}=${v}`).join(' · ')});
+    s.appendChild(p);
+  }
+  const wl=(D.workloads||[]).slice(0,60);
+  if(wl.length){
+    s.appendChild(el('h3',{style:'margin:16px 0 6px;font-size:13.5px',text:'Workloads'}));
+    const tbl=el('table'); tbl.appendChild(el('tr',{},['kind','phase','config','conc','batch','in','out','graph','source'].map((h,i)=>el('th',{class:i>2&&i<7?'num':'',text:h}))));
+    wl.forEach(w=>tbl.appendChild(el('tr',{},[
+      el('td',{text:w.kind||'unknown'}), el('td',{text:w.phase||'unknown'}),
+      el('td',{class:'mono muted',text:w.config||'unknown'}),
+      el('td',{class:'num',text:w.concurrency??'—'}), el('td',{class:'num',text:w.batch??'—'}),
+      el('td',{class:'num',text:w.input_len??'—'}), el('td',{class:'num',text:w.output_len??'—'}),
+      el('td',{text:w.graph_mode||'unknown'}), el('td',{class:'mono muted',text:w.source||''}),
+    ])));
+    s.appendChild(el('div',{class:'tablewrap'},[tbl]));
+  }
+});
+
 // ===================== FINDINGS =====================
-(function(){
+safe(function(){
   const s=section('findings','Findings','derived: decode share × ncu bound-type → Amdahl-bounded win');
   const a=F.amdahl||{};
   s.appendChild(el('div',{class:'note',text:'Decode kernel-time split by winnability (canonical trace: '
@@ -127,6 +200,21 @@ function section(id,title,sub){const s=el('section',{id});
     +`<i>if</i> it's fully fp32-ALU and fp16 halves it (could be far less if tensor-bound — `
     +`<b>needs a pipe roofline to size</b>). The rewrite surface is the lever, not the glue.`}));
 
+  if((F.components||[]).length){
+    s.appendChild(el('h3',{style:'margin:16px 0 6px;font-size:13.5px',text:'Component Summary'}));
+    const t=el('table');
+    t.appendChild(el('tr',{},['component','decode %','winnable %','unknown %','ownership','categories'].map((h,i)=>el('th',{class:i>0&&i<4?'num':'',text:h}))));
+    F.components.forEach(c=>t.appendChild(el('tr',{},[
+      el('td',{text:c.component}),
+      el('td',{class:'num',text:fmt(c.pct,1)}),
+      el('td',{class:'num',text:fmt(c.winnable_pct,1)}),
+      el('td',{class:'num',text:fmt(c.unknown_pct,1)}),
+      el('td',{class:'mono muted',text:Object.entries(c.ownership||{}).map(([k,v])=>`${k}:${fmt(v,1)}%`).join(' · ')}),
+      el('td',{class:'mono muted',style:'white-space:normal',text:(c.categories||[]).join(', ')}),
+    ])));
+    s.appendChild(el('div',{class:'tablewrap'},[t]));
+  }
+
   if((F.constraints||[]).length){
     s.appendChild(el('h3',{style:'margin:16px 0 6px;font-size:13.5px',text:'Hard constraints'}));
     F.constraints.forEach(c=>s.appendChild(el('div',{class:'warn',text:c})));
@@ -143,10 +231,10 @@ function section(id,title,sub){const s=el('section',{id});
     ]));
   });
   s.appendChild(cards);
-})();
+});
 
 // ===================== E2E SWEEP =====================
-(function(){
+safe(function(){
   const sweeps=(D.e2e||[]).filter(r=>r.kind==='sweep');
   if(!sweeps.length)return;
   const s=section('e2e','E2E throughput','serve_load2 steady tok/s vs concurrency');
@@ -193,10 +281,10 @@ function section(id,title,sub){const s=el('section',{id});
     ]));
   });
   tw.appendChild(tbl); s.appendChild(tw);
-})();
+});
 
 // ===================== DECODE BREAKDOWN =====================
-(function(){
+safe(function(){
   const c=F.decode_canonical; if(!c||!c.categories?.length)return;
   const s=section('decode','Decode breakdown','% of decode kernel time, colored by ncu verdict');
   s.appendChild(legend([['Winnable (fuse)',CSS.green],['Vendor floor',CSS.red],['Unknown (profile)',CSS.gray],['Mixed',CSS.amber]]));
@@ -217,10 +305,77 @@ function section(id,title,sub){const s=el('section',{id});
   });
   s.appendChild(el('div',{class:'tablewrap'},[tbl]));
   s.appendChild(el('div',{class:'note muted',text:'Source: '+(c.file||'')+'  ·  total decode kernel time '+fmt(c.total_us/1000,2)+' ms/step.'}));
-})();
+});
+
+// ===================== REGIME BREAKDOWN (prefill vs decode) =====================
+safe(function(){
+  const regs=(F.regimes||[]).filter(r=>(r.categories||[]).length);
+  if(regs.length<1)return;
+  const s=section('regimes','Regime breakdown','full timeline: each phase'+"'"+'s kernel-time share × same-regime ncu bound-type');
+  s.appendChild(el('div',{class:'note',text:'Decode and prefill are different machines: the decode skinny-M NVFP4 MoE GEMM is occupancy-bound; '
+    +'prefill is attention-bound (MSA gqa_share + block-score flash). Each category below is colored by an ncu capture FROM THE SAME REGIME.'}));
+  s.appendChild(legend([['Winnable (fuse)',CSS.green],['Occupancy / floor',CSS.red],['Unknown (profile)',CSS.gray],['Mixed/compute',CSS.amber]]));
+  regs.forEach(rg=>{
+    const tag=rg.regime==='prefill'?'pink':'accent';
+    s.appendChild(el('h3',{style:'margin:18px 0 6px;font-size:13.5px'},[
+      el('span',{class:'pill '+(rg.regime==='prefill'?'pink':'purple'),text:rg.regime.toUpperCase()}),
+      ' '+rg.label+' ', el('span',{class:'muted',style:'font-weight:400',text:'· '+fmt(rg.total_ms,0)+' ms kernel-time (all GPUs)'})]));
+    const maxP=Math.max(...rg.categories.map(x=>x.pct));
+    const tbl=el('table');
+    rg.categories.forEach(e=>{
+      const col=CSS[WIN_COLOR(e.winnable)];
+      const n=e.ncu;
+      tbl.appendChild(el('tr',{},[
+        el('td',{style:'min-width:210px',text:e.display}),
+        el('td',{class:'num',text:fmt(e.pct,1)+'%'}),
+        el('td',{style:'width:40%'},[el('span',{class:'bar',style:`width:${100*e.pct/maxP}%;background:${col}`})]),
+        el('td',{},[el('span',{class:'pill '+BOUND_COLOR[e.bound_type],text:e.bound_type})]),
+        el('td',{class:'mono muted',style:'font-size:11px',
+          text:n?`comp ${fmt(n.comp,0)} · mem ${fmt(n.mem,0)} · dram ${fmt(n.dram,0)} · occ ${fmt(n.occ,0)} · w ${fmt(n.waves,2)}`:'no same-regime ncu'}),
+      ]));
+      tbl.appendChild(el('tr',{},[el('td',{colspan:5,class:'muted',style:'font-size:11.5px;padding-top:0',text:'↳ '+e.verdict})]));
+    });
+    s.appendChild(el('div',{class:'tablewrap'},[tbl]));
+  });
+});
+
+// ===================== TIMELINE SUMMARY =====================
+safe(function(){
+  const tls=(D.timelines||[]);
+  if(!tls.length)return;
+  const s=section('timeline','Timeline Summary','compact nsys SQLite summaries: devices, streams, graph ids, launch dims');
+  tls.forEach(tl=>{
+    s.appendChild(el('h3',{style:'margin:14px 0 6px;font-size:13.5px'},[
+      tl.file+' ', el('span',{class:'pill gray',text:`${fmt(tl.span_ms,0)} ms span`}),
+      el('span',{class:'pill purple',text:`graphs ${tl.n_graph_ids||0}`}),
+    ]));
+    if((tl.devices||[]).length){
+      const dtab=el('table'); dtab.appendChild(el('tr',{},['device','kernel ms','launches','span gap ms','busy %'].map((h,i)=>el('th',{class:i?'num':'',text:h}))));
+      tl.devices.forEach(d=>dtab.appendChild(el('tr',{},[
+        el('td',{text:d.id}), el('td',{class:'num',text:fmt(d.kernel_ms,1)}),
+        el('td',{class:'num',text:fmt0(d.launches)}), el('td',{class:'num',text:fmt(d.span_gap_ms,1)}),
+        el('td',{class:'num',text:fmt(d.busy_pct_of_span,1)}),
+      ])));
+      s.appendChild(el('div',{class:'tablewrap',style:'margin-bottom:10px'},[dtab]));
+    }
+    if((tl.top_launch_dims||[]).length){
+      const ltab=el('table'); ltab.appendChild(el('tr',{},['category','kernel','grid','block','regs','smem','device/stream'].map((h,i)=>el('th',{class:i>3?'num':'',text:h}))));
+      tl.top_launch_dims.slice(0,25).forEach(k=>ltab.appendChild(el('tr',{},[
+        el('td',{text:DISPLAY[k.cat]||k.cat}),
+        el('td',{class:'kn',text:k.kernel}),
+        el('td',{class:'mono muted',text:(k.grid||[]).join('x')}),
+        el('td',{class:'mono muted',text:(k.block||[]).join('x')}),
+        el('td',{class:'num',text:k.regs??'—'}), el('td',{class:'num',text:k.dynamic_smem??'—'}),
+        el('td',{class:'mono muted',text:`d${k.device}:s${k.stream}`}),
+      ])));
+      s.appendChild(el('div',{class:'tablewrap'},[ltab]));
+    }
+    s.appendChild(el('div',{class:'note muted',text:tl.note||''}));
+  });
+});
 
 // ===================== NCU BOUND-TYPES =====================
-(function(){
+safe(function(){
   if(!(D.ncu||[]).length)return;
   const s=section('ncu','NCU bound-types','per-kernel hardware-counter verdicts (TP=1)');
   D.ncu.forEach(cap=>{
@@ -247,10 +402,10 @@ function section(id,title,sub){const s=el('section',{id});
     });
     s.appendChild(el('div',{class:'tablewrap'},[tbl]));
   });
-})();
+});
 
 // ===================== KERNEL EXPLORER =====================
-(function(){
+safe(function(){
   const rows=[];
   (D.decode||[]).forEach(t=>(t.top_kernels||[]).forEach(k=>rows.push(
     {src:t.label+'/'+t.rank, cat:k.cat, name:k.name, pct:k.pct, ms:k.us/1000, count:k.count})));
@@ -282,10 +437,10 @@ function section(id,title,sub){const s=el('section',{id});
     if(data.length>400)tbl.appendChild(el('tr',{},[el('td',{colspan:6,class:'muted',text:`… ${data.length-400} more (refine the filter)`})]));
   }
   box.addEventListener('input',draw); draw();
-})();
+});
 
 // ===================== LEVERS =====================
-(function(){
+safe(function(){
   const L=F.levers||{}; const s=section('levers','Config levers','A/B knobs measured at e2e');
   if(L.cuda_graph){
     s.appendChild(el('div',{class:'card',style:'margin-bottom:10px'},[
@@ -315,14 +470,47 @@ function section(id,title,sub){const s=el('section',{id});
       el('td',{class:'num',text:fmt(c.apparent_share_pct,1)+'%'})])));
     s.appendChild(el('div',{class:'card'},[t]));
   }
-})();
+});
+
+// ===================== ARTIFACTS =====================
+safe(function(){
+  const art=D.artifacts||{}, rows=art.files||[];
+  if(!rows.length)return;
+  const s=section('artifacts','Artifacts','recursive discovery, parse status, and provenance');
+  const counts={};
+  rows.forEach(r=>{counts[r.kind]=counts[r.kind]||{parsed:0,opaque:0,total:0};counts[r.kind].total++;counts[r.kind][r.status==='parsed'?'parsed':'opaque']++;});
+  const cards=el('div',{class:'grid cards'});
+  Object.entries(counts).sort((a,b)=>b[1].total-a[1].total).forEach(([kind,c])=>cards.appendChild(el('div',{class:'card'},[
+    el('h3',{text:`${kind}: ${c.total}`}),
+    el('p',{class:'muted',text:`parsed ${c.parsed} · opaque ${c.opaque}`}),
+  ])));
+  s.appendChild(cards);
+  if((art.failures||[]).length){
+    art.failures.forEach(f=>s.appendChild(el('div',{class:'warn',text:`${f.path}: ${f.error}`})));
+  }
+  const box=el('input',{class:'search',type:'text',placeholder:'filter artifacts…'});
+  s.appendChild(box);
+  const tw=el('div',{class:'tablewrap'}), tbl=el('table'); tw.appendChild(tbl); s.appendChild(tw);
+  function draw(){
+    const q=box.value.toLowerCase();
+    const data=rows.filter(r=>!q||r.path.toLowerCase().includes(q)||r.kind.toLowerCase().includes(q)||r.status.toLowerCase().includes(q));
+    tbl.innerHTML='';
+    tbl.appendChild(el('tr',{},['status','kind','size','path'].map((h,i)=>el('th',{class:i===2?'num':'',text:h}))));
+    data.slice(0,300).forEach(r=>tbl.appendChild(el('tr',{},[
+      el('td',{},[el('span',{class:'pill '+(r.status==='parsed'?'green':'gray'),text:r.status})]),
+      el('td',{text:r.kind}), el('td',{class:'num',text:fmt0(r.size_bytes)}),
+      el('td',{class:'mono muted',style:'white-space:normal',text:r.path}),
+    ])));
+  }
+  box.addEventListener('input',draw); draw();
+});
 
 // ===================== HEALTH =====================
-(function(){
+safe(function(){
   const h=D.health||{}; const s=section('health','Artifact health','what is present, what is junk');
   const g=el('div',{class:'grid cards'});
   const counts=[['torch traces',h.torch_traces],['nsys binaries',h.nsys_rep_binaries],
-    ['nsys kernsum exports',h.nsys_kernsum_exports],['ncu binaries',h.ncu_rep_binaries],
+    ['nsys kernsum exports',h.nsys_kernsum_exports],['nsys timelines',h.nsys_timelines],['ncu binaries',h.ncu_rep_binaries],
     ['ncu captures parsed',h.ncu_captures_parsed],['e2e rows',h.e2e_rows]];
   counts.forEach(([k,v])=>g.appendChild(el('div',{class:'card'},[el('h3',{text:fmt0(v)}),el('p',{class:'muted',text:k})])));
   s.appendChild(g);
@@ -343,6 +531,17 @@ function section(id,title,sub){const s=el('section',{id});
     (sg.warnings||[]).forEach(r=>card.appendChild(el('div',{class:'warn',text:`${r.message} (${r.count} files)`})));
     s.appendChild(card);
   }
+  const tel=h.telemetry||{};
+  if((tel.files||[]).length){
+    const card=el('div',{class:'card',style:'margin-top:10px'});
+    card.appendChild(el('h3',{text:`GPU telemetry (${tel.files.length} files)`}));
+    tel.files.slice(0,8).forEach(t=>{
+      card.appendChild(el('p',{class:'mono muted',style:'font-size:11.5px',text:t.file}));
+      (t.gpus||[]).slice(0,8).forEach(g=>card.appendChild(el('p',{class:'muted',
+        text:`gpu${g.index} ${g.name}: sm ${fmt((g.sm_clock_mhz||{}).avg,0)} MHz, mem ${fmt((g.mem_clock_mhz||{}).avg,0)} MHz, power ${fmt((g.power_w||{}).avg,1)} W, temp ${fmt((g.temp_c||{}).avg,1)} C`})));
+    });
+    s.appendChild(card);
+  }
   if((h.ncu_all_nan_captures||[]).length)
     s.appendChild(el('div',{class:'warn',text:'All-NaN ncu captures (excluded): '+h.ncu_all_nan_captures.join(', ')}));
   if((h.ncu_launchfailed_captures||[]).length)
@@ -355,7 +554,7 @@ function section(id,title,sub){const s=el('section',{id});
     s.appendChild(el('div',{class:'warn',text:'Bogus _summary.txt (==ERROR==, ignored): '+h.bogus_summary_exports.join(', ')}));
   (h.notes||[]).forEach(n=>s.appendChild(el('div',{class:'note muted',text:'• '+n})));
   (F.data_quality||[]).forEach(n=>s.appendChild(el('div',{class:'note muted',text:'• '+n})));
-})();
+});
 
 // ---------- helpers that need findings thresholds ----------
 function boundOf(k){
@@ -364,12 +563,15 @@ function boundOf(k){
   if(comp==null||k.mem==null)return{type:'unknown',text:'no valid metrics'};
   if(mem>=T.MEM_BOUND_PCT&&mem-comp>T.DOMINANCE_GAP)return{type:'memory',text:`memory/BW-bound (${fmt(mem,0)}% vs ${fmt(comp,0)}%) — vendor floor; fuse / fewer bytes / bigger batch`};
   if(comp>=T.COMPUTE_BOUND_PCT&&comp-mem>T.DOMINANCE_GAP)return{type:'compute',text:(k.occ!=null&&k.occ<20&&!k.clc)?`compute ${fmt(comp,0)}% but low occ ${fmt(k.occ,0)}% — occupancy-limited, uncertain`:`compute-bound (${fmt(comp,0)}%) — near peak, don't rewrite`};
+  const lowOcc=T.LOW_OCC_PCT||20;
   if(Math.max(comp,mem)<T.LATENCY_CEIL){
     if(k.clc)return{type:'latency',text:`low util ${fmt(Math.max(comp,mem),0)}% but CLC corrupts occupancy — verify before trusting a fuse win`};
     const tiny=k.waves!=null&&k.waves<T.LOW_WAVES;
-    if(!tiny&&k.waves!=null&&k.occ!=null&&k.occ<15)return{type:'occupancy',text:`occupancy-bound (occ ${fmt(k.occ,0)}%, util ${fmt(Math.max(comp,mem),0)}%) — under-filled skinny shape; batch/parallelism not fusion`};
+    if(!tiny&&k.waves!=null&&k.occ!=null&&k.occ<lowOcc)return{type:'occupancy',text:`occupancy-bound (occ ${fmt(k.occ,0)}%, util ${fmt(Math.max(comp,mem),0)}%) — under-filled low-occupancy shape; more blocks/SM or a shape-specialized rewrite, not fusion`};
     return{type:'latency',text:`latency-bound (peak ${fmt(Math.max(comp,mem),0)}%, waves ${fmt(k.waves,2)}) — ${tiny?'FUSE':'fuse/parallelize'}`};
   }
+  if(k.occ!=null&&k.occ<25&&!k.clc&&(k.waves==null||k.waves<=1.5))
+    return{type:'occupancy',text:`occupancy-bound (occ ${fmt(k.occ,0)}%, util ${fmt(Math.max(comp,mem),0)}%, ~1 block/SM) — neither pipe saturated; under-subscribed at decode skinny-M, decode-specialized kernel not fusion`};
   return{type:'mixed',text:`compute ${fmt(comp,0)}% / mem ${fmt(mem,0)}% — compute/cache-bound, inspect`};
 }
 function boundCat(cat){ // color kernel-explorer categories by their canonical verdict if known

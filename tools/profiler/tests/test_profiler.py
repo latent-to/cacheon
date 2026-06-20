@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import gzip
 import json
+import sqlite3
 import sys
+import tarfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -24,6 +26,9 @@ import ingest          # noqa: E402
 import findings as fnd  # noqa: E402
 import compare as cmp   # noqa: E402
 import plan as plan_mod  # noqa: E402
+import report as report_mod  # noqa: E402
+import index as index_mod  # noqa: E402
+import taxonomy as tax  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -293,6 +298,87 @@ def test_capture_plan_closes_grey_buckets(tmp):
     assert "gdnscan" in labels
     assert "finalize" not in labels, "already-captured NCU labels should not be re-planned"
     assert p["comm_actions"], "all-reduce should become e2e/nsys action, not NCU replay"
+
+
+def test_schema_v2_manifest_and_architecture(tmp):
+    (tmp / "profile_manifest.json").write_text(json.dumps({
+        "run": {"name": "unit-run", "tags": ["unit", "manifest"]},
+        "model": {"id": "MiniMaxAI/MiniMax-M3-MXFP8", "quantization": "mxfp8"},
+        "runtime": {"graph_mode": "enabled"},
+        "workload": {"kind": "serve", "phase": "decode", "concurrency": 64},
+        "notes": ["manifest note"],
+    }))
+    ds, f = _run(tmp)
+    assert ds["meta"]["schema_version"] == 2
+    assert ds["run"]["name"] == "unit-run"
+    assert ds["model"]["family"] == "MiniMax M3"
+    assert ds["model"]["features"]["sparse_attention"] is True
+    assert ds["runtime"]["graph_mode"] == "enabled"
+    assert ds["workloads"][0]["source"] == "profile_manifest.json"
+    assert ds["taxonomy"]["categories"]["msa_decode_attn"]["component"] == "attention"
+    assert "components" in f
+
+
+def test_taxonomy_order_keeps_msa_out_of_attention_bucket(tmp):
+    name = "_gqa_share_sparse_decode_kernel"
+    assert tax.categorize(name) == "msa_decode_attn"
+    assert tax.categorize("trtllm_mha_decode_kernel") == "attention"
+
+
+def test_recursive_tar_and_telemetry_ingest(tmp):
+    export = tmp / "m3_export2"
+    export.mkdir()
+    raw = "\n".join([
+        "ID,Process ID,Process Name,Host Name,Kernel Name,Context,Stream,Section Name,Metric Name,Metric Unit,Metric Value,Grid Size,Block Size,launch__waves_per_multiprocessor,launch__registers_per_thread,gpu__time_duration.sum,sm__throughput.avg.pct_of_peak_sustained_elapsed,gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed,gpu__dram_throughput.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_active",
+        ",,,,,,,,,us,,,,,,,,,",
+        "0,1,p,h,_gqa_share_sparse_decode_kernel,1,1,SOL,x,%,1,(1 1 1),(128 1 1),0.2,64,100,10,12,8,15",
+    ])
+    log = "==PROF== Profiling \"_gqa_share_sparse_decode_kernel\"\nEXIT=0\n"
+    with tarfile.open(export / "ncu_results_full.tgz", "w:gz") as tf:
+        for name, text in {"ncu_msa_raw.csv": raw, "ncu_msa.log": log}.items():
+            f = tmp / name
+            f.write_text(text)
+            tf.add(f, arcname=name)
+            f.unlink()
+    (export / "gpu_telemetry_unit.csv").write_text(
+        "timestamp, index, name, clocks.current.sm [MHz], clocks.current.memory [MHz], pstate, temperature.gpu, power.draw [W], power.limit [W], clocks_event_reasons.active\n"
+        "t, 0, NVIDIA B300 SXM6 AC, 1905 MHz, 3996 MHz, P0, 35, 240.5 W, 1100 W, 0x1\n"
+    )
+    ds = ingest.ingest(tmp).to_dict()
+    labels = {c["label"] for c in ds["ncu"]}
+    assert "msa" in labels
+    assert ds["health"]["telemetry"]["gpu_count"] == 1
+    assert any(a["kind"] == "archive" and a["status"] == "parsed" for a in ds["artifacts"]["files"])
+
+
+def test_nsys_sqlite_timeline_ingest(tmp):
+    db = tmp / "decode_c64.sqlite"
+    con = sqlite3.connect(str(db))
+    con.execute("create table StringIds(id integer primary key, value text)")
+    con.execute("create table CUPTI_ACTIVITY_KIND_KERNEL(start integer, end integer, deviceId integer, contextId integer, greenContextId integer, streamId integer, correlationId integer, globalPid integer, demangledName integer, shortName integer, mangledName integer, launchType integer, cacheConfig integer, registersPerThread integer, gridX integer, gridY integer, gridZ integer, blockX integer, blockY integer, blockZ integer, staticSharedMemory integer, dynamicSharedMemory integer, localMemoryPerThread integer, localMemoryTotal integer, gridId integer, sharedMemoryExecuted integer, graphNodeId integer, sharedMemoryLimitConfig integer, qmdBulkReleaseDone integer, qmdPreexitDone integer, qmdLastCtaDone integer, graphId integer, clusterX integer, clusterY integer, clusterZ integer, clusterSchedulingPolicy integer, maxPotentialClusterSize integer, maxActiveClusters integer, sharedMemoryRequestedPercentage integer, tensorSizeMinusOneElements text)")
+    con.execute("insert into StringIds values(1, '_decode_score_kernel')")
+    con.execute("insert into CUPTI_ACTIVITY_KIND_KERNEL values(0, 1000, 0, 1, null, 7, 1, 123, 1, 1, null, 0, 0, 64, 1, 1, 1, 128, 1, 1, 0, 0, 0, 0, 1, 0, null, 0, 0, 0, 0, 42, 1, 1, 1, 0, 0, 0, 0, '')")
+    con.commit(); con.close()
+    ds = ingest.ingest(tmp).to_dict()
+    assert ds["nsys"] and ds["nsys"][0]["top_kernels"][0]["cat"] == "msa_indexer_score"
+    assert ds["timelines"] and ds["timelines"][0]["n_graph_ids"] == 1
+    assert ds["timelines"][0]["top_launch_dims"][0]["grid"] == [1, 1, 1]
+
+
+def test_html_and_registry_smoke(tmp):
+    ds, f = _run(tmp)
+    ds["findings"] = f
+    out = tmp / "report.html"
+    report_mod.render(ds, f, out)
+    html = out.read_text()
+    assert "__PROFILER_PAYLOAD__" not in html
+    assert "Run Context" in html and "Timeline Summary" in html and "Artifacts" in html
+    (tmp / "dataset.json").write_text(json.dumps(ds))
+    idx_dir = tmp / "idx"
+    index_mod.main = index_mod.main
+    rows = [index_mod._row(tmp / "dataset.json", ds)]
+    idx_html = index_mod.render(rows)
+    assert "Profiler Runs" in idx_html and "unit" not in idx_html.lower()
 
 
 def test_compare_win_with_fusion(tmp):

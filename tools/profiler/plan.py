@@ -29,6 +29,26 @@ PREFILL_BENCH = "--batch-size 2 --input-len 2048 --output-len 1 --disable-cuda-g
 
 
 NCU_TARGETS = {
+    "nvfp4_moe_gemm": {
+        "label": "nvfp4_moe",
+        "section": "GEMM",
+        "regex": r"GroupProblemShape|GemmUniversal.*Group|mxfp4|nvfp4",
+        "skip": 250,
+        "count": 8,
+        "bench": DEFAULT_DECODE_BENCH,
+        "reason": "decode NVFP4/MXFP4 grouped MoE GEMM bound-type and occupancy",
+        "also": [
+            {
+                "label": "nvfp4_moe_prefill",
+                "section": "GEMM",
+                "regex": r"GroupProblemShape|GemmUniversal.*Group|mxfp4|nvfp4",
+                "skip": 120,
+                "count": 6,
+                "bench": PREFILL_BENCH,
+                "reason": "prefill-vs-decode regime separation for grouped MoE GEMM",
+            }
+        ],
+    },
     "fp4_moe_gemm": {
         "label": "fp4gemm_b32",
         "section": "GEMM",
@@ -104,6 +124,69 @@ NCU_TARGETS = {
         "count": 8,
         "bench": DEFAULT_DECODE_BENCH,
         "reason": "linear-attention recurrence bound-type",
+    },
+    "ssm_scan_decode": {
+        "label": "ssm_decode",
+        "section": "DEEP",
+        "regex": r"selective_scan_update|selective_state_update",
+        "skip": 250,
+        "count": 8,
+        "bench": DEFAULT_DECODE_BENCH,
+        "reason": "Mamba/SSM decode recurrence bound-type",
+    },
+    "ssm_chunk_prefill": {
+        "label": "ssm_prefill",
+        "section": "DEEP",
+        "regex": r"chunk_scan|chunk_state|state_passing|chunk_cumsum|bmm_chunk",
+        "skip": 80,
+        "count": 6,
+        "bench": PREFILL_BENCH,
+        "reason": "Mamba/SSM prefill chunk-scan bound-type",
+    },
+    "ssm_conv": {
+        "label": "ssm_conv",
+        "section": "STALL",
+        "regex": r"causal_conv1d",
+        "skip": 250,
+        "count": 6,
+        "bench": DEFAULT_DECODE_BENCH,
+        "reason": "SSM causal-conv state update launch and memory cost",
+    },
+    "msa_decode_attn": {
+        "label": "msa_decode_attn",
+        "section": "DEEP",
+        "regex": r"_gqa_share_sparse_(decode|fwd)|_merge_topk_attn_out",
+        "skip": 160,
+        "count": 8,
+        "bench": DEFAULT_DECODE_BENCH,
+        "reason": "sparse attention decode kernel bound-type",
+    },
+    "msa_indexer_score": {
+        "label": "msa_indexer",
+        "section": "DEEP",
+        "regex": r"_decode_score|_flash_attn_fwd_with_block_sco|_merge_attn_out",
+        "skip": 160,
+        "count": 8,
+        "bench": LONGCTX_BENCH,
+        "reason": "sparse-attention indexer / block-score bound-type at long context",
+    },
+    "msa_topk": {
+        "label": "msa_topk",
+        "section": "STALL",
+        "regex": r"minimax_decode_topk|_topk_index",
+        "skip": 160,
+        "count": 8,
+        "bench": DEFAULT_DECODE_BENCH,
+        "reason": "sparse-attention top-k/index glue",
+    },
+    "msa_qknorm_rope": {
+        "label": "msa_qknorm_rope",
+        "section": "STALL",
+        "regex": r"qknorm|qk_norm|rope",
+        "skip": 160,
+        "count": 6,
+        "bench": DEFAULT_DECODE_BENCH,
+        "reason": "sparse-attention qk-norm/RoPE glue",
     },
     "gdn_conv": {
         "label": "conv",
@@ -217,6 +300,47 @@ def _rows_for_category(cat: str) -> list[dict]:
     return out
 
 
+def _cat_meta(dataset: dict, cat: str) -> dict:
+    return (dataset.get("taxonomy", {}).get("categories", {}) or {}).get(cat, {})
+
+
+def _architecture_actions(dataset: dict) -> list[dict]:
+    features = (dataset.get("model", {}) or {}).get("features", {}) or {}
+    comps = {r.get("component"): r for r in dataset.get("findings", {}).get("components", [])}
+    actions = []
+    if features.get("moe") and comps.get("moe", {}).get("unknown_pct", 0) > 2:
+        actions.append({
+            "component": "moe",
+            "title": "Close MoE attribution",
+            "reason": "MoE architectures need expert GEMM, routing/finalize, shared expert, and trailing reduce separated before choosing a kernel target.",
+        })
+    if features.get("sparse_attention") and comps.get("attention", {}).get("unknown_pct", 0) > 1:
+        actions.append({
+            "component": "attention",
+            "title": "Profile sparse-attention subcomponents",
+            "reason": "Indexing, top-k, block-score, KV insert, and decode attention are separate levers on sparse-attention models.",
+        })
+    if features.get("mla"):
+        actions.append({
+            "component": "attention",
+            "title": "Add MLA long-context point",
+            "reason": "MLA changes KV-cache economics; capture decode at normal and long context before classifying attention as a floor.",
+        })
+    if features.get("ssm") and comps.get("ssm", {}).get("unknown_pct", 0) > 1:
+        actions.append({
+            "component": "ssm",
+            "title": "Separate SSM decode/prefill/state kernels",
+            "reason": "Mamba/SSM decode recurrence and prefill chunk scan have different shapes and must not share NCU evidence.",
+        })
+    if features.get("linear_attention"):
+        actions.append({
+            "component": "linear_attention",
+            "title": "Pin and A/B linear-attention backends",
+            "reason": "Linear-attention reports are only comparable when decode/prefill backend choices are explicit in logs.",
+        })
+    return actions
+
+
 def plan(dataset: dict, min_pct: float = 0.8, include_known_wins: bool = True) -> dict:
     labels_done = _ncu_labels(dataset)
     ncu_rows: list[dict] = []
@@ -248,7 +372,18 @@ def plan(dataset: dict, min_pct: float = 0.8, include_known_wins: bool = True) -
             continue
         if cat.get("winnable") is True and not include_known_wins:
             continue
-        for row in _rows_for_category(name):
+        rows = _rows_for_category(name)
+        # v2 fallback: if a specific category has no row, ask for a component
+        # capture only when that component is architecture-relevant and unknown.
+        if not rows:
+            comp = _cat_meta(dataset, name).get("component")
+            if comp == "attention":
+                rows = _rows_for_category("attention")
+            elif comp == "ssm":
+                rows = _rows_for_category("ssm_scan_decode")
+            elif comp == "moe":
+                rows = _rows_for_category("nvfp4_moe_gemm")
+        for row in rows:
             if row["label"] in labels_done or row["label"] in seen:
                 continue
             seen.add(row["label"])
@@ -287,6 +422,7 @@ def plan(dataset: dict, min_pct: float = 0.8, include_known_wins: bool = True) -
         "ncu_rows": ncu_rows,
         "backend_abs": backend_abs,
         "comm_actions": comm_actions,
+        "architecture_actions": _architecture_actions(dataset),
         "stop_conditions": stop,
     }
 
@@ -323,6 +459,14 @@ def render(plan_obj: dict) -> str:
                 lines.append(f"  - {f}")
     else:
         lines.append("- no comm-specific action")
+    lines.append("")
+
+    lines.append("## Architecture Notes")
+    if plan_obj.get("architecture_actions"):
+        for a in plan_obj["architecture_actions"]:
+            lines.append(f"- {a['title']} ({a['component']}): {a['reason']}")
+    else:
+        lines.append("- no architecture-specific action")
     lines.append("")
 
     lines.append("## Stop Conditions")

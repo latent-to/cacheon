@@ -23,6 +23,7 @@ COMPUTE_BOUND_PCT = 60.0  # compute throughput at/above this => compute-bound
 DOMINANCE_GAP = 10.0      # one axis must beat the other by this to "win" the label
 LATENCY_CEIL = 50.0       # if max(comp,mem) below this => under-utilised launch
 LOW_WAVES = 0.5           # waves/SM below this => serialized tiny launch (fuse it)
+LOW_OCC_PCT = 20.0        # achieved occupancy below this (doing real work) => occupancy-bound
 FUSION_EFFICIENCY = 0.6   # fraction of glue time fusion realistically recovers
 MIN_DECODE_PCT = 0.3      # ignore decode categories below this share
 
@@ -74,17 +75,26 @@ def bound_type(k: dict) -> tuple[str, str, bool]:
             return ("latency", f"low util ({hi:.0f}%{extra}) but CLC corrupts occupancy — "
                     "verify without thread-block clusters before trusting a fuse win", False)
         tiny = waves is not None and waves < LOW_WAVES
-        if not tiny and waves is not None and occ is not None and occ < 15:
-            return ("occupancy", f"OCCUPANCY-bound (occ {occ:.0f}%, util {hi:.0f}%{extra}) — "
-                    "under-filled (skinny decode shape); lever is batch/parallelism, NOT fusion. "
-                    "If a vendor GEMM, it's the vendor's shape problem — don't rewrite", False)
+        if not tiny and waves is not None and occ is not None and occ < LOW_OCC_PCT:
+            return ("occupancy", f"OCCUPANCY-bound (occ {occ:.0f}%, util {hi:.0f}%{extra}) — under-filled "
+                    "(low-occupancy/skinny shape doing real work); lever is more blocks/SM or a shape-specialized "
+                    "rewrite, NOT fusion", False)
         tag = "FUSE into adjacent GEMM" if tiny else "fuse / more parallelism"
         return ("latency", f"LATENCY-bound (peak util {hi:.0f}%{extra}) — {tag}", True)
+    # Occupancy floor at MODERATE utilisation: neither pipe saturated (≈50–60%) yet
+    # achieved occupancy is very low at ~1 block/SM — under-subscribed silicon, not a
+    # clean wall (the NVFP4 decode MoE grouped GEMM: 56% comp / 56% mem, occ ~17, ~1
+    # block/SM). Throughput-based so it survives CLC; gate the occ evidence on !clc.
+    if occ is not None and occ < LOW_OCC_PCT and not clc and (waves is None or waves <= 1.5):
+        return ("occupancy", f"OCCUPANCY-bound (occ {occ:.0f}%, util {hi:.0f}%, ~1 block/SM) — neither pipe "
+                "saturated; under-subscribed at decode skinny-M. Lever is a decode-specialized kernel "
+                "(more blocks/SM / less M-padding), not fusion", False)
     return ("mixed", f"compute {comp:.0f}% / mem {memx:.0f}% (L1/L2 if DRAM low {dram or 0:.0f}%) — "
             "likely compute/cache-bound; inspect", False)
 
 
-def _decode_ncu_for_cat(ncu: list[dict], allow_all_regimes: bool = False) -> tuple[dict[str, dict], set[str]]:
+def _decode_ncu_for_cat(ncu: list[dict], allow_all_regimes: bool = False,
+                        regime: str = "decode") -> tuple[dict[str, dict], set[str]]:
     """Pick a representative ncu kernel per category to characterize *decode*.
 
     Soundness rules (each one fixes a real phantom-win we hit):
@@ -104,7 +114,7 @@ def _decode_ncu_for_cat(ncu: list[dict], allow_all_regimes: bool = False) -> tup
     cands: dict[str, list[dict]] = {}
     cluster_cats: set[str] = set()
     for cap in ncu:
-        if not allow_all_regimes and cap.get("regime") != "decode":
+        if not allow_all_regimes and cap.get("regime") != regime:
             continue
         bs1 = cap.get("batch") == 1
         for k in cap.get("kernels", []):
@@ -317,6 +327,90 @@ def _unknown_opportunity(e: dict, dataset: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# per-regime breakdown (decode vs prefill) — share (nsys kernsum) × bound-type
+# (ncu of the SAME regime). This is what makes prefill a first-class section, not
+# just a kernel dump: a prefill big-M attention is occupancy/compute-bound; the
+# decode skinny-M MoE GEMM is occupancy-bound — never let one regime's ncu speak
+# for the other (the cardinal phantom-win guard, applied per regime).
+# --------------------------------------------------------------------------- #
+def _regime_of(label: str) -> str:
+    return "prefill" if "prefill" in label.lower() else "decode"
+
+
+def _best_ncu_by_cat_for_regime(ncu: list[dict], regime: str) -> dict[str, dict]:
+    best: dict[str, dict] = {}
+    for cap in ncu:
+        if cap.get("regime") != regime:
+            continue
+        for k in cap.get("kernels", []):
+            if not k.get("valid") or k.get("cluster"):
+                continue
+            c = k.get("cat", "other")
+            cur = best.get(c)
+            if cur is None or (k.get("dur_us") or 0) > (cur.get("dur_us") or 0):
+                best[c] = {**k, "capture": cap["label"]}
+    return best
+
+
+def _regime_breakdown(nsys_entry: dict, ncu: list[dict], display: dict) -> dict:
+    label = nsys_entry.get("file", "?")
+    regime = _regime_of(label)
+    best = _best_ncu_by_cat_for_regime(ncu, regime)
+    cats = []
+    for c, row in sorted(nsys_entry.get("cats", {}).items(), key=lambda kv: -kv[1]["pct"]):
+        if row["pct"] < MIN_DECODE_PCT:
+            continue
+        k = best.get(c)
+        if k:
+            bt, verdict, win = bound_type(k)
+            ev = {"capture": k.get("capture"), "comp": k.get("comp"), "mem": k.get("mem"),
+                  "dram": k.get("dram"), "occ": k.get("occ"), "waves": k.get("waves"), "kernel": k.get("kernel")}
+        else:
+            bt, verdict, win, ev = "unknown", f"no {regime}-regime ncu capture for this category — PROFILE IT", None, None
+        cats.append({"cat": c, "display": display.get(c, c), "pct": round(row["pct"], 2),
+                     "us": round(row["us"], 1), "count": row["count"],
+                     "bound_type": bt, "verdict": verdict, "winnable": win, "ncu": ev})
+    return {"label": label.replace("_kernsum.txt", ""), "regime": regime,
+            "total_ms": round(nsys_entry.get("total_ms", 0.0), 1), "categories": cats}
+
+
+def _taxonomy_meta(dataset: dict, cat: str) -> dict:
+    return (dataset.get("taxonomy", {}).get("categories", {}) or {}).get(cat, {})
+
+
+def _component_summary(dataset: dict, categories: list[dict]) -> list[dict]:
+    by: dict[str, dict] = {}
+    for e in categories:
+        meta = _taxonomy_meta(dataset, e["cat"])
+        comp = meta.get("component") or "unknown"
+        own = meta.get("ownership") or "unknown"
+        row = by.setdefault(comp, {
+            "component": comp, "pct": 0.0, "count": 0,
+            "winnable_pct": 0.0, "unknown_pct": 0.0,
+            "ownership": {},
+            "categories": [],
+        })
+        pct = float(e.get("pct") or 0)
+        row["pct"] += pct
+        row["count"] += int(e.get("count") or 0)
+        row["ownership"][own] = row["ownership"].get(own, 0.0) + pct
+        row["categories"].append(e["cat"])
+        if e.get("winnable") is True:
+            row["winnable_pct"] += pct
+        elif e.get("winnable") is None:
+            row["unknown_pct"] += pct
+    out = []
+    for row in by.values():
+        row["pct"] = round(row["pct"], 2)
+        row["winnable_pct"] = round(row["winnable_pct"], 2)
+        row["unknown_pct"] = round(row["unknown_pct"], 2)
+        row["ownership"] = {k: round(v, 2) for k, v in sorted(row["ownership"].items())}
+        row["categories"] = sorted(set(row["categories"]))
+        out.append(row)
+    return sorted(out, key=lambda r: -r["pct"])
+
+
+# --------------------------------------------------------------------------- #
 # main
 # --------------------------------------------------------------------------- #
 def derive(dataset: dict) -> dict:
@@ -331,16 +425,24 @@ def derive(dataset: dict) -> dict:
     # decode/steady. This is a SERVING MIX (prefill+decode interleaved), so the ncu
     # join is allowed to use both regimes.
     nsys_mix = False
+    canon_regime = "decode"
     if canon is None and dataset.get("nsys"):
         ns = sorted(dataset["nsys"], key=lambda n: (
             0 if re.search(r"decode|steady", n.get("file", ""), re.I) else 1,
             -n.get("total_ms", 0),
         ))[0]
-        canon = {"label": "nsys:" + ns.get("file", "?"), "rank": "serving-mix",
-                 "file": ns.get("file"), "total_us": ns.get("total_ms", 0) * 1000.0,
-                 "cats": ns.get("cats", {}), "source": "nsys", "serving_mix": True}
-        nsys_mix = True
-    best_ncu, cluster_cats = _decode_ncu_for_cat(ncu, allow_all_regimes=nsys_mix)
+        fname = ns.get("file", "")
+        # A regime-specific kernsum (named decode/prefill) must join ONLY its own
+        # regime's ncu — never let a prefill big-M capture characterize a decode
+        # category (and vice-versa). A genuine continuous-batch mix (neither tag)
+        # falls back to all-regimes.
+        regime_specific = bool(re.search(r"decode|prefill", fname, re.I))
+        canon_regime = _regime_of(fname)
+        canon = {"label": "nsys:" + fname, "rank": canon_regime + "-regime",
+                 "file": fname, "total_us": ns.get("total_ms", 0) * 1000.0,
+                 "cats": ns.get("cats", {}), "source": "nsys", "serving_mix": not regime_specific}
+        nsys_mix = not regime_specific
+    best_ncu, cluster_cats = _decode_ncu_for_cat(ncu, allow_all_regimes=nsys_mix, regime=canon_regime)
 
     categories: list[dict] = []
     winnable_pct = floor_pct = unknown_pct = 0.0
@@ -384,7 +486,7 @@ def derive(dataset: dict) -> dict:
     max_decode_speedup = 1.0 / (1.0 - wp) if wp < 1 else float("inf")
     realistic_decode_gain = winnable_pct * FUSION_EFFICIENCY      # fusion-only
     rewritable_pct = sum(e["pct"] for e in categories
-                         if e["cat"] in OURS_CATS and e["bound_type"] in ("compute", "mixed"))
+                         if e["cat"] in OURS_CATS and e["bound_type"] in ("compute", "mixed", "occupancy"))
     rewrite_ceiling_pct = rewritable_pct * 0.5   # OPTIMISTIC: fp16 halves a fully-fp32-ALU surface
     amdahl = {
         "winnable_pct": round(winnable_pct, 1),
@@ -407,6 +509,10 @@ def derive(dataset: dict) -> dict:
     }
 
     levers = _levers(e2e)
+
+    # per-regime breakdowns (decode + prefill), each share × same-regime bound-type
+    regimes = [_regime_breakdown(n, ncu, display) for n in dataset.get("nsys", [])]
+    regimes.sort(key=lambda r: (0 if r["regime"] == "decode" else 1, r["label"]))
 
     # peak throughput — over PRIMARY configs only (mtp_off/mtp_on), never an
     # ablation (no_all_reduce / no_cuda_graph), so the headline number is real.
@@ -432,17 +538,42 @@ def derive(dataset: dict) -> dict:
     # compute/cache-bound kernels WE OWN → precision/tensor reformulation lever (the
     # fusion-centric 'winnable' misses these; they're the biggest surface on SSM models).
     for e in categories:
-        if e["cat"] in OURS_CATS and e["bound_type"] in ("compute", "mixed") and e["pct"] >= 1.0:
+        if e["cat"] in OURS_CATS and e["bound_type"] in ("compute", "mixed", "occupancy") and e["pct"] >= 1.0:
+            n = e.get("ncu") or {}
+            occ_bound = e["bound_type"] == "occupancy"
+            if occ_bound:
+                ev = (f"occupancy-bound (occ {n.get('occ','?')}%, SM {n.get('comp','?')}%, DRAM {n.get('dram','?')}%) "
+                      "AND it's a Triton kernel we own — under-subscribed silicon, not a vendor floor. A Blackwell-tuned "
+                      "tiling/occupancy rewrite (more blocks/SM, fp8) is the lever.")
+                act = ("ncu the launch limiter (registers vs smem) at the serving shape, then a Blackwell-native "
+                       "re-tile to raise blocks/SM; fidelity-gate (GSM8K). Confirm e2e (not just occupancy).")
+            else:
+                ev = (f"compute/cache-bound (SM {n.get('comp','?')}%, DRAM {n.get('dram','?')}%) AND it's a "
+                      "Triton kernel we own — not a vendor floor. If the SM% is fp32-ALU (not tensor cores), "
+                      "a precision (fp16) / tensor-core reformulation is the lever.")
+                act = ("pipe roofline (sm__pipe_fp32 vs sm__pipe_tensor) to confirm ALU-bound, then fp16/tensor "
+                       "rewrite — e.g. `--mamba-ssm-dtype float16` for SSM (TRT-LLM's Ultra config already does). "
+                       "Fidelity-gate (GPQA/GSM8K).")
+            opportunities.append({
+                "title": f"Reformulate {e['display']} ({e['pct']:.1f}% of decode) — {'occupancy' if occ_bound else 'compute'}-bound, OURS",
+                "category": e["cat"], "pct": e["pct"], "kind": "rewrite", "est_decode_gain_pct": None,
+                "evidence": ev, "action": act,
+            })
+    # Occupancy-bound VENDOR kernels (not ours): a decode-specialized REPLACEMENT is
+    # the lever (idle silicon, not a saturated wall) — but it's a hard from-scratch
+    # kernel, never a fuse, so gain is unknown until built + measured. Surfaced so the
+    # biggest decode consumer (the NVFP4 MoE GEMM) is not hidden inside "vendor floor".
+    for e in categories:
+        if e["bound_type"] == "occupancy" and e["cat"] not in OURS_CATS and e["pct"] >= 5.0:
             n = e.get("ncu") or {}
             opportunities.append({
-                "title": f"Reformulate {e['display']} ({e['pct']:.1f}% of decode) — compute-bound, OURS",
-                "category": e["cat"], "pct": e["pct"], "kind": "rewrite", "est_decode_gain_pct": None,
-                "evidence": (f"compute/cache-bound (SM {n.get('comp','?')}%, DRAM {n.get('dram','?')}%) AND it's a "
-                             "Triton kernel we own — not a vendor floor. If the SM% is fp32-ALU (not tensor cores), "
-                             "a precision (fp16) / tensor-core reformulation is the lever."),
-                "action": ("pipe roofline (sm__pipe_fp32 vs sm__pipe_tensor) to confirm ALU-bound, then fp16/tensor "
-                           "rewrite — e.g. `--mamba-ssm-dtype float16` for SSM (TRT-LLM's Ultra config already does). "
-                           "Fidelity-gate (GPQA/GSM8K)."),
+                "title": f"Decode-specialized replacement for {e['display']} ({e['pct']:.1f}% of decode) — occupancy-bound, HARD",
+                "category": e["cat"], "pct": e["pct"], "kind": "rewrite-hard", "est_decode_gain_pct": None,
+                "evidence": (f"occupancy-bound (occ {n.get('occ','?')}%, SM {n.get('comp','?')}%, DRAM {n.get('dram','?')}%, ~1 block/SM) — "
+                             "idle silicon, NOT a saturated vendor wall. A vendor (cutlass/nvjet) kernel tuned for big-M leaves the SM "
+                             "mostly empty at decode-M. Beatable ONLY by a from-scratch decode-specialized kernel at equal fidelity."),
+                "action": ("ncu the launch limiter (registers AND smem); design a lower-footprint / less-padded decode kernel "
+                           "(more blocks/SM, or a thin-M-specialized tile); prove e2e served tok/s + a fidelity gate before trusting it."),
             })
     for e in categories:
         if e["winnable"] is None and e["pct"] >= 1.0:
@@ -475,16 +606,30 @@ def derive(dataset: dict) -> dict:
         data_quality.append("Ceiling (noop-op) numbers are single-run and NOISY — treat as directional; "
                             "re-verify interleaved + clock-locked before trusting op-shares.")
 
+    components = _component_summary(dataset, categories)
+    features = (dataset.get("model", {}).get("features") or {})
+    architecture_notes = []
+    if features.get("moe"):
+        architecture_notes.append("MoE model: keep expert GEMM, routing/finalize, shared experts, and collective/reduce ownership separated.")
+    if features.get("mla"):
+        architecture_notes.append("MLA model: long-context attention and KV-cache bytes/token need their own phase points; do not treat GQA assumptions as sufficient.")
+    if features.get("sparse_attention"):
+        architecture_notes.append("Sparse-attention model: indexer/top-k/block-score kernels are architecture surfaces, not generic attention glue.")
+    if features.get("ssm"):
+        architecture_notes.append("SSM/Mamba model: separate decode recurrence, prefill chunk scan, causal conv, and state-cache movement.")
+    if features.get("linear_attention"):
+        architecture_notes.append("Linear-attention model: backend A/Bs and packed decode provenance are first-class report dimensions.")
+
     headline = "no data"
     if canon:
         src = (f"Peak {peak['tok_s']:.0f} tok/s @ conc{peak['conc']} ({peak['config']}). " if peak
                else f"Breakdown from {canon.get('label', '?')}" + (" (serving mix). " if canon.get("serving_mix") else ". "))
         rw = amdahl["rewritable_pct"]
         headline = (src +
-                    f"Of decode GPU time: ≈{rw:.0f}% is compute-bound kernels WE OWN (Triton/SSM) — "
-                    f"the precision/tensor REWRITE lever; ≈{winnable_pct:.0f}% fusible glue; "
+                    f"Of {canon_regime} GPU time: ≈{rw:.0f}% is compute/occupancy-bound kernels WE OWN (Triton) — "
+                    f"the precision/occupancy REWRITE lever; ≈{winnable_pct:.0f}% fusible glue; "
                     f"≈{amdahl['floor_pct']:.0f}% vendor floor; ≈{amdahl['unknown_pct']:.0f}% un-profiled. "
-                    f"The win is the {rw:.0f}% rewrite surface (e.g. fp16 SSM), not the {winnable_pct:.0f}% glue.")
+                    f"The win is the {rw:.0f}% rewrite surface (our Triton kernels), not the {winnable_pct:.0f}% glue.")
 
     return {
         "headline": headline,
@@ -497,6 +642,9 @@ def derive(dataset: dict) -> dict:
             "categories": categories,
         },
         "amdahl": amdahl,
+        "components": components,
+        "architecture_notes": architecture_notes,
+        "regimes": regimes,
         "levers": levers,
         "opportunities": opportunities,
         "constraints": constraints,
@@ -504,7 +652,7 @@ def derive(dataset: dict) -> dict:
         "thresholds": {
             "MEM_BOUND_PCT": MEM_BOUND_PCT, "COMPUTE_BOUND_PCT": COMPUTE_BOUND_PCT,
             "DOMINANCE_GAP": DOMINANCE_GAP, "LATENCY_CEIL": LATENCY_CEIL,
-            "LOW_WAVES": LOW_WAVES, "FUSION_EFFICIENCY": FUSION_EFFICIENCY,
+            "LOW_WAVES": LOW_WAVES, "LOW_OCC_PCT": LOW_OCC_PCT, "FUSION_EFFICIENCY": FUSION_EFFICIENCY,
         },
     }
 
