@@ -113,8 +113,25 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return rc
 
 
+def _declared_model(bundle: str, op) -> str | None:
+    """Dev convenience: read the model an op's metadata JSON declares, to pick the
+    validator's per-model slot profile when --model isn't given. Never reads thresholds
+    from metadata (those are validator-owned in slots.MODEL_PROFILES) — only the model id,
+    which selects WHICH validator profile applies. Best-effort; returns None on any issue."""
+    if not getattr(op, "metadata", None):
+        return None
+    try:
+        import json
+        from pathlib import Path
+
+        meta = json.loads((Path(bundle) / op.metadata).read_text())
+        return meta.get("model") or meta.get("model_profile")
+    except Exception:
+        return None
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
-    from optima.slots import SLOTS, get_slot
+    from optima.slots import SLOTS, get_slot, model_profile, slot_for_model
     from optima.verify import format_verify, verify_entry
 
     m = load_manifest(args.bundle)
@@ -123,7 +140,12 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if op.slot not in SLOTS:
             print(f"  [SKIP] {op.slot}: not a known slot on this validator")
             continue
-        slot = get_slot(op.slot)
+        model_key = args.model or _declared_model(args.bundle, op)
+        if model_profile(model_key, op.slot) is not None:
+            via = "via --model" if args.model else "declared in metadata"
+            print(f"  [profile] {op.slot}: model {model_key!r} ({via}) -> validator slot profile "
+                  "(activation + low-bit metric)")
+        slot = slot_for_model(op.slot, model_key)
         src = resolve_source(args.bundle, op)
 
         scan = scan_path(src)
@@ -141,7 +163,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
             ws = getattr(args, "world_size", None) or 2
             result = verify_collective(slot, str(src), op.entry, prepare_name=op.prepare,
-                                       world_size=ws, device=args.device, seed=args.seed)
+                                       world_size=ws, device=args.device, seed=args.seed,
+                                       model_key=model_key)
             print(format_verify(result))
             if not result.passed:
                 rc = 2
@@ -157,6 +180,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             verify_entry_from_source, op.slot, str(src), op.entry,
             prepare_name=op.prepare, dtype_name=args.dtype, device=args.device, seed=args.seed,
             jitter_seed=args.seed,  # count-dim jitter so shapes vary per run (anti shape-branch)
+            model_key=model_key,  # validator per-model slot profile (activation + metric)
         )
         print(format_verify(result))
         if not result.passed:
@@ -523,6 +547,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     sp.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
     sp.add_argument("--seed", type=int, default=0)
+    sp.add_argument("--model", default=None,
+                    help="validator model key for the per-model slot profile (activation + "
+                         "low-bit metric), e.g. MiniMax-M3. Default: the model declared in the "
+                         "op's metadata (dev convenience); production uses the served-model key.")
     sp.set_defaults(func=cmd_verify)
 
     sp = sub.add_parser("evaluate", help="end-to-end throughput + KL on a model")

@@ -47,7 +47,7 @@ Adding a slot is a validator action (a code change here), never a miner action.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional, Sequence
 
 import torch
@@ -78,12 +78,37 @@ class Correctness:
       (FP4/FP8): element-wise tolerance is meaningless when every element carries
       ~6-12% quantization error, but the *direction* (and energy) of the block output
       is preserved — which is what actually drives the model's logits.
+
+    DESIGN NOTE — this is the *op-correctness* gate, a cheap **sanity** check ("is this
+    even computing the slot's function?"), explicitly necessary-but-not-sufficient
+    (verify.py). It is NOT the fidelity authority: the load-bearing anti-cheat gate is
+    the end-to-end per-token **KL on the model's logits** (optima.eval), which is exactly
+    where a temp-0 distributional metric belongs. The op-gate's only job is to never let
+    through a kernel computing the WRONG function (e.g. plain SiLU on a swigluoai model:
+    cosine 0.45) while never false-failing a kernel the e2e KL gate accepts (a faithful
+    low-bit kernel: cosine 0.996). Hence: same-function reference + a validator-owned
+    floor, never a per-element bound that the irreducible quant noise alone would trip.
     """
 
     mode: str = "allclose"  # "allclose" | "matched_ratio" | "cosine"
     min_ratio: float = 1.0
     min_cosine: float = 0.0  # cosine mode: min cosine similarity vs the HP reference
     max_rel_norm_err: float = 0.0  # cosine mode: optional |‖a‖-‖e‖|/‖e‖ guard (0 = off)
+
+
+@dataclass(frozen=True)
+class Activation:
+    """The gated-MLP activation a model's MoE/FFN uses — a MODEL fact (read from the
+    model's config), NOT a miner choice. ``silu`` is the Qwen/Llama default
+    ``silu(gate)*up``; ``swigluoai`` is the clamped GPT-OSS / MiniMax-M3 form
+    ``g=min(gate,limit); u=clamp(up,-limit,limit); g*sigmoid(alpha*g)*(u+1)``."""
+
+    kind: str = "silu"  # "silu" | "swigluoai"
+    alpha: float = 1.702  # swigluoai sigmoid gain (config swiglu_alpha)
+    limit: float = 7.0  # swigluoai clamp (config swiglu_limit)
+
+
+_SILU = Activation("silu")
 
 
 @dataclass(frozen=True)
@@ -389,7 +414,18 @@ ATTENTION_DECODE = SlotSpec(
 # ---------------------------------------------------------------------------
 
 
-def _moe_reference(x, w13, w2, topk_ids, topk_weights):
+def _gated_activation(gate: torch.Tensor, up: torch.Tensor, act: Activation) -> torch.Tensor:
+    """The fc1 -> intermediate activation. ``act`` (a MODEL fact) selects the form so the
+    HP reference matches the model the kernel targets — using SiLU as the reference for a
+    swigluoai model is the ratio-0.0 false-fail this fixes."""
+    if act.kind == "swigluoai":
+        g = gate.clamp(max=act.limit)
+        u = up.clamp(min=-act.limit, max=act.limit)
+        return g * torch.sigmoid(act.alpha * g) * (u + 1.0)
+    return F.silu(gate) * up
+
+
+def _moe_reference(x, w13, w2, topk_ids, topk_weights, act: Activation = _SILU):
     # x:(M,H) w13:(E,2I,H)[gate;up] w2:(E,H,I) topk_ids:(M,K) topk_weights:(M,K) -> (M,H)
     M, H = x.shape
     I = w13.shape[1] // 2
@@ -403,9 +439,37 @@ def _moe_reference(x, w13, w2, topk_ids, topk_weights):
         w2_e = w2[e].float()                            # (M,H,I)
         fc1 = torch.einsum("mh,mih->mi", x32, w13_e)    # (M,2I)
         gate, up = fc1[:, :I], fc1[:, I:]
-        act = F.silu(gate) * up                         # (M,I)
-        out += wk[:, None] * torch.einsum("mi,mhi->mh", act, w2_e)
+        act_out = _gated_activation(gate, up, act)      # (M,I)
+        out += wk[:, None] * torch.einsum("mi,mhi->mh", act_out, w2_e)
     return out
+
+
+def _moe_prepare_args_from_layer(layer):
+    """Map a LIVE sglang FusedMoE layer to the miner ``prepare()`` call shape — the
+    validator-owned layer->contract mapping. Live-eval seam only (``dispatch._moe_prepared``);
+    ``optima verify`` uses ``invoke_prepare`` on synthetic weights and never calls this.
+
+    * DENSE layer -> ``(w13_weight.data, w2_weight.data)`` — identical to the old default; the
+      miner's prepare reorders/repacks the two tensors.
+    * QUANTIZED layer (NVFP4 ``ModelOptNvFp4FusedMoEMethod``, weights are packed uint8) ->
+      ``("nvfp4_layer", layer)``: the validator hands the miner's prepare the LIVE layer. A
+      quantized kernel's weight layout is *kernel-specific* (the flashinfer CuteDSL v2 path wants
+      a ``CuteDslMoEWrapper`` + [Up,Gate]-interleaved weights + MMA-layout block-scales +
+      scalarized scales; a cutlass kernel wants something else), so the per-kernel transform
+      belongs in the miner's prepare, which builds it ONCE — reusing the model runtime's own
+      prepared state (e.g. sglang ``ensure_cutedsl_wrapper``) rather than re-deriving the fragile
+      scale algebra. This keeps the generic slot free of any one kernel's layout while still
+      giving the miner everything the quantized weights need (the dense 2-tuple omits the scales).
+
+    hasattr-guarded so a dense (or unrecognized) layer always falls back to the dense 2-tuple."""
+    w13 = getattr(getattr(layer, "w13_weight", None), "data", None)
+    is_quant = getattr(w13, "dtype", None) == torch.uint8 and (
+        getattr(layer, "w13_weight_scale", None) is not None
+        or getattr(layer, "g1_alphas", None) is not None
+    )
+    if is_quant:
+        return ("nvfp4_layer", layer)
+    return (layer.w13_weight.data, layer.w2_weight.data)  # dense — unchanged default
 
 
 def _moe_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter: int, topk: int,
@@ -441,7 +505,7 @@ MOE_FUSED_EXPERTS = SlotSpec(
     out_shapes=lambda i: [(i["x"].shape[0], i["x"].shape[1])],
     invoke_reference=lambda i: [_moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"])],
     invoke_prepare=lambda prepare_fn, i: prepare_fn(i["w13"], i["w2"]),
-    prepare_from_layer=lambda layer: (layer.w13_weight.data, layer.w2_weight.data),
+    prepare_from_layer=_moe_prepare_args_from_layer,
     invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], i["topk_ids"], i["topk_weights"], prepared, outs[0]),
     shapes=(
         {"num_tokens": 4, "num_experts": 8, "hidden": 256, "inter": 128, "topk": 2},
@@ -570,7 +634,7 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
     invoke_reference=lambda i: [_moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"])],
     invoke_entry=lambda entry, i, outs, prepared: None,
     invoke_prepare=lambda prepare_fn, i: prepare_fn(i["w13"], i["w2"]),
-    prepare_from_layer=lambda layer: (layer.w13_weight.data, layer.w2_weight.data),
+    prepare_from_layer=_moe_prepare_args_from_layer,
     # Reference partial = this rank's fp32 expert output (HP, from the RAW weights, NOT the
     # miner's `prepared`); the trusted cross-rank SUM is the full MoE output.
     collective_partial=lambda i, prepared: _moe_reference(
@@ -608,3 +672,87 @@ def get_slot(name: str) -> SlotSpec:
 
 def list_slots() -> list[str]:
     return sorted(SLOTS)
+
+
+# ---------------------------------------------------------------------------
+# Per-model slot policy — the VALIDATOR-OWNED specialization.
+#
+# A slot's default (above) is the generic case (SiLU experts, matched_ratio). But the
+# *activation*, *quant format*, and the *correctness floor* for a given (model, slot) are
+# MODEL/VALIDATOR facts, never miner choices: the validator controls the model it serves,
+# reads swiglu_alpha/limit from its config, and calibrates the floor to the measured noise.
+# A miner only NAMES which model it targets; the numbers below are the validator's.
+#
+# This is the precursor to a full per-model arena registry (docs: arenas). When that lands,
+# these profiles move there; today it is the one validator-owned table that makes the MoE
+# slot verifiable on a swigluoai/NVFP4 model (e.g. MiniMax-M3) without weakening the generic
+# slot or letting a submission set its own gate.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SlotProfile:
+    """Validator-owned (model, slot) overrides. ``activation`` retargets the HP reference
+    to the model's real activation; ``correctness`` (optional) swaps the op-sanity metric
+    (e.g. cosine for a low-bit kernel). None fields keep the generic slot default."""
+
+    activation: Activation = field(default_factory=Activation)
+    correctness: Optional[Correctness] = None
+
+
+_MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
+
+
+def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
+    """Return a copy of ``slot`` retargeted by a validator ``profile``. Only rebinds the
+    pieces the profile changes (the activation-bearing references + the correctness policy);
+    everything else — inputs, shapes, seam wiring — is untouched. The module-level slot
+    singletons are never mutated, so ``get_slot`` stays generic."""
+    repl: dict = {}
+    if slot.name in _MOE_SLOTS:
+        act = profile.activation
+
+        def _ref(i, _act=act):
+            return [_moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"], _act)]
+
+        repl["invoke_reference"] = _ref
+        if slot.collective_partial is not None:  # the reduce block's distributed reference
+            def _partial(i, prepared, _act=act):
+                return _moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"], _act).float()
+
+            repl["collective_partial"] = _partial
+    if profile.correctness is not None:
+        repl["correctness"] = profile.correctness
+    return replace(slot, **repl) if repl else slot
+
+
+# model key (as a miner may declare it / as the validator keys its served model) -> {slot: profile}
+MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
+    "MiniMax-M3": {
+        "moe.fused_experts": SlotProfile(
+            activation=Activation("swigluoai", alpha=1.702, limit=7.0),
+            # Low-bit (NVFP4) experts: gate on cosine vs the same-function fp32 reference.
+            # min_cosine = the measured NVFP4 representational floor (0.9958 at M3 shape,
+            # m3_swigluoai_gate.py) with headroom; plain-SiLU scores 0.45 and is rejected.
+            # No norm guard yet (max_rel_norm_err uncalibrated — TODO measure the floor).
+            correctness=Correctness("cosine", min_cosine=0.985),
+        ),
+    },
+}
+# NVFP4 builds carry a "-NVFP4" suffix in their declared model id; alias them.
+MODEL_PROFILES["MiniMax-M3-NVFP4"] = MODEL_PROFILES["MiniMax-M3"]
+
+
+def model_profile(model_key: Optional[str], slot_name: str) -> Optional[SlotProfile]:
+    if not model_key:
+        return None
+    return MODEL_PROFILES.get(model_key, {}).get(slot_name)
+
+
+def slot_for_model(slot_name: str, model_key: Optional[str] = None) -> SlotSpec:
+    """``get_slot`` + the validator's per-model specialization. With no model key (or no
+    registered profile) this is exactly ``get_slot`` — the generic slot — so existing
+    callers and bundles are unchanged."""
+    slot = get_slot(slot_name)
+    prof = model_profile(model_key, slot_name)
+    return specialize_slot(slot, prof) if prof else slot
