@@ -5,7 +5,14 @@ A validator harness for a Bittensor-style subnet where miners submit **kernels**
 are scored on **throughput** gated by **output fidelity** — measured two ways:
 per-token **KL** against a reference run, and **task accuracy** on real benchmarks.
 
-> **New here? Read [docs/HOW_OPTIMA_WORKS.md](docs/HOW_OPTIMA_WORKS.md)** — the
+> **Want to compete? Start with [docs/MINER_GUIDE.md](docs/MINER_GUIDE.md)** — the
+> miner on-ramp in plain language: what Optima is and how you earn, exactly how a
+> kernel is scored (the gates and thresholds), the slots you can target, a 20-minute
+> first-kernel walkthrough, the bundle format, how to test locally then on a GPU,
+> how to actually find a real win, and how to submit. No prior subnet knowledge
+> assumed.
+>
+> **New here (design)? Read [docs/HOW_OPTIMA_WORKS.md](docs/HOW_OPTIMA_WORKS.md)** — the
 > full end-to-end explainer: what the validator does, what miners submit, the
 > exact pipeline, how a kernel gets into the model, and the complete threat model
 > (including the "fake the output via an API call" attack and why the op-slot
