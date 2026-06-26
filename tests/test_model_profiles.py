@@ -103,3 +103,27 @@ def test_override_missing_torch_reference_errors(tmp_path):
             override_point="gemm1_epilogue", model_key="MiniMax-M3",
             dtype_name="float32", device="cpu",
         )
+
+
+def test_example_swigluoai_override_bundle_verifies():
+    """The shipped example override bundle: policy-clean (no open/sglang/vendored tree),
+    is_override, and verifies under its declared M3 profile via the CPU dense path."""
+    import json
+    from pathlib import Path
+
+    from optima.manifest import load_manifest, resolve_source
+    from optima.sandbox import scan_path
+
+    bundle = "examples/miner_m3_swigluoai_override"
+    m = load_manifest(bundle)
+    op = m.op_for("moe.fused_experts")
+    assert op.is_override and op.base_kernel == "nvfp4_moe_megakernel"
+    src = resolve_source(bundle, op)
+    assert scan_path(str(src)).ok  # no banned builtins / vendored tree
+    model_key = json.loads((Path(bundle) / op.metadata).read_text())["model"]
+    res = verify_entry_from_source(
+        "moe.fused_experts", str(src), op.entry, override_point=op.override_point,
+        model_key=model_key, dtype_name="float32", device="cpu",
+    )
+    assert res.passed, res.shape_results
+    assert all(r.metric == "cosine" for r in res.shape_results)

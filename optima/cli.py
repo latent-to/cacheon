@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from optima.manifest import load_manifest, resolve_source
 from optima.sandbox import scan_path
@@ -121,9 +122,9 @@ def _verify_model_key(args: argparse.Namespace, op, bundle: str):
     if op.metadata:
         try:
             meta = json.loads((Path(bundle) / op.metadata).read_text())
-            return meta.get("model")
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # missing/malformed metadata -> no profile (not a hard error)
             return None
+        return meta.get("model")
     return None
 
 
