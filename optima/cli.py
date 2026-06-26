@@ -100,6 +100,8 @@ def cmd_set_weights(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
+    from optima.sandbox import scan_tree
+
     m = load_manifest(args.bundle)
     print(f"bundle: {m.bundle_id}  abi: {m.abi_version}  ops: {len(m.ops)}")
     rc = 0
@@ -111,7 +113,29 @@ def cmd_scan(args: argparse.Namespace) -> int:
         for v in result.violations:
             print(f"      {v}")
             rc = 2
+    # Recursive guard: catch a vendored/extra .py the per-op (entry-only) scan misses.
+    op_sources = {op.source for op in m.ops}
+    extra = [v for v in scan_tree(args.bundle).violations
+             if not any(v.startswith(s) for s in op_sources)]
+    if extra:
+        print("  [VIOLATIONS] vendored/extra .py (recursive scan):")
+        for v in extra:
+            print(f"      {v}")
+        rc = 2
     return rc
+
+
+def _recursive_scan_ok(bundle: str) -> bool:
+    """Fail-closed vendored-tree guard for the eval paths: scan every bundle .py, not just
+    the declared entries. Prints violations; returns False if any."""
+    from optima.sandbox import scan_tree
+
+    tree = scan_tree(bundle)
+    if not tree.ok:
+        print("  [FAIL] recursive policy scan (vendored-tree guard):")
+        for v in tree.violations:
+            print(f"      {v}")
+    return tree.ok
 
 
 def _verify_model_key(args: argparse.Namespace, op, bundle: str):
@@ -133,6 +157,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
     from optima.verify import format_verify, verify_entry
 
     m = load_manifest(args.bundle)
+    if not _recursive_scan_ok(args.bundle):
+        return 2
     rc = 0
     for op in m.ops:
         if op.slot not in SLOTS:
@@ -191,6 +217,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     # Trusted parent: validate + scan only. It never imports miner code — the
     # kernel is loaded inside the (to-be-isolated) model process by the plugin.
     m = load_manifest(args.bundle)
+    if not _recursive_scan_ok(args.bundle):
+        return 2
     known = 0
     for op in m.ops:
         if op.slot not in SLOTS:

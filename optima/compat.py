@@ -152,6 +152,18 @@ def run_checks() -> list[Check]:
     except Exception as exc:  # noqa: BLE001
         add("ServerArgs accepts our kwargs", False, repr(exc))
 
+    # Blessed base — the kernel-library surface a miner kernel / a composed override runs on.
+    # Consensus-critical: a flashinfer/cutlass/triton skew JITs different kernels -> different
+    # throughput AND numerics -> divergent weights -> Yuma penalty (the same reason sglang is
+    # pinned). Record-only until the arena pins exact versions; the canary reports the surface.
+    try:
+        from optima.blessed_base import check_blessed_base
+
+        for name, ok, detail in check_blessed_base():
+            add(f"blessed-base: {name}", ok, detail)
+    except Exception as exc:  # noqa: BLE001
+        add("blessed-base", False, repr(exc))
+
     return checks
 
 

@@ -95,10 +95,16 @@ def activate() -> None:
 def _load_bundle_into_registry(bundle: str) -> None:
     from optima.manifest import load_manifest, resolve_source
     from optima.registry import REGISTRY, KernelImpl, eligibility_from_metadata
-    from optima.sandbox import load_entry, scan_path
+    from optima.sandbox import load_entry, scan_path, scan_tree
     from optima.slots import SLOTS
 
     manifest = load_manifest(bundle)
+    # Recursive vendored-tree guard: a bundle can carry a whole vendored library; every .py
+    # must clear the policy scan, not just the declared entries. Fail closed (load nothing).
+    tree = scan_tree(bundle)
+    if not tree.ok:
+        logger.warning("optima: skip bundle %s, recursive scan failed: %s", bundle, tree.violations)
+        return
     for op in manifest.ops:
         if op.slot not in SLOTS:
             continue

@@ -209,33 +209,32 @@ swigluoai-vs-SiLU control); the dense CPU path passes; the composed kernel fires
 
 ---
 
-## M2 — Package boundary + blessed-base lockfile + scanner allowlist
+## M2 — Package boundary + recursive scan + blessed-base lockfile
 
 **Why.** Make the moat portable and the measurement consensus-safe.
 
 1. **`optima_kernels` boundary.** `optima/` (harness) imports `optima_kernels`; **never the
    reverse**. `optima_kernels` has zero `sglang` imports — it's the library that dogfeeds the own
-   engine. Add a CI guard (`grep -r "import sglang" optima_kernels/` must be empty).
-2. **Blessed-base lockfile** — `optima/blessed_base.py` (stdlib-only, like `seams.py`): pinned
-   versions/hashes of `{cutlass, cute-dsl, flashinfer, triton, torch, CUDA, arch}`. Extend
-   `optima compat` (`compat.py`) to assert the resolved versions match — today it checks only
+   engine. Add a CI guard (`grep -rE "^\s*(import sglang|from sglang)" optima_kernels/` must be empty).
+2. **Recursive scan** (`optima/sandbox.py`) — `scan_tree(root)` applies the existing safety denylist
+   to **all bundle `.py`**, not just the declared entry (`seam.py:106`, `cli.py` scan only the entry
+   today — the vendored-tree hole: a vendored lib using `open()`/`importlib`/`subprocess` is never
+   scanned). Wire it into `cmd_scan` / `cmd_verify` / `cmd_evaluate` / the seam load. This is the
+   safety fix (close the hole), NOT a transferability gate — and it does **not** flip to an
+   allowlist: per the corrected Axiom 5, a kernel is a kernel (an example legitimately does
+   `from sglang.srt...import RMSNorm`), so we don't ban namespaces. Transferability is enforced by
+   the contribution *unit* (device-source-at-a-slot/override-point) and, ultimately, the swappable
+   arena runtime — not by import hygiene.
+3. **Blessed-base lockfile** — `optima/blessed_base.py` (stdlib-only, like `seams.py`): pinned
+   versions of `{torch, triton, flashinfer, cutlass/cute-dsl, sgl_kernel, deepgemm}` (+ CUDA/arch).
+   Extend `optima compat` (`compat.py`) to assert the resolved versions match — today it checks only
    sglang signatures, but **two validators on different flashinfer pick different kernels →
    different throughput AND numerics → divergent weights → Yuma penalty.** This closes a latent
    consensus bug on the exact surface the win lives on. (Per-arena: fold into `arenas.py` when that
    merges — the `docker_image` should expose the *enumerated, hashed* dep set, not an opaque blob.)
-3. **Scanner allowlist** (`optima/sandbox.py`) — flip the import check from denylist (`:41-54`) to
-   an **allowlist** over the blessed kernel libs (`cutlass`, `cute`, `triton`, `flashinfer`,
-   `sgl_kernel`, `deepgemm`, `torch`, `numpy`, stdlib `math`) — **kernel libs are fine; a kernel is
-   a kernel** (Axiom 5 is transferability, not a namespace ban). Keep the existing escape-pattern
-   denylist as defense-in-depth. **Scan recursively** over all bundle `.py` (today only the declared
-   entry file is scanned — `seam.py:106`, `cli.py:107/129/180/292` — the vendored-tree hole). The
-   contribution *unit* (device-source-at-a-slot/override-point) is what actually enforces
-   transferability; the allowlist hardens it. Sequence **after** M1 (so swigluoai has migrated off
-   its `from sglang import ensure_cutedsl_wrapper` to the validator-owned `prepare`).
 
-**Acceptance:** `optima compat` fails closed on a flashinfer/cutlass version mismatch; the recursive
-scan rejects a bundle carrying a foreign tree; the swigluoai override bundle passes the allowlist
-(imports only `cutlass`/`cute`).
+**Acceptance:** the recursive scan rejects a bundle carrying a foreign `.py` that trips the denylist;
+`optima compat` reports a flashinfer/cutlass version mismatch; the override bundle still scans clean.
 
 ---
 
