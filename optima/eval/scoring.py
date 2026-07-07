@@ -74,7 +74,7 @@ def score_speedup(
     baseline_reads: list[float],
     candidate_read: float,
     *,
-    min_margin: float = 0.02,
+    min_margin: float = 0.005,
     k: float = 2.0,
     max_noise: float = 0.10,
 ) -> SpeedupVerdict:
@@ -87,6 +87,13 @@ def score_speedup(
     is flagged ``confident=False`` (no-decision) so noise can never mint a champion.
 
     * ``min_margin`` — floor on the required improvement even on a perfectly stable box.
+      Default 0.5% (2026-07-07, Shiv's call): real kernel wins arrive as STACKS of
+      1-2% improvements, so a 2% floor rejects most of the genuine win distribution
+      — a campaign-validated +2.2% win measured at exactly the old floor's edge. The
+      ``k*noise`` term (not this constant) is what protects against unstable boxes:
+      on a drifting box the noise term dominates the bar, and on a quiet/clock-locked
+      box (bracket spread ~0.013% measured 2026-06-15) sub-1% wins ARE resolvable.
+      Per-arena override belongs in the arena registry when it lands.
     * ``k`` — how many noise-widths above 1.0 the speedup must sit (2.0 ~= a 2-sigma-ish bar).
     * ``max_noise`` — relative baseline spread above which the round is untrustworthy.
     """

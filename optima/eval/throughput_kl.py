@@ -84,9 +84,10 @@ class EvalConfig:
     prompt_seed: int = 0  # per-epoch prompt sampling seed
     # FLOOR on the required improvement (see optima/eval/scoring.py). The ACTUAL bar
     # is max(speedup_margin, score_k * measured_baseline_noise) — derived from the box,
-    # not hand-picked — because a constant 2% sits an order of magnitude below the
-    # ±7-17% warmup/thermal noise on a pod whose clocks we can't lock.
-    speedup_margin: float = 0.02
+    # not hand-picked. 0.5% floor (2026-07-07): real wins stack at 1-2%, and the
+    # k*noise term — not this constant — is what guards a drifting box; a quiet box
+    # resolves sub-1% deltas (locked-clock bracket spread 0.013%, 2026-06-15).
+    speedup_margin: float = 0.005
     # Noise-robust scoring (we cannot lock GPU clocks on rented pods):
     #  * bookend_baseline: measure stock BEFORE and AFTER the candidate (B,C,B') so the
     #    candidate is bracketed; the two baseline reads bound the drift across it and
@@ -127,6 +128,19 @@ class EvalConfig:
     candidate_disable_custom_all_reduce: Optional[bool] = None
     extra_engine_kwargs: dict[str, Any] = field(default_factory=dict)
     candidate_extra_engine_kwargs: dict[str, Any] = field(default_factory=dict)
+    # FIDELITY MODE (2026-07-07 finding, measured): on non-deterministic stacks
+    # rollout-KL between two launches gates BATCHING/TACTICS, not fidelity — a
+    # bit-stock candidate at 0.545x speed scored mean_kl 0.96, a single-prompt
+    # bit-stock control still scored 0.81, and sglang's deterministic mode refuses
+    # some arena backends (fa4). "audit" replaces the KL razor with the IN-ENGINE
+    # AUDIT (optima/audit.py): an extra UNTIMED candidate quality launch runs with
+    # sampled per-call stock-baseline comparison under the slot's verify
+    # tolerances; KL is still computed and REPORTED (advisory — calibration data),
+    # and the timed launches carry zero audit overhead. "kl" = the legacy gate
+    # (valid on deterministic-capable arenas).
+    fidelity_mode: str = "kl"  # "kl" | "audit"
+    audit_rate: float = 0.05  # fraction of eligible dispatcher calls audited
+    audit_min_calls: int = 32  # insufficient audit coverage is a FAIL, not a pass
 
 
 @dataclass
@@ -158,6 +172,9 @@ class EvalReport:
     required_speedup: float = 1.0  # the bar the speedup had to clear this round
     confident: bool = True  # False -> box too noisy this round; NO-DECISION, never crowns
     baseline2: Optional[ModeResult] = None  # the trailing bookend baseline (B'), if measured
+    fidelity_mode: str = "kl"  # which quality gate produced passed_quality
+    audit_desc: str = ""  # audit-mode: human-readable audit verdict (calls/violations)
+    audit_receipts: list = field(default_factory=list)  # raw per-rank rolling audit stats
 
 
 @contextmanager
@@ -239,32 +256,40 @@ def _measure(engine, prompts: list[str], cfg: EvalConfig) -> ModeResult:
 
 
 def _run_launch(cfg: EvalConfig, prompts: list[str], *, bundle_path: str, active: bool) -> ModeResult:
-    # Mark THIS process as the timer/driver before importing sglang, so the seam
-    # here is pass-through only and the miner module is never imported in the
-    # process that measures wall-clock.
-    from optima import seam
+    # launched_engine marks THIS process as the timer/driver before importing sglang
+    # (seam pass-through; the miner module never loads where wall-clock is measured)
+    # and, for an ACTIVE launch, demands seam receipts — the candidate must PROVE the
+    # bundle loaded and the impl was selected, else the run is stock-vs-stock and
+    # scoring it would be a phantom pass (see optima/receipts.py).
+    from optima.eval._launch import launched_engine
 
-    seam.mark_driver()
+    with launched_engine(cfg, bundle_path=bundle_path, active=active) as engine:
+        return _measure(engine, prompts, cfg)
 
-    from optima.eval._launch import engine_kwargs, prepare_candidate_environment
 
-    prepare_candidate_environment(cfg, bundle_path=bundle_path, active=active)
+def _run_quality_launch(cfg: EvalConfig, prompts: list[str], *,
+                        bundle_path: str) -> tuple[ModeResult, list]:
+    """Audit-mode candidate QUALITY launch: UNTIMED (its tok/s is discarded), with
+    the in-engine audit armed at cfg.audit_rate and logprobs captured for the
+    advisory KL. Kept separate from the timed candidate launch so audited calls'
+    clone+baseline overhead can never bias the throughput comparison.
 
-    with _env(
-        OPTIMA_BUNDLE_PATH=bundle_path or "",
-        OPTIMA_ACTIVE="1" if active else "0",
-        SGLANG_PLUGINS="optima",
-    ):
-        import sglang as sgl
+    Runs EAGER regardless of the scoring config: calls replayed inside a captured
+    CUDA graph never re-enter the Python dispatcher, so a graphs-on launch would
+    audit ~nothing. The audit checks the kernel's FUNCTION (regime-independent);
+    capture-conditional divergence is covered elsewhere — verify's capture-replay
+    stress plus the graphs-on benchmark accuracy gate (a kernel that computes
+    correctly eager but garbage under capture trashes its own benchmark run)."""
+    import dataclasses
 
-        engine = sgl.Engine(**engine_kwargs(cfg, active=active))
-        try:
-            return _measure(engine, prompts, cfg)
-        finally:
-            try:
-                engine.shutdown()
-            except Exception:  # noqa: BLE001
-                pass
+    from optima.eval._launch import launched_engine
+
+    qcfg = dataclasses.replace(cfg, timed_iters=1, warmup_iters=1, disable_cuda_graph=True)
+    audit_out: list = []
+    with launched_engine(qcfg, bundle_path=bundle_path, active=True,
+                         audit_rate=cfg.audit_rate, audit_out=audit_out) as engine:
+        result = _measure(engine, prompts, qcfg)
+    return result, audit_out
 
 
 def _aligned_kl(baseline: ModeResult, candidate: ModeResult) -> KLReport:
@@ -281,6 +306,10 @@ def evaluate(cfg: EvalConfig, bundle_path: str, prompts: Optional[list[str]] = N
     # process (call_in_subprocess) so the baseline's deterministic/CUDA global state
     # can't corrupt the candidate. See optima/eval/scoring.py.
     baseline = call_in_subprocess(_run_launch, cfg, prompts, bundle_path="", active=False)
+    audit_mode = getattr(cfg, "fidelity_mode", "kl") == "audit"
+    quality_result, audit_receipts = (
+        call_in_subprocess(_run_quality_launch, cfg, prompts, bundle_path=bundle_path)
+        if audit_mode else (None, []))
     candidate = call_in_subprocess(_run_launch, cfg, prompts, bundle_path=bundle_path, active=True)
     baseline2 = (call_in_subprocess(_run_launch, cfg, prompts, bundle_path="", active=False)
                  if cfg.bookend_baseline else None)
@@ -292,11 +321,24 @@ def evaluate(cfg: EvalConfig, bundle_path: str, prompts: Optional[list[str]] = N
     )
 
     # KL/token fidelity vs the (stock) baseline — any stock run is a valid reference;
-    # use the first so it's deterministic.
-    kl = _aligned_kl(baseline, candidate)
-    matched, total = token_match_rate(baseline.per_prompt, candidate.per_prompt)
+    # use the first so it's deterministic. In audit mode the KL comes from the quality
+    # launch (the one whose calls were audited) and is ADVISORY.
+    kl = _aligned_kl(baseline, quality_result if audit_mode else candidate)
+    matched, total = token_match_rate(
+        baseline.per_prompt, (quality_result if audit_mode else candidate).per_prompt)
     token_match = (matched / total) if total else 1.0
-    if getattr(cfg, "framework_mode", False):
+    audit_desc = ""
+    if audit_mode:
+        # Primary quality gate = the in-engine audit: sampled per-call comparison vs
+        # the captured stock baseline, under the slot's own verify tolerances, inside
+        # the scored engine. Immune to launch-to-launch nondeterminism (batching,
+        # autotune tactics, atomics) that makes rollout-KL ungateable on this class
+        # of stack — measured 2026-07-07: bit-stock candidates scored mean_kl 0.8-0.96.
+        from optima import audit as _audit
+
+        passed_quality, audit_desc = _audit.gate(
+            audit_receipts, min_calls=cfg.audit_min_calls)
+    elif getattr(cfg, "framework_mode", False):
         # The miner may have patched the engine (setup()), so its self-reported logprobs
         # are not trusted: gate on token-match vs the trusted stock baseline, not KL.
         passed_quality = total > 0 and token_match >= cfg.token_match_threshold
@@ -319,4 +361,6 @@ def evaluate(cfg: EvalConfig, bundle_path: str, prompts: Optional[list[str]] = N
         baseline, candidate, verdict.speedup, kl, passed_quality, verdict.passed_speedup, score,
         token_match, noise=verdict.noise, required_speedup=verdict.required,
         confident=verdict.confident, baseline2=baseline2,
+        fidelity_mode="audit" if audit_mode else ("framework" if getattr(cfg, "framework_mode", False) else "kl"),
+        audit_desc=audit_desc, audit_receipts=audit_receipts,
     )

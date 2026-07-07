@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger("optima.eval")
 
@@ -119,6 +119,33 @@ def prepare_candidate_environment(cfg, *, bundle_path: str, active: bool) -> Non
 
         if apply_rebuild_plan(bundle_path):
             logger.warning("optima: applied rebuild plan for %s", bundle_path)
+        _dep_overlay_env(bundle_path)
+
+
+def _dep_overlay_env(bundle_path: str) -> None:
+    """Candidate-local JIT workspace for a dep-patched candidate.
+
+    ``FLASHINFER_WORKSPACE_BASE`` is read ONCE at ``flashinfer.jit.env`` import (a real
+    ``os.getenv``, unlike everything else there — verified 2026-07-07), so it must be a
+    process env var set BEFORE the engine spawns; the overlay integration cannot rebind
+    it later. Without this, a patched JIT build and a stock JIT build of the same
+    module name share a cache dir — ninja does invalidate on the changed source path,
+    but concurrent candidates would serialize/race on the shared build files.
+    """
+    import os
+
+    try:
+        from optima.dep_policy import overlay_base
+        from optima.manifest import load_manifest
+
+        manifest = load_manifest(bundle_path)
+        if manifest.dep_patches and "FLASHINFER_WORKSPACE_BASE" not in os.environ:
+            ws = overlay_base(manifest.bundle_id) / "jit_workspace"
+            ws.mkdir(parents=True, exist_ok=True)
+            os.environ["FLASHINFER_WORKSPACE_BASE"] = str(ws)
+            logger.info("optima: candidate-local FLASHINFER_WORKSPACE_BASE=%s", ws)
+    except Exception:  # noqa: BLE001 - a bad bundle fails later at load, with context
+        logger.exception("optima: dep-overlay env setup failed for %s", bundle_path)
 
 
 def engine_kwargs(cfg, *, active: bool = False) -> dict[str, Any]:
@@ -168,32 +195,76 @@ def engine_kwargs(cfg, *, active: bool = False) -> dict[str, Any]:
 
 
 @contextmanager
-def launched_engine(cfg, *, bundle_path: str, active: bool):
+def launched_engine(cfg, *, bundle_path: str, active: bool,
+                    audit_rate: float = 0.0, audit_out: Optional[list] = None):
     """Launch a sglang Engine with the Optima seam configured.
 
     ``cfg`` is an ``EvalConfig`` (see optima.eval.throughput_kl). The miner
     kernel runs only in the spawned scheduler child; THIS process is marked as
     the driver so it never imports miner code (timing stays tamper-resistant).
+
+    An ACTIVE launch demands seam receipts (see optima/receipts.py): at least one
+    scheduler rank must report the bundle loaded+enabled before we hand the engine
+    to the caller, and at least one rank must report the miner impl actually
+    SELECTED (``fired``) before the context exits cleanly. Without this, a missing
+    bootstrap/env silently scores stock-vs-stock (bit-identical logits, KL 0.0,
+    PASS) — the phantom-pass class hit on 2026-07-07.
+
+    ``audit_rate > 0`` arms the IN-ENGINE AUDIT (optima/audit.py) in the ranks:
+    sampled dispatcher calls are re-run through the captured stock baseline and
+    compared under the slot's verify tolerances. Only ever set on an UNTIMED
+    quality launch — audited calls carry clone+baseline overhead. The rolling
+    per-rank audit receipts are appended to ``audit_out`` before cleanup. The
+    sampling seed is fixed per launch and shared by all ranks (collective
+    baselines need rank-identical sampling; see audit.py).
     """
-    from optima import seam
+    import random
+    import shutil
+    import tempfile
+
+    from optima import receipts, seam
 
     seam.mark_driver()
     prepare_candidate_environment(cfg, bundle_path=bundle_path, active=active)
-    with env(
-        OPTIMA_BUNDLE_PATH=bundle_path or "",
-        OPTIMA_ACTIVE="1" if active else "0",
-        SGLANG_PLUGINS="optima",
-    ):
-        import sglang as sgl
+    receipt_dir = tempfile.mkdtemp(prefix="optima_receipts_") if active else ""
+    extra_env = {"OPTIMA_SEAM_RECEIPT_DIR": receipt_dir} if active else {}
+    if active and audit_rate > 0.0:
+        extra_env["OPTIMA_SLOT_AUDIT"] = f"{audit_rate:g}"
+        extra_env["OPTIMA_SLOT_AUDIT_SEED"] = str(random.SystemRandom().randrange(2**31))
+    try:
+        with env(
+            OPTIMA_BUNDLE_PATH=bundle_path or "",
+            OPTIMA_ACTIVE="1" if active else "0",
+            SGLANG_PLUGINS="optima",
+            **extra_env,
+        ):
+            import sglang as sgl
 
-        engine = sgl.Engine(**engine_kwargs(cfg, active=active))
-        try:
-            yield engine
-        finally:
+            engine = sgl.Engine(**engine_kwargs(cfg, active=active))
+            ok = False
             try:
-                engine.shutdown()
-            except Exception:  # noqa: BLE001
-                pass
+                if active:
+                    got = receipts.require(receipt_dir, "active",
+                                           context="candidate engine launch")
+                    logger.info("optima: seam active receipts: %s", got)
+                yield engine
+                ok = True
+            finally:
+                try:
+                    engine.shutdown()
+                except Exception:  # noqa: BLE001
+                    pass
+                if active and ok and audit_out is not None:
+                    audit_out.extend(receipts.collect(receipt_dir, "audit"))
+                if active and ok:
+                    # After the caller's generations: the impl must have actually been
+                    # selected at least once, else the engine config never exercised
+                    # the slot and every downstream number is stock-vs-stock.
+                    receipts.require(receipt_dir, "fired",
+                                     context="candidate engine run (post-generation)")
+    finally:
+        if receipt_dir:
+            shutil.rmtree(receipt_dir, ignore_errors=True)
 
 
 def _subprocess_entry(out_path, fn, args, kwargs):

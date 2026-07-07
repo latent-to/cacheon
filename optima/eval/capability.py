@@ -72,16 +72,27 @@ class CapabilityReport:
     baseline2_tok_s: float = 0.0
 
 
-def _sampling_params(cfg: EvalConfig, *, max_new_tokens: int) -> dict:
+def _sampling_params(cfg: EvalConfig, *, max_new_tokens: int,
+                     stop: tuple[str, ...] = ()) -> dict:
+    # ACCURACY semantics, deliberately NOT the throughput eval's: the capability gate
+    # grades ANSWERS, so generations must end the way serving would — at EOS or a
+    # benchmark stop cue. cfg.ignore_eos (correct for the throughput eval's
+    # identical-token-budget timing) is NOT honored here: forcing a model to its full
+    # budget makes it ramble past its answer into self-generated Q&A and the extractor
+    # grades the ramble (measured 2026-07-07 on M3 @4096 forced tokens: 6.2% absolute
+    # on a ~90% model; at 256 the truncation accidentally capped the ramble at ~45%).
+    # The tok/s this runner reports is consequently NOISE (unequal token counts) —
+    # already documented as such; the throughput authority is optima.eval.throughput_kl.
     sp = {"temperature": 0.0, "max_new_tokens": max_new_tokens}
-    if getattr(cfg, "ignore_eos", False):
-        sp["ignore_eos"] = True
+    if stop:
+        sp["stop"] = list(stop)
     return sp
 
 
 def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed_iters: int,
-                       cfg: EvalConfig, top_logprobs_num: int = 0):
-    sp = _sampling_params(cfg, max_new_tokens=max_new_tokens)
+                       cfg: EvalConfig, top_logprobs_num: int = 0,
+                       stop: tuple[str, ...] = ()):
+    sp = _sampling_params(cfg, max_new_tokens=max_new_tokens, stop=stop)
     # warmup (JIT/compile AND the clock ramp off the clock): cfg.warmup_iters full
     # rounds, >=2 — a single round leaves the documented ±17-32% ramp inside the
     # timing window (see EvalConfig.warmup_iters).
@@ -105,12 +116,10 @@ def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed
         elapsed = time.perf_counter() - t0
         if isinstance(outs, dict):
             outs = [outs]
-        # Numerator: under ignore_eos the driver knows the count a priori (fixed budget),
-        # so don't trust the scheduler-reported completion_tokens (#11).
-        if getattr(cfg, "ignore_eos", False):
-            tokens = len(prompts) * int(max_new_tokens)
-        else:
-            tokens = sum(int(o.get("meta_info", {}).get("completion_tokens", 0)) for o in outs)
+        # Natural-length generations (accuracy semantics, no ignore_eos): the count is
+        # scheduler-reported and untrusted — fine, because this runner's tok/s is
+        # explicitly NOISE (see _sampling_params); throughput authority lives elsewhere.
+        tokens = sum(int(o.get("meta_info", {}).get("completion_tokens", 0)) for o in outs)
         if elapsed > 0:
             samples.append(tokens / elapsed)
         outputs = outs  # keep last for answer-checking + KL
@@ -121,13 +130,13 @@ def _generate_and_time(engine, prompts: list[str], *, max_new_tokens: int, timed
 
 
 def _run_launch(cfg: EvalConfig, flat: list[tuple[str, Problem]], *, bundle_path: str, active: bool,
-                max_new_tokens: int):
+                max_new_tokens: int, stop: tuple[str, ...] = ()):
     prompts = [p.prompt for _, p in flat]
     with launched_engine(cfg, bundle_path=bundle_path, active=active) as engine:
         return _generate_and_time(engine, prompts, max_new_tokens=max_new_tokens,
                                   timed_iters=cfg.timed_iters,
                                   top_logprobs_num=cfg.top_logprobs_num,
-                                  cfg=cfg)
+                                  cfg=cfg, stop=stop)
 
 
 def _accuracy_by_benchmark(flat: list[tuple[str, Problem]], texts: list[str]) -> dict[str, int]:
@@ -155,23 +164,29 @@ def evaluate_capability(
     flat: list[tuple[str, Problem]] = []
     counts: dict[str, int] = {}
     max_new = 0
+    stops: set[str] = set()
     for name in benchmark_names:
         bench = get_benchmark(name)
         probs = bench.load(samples_per_benchmark, cfg.prompt_seed)
         counts[name] = len(probs)
         max_new = max(max_new, bench.max_new_tokens)
+        # Union of stop cues across the co-generated benchmarks. Fine because every
+        # completion-format bench here delimits blocks with "Question:"-style cues; a
+        # cross-bench stop can only END a ramble, never truncate a real answer.
+        stops.update(getattr(bench, "stop", ()) or ())
         flat.extend((name, p) for p in probs)
     if max_new_tokens is not None:
         max_new = int(max_new_tokens)
+    stop = tuple(sorted(stops))
 
     # Bookended A/B (clocks unlockable on rented pods): stock BEFORE and AFTER the
     # candidate brackets it and bounds the drift across it. Each launch runs in its
     # own fresh process so the baseline's deterministic/CUDA global state can't corrupt
     # the candidate (see _launch.call_in_subprocess + optima/eval/scoring.py).
     base_tok_s, base_texts, base_pp = call_in_subprocess(
-        _run_launch, cfg, flat, bundle_path="", active=False, max_new_tokens=max_new)
+        _run_launch, cfg, flat, bundle_path="", active=False, max_new_tokens=max_new, stop=stop)
     cand_tok_s, cand_texts, cand_pp = call_in_subprocess(
-        _run_launch, cfg, flat, bundle_path=bundle_path, active=True, max_new_tokens=max_new)
+        _run_launch, cfg, flat, bundle_path=bundle_path, active=True, max_new_tokens=max_new, stop=stop)
     base2_tok_s = 0.0
     if getattr(cfg, "bookend_baseline", True):
         base2_tok_s, _b2_texts, _b2_pp = call_in_subprocess(
