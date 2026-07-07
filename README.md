@@ -87,9 +87,25 @@ other example bundle remains a correctness demo (faithful but slower). (Full run
 live in the local `experiments/` ledger on the dev machine — gitignored, like `WORKLOG.md`;
 the numbers above are the record of record.)
 
-**Still open:** isolation for untrusted miners; chain integration + a tiered eval
-scheduler; a real DB; bigger slots (MLA / weight-absorbed attention, GEMM, comms-overlap
-blocks); and **eval calibration** (see "Calibration findings").
+**Chain integration is live (2026-07-08): the deep win came back through the chain.**
+The full miner→chain→validator loop ran on the public Bittensor testnet (netuid 307):
+the deep bundle was committed from a miner hotkey via the chain's native **timelock
+commit-reveal** (`set_reveal_commitment` — the bundle URL is drand-encrypted until the
+reveal block, which doubles as the anti-copy priority timestamp), and `optima
+chain-validate` discovered it, fetched the artifact, **re-hashed it against the
+committed content hash**, fingerprinted it for copy detection, drove the full referee
+on the GPU box, and crowned it: **1.072× vs bar 1.026, in-engine audit 12,824 calls /
+0 violations — SCORE 1.0717**, the third independent reproduction of the deep win
+(1.074 / 1.071 / 1.072), this one with no human in the path. `optima chain-package/
+chain-submit/chain-status/chain-validate/chain-register` are the operator surface;
+`docs/TESTNET.md` is the runbook. Weight policy is read from ONE seam
+(`Ledger.current_weights`) so the planned relative-improvement emission scheme swaps
+in without touching chain I/O.
+
+**Still open:** isolation for untrusted miners; a tiered eval scheduler; a real DB;
+mainnet economics (own subnet, stake/permits, hosted bundle storage); bigger slots
+(MLA / weight-absorbed attention, GEMM, comms-overlap blocks); and **eval
+calibration** (see "Calibration findings").
 
 ## Status: validated end-to-end
 
@@ -413,7 +429,7 @@ cross-validator consensus catches a rogue validator.
 | Scoring noise | noise-derived margin + bookended A/B + no-decision (no clock-lock needed) | + interleaved per-iter A/B + locked clocks where available |
 | Isolation | scan (hardened) + **out-of-process** verify | namespaces + no-egress + per-eval ctx + watchdog (needs Linux/root) |
 | Champion | per-round, pin-staleness flagged | head-to-head re-eval vs a content-addressed bundle store |
-| Chain | local JSON ledger | on-chain commit-reveal + set_weights |
+| Chain | **native timelock commit-reveal + hash-verified fetch + the validator loop, run live on testnet** (`optima chain-*`, docs/TESTNET.md); weights dry-run (permit-gated) | own subnet, staked permits, real set_weights cadence, hosted bundle store |
 | State | JSON | a real DB, single-writer weights |
 
 ## Adding a slot
