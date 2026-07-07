@@ -117,7 +117,22 @@ def extract_choice_letter(text: str, num_choices: int = 4) -> str | None:
 
 class GSM8K:
     name = "gsm8k"
+    # Decode budget CALIBRATED FOR TERSE FEW-SHOT COMPLETION MODELS. A reasoning/
+    # thinking model (MiniMax M3, DeepSeek-R1 style) emits multi-thousand-token traces
+    # from this same prompt: at 256 it gets truncated mid-scratchwork and the extractor
+    # falls back to "last number in the fragment" — measured ~45% absolute on a ~90%
+    # model (M3, 2026-07-07), i.e. the harness grades truncation, not math. The paired
+    # delta stays meaningful (both launches share the budget), but absolute levels and
+    # gate sensitivity are trashed. For such models pass ``bench --max-new-tokens``
+    # (>= 4096) — the per-model home for this knob is the arena row, together with
+    # chat-template application (raw completion prompts are the second half of the
+    # miscalibration; templating is arena policy, not a benchmark-class default).
     _max_new_tokens = 256
+    # Completion-format models don't stop after answering — they continue the few-shot
+    # pattern into self-generated "Question: ..." blocks, and last-number extraction
+    # then grades hallucinated problems (measured 2026-07-07: 6.2% absolute on a ~90%
+    # model once a 4096 budget let the ramble run). The block delimiter is the stop cue.
+    stop = ("\nQuestion:",)
 
     def __init__(self, num_fewshot: int = 4) -> None:
         self.num_fewshot = num_fewshot
@@ -172,7 +187,11 @@ class GSM8K:
         return problems
 
     def check(self, problem: Problem, output_text: str) -> bool:
-        return numbers_equal(extract_final_number(output_text), _to_float(problem.answer))
+        # Defense-in-depth vs the self-generated-Q&A ramble (see ``stop``): even when
+        # an engine path ignores stop strings, grade only up to the first block the
+        # model started on its own.
+        answer_region = output_text.split("\nQuestion:")[0]
+        return numbers_equal(extract_final_number(answer_region), _to_float(problem.answer))
 
 
 # ---------------------------------------------------------------------------

@@ -55,23 +55,45 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   (the TP comms waist, via the `GroupCoordinator.all_reduce` seam,
   `OPTIMA_COLLECTIVE_SEAM=1`); and **`moe.fused_experts_reduce`** — the experts block that
   **owns its trailing all-reduce** (the compute-comm OVERLAP lever, ~75% of decode), so the
-  kernel fuses experts + reduce and the validator does NOT replay a stock reduce. Both
-  collectives are verified distributed by `optima.verify_collective`. The 5 seam adapters
+  kernel fuses experts + reduce and the validator does NOT replay a stock reduce. Plus
+  `collective.ar_residual_rmsnorm` (the fused AR+residual+RMSNorm epilogue waist behind
+  sglang's `--enable-flashinfer-allreduce-fusion`, `OPTIMA_ARFUSION_SEAM=1`) and
+  **`collective.moe_finalize_ar_rmsnorm`** — the DEEP fused epilogue (MoE finalize + AR +
+  add + norm in ONE kernel): a bundle-declared **`dep_patches`** unified diff against the
+  pinned flashinfer csrc (policy-allowlisted, applied by a reviewed patcher to an OVERLAY
+  copy — the install is never mutated) makes the launcher skip its in-op finalize and
+  export pre-finalize pointers; validator-owned export/consume seams
+  (`optima/moe_export.py`) hand them to the kernel at the deferred fusion call. All
+  collectives are verified distributed by `optima.verify_collective`. ALL seam adapters
   live in ONE table, `optima/seams.py` (the bootstrap watch-list, `seam.activate`, and the
   `compat` canary all derive from it — no parallel list).
 - **Graphs-ON is the only regime that counts.** Scoring runs CUDA graphs ON (graphs-off
   cripples the baseline ~4.5–6.5×). Op seams capture directly; a block/collective kernel must
   declare `graph_safe: true` in metadata to run under capture, else it falls back in-graph.
   Beating sglang/vLLM/TensorRT graphs-on is the whole point.
+- **Fidelity has two modes** (docs/FIDELITY.md — read it before touching the quality gate):
+  `--fidelity-mode kl` (legacy rollout-KL, valid ONLY on arenas where a stock-vs-stock
+  control measures ~0) and `--fidelity-mode audit` — the **in-engine audit**
+  (`optima/audit.py`): an extra untimed EAGER candidate launch randomly samples dispatcher
+  calls, re-runs the captured stock baseline on pre-call clones, and compares under the
+  slot's own verify tolerances (receipted; zero violations + minimum coverage required;
+  KL becomes advisory). Built 2026-07-07 after measuring that on the M3 arena two identical
+  launches are NOT logit-identical (bit-stock candidates scored mean_kl 0.81–0.96;
+  deterministic mode refuses fa4) — rollout-KL there punishes ANY timing change, i.e.
+  exactly what miners are paid for. Pod-validated: honest kernel 2,996 audited calls /
+  0 violations = PASS while advisory KL read 0.89; sabotage kernel 3,120/3,120 = FAIL.
+  Known residuals (see the doc's adversarial matrix): in-process tampering (the standing
+  isolation gap), timed-workload fingerprinting, attention slot not yet audited.
 - **Scoring is noise-robust without clock-locking** (`optima/eval/scoring.py`): the candidate is
   bracketed by a baseline before AND after (B,C,B'), paired against the mean, with the bar
   derived from measured baseline noise (`1 + max(margin, k·noise)`) and a NO-DECISION verdict
   when the bracketing baselines disagree. `ignore_eos` on → identical token budgets AND a
   driver-known throughput numerator (not a scheduler-reported count). Fidelity gating beyond
-  mean-KL: a coverage/tail-mass guard (catches a flattened head-matching distribution top-k KL
-  misses), argmax-rate (sparse flips), early-stop dropped-position accounting, and **per-slot
-  KL thresholds** (`SlotSpec.kl_threshold`; attention 3e-2 vs the 5e-3 default). Per-op verify
-  **jitters count dims** per run (anti shape-branching; collective verify too). Anti-copy
+  mean-KL (kl mode): a coverage/tail-mass guard (catches a flattened head-matching distribution
+  top-k KL misses), argmax-rate (sparse flips), early-stop dropped-position accounting, and
+  **per-slot KL thresholds** (`SlotSpec.kl_threshold`; attention 3e-2 vs the 5e-3 default).
+  Per-op verify **jitters count dims** per run (anti shape-branching; collective verify too;
+  plus synced-temporal AND unsynced-burst sequence gates for stateful collectives). Anti-copy
   (`optima/copy_fingerprint.py`): cumulative-across-rounds detection on exact hash OR a
   reformat-invariant fingerprint — computed **per slot over each op's transitive bundle-local
   import closure**, with a per-FILE containment compare so neither padding the bundle with an
@@ -80,16 +102,34 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   `optima settle --per-slot` = a champion per slot, emission split (pays specialists); a champion
   on a different `PINNED_SGLANG` is flagged stale (re-baseline). `optima verify` loads + runs the
   kernel **out-of-process** so the CLI never imports miner code (full netns isolation is still TODO).
-- **No kernel has beaten sglang.** The mechanism is validated to fire correctly on real
-  models (a faithful kernel reproduces the model; a broken one is caught by the gate), but
-  every example kernel is a correctness demo — the faithful ones are *slower* than sglang's
-  own tuned kernels. The optimization side is unproven: nothing submitted moves throughput.
-- **Open — the actual goal:** a submitted graph-safe kernel that genuinely beats sglang at
-  equal fidelity (none does yet) — the `moe.fused_experts_reduce` overlap is the highest-value
-  target. Plus isolation for untrusted miners, chain integration, a real DB, more slots
-  (MLA/weight-absorbed attention, FP8/FP4 GEMM, graph-safe paged attention), and **eval
-  calibration** (KL threshold = k× the measured nondeterminism noise floor; run with
-  `enable_deterministic_inference`; benchmark accuracy needs large n).
+- **FIRST REAL WIN (2026-07-07): a submitted kernel beat sglang through optima's own
+  scorer at equal fidelity.** The `miner_m3_fused_epilogue` bundle (the July-2 campaign's
+  v6 Lamport fused AR+residual+RMSNorm, `collective.ar_residual_rmsnorm`, graph_safe) on
+  the MiniMax-M3-NVFP4/4×B300 arena: **speedup 1.044× vs the noise-derived bar 1.038 →
+  PASS (noise-confident), SCORE 1.044**, with the full gate chain green — distributed
+  verify, GSM8K paired no-regression (93.8%/92.2%), in-engine audit 12,456 calls /
+  0 violations (graphs-on, NP=256/MNT=256, heat-soaked bookends). **Reproduced on an
+  independent prompt seed: 1.049× vs bar 1.005, audit 12,648 calls / 0 violations** —
+  the win is workload-robust, not a lucky draw. **Same day, the DEEP bundle
+  (`miner_m3_fused_epilogue_deep`, both slots incl. `collective.moe_finalize_ar_rmsnorm`
+  via dep_patches) crowned at SCORE 1.074 (vs bar 1.010; audit 12,480/0) and
+  reproduced at 1.071 (vs bar 1.037; audit 12,636/0) — the campaign's +2.7% deep-fusion
+  claim converted through the referee, stacked on the shallow win (1.049 × 1.025 ≈
+  1.074).** Shipping that required the LAST-LAYER VETO in `optima/moe_export.py`
+  (upstream minimax_m3 never wires `is_last_layer`, so sglang lets the final layer
+  defer its AR — fatal with skip-finalize armed; the seam now reads the layer count
+  from the model config and refuses the last-of-forward arm). Full record:
+  `experiments/minimax_m3/frontier_2026-07-07/02_FE_BUNDLE_INGEST_LEDGER.md`
+  (**local-only, gitignored** — dev machine, like WORKLOG.md; the numbers here are
+  the committed record). Every OTHER example bundle remains a correctness demo
+  (faithful but slower).
+- **Open — the next goals:** isolation for untrusted miners; chain integration + the
+  tiered eval scheduler (screen cheap, record rarely, amortized B,C1..Ck,B' bookends;
+  resident-engine screener design in the 07-07 ledger); a real DB; more slots
+  (MLA/weight-absorbed attention, FP8/FP4 GEMM, graph-safe paged attention); upstream:
+  report minimax_m3's unwired `is_last_layer` (stock last-layer AR realization is
+  unclear — probe before filing). NOTE: emissions will NOT stay winner-take-all
+  (relative-improvement + time-decay direction) — don't design around argmax-only scoring.
 
 ## How to run
 

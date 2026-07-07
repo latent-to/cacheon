@@ -2,8 +2,13 @@
 
 A validator harness for a Bittensor-style subnet where miners submit **kernels**
 (Triton / CuteDSL) that get swapped into a **fixed** model at typed op-slots, and
-are scored on **throughput** gated by **output fidelity** — measured two ways:
-per-token **KL** against a reference run, and **task accuracy** on real benchmarks.
+are scored on **throughput** gated by **output fidelity** — the **in-engine audit**
+(sampled per-call comparison vs the stock baseline inside the scored engine, under
+each slot's verify tolerances) plus **task accuracy** on real benchmarks; per-token
+**KL** vs a reference launch is the legacy gate, valid only on arenas where a
+stock-vs-stock control measures ~0 (advisory elsewhere — see
+[docs/FIDELITY.md](docs/FIDELITY.md) for the measured post-mortem and the
+adversarial analysis).
 
 > **Want to compete? Start with [docs/MINER_GUIDE.md](docs/MINER_GUIDE.md)** — the
 > miner on-ramp in plain language: what Optima is and how you earn, exactly how a
@@ -26,20 +31,26 @@ per-token **KL** against a reference run, and **task accuracy** on real benchmar
 
 ## What is and isn't done
 
-**Done & validated on real GPUs (H100, up to gpt-oss-120b; sglang 0.5.12.post1 / CUDA 13):**
-the whole *mechanism* — typed op-slots, fused-*block* slots, **and a cross-GPU *collective*
-slot** (a slot can be one op, a region behind one typed tensor boundary, or a collective
+**Done & validated on real GPUs (H100 up to gpt-oss-120b; 4×B300 MiniMax-M3-NVFP4;
+pinned sglang 0.5.13.post1 / CUDA 13):**
+the whole *mechanism* — typed op-slots, fused-*block* slots, **and cross-GPU *collective*
+slots** (a slot can be one op, a region behind one typed tensor boundary, or a collective
 handed the process group), the seam that swaps an untrusted kernel into a spawned model
-process, op-correctness, two-launch throughput measurement, the KL gate, a real-task
-capability gate (GSM8K + MMLU), commit-reveal + king-of-the-hill scoring, and
-tamper-resistant timing. **Seven slots:** `activation.silu_and_mul`, `norm.rmsnorm` (ops);
-`attention.sdpa` / `attention.decode`, `moe.fused_experts` (blocks); `collective.all_reduce`
-and `moe.fused_experts_reduce` (collectives, verified distributed). The last is the **block
-that owns its trailing TP all-reduce** — the only contract that can express the compute-comm
-**overlap** win (~75% of decode at scale), where a plain MoE slot can't (the validator there
-replays a separate stock reduce). The **attention-decode swap is proven end-to-end on a live
-Qwen** (the validator extracts the running model's paged KV and routes decode to the miner
-kernel; a broken kernel is caught ~20×).
+process, op-correctness, bookended throughput measurement, the fidelity gates (in-engine
+audit / KL), a real-task capability gate (GSM8K + MMLU), commit-reveal + king-of-the-hill
+scoring, and tamper-resistant timing. **Ten slots:** `activation.silu_and_mul`,
+`norm.rmsnorm` (ops); `attention.sdpa` / `attention.decode` / `attention.msa_block_score`,
+`moe.fused_experts` (blocks); `collective.all_reduce`, `moe.fused_experts_reduce`,
+`collective.ar_residual_rmsnorm`, and `collective.moe_finalize_ar_rmsnorm` (collectives,
+verified distributed). `moe.fused_experts_reduce` is the **block that owns its trailing TP
+all-reduce** — the contract that can express the compute-comm **overlap** win (~75% of
+decode at scale), where a plain MoE slot can't (the validator there replays a separate
+stock reduce); `collective.moe_finalize_ar_rmsnorm` goes deeper still — MoE finalize +
+all-reduce + residual + RMSNorm as ONE kernel, enabled by a bundle-declared **`dep_patches`**
+diff against the pinned flashinfer (policy-allowlisted, applied by a reviewed patcher to an
+**overlay copy** — the install is never mutated). The **attention-decode swap is proven
+end-to-end on a live Qwen** (the validator extracts the running model's paged KV and routes
+decode to the miner kernel; a broken kernel is caught ~20×).
 
 **Scoring is CUDA-graphs-ON** (graphs-off cripples the baseline ~4.5–6.5×, so it's never used
 to score). The op seams (silu/rmsnorm) are graph-captured directly; the **block/collective
@@ -49,20 +60,36 @@ undeclared kernel stays eager-only (falls back to the trusted baseline in-graph,
 wedge capture); the attention gather-MVP is still eager (a paged-direct, graph-safe contract is
 the next rung). **Noise-robust scoring** (we can't lock clocks on rented pods): each candidate is
 **bracketed by a baseline before AND after** (B,C,B'), the speedup is paired against their mean,
-the bar is `1 + max(2%, k·measured-noise)` not a hand-picked 2%, and a round whose baselines
-disagree past a tolerance is **NO-DECISION** (never crowns). `ignore_eos` is on for scoring so
-both sides emit identical token counts.
+the bar is `1 + max(margin, k·measured-noise)` (margin floor 0.5% — real wins stack at 1-2%;
+the noise term is what guards an unstable box), and a round whose baselines disagree past a
+tolerance is **NO-DECISION** (never crowns). `ignore_eos` is on for scoring so both sides emit
+identical token counts.
 
-**No kernel has beaten sglang — the optimization side is unproven.** This validates the
-*referee*, not any optimization. Every example kernel is a correctness demo: faithful ones
-reproduce the model and are *slower* than sglang's own tuned kernels; broken ones are caught
-by the gate. The point so far is that the harness can tell a real kernel from a cheat and
-time it tamper-resistantly — not that any submission moves throughput.
+**First real win (2026-07-07): a submitted kernel beat sglang through the referee at equal
+fidelity.** The `miner_m3_fused_epilogue` bundle (fused AR+residual+RMSNorm collective, the
+July-2 MiniMax-M3 campaign kernel) scored **1.044× against the noise-derived bar 1.038 —
+PASS, noise-confident** — on the M3-NVFP4/4×B300 arena, graphs-on, with the full gate chain
+green (distributed verify; GSM8K paired no-regression 93.8%/92.2%; in-engine audit 12,456
+sampled calls, 0 violations), and **reproduced on an independent prompt seed** (1.049× vs
+bar 1.005; audit 12,648 calls, 0 violations).
 
-**Still open — including the actual goal:** a submitted kernel that genuinely beats sglang at
-equal fidelity. Plus isolation for untrusted miners, chain integration, a real DB, bigger
-slots (MLA / weight-absorbed attention, GEMM, comms-overlap blocks), and **eval calibration**
-(see "Calibration findings").
+**Same day, the deep bundle went through the same gate: SCORE 1.074.** The
+`miner_m3_fused_epilogue_deep` bundle adds `collective.moe_finalize_ar_rmsnorm` — the MoE
+finalize + all-reduce + residual + RMSNorm fused into ONE kernel via a declared `dep_patches`
+overlay against pinned flashinfer — and scored **1.074× vs bar 1.010** (audit 12,480 calls /
+0 violations), **reproduced at 1.071× vs bar 1.037** (audit 12,636 / 0) on an independent
+prompt seed. The deep increment over the shallow win (1.049 × 1.025 ≈ 1.074) matches the
+July-2 campaign's +2.7% claim for the fused epilogue. Landing it surfaced a real seam
+hazard: upstream `minimax_m3` never wires `is_last_layer`, so sglang lets the final layer
+defer its all-reduce — harmless stock, fatal with a skipped finalize; the seam now vetoes
+the last-of-forward arm from the model's own layer count (`optima/moe_export.py`). Every
+other example bundle remains a correctness demo (faithful but slower). (Full run records
+live in the local `experiments/` ledger on the dev machine — gitignored, like `WORKLOG.md`;
+the numbers above are the record of record.)
+
+**Still open:** isolation for untrusted miners; chain integration + a tiered eval
+scheduler; a real DB; bigger slots (MLA / weight-absorbed attention, GEMM, comms-overlap
+blocks); and **eval calibration** (see "Calibration findings").
 
 ## Status: validated end-to-end
 
@@ -142,39 +169,49 @@ caught a *subtle* real drift a per-op check missed.
 
 ```
 optima/
-  slots.py                  # the slot ABI: SlotSpec catalog (7 slots; kind = op|block|collective)
+  slots.py                  # the slot ABI: SlotSpec catalog (10 slots; kind = op|block|collective)
   seams.py                  # single source of truth for the seam adapters (bootstrap/activate/compat derive from it)
   eval/scoring.py           # noise-robust speedup verdict (bookended A/B, noise-derived margin, no-decision)
+  audit.py                  # the IN-ENGINE AUDIT: sampled per-call stock-baseline comparison inside the scored engine
+  receipts.py               # seam-health receipts (bundle loaded / impl fired / audit / export counters) by file
   copy_fingerprint.py       # reformat-invariant near-copy fingerprint (AST-normalized)
-  manifest.py               # bundle manifest parse + path-safety
+  manifest.py               # bundle manifest parse + path-safety (+ dep_patches declarations)
   sandbox.py                # static policy scan + isolated load (defense-in-depth)
   registry.py               # kernel registry + eligibility + active toggle
-  dispatch.py               # per-slot dispatchers — silu/rmsnorm/attention/moe/all_reduce
+  dispatch.py               # per-slot dispatchers — silu/rmsnorm/attention/moe/all_reduce/arfusion(+deep consume)
+  moe_export.py             # deep-seam export/consume state machine (fe_export ABI, last-layer veto)
+  dep_policy.py / deppatch.py  # dep_patches tier: per-dep allowlist policy + unified-diff apply to an OVERLAY copy
+  patchers/                 # the reviewed patcher scripts a rebuild plan may run (apply_dep_patch, build_cuda_ext)
   verify.py                 # op/block correctness vs HP reference (allclose|matched_ratio|cosine)
-  verify_collective.py      # DISTRIBUTED verify for collective slots (mp-spawn N ranks)
+  verify_collective.py      # DISTRIBUTED verify for collective slots (mp-spawn N ranks; count-dim jitter)
   rebuild.py                # fenced escape hatch: validator-shipped repo patchers only (no bundle code)
-  compat.py                 # PINNED_SGLANG (0.5.13.post1; re-baseline pending) + the seam canary (`optima compat`)
+  compat.py                 # PINNED_SGLANG (0.5.13.post1) + the seam canary (`optima compat`)
   seam.py / bootstrap.py    # install the seam in every venv interpreter via a .pth
   integrations/
     sglang_silu.py / sglang_norm.py        # ops: SiluAndMul, RMSNorm
     sglang_attention.py / sglang_moe.py    # blocks: RadixAttention.forward, FusedMoE.forward
     sglang_allreduce.py                    # collective: GroupCoordinator.all_reduce
+    sglang_arfusion.py                     # collective: fused AR+residual+RMSNorm epilogue chokepoint
+    sglang_defer_gate.py / sglang_moe_export.py  # deep seam: LayerCommunicator scoping + fused-moe export wrap
+    flashinfer_overlay.py                  # routes the engine's flashinfer import to the patched overlay copy
     sglang_plugin.py                       # entry point for sglang builds that have a plugin fw
   eval/
-    throughput_kl.py        # two-launch throughput + KL (generic corpus; calibration smoke)
-    capability.py           # two-launch throughput + KL + benchmark accuracy (the real-task scoring path)
+    throughput_kl.py        # bookended throughput + fidelity (audit|kl modes; calibration smoke)
+    capability.py           # throughput + fidelity + benchmark accuracy (the real-task scoring path)
     benchmarks.py           # Benchmark protocol + GSM8K & MMLU (HF), answer extraction
     kl.py / prompts.py / _launch.py
   bundle_hash.py            # deterministic bundle identity
   commit_reveal.py          # commit-reveal + king-of-the-hill ledger
   cli.py                    # slots|compat|scan|verify|evaluate|bench|hash|commit|reveal|ledger|settle
+optima_kernels/
+  collective/               # validator-owned reference lib for the fused AR+norm family (sm103 CUDA + wrapper)
 examples/
   miner_silu_{triton,torch,broken,sparse}/     # silu slot (faithful / CPU dry-run / adversarial / sparse)
   miner_rmsnorm_{triton,broken}/               # rmsnorm slot (faithful / adversarial)
   miner_attention_torch/ miner_attention_decode_torch/   # attention.sdpa / attention.decode (blocks)
   miner_moe_fused_experts_torch/               # moe.fused_experts (block)
   miner_allreduce_torch/                       # collective.all_reduce
-tests/                                  # 75 tests (scanner, manifest, KL, verify, block/moe seams, collective, rebuild, commit-reveal)
+tests/                                  # 357 tests (scanner, manifest, fidelity/audit, verify, seams, deep seam, dep_patches, collective, rebuild, commit-reveal)
 ```
 
 ## How a kernel gets into the model (the seam)
@@ -183,9 +220,12 @@ tests/                                  # 75 tests (scanner, manifest, KL, verif
 separate scheduler process, so a class-patch in the parent never reaches it. We
 install the seam in **every** venv interpreter via a `.pth` file
 (`import optima.bootstrap`) + a post-import hook that patches the target chokepoint the
-moment its module loads — including in the spawned scheduler. Five chokepoints today:
-`SiluAndMul` / `RMSNorm` (ops), `RadixAttention.forward` / `FusedMoE.forward` (blocks),
-and `GroupCoordinator.all_reduce` (collective). The pinned sglang (0.5.13.post1, see
+moment its module loads — including in the spawned scheduler. The chokepoints today
+(one `SeamAdapter` row each in `optima/seams.py`): `SiluAndMul` / `RMSNorm` (ops),
+`RadixAttention.forward` / `FusedMoE.forward` (blocks), `GroupCoordinator.all_reduce`
+(collective), the fused AR+residual+RMSNorm epilogue behind
+`--enable-flashinfer-allreduce-fusion` (arfusion), and the deep-seam pair
+(`LayerCommunicator` defer-gate + the fused-moe export wrap). The pinned sglang (0.5.13.post1, see
 `optima/compat.py`) **does** ship a hook/plugin framework (`srt/plugins/hook_registry.py`,
 added by PR #21388 — present at the pin), so migrating the seam to a sanctioned
 `sglang.srt.plugins` entry-point hook is a tracked option (`integrations/sglang_plugin.py`
@@ -257,7 +297,7 @@ that legitimately differ (attention/fp8/absorbed), or `cosine` (vs the HP refere
 low-bit kernels where element-wise tolerance is meaningless (FP4/FP8). A kernel that
 targets a block/collective slot also declares `graph_safe` in its metadata to be run
 (and scored) under CUDA graphs; undeclared kernels stay eager-only and fall back in-graph.
-**Seven slots today:**
+**Ten slots today:**
 
 - `activation.silu_and_mul` — `entry(x, out)` — Qwen/Llama-class MLP (op).
 - `norm.rmsnorm` — `entry(x, weight, out, eps)` — universal; fires on gpt-oss (op).
@@ -266,6 +306,8 @@ targets a block/collective slot also declares `graph_safe` in its metadata to be
 - `attention.decode` — `entry(q, k, v, seq_lens, sm_scale, out)` — paged-decode
   attention; the seam extracts the running model's paged KV and routes decode through
   it (block; eager-only gather MVP — a paged-direct, CUDA-graph-safe contract is next).
+- `attention.msa_block_score` — the MiniMax sparse-attention block-score stage
+  (block; `matched_ratio` vs high-precision ground truth — see the M3 arena work).
 - `moe.fused_experts` — `(prepare, forward)` pair — SwiGLU fused experts; `prepare` owns
   the weight layout once at load, `forward(x, topk_ids, topk_weights, prepared, out)` runs
   per step (block; a quantized kernel carries its FP4/FP8 weight layout in `prepare`).
@@ -277,6 +319,18 @@ targets a block/collective slot also declares `graph_safe` in its metadata to be
 - `collective.all_reduce` — `entry(x, out, group)` — TP all-reduce (the comms waist); the
   validator owns the buffer + the process group; verified distributed vs the fp32
   cross-rank sum (`optima.verify_collective`).
+- `collective.ar_residual_rmsnorm` — `entry(x, residual, weight, eps, out_norm,
+  out_residual, group)` — the fused all-reduce + residual-add + RMSNorm epilogue behind
+  sglang's `--enable-flashinfer-allreduce-fusion` (the **first slot a submitted kernel
+  crowned through**). Verified distributed vs the fp32 sum+add+norm.
+- `collective.moe_finalize_ar_rmsnorm` — `entry(gemm_out, row_map, scales, residual,
+  weight, eps, out_norm, out_residual, group)` — the DEEP fused epilogue: MoE finalize +
+  all-reduce + residual + RMSNorm in one kernel. Requires the bundle to declare a
+  **`dep_patches`** unified diff against the pinned flashinfer csrc (policy-allowlisted;
+  applied by a reviewed patcher to an **overlay copy**, never the install) that exports
+  pre-finalize pointers; validator-owned export/consume seams (`optima/moe_export.py`)
+  hand them to the kernel at the deferred fusion call, and a **last-layer veto** keeps
+  the finalize in-op for any layer whose deferred call has no consumer.
 
 ## Anti-copy & scoring: commit-reveal + king of the hill
 
@@ -352,10 +406,10 @@ cross-validator consensus catches a rogue validator.
 
 | Concern | Now | Production |
 |---|---|---|
-| Slots | 7: silu/rmsnorm, attention.sdpa/decode, MoE, all-reduce, MoE+reduce (overlap) | + MLA, FP8/FP4 GEMM, graph-safe paged attention |
-| Throughput gain | **none — no submitted kernel beats sglang yet** | a kernel that beats sglang at equal fidelity |
-| Model | up to gpt-oss-120b (1 GPU) | DSV4-scale (multi-GPU, TP/PD/EP) |
-| Quality gate | mean-KL + coverage/argmax/per-slot-threshold + GSM8K/MMLU, det-mode default | full-vocab KL at a reference seam + large-n (100–200) benchmarks |
+| Slots | 10: silu/rmsnorm, attention ×3, MoE ×2, all-reduce, AR+norm epilogues ×2 (deep via dep_patches) | + MLA, FP8/FP4 GEMM, graph-safe paged attention |
+| Throughput gain | **two crowned bundles on M3-NVFP4/4×B300: 1.044×/1.049× (shallow) and 1.074×/1.071× (deep), each double-proven** | keep beating the pinned baseline as it advances |
+| Model | gpt-oss-120b (1×H100); MiniMax-M3-NVFP4 (4×B300, TP4) | DSV4-scale (multi-GPU, TP/PD/EP) |
+| Quality gate | in-engine audit (nondet arenas) / calibrated KL (det arenas) + coverage/argmax/per-slot-threshold + GSM8K/MMLU | full-vocab KL at a reference seam + large-n (100–200) benchmarks |
 | Scoring noise | noise-derived margin + bookended A/B + no-decision (no clock-lock needed) | + interleaved per-iter A/B + locked clocks where available |
 | Isolation | scan (hardened) + **out-of-process** verify | namespaces + no-egress + per-eval ctx + watchdog (needs Linux/root) |
 | Champion | per-round, pin-staleness flagged | head-to-head re-eval vs a content-addressed bundle store |

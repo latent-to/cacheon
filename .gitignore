@@ -7,6 +7,9 @@ optima_ledger.json
 l.json
 ._*
 .DS_Store
+.claude/
+.cursor/
+.opencode/
 
 # Private working log — candid history, live pod access, strategy. NOT for GitHub.
 WORKLOG.md

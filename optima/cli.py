@@ -23,7 +23,8 @@ import argparse
 import json
 import sys
 
-from optima.manifest import load_manifest, resolve_source
+from optima.manifest import (all_declared_cuda_sources, all_declared_dep_patches,
+                             load_manifest, resolve_source)
 from optima.sandbox import scan_path
 
 
@@ -112,27 +113,43 @@ def cmd_scan(args: argparse.Namespace) -> int:
         for v in result.violations:
             print(f"      {v}")
             rc = 2
-    # Recursive guard: catch a vendored/extra .py the per-op (entry-only) scan misses.
+    # Recursive guard: catch a vendored/extra .py the per-op (entry-only) scan misses, and
+    # (fail-closed, manifest now loaded) any file that's neither a scanned .py, a declared
+    # cuda_source, nor benign metadata — e.g. an undeclared .cu or a stray .so.
     # Exact file match, not startswith: a prefix filter would also drop violations in
     # e.g. "kernels/silu.py_evil.py" because it string-prefixes "kernels/silu.py".
     op_sources = {op.source for op in m.ops}
-    extra = [v for v in scan_tree(args.bundle).violations
+    declared_cuda = all_declared_cuda_sources(args.bundle, m)
+    declared_patches = all_declared_dep_patches(args.bundle, m)
+    extra = [v for v in scan_tree(args.bundle, declared_cuda_sources=declared_cuda,
+                                  declared_dep_patches=declared_patches).violations
              if v.split(":", 1)[0] not in op_sources]
     if extra:
-        print("  [VIOLATIONS] vendored/extra .py (recursive scan):")
+        print("  [VIOLATIONS] vendored/extra/undeclared files (recursive scan):")
         for v in extra:
             print(f"      {v}")
         rc = 2
     return rc
 
 
-def _recursive_scan_ok(bundle: str) -> bool:
+def _recursive_scan_ok(bundle: str, manifest=None) -> bool:
     """Fail-closed vendored-tree guard for the eval paths: scan every bundle .py, not just the
     declared entries (a vendored library .py using open/importlib/subprocess must not slip in
-    unscanned). Prints violations; returns False if any."""
+    unscanned). Prints violations; returns False if any.
+
+    ``manifest`` (already loaded by the caller) supplies the declared ``cuda_sources``
+    allowlist, so scan_tree runs in its fail-closed mode: any file that's neither a
+    scanned ``.py``, a declared cuda_source, nor benign metadata is rejected. Passing
+    ``None`` falls back to the old (looser) behavior — kept only for callers that scan
+    without a manifest; every call site in this file now has one available.
+    """
     from optima.sandbox import scan_tree
 
-    tree = scan_tree(bundle)
+    declared_cuda = all_declared_cuda_sources(bundle, manifest) if manifest is not None else None
+    declared_patches = (all_declared_dep_patches(bundle, manifest)
+                        if manifest is not None else None)
+    tree = scan_tree(bundle, declared_cuda_sources=declared_cuda,
+                     declared_dep_patches=declared_patches)
     if not tree.ok:
         print("  [FAIL] recursive policy scan (vendored-tree guard):")
         for v in tree.violations:
@@ -162,7 +179,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     from optima.verify import format_verify, verify_entry
 
     m = load_manifest(args.bundle)
-    if not _recursive_scan_ok(args.bundle):  # vendored-tree guard (every .py, not just entries)
+    if not _recursive_scan_ok(args.bundle, manifest=m):  # vendored-tree guard (every .py, not just entries)
         return 2
     rc = 0
     for op in m.ops:
@@ -194,7 +211,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
             result = verify_collective(slot, str(src), op.entry, prepare_name=op.prepare,
                                        world_size=ws, device=args.device, seed=args.seed,
                                        jitter_seed=args.seed,  # anti shape-branch, like per-op
-                                       model_key=model_key)
+                                       model_key=model_key,
+                                       # rebuild plan (declared cuda_sources) must apply
+                                       # in the ranks that load the kernel
+                                       bundle_path=str(args.bundle))
             print(format_verify(result))
             if not result.passed:
                 rc = 2
@@ -226,7 +246,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     # Trusted parent: validate + scan only. It never imports miner code — the
     # kernel is loaded inside the (to-be-isolated) model process by the plugin.
     m = load_manifest(args.bundle)
-    if not _recursive_scan_ok(args.bundle):  # vendored-tree guard (every .py, not just entries)
+    if not _recursive_scan_ok(args.bundle, manifest=m):  # vendored-tree guard (every .py, not just entries)
         return 2
     known = 0
     for op in m.ops:
@@ -264,6 +284,8 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         isolate=args.isolate or args.framework_mode,  # framework-mode implies no-egress isolation
         allow_unsafe_no_isolation=args.allow_unsafe_no_isolation,
         timed_iters=args.timed_iters,
+        warmup_iters=args.warmup_iters,
+        speedup_margin=args.speedup_margin,
         prompt_seed=args.prompt_seed,
         top_logprobs_num=args.top_logprobs,
         ignore_eos=args.ignore_eos,
@@ -283,9 +305,14 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         candidate_disable_custom_all_reduce=args.candidate_disable_custom_all_reduce,
         extra_engine_kwargs=_json_obj(args.engine_kwargs_json),
         candidate_extra_engine_kwargs=_json_obj(args.candidate_engine_kwargs_json),
+        fidelity_mode=args.fidelity_mode,
+        audit_rate=args.audit_rate,
     )
-    if _slot_kl is not None and not args.kl_advisory:
+    if _slot_kl is not None and not args.kl_advisory and cfg.fidelity_mode == "kl":
         print(f"  (using {m.ops[0].slot}'s calibrated KL threshold {_slot_kl:g})")
+    if cfg.fidelity_mode == "audit":
+        print(f"  (fidelity=audit: extra untimed quality launch, in-engine audit at "
+              f"rate {cfg.audit_rate:g}, KL advisory)")
     print(f"\nrunning two launches of {args.model} (dtype={args.dtype}, "
           f"deterministic={cfg.deterministic}, cuda_graph={not cfg.disable_cuda_graph}, "
           f"attn_backend={cfg.attention_backend or 'auto'}, "
@@ -313,11 +340,19 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
     else:
         verdict = "below the noise-derived bar"
     print(f"speedup    {report.speedup:8.3f}x  (needs >= {report.required_speedup:.3f} = "
-          f"1 + max({cfg.speedup_margin:.2f}, {cfg.score_k:g}*noise) -> {verdict})")
-    print(f"quality    mean_kl={report.kl.mean_kl:.3e} max_kl={report.kl.max_kl:.3e} "
-          f"argmax_disagree={report.kl.argmax_disagreements}/{report.kl.num_positions}  "
-          f"token_match={report.token_match:.4f}{' (GATE)' if cfg.framework_mode else ''} -> "
-          f"{'PASS' if report.passed_quality else 'FAIL'}")
+          f"1 + max({cfg.speedup_margin:g}, {cfg.score_k:g}*noise) -> {verdict})")
+    if report.fidelity_mode == "audit":
+        print(f"quality    in-engine audit: {report.audit_desc} -> "
+              f"{'PASS' if report.passed_quality else 'FAIL'}")
+        print(f"           KL (ADVISORY, not gated — launch-nondeterminism confounded): "
+              f"mean_kl={report.kl.mean_kl:.3e} max_kl={report.kl.max_kl:.3e} "
+              f"argmax_disagree={report.kl.argmax_disagreements}/{report.kl.num_positions} "
+              f"token_match={report.token_match:.4f}")
+    else:
+        print(f"quality    mean_kl={report.kl.mean_kl:.3e} max_kl={report.kl.max_kl:.3e} "
+              f"argmax_disagree={report.kl.argmax_disagreements}/{report.kl.num_positions}  "
+              f"token_match={report.token_match:.4f}{' (GATE)' if cfg.framework_mode else ''} -> "
+              f"{'PASS' if report.passed_quality else 'FAIL'}")
     print(f"SCORE      {report.score:.3f}  (crownable speedup, else 0.0)")
 
     if getattr(args, "ledger", None) and getattr(args, "hotkey", None):
@@ -341,7 +376,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
     from optima.eval.throughput_kl import EvalConfig
 
     m = load_manifest(args.bundle)
-    if not _recursive_scan_ok(args.bundle):  # vendored-tree guard (every .py, not just entries)
+    if not _recursive_scan_ok(args.bundle, manifest=m):  # vendored-tree guard (every .py, not just entries)
         return 2
     known = 0
     for op in m.ops:
@@ -395,6 +430,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         candidate_extra_engine_kwargs=_json_obj(args.candidate_engine_kwargs_json),
     )
     names = [b.strip() for b in args.benchmarks.split(",") if b.strip()]
+    # (bench keeps the EvalConfig default warmup; its tok/s is documented noise)
     print(f"\nbenchmark eval of {args.model} on {names} "
           f"({args.samples}/bench; framework_mode={cfg.framework_mode}, "
           f"isolate_candidate={cfg.isolate}, "
@@ -591,6 +627,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     sp.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
     sp.add_argument("--seed", type=int, default=0)
+    sp.add_argument("--world-size", type=int, default=None, dest="world_size",
+                    help="ranks for DISTRIBUTED verify of collective slots (default 2; "
+                         "use the arena TP size, e.g. 4, on a multi-GPU box)")
     sp.add_argument("--model", default=None,
                     help="validator model key for the per-model slot profile (activation + "
                          "low-bit metric), e.g. MiniMax-M3. Default: the model declared in the "
@@ -604,6 +643,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-new-tokens", type=int, default=64)
     sp.add_argument("--num-prompts", type=int, default=32)
     sp.add_argument("--timed-iters", type=int, default=3, help="median-of-K timed passes per launch")
+    sp.add_argument("--warmup-iters", type=int, default=2,
+                    help="untimed heat-soak rounds before the first timed pass. On boxes where "
+                         "clock-locking is unavailable (tenant pods), thermal ramp lands in the "
+                         "B/B' bookends as baseline 'noise' and inflates the crowning bar — raise "
+                         "this until the bookends agree instead")
+    sp.add_argument("--speedup-margin", type=float, default=0.005,
+                    help="FLOOR on the required improvement; the actual bar is "
+                         "1 + max(margin, 2*measured_noise). Keep low — real wins stack at 1-2%%; "
+                         "the noise term, not this floor, guards an unstable box")
     sp.add_argument("--prompt-seed", type=int, default=0, help="per-epoch prompt sampling seed")
     sp.add_argument("--top-logprobs", type=int, default=20)
     sp.add_argument("--ignore-eos", action=argparse.BooleanOptionalAction, default=True,
@@ -615,6 +663,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="max fraction of positions whose top token may flip (sparse-cheat guard)")
     sp.add_argument("--p99-kl-threshold", type=float, default=None, help="optional p99 KL gate (catastrophic tail)")
     sp.add_argument("--kl-advisory", action="store_true", help="report KL but don't gate on it")
+    sp.add_argument("--fidelity-mode", choices=("kl", "audit"), default="kl",
+                    help="quality gate: 'kl' = rollout-KL vs the baseline launch (valid only on a "
+                         "deterministic-capable arena); 'audit' = in-engine per-call comparison vs "
+                         "the stock baseline under the slot's verify tolerances (extra untimed "
+                         "quality launch; KL becomes advisory). Use 'audit' where two identical "
+                         "launches aren't logit-identical (measured 2026-07-07: bit-stock "
+                         "candidates scored mean_kl 0.8-0.96 on eager fa4/NVFP4).")
+    sp.add_argument("--audit-rate", type=float, default=0.05,
+                    help="fidelity-mode=audit: fraction of eligible dispatcher calls audited")
     sp.add_argument("--mem-fraction", type=float, default=0.6,
                     help="sglang mem_fraction_static (use ~0.9 for big models like gpt-oss-120b)")
     sp.add_argument("--no-deterministic", action="store_true")
