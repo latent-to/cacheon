@@ -123,13 +123,29 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   (**local-only, gitignored** — dev machine, like WORKLOG.md; the numbers here are
   the committed record). Every OTHER example bundle remains a correctness demo
   (faithful but slower).
-- **Open — the next goals:** isolation for untrusted miners; chain integration + the
-  tiered eval scheduler (screen cheap, record rarely, amortized B,C1..Ck,B' bookends;
-  resident-engine screener design in the 07-07 ledger); a real DB; more slots
-  (MLA/weight-absorbed attention, FP8/FP4 GEMM, graph-safe paged attention); upstream:
-  report minimax_m3's unwired `is_last_layer` (stock last-layer AR realization is
-  unclear — probe before filing). NOTE: emissions will NOT stay winner-take-all
-  (relative-improvement + time-decay direction) — don't design around argmax-only scoring.
+- **Chain integration: DONE and live-validated on testnet (2026-07-08).**
+  `optima/chain/` = the full loop: miners commit `{"v":1,"h":<content_hash>,"u":<url>}`
+  via the chain's NATIVE timelock commit-reveal (`set_reveal_commitment`, ≤1024 B —
+  URL unreadable until the reveal block, which is the anti-copy priority timestamp);
+  `optima chain-validate` reads reveals in chain order, fetches (hostile-archive-safe,
+  size-capped), **re-hashes the extracted tree against the committed hash**, fingerprints
+  + demotes copies, evaluates out-of-process (pluggable `--eval-cmd` → the real GPU gate
+  chain), settles per slot, and pushes weights (SDK auto-routes through drand CRv4 when
+  the subnet enables commit-reveal weights). Emission policy lives in ONE seam,
+  `Ledger.current_weights` — swap it there, nowhere else. Proven on netuid 307: the deep
+  FE bundle was chain-committed by a miner hotkey and the loop crowned it at **SCORE
+  1.0717 (1.072× vs bar 1.026; audit 12,824/0)** — the third independent deep repro.
+  Runbook: `docs/TESTNET.md`; canary: `optima chain-compat` (SDK 10.3.2; note
+  `bittensor-drand<2.0.0`). Weights stayed dry-run on 307 (zero-stake = no permit, and
+  that subnet can't accept stake) — a real push needs our own subnet.
+- **Open — the next goals:** isolation for untrusted miners; the tiered eval scheduler
+  (screen cheap, record rarely, amortized B,C1..Ck,B' bookends; resident-engine screener
+  design in the 07-07 ledger); a real DB behind the Ledger; mainnet economics (own
+  subnet, staked validator permits, hosted bundle store); more slots (MLA/weight-absorbed
+  attention, FP8/FP4 GEMM, graph-safe paged attention); upstream: report minimax_m3's
+  unwired `is_last_layer` (stock last-layer AR realization is unclear — probe before
+  filing). NOTE: emissions will NOT stay winner-take-all (relative-improvement +
+  time-decay direction) — don't design around argmax-only scoring.
 
 ## How to run
 
