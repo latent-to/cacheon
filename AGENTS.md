@@ -151,7 +151,7 @@ This repo is the **validator harness** (the referee), plus example miner bundles
 
 ```bash
 # CPU dry-run (no GPU): manifest -> scan -> load -> op-correctness, + tests
-pip install -e . && pytest tests/
+pip install -e ".[cpu,dev]" && pytest tests/   # [cpu] pulls torch (the core leaves it unpinned)
 python -m optima.cli verify examples/miner_silu_torch --device cpu --dtype float32
 
 # GPU: see docs/DEV_ENVIRONMENT.md for the env setup, then

@@ -26,19 +26,23 @@ runs the model, and measures two things:
 
 **You earn if and only if your kernel is *both* faster *and* faithful.** A kernel
 that's 30% faster but changes the model's answers scores **zero**. A kernel that's
-perfectly faithful but slower than stock also scores zero (no speedup). The whole
-game is: *a genuine speedup at equal quality.*
+perfectly faithful but slower than stock also scores zero (no speedup). The
+requirement is a genuine speedup at equal quality.
 
 You don't have to understand Bittensor to develop a kernel. You write and test it
 locally; the chain only matters when you submit (§9). To actually be paid you'll
 need a Bittensor **hotkey** (wallet), but you can do everything up to submission
 without one.
 
-**Reality check (be honest with yourself):** as of this writing, *no submitted
-kernel has beaten sglang.* sglang's built-in kernels are already heavily tuned. Most
-faithful kernels you write will be *slower* than the baseline. Winning is real work —
-§8 is about where the actual openings are. This isn't a faucet; it's a performance-
-engineering competition with a tuned opponent.
+**Expectation-setting (measured, not vibes):** sglang's built-in kernels are heavily
+tuned, and most faithful kernels you write will measure *slower* than the baseline.
+It is doable — the first submissions passed every gate on 2026-07-07: two related
+fused-epilogue collective kernels (shallow and deep) measured 1.044–1.049× and
+1.071–1.074× against the noise-derived bar on the MiniMax-M3 / 4×B300 arena, at
+zero fidelity violations across ~12,500 audited calls each, reproduced on
+independent prompt seeds. That is the realistic shape of a passing
+submission: a few percent, earned from an opening the vendor left (§8), proven
+through the gates. Plan for that, not for 2×.
 
 ---
 
@@ -54,21 +58,36 @@ function?" — not the real anti-cheat. It catches a kernel that computes the wr
 thing (e.g. SiLU where the model wants SwiGLU). Run it yourself with `optima verify`.
 
 ### Gate B — fidelity (the load-bearing anti-cheat, on the real model)
-With your kernel swapped into the live model, the validator compares the model's
-**per-token output distribution** to the stock run:
+Fidelity has **two modes**, selected per arena (`--fidelity-mode`, see
+[FIDELITY.md](FIDELITY.md)):
+
+- **`audit` — the in-engine audit** (used on arenas where two identical stock runs
+  are *not* logit-identical, which includes the current MiniMax-M3 arena): an extra
+  untimed launch randomly samples your kernel's real dispatcher calls, re-runs the
+  stock baseline on clones of the same inputs, and compares under the slot's own
+  verify tolerances. **Zero violations** (plus a minimum call coverage) is the gate;
+  KL becomes advisory. The 2026-07-07 record submissions passed with ~12,500 audited
+  calls / 0 violations each.
+- **`kl` — rollout-KL** (valid only on arenas where a stock-vs-stock control
+  measures ~0): the model's **per-token output distribution** is compared to the
+  stock run:
 
 | check | what it catches | default threshold |
 |---|---|---|
 | **mean KL** | the output distribution drifting | `5e-3` (most slots); `3e-2` for attention |
 | **argmax-disagree rate** | a *sparse* cheat — bit-exact almost everywhere but a few tokens flipped | `1%` |
 | **coverage / tail-mass** | a flattened distribution that fools top-k KL | loose by default |
-| **benchmark accuracy** | the model getting *dumber* (GSM8K / MMLU) | no regression beyond ~2 points |
+
+In **both** modes, **benchmark accuracy** (GSM8K / MMLU) gates the model getting
+*dumber*: no regression beyond ~2 points, paired against the same run's baseline.
 
 The KL threshold is **per-slot** and is calibrated to the model's own
 nondeterminism floor (running the *same* stock kernel twice isn't bitwise identical).
 Attention's flash-style softmax reorders arithmetic, so its floor is higher — hence
 `3e-2`, not `5e-3`. **Don't claim your kernel "drifts" or panic about a small KL
-until you've measured the stock-vs-stock floor for that model.**
+until you've measured the stock-vs-stock floor for that model** — on a noisy arena
+a *bit-identical* kernel can read mean KL ~0.9, which is exactly why the audit mode
+exists.
 
 ### Gate C — throughput (is the speedup real?)
 This is **CUDA-graphs-ON** scoring — graphs-off cripples the baseline ~5×, so it's
@@ -82,7 +101,7 @@ your speedup against the *mean* of the two baselines, and sets the bar from the
 *measured* noise:
 
 ```
-required speedup = 1 + max(2%, k · noise)      # k ≈ 2
+required speedup = 1 + max(0.5%, k · noise)      # k ≈ 2; margin floor 0.005
 ```
 
 where `noise` is the spread between the two baseline reads. If the two baselines
@@ -102,7 +121,7 @@ in one slot, you don't need to beat everyone everywhere.
 ## 3. The slots — pick your target
 
 A **slot** is one typed boundary the validator will swap your kernel into. Run
-`python -m optima.cli slots` for the live list; today there are seven:
+`python -m optima.cli slots` for the live list; today there are ten:
 
 | slot | kind | what it computes | entry signature |
 |---|---|---|---|
@@ -110,9 +129,12 @@ A **slot** is one typed boundary the validator will swap your kernel into. Run
 | `norm.rmsnorm` | op | `x · rsqrt(mean(x²)+eps) · weight` | `entry(x, weight, out, eps)` |
 | `attention.sdpa` | block | `softmax(qkᵀ·scale + causal) v` (GQA/MQA) | `entry(q, k, v, out, sm_scale, causal)` |
 | `attention.decode` | block | decode attention over each request's cached K/V | `entry(q, k, v, seq_lens, sm_scale, out)` |
+| `attention.msa_block_score` | block | per-block scores for sparse-attention selection (the validator owns the top-k selection + the attend) | `entry(q, index_k, seq_lens, block_size, out)` |
 | `moe.fused_experts` | block | fused MoE experts (SwiGLU-MLP), a **(prepare, forward)** pair | `prepare(w13, w2)` + `forward(x, topk_ids, topk_weights, prepared, out)` |
 | `collective.all_reduce` | collective | tensor-parallel all-reduce (sum across GPUs) | `entry(x, out, group)` |
 | `moe.fused_experts_reduce` | collective | MoE experts that **own their trailing all-reduce** (the compute-comm overlap lever) | `prepare(...)` + `forward(x, topk_ids, topk_weights, prepared, out, group)` |
+| `collective.ar_residual_rmsnorm` | collective | fused all-reduce + residual add + RMSNorm epilogue (the slot the first gate-passing submission targeted) | `entry(x, residual, weight, eps, out_norm, out_residual, group)` |
+| `collective.moe_finalize_ar_rmsnorm` | collective | MoE finalize + all-reduce + residual + RMSNorm as one kernel; requires a `dep_patches` diff declared in `manifest.toml` (policy-allowlisted, applied to an overlay copy — see `optima/dep_policy.py`) | `entry(gemm_out, row_map, scales, residual, weight, eps, out_norm, out_residual, group)` |
 
 **Kinds:**
 - **op** — a single elementwise/reduction op. Small, and sglang's versions are very
@@ -124,8 +146,10 @@ A **slot** is one typed boundary the validator will swap your kernel into. Run
   one slot that can express the experts↔all-reduce *overlap*, ~75% of decode at scale.
 
 **Where the ceiling is higher:** op slots are a tuned wall. The block and collective
-slots are where real wins live — fusion across the GEMM/comm boundary, format
-specialization (FP8/FP4), and kernels the vendor never tuned for your GPU. See §8.
+slots have the larger openings — fusion across the GEMM/comm boundary, format
+specialization (FP8/FP4), and kernels the vendor never tuned for your GPU. The
+submissions that have passed the gates so far both landed on the fused-epilogue
+collectives. See §8.
 
 The full invariants every slot guarantees (and why they make cheating impossible)
 are in [SLOT_CONTRACT.md](SLOT_CONTRACT.md). The one you must never break: **a slot
@@ -138,10 +162,14 @@ allocated; you never see or produce the final tokens. That's what kills the
 ## 4. Your first kernel in 20 minutes (CPU, no GPU)
 
 ```bash
-git clone <repo> && cd optima
-pip install -e .            # installs the `optima` CLI + test deps
-pytest tests/              # sanity: should be all green
+git clone https://github.com/latent-to/optima && cd optima
+python3 -m venv .venv && source .venv/bin/activate   # python -m venv ships pip; `uv venv` does NOT
+pip install -e ".[cpu,dev]"   # the CLI + torch (CPU build) + pytest
+pytest tests/                 # sanity: all green (a few skips are normal — they need the maintainers' local data)
 ```
+
+(`[cpu]` exists because the core deliberately doesn't pin torch — a GPU box gets
+torch from its sglang/CUDA install instead; see [GPU_SETUP.md](GPU_SETUP.md).)
 
 Look at the simplest example — a pure-PyTorch `silu_and_mul`:
 
@@ -170,10 +198,16 @@ Compare against the broken examples to see what a *failing* kernel looks like �
 exist on purpose:
 
 ```bash
-python -m optima.cli verify examples/miner_silu_broken --device cpu --dtype float32   # fails op-correctness
+# adversarial bundle: drops the SiLU, so it's faster but wrong — must FAIL
+python -m optima.cli verify examples/miner_silu_broken_torch --device cpu --dtype float32
 ```
 
-That's the whole inner loop: edit → `verify` → repeat. No GPU, no cost.
+(`miner_silu_broken` is the same cheat as a Triton kernel — use it instead once
+you're on a GPU box; Triton has no CPU/macOS wheels.)
+
+That's the whole inner loop: edit → `verify` → repeat. No GPU, no cost. What CPU
+`verify` proves is **op-correctness only** — throughput, CUDA-graph capture, and
+the fidelity gates are measured on GPU (§6).
 
 ---
 
@@ -257,6 +291,21 @@ def fused_experts(x, topk_ids, topk_weights, prepared, out):   # every step
   can't win. Only declare it if your kernel truly captures (no host syncs, no
   data-dependent shapes inside the graph).
 
+### Advanced: override submissions and dependency patches
+
+Two tiers beyond the plain kernel bundle, both optional:
+
+- **Override submissions** — for some slots you can submit a small *epilogue*
+  composed onto a validator-owned base kernel (`base_kernel` / `override_point`
+  in the manifest) instead of a full implementation. See
+  [SUBMISSION_MODEL.md](SUBMISSION_MODEL.md);
+  `examples/miner_m3_swigluoai_override` is a copyable override bundle.
+- **`dep_patches`** — a bundle may declare a unified diff against a pinned
+  dependency's sources (e.g. flashinfer) to export data a deep-fusion kernel
+  needs. The diff is policy-allowlisted per dependency (`optima/dep_policy.py`)
+  and applied by the validator to an overlay copy — the install is never mutated.
+  Required by `collective.moe_finalize_ar_rmsnorm`.
+
 ### What you may NOT write (sandbox)
 
 Submitted kernels are statically scanned before they're loaded. **Banned:** network
@@ -273,10 +322,11 @@ flags you, that's why.
 
 ## 6. Testing with a GPU (the real scoring)
 
-When local `verify` passes, measure on a GPU. You can use your own or rent one
-(see [DEV_ENVIRONMENT.md](DEV_ENVIRONMENT.md) for the pod/toolchain recipe; set
-`TORCH_CUDA_ARCH_LIST` to your arch — `9.0`=H100, `10.0`=B200, and have `nvcc`+`ninja`
-on PATH for Triton JIT).
+When local `verify` passes, measure on a GPU. You can use your own or rent one from
+any provider — [GPU_SETUP.md](GPU_SETUP.md) is the provider-agnostic checklist
+(toolchain, the seam `.pth`, env vars, self-checks). The short version: set
+`TORCH_CUDA_ARCH_LIST` to your arch (`9.0`=H100, `10.0`=B200) and have `nvcc`+`ninja`
+on PATH for Triton JIT.
 
 ```bash
 # 1) op-correctness on real shapes/dtypes
@@ -308,15 +358,38 @@ disjoint GPUs so drift cancels).
 |---|---|---|
 | `scan` reports a banned construct | network / file / dynamic-code call in your kernel | remove it; reuse sglang helpers via `import`, don't `open()`/`exec()` |
 | `verify` op-correctness fails | wrong math, wrong dtype handling, or shape mismatch vs the slot contract | check the exact signature in `optima slots`; compare to the matching example bundle |
-| `evaluate` runs but your kernel never fires | dtype/arch eligibility excludes the run, or a block kernel isn't `graph_safe` so it fell back | widen `metadata`, declare `graph_safe`, set `OPTIMA_MOE_DEBUG=1`-style debug to confirm it fired |
-| KL gate fails on a *faithful* kernel | you didn't measure the stock-vs-stock noise floor; your "drift" may be the model's own nondeterminism — or your kernel genuinely isn't bit-faithful | measure the floor first; for big MoE use deterministic mode or `--kl-advisory` and let the accuracy gate carry quality |
+| `verify` fails only on *some* shapes | your kernel branches on shape or hard-codes dims | make it shape-generic; the verify shapes are jittered per run precisely to catch this |
+| your module raises at import (`load_failed` receipt) | a GPU-only import on a CPU box, or a syntax error | guard GPU imports; make sure the module imports cleanly everywhere it might load |
+| `evaluate` runs but your kernel never fires (no `fired` receipt) | dtype/arch eligibility excludes the run, a block kernel isn't `graph_safe` so it fell back, or the seam wasn't armed (`OPTIMA_*_SEAM=1`) | widen `metadata`, declare `graph_safe`, check the `active`/`load_failed`/`fired` receipt lines in the launch logs |
+| audit gate fails (audit mode) | your kernel's output differs from stock beyond the slot's tolerance on real calls — often dropped work | the audit re-ran stock on clones of your actual inputs; treat every violation as real |
+| KL gate fails on a *faithful* kernel (kl mode) | you didn't measure the stock-vs-stock noise floor; your "drift" may be the model's own nondeterminism — or your kernel genuinely isn't bit-faithful | measure the floor first; on nondeterministic arenas the audit mode is the gate and KL is advisory |
 | speedup gate fails | your kernel is simply slower than sglang's (the common case) | profile; see §8 — a faithful-but-slower kernel is the default outcome, not a bug |
-| score is 0 despite a speedup | a fidelity gate failed (fast-but-dumb), or it tied the champion and didn't clear the +2% margin | check the quality line in the report |
+| score is 0 despite a speedup | a fidelity gate failed, or it tied the champion and didn't clear the +2% dethrone margin | check the quality line in the report |
 | NO-DECISION | the box was too noisy (baselines disagreed >~10%) | quieten the box; re-run |
+
+**The phantom-pass (read this one).** A result that looks *too good* — KL exactly
+0.0, accuracy delta exactly 0.0, a large speedup — usually means the candidate
+engine came up **without your kernel**: missing seam `.pth`, a bad env var, or a
+bundle load failure made the dispatcher fall back to stock, and you measured
+stock-vs-stock. The receipt system exists for exactly this: the driver demands an
+`active` receipt (bundle loaded) and a `fired` receipt (the registry actually
+selected your kernel at least once), and **aborts the eval rather than scoring a
+stock-vs-stock run when they're missing** (the receipt lines themselves appear in
+the launch logs, not the final report block). If you ever see a speedup with no
+`fired` receipt in the logs, it is not attributable to your kernel. Locally
+without the `.pth` installed, running stock is expected
+(see [GPU_SETUP.md](GPU_SETUP.md)).
+
+Common contract mistakes worth checking before anything else: returning a tensor
+instead of writing into `out` (the dispatcher ignores your return value);
+allocating the output yourself; mutating weights in `forward` (that belongs in
+`prepare`); a host sync (`.item()`, `.cpu()`) inside a kernel you declared
+`graph_safe` (capture fails → fallback → no scored result); ignoring the `group`
+argument in a collective and reducing over a global.
 
 ---
 
-## 8. How to actually find a win
+## 8. How to find a real improvement
 
 This is the hard part and where most effort should go. Distilled from real
 profiling sessions on real hardware:
@@ -334,7 +407,7 @@ profiling sessions on real hardware:
 
 3. **Let the bound-type pick the tool.** Profile (e.g. `ncu`) to see whether the
    kernel is memory-bound, compute-bound, or co-limited:
-   - memory-bound → lower precision (FP8/FP4) halves bytes and wins.
+   - memory-bound → lower precision (FP8/FP4) halves bytes and usually pays.
    - compute-bound on a dense GEMM → the vendor (cuBLAS/cutlass) is near-optimal;
      don't fight it.
    - co-limited → lowering precision speeds *only* the part it touches; the other
@@ -347,47 +420,84 @@ profiling sessions on real hardware:
    dead end. **The open ground is the kernels the vendor did *not* tune for your GPU**
    — e.g. a model's own Triton kernels running un-optimized on a new architecture.
 
-5. **State your regime — a win is (model, context length, concurrency)-scoped.** A
+5. **State your regime — an improvement is (model, context length, concurrency)-scoped.** A
    kernel that helps at long context / high concurrency can be a no-op at short
    context / low concurrency, and vice versa. The decode-throughput regime under CUDA
-   graphs is what's scored; optimize there, and report the regime your win holds in.
+   graphs is what's scored; optimize there, and report the regime your improvement
+   holds in.
 
-6. **Distrust a surprising win until it survives an adversarial check.** Big speedups
+6. **Distrust a surprising speedup until it survives an adversarial check.** Big speedups
    are usually artifacts: clock drift, a thin low-batch corner that doesn't
    generalize, an unfair baseline (e.g. comparing kernels doing different amounts of
    work), or a fidelity regression you haven't measured. Bracket your timing, match
    the work both sides do, and check the quality gates before you believe it.
 
-7. **The realistic shape of a win is ~1.1–1.4×, not 2×.** Kernels are a slice of the
-   $/token stack; the strategy is to *stack* several regime-specific wins, not to find
-   one giant lever. A clean, faithful 1.1× that survives the gates is a real win.
+7. **The realistic shape of a passing kernel is a few percent end-to-end, not 2×.**
+   Kernels are a slice of the $/token stack; the strategy is to *stack* several
+   regime-specific improvements, not to find one giant lever. The submissions that
+   have passed the gates so far measured 1.04–1.07× end-to-end against the noise
+   bar; a clean, faithful speedup of that shape is the target.
 
 ---
 
 ## 9. Submitting to the subnet
 
-Submission uses **commit-reveal** so nobody can copy your bundle off-chain and
-front-run you:
+Everything *before* this section — writing, verifying, GPU-evaluating — needs no
+chain and no wallet. Submission itself rides Bittensor's native **timelock
+commit-reveal**: you commit `{content hash, fetch URL}` on-chain, encrypted until
+the reveal block. Until then nobody (validators included) can read your URL, and
+the reveal block is your priority timestamp — a later copy of your bundle is
+detected and demoted, by exact hash **or** a reformat-invariant fingerprint that
+survives whitespace/rename changes. Copy detection is cumulative across rounds.
+
+**One-time setup — a wallet and a registered hotkey:**
 
 ```bash
-# 1) commit a hash of your bundle (during the commit window)
-python -m optima.cli commit my_bundle --hotkey <YOUR_HOTKEY> --salt <random> --round N
-
-# 2) reveal it (during the reveal window) — proves you committed it first
-python -m optima.cli reveal my_bundle --hotkey <YOUR_HOTKEY> --salt <random> --round N
+pip install bittensor-cli
+btcli wallet create        # coldkey (funds) + hotkey (identity); back up the mnemonics
+# testnet TAO for registration comes from the Bittensor discord faucet
+python -m optima.cli chain-register --netuid <NETUID> --network <wss-endpoint>
 ```
 
-A reveal whose content matches an *earlier* commit by a different hotkey (exact hash
-**or** a reformat-invariant fingerprint that ignores whitespace/renames) is flagged a
-**copy** and earns 0. Copy detection is cumulative across rounds.
+(Bittensor's own wallet documentation: <https://docs.learnbittensor.org/keys/wallets>.
+The hotkey signs your submissions and receives emission; the coldkey only pays
+the registration fee and never touches this repo's data path.)
 
-Settlement (run by the validator) scores all original, passing reveals and applies
-king-of-the-hill (`settle`, or `settle --per-slot` for per-slot champions + emission
-split). You can inspect ledger state with `optima ledger`.
+**Per submission:**
 
-You'll need a Bittensor hotkey for identity/payout; setting one up is standard
-Bittensor wallet tooling (outside this guide). Everything *before* commit — writing,
-verifying, GPU-evaluating — needs no chain and no hotkey.
+```bash
+# 1) package: tars the bundle exactly as the identity hash sees it, prints the content hash
+python -m optima.cli chain-package my_bundle
+
+# 2) host my_bundle.tar.gz anywhere the validator can HTTPS-fetch it (any static host);
+#    the validator re-hashes what it downloads, so the archive must be byte-exact
+
+# 3) commit hash + URL on-chain (timelock; ~1 KB rides the chain, not your code)
+python -m optima.cli chain-submit my_bundle --url https://<where-you-hosted-it> \
+    --netuid <NETUID> --network <wss-endpoint>
+
+# check what the subnet currently sees (block, your uid, revealed submissions)
+python -m optima.cli chain-status --netuid <NETUID> --network <wss-endpoint>
+```
+
+After your reveal block passes, the validator loop fetches the archive, verifies
+it re-hashes to the committed hash, runs copy detection, evaluates through the
+full gate chain (§2), and settles king-of-the-hill per slot. The whole path —
+commit on a public testnet through GPU evaluation to settlement — was run
+end-to-end on 2026-07-08 ([TESTNET.md](TESTNET.md) is the operator-side runbook
+with the record).
+
+The `optima commit` / `optima reveal` / `optima settle` subcommands are the same
+protocol against a **local ledger file** — useful for testing the round logic
+offline; they are not the production submission path.
+
+**Ready to submit when:**
+
+- [ ] `optima scan` and `optima verify --device cuda` pass on your bundle
+- [ ] `evaluate` shows a speedup over the noise bar *with* an `active` + `fired` receipt (§7 — no phantom-pass)
+- [ ] fidelity green in the arena's mode (audit violations 0 / KL under threshold) and `bench` shows no accuracy regression
+- [ ] block/collective kernels: `graph_safe` declared and the kernel actually captures
+- [ ] the hosted tar.gz re-hashes to what `chain-package` printed
 
 ---
 
@@ -407,7 +517,14 @@ verifying, GPU-evaluating — needs no chain and no hotkey.
 - **fidelity** — how faithfully your kernel reproduces the model's outputs. Gated by
   KL + benchmark accuracy.
 - **KL (divergence)** — distance between the stock and your per-token output
-  distributions; the primary fidelity gate.
+  distributions; the fidelity gate on deterministic arenas (advisory where the
+  audit is the gate).
+- **in-engine audit** — the fidelity mode on nondeterministic arenas: an untimed
+  launch samples your kernel's real calls, re-runs stock on cloned inputs, and
+  compares under the slot's verify tolerances; zero violations required.
+- **receipts** — seam-health markers (`active`, `fired`, `load_failed`, …) the
+  eval demands so a result is attributable to your kernel; a missing `fired`
+  means you measured stock-vs-stock (§7).
 - **graph-safe** — a kernel that can run inside a CUDA graph capture. Required for
   block/collective kernels to be scored (scoring is graphs-ON).
 - **king-of-the-hill** — the best kernel per slot is champion; you take the title only
@@ -424,6 +541,8 @@ verifying, GPU-evaluating — needs no chain and no hotkey.
 
 *Questions the deep docs answer:* the full pipeline and injection mechanism
 ([HOW_OPTIMA_WORKS.md](HOW_OPTIMA_WORKS.md)), the slot invariants
-([SLOT_CONTRACT.md](SLOT_CONTRACT.md)), the GPU/toolchain setup
-([DEV_ENVIRONMENT.md](DEV_ENVIRONMENT.md)), and how the scored sglang version is
-pinned and bumped ([SGLANG_TRACKING.md](SGLANG_TRACKING.md)).
+([SLOT_CONTRACT.md](SLOT_CONTRACT.md)), the two fidelity modes and their measured
+rationale ([FIDELITY.md](FIDELITY.md)), the GPU/toolchain setup
+([GPU_SETUP.md](GPU_SETUP.md)), the chain loop from the validator's side
+([TESTNET.md](TESTNET.md)), and how the scored sglang version is pinned and
+bumped ([SGLANG_TRACKING.md](SGLANG_TRACKING.md)).
