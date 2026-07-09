@@ -1,38 +1,94 @@
-# Optima — inference-throughput competition harness on SGLang
+# Optima
 
-A validator harness for a Bittensor-style subnet where miners submit **kernels**
-(Triton / CuteDSL) that get swapped into a **fixed** model at typed op-slots, and
-are scored on **throughput** gated by **output fidelity** — the **in-engine audit**
-(sampled per-call comparison vs the stock baseline inside the scored engine, under
-each slot's verify tolerances) plus **task accuracy** on real benchmarks; per-token
-**KL** vs a reference launch is the legacy gate, valid only on arenas where a
-stock-vs-stock control measures ~0 (advisory elsewhere — see
-[docs/FIDELITY.md](docs/FIDELITY.md) for the measured post-mortem and the
-adversarial analysis).
+Optima is an inference-throughput competition on SGLang, built to run as a
+Bittensor subnet. Miners submit GPU **kernels** (Triton / CuteDSL) targeting
+individual operations in a **fixed** model; the validator swaps each kernel into
+the model it controls, measures **throughput** under CUDA graphs, and gates the
+result on **output fidelity** — a sampled in-engine comparison against the stock
+baseline, plus task accuracy on real benchmarks. A kernel earns only if it is
+faster at equal quality.
 
-> **Want to compete? Start with [docs/MINER_GUIDE.md](docs/MINER_GUIDE.md)** — the
-> miner on-ramp in plain language: what Optima is and how you earn, exactly how a
-> kernel is scored (the gates and thresholds), the slots you can target, a 20-minute
-> first-kernel walkthrough, the bundle format, how to test locally then on a GPU,
-> how to actually find a real win, and how to submit. No prior subnet knowledge
-> assumed.
->
-> **New here (design)? Read [docs/HOW_OPTIMA_WORKS.md](docs/HOW_OPTIMA_WORKS.md)** — the
-> full end-to-end explainer: what the validator does, what miners submit, the
-> exact pipeline, how a kernel gets into the model, and the complete threat model
-> (including the "fake the output via an API call" attack and why the op-slot
-> design defeats it). *(Some of its prose predates the current slot catalog —
-> this README is the current state of record.)*
->
-> **Going to production?** [docs/SUBNET_BLUEPRINT.md](docs/SUBNET_BLUEPRINT.md)
-> distills how a real Bittensor subnet (Affine) is built — chain plumbing, the
-> service decomposition, DB-backed state, copy detection, and the isolation
-> security pattern — and maps each onto Optima's production architecture.
+This repository is the validator harness (the referee), the chain integration,
+and example miner bundles.
+
+| You are | Start here |
+|---|---|
+| writing kernels to compete (**miner**) | [docs/MINER_GUIDE.md](docs/MINER_GUIDE.md) — the slots, the gates, the bundle format, local → GPU testing, submission. No prior subnet knowledge assumed. |
+| operating a **validator** | [docs/TESTNET.md](docs/TESTNET.md) (the chain loop runbook) + [docs/GPU_SETUP.md](docs/GPU_SETUP.md) (the GPU box) |
+| reading the **design** | [docs/HOW_OPTIMA_WORKS.md](docs/HOW_OPTIMA_WORKS.md) (end-to-end mechanism + threat model) and [docs/SLOT_CONTRACT.md](docs/SLOT_CONTRACT.md) (the four invariants) |
+
+## Quickstart (CPU — no GPU required)
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate   # python -m venv ships pip; `uv venv` does NOT
+pip install -e ".[cpu,dev]"
+python -m optima.cli slots        # the catalog of slots a kernel can target
+python -m optima.cli verify examples/miner_silu_torch        --device cpu --dtype float32   # passes
+python -m optima.cli verify examples/miner_silu_broken_torch --device cpu --dtype float32   # fails: drops SiLU
+pytest tests/
+```
+
+That is the local inner loop: copy an example bundle, edit the kernel,
+re-`verify`. CPU verify checks op-correctness only; throughput and fidelity are
+scored on GPU — setup in [docs/GPU_SETUP.md](docs/GPU_SETUP.md).
+
+## Measured record
+
+- **2026-07-07 — first submission through every gate.** The
+  `miner_m3_fused_epilogue` bundle (fused all-reduce + residual + RMSNorm
+  collective) measured **1.044× against the noise-derived bar 1.038** on the
+  MiniMax-M3-NVFP4 / 4×B300 arena — distributed verify, paired GSM8K
+  no-regression, in-engine audit 12,456 sampled calls / 0 violations — and
+  reproduced on an independent prompt seed at 1.049× (bar 1.005).
+- **The deep variant cleared the same gates at 1.074×** (bar 1.010; audit
+  12,480 / 0), reproduced at 1.071× (bar 1.037). It adds
+  `collective.moe_finalize_ar_rmsnorm` — MoE finalize + all-reduce + residual +
+  RMSNorm as one kernel — via a declared `dep_patches` overlay.
+- **2026-07-08 — the full loop ran on the public Bittensor testnet** (netuid
+  307): timelock commit-reveal → hash-verified fetch → copy fingerprinting →
+  the GPU referee, no human in the path. The deep bundle scored **1.072× (bar
+  1.026; audit 12,824 / 0)** — its third independent reproduction.
+- **Adversarial kernels are rejected.** A kernel that drops SiLU runs 26%
+  faster and scores **0** (GSM8K 62.5% → 0.0%); a kernel that skips RMSNorm on
+  gpt-oss-120b is caught the same way (75% → 0%).
+- Most faithful kernels measure *slower* than the pinned baseline — sglang's
+  kernels are heavily tuned. The record above is what passing actually looks
+  like: a ~1.04–1.07× measured speedup at zero fidelity violations.
+
+## Docs map
+
+| Doc | What it covers |
+|---|---|
+| [docs/MINER_GUIDE.md](docs/MINER_GUIDE.md) | the miner on-ramp: gates, slots, bundle anatomy, first kernel in 20 minutes, GPU testing, chain submission |
+| [docs/HOW_OPTIMA_WORKS.md](docs/HOW_OPTIMA_WORKS.md) | the full design: pipeline, seam mechanism, threat model |
+| [docs/SLOT_CONTRACT.md](docs/SLOT_CONTRACT.md) | the four invariants every slot must satisfy (short; read before touching `optima/slots.py`) |
+| [docs/FIDELITY.md](docs/FIDELITY.md) | the two fidelity modes (in-engine audit vs rollout-KL), the measured post-mortem, the adversarial matrix |
+| [docs/TESTNET.md](docs/TESTNET.md) | validator runbook: register, run the chain loop, evaluator contract |
+| [docs/GPU_SETUP.md](docs/GPU_SETUP.md) | provider-agnostic GPU box setup: toolchain, seam install, self-checks |
+| [docs/SGLANG_TRACKING.md](docs/SGLANG_TRACKING.md) | how the pinned sglang is bumped and re-baselined (consensus) |
+| [docs/SUBNET_BLUEPRINT.md](docs/SUBNET_BLUEPRINT.md) | how a production subnet is assembled (studied from Affine), mapped onto Optima |
+| [docs/SUBMISSION_MODEL.md](docs/SUBMISSION_MODEL.md) | advanced: the override submission tier (`base_kernel` / `override_point`) |
+| [docs/DEV_ENVIRONMENT.md](docs/DEV_ENVIRONMENT.md) | the maintainers' own dev-pod notes (provider-specific; not required reading) |
+| [docs/SUBMISSION_TERMS.md](docs/SUBMISSION_TERMS.md) | **draft** miner submission terms (operator license grant, emissions as sole compensation) — needs counsel review before mainnet |
+
+## License
+
+The harness is [Apache-2.0](LICENSE). Miner submissions to the subnet are
+accepted under separate [submission terms](docs/SUBMISSION_TERMS.md) (draft) —
+the repo license covers this code, not what miners submit.
+
+---
+
+# Full state of record
+
+Everything below is the detailed, numbers-first record. Where any doc and this
+file disagree, this file wins (it is kept current).
 
 ## What is and isn't done
 
 **Done & validated on real GPUs (H100 up to gpt-oss-120b; 4×B300 MiniMax-M3-NVFP4;
-pinned sglang 0.5.13.post1 / CUDA 13):**
+CUDA 13; the scored sglang version is `PINNED_SGLANG` in `optima/compat.py`, which
+also records that pin's validation state):**
 the whole *mechanism* — typed op-slots, fused-*block* slots, **and cross-GPU *collective*
 slots** (a slot can be one op, a region behind one typed tensor boundary, or a collective
 handed the process group), the seam that swaps an untrusted kernel into a spawned model
@@ -60,13 +116,13 @@ undeclared kernel stays eager-only (falls back to the trusted baseline in-graph,
 wedge capture); the attention gather-MVP is still eager (a paged-direct, graph-safe contract is
 the next rung). **Noise-robust scoring** (we can't lock clocks on rented pods): each candidate is
 **bracketed by a baseline before AND after** (B,C,B'), the speedup is paired against their mean,
-the bar is `1 + max(margin, k·measured-noise)` (margin floor 0.5% — real wins stack at 1-2%;
+the bar is `1 + max(margin, k·measured-noise)` (margin floor 0.5% — real improvements stack at 1-2%;
 the noise term is what guards an unstable box), and a round whose baselines disagree past a
 tolerance is **NO-DECISION** (never crowns). `ignore_eos` is on for scoring so both sides emit
 identical token counts.
 
-**First real win (2026-07-07): a submitted kernel beat sglang through the referee at equal
-fidelity.** The `miner_m3_fused_epilogue` bundle (fused AR+residual+RMSNorm collective, the
+**First gate-passing submission (2026-07-07): a submitted kernel measured faster than
+stock sglang through the referee at equal fidelity.** The `miner_m3_fused_epilogue` bundle (fused AR+residual+RMSNorm collective, the
 July-2 MiniMax-M3 campaign kernel) scored **1.044× against the noise-derived bar 1.038 —
 PASS, noise-confident** — on the M3-NVFP4/4×B300 arena, graphs-on, with the full gate chain
 green (distributed verify; GSM8K paired no-regression 93.8%/92.2%; in-engine audit 12,456
@@ -87,7 +143,7 @@ other example bundle remains a correctness demo (faithful but slower). (Full run
 live in the local `experiments/` ledger on the dev machine — gitignored, like `WORKLOG.md`;
 the numbers above are the record of record.)
 
-**Chain integration is live (2026-07-08): the deep win came back through the chain.**
+**Chain integration is live (2026-07-08): the deep bundle came back through the chain.**
 The full miner→chain→validator loop ran on the public Bittensor testnet (netuid 307):
 the deep bundle was committed from a miner hotkey via the chain's native **timelock
 commit-reveal** (`set_reveal_commitment` — the bundle URL is drand-encrypted until the
@@ -120,8 +176,8 @@ degrade the model; the gate must reject them.
 | `miner_silu_triton` (faithful) | 62.5% → 62.5% | 0.94× | **PASS** | 1.0 |
 | `miner_silu_broken` (drops SiLU) | 62.5% → **0.0%** | 1.26× faster | **FAIL** | **0** |
 
-The cheat is genuinely 26% faster yet scores **zero** because it can't do the
-work anymore. *Fast-but-dumb = worthless.*
+The cheat is genuinely 26% faster yet scores **zero** because it no longer does
+the work: a faster kernel that changes the model's answers earns nothing.
 
 **gpt-oss-120b (single H100), GSM8K + KL:**
 
@@ -222,12 +278,15 @@ optima/
 optima_kernels/
   collective/               # validator-owned reference lib for the fused AR+norm family (sm103 CUDA + wrapper)
 examples/
-  miner_silu_{triton,torch,broken,sparse}/     # silu slot (faithful / CPU dry-run / adversarial / sparse)
+  miner_silu_{triton,torch,broken,broken_torch,sparse}/   # silu slot (faithful / CPU dry-run / adversarial ×2 / sparse)
   miner_rmsnorm_{triton,broken}/               # rmsnorm slot (faithful / adversarial)
   miner_attention_torch/ miner_attention_decode_torch/   # attention.sdpa / attention.decode (blocks)
   miner_moe_fused_experts_torch/               # moe.fused_experts (block)
   miner_allreduce_torch/                       # collective.all_reduce
-tests/                                  # 357 tests (scanner, manifest, fidelity/audit, verify, seams, deep seam, dep_patches, collective, rebuild, commit-reveal)
+  miner_moe_fused_experts_reduce_torch/        # moe.fused_experts_reduce (experts + owned reduce)
+  miner_m3_swigluoai_override/                 # the override submission tier (base_kernel + override_point)
+  miner_setup_demo/                            # framework-mode demo: a setup() engine patch, gated by token-match
+tests/                                  # the test suite (scanner, manifest, fidelity/audit, verify, seams, deep seam, dep_patches, collective, rebuild, commit-reveal, chain)
 ```
 
 ## How a kernel gets into the model (the seam)
@@ -263,9 +322,11 @@ reach the clock.
 ### CPU dry-run (no GPU)
 
 ```bash
-pip install -e .
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[cpu,dev]"     # [cpu] pulls torch; a GPU box gets torch from its sglang install instead
 python -m optima.cli slots
-python -m optima.cli verify examples/miner_silu_torch --device cpu --dtype float32
+python -m optima.cli verify examples/miner_silu_torch        --device cpu --dtype float32
+python -m optima.cli verify examples/miner_silu_broken_torch --device cpu --dtype float32   # must FAIL
 pytest tests/
 ```
 
@@ -273,7 +334,7 @@ pytest tests/
 
 ```bash
 uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python sglang -e . ninja datasets
+uv pip install --python .venv/bin/python "sglang==<PINNED_SGLANG from optima/compat.py>" -e . ninja datasets
 SP=$(.venv/bin/python -c 'import site;print(site.getsitepackages()[0])')
 echo 'import optima.bootstrap' > "$SP/optima.pth"     # install the seam everywhere
 export CUDA_HOME=/usr/local/cuda

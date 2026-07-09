@@ -14,16 +14,17 @@ This is the long-form explainer. By the end you should understand, with no gaps:
 It points at every file. Paths are relative to this doc (`docs/`), so
 `../optima/slots.py` is the harness module `optima/slots.py`.
 
-> **Current scope (kept in sync):** seven slots — `activation.silu_and_mul`,
-> `norm.rmsnorm` (ops); `attention.sdpa` / `attention.decode`, `moe.fused_experts`
-> (blocks); `collective.all_reduce` and `moe.fused_experts_reduce` (collectives — the
-> latter the block that owns its trailing reduce, the compute-comm overlap lever) — two
-> quality gates (per-token **KL**
-> *and* real **benchmark accuracy** — Part 6), validated up to **gpt-oss-120b**.
-> `README.md` is the live state-of-record (results + calibration); if it disagrees with
-> this doc, README wins. **No submitted kernel has beaten sglang** — this validates the
-> referee, not any optimization; the example kernels are correctness demos, slower than
-> sglang's own.
+> **Current scope:** ten slots across three kinds (op / block / collective) — run
+> `python -m optima.cli slots` for the live catalog; the README's slot list is the
+> state of record. Fidelity is gated by the **in-engine audit** or per-token **KL**
+> (arena-dependent — see `docs/FIDELITY.md`) *plus* real **benchmark accuracy**
+> (Part 6). Validated on real GPUs up to gpt-oss-120b (1×H100) and
+> MiniMax-M3-NVFP4 (4×B300).
+> `README.md` is the live state-of-record (results + calibration); prose below may
+> lag it — where they disagree, **README wins**. Since 2026-07-07, submitted
+> kernels **have** measured faster than stock sglang through the referee (the
+> fused-epilogue collectives, 1.044–1.074× vs the noise bar — see the README's
+> measured record); the bundles in `examples/` remain correctness demos.
 
 > Reading order: Parts 1–3 are the mental model. Part 4 is the pipeline. Part 5
 > is the clever bit (how a kernel gets into the model). Parts 6–7 are scoring and
@@ -158,10 +159,12 @@ targets and *where* the kernel source lives. It does not run anything yet.
 
 The set of operations a miner is allowed to replace is the **slot catalog**,
 owned by the validator in [../optima/slots.py](../optima/slots.py). Today there are
-seven slots across three `kind`s — `op` (`activation.silu_and_mul`, `norm.rmsnorm`),
-`block` (`attention.sdpa`, `attention.decode`, `moe.fused_experts`), and `collective`
-(`collective.all_reduce`, and `moe.fused_experts_reduce` — the block that owns its reduce)
-(`collective.all_reduce`). A slot
+ten slots across three `kind`s — `op` (`activation.silu_and_mul`, `norm.rmsnorm`),
+`block` (`attention.sdpa`, `attention.decode`, `attention.msa_block_score`,
+`moe.fused_experts`), and `collective` (`collective.all_reduce`,
+`moe.fused_experts_reduce` — the experts block that owns its trailing reduce —
+and the fused epilogues `collective.ar_residual_rmsnorm` /
+`collective.moe_finalize_ar_rmsnorm`). A slot
 (`SlotSpec`) declares everything the validator needs to *use* and *verify* a kernel
 without trusting it:
 
@@ -719,7 +722,7 @@ Validated on a real H100 (sglang 0.5.12.post1 / CUDA 13, torch 2.11+cu130), Qwen
 up to gpt-oss-120b:
 
 - **The seam works on real models, including a 120B MoE.** Confirmed because the
-  *broken* kernel changes the output. Seven slots across op / block / collective kinds;
+  *broken* kernel changes the output. Ten slots across op / block / collective kinds;
   e.g. `norm.rmsnorm` fires on gpt-oss (whose activation is fused into the MoE kernel so
   silu is inert), and the `FusedMoE.forward` block seam routes gpt-oss's experts to the
   miner kernel.
@@ -727,7 +730,7 @@ up to gpt-oss-120b:
   - KL gate: faithful silu → mean KL ~0 **PASS**; broken silu → mean KL ~14
     **FAIL**, score **0** (~4 orders of magnitude separation).
   - Benchmark gate: on Qwen2.5-1.5B, broken silu drops GSM8K 62.5%→0% while being
-    26% *faster* → **FAIL**, score 0. *Fast-but-dumb = worthless.*
+    26% *faster* → **FAIL**, score 0 — a faster kernel with wrong answers earns nothing.
   - On gpt-oss-120b, broken rmsnorm drops GSM8K 75%→0% → **FAIL**.
 - **End-to-end KL catches subtle drift op-correctness misses.** A "faithful"
   rmsnorm passed per-op correctness but sat at KL 9.2e-3 vs a measured stock-vs-stock
@@ -739,10 +742,12 @@ up to gpt-oss-120b:
 - **gpt-oss-120b fits one 80 GB H100** (~69 GB at its native quantization), so the
   bootstrap doesn't need a B200 cluster.
 
-**What is NOT proven:** no submitted kernel has beaten sglang at anything. Every example
-kernel is a correctness demo — the faithful ones reproduce the model but are *slower* than
-sglang's own tuned kernels; the broken ones are caught by the gate. This validates the
-*referee*; the optimization side is unproven.
+**What was NOT yet proven at this stage:** a submitted kernel measuring faster than
+sglang. That milestone landed later — 2026-07-07, the fused-epilogue collectives on
+the MiniMax-M3 arena, 1.044–1.074× vs the noise bar (see the README's measured
+record). Every bundle in `examples/` remains a correctness demo — the faithful ones
+reproduce the model but are *slower* than sglang's own tuned kernels; the broken
+ones are caught by the gate.
 
 ---
 
@@ -753,17 +758,20 @@ In rough priority:
 1. **Isolation** (8.4): per-eval process + namespaces + no network egress + GPU
    context isolation + watchdog. *Required before untrusted miners.* Today the VM
    is the trust boundary.
-2. **A kernel that actually beats sglang** — the whole point, still unproven. Seven slots
-   exist (silu/rmsnorm ops; attention.sdpa/decode, MoE blocks; all-reduce + MoE-with-owned-reduce
-   collectives), but they're correctness demos, not speedups. The prizes are MLA/weight-absorbed attention,
+2. **More kernels that beat sglang** — proven possible (2026-07-07: the fused-epilogue
+   collectives measured 1.044–1.074× through the referee on the M3 arena); now it needs
+   breadth. Ten slots exist; the example bundles are correctness demos. The prizes are MLA/weight-absorbed attention,
    dense FP8/FP4 GEMM, and *comms-overlap* blocks (a block that owns its trailing reduce) —
    plus the multi-GPU surface (TP / PD-disaggregation / EP). Each new slot is a `SlotSpec` +
    a seam patch; the hard part is a kernel that wins, not the wiring.
 3. **Cross-validator determinism**: locked clocks, pinned HW/driver, deterministic
    mode on, more medians — so independent validators agree (Bittensor consensus).
 4. **Full-logit KL** at a reference seam (vs top-k) for the tightest fidelity gate.
-5. **Chain integration**: on-chain commitments, content-addressed bundle fetch,
-   real weight-setting. Today it's a local JSON ledger.
+5. **Chain integration: DONE (2026-07-08)** — native timelock commit-reveal
+   submissions, hash-verified fetch, and the validator loop ran live on the
+   public testnet (`optima chain-*`, `docs/TESTNET.md`). Still open on this
+   front: an owned subnet, staked validator permits, and a hosted bundle store
+   (ledger state is still a local JSON file).
 6. **Bigger models / multi-GPU** (DeepSeek-V4 scale) on the 8×B200 validator.
 7. **A leaderboard/dashboard** over the ledger (mostly a fundraising artifact).
 
@@ -775,7 +783,7 @@ The harness package, [../optima/](../optima):
 
 | File | Role |
 |---|---|
-| [slots.py](../optima/slots.py) | The slot ABI. `SlotSpec` (`invoke_reference`/`invoke_entry` for non-uniform signatures, `kind` = op/block/collective, a `Correctness` mode, `prepare`/`prepare_from_layer` for quant-layout slots), the **7 slots** (silu, rmsnorm, attention.sdpa/decode, moe.fused_experts, moe.fused_experts_reduce, collective.all_reduce), references, input generators, tolerances. Adding a slot = editing here. |
+| [slots.py](../optima/slots.py) | The slot ABI. `SlotSpec` (`invoke_reference`/`invoke_entry` for non-uniform signatures, `kind` = op/block/collective, a `Correctness` mode, `prepare`/`prepare_from_layer` for quant-layout slots), the **10 slots** (silu, rmsnorm ops; attention.sdpa/decode/msa_block_score + moe.fused_experts blocks; all_reduce, moe.fused_experts_reduce, ar_residual_rmsnorm, moe_finalize_ar_rmsnorm collectives), references, input generators, tolerances. Adding a slot = editing here. |
 | [manifest.py](../optima/manifest.py) | Parse + validate `manifest.toml`. Schema + ABI check + **path-safety** (`_safe_relpath`). Pure-Python. |
 | [sandbox.py](../optima/sandbox.py) | `scan_source` (AST policy tripwire), `load_entry` (import the kernel — isolate in prod), `probe_in_subprocess`. |
 | [registry.py](../optima/registry.py) | `KernelRegistry` (process-global `REGISTRY`), `KernelImpl`, `Eligibility`. The dispatcher's lookup table + active toggle. |
@@ -819,7 +827,7 @@ Examples [../examples/](../examples): one (or more) bundle per slot —
 CPU dry-run (no GPU; exercises manifest → scan → load → op-correctness):
 
 ```bash
-pip install -e .
+pip install -e ".[cpu,dev]"   # [cpu] pulls torch; a GPU box gets torch from its sglang install
 optima slots
 optima scan   examples/miner_silu_torch
 optima verify examples/miner_silu_torch --device cpu --dtype float32
