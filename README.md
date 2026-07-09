@@ -69,6 +69,13 @@ scored on GPU — setup in [docs/GPU_SETUP.md](docs/GPU_SETUP.md).
 | [docs/SUBNET_BLUEPRINT.md](docs/SUBNET_BLUEPRINT.md) | how a production subnet is assembled (studied from Affine), mapped onto Optima |
 | [docs/SUBMISSION_MODEL.md](docs/SUBMISSION_MODEL.md) | advanced: the override submission tier (`base_kernel` / `override_point`) |
 | [docs/DEV_ENVIRONMENT.md](docs/DEV_ENVIRONMENT.md) | the maintainers' own dev-pod notes (provider-specific; not required reading) |
+| [docs/SUBMISSION_TERMS.md](docs/SUBMISSION_TERMS.md) | **draft** miner submission terms (operator license grant, emissions as sole compensation) — needs counsel review before mainnet |
+
+## License
+
+The harness is [Apache-2.0](LICENSE). Miner submissions to the subnet are
+accepted under separate [submission terms](docs/SUBMISSION_TERMS.md) (draft) —
+the repo license covers this code, not what miners submit.
 
 ---
 

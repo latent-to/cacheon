@@ -1,0 +1,10 @@
+Optima
+Copyright 2026 latent-to
+
+Validator harness for the Optima inference-throughput subnet.
+https://github.com/latent-to/optima
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+Miner submissions to the subnet are accepted under the terms in
+docs/SUBMISSION_TERMS.md, which are separate from and additional to
+this repository's license.

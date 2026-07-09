@@ -480,6 +480,11 @@ python -m optima.cli chain-submit my_bundle --url https://<where-you-hosted-it> 
 python -m optima.cli chain-status --netuid <NETUID> --network <wss-endpoint>
 ```
 
+Submissions are made under the terms in
+[SUBMISSION_TERMS.md](SUBMISSION_TERMS.md) (currently a published draft): in
+short, you keep copyright, the operator gets a perpetual license to run and
+commercialize submitted kernels, and emissions are the sole compensation.
+
 After your reveal block passes, the validator loop fetches the archive, verifies
 it re-hashes to the committed hash, runs copy detection, evaluates through the
 full gate chain (§2), and settles king-of-the-hill per slot. The whole path —

@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "optima-harness"
 version = "0.0.1"
 description = "Validator harness for an inference-throughput competition on SGLang"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 # torch is required but intentionally NOT pinned here: install the build that
 # matches the validator's CUDA/SGLang environment first, then `pip install -e .`.
