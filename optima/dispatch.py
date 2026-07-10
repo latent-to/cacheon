@@ -948,10 +948,13 @@ def make_msa_prefill_dispatcher(
     ``robust_allocator``) so selection stays byte-stock. Version-pinned glue by design
     — this module only exists on the MSA arena's pinned sglang build.
 
-    AUDIT NOTE: the in-engine audit (optima/audit.py) is NOT yet wired for this
-    dispatcher (same standing residual as the attention slots — docs/FIDELITY.md); the
-    slab feeds the STOCK selection kernel, so fidelity evidence = the topk_overlap
-    op-gate + e2e KL/benchmarks until the audit hook lands.
+    AUDIT: wired (optima/audit.py, topk_overlap mode). On sampled calls the STOCK
+    function runs FIRST on the still-pristine inputs (no pre-call clones are possible
+    here — the gathered K comes from the multi-GB KV pool), then the miner path runs,
+    and the audit compares the CONSUMED product: the selection rows our
+    validator-owned selector produced from miner scores vs the rows stock produced —
+    per-row set overlap gated at the slot's own min_overlap. Only the untimed quality
+    launch arms sampling (OPTIMA_SLOT_AUDIT); timed launches carry zero overhead.
     """
     import os
 
@@ -1008,6 +1011,16 @@ def make_msa_prefill_dispatcher(
                     return stock()
                 meta.append((qs, qe, seq_b, pre_b, int(sids[b])))
 
+            # In-engine audit (per-rank independent here — the indexer is not a
+            # collective): stock runs FIRST on pristine inputs; the comparison target
+            # is the selection the engine would actually consume.
+            aud = _audit.sampled()
+            expected_idx = None
+            if aud:
+                exp = stock()
+                expected_idx = (exp[1] if isinstance(exp, (tuple, list)) and len(exp) > 1
+                                else None)
+
             max_seqblock_k = (max_seqlen_k + block_size_k - 1) // block_size_k
             score = torch.full((num_heads, total_q, max_seqblock_k), float("-inf"),
                                dtype=torch.float32, device=q.device)
@@ -1044,6 +1057,11 @@ def make_msa_prefill_dispatcher(
                 topk_idx.stride(0), topk_idx.stride(1), topk_idx.stride(2),
                 MASK_INIT=False, MASK_LOCAL=False,
             )
+            if aud:
+                if expected_idx is None:
+                    _audit.baseline_refused(slot)
+                else:
+                    _audit.record(slot, (topk_idx,), (expected_idx,))
             _log_msa_prefill_active()
             return None, topk_idx  # o is None in the gated (disable_index_value) mode
         except Exception as exc:  # noqa: BLE001
