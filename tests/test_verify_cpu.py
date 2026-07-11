@@ -157,6 +157,140 @@ def test_output_poison_catches_graph_that_does_not_write():
     assert "actual has non-finite values" in result.shape_results[0].detail
 
 
+def test_fresh_graph_inputs_catch_cached_correct_output():
+    slot = get_slot("activation.silu_and_mul")
+    backend = _FakeGraphBackend()
+    cached = None
+
+    def cached_capture(x, out):
+        nonlocal cached
+        if backend.phase == "capture":
+            d = x.shape[-1] // 2
+            cached = (
+                torch.nn.functional.silu(x[..., :d]) * x[..., d:]
+            ).clone()
+            out.copy_(cached)
+        elif backend.phase == "replay":
+            out.copy_(cached)
+        else:
+            _faithful_silu(x, out)
+
+    result = verify_entry(
+        slot, cached_capture, dtype=torch.float32, device="cpu", seed=0,
+        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=True,
+        graph_replays=3, _graph_backend=backend,
+    )
+
+    assert not result.passed
+    assert "cuda graph replay[0]" in result.shape_results[0].detail
+
+
+def test_candidate_may_not_mutate_validator_inputs():
+    slot = get_slot("activation.silu_and_mul")
+
+    def mutating(x, out):
+        _faithful_silu(x, out)
+        x.zero_()
+
+    result = verify_entry(
+        slot, mutating, dtype=torch.float32, device="cpu", seed=0,
+        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=False,
+    )
+
+    assert not result.passed
+    assert "input 'x' was mutated" in result.shape_results[0].detail
+
+
+def test_candidate_may_not_rebind_validator_inputs_to_equal_storage():
+    slot = get_slot("activation.silu_and_mul")
+
+    def rebinding(x, out):
+        replacement = x.detach().clone()
+        x.set_(replacement)
+        _faithful_silu(x, out)
+
+    result = verify_entry(
+        slot,
+        rebinding,
+        dtype=torch.float32,
+        device="cpu",
+        seed=0,
+        shapes=[{"num_tokens": 2, "d": 8}],
+        graph_safe=False,
+    )
+
+    assert not result.passed
+    assert "validator-owned storage/tensor binding" in result.shape_results[0].detail
+
+
+def test_candidate_may_not_replace_validator_output_storage():
+    slot = get_slot("activation.silu_and_mul")
+
+    def replacing(x, out):
+        replacement = torch.empty_like(out)
+        out.set_(replacement)
+        _faithful_silu(x, out)
+
+    result = verify_entry(
+        slot,
+        replacing,
+        dtype=torch.float32,
+        device="cpu",
+        seed=0,
+        shapes=[{"num_tokens": 2, "d": 8}],
+        graph_safe=False,
+    )
+
+    assert not result.passed
+    assert "validator-owned storage" in result.shape_results[0].detail
+
+
+def test_candidate_may_not_change_validator_output_strides():
+    slot = get_slot("activation.silu_and_mul")
+
+    def restriding(x, out):
+        out.as_strided_(out.shape, (1, out.shape[0]))
+        _faithful_silu(x, out)
+
+    result = verify_entry(
+        slot,
+        restriding,
+        dtype=torch.float32,
+        device="cpu",
+        seed=0,
+        shapes=[{"num_tokens": 2, "d": 8}],
+        graph_safe=False,
+    )
+
+    assert not result.passed
+    assert "validator-owned storage/tensor binding" in result.shape_results[0].detail
+
+
+def test_one_loaded_entry_cannot_cache_first_captured_shape():
+    slot = get_slot("activation.silu_and_mul")
+    backend = _FakeGraphBackend()
+    captured_tokens = None
+
+    def first_shape_only(x, out):
+        nonlocal captured_tokens
+        if backend.phase == "capture" and captured_tokens is None:
+            captured_tokens = x.shape[0]
+        if backend.phase in {"capture", "replay"} and x.shape[0] != captured_tokens:
+            out.zero_()
+        else:
+            _faithful_silu(x, out)
+
+    result = verify_entry(
+        slot, first_shape_only, dtype=torch.float32, device="cpu", seed=0,
+        shapes=[{"num_tokens": 2, "d": 8}, {"num_tokens": 5, "d": 8}],
+        graph_safe=True, graph_replays=3, _graph_backend=backend,
+    )
+
+    assert not result.passed
+    assert result.shape_results[0].passed
+    assert not result.shape_results[1].passed
+
+
 def test_topk_graph_poison_catches_partial_score_sheet_write():
     # MSA serves eagerly; this is a comparator/orchestration regression using its
     # typed FP32 padded score sheet. During replay the entry writes only the correct
@@ -185,7 +319,7 @@ def test_topk_graph_poison_catches_partial_score_sheet_write():
         dtype=torch.bfloat16,
         device="cpu",
         seed=0,
-        shapes=[slot.shapes[4]],
+        shapes=[slot.shapes[0]],
         graph_safe=True,
         graph_replays=3,
         _graph_backend=backend,

@@ -56,6 +56,16 @@ two things **mandatory, not optional**:
   `world_size` ranks, runs the miner kernel as the real collective, and compares each rank's
   output to a `torch.distributed` reduce of the **fp32** partials (gloo/CPU for a numeric check,
   nccl/GPU for the real path).
+- **One canonical live ABI.** Offline verification and the version-pinned engine binding emit the
+  same `CallDescriptor` and allocate from the same typed output/workspace contract. The binding
+  derives size and role from the actual process group, retains validator-owned input/output
+  storage identities, and revalidates dtype/device/shape/stride/layout/storage after candidate
+  execution. A missing field or unknown/unsupported topology is stock, never a miner fallback.
+- **Collective selection is terminal for that engine call.** Before selection, ineligibility is
+  ordinary stock routing. After all ranks select the unique candidate route, any rank-local
+  prepare/allocation/entry/validation failure aborts the candidate engine; a one-rank stock retry
+  would diverge from peers entering candidate NCCL. Current MoE contracts explicitly exclude
+  MoE-DP/EP dispatch-combine and EP AR-fusion until those boundaries receive their own verifier.
 - **The end-to-end gate.** Per-collective error compounds across every layer, so the op-level
   cosine/matched_ratio is necessary-but-not-sufficient — the token/KL/accuracy gate is required.
 
@@ -78,8 +88,13 @@ Scoring runs with **CUDA graphs ON** — graphs-off cripples the baseline ~4.5�
 `graph_safe: true` in its metadata to be run inside the graph; otherwise the seam falls back to the
 trusted baseline under capture (an un-capturable kernel can't wedge the graph). `graph_safe` means:
 static shapes, no host syncs (`.item()`/`.cpu()`), no data-dependent Python control flow, writes only
-the validator-allocated buffer. A kernel that lies either errors at capture (→ fallback) or is caught
-by the fidelity gate. The attention `decode` gather-MVP is the one seam that is structurally eager (a
+the validator-allocated buffer, and never mutates an input tensor. Each slot names the request tensors
+whose values may change at fixed captured addresses. Qualification refreshes every named tensor and
+uses a fresh trusted reference on each replay; poisoning outputs alone is insufficient because a graph
+could otherwise copy one cached correct answer. It also captures multiple applicable shapes in one
+loaded process so first-bucket workspace caches are exercised. A kernel that lies either errors or
+fails capture/replay (→ fallback) or is caught by the fidelity gate. The attention `decode` gather-MVP
+is the one seam that is structurally eager (a
 per-step `max_len` host-sync); its graph-safe form is a paged-direct contract (the next rung).
 
 ## Evolution rules
