@@ -6,7 +6,7 @@ always selected hunk-by-hunk.
 
 | Owner | Donor modules | Disposition | Extraction rule |
 |---|---|---|---|
-| Vendor prerequisite | `eval/seccomp_moby_v0_2_1.json`, `arena_assets/**`, `NOTICE`, package-data declarations | VENDOR | Provenance-only commit before the OCI executor. |
+| Vendor prerequisite | `eval/seccomp_moby_v0_2_1.json`, two `arena_assets/minimax_m3/sglang_patch/**` files, `NOTICE`, package-data declarations | VENDOR/extracted | Preserve the three donor bytes exactly; bind distribution, derivation, runtime-preimage, license, size, and hash in `vendor_provenance.json`. Do not port donor runtime/model-provision code. |
 | PR 1 contracts | `capabilities.py`, `tensor_spec.py` | PORT | Strong standalone typed foundations. |
 | PR 1 contracts | `slots.py`, `registry.py`, `dispatch.py`, `verify.py`, `verify_collective.py`, `receipts.py` | ADAPT/high reuse | Keep typed outputs, variants, domain routing, stock fallback, capture/replay, completed/fallback evidence; prepare loader for composite stacks. |
 | PR 1 target catalog | `competition.py`, target portions of `manifest.py` | ADAPT | Keep singleton/atomic semantics. Remove device-only crown restriction and duplicate whole-serving titles. PR 1 defines targets, not economics. |

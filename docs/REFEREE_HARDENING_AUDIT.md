@@ -773,3 +773,29 @@ from clean pre-extraction main `203bb559`: production +6,343/-476, tests +6,490/
 the PR-1 guidance is explicitly accepted because it retains reproduced adversaries; duplicate
 mutation/graph/legacy-lookup cases were consolidated, and independent scope review found no PR 2/3
 drift or safe production deletion. The next merge unit is PR 3a, not another PR-1 slice.
+
+## 2026-07-11 vendor-provenance prerequisite
+
+The independent vendor prerequisite is extracted before PR 3a so the frozen donor's binary inputs
+cannot remain implicit while later stack identities are designed. Exactly three inert assets move:
+the two GPU-tested MiniMax-M3 SGLang overlays and the Moby seccomp v0.2.1 profile. No executor,
+arena, model provisioner, source release, OCI, chain, scoring, or settlement code enters.
+
+The donor's provenance claims required two corrections. Both overlays are exact copies from
+`Mapika/MiniMax-M3-NVFP4@668435825700a0047399441720f430bdd8eca0ab`, not direct copies of the
+g56e290315 runtime files. Their manifest therefore records the immutable distribution, exact
+SGLang derivation base, and actual runtime-target preimage separately. The seccomp profile differs
+from upstream Moby by one terminal LF; both input and packaged hashes plus that transformation are
+bound. `NOTICE`, exact third-party license copies, and package metadata travel with the assets.
+This is provenance disclosure, not a claim of legal advice or deployment compliance.
+
+Exit evidence is offline and fail-closed: a canonical closed three-asset manifest; regular-file,
+path, size, hash, revision, license, and transformation checks; clean no-network wheel/sdist
+inspection; focused **7 passed**; complete local **681 passed, 15 skipped**; compileall and both
+staged/unstaged diff checks clean. The change adds zero runtime production logic. It does not
+activate seccomp, install or mount an overlay, enforce a runtime preimage, change an arena/model/
+SGLang pin, or provide GPU, fidelity, performance, crown, settlement, or release evidence.
+
+With the prerequisite explicit, the next product merge unit is PR 3a. Before implementation its
+tracked file list, donor dispositions, same-PR deletions, exit matrix, and nonclaims are frozen in
+the PR 3a extraction spec; expanding that list requires a written scope amendment.
