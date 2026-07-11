@@ -6,6 +6,15 @@ security model. **Where any doc and this file disagree, this file wins** (it is
 kept current). The [README](../README.md) carries the quickstart and
 orientation; this file carries the record.
 
+The current referee-hardening program is governed by the
+[product contract](PRODUCT_CONTRACT.md), the
+[focused extraction plan](REFEREE_HARDENING_SPLIT_PLAN.md), and the
+[donor disposition map](REFEREE_HARDENING_DONOR_MAP.md). The
+[hardening audit ledger](REFEREE_HARDENING_AUDIT.md) records exact extracted commits,
+receipts, cumulative size, accepted review findings, and explicit nonclaims. The product
+contract and this state of record remain the architectural and factual authorities; the
+plan and audit make the ongoing implementation reviewable and resumable.
+
 ## What is and isn't done
 
 **Done & validated on real GPUs (H100 up to gpt-oss-120b; 4×B300 MiniMax-M3-NVFP4;
