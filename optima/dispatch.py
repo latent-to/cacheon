@@ -22,7 +22,10 @@ import torch
 
 from optima import audit as _audit
 from optima import moe_export as _moe_export
+from optima.capabilities import msa_prefill_call_descriptor
 from optima.registry import REGISTRY, KernelRegistry
+from optima.slots import get_slot
+from optima.tensor_spec import validate_output_spec
 
 logger = logging.getLogger("optima.dispatch")
 _MOE_LOGGED_ACTIVE = False
@@ -34,6 +37,33 @@ def _arch_tag(device_index: int = 0) -> Optional[str]:
         return None
     major, minor = torch.cuda.get_device_capability(device_index)
     return f"sm{major}{minor}"
+
+
+def _runtime_parallel_sizes() -> tuple[Optional[int], Optional[int]]:
+    """Return validator-observed ``(tp_size, world_size)`` when initialized.
+
+    The MSA function itself carries no model-runner object, so these values come
+    only from sglang's already-initialized parallel-state authority.  Import or
+    initialization failure means unknown (descriptor fields omitted), never a
+    guessed value from environment variables.
+    """
+
+    tp_size: Optional[int] = None
+    world_size: Optional[int] = None
+    try:
+        from sglang.srt.distributed import parallel_state as ps
+
+        try:
+            tp_size = int(ps.get_tensor_model_parallel_world_size())
+        except Exception:  # noqa: BLE001 - parallel state may not be initialized
+            pass
+        try:
+            world_size = int(ps.get_world_size())
+        except Exception:  # noqa: BLE001 - parallel state may not be initialized
+            pass
+    except Exception:  # noqa: BLE001 - CPU/unit environments need no sglang import
+        pass
+    return tp_size, world_size
 
 
 def make_silu_and_mul_dispatcher(
@@ -958,6 +988,11 @@ def make_msa_prefill_dispatcher(
     """
     import os
 
+    # Resolve once at binding installation, not in the serving hot loop.  The
+    # logical shape is still resolved per invocation below, but dtype/layout/stride
+    # policy now comes from the same validator-owned declaration as offline verify.
+    output_slot = get_slot(slot)
+
     def dispatched(q, k_cache, v_cache, sink, req_to_token, slot_ids, cu_seqlens,
                    seq_lens, prefix_lens, max_seqlen_q, max_seqlen_k, block_size_q,
                    block_size_k, topk, init_blocks=1, local_blocks=2, sm_scale=None,
@@ -977,20 +1012,12 @@ def make_msa_prefill_dispatcher(
             return stock()
         try:
             num_kv_heads = k_cache.shape[1]
+            contract_top_k = int(output_slot.correctness.top_k)
             if not (disable_index_value and score_type == "max" and sink is None
-                    and num_kv_heads == 1 and q.is_cuda and q.dim() == 3):
+                    and num_kv_heads == 1 and q.is_cuda and q.dim() == 3
+                    and int(topk) == contract_top_k):
                 return stock()
             total_q, num_heads, head_dim = q.shape
-            impl = registry.lookup(
-                slot,
-                dtype_name=_dtype_name(q.dtype),
-                last_dim=head_dim,
-                arch=_arch_tag(q.device.index or 0),
-                num_tokens=total_q,
-            )
-            if impl is None:
-                return stock()
-
             batch_size = cu_seqlens.shape[0] - 1
             scale = float(sm_scale if sm_scale is not None else head_dim ** -0.5) * 1.4426950409
 
@@ -1009,7 +1036,52 @@ def make_msa_prefill_dispatcher(
                 seq_b, pre_b = int(sls[b]), int(pls[b])
                 if qe - qs > 0 and seq_b != pre_b + (qe - qs):
                     return stock()
-                meta.append((qs, qe, seq_b, pre_b, int(sids[b])))
+                meta.append((b, qs, qe, seq_b, pre_b, int(sids[b])))
+
+            # Describe and select EVERY call before allocating/writing the shared
+            # score slab.  A mixed batch is atomic at this binding: if even one
+            # request/head lies outside all variants (or matches ambiguously), the
+            # whole batch runs byte-stock and no miner fallback is consulted.
+            architecture = _arch_tag(q.device.index or 0)
+            tp_size, world_size = _runtime_parallel_sizes()
+            planned: dict[int, tuple[object, object]] = {}
+            for b, qs, qe, seq_b, _pre_b, _sid in meta:
+                q_len_b = qe - qs
+                if q_len_b == 0 or seq_b == 0:
+                    continue
+                # The seam invokes one head at a time, but every head in this
+                # request has the same canonical descriptor. Select once and reuse
+                # the immutable implementation rather than multiplying Python
+                # capability matching by num_heads.
+                descriptor = msa_prefill_call_descriptor(
+                    dtype=_dtype_name(q.dtype),
+                    architecture=architecture,
+                    head_dim=head_dim,
+                    block_size=int(block_size_k),
+                    q_len=q_len_b,
+                    kv_len=seq_b,
+                    top_k=contract_top_k,
+                    num_kv_heads=num_kv_heads,
+                    tp_size=tp_size,
+                    world_size=world_size,
+                )
+                decision = registry.select(
+                    slot, descriptor, write_fired_receipt=False
+                )
+                if not decision.use_candidate:
+                    return stock()
+                planned[b] = (descriptor, decision.impl)
+            if not planned:
+                return stock()
+
+            # Commit routing only after the complete batch passed preflight.  This
+            # writes the slot-level "fired" receipt without reintroducing a partial
+            # batch: registry state is immutable after engine initialization, and a
+            # changed/ambiguous decision still fails closed to stock.
+            first_descriptor, first_impl = next(iter(planned.values()))
+            committed = registry.select(slot, first_descriptor)
+            if committed.impl is not first_impl:
+                return stock()
 
             # In-engine audit (per-rank independent here — the indexer is not a
             # collective): stock runs FIRST on pristine inputs; the comparison target
@@ -1022,10 +1094,23 @@ def make_msa_prefill_dispatcher(
                                 else None)
 
             max_seqblock_k = (max_seqlen_k + block_size_k - 1) // block_size_k
+            probe_contract = output_slot.output_contract({
+                "q": q[:1, 0, :],
+                "index_k": k_cache[:1, 0, :],
+                "prefix_len": 0,
+                "scale": scale,
+                "block_size": block_size_k,
+            })
+            if len(probe_contract.outputs) != 1:
+                raise RuntimeError(f"{slot} must declare exactly one score output")
+            score_tensor_spec = probe_contract.outputs[0]
+            score_dtype = score_tensor_spec.dtype or q.dtype
+            score_device = score_tensor_spec.device or q.device
             score = torch.full((num_heads, total_q, max_seqblock_k), float("-inf"),
-                               dtype=torch.float32, device=q.device)
+                               dtype=score_dtype, device=score_device)
 
-            for qs, qe, seq_b, pre_b, sid in meta:
+            contract_validated = False
+            for b, qs, qe, seq_b, pre_b, sid in meta:
                 if qe - qs == 0 or seq_b == 0:
                     continue
                 nblk_b = (seq_b + block_size_k - 1) // block_size_k
@@ -1034,9 +1119,30 @@ def make_msa_prefill_dispatcher(
                 slots_b = req_to_token[sid, :seq_b].to(torch.long)
                 kg = k_cache[slots_b, 0, :].contiguous()
                 for h in range(num_heads):
+                    _descriptor, impl = planned[b]
                     q_bh = q[qs:qe, h, :].contiguous()
-                    impl.entry(q_bh, kg, pre_b, scale, block_size_k,
-                               score[h, qs:qe, :nblk_b])
+                    out_view = score[h, qs:qe, :nblk_b]
+                    if not contract_validated:
+                        # One representative slice is enough: every per-head/request
+                        # view comes from this same slab with the same dtype, device,
+                        # layout and row pitch; logical shapes are constructed directly
+                        # from the validated metadata above.  Avoid per-head hot-path tax.
+                        live_inputs = {
+                            "q": q_bh,
+                            "index_k": kg,
+                            "prefix_len": pre_b,
+                            "scale": scale,
+                            "block_size": block_size_k,
+                        }
+                        validate_output_spec(
+                            output_slot.output_contract(live_inputs),
+                            [out_view],
+                            fallback_dtype=q.dtype,
+                            fallback_device=q.device,
+                            inputs=(q_bh, kg),
+                        )
+                        contract_validated = True
+                    impl.entry(q_bh, kg, pre_b, scale, block_size_k, out_view)
 
             # The validator-owned top-k tail, byte-stock from the target module's own
             # pieces: the SELECTION never comes from miner code.
