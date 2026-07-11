@@ -8,3 +8,21 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 Miner submissions to the subnet are accepted under the terms in
 docs/SUBMISSION_TERMS.md, which are separate from and additional to
 this repository's license.
+
+The MiniMax-M3 arena overlay sources under
+optima/arena_assets/minimax_m3/sglang_patch/ are exact copies from
+Mapika/MiniMax-M3-NVFP4 revision
+668435825700a0047399441720f430bdd8eca0ab. That distribution identifies the
+MiniMax Community License, reproduced in
+LICENSES/MINIMAX_COMMUNITY_LICENSE.txt. The files are derivatives of SGLang
+sources licensed under the Apache License, Version 2.0; SGLang's license and
+copyright notice are reproduced in LICENSES/SGLANG.txt. The
+modelopt_quant.py source retains its upstream vLLM SPDX notice.
+
+The pinned seccomp profile at optima/eval/seccomp_moby_v0_2_1.json is from
+moby/profiles tag seccomp/v0.2.1, licensed under the Apache License, Version
+2.0. The packaged, GPU-tested file is the exact upstream profile with one
+terminal LF appended.
+
+Exact source revisions, derivation bases, runtime-target preimages, sizes,
+hashes, and transformations are recorded in optima/vendor_provenance.json.

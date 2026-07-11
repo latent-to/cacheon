@@ -28,6 +28,15 @@ dev = ["pytest>=7"]
 [project.scripts]
 optima = "optima.cli:main"
 
+[tool.setuptools]
+license-files = ["LICENSE", "NOTICE", "LICENSES/*.txt"]
+
+[tool.setuptools.package-data]
+"optima" = ["vendor_provenance.json"]
+"optima.eval" = ["seccomp_moby_v0_2_1.json"]
+"optima.arena_assets.minimax_m3.sglang_patch" = ["*.py"]
+"optima_kernels.collective" = ["*.cu"]
+
 # Installs the Optima seam inside every SGLang process (incl. the spawned
 # scheduler that runs the model). This is validator-owned code. Select it with
 # SGLANG_PLUGINS=optima (the eval harness sets this automatically).

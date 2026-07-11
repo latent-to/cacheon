@@ -1,0 +1,125 @@
+{
+  "assets": [
+    {
+      "derivation_base": {
+        "deletions": 0,
+        "insertions": 12,
+        "path": "python/sglang/srt/layers/moe/moe_runner/flashinfer_trtllm.py",
+        "repository": "https://github.com/sgl-project/sglang",
+        "revision": "01f10acd0669b37cde1d4b248edcb3e1f986d062",
+        "sha256": "930c2e660b2f3c2d9740682c79f7e38b33eb8f3378dc7ec85e6f0ec66d103656",
+        "size": 47589
+      },
+      "license": {
+        "distribution": {
+          "file": "LICENSES/MINIMAX_COMMUNITY_LICENSE.txt",
+          "name": "MiniMax Community License"
+        },
+        "upstream_base": {
+          "file": "LICENSES/SGLANG.txt",
+          "name": "Apache License 2.0",
+          "spdx": "Apache-2.0"
+        }
+      },
+      "packaged": {
+        "path": "optima/arena_assets/minimax_m3/sglang_patch/flashinfer_trtllm.py",
+        "sha256": "4eada0776f23f7aa4633d57dea69e55fadbd335fa6d01cc2983cbba11981f289",
+        "size": 48224
+      },
+      "runtime_target": {
+        "package_version": "0.0.0.dev1+g56e290315",
+        "path": "python/sglang/srt/layers/moe/moe_runner/flashinfer_trtllm.py",
+        "repository": "https://github.com/sgl-project/sglang",
+        "revision": "56e290315b8fdb4c8c10f8e31360d9bc3d878633",
+        "sha256": "1143a6735920dfa8a1a69004f17f1adc3eb807443fe1ac4d17c061f41500d1e8",
+        "size": 50237
+      },
+      "source_distribution": {
+        "path": "sglang_patch/flashinfer_trtllm.py",
+        "repository": "https://huggingface.co/Mapika/MiniMax-M3-NVFP4",
+        "revision": "668435825700a0047399441720f430bdd8eca0ab",
+        "sha256": "4eada0776f23f7aa4633d57dea69e55fadbd335fa6d01cc2983cbba11981f289",
+        "size": 48224
+      },
+      "transformations": []
+    },
+    {
+      "derivation_base": {
+        "deletions": 0,
+        "insertions": 30,
+        "path": "python/sglang/srt/layers/quantization/modelopt_quant.py",
+        "repository": "https://github.com/sgl-project/sglang",
+        "revision": "97a00317993e861fe91aa00d9074a8aad7be842c",
+        "sha256": "0d99085121d16cc3c14cf0a747b3a76fd4e363c4270f91be089ca6cf84810d38",
+        "size": 101601
+      },
+      "license": {
+        "distribution": {
+          "file": "LICENSES/MINIMAX_COMMUNITY_LICENSE.txt",
+          "name": "MiniMax Community License"
+        },
+        "inline_notices": [
+          "SPDX-License-Identifier: Apache-2.0",
+          "SPDX-FileCopyrightText: Copyright contributors to the vLLM project"
+        ],
+        "upstream_base": {
+          "file": "LICENSES/SGLANG.txt",
+          "name": "Apache License 2.0",
+          "spdx": "Apache-2.0"
+        }
+      },
+      "packaged": {
+        "path": "optima/arena_assets/minimax_m3/sglang_patch/modelopt_quant.py",
+        "sha256": "53f92fac550b46ed4b297a229b6f10fe9235424730d69143ce970d828f7b36b5",
+        "size": 103027
+      },
+      "runtime_target": {
+        "package_version": "0.0.0.dev1+g56e290315",
+        "path": "python/sglang/srt/layers/quantization/modelopt_quant.py",
+        "repository": "https://github.com/sgl-project/sglang",
+        "revision": "56e290315b8fdb4c8c10f8e31360d9bc3d878633",
+        "sha256": "0d99085121d16cc3c14cf0a747b3a76fd4e363c4270f91be089ca6cf84810d38",
+        "size": 101601
+      },
+      "source_distribution": {
+        "path": "sglang_patch/modelopt_quant.py",
+        "repository": "https://huggingface.co/Mapika/MiniMax-M3-NVFP4",
+        "revision": "668435825700a0047399441720f430bdd8eca0ab",
+        "sha256": "53f92fac550b46ed4b297a229b6f10fe9235424730d69143ce970d828f7b36b5",
+        "size": 103027
+      },
+      "transformations": []
+    },
+    {
+      "license": {
+        "distribution": {
+          "file": "LICENSE",
+          "name": "Apache License 2.0",
+          "spdx": "Apache-2.0"
+        }
+      },
+      "packaged": {
+        "path": "optima/eval/seccomp_moby_v0_2_1.json",
+        "sha256": "de1f5327ca42b80be02daba8d39c0d087a530dc3c16f7028170fe068c9d66e61",
+        "size": 13471
+      },
+      "source_distribution": {
+        "path": "seccomp/default.json",
+        "repository": "https://github.com/moby/profiles",
+        "revision": "5ad5f40ecde90d78e4a7c861c003fe92747d5518",
+        "sha256": "536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74",
+        "size": 13470,
+        "tag": "seccomp/v0.2.1",
+        "tag_object": "e295db0a4d7b67853387fef0b2ef0a29e796b1c1"
+      },
+      "transformations": [
+        {
+          "input_sha256": "536529b665dd0972c37bfb569f5d4ac8a53592e7b00752bc39ff063ca9864c74",
+          "name": "append-terminal-lf-v1",
+          "output_sha256": "de1f5327ca42b80be02daba8d39c0d087a530dc3c16f7028170fe068c9d66e61"
+        }
+      ]
+    }
+  ],
+  "schema_version": 1
+}

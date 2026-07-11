@@ -1,0 +1,2 @@
+# Preserve the exact upstream license bytes, including intentional trailing spaces.
+LICENSES/MINIMAX_COMMUNITY_LICENSE.txt -whitespace
