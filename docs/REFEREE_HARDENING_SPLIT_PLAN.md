@@ -59,22 +59,6 @@ Before PR 2, land a provenance-only commit for the pinned Moby seccomp profile, 
 MiniMax/SGLang overlay assets, `NOTICE`, licenses, hashes, and package-data declarations.
 Vendor material never pads an ordinary implementation PR.
 
-The 2026-07-11 extraction preserves exactly three GPU-tested assets from donor commit
-`1b1c842b`: the two MiniMax-M3 SGLang whole-file overlays and the Moby v0.2.1 seccomp
-profile. `optima/vendor_provenance.json` separately binds each packaged hash to its immutable
-distribution revision, the overlays' actual SGLang derivation bases, and the later g56e290315
-runtime preimages they replace. This distinction matters: `flashinfer_trtllm.py` is a 12-line
-derivative of an earlier SGLang file but a +40/-101 whole-file replacement of the actual runtime
-target. The Moby profile preserves the historical tested hash and truthfully records its sole
-transformation—one appended terminal LF—instead of the donor's false byte-for-byte claim.
-
-This prerequisite adds no runtime consumer or activation. Its offline exit is a closed canonical
-inventory, exact third-party notices and hashes, and clean wheel/sdist inclusion of all assets,
-licenses, `NOTICE`, and the existing collective CUDA source. Focused provenance evidence is
-7 passed; the complete local suite is 681 passed, 15 skipped. Runtime preimage enforcement,
-read-only mounts, seccomp activation, OCI isolation, compatibility, and any performance/crown
-claim remain owned by later PRs.
-
 ## Eight focused PRs
 
 The ceilings below are review budgets, not quotas. Exceeding one requires splitting the PR
@@ -365,12 +349,10 @@ to the backlog. New feature scope requires removing equivalent work or opening a
 
 Gate 0 is on main and architectural PR 1 is complete on GitHub PR #39. Architectural PR 3 remains
 the main genuinely missing product layer; PR 2 and later layers still have substantial donor
-material but are not merged. The independent vendor prerequisite was deliberately moved ahead of
-PR 3a so its provenance could not context-rot while stack assembly was built. After this vendor
-commit, the bounded merge sequence is: PR 3a; PR 2; PR 3b; PR 4; PR 5; PR 6; PR 7; PR 8. Split
-PR 2 or PR 4 only when reviewability genuinely requires it; larger merge units retain their exit
-tests and finite reviews rather than cutting corners or repeating the seven-micro-PR cadence for
-every layer.
+material but are not merged. After #39 the bounded merge sequence is: PR 3a; vendor provenance;
+PR 2; PR 3b; PR 4; PR 5; PR 6; PR 7; PR 8. Split PR 2 or PR 4 only when reviewability genuinely
+requires it; larger merge units retain their exit tests and finite reviews rather than cutting
+corners or repeating the seven-micro-PR cadence for every layer.
 
 The refactor's operational acceptance test is:
 
