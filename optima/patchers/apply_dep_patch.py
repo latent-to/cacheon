@@ -38,7 +38,6 @@ losers of the race verify the winner's stamp and reuse it.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import os
 import shutil
@@ -49,13 +48,6 @@ from pathlib import Path, PurePosixPath
 
 def _log(msg: str) -> None:
     print(f"[optima.apply_dep_patch] {msg}", flush=True)
-
-
-def _site_root(package: str) -> Path | None:
-    spec = importlib.util.find_spec(package)
-    if spec is None or not spec.submodule_search_locations:
-        return None
-    return Path(list(spec.submodule_search_locations)[0]).resolve().parent
 
 
 def _check_policy(target: str, file_patches) -> "object":
@@ -107,10 +99,43 @@ def _apply_to_overlay(policy, parsed_by_patch, site_root: Path, dest: Path) -> d
             touched[fp.path] = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
     return {
         "subtree": policy.overlay_subtree,
-        "site_root": str(site_root),
         "force_jit_modules": list(policy.force_jit_modules),
         "files": touched,
     }
+
+
+def _valid_overlay(dest: Path, want_stamp: dict, policy) -> tuple[bool, str, dict | None]:
+    """Validate both identity metadata and every materialized source byte."""
+    from optima.dep_policy import tree_hash
+
+    stamp_path = dest / "overlay.json"
+    if stamp_path.is_symlink() or not stamp_path.is_file():
+        return False, "overlay stamp is missing or a symlink", None
+    try:
+        have = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return False, f"overlay stamp is unreadable: {exc}", None
+    expected_keys = {
+        "cache_key", "identity", "patch_shas", "subtree", "force_jit_modules",
+        "files", "overlay_subtree_sha256",
+    }
+    if not isinstance(have, dict) or set(have) != expected_keys:
+        return False, "overlay stamp schema is malformed", have if isinstance(have, dict) else None
+    for key, value in want_stamp.items():
+        if have.get(key) != value:
+            return False, f"overlay stamp field {key!r} differs", have
+    if have.get("subtree") != policy.overlay_subtree:
+        return False, "overlay subtree policy differs", have
+    if have.get("force_jit_modules") != list(policy.force_jit_modules):
+        return False, "overlay force-JIT policy differs", have
+    subtree = dest / policy.overlay_subtree
+    try:
+        actual = tree_hash(subtree)
+    except RuntimeError as exc:
+        return False, str(exc), have
+    if have.get("overlay_subtree_sha256") != actual:
+        return False, "materialized overlay bytes differ from stamp", have
+    return True, "", have
 
 
 def main() -> None:
@@ -123,6 +148,9 @@ def main() -> None:
     from optima.manifest import load_manifest
 
     manifest = load_manifest(bundle)
+    phase = os.environ.get("OPTIMA_REBUILD_PHASE", "all").strip().lower()
+    if phase not in {"all", "build", "load"}:
+        raise RuntimeError(f"unsupported OPTIMA_REBUILD_PHASE: {phase!r}")
     if not manifest.dep_patches:
         _log("bundle declares no dep_patches; nothing to apply")
         return
@@ -142,47 +170,73 @@ def main() -> None:
 
     for target, entries in sorted(by_target.items()):
         policy = policies[target]
-        site_root = _site_root(policy.package)
+        from optima.dep_policy import dependency_site_root
+
+        site_root = dependency_site_root(policy)
         if site_root is None:
             _log(f"dependency {policy.package!r} not installed on this box; policy checks "
                  "passed, SKIPPING overlay materialization (no engine run here to score)")
             continue
 
-        from optima.dep_policy import overlay_base
+        from optima.dep_policy import overlay_base, overlay_identity, tree_hash
 
-        dest = overlay_base(manifest.bundle_id) / target
-        stamp_path = dest / "overlay.json"
-        want_stamp = {"bundle_id": manifest.bundle_id, "target": target,
-                      "patch_shas": {rel: patch_shas[rel] for rel, _ in entries}}
-        if stamp_path.is_file():
-            try:
-                have = json.loads(stamp_path.read_text())
-            except (OSError, ValueError):
-                have = None
-            if have is not None and all(have.get(k) == v for k, v in want_stamp.items()):
+        identity = overlay_identity(bundle, target, site_root=site_root)
+        dest = overlay_base(identity.cache_key) / target
+        want_stamp = {
+            "cache_key": identity.cache_key,
+            "identity": identity.payload,
+            "patch_shas": {rel: patch_shas[rel] for rel, _ in entries},
+        }
+
+        if phase == "load":
+            # The candidate receives the content-addressed overlay cache read-only.
+            # Validation must therefore be side-effect free (even creating a lock
+            # file would require a writable mount and reopen cache-poisoning races).
+            valid, why, _overlay_manifest = _valid_overlay(
+                dest, want_stamp, policy
+            )
+            if not valid:
+                raise RuntimeError(
+                    f"refusing stale/missing dep overlay for {target}: {why}; "
+                    "the trusted build worker must materialize this exact identity first"
+                )
+            _log(f"overlay cache hit for {target} ({dest})")
+            continue
+
+        # Same-identity processes serialize. Different bundle/dependency/policy
+        # identities have different lock paths and can build concurrently safely.
+        import fcntl
+
+        lock_path = dest.parent / f".{target}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lockf:
+            fcntl.flock(lockf, fcntl.LOCK_EX)
+            valid, why, overlay_manifest = _valid_overlay(dest, want_stamp, policy)
+            if valid:
                 _log(f"overlay cache hit for {target} ({dest})")
                 continue
-            _log(f"overlay stamp mismatch for {target}; rebuilding")
-            shutil.rmtree(dest, ignore_errors=True)
+            if dest.exists():
+                _log(f"invalid overlay cache entry for {target} ({why}); rebuilding")
+                shutil.rmtree(dest, ignore_errors=True)
 
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = Path(tempfile.mkdtemp(prefix=f".{target}.", dir=dest.parent))
-        try:
-            overlay_manifest = _apply_to_overlay(policy, entries, site_root, tmp)
-            overlay_manifest.update(want_stamp)
-            (tmp / "overlay.json").write_text(json.dumps(overlay_manifest, indent=2,
-                                                         sort_keys=True))
+            tmp = Path(tempfile.mkdtemp(prefix=f".{target}.", dir=dest.parent))
             try:
-                os.rename(tmp, dest)  # atomic landing; loser of a rank race falls through
-            except OSError:
-                if stamp_path.is_file():
-                    _log(f"another rank landed the {target} overlay first; reusing it")
-                else:
-                    raise
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-        _log(f"overlay ready for {target}: {dest / policy.overlay_subtree} "
-             f"(files patched: {len(overlay_manifest['files'])})")
+                overlay_manifest = _apply_to_overlay(policy, entries, site_root, tmp)
+                overlay_manifest.update(want_stamp)
+                overlay_manifest["overlay_subtree_sha256"] = tree_hash(
+                    tmp / policy.overlay_subtree
+                )
+                (tmp / "overlay.json").write_text(
+                    json.dumps(overlay_manifest, indent=2, sort_keys=True), encoding="utf-8"
+                )
+                os.rename(tmp, dest)  # same filesystem + identity lock => atomic landing
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            valid, why, overlay_manifest = _valid_overlay(dest, want_stamp, policy)
+            if not valid:
+                raise RuntimeError(f"newly materialized overlay failed self-check: {why}")
+            _log(f"overlay ready for {target}: {dest / policy.overlay_subtree} "
+                 f"(files patched: {len(overlay_manifest['files'])})")
 
 
 main()

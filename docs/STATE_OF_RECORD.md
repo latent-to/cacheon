@@ -6,6 +6,53 @@ security model. **Where any doc and this file disagree, this file wins** (it is
 kept current). The [README](../README.md) carries the quickstart and
 orientation; this file carries the record.
 
+## 2026-07-11 referee-hardening branch status
+
+This section supersedes the older evaluator/security implementation descriptions
+later in this file while `codex/referee-hardening` is being reduced and split. The
+detailed finding-to-evidence ledger is
+[`REFEREE_HARDENING_AUDIT.md`](REFEREE_HARDENING_AUDIT.md).
+
+- Candidate-native code is no longer loaded by the trusted timing controller in the
+  crown path. A host-owned streaming B/C/B' referee clocks fresh runc containers;
+  candidate builds happen in a disposable prebuild, and model execution remains inside
+  the candidate container. Qualification v11 and host-attestation v4 are fail-closed and
+  independently regraded; active-device receipt v2 binds pre-release work plus one
+  post-release ready sample. Ledger schema is v10.
+- The current exact autoregressive output-token comparison is **not valid crown
+  authority**: two independent stock-equivalent RTX brackets false-failed it even while
+  all paired top-k distribution checks passed. It is being replaced by a versioned
+  controller-posthoc teacher-forced product with prompt-cluster non-inferiority and hidden
+  task utility. Effective throughput remains the minimum of the
+  timed median and the charged conditioning tail; free setup warmups remain quality-graded,
+  while the final configured warmups, gaps, readiness, and first timed response are charged.
+- Broad engine optimizations have a bounded whole-serving SGLang source-overlay product.
+  The timing driver imports stock SGLang; exact scheduler children force the immutable
+  overlay after `multiprocessing.spawn.prepare`, and an origin receipt is emitted only
+  after the overlay package loads. External hidden output fidelity—not process-local
+  receipts—is the correctness authority.
+- Current local checkpoint: **1023 passed, 1 skipped in 34.25s**, with compileall and
+  `git diff --check` clean. Two complete non-crown RTX TP8 system-overlay B/C/B' brackets
+  on release tree `d619041e...0096` exercised prebuild, fresh engines, device/overlay
+  receipts, speed rejection, and exact cleanup. The second produced B/C/B' effective
+  316.04/313.87/314.52 tok/s and nine contiguous receipts. These are portability and
+  quality-design receipts, not substitutes for a registered B300 crown.
+- Current-schema testnet-307 intake is live-proven through finalized reveal history,
+  hardened HTTPS fetch/re-hash, competition resolution, non-crown evaluation, restart
+  idempotence, sparse SDK weight reconciliation, stale-emission refusal, and whole-pass
+  lock contention. No current-schema GPU crown or weight extrinsic has been claimed.
+- This branch is **not merge- or digest-freeze-ready** merely because it is green. An
+  independent moving-tree audit measured about +47.7k/-1.1k: +27.9k authored production,
+  +15.0k tests, and +4.6k vendored assets. Superseded one-shot OCI/dead protocol paths,
+  the non-crown raw-pointer device-component experiment, duplicated settlement evidence,
+  and repeated fixtures must be removed or consolidated; retained work must be split into
+  reviewable subsystem commits and audited again.
+- Still required on B300: registered TP4/SM103/NVLink topology and device-policy proof;
+  custom-all-reduce scheduler-descendant/P2P behavior; quality/conditioning/noise
+  calibration; real candidate B/C/B'; retained v11/v4 evidence reopen/regrade/settle; and
+  only then an approved referee digest or crown. Composition, marginal ablations, and the
+  resident hill-climbing screen remain subsequent product work.
+
 ## What is and isn't done
 
 **Done & validated on real GPUs (H100 up to gpt-oss-120b; 4×B300 MiniMax-M3-NVFP4;
@@ -364,11 +411,16 @@ optima settle  --round 0 --margin 0.02 --ledger l.json
   is paid (vs winner-take-all giving 100% to the single best end-to-end bundle).
 
 Robust scoring (see `optima/eval/scoring.py`), built for a validator that **can't lock GPU
-clocks**: each launch does median-of-K timed passes; the candidate is **bracketed by a
-baseline before and after** (B,C,B'); the speedup is paired against the baseline mean; the
-bar is **derived from the measured baseline noise** (`1 + max(margin, k·noise)`) not a
-hand-picked constant; a round whose bracketing baselines disagree past a tolerance is
-**NO-DECISION** and cannot crown. The ledger records a crownable speedup or 0.0. Fidelity
+clocks**: each launch does median-of-K timed passes, but its load-bearing point is the lower
+of that median and a charged conditioning floor. Every warmup is fidelity-graded; the
+initial `warmup_iters - conditioning_iters` rounds are throughput-free setup, then one
+continuous tail spans the final conditioning warmups, all gaps/readiness checks, and the
+first timed completion. Its floor retains every charged warmup rate, the first timed rate,
+and the aggregate tail rate. The candidate is **bracketed by a baseline before and after**
+(B,C,B'); the speedup is paired against the baseline mean; the bar is **derived from the
+measured baseline noise** (`1 + max(margin, k·noise)`) not a hand-picked constant; a round
+whose bracketing baselines disagree past a tolerance is **NO-DECISION** and cannot crown.
+The ledger records a crownable speedup or 0.0. Fidelity
 gating beyond mean-KL: a **coverage (tail-mass) guard** catches a flattened distribution
 whose visible head matches (top-k KL is blind to it), the argmax-rate catches sparse flips,
 **per-slot KL thresholds** calibrate to each slot's floor (attention's ~6e-3 vs silu's), and

@@ -28,7 +28,6 @@ handled separately: ``FLASHINFER_WORKSPACE_BASE`` is a real env var read once at
 from __future__ import annotations
 
 import importlib
-import json
 import logging
 import os
 import sys
@@ -42,14 +41,16 @@ def _truthy(v: str | None) -> bool:
     return (v or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _active_overlays() -> list[tuple[str, dict, "object"]]:
-    """(target, overlay.json payload, policy) for every overlay the reviewed patcher
-    materialized for the ACTIVE bundle. [] whenever this process isn't an active
-    candidate or nothing was materialized."""
+def _active_overlays() -> list[tuple[str, dict, "object", "object"]]:
+    """Validated overlays for the ACTIVE bundle.
+
+    A declared overlay is never advisory: missing/stale/corrupt materialization raises
+    before the candidate engine can silently serve the stock dependency.
+    """
     bundle = os.environ.get("OPTIMA_BUNDLE_PATH", "").strip()
     if not bundle or not _truthy(os.environ.get("OPTIMA_ACTIVE")):
         return []
-    from optima.dep_policy import PATCHABLE_DEPS, overlay_base
+    from optima.dep_policy import PATCHABLE_DEPS, read_validated_overlay
     from optima.manifest import ManifestError, load_manifest
 
     try:
@@ -60,20 +61,9 @@ def _active_overlays() -> list[tuple[str, dict, "object"]]:
     for target in sorted({dp.target for dp in manifest.dep_patches}):
         policy = PATCHABLE_DEPS.get(target)
         if policy is None:
-            continue  # the applier already hard-rejected; never guess here
-        stamp = overlay_base(manifest.bundle_id) / target / "overlay.json"
-        if not stamp.is_file():
-            logger.warning(
-                "optima: bundle declares dep_patches for %r but no overlay is "
-                "materialized at %s — the rebuild plan did not run; the engine "
-                "will serve the UNPATCHED dependency", target, stamp)
-            continue
-        try:
-            data = json.loads(stamp.read_text())
-        except (OSError, ValueError):
-            logger.exception("optima: unreadable overlay stamp %s", stamp)
-            continue
-        out.append((target, data, policy))
+            raise RuntimeError(f"active bundle declares unapproved dep target {target!r}")
+        identity, data, dest = read_validated_overlay(bundle, target)
+        out.append((target, data, policy, dest))
     return out
 
 
@@ -86,12 +76,9 @@ def install(registry) -> None:  # registry unused; signature shared by all integ
         return
 
     from optima import receipts
-    from optima.dep_policy import overlay_base
-
     force_jit: set[str] = set()
     applied: list[str] = []
-    for target, data, policy in overlays:
-        root = overlay_base(data["bundle_id"]) / target
+    for target, data, policy, root in overlays:
         if policy.env_rebind is not None:
             mod_name, attr = policy.env_rebind
             env_mod = importlib.import_module(mod_name)

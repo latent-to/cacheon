@@ -23,6 +23,8 @@ committed* and *who won*; the Ledger is the scoring half.
 from __future__ import annotations
 
 import logging
+import math
+import operator
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -31,6 +33,23 @@ logger = logging.getLogger("optima.chain")
 # Yuma-consensus version stamped on set_weights. A coordinated subnet parameter,
 # bumped deliberately (like PINNED_SGLANG) so every validator agrees.
 WEIGHTS_VERSION_KEY = 1
+CHAIN_REVEAL_HISTORY_CAP = 10
+MAX_REVEAL_HISTORY_PAGES = 4_096
+MAX_REVEAL_HISTORY_ROWS = 1_000_000
+
+
+class ChainWeightStateError(RuntimeError):
+    """The validator's currently active on-chain vector cannot be read safely."""
+
+    validator_fault = True
+    retryable = False
+
+
+class ChainRevealHistoryError(RuntimeError):
+    """The bounded chain view cannot prove complete anti-copy ordering."""
+
+    validator_fault = True
+    retryable = False
 
 
 @dataclass
@@ -67,6 +86,14 @@ class MetagraphView:
             return None
 
 
+@dataclass(frozen=True)
+class ValidatorWeightSnapshot:
+    """Authoritative sparse vector plus its on-chain last-update block."""
+
+    weights: dict[str, float]
+    last_update_block: int
+
+
 # --------------------------------------------------------------------------- #
 # Pure helpers — exercised with no chain
 # --------------------------------------------------------------------------- #
@@ -83,14 +110,176 @@ def normalize(weights: dict[str, float]) -> dict[str, float]:
 def weights_to_uid_vector(weights_by_hotkey: dict[str, float],
                           metagraph: MetagraphView) -> tuple[list[int], list[float]]:
     """Map ``{hotkey: weight}`` to ``(uids, weights)`` for set_weights, aligned to the
-    *live* metagraph. Hotkeys absent from the metagraph (deregistered since the eval)
-    are dropped; the remainder is renormalized to sum 1.0."""
-    on_chain = {hk: w for hk, w in weights_by_hotkey.items()
-                if metagraph.uid_of(hk) is not None}
-    norm = normalize(on_chain)
+    *live* metagraph.
+
+    A missing positive-weight champion is a safety event, not permission to silently
+    redistribute its emission among the remaining titles. The caller must explicitly
+    re-settle/neutralize that target before publishing another vector.
+    """
+    positive: dict[str, float] = {}
+    for hotkey, raw_weight in weights_by_hotkey.items():
+        if (
+            not isinstance(hotkey, str)
+            or not hotkey
+            or isinstance(raw_weight, bool)
+            or not isinstance(raw_weight, (int, float))
+        ):
+            raise ChainWeightStateError("weight projection contains an invalid entry")
+        weight = float(raw_weight)
+        if not math.isfinite(weight) or weight < 0:
+            raise ChainWeightStateError(
+                f"weight projection contains an invalid value for {hotkey!r}"
+            )
+        if weight > 0:
+            positive[hotkey] = weight
+    missing = sorted(hotkey for hotkey in positive if metagraph.uid_of(hotkey) is None)
+    if missing:
+        raise ChainWeightStateError(
+            "positive-weight hotkeys are absent from the live metagraph: "
+            + ", ".join(missing[:16])
+        )
+    norm = normalize(positive)
     uids = [metagraph.uid_of(hk) for hk in norm]
+    if (
+        any(type(uid) is not int or uid < 0 for uid in uids)
+        or len(set(uids)) != len(uids)
+    ):
+        raise ChainWeightStateError(
+            "live metagraph maps champion hotkeys to invalid or duplicate UIDs"
+        )
     weights = [norm[hk] for hk in norm]
     return uids, weights
+
+
+def _chain_uint(raw, description: str, *, maximum: int | None = None) -> int:
+    """Decode an SDK integer without accepting bools, floats, or truncation."""
+
+    if isinstance(raw, bool):
+        raise ChainWeightStateError(f"invalid {description}")
+    try:
+        value = operator.index(raw)
+    except (TypeError, OverflowError):
+        raise ChainWeightStateError(f"invalid {description}") from None
+    if value < 0 or (maximum is not None and value > maximum):
+        raise ChainWeightStateError(f"invalid {description}")
+    return value
+
+
+def read_validator_weight_snapshot(
+    subtensor, netuid: int, validator_hotkey: str
+) -> ValidatorWeightSnapshot:
+    """Read one validator's authoritative vector and last-update block.
+
+    The local weights-state file is only a durable submission cache; it cannot
+    prove that a vector is or is not still active after failover/corruption.
+    """
+
+    if not isinstance(validator_hotkey, str) or not validator_hotkey:
+        raise ChainWeightStateError("validator hotkey must be non-empty")
+    try:
+        metagraph = subtensor.metagraph(netuid=netuid)
+        hotkeys = list(metagraph.hotkeys)
+        raw_uids = list(metagraph.uids)
+        raw_last_updates = list(metagraph.last_update)
+    except Exception as exc:
+        raise ChainWeightStateError(
+            f"cannot fetch metagraph for active-weight verification: {exc}"
+        ) from None
+
+    if len(raw_uids) != len(hotkeys) or len(raw_last_updates) != len(hotkeys):
+        raise ChainWeightStateError(
+            "metagraph UID/hotkey/last-update widths differ"
+        )
+    if any(not isinstance(hotkey, str) or not hotkey for hotkey in hotkeys):
+        raise ChainWeightStateError("metagraph contains an invalid hotkey")
+    if len(set(hotkeys)) != len(hotkeys):
+        raise ChainWeightStateError("metagraph contains duplicate hotkeys")
+
+    uids = [
+        _chain_uint(raw_uid, "metagraph UID")
+        for raw_uid in raw_uids
+    ]
+    last_updates = [
+        _chain_uint(raw_block, "metagraph last-update block")
+        for raw_block in raw_last_updates
+    ]
+    if len(set(uids)) != len(uids):
+        raise ChainWeightStateError("metagraph contains duplicate UIDs")
+
+    uid_to_hotkey = dict(zip(uids, hotkeys))
+    try:
+        validator_index = hotkeys.index(validator_hotkey)
+        validator_uid = uids[validator_index]
+    except ValueError:
+        return ValidatorWeightSnapshot({}, 0)
+
+    # bt 10.3.2's default metagraph is lite=True, so ``metagraph.W`` is an
+    # empty shape-(0,) array even when the subnet has neurons. Reading a dense
+    # row from it produced the live netuid-307 failure (validator UID 3 indexed
+    # into that empty array). The authoritative SDK API is sparse and returns:
+    # ``[(source_uid, [(target_uid, uint16_weight), ...]), ...]``.
+    try:
+        raw_rows = list(subtensor.weights(netuid=netuid))
+    except Exception as exc:
+        raise ChainWeightStateError(
+            f"cannot fetch validator on-chain weights: {exc}"
+        ) from None
+
+    rows: dict[int, dict[int, int]] = {}
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, (list, tuple)) or len(raw_row) != 2:
+            raise ChainWeightStateError("chain weight state contains a malformed row")
+        raw_source_uid, raw_targets = raw_row
+        source_uid = _chain_uint(raw_source_uid, "chain weight source UID")
+        if source_uid not in uid_to_hotkey:
+            raise ChainWeightStateError(
+                "chain weight state contains a source UID absent from the metagraph"
+            )
+        if source_uid in rows:
+            raise ChainWeightStateError("chain weight state contains duplicate source rows")
+        if not isinstance(raw_targets, (list, tuple)):
+            raise ChainWeightStateError("chain weight state contains malformed targets")
+
+        targets: dict[int, int] = {}
+        for raw_target in raw_targets:
+            if not isinstance(raw_target, (list, tuple)) or len(raw_target) != 2:
+                raise ChainWeightStateError(
+                    "chain weight state contains a malformed target row"
+                )
+            raw_target_uid, raw_weight = raw_target
+            target_uid = _chain_uint(raw_target_uid, "chain weight target UID")
+            if target_uid not in uid_to_hotkey:
+                raise ChainWeightStateError(
+                    "chain weight state contains a target UID absent from the metagraph"
+                )
+            if target_uid in targets:
+                raise ChainWeightStateError(
+                    "chain weight state contains duplicate target UIDs"
+                )
+            weight = _chain_uint(
+                raw_weight, "uint16 weight", maximum=65_535
+            )
+            targets[target_uid] = weight
+        rows[source_uid] = targets
+
+    result: dict[str, float] = {}
+    for target_uid, weight in rows.get(validator_uid, {}).items():
+        if weight > 0:
+            result[uid_to_hotkey[target_uid]] = float(weight)
+    return ValidatorWeightSnapshot(
+        normalize(result),
+        last_updates[validator_index],
+    )
+
+
+def read_validator_weights(
+    subtensor, netuid: int, validator_hotkey: str
+) -> dict[str, float]:
+    """Compatibility projection of :func:`read_validator_weight_snapshot`."""
+
+    return read_validator_weight_snapshot(
+        subtensor, netuid, validator_hotkey
+    ).weights
 
 
 # --------------------------------------------------------------------------- #
@@ -140,21 +329,105 @@ def read_commitments(subtensor, netuid: int) -> dict[str, Commitment]:
     return out
 
 
-def read_revealed_commitments(subtensor, netuid: int) -> dict[str, RevealedCommitment]:
-    """Read every hotkey's LATEST revealed commitment (native chain commit-reveal).
+def read_reveal_history(
+    subtensor, netuid: int, *, block: int | None = None
+) -> tuple[RevealedCommitment, ...]:
+    """Read every available reveal and return one deterministic global history.
 
     The chain returns each hotkey's reveal history (capped at the 10 most recent);
-    optima's submission protocol takes the newest entry as the hotkey's current
-    submission. Ordering across hotkeys is by reveal block — the caller replays
-    them into the Ledger sorted by ``(block, hotkey)`` so ledger seq = chain priority.
+    discarding older entries loses anti-copy priority after validator downtime. A
+    saturated page is first continued *at* its newest oldest boundary block. This
+    excludes newer rows while retaining every reveal at the boundary, so multiple
+    same-hotkey reveals in one block are not skipped. A subsequent page must move
+    strictly backward; ten or more indistinguishable rows at one boundary therefore
+    fail closed instead of being silently truncated. Every recovered row is retained,
+    de-duplicated, and globally ordered by ``(reveal block, hotkey, payload)``. If
+    historical state is unavailable, malformed, non-progressing, or exceeds a hard
+    work bound, validation fails closed instead of guessing copy priority.
     """
-    raw = subtensor.get_all_revealed_commitments(netuid=netuid)
+
+    rows: dict[tuple[int, str, str], RevealedCommitment] = {}
+    if block is not None and (type(block) is not int or block < 0):
+        raise ValueError("reveal-history block must be a non-negative integer")
+    query_block: int | None = block
+    for page in range(MAX_REVEAL_HISTORY_PAGES):
+        try:
+            raw = subtensor.get_all_revealed_commitments(
+                netuid=netuid,
+                **({"block": query_block} if query_block is not None else {}),
+            )
+            page_items = dict(raw).items()
+        except Exception as exc:
+            raise ChainRevealHistoryError(
+                "cannot retrieve complete historical reveal state: "
+                f"{type(exc).__name__}: {exc}"
+            ) from None
+
+        saturated_oldest: list[int] = []
+        for hotkey, history in page_items:
+            if not history:
+                continue
+            if not isinstance(hotkey, str) or not hotkey or len(hotkey) > 256:
+                raise ChainRevealHistoryError(
+                    "chain reveal history contains an invalid hotkey"
+                )
+            if not isinstance(history, (list, tuple)):
+                raise ChainRevealHistoryError(
+                    "chain reveal history contains a malformed hotkey history"
+                )
+            history_blocks: list[int] = []
+            for entry in history:
+                if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                    raise ChainRevealHistoryError(
+                        "chain reveal history contains a malformed row"
+                    )
+                block, data = entry
+                if (
+                    type(block) is not int
+                    or block < 0
+                    or not isinstance(data, str)
+                    or (query_block is not None and block > query_block)
+                ):
+                    raise ChainRevealHistoryError(
+                        "chain reveal history contains invalid block/data provenance"
+                    )
+                history_blocks.append(block)
+                row = RevealedCommitment(hotkey=hotkey, data=data, block=block)
+                rows[(block, hotkey, data)] = row
+                if len(rows) > MAX_REVEAL_HISTORY_ROWS:
+                    raise ChainRevealHistoryError(
+                        "historical reveal recovery exceeded its bounded row budget"
+                    )
+            if len(history) >= CHAIN_REVEAL_HISTORY_CAP:
+                saturated_oldest.append(min(history_blocks))
+
+        if not saturated_oldest:
+            return tuple(rows[key] for key in sorted(rows))
+        next_block = max(saturated_oldest)
+        if query_block is not None and next_block >= query_block:
+            raise ChainRevealHistoryError(
+                "historical reveal pagination did not make backward progress; "
+                "the chain may contain at least ten same-hotkey reveals at one block"
+            )
+        query_block = next_block
+
+    raise ChainRevealHistoryError(
+        f"historical reveal recovery exceeded {MAX_REVEAL_HISTORY_PAGES} pages"
+    )
+
+
+def read_revealed_commitments(subtensor, netuid: int) -> dict[str, RevealedCommitment]:
+    """Compatibility/status view containing only each hotkey's latest reveal.
+
+    Production validation uses :func:`read_reveal_history`; this lossy view remains
+    for existing CLI status output and must not drive copy-priority accounting.
+    """
+
     out: dict[str, RevealedCommitment] = {}
-    for hotkey, history in dict(raw).items():
-        if not history:
-            continue
-        block, data = max(history, key=lambda pair: int(pair[0]))
-        out[hotkey] = RevealedCommitment(hotkey=hotkey, data=str(data), block=int(block))
+    for row in read_reveal_history(subtensor, netuid):
+        previous = out.get(row.hotkey)
+        if previous is None or (row.block, row.data) > (previous.block, previous.data):
+            out[row.hotkey] = row
     return out
 
 

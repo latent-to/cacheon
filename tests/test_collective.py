@@ -28,6 +28,19 @@ def test_allreduce_faithful_passes_gloo_cpu():
     assert res.passed, "\n".join(f"{r.shape}: {r.detail}" for r in res.shape_results)
 
 
+def test_collective_cpu_verify_does_not_claim_graph_proof():
+    slot = get_slot("collective.all_reduce")
+    res = verify_collective(
+        slot, ALLREDUCE_BUNDLE, "all_reduce", world_size=2,
+        backend="gloo", device="cpu", seed=0,
+        shapes=[{"num_tokens": 2, "hidden": 8}], graph_safe=True,
+    )
+    assert res.passed
+    assert res.graph_required
+    assert not res.graph_verified
+    assert all(r.graph_replays == 0 for r in res.shape_results)
+
+
 def test_non_reducing_kernel_fails_gloo_cpu(tmp_path):
     # A "reduce" that returns the LOCAL partial (forgets to sum across ranks) must fail:
     # out = x_rank != sum_r(x_r). Distributed verify is what catches this — a single-rank
@@ -38,6 +51,27 @@ def test_non_reducing_kernel_fails_gloo_cpu(tmp_path):
     res = verify_collective(slot, str(broken), "all_reduce",
                             world_size=2, backend="gloo", device="cpu", seed=0)
     assert not res.passed
+
+
+def test_collective_verify_watchdog_terminates_hung_ranks(tmp_path):
+    import time
+
+    hanging = tmp_path / "hanging_allreduce.py"
+    hanging.write_text(
+        "def all_reduce(x, out, group=None):\n"
+        "    while True:\n"
+        "        pass\n"
+    )
+    slot = get_slot("collective.all_reduce")
+    started = time.monotonic()
+    res = verify_collective(
+        slot, str(hanging), "all_reduce",
+        world_size=2, backend="gloo", device="cpu", seed=0,
+        shapes=[{"num_tokens": 2, "hidden": 8}], timeout_s=1.0,
+    )
+
+    assert not res.passed
+    assert time.monotonic() - started < 15
 
 
 def test_verify_entry_rejects_collective():

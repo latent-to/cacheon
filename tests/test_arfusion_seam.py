@@ -196,6 +196,22 @@ def test_dispatcher_token_cap_falls_back(monkeypatch, _fake_group):
     assert calls == ["baseline"]
 
 
+def test_flashinfer_autotune_routes_to_stock_before_candidate_selection(
+    monkeypatch, _fake_group
+):
+    import optima.dispatch as dispatch
+
+    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setattr(dispatch, "_flashinfer_tuning", lambda: True)
+    calls = []
+    reg = _registry()
+    d = make_arfusion_dispatcher(_baseline_recorder(calls), registry=reg)
+    x = torch.zeros(4, 8)
+
+    assert d(x, x.clone(), x[0])[0] == "baseline"
+    assert calls == ["baseline"]
+
+
 def test_dispatcher_graph_capture_requires_graph_safe(monkeypatch, _fake_group):
     import optima.dispatch as dispatch
 

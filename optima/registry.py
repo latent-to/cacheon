@@ -14,9 +14,22 @@ op's effect exactly.
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Optional
+
+from optima.capabilities import (
+    CallDescriptor,
+    CapabilityDomain,
+    CapabilityMatch,
+    CapabilityMismatch,
+    NUMERIC_FIELDS,
+    SUPPORTED_FIELDS,
+    capability_domain_from_metadata,
+)
+from optima.manifest import DEFAULT_VARIANT
 
 
 @dataclass(frozen=True)
@@ -62,6 +75,11 @@ class Eligibility:
     # never has its finalize skipped in the first place. None -> no floor.
     min_num_tokens: Optional[int] = None
 
+    # Normative, named specialization predicates.  Legacy fields above remain
+    # supported while arena bindings migrate from the positional lookup API to
+    # ``KernelRegistry.select(CallDescriptor(...))``.
+    capabilities: CapabilityDomain = field(default_factory=CapabilityDomain)
+
     def accepts(self, *, dtype_name: str, last_dim: int, arch: Optional[str],
                 num_tokens: Optional[int] = None) -> bool:
         if self.dtypes and dtype_name not in self.dtypes:
@@ -76,7 +94,197 @@ class Eligibility:
         if (self.min_num_tokens is not None and num_tokens is not None
                 and num_tokens < self.min_num_tokens):
             return False
-        return True
+        # New normative predicates fail closed on missing live fields.  The
+        # legacy bridge provides the fields old dispatchers already know; a
+        # capability such as head_dim intentionally remains ineligible until its
+        # validator-owned arena binding supplies head_dim.
+        descriptor = CallDescriptor.from_legacy(
+            dtype_name=dtype_name,
+            last_dim=last_dim,
+            arch=arch,
+            num_tokens=num_tokens,
+        )
+        return self.capabilities.match(descriptor).accepted
+
+    def match(self, descriptor: CallDescriptor) -> CapabilityMatch:
+        """Match a complete canonical descriptor, including legacy constraints.
+
+        Unlike ``accepts`` this API is fail-closed when a constrained legacy
+        field is missing.  New integrations should call ``KernelRegistry.select``
+        with every dimension/context value they own and inspect its decision.
+        """
+        mismatches: list[CapabilityMismatch] = []
+
+        def _missing(field_name: str, expected: str) -> None:
+            mismatches.append(CapabilityMismatch(field_name, "missing", expected))
+
+        def _outside(field_name: str, expected: str, actual: Any) -> None:
+            mismatches.append(
+                CapabilityMismatch(field_name, "outside_domain", expected, actual)
+            )
+
+        if self.dtypes:
+            if "dtype" not in descriptor:
+                _missing("dtype", f"one of {sorted(self.dtypes)!r}")
+            elif descriptor["dtype"] not in self.dtypes:
+                _outside("dtype", f"one of {sorted(self.dtypes)!r}", descriptor["dtype"])
+        if self.architectures:
+            if "architecture" not in descriptor:
+                _missing("architecture", f"one of {sorted(self.architectures)!r}")
+            elif descriptor["architecture"] not in self.architectures:
+                _outside(
+                    "architecture",
+                    f"one of {sorted(self.architectures)!r}",
+                    descriptor["architecture"],
+                )
+        if self.max_last_dim is not None:
+            if "last_dim" not in descriptor:
+                _missing("last_dim", f"at most {self.max_last_dim}")
+            elif descriptor["last_dim"] > self.max_last_dim:
+                _outside("last_dim", f"at most {self.max_last_dim}", descriptor["last_dim"])
+        if self.max_num_tokens is not None or self.min_num_tokens is not None:
+            lo = "-inf" if self.min_num_tokens is None else str(self.min_num_tokens)
+            hi = "+inf" if self.max_num_tokens is None else str(self.max_num_tokens)
+            expected = f"in [{lo}, {hi}]"
+            if "num_tokens" not in descriptor:
+                _missing("num_tokens", expected)
+            else:
+                value = descriptor["num_tokens"]
+                if ((self.min_num_tokens is not None and value < self.min_num_tokens)
+                        or (self.max_num_tokens is not None and value > self.max_num_tokens)):
+                    _outside("num_tokens", expected, value)
+        if self.quant:
+            if "quant" not in descriptor:
+                _missing("quant", f"one of {sorted(self.quant)!r}")
+            elif descriptor["quant"] not in self.quant:
+                _outside("quant", f"one of {sorted(self.quant)!r}", descriptor["quant"])
+        if descriptor.get("graph_mode") == "cuda_graph" and not self.graph_safe:
+            _outside("graph_mode", "eager (graph_safe is false)", "cuda_graph")
+
+        mismatches.extend(self.capabilities.match(descriptor).mismatches)
+        # A field may be constrained by both legacy and new metadata.  Preserve
+        # the intersection semantics but avoid duplicate identical diagnostics.
+        deduped: list[CapabilityMismatch] = []
+        for mismatch in mismatches:
+            if mismatch not in deduped:
+                deduped.append(mismatch)
+        return CapabilityMatch(tuple(deduped))
+
+
+@dataclass
+class _FieldConstraint:
+    """Internal intersection model used only for registration-time overlap checks."""
+
+    allowed: set[Any] | None = None
+    minimum: int | None = None
+    maximum: int | None = None
+    excluded: set[Any] = field(default_factory=set)
+
+    def allow(self, values: set[Any]) -> None:
+        self.allowed = values if self.allowed is None else self.allowed & values
+
+    def range(self, minimum: int | None, maximum: int | None) -> None:
+        if minimum is not None:
+            self.minimum = minimum if self.minimum is None else max(self.minimum, minimum)
+        if maximum is not None:
+            self.maximum = maximum if self.maximum is None else min(self.maximum, maximum)
+
+    def is_empty(self, *, numeric: bool) -> bool:
+        minimum = self.minimum
+        maximum = self.maximum
+        if numeric:
+            minimum = 0 if minimum is None else max(0, minimum)
+            if maximum is not None and minimum > maximum:
+                return True
+        if self.allowed is not None:
+            for value in self.allowed:
+                if value in self.excluded:
+                    continue
+                if isinstance(value, bool) or not isinstance(value, int):
+                    if self.minimum is None and self.maximum is None:
+                        return False
+                    continue
+                if minimum is not None and value < minimum:
+                    continue
+                if maximum is not None and value > maximum:
+                    continue
+                return False
+            return True
+        # Text domains are infinite, so a finite exclusion set cannot empty one.
+        if not numeric or maximum is None:
+            return False
+        assert minimum is not None
+        # Numeric descriptor values are non-negative integers.  A finite interval
+        # is empty only when every value is explicitly excluded.
+        width = maximum - minimum + 1
+        if width > len(self.excluded):
+            return False
+        return all(value in self.excluded for value in range(minimum, maximum + 1))
+
+
+def _add_eligibility_constraints(
+    constraints: dict[str, _FieldConstraint], eligibility: Eligibility
+) -> bool:
+    """Fold one Eligibility into constraints; return whether analysis is complete."""
+
+    def _field(name: str) -> _FieldConstraint:
+        return constraints.setdefault(name, _FieldConstraint())
+
+    if eligibility.dtypes:
+        _field("dtype").allow(set(eligibility.dtypes))
+    if eligibility.architectures:
+        _field("architecture").allow(set(eligibility.architectures))
+    if eligibility.max_last_dim is not None:
+        _field("last_dim").range(None, eligibility.max_last_dim)
+    if eligibility.min_num_tokens is not None or eligibility.max_num_tokens is not None:
+        _field("num_tokens").range(
+            eligibility.min_num_tokens, eligibility.max_num_tokens
+        )
+    if eligibility.quant:
+        _field("quant").allow(set(eligibility.quant))
+    if not eligibility.graph_safe:
+        _field("graph_mode").excluded.add("cuda_graph")
+
+    complete = True
+    for predicate in eligibility.capabilities.predicates:
+        # CapabilityDomain deliberately permits programmatic future/private fields
+        # even though public metadata cannot declare them.  Their matching semantics
+        # may evolve, so defer those intersections to selection-time.
+        if predicate.field not in SUPPORTED_FIELDS:
+            complete = False
+        constraint = _field(predicate.field)
+        if predicate.allowed:
+            constraint.allow(set(predicate.allowed))
+        else:
+            constraint.range(predicate.minimum, predicate.maximum)
+    return complete
+
+
+def eligibility_domains_overlap(
+    left: Eligibility, right: Eligibility
+) -> bool | None:
+    """Return whether two domains overlap, or ``None`` when it cannot be proven.
+
+    Public capability metadata and all legacy eligibility fields are fully
+    analyzable.  Programmatically constructed future/private predicates are
+    intentionally deferred; ``KernelRegistry.select`` remains the final
+    fail-closed ambiguity guard for those.
+    """
+
+    constraints: dict[str, _FieldConstraint] = {}
+    complete = _add_eligibility_constraints(constraints, left)
+    complete = _add_eligibility_constraints(constraints, right) and complete
+    for name, constraint in constraints.items():
+        if constraint.is_empty(numeric=name in NUMERIC_FIELDS):
+            return False
+    return True if complete else None
+
+
+class VariantRegistrationError(ValueError):
+    """A slot variant cannot be registered without making routing unambiguous."""
+
+
+_VARIANT_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
 
 
 @dataclass
@@ -90,10 +298,57 @@ class KernelImpl:
     # None for plain forward-only slots (silu / rmsnorm / attention).
     prepare: Optional[Callable[..., Any]] = None
     eligibility: Eligibility = field(default_factory=Eligibility)
+    variant: str = DEFAULT_VARIANT
 
 
-# Slots whose miner impl was actually SELECTED at least once in this process —
-# guards the one-time "fired" receipt write in lookup() (see optima/receipts.py).
+# Public architecture spelling; KernelImpl remains the compatibility name used
+# throughout existing dispatchers and tests.
+KernelVariant = KernelImpl
+
+
+class SelectionOutcome(str, Enum):
+    """Validator-owned routing result; every non-selected outcome means stock."""
+
+    SELECTED = "selected"
+    REGISTRY_INACTIVE = "registry_inactive"
+    SLOT_UNREGISTERED = "slot_unregistered"
+    OUT_OF_DOMAIN = "out_of_domain"
+    AMBIGUOUS = "ambiguous"
+
+
+@dataclass(frozen=True)
+class VariantCapabilityMatch:
+    """Diagnostic match result for one registered variant."""
+
+    variant: str
+    match: CapabilityMatch
+
+
+@dataclass(frozen=True)
+class SelectionDecision:
+    slot: str
+    descriptor: CallDescriptor
+    outcome: SelectionOutcome
+    candidate: KernelImpl | None = None
+    capability_match: CapabilityMatch | None = None
+    variant_matches: tuple[VariantCapabilityMatch, ...] = ()
+
+    @property
+    def impl(self) -> KernelImpl | None:
+        return self.candidate if self.outcome is SelectionOutcome.SELECTED else None
+
+    @property
+    def use_candidate(self) -> bool:
+        return self.impl is not None
+
+    @property
+    def use_baseline(self) -> bool:
+        return not self.use_candidate
+
+
+# Slots whose miner impl was SELECTED at least once in this process — guards the
+# one-time routing-only "fired" receipt.  Dispatchers separately write post-success
+# ``completed`` and exception ``fallback`` receipts (see optima/receipts.py).
 _FIRED_SLOTS: set[str] = set()
 
 
@@ -101,7 +356,10 @@ class KernelRegistry:
     """Process-global registry. One active bundle at a time (MVP)."""
 
     def __init__(self) -> None:
-        self._by_slot: dict[str, KernelImpl] = {}
+        # Registration order is retained for reproducible diagnostics and load
+        # behavior, but never acts as routing priority: exactly one variant must
+        # match a call or stock is served.
+        self._by_slot: dict[str, list[KernelImpl]] = {}
         self._active: bool = False
         self._strict: bool = False  # if True, a kernel exception aborts instead of falling back
         self._lock = threading.Lock()
@@ -110,7 +368,29 @@ class KernelRegistry:
 
     def register(self, impl: KernelImpl) -> None:
         with self._lock:
-            self._by_slot[impl.slot] = impl
+            if (
+                not isinstance(impl.variant, str)
+                or not impl.variant
+                or not _VARIANT_RE.fullmatch(impl.variant)
+            ):
+                raise VariantRegistrationError(
+                    "kernel variant must be a non-empty simple identifier"
+                )
+            variants = self._by_slot.setdefault(impl.slot, [])
+            if any(existing.variant == impl.variant for existing in variants):
+                raise VariantRegistrationError(
+                    f"duplicate variant {impl.variant!r} for slot {impl.slot!r}"
+                )
+            for existing in variants:
+                overlap = eligibility_domains_overlap(
+                    existing.eligibility, impl.eligibility
+                )
+                if overlap is True:
+                    raise VariantRegistrationError(
+                        f"overlapping capability domains for slot {impl.slot!r}: "
+                        f"variants {existing.variant!r} and {impl.variant!r}"
+                    )
+            variants.append(impl)
 
     def clear(self) -> None:
         with self._lock:
@@ -138,27 +418,101 @@ class KernelRegistry:
 
     # ---- lookup (dispatcher-side, hot path) ----
 
-    def lookup(
-        self, slot: str, *, dtype_name: str, last_dim: int, arch: Optional[str],
-        num_tokens: Optional[int] = None
-    ) -> Optional[KernelImpl]:
+    def select(
+        self,
+        slot: str,
+        descriptor: CallDescriptor,
+        *,
+        write_fired_receipt: bool = True,
+    ) -> SelectionDecision:
+        """Choose candidate or baseline for a canonical live call.
+
+        The decision is validator-owned and diagnostic: out-of-domain calls
+        carry structured mismatches rather than being indistinguishable from an
+        unregistered slot.  No miner code runs here.  Existing dispatchers can
+        continue using ``lookup`` until their arena bindings populate complete
+        descriptors.
+        """
         if not self._active:
-            return None
-        impl = self._by_slot.get(slot)
-        if impl is None:
-            return None
-        if not impl.eligibility.accepts(dtype_name=dtype_name, last_dim=last_dim, arch=arch,
-                                        num_tokens=num_tokens):
-            return None
+            return SelectionDecision(
+                slot, descriptor, SelectionOutcome.REGISTRY_INACTIVE
+            )
+        variants = self._by_slot.get(slot)
+        if not variants:
+            return SelectionDecision(
+                slot, descriptor, SelectionOutcome.SLOT_UNREGISTERED
+            )
+        variant_matches = tuple(
+            VariantCapabilityMatch(impl.variant, impl.eligibility.match(descriptor))
+            for impl in variants
+        )
+        accepted = [
+            (impl, result.match)
+            for impl, result in zip(variants, variant_matches)
+            if result.match.accepted
+        ]
+        if not accepted:
+            only_impl = variants[0] if len(variants) == 1 else None
+            only_match = variant_matches[0].match if len(variants) == 1 else None
+            return SelectionDecision(
+                slot,
+                descriptor,
+                SelectionOutcome.OUT_OF_DOMAIN,
+                candidate=only_impl,
+                capability_match=only_match,
+                variant_matches=variant_matches,
+            )
+        if len(accepted) != 1:
+            # Registration catches every overlap expressible in today's public
+            # capability vocabulary.  This remains the authoritative guard for
+            # future/private predicates whose intersection was not provable then.
+            return SelectionDecision(
+                slot,
+                descriptor,
+                SelectionOutcome.AMBIGUOUS,
+                variant_matches=variant_matches,
+            )
+        impl, match = accepted[0]
+        if write_fired_receipt:
+            self._write_fired_once(slot)
+        return SelectionDecision(
+            slot,
+            descriptor,
+            SelectionOutcome.SELECTED,
+            candidate=impl,
+            capability_match=match,
+            variant_matches=variant_matches,
+        )
+
+    @staticmethod
+    def _write_fired_once(slot: str) -> None:
         if slot not in _FIRED_SLOTS:
-            # First time this process actually SELECTS the miner impl for this slot —
-            # positive routed-evidence for the eval driver (anti phantom-pass; see
-            # optima/receipts.py). Once per slot per process, so it stays off the hot
-            # path; under CUDA-graph replay this host code doesn't run at all.
+            # First time this process SELECTS the miner impl for this slot. This proves
+            # routing only: eligibility/graph checks and the call itself may still fail
+            # or decline downstream. The dispatcher writes ``completed`` only after its
+            # output path succeeds and ``fallback`` on selected-candidate exceptions.
             _FIRED_SLOTS.add(slot)
             from optima import receipts
 
             receipts.write("fired", {"slot": slot}, tag=slot)
+
+    def lookup(
+        self, slot: str, *, dtype_name: str, last_dim: int, arch: Optional[str],
+        num_tokens: Optional[int] = None
+    ) -> Optional[KernelImpl]:
+        # Preserve the old API's special case: unknown architecture and token
+        # count do not reject legacy fields.  New normative capability fields are
+        # still checked (and missing ones fail closed) by Eligibility.accepts.
+        impl = self._legacy_select(
+            slot,
+            dtype_name=dtype_name,
+            last_dim=last_dim,
+            arch=arch,
+            num_tokens=num_tokens,
+        )
+        if impl is None:
+            return None
+        self._write_fired_once(slot)
         return impl
 
     def peek(
@@ -169,14 +523,48 @@ class KernelRegistry:
         deep export seam asks "would the consume kernel run?" before arming
         skip-finalize) — 'fired' must keep meaning "the miner entry was actually
         selected at a call site", so probes must not write it."""
+        return self._legacy_select(
+            slot,
+            dtype_name=dtype_name,
+            last_dim=last_dim,
+            arch=arch,
+            num_tokens=num_tokens,
+        )
+
+    def _legacy_select(
+        self,
+        slot: str,
+        *,
+        dtype_name: str,
+        last_dim: int,
+        arch: Optional[str],
+        num_tokens: Optional[int],
+    ) -> Optional[KernelImpl]:
+        """Compatibility selection for integrations not yet on CallDescriptor.
+
+        The historical allowance for an unknown architecture/token count is
+        preserved by using Eligibility.accepts.  Multiple variants are still
+        fail-closed: old bindings may route only when their limited descriptor
+        identifies exactly one implementation.
+        """
         if not self._active:
             return None
-        impl = self._by_slot.get(slot)
-        if impl is None or not impl.eligibility.accepts(
-                dtype_name=dtype_name, last_dim=last_dim, arch=arch,
-                num_tokens=num_tokens):
-            return None
-        return impl
+        variants = self._by_slot.get(slot, ())
+        matches = [
+            impl
+            for impl in variants
+            if impl.eligibility.accepts(
+                dtype_name=dtype_name,
+                last_dim=last_dim,
+                arch=arch,
+                num_tokens=num_tokens,
+            )
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def variants(self, slot: str) -> tuple[KernelImpl, ...]:
+        """Return registered variants for ``slot`` in deterministic load order."""
+        return tuple(self._by_slot.get(slot, ()))
 
     def slots(self) -> list[str]:
         return sorted(self._by_slot)
@@ -186,11 +574,17 @@ class KernelRegistry:
 REGISTRY = KernelRegistry()
 
 
-def eligibility_from_metadata(meta: dict | None, manifest_dtypes: tuple[str, ...]) -> Eligibility:
+def eligibility_from_metadata(
+    meta: dict | None,
+    manifest_dtypes: tuple[str, ...],
+    manifest_architectures: tuple[str, ...] = (),
+) -> Eligibility:
     """Build an Eligibility from a bundle op's metadata json (+ manifest dtypes)."""
     meta = meta or {}
     dtypes = set(manifest_dtypes) | {str(d) for d in meta.get("dtypes", ())}
-    archs = {str(a) for a in meta.get("architectures", ())}
+    archs = set(manifest_architectures) | {
+        str(a) for a in meta.get("architectures", ())
+    }
     max_last = meta.get("max_last_dim")
     return Eligibility(
         dtypes=frozenset(dtypes),
@@ -202,4 +596,5 @@ def eligibility_from_metadata(meta: dict | None, manifest_dtypes: tuple[str, ...
                         if meta.get("max_num_tokens") is not None else None),
         min_num_tokens=(int(meta["min_num_tokens"])
                         if meta.get("min_num_tokens") is not None else None),
+        capabilities=capability_domain_from_metadata(meta),
     )

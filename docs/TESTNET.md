@@ -23,8 +23,9 @@ NATIVE timelock commit-reveal (`set_reveal_commitment`):
 Everything else — fetching, hash verification, copy detection, the gate chain,
 settlement — happens on the validator, recorded in the JSON ledger
 (`commit_reveal.Ledger`). Weight policy is read from `Ledger.current_weights()`
-— the ONE place emission policy lives (currently per-slot king-of-the-hill;
-NOT frozen winner-take-all).
+— the ONE place emission policy lives (currently per-target king-of-the-hill;
+singleton targets are slots, while registered atomic multi-slot targets receive
+one indivisible title; NOT frozen winner-take-all).
 
 ## Prerequisites
 
@@ -51,8 +52,8 @@ optima chain-register --netuid 307 --network "$NET" --wallet default --hotkey de
 # 1. miner: package a bundle -> tar.gz + the content hash that will be committed
 optima chain-package examples/miner_silu_torch --out hosted/bundle.tar.gz
 
-# 2. miner: host the tarball anywhere fetchable (https://...; file:// for a
-#    same-machine dev loop), then commit hash+URL on-chain (timelock)
+# 2. miner: host the tarball on authenticated HTTPS, then commit hash+URL
+#    on-chain (timelock). Production payloads reject file:// and plaintext HTTP.
 optima chain-submit examples/miner_silu_torch --url https://example.com/bundle.tar.gz \
     --netuid 307 --network "$NET" --wallet default --hotkey miner
 #    (--dry-run prints the exact payload without signing)
@@ -62,36 +63,63 @@ optima chain-status --netuid 307 --network "$NET" --wallet default --hotkey defa
 
 # 4. validator: the referee loop (single pass with --once; daemon without)
 optima chain-validate --netuid 307 --network "$NET" --wallet default --hotkey default \
+    --arena minimax-m3-b300-tp4-decode-v1 \
     --ledger chain_ledger.json --bundles-dir chain_bundles \
-    --once --margin 0 --dry-run-weights
+    --once --dry-run-weights
 ```
 
 One `chain-validate` pass = read revealed commitments (chain order) → fetch each
 new artifact (size-capped; hostile-archive-safe extraction: no symlinks /
 hardlinks / path escapes) → **re-hash the extracted tree and refuse a mismatch
 with the committed hash** → fingerprint + Ledger reveal (copies are demoted, not
-evaluated) → evaluate originals out-of-process → record scores → settle per slot
+evaluated) → independently resolve the fetched manifest's validator-owned
+competition target → derive a one-shot prompt seed from post-commit block-hash
+entropy → evaluate originals out-of-process → require the report's bundle hash,
+arena fingerprint/bracket/regime, prompt seed/engine, validator image, sglang pin,
+and target/mode/canonical members to match → record scores → settle per target
 → push weights (the SDK routes through the drand commit-reveal weight path
 automatically when the subnet enables it). Every submission gets an EvalRecord,
 so restarts skip known work and dead URLs are not refetched.
 
 ### Evaluators
 
-- Default (no flag): **verify-mode plumbing** — runs `optima verify` on CPU and
-  scores pass/fail as 1.0/0.0. A 1.0 never clears a positive dethrone margin, so
-  plumbing runs use `--margin 0`. Never use this for real emissions.
-- Production: `--eval-cmd 'ssh gpubox optima-eval.sh {bundle} {report}'` — any
-  command template; exit 0 = passed the gate chain, and a JSON report
-  (`{"score":..., "kl_mean":..., "slot":...}`) written to `{report}` carries the
-  real throughput score from `optima evaluate` (graphs-on, audit fidelity mode,
-  GSM8K gate — the full referee).
+- Default (no flag): **verify-mode plumbing** — runs `optima verify` on CPU. Its
+  result is explicitly non-crownable even at margin zero. Never use this for real emissions.
+- Production: `--oci-gpus 0,1,2,3` runs the registered validator-owned OCI
+  controller and publishes retained host/device/qualification evidence.
+- Development only: `--eval-cmd 'optima-eval.sh {bundle} {report} {arena} {prompt_seed}'` — the
+  command must exit zero **and** atomically write the typed qualification report
+  produced by `optima evaluate {bundle} --arena {arena} --prompt-seed
+  {prompt_seed} --report {report}`. The report separately
+  carries completion, quality, speed confidence, crownability, and the resolved
+  target/mode/canonical member slots; the chain independently derives the same
+  identity from the fetched manifest and requires an exact match. Missing,
+  malformed, incomplete, stale, mismatched, or internally inconsistent reports fail closed.
+  A command report is never crownable.
+
+All arena workers for one validator/netuid must share the same ledger path,
+retained-artifact root, and whole-pass lock. The ledger computes one global
+equal-per-target vector across registered arenas; independent per-arena ledgers
+cannot safely compose on-chain weights. The native reveal-history RPC exposes a
+bounded ten-row view per hotkey. Optima paginates saturated windows backward with
+historical `block=` queries and fails closed if the configured RPC cannot serve
+that archive state or pagination does not make bounded progress.
+
+Ledger compatibility is additive for historical singleton rows: an old
+`slot = s` score loads as target `s`, mode `slot`, members `[s]`. Historical
+multi-op rows are not safely inferable because the old ledger persisted only
+`ops[0]`; re-evaluate and re-crown those bundles under their registered atomic
+target rather than guessing membership during load. All pre-arena scores and
+champions remain in a quarantined legacy namespace; they are never current in a
+registered arena and must also be re-evaluated there.
 
 ## Validated on netuid 307 (2026-07-08)
 
 - Registered validator (uid 3) + miner (uid 4) hotkeys; burn ≈ 0.0005 tTAO each.
 - Committed `miner_silu_torch` (178-byte payload, 5-block timelock) from the
   miner hotkey; the reveal appeared at block 7509374.
-- One validator pass picked it up, fetched via `file://`, hash-verified,
+- One historical validator plumbing pass picked it up through the now-test-only
+  local-file transport, hash-verified,
   CPU-verified, crowned it, and produced `{miner_hotkey: 1.0}` targeting uid 4;
   a second pass did zero new work (idempotence).
 - Subnet-307 caveats (someone else's unstarted subnet): its alpha pool rejects
@@ -112,7 +140,8 @@ start-called 307 around 07-08, so `SubtokenEnabled` and permits now work there):
   this subnet; the weights become visible in the metagraph after the reveal at
   the next epoch boundary — check `Subtensor.weights(netuid)`).
 - Multi-miner emission split: a second miner hotkey committed a bundle for a
-  second slot → per-slot settle → weights `{miner: 2/3, miner2: 1/3}` pushed.
+  second singleton target → per-target settle → weights
+  `{miner: 2/3, miner2: 1/3}` pushed.
 - Copy demotion through the chain: the same bundle committed later by another
   hotkey was demoted (`copies=1`, never evaluated), and the loop skipped the
   redundant weight push (weights unchanged, not stale).
@@ -123,10 +152,10 @@ start-called 307 around 07-08, so `SubtokenEnabled` and permits now work there):
 
 Operational gotchas (learned here):
 
-- **One active submission per hotkey.** The chain keeps a reveal history (last
-  10) but the protocol takes each hotkey's LATEST reveal as its current
-  submission. Two commits from one hotkey between validator passes = the
-  earlier one is superseded unseen. Stagger commits across passes.
+- **Reveal history is settlement input, not a latest-value register.** The loop
+  replays every row in chain order. Ten-row windows are paginated through
+  historical block state, so multiple submissions between validator passes are
+  preserved; use an archive-capable RPC or validation fails closed.
 - **bittensor's import reconfigures global logging** — it sets pre-existing
   loggers to CRITICAL, which silenced daemon mode entirely (the ledger advanced
   while the log stayed empty). `chain-validate` now takes ownership of the

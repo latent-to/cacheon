@@ -170,6 +170,45 @@ def test_gate_clean_passes_and_sums_ranks():
     assert ok and "40 audited calls" in desc
 
 
+def test_gate_detailed_requires_each_slot_on_each_active_member():
+    active = [
+        {"pid": 10, "rank": 0, "world_size": 2},
+        {"pid": 11, "rank": 1, "world_size": 2},
+    ]
+    audited = [
+        {"slot": slot, "pid": pid, "rank": rank, "world_size": 2,
+         "n": 8, "violations": 0, "compare_errors": 0}
+        for pid, rank in ((10, 0), (11, 1))
+        for slot in ("slot.a", "slot.b")
+    ]
+    ok, desc = audit.gate(
+        audited, min_calls=8, expected_slots=("slot.a", "slot.b"),
+        member_receipts=active, min_calls_per_member=8)
+    assert ok and "4/4 slot/member pairs" in desc
+
+    ok, desc = audit.gate(
+        audited[:-1], min_calls=8, expected_slots=("slot.a", "slot.b"),
+        member_receipts=active, min_calls_per_member=8)
+    assert not ok and "slot.b" in desc and "pid:11" in desc
+
+
+def test_gate_detailed_rejects_busy_rank_masking_short_rank():
+    active = [
+        {"pid": 10, "rank": 0, "world_size": 2},
+        {"pid": 11, "rank": 1, "world_size": 2},
+    ]
+    audited = [
+        {"slot": SLOT, "pid": 10, "rank": 0, "world_size": 2,
+         "n": 100, "violations": 0},
+        {"slot": SLOT, "pid": 11, "rank": 1, "world_size": 2,
+         "n": 1, "violations": 0},
+    ]
+    ok, desc = audit.gate(
+        audited, min_calls=8, expected_slots=(SLOT,), member_receipts=active,
+        min_calls_per_member=8)
+    assert not ok and "short=" in desc and "pid:11" in desc
+
+
 # ---- dispatcher wiring (rmsnorm: the pure-op case) -------------------------------
 
 

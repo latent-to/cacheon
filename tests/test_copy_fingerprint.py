@@ -163,6 +163,31 @@ def _write_bundle(root: Path, ops: list[tuple[str, str, str]], files: dict[str, 
     return root
 
 
+def _write_variant_bundle(
+    root: Path,
+    variants: list[tuple[str, str, str]],
+    files: dict[str, str],
+) -> Path:
+    """One semantic slot with explicit ``(variant, source, entry)`` rows."""
+    root.mkdir(parents=True, exist_ok=True)
+    lines = ['bundle_id = "t"', 'abi_version = "optima-op-abi-v0"', ""]
+    for variant, source, entry in variants:
+        lines += [
+            "[[ops]]",
+            'slot = "activation.silu_and_mul"',
+            f'variant = "{variant}"',
+            f'source = "{source}"',
+            f'entry = "{entry}"',
+            "",
+        ]
+    (root / "manifest.toml").write_text("\n".join(lines))
+    for rel, src in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(src)
+    return root
+
+
 def _reveal_bundle(led: Ledger, hotkey: str, ch: str, rnd: int, bundle: Path):
     led.commit(hotkey, make_commitment(ch, hotkey, "s"), rnd)
     return led.reveal(
@@ -205,6 +230,55 @@ def test_padding_an_extra_op_does_not_evade_demotion(tmp_path):
     rb = _reveal_bundle(led, "bob", "H_B", 1, b)
     assert ra.original is True
     assert rb.original is False
+
+
+def test_padding_a_copied_variant_cannot_overwrite_its_slot_fingerprint(tmp_path):
+    alice = _write_bundle(
+        tmp_path / "alice",
+        [("activation.silu_and_mul", "kernels/silu.py", "silu_and_mul")],
+        {"kernels/silu.py": ORIG},
+    )
+    # The copied implementation is deliberately FIRST.  The historical dict
+    # assignment implementation overwrote its per-slot file set with the later
+    # clean variant, making this exact padding attack invisible.
+    bob = _write_variant_bundle(
+        tmp_path / "bob",
+        [
+            ("copied", "kernels/copied.py", "silu_and_mul"),
+            ("clean", "kernels/clean.py", "silu_and_mul"),
+        ],
+        {"kernels/copied.py": REFORMATTED, "kernels/clean.py": DIFFERENT},
+    )
+
+    bob_files = set(
+        bundle_slot_file_fingerprints(bob)["activation.silu_and_mul"]
+    )
+    assert source_fingerprint(ORIG) in bob_files
+    assert source_fingerprint(DIFFERENT) in bob_files
+
+    ledger = Ledger()
+    original = _reveal_bundle(ledger, "alice", "H_A", 0, alice)
+    padded_copy = _reveal_bundle(ledger, "bob", "H_B", 1, bob)
+    assert original.original is True
+    assert padded_copy.original is False
+
+
+def test_variant_fingerprint_aggregation_is_manifest_order_independent(tmp_path):
+    files = {"kernels/a.py": ORIG, "kernels/b.py": DIFFERENT}
+    forward = _write_variant_bundle(
+        tmp_path / "forward",
+        [("a", "kernels/a.py", "silu_and_mul"),
+         ("b", "kernels/b.py", "silu_and_mul")],
+        files,
+    )
+    reverse = _write_variant_bundle(
+        tmp_path / "reverse",
+        [("b", "kernels/b.py", "silu_and_mul"),
+         ("a", "kernels/a.py", "silu_and_mul")],
+        files,
+    )
+
+    assert bundle_slot_fingerprints(forward) == bundle_slot_fingerprints(reverse)
 
 
 def test_shared_vendored_utility_alone_is_not_a_copy(tmp_path):

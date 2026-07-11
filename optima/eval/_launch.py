@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("optima.eval")
@@ -33,6 +34,159 @@ def env(**overrides: str):
                 os.environ[k] = v
 
 
+def _bring_loopback_up() -> bool:
+    """Enable ``lo`` inside the candidate network namespace without shell tools.
+
+    Minimal serving images often omit ``iproute2`` (the B300 arena does). SGLang uses
+    localhost IPC, so accepting an isolated namespace with loopback still down merely
+    defers failure until engine startup. Linux's interface ioctl is small, deterministic,
+    and avoids adding a mutable external command to the trust boundary.
+    """
+    import fcntl
+    import socket
+    import struct
+
+    siocgifflags = 0x8913
+    siocsifflags = 0x8914
+    iff_up = 0x1
+    ifreq = struct.Struct("16sH14s")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            request = ifreq.pack(b"lo", 0, b"")
+            response = fcntl.ioctl(sock.fileno(), siocgifflags, request)
+            _name, flags, _pad = ifreq.unpack(response)
+            fcntl.ioctl(
+                sock.fileno(), siocsifflags,
+                ifreq.pack(b"lo", flags | iff_up, b""),
+            )
+        return True
+    except (OSError, ValueError, struct.error) as exc:
+        logger.warning("optima: could not enable isolated loopback (%s)", exc)
+        return False
+
+
+def _loopback_is_up() -> bool:
+    import fcntl
+    import socket
+    import struct
+
+    ifreq = struct.Struct("16sH14s")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            response = fcntl.ioctl(
+                sock.fileno(), 0x8913, ifreq.pack(b"lo", 0, b"")
+            )
+        _name, flags, _pad = ifreq.unpack(response)
+        return bool(flags & 0x1)
+    except (OSError, ValueError, struct.error):
+        return False
+
+
+def _egress_is_blocked() -> bool:
+    import socket
+
+    try:
+        socket.create_connection(("1.1.1.1", 443), timeout=2).close()
+        return False
+    except OSError:
+        return True
+
+
+def _network_namespace_is_loopback_only() -> bool:
+    """Prove the current network namespace has no non-loopback interface/route.
+
+    A failed connection to one public IP is only a canary: a firewall can reject that
+    destination while private or alternate egress remains available.  Production uses
+    an OCI ``--network none`` namespace (or an equivalent fresh ``CLONE_NEWNET``), whose
+    enforceable topology is stronger and directly inspectable: only ``lo`` exists and
+    neither the IPv4 nor IPv6 route table names another interface.
+
+    Fail closed on platforms without Linux proc/sysfs rather than treating a missing
+    introspection surface as isolation proof.
+    """
+    from pathlib import Path
+
+    try:
+        # ``/sys/class/net`` can contain kernel bookkeeping files such as
+        # ``bonding_masters`` even in a network-none container.  /proc/net/dev is
+        # the authoritative list of actual interfaces visible in this namespace.
+        netdev_lines = Path("/proc/net/dev").read_text().splitlines()[2:]
+        interfaces = {
+            line.split(":", 1)[0].strip()
+            for line in netdev_lines
+            if ":" in line
+        }
+        if interfaces != {"lo"}:
+            return False
+
+        # /proc/net/route has a header followed by tab-separated rows whose first
+        # field is the interface.  A loopback-only namespace normally has no rows,
+        # but accepting explicit lo routes keeps this check kernel-version agnostic.
+        ipv4_lines = Path("/proc/net/route").read_text().splitlines()[1:]
+        if any(line.split()[0] != "lo" for line in ipv4_lines if line.split()):
+            return False
+
+        # Linux's IPv6 route table stores the device name in the final column.
+        ipv6_lines = Path("/proc/net/ipv6_route").read_text().splitlines()
+        if any(line.split()[-1] != "lo" for line in ipv6_lines if line.split()):
+            return False
+    except (OSError, IndexError):
+        return False
+    return True
+
+
+def _process_sandbox_is_hardened() -> bool:
+    """Verify candidate descendants cannot ptrace/privilege-escalate into the timer.
+
+    The scheduler necessarily shares a PID namespace with the trusted SGLang driver.
+    The result HMAC stops file replacement, while this policy stops a native candidate
+    from simply attaching to the parent and stealing that key.  Production containers
+    use ``--cap-drop ALL --cap-add SYS_NICE --cap-add SYS_RESOURCE`` plus
+    ``no-new-privileges``; those two capabilities are the only accepted bounding set.
+    """
+    from pathlib import Path
+
+    allowed = (1 << 23) | (1 << 24)  # CAP_SYS_NICE, CAP_SYS_RESOURCE
+    try:
+        status: dict[str, str] = {}
+        for line in Path("/proc/self/status").read_text().splitlines():
+            key, sep, value = line.partition(":")
+            if sep:
+                status[key] = value.strip()
+        effective = int(status["CapEff"], 16)
+        bounding = int(status["CapBnd"], 16)
+        no_new_privs = int(status["NoNewPrivs"])
+        seccomp_mode = int(status["Seccomp"])
+        seccomp_filters = int(status["Seccomp_filters"])
+        ptrace_scope = int(Path("/proc/sys/kernel/yama/ptrace_scope").read_text())
+        root_options = None
+        for line in Path("/proc/mounts").read_text().splitlines():
+            fields = line.split()
+            if len(fields) >= 4 and fields[1] == "/":
+                root_options = set(fields[3].split(","))
+                break
+    except (OSError, KeyError, ValueError):
+        return False
+    return (
+        effective & ~allowed == 0
+        and bounding & ~allowed == 0
+        and no_new_privs == 1
+        and seccomp_mode == 2
+        and seccomp_filters >= 1
+        and ptrace_scope >= 1
+        and root_options is not None
+        and "ro" in root_options
+    )
+
+
+def _path_mount_is_read_only(path: str) -> bool:
+    """Whether an existing candidate input lives on a read-only mount."""
+    try:
+        return bool(os.statvfs(path).f_flag & getattr(os, "ST_RDONLY", 1))
+    except OSError:
+        return False
+
+
 def isolate_network() -> bool:
     """Put THIS process (and every child it spawns) into a fresh network namespace with
     NO egress, so untrusted miner code can't reach an external API to fake the output.
@@ -45,7 +199,30 @@ def isolate_network() -> bool:
     GPU box privileged; chain/cloud secrets live on a separate CPU control box). Returns
     True iff the candidate is confirmed no-egress; logs loudly and returns False if not.
     """
-    import subprocess
+    # Production workers may already be launched by the trusted host with an OCI
+    # ``--network none`` policy. Do not create a second namespace there; verify both
+    # required properties instead. The env bit is operator-owned and is not accepted
+    # without the live self-check.
+    if _truthy_env("OPTIMA_EXTERNAL_NO_EGRESS"):
+        if not _loopback_is_up():
+            logger.error("optima: external isolation claimed but loopback is down")
+            return False
+        if not _network_namespace_is_loopback_only():
+            logger.error(
+                "optima: external isolation claimed but namespace is not loopback-only"
+            )
+            return False
+        if not _egress_is_blocked():
+            logger.error("optima: external isolation claimed but egress is reachable")
+            return False
+        if not _process_sandbox_is_hardened():
+            logger.error(
+                "optima: external isolation lacks cap-drop/no-new-privileges/ptrace guard"
+            )
+            return False
+        _offline_env()
+        logger.warning("optima: externally network-isolated (verified no egress; loopback up)")
+        return True
 
     clone_newnet = getattr(os, "CLONE_NEWNET", None)
     if clone_newnet is None or not hasattr(os, "unshare"):
@@ -58,23 +235,30 @@ def isolate_network() -> bool:
         return False
     # Bring up loopback (the sglang scheduler<->detokenizer IPC uses localhost); external
     # stays unreachable because the netns has no route off-box.
-    try:
-        subprocess.run(["ip", "link", "set", "lo", "up"], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("optima: could not bring up netns loopback (%s); sglang IPC may fail", exc)
+    if not _bring_loopback_up():
+        return False
+    if not _network_namespace_is_loopback_only():
+        logger.error(
+            "optima: ISOLATION FAILED — fresh namespace is not loopback-only"
+        )
+        return False
+    if not _process_sandbox_is_hardened():
+        logger.error(
+            "optima: ISOLATION FAILED — process capabilities/ptrace policy are unsafe"
+        )
+        return False
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     # Self-check: prove egress is actually gone (a fail-closed signal in the log).
-    import socket
-
-    try:
-        socket.create_connection(("1.1.1.1", 443), timeout=2).close()
+    if not _egress_is_blocked():
         logger.error("optima: ISOLATION FAILED — candidate still has network egress!")
         return False
-    except OSError:
-        logger.warning("optima: candidate network-isolated (no egress; loopback only)")
-        return True
+    logger.warning("optima: candidate network-isolated (no egress; loopback only)")
+    return True
+
+
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _offline_env() -> None:
@@ -83,21 +267,49 @@ def _offline_env() -> None:
 
 
 def prepare_candidate_environment(cfg, *, bundle_path: str, active: bool) -> None:
-    """Apply candidate-only process isolation/rebuild work before importing SGLang."""
+    """Apply candidate-only isolation/build work before importing SGLang.
+
+    Every active bundle contains untrusted host Python, even when it implements a
+    narrow tensor slot. Production evaluation therefore fails closed unless the
+    entire candidate process tree is no-egress. ``allow_unsafe_no_isolation`` remains
+    an explicit local-development escape hatch and is never suitable for settlement.
+    """
     if not active:
         return
     framework_mode = getattr(cfg, "framework_mode", False)
     isolate = getattr(cfg, "isolate", False)
     allow_unsafe = getattr(cfg, "allow_unsafe_no_isolation", False)
-    if framework_mode and not isolate:
+    if bundle_path:
+        from optima.manifest import load_manifest
+
+        manifest = load_manifest(bundle_path)
+        has_setup = any(op.setup for op in manifest.ops)
+        if has_setup and not framework_mode:
+            raise IsolationError(
+                "bundle declares setup() but framework_mode is not enabled. "
+                "Engine-wide mutation requires external token fidelity and isolation."
+            )
+    if isolate and _truthy_env("OPTIMA_EXTERNAL_NO_EGRESS"):
+        immutable_inputs = [bundle_path]
+        model_path = str(getattr(cfg, "model_path", "") or "")
+        if model_path and os.path.exists(model_path):
+            immutable_inputs.append(model_path)
+        mutable = [path for path in immutable_inputs
+                   if path and not _path_mount_is_read_only(path)]
+        if mutable:
+            raise IsolationError(
+                "candidate bundle/model inputs must be mounted read-only: "
+                + ", ".join(mutable)
+            )
+    if not isolate:
         if not allow_unsafe:
             raise IsolationError(
-                "framework_mode requires no-egress candidate isolation. "
+                "every untrusted candidate requires no-egress isolation. "
                 "Use --allow-unsafe-no-isolation only for local throughput debugging."
             )
         logger.error(
-            "optima: UNSAFE dev override: framework-mode candidate is running without "
-            "requested network isolation"
+            "optima: UNSAFE dev override: candidate is running without requested "
+            "network isolation"
         )
         _offline_env()
     if isolate:
@@ -115,10 +327,24 @@ def prepare_candidate_environment(cfg, *, bundle_path: str, active: bool) -> Non
             )
             _offline_env()
     if bundle_path:
-        from optima.rebuild import apply_rebuild_plan
+        from optima.rebuild import apply_rebuild_plan_subprocess
 
-        if apply_rebuild_plan(bundle_path):
-            logger.warning("optima: applied rebuild plan for %s", bundle_path)
+        has_plan = (Path(bundle_path) / "rebuild.json").is_file()
+        externally_isolated = _truthy_env("OPTIMA_EXTERNAL_NO_EGRESS")
+        if has_plan and externally_isolated:
+            if not _truthy_env("OPTIMA_PREBUILT_ARTIFACTS"):
+                raise IsolationError(
+                    "externally isolated candidate requires a trusted prebuild and "
+                    "read-only artifact/overlay mounts (set OPTIMA_PREBUILT_ARTIFACTS=1 "
+                    "only after apply_rebuild_plan_subprocess(..., phase='build') succeeds)"
+                )
+            logger.info(
+                "optima: using trusted prebuilt read-only artifacts for %s", bundle_path
+            )
+        elif apply_rebuild_plan_subprocess(bundle_path, phase="build"):
+            logger.warning(
+                "optima: built candidate artifacts in subprocess for %s", bundle_path
+            )
         _dep_overlay_env(bundle_path)
 
 
@@ -135,17 +361,26 @@ def _dep_overlay_env(bundle_path: str) -> None:
     import os
 
     try:
-        from optima.dep_policy import overlay_base
+        from optima.dep_policy import overlay_workspace_base
         from optima.manifest import load_manifest
 
         manifest = load_manifest(bundle_path)
-        if manifest.dep_patches and "FLASHINFER_WORKSPACE_BASE" not in os.environ:
-            ws = overlay_base(manifest.bundle_id) / "jit_workspace"
+        if manifest.dep_patches:
+            ws = overlay_workspace_base(
+                bundle_path, tuple(dp.target for dp in manifest.dep_patches)
+            )
             ws.mkdir(parents=True, exist_ok=True)
+            existing = os.environ.get("FLASHINFER_WORKSPACE_BASE", "").strip()
+            if existing and Path(existing).resolve() != ws.resolve():
+                logger.warning(
+                    "optima: replacing shared/stale FLASHINFER_WORKSPACE_BASE=%s with "
+                    "content-addressed candidate workspace %s", existing, ws,
+                )
             os.environ["FLASHINFER_WORKSPACE_BASE"] = str(ws)
             logger.info("optima: candidate-local FLASHINFER_WORKSPACE_BASE=%s", ws)
-    except Exception:  # noqa: BLE001 - a bad bundle fails later at load, with context
+    except Exception:  # noqa: BLE001 - cache identity/setup failures are disqualifying
         logger.exception("optima: dep-overlay env setup failed for %s", bundle_path)
+        raise
 
 
 def engine_kwargs(cfg, *, active: bool = False) -> dict[str, Any]:
@@ -270,7 +505,8 @@ def _wait_gpu_drain(threshold_mib: int = 4096, timeout_s: float = 150.0) -> None
 
 @contextmanager
 def launched_engine(cfg, *, bundle_path: str, active: bool,
-                    audit_rate: float = 0.0, audit_out: Optional[list] = None):
+                    audit_rate: float = 0.0, audit_out: Optional[list] = None,
+                    member_out: Optional[list] = None):
     """Launch a sglang Engine with the Optima seam configured.
 
     ``cfg`` is an ``EvalConfig`` (see optima.eval.throughput_kl). The miner
@@ -279,10 +515,11 @@ def launched_engine(cfg, *, bundle_path: str, active: bool,
 
     An ACTIVE launch demands seam receipts (see optima/receipts.py): at least one
     scheduler rank must report the bundle loaded+enabled before we hand the engine
-    to the caller, and at least one rank must report the miner impl actually
-    SELECTED (``fired``) before the context exits cleanly. Without this, a missing
-    bootstrap/env silently scores stock-vs-stock (bit-identical logits, KL 0.0,
-    PASS) — the phantom-pass class hit on 2026-07-07.
+    to the caller, and every active scheduler member must report successful
+    model-facing output production for every registered slot. Any selected-candidate
+    exception fallback disqualifies the run. Without this, a missing bootstrap/env
+    or partial multi-slot activation can silently score stock-vs-stock — the
+    phantom-pass class hit on 2026-07-07.
 
     ``audit_rate > 0`` arms the IN-ENGINE AUDIT (optima/audit.py) in the ranks:
     sampled dispatcher calls are re-run through the captured stock baseline and
@@ -309,19 +546,33 @@ def launched_engine(cfg, *, bundle_path: str, active: bool,
         with env(
             OPTIMA_BUNDLE_PATH=bundle_path or "",
             OPTIMA_ACTIVE="1" if active else "0",
+            OPTIMA_FRAMEWORK_MODE="1" if getattr(cfg, "framework_mode", False) else "0",
             SGLANG_PLUGINS="optima",
             **extra_env,
         ):
             import sglang as sgl
 
             _wait_gpu_drain()
-            engine = sgl.Engine(**engine_kwargs(cfg, active=active))
+            resolved_engine_kwargs = engine_kwargs(cfg, active=active)
+            engine = sgl.Engine(**resolved_engine_kwargs)
             ok = False
+            active_receipts: list[dict] = []
             try:
                 if active:
-                    got = receipts.require(receipt_dir, "active",
-                                           context="candidate engine launch")
-                    logger.info("optima: seam active receipts: %s", got)
+                    active_receipts = receipts.require(
+                        receipt_dir, "active", context="candidate engine launch"
+                    )
+                    expected_members = int(resolved_engine_kwargs.get("tp_size", 1) or 1)
+                    observed_pids = {r.get("pid") for r in active_receipts if r.get("pid")}
+                    if len(observed_pids) < expected_members:
+                        raise RuntimeError(
+                            "candidate engine launch: incomplete active-rank coverage "
+                            f"({len(observed_pids)}/{expected_members} scheduler members); "
+                            "refusing a partially activated TP engine"
+                        )
+                    logger.info("optima: seam active receipts: %s", active_receipts)
+                    if member_out is not None:
+                        member_out.extend(active_receipts)
                 yield engine
                 ok = True
             finally:
@@ -344,30 +595,76 @@ def launched_engine(cfg, *, bundle_path: str, active: bool,
                 if active and ok and audit_out is not None:
                     audit_out.extend(receipts.collect(receipt_dir, "audit"))
                 if active and ok:
-                    # After the caller's generations: the impl must have actually been
-                    # selected at least once, else the engine config never exercised
-                    # the slot and every downstream number is stock-vs-stock.
-                    receipts.require(receipt_dir, "fired",
-                                     context="candidate engine run (post-generation)")
+                    expected_slots = sorted({
+                        str(slot)
+                        for receipt in active_receipts
+                        for slot in receipt.get("slots", ())
+                        if str(slot)
+                    })
+                    completed = receipts.collect(receipt_dir, "completed")
+                    fallbacks = receipts.collect(receipt_dir, "fallback")
+                    passed, detail = receipts.completed_gate(
+                        completed,
+                        expected_slots=expected_slots,
+                        member_receipts=active_receipts,
+                        fallback_receipts=fallbacks,
+                    )
+                    if not passed:
+                        raise RuntimeError(
+                            "candidate engine run failed execution coverage: " + detail
+                        )
+                    logger.info("optima: %s", detail)
     finally:
         if receipt_dir:
             shutil.rmtree(receipt_dir, ignore_errors=True)
 
 
-def _subprocess_entry(out_path, fn, args, kwargs):
-    """Run ``fn(*args, **kwargs)`` and pickle the result (or traceback) to a file."""
-    import pickle
+def _subprocess_entry(out_path, auth_key, auth_nonce, fn, args, kwargs):
+    """Run ``fn(*args, **kwargs)`` and write a bounded JSON-safe outcome."""
+    # Give the parent one killable process group for this launch and request kernel
+    # cleanup if the parent itself dies. SGLang creates several descendants; an
+    # unbounded orphaned launch can pin an entire TP arena indefinitely.
+    try:
+        import ctypes
+        import signal
+
+        os.setsid()
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    except Exception:  # noqa: BLE001 - non-Linux dev boxes keep basic behavior
+        pass
     import traceback
 
+    from optima.ipc import LaunchOutcome, dump_authenticated_file
+
     try:
-        payload = {"value": fn(*args, **kwargs), "error": None}
+        outcome = LaunchOutcome(value=fn(*args, **kwargs), error=None)
     except BaseException:  # noqa: BLE001 - report ANY failure back to the parent
-        payload = {"value": None, "error": traceback.format_exc()}
-    with open(out_path, "wb") as f:
-        pickle.dump(payload, f)
+        outcome = LaunchOutcome(value=None, error=traceback.format_exc())
+    try:
+        dump_authenticated_file(
+            out_path, outcome, key=auth_key, nonce=auth_nonce
+        )
+    except BaseException:  # noqa: BLE001 - unsupported/malicious result type
+        # A callable can return an arbitrary miner-defined object.  Never fall back
+        # to pickle/repr for it; report the codec failure through the same safe wire.
+        serialization_error = traceback.format_exc()
+        try:
+            dump_authenticated_file(
+                out_path,
+                LaunchOutcome(
+                    value=None,
+                    error=("launch result serialization failed:\n"
+                           + serialization_error[-64_000:]),
+                ),
+                key=auth_key,
+                nonce=auth_nonce,
+            )
+        except BaseException:  # noqa: BLE001 - parent treats empty/malformed as fail
+            pass
 
 
-def call_in_subprocess(fn, *args, **kwargs):
+def call_in_subprocess(fn, *args, timeout_s: float | None = None, **kwargs):
     """Run ``fn(*args, **kwargs)`` in a FRESH spawned process; return its result.
 
     Each model launch must run in its own process. sglang + deterministic mode set
@@ -377,26 +674,60 @@ def call_in_subprocess(fn, *args, **kwargs):
     the candidate launch then produces NaN/garbage. A fresh process makes the baseline
     and candidate launches independent and frees all GPU/host memory between them.
 
-    ``fn`` must be a module-level (picklable) callable; the result travels back through
-    a temp pickle file (avoids mp.Queue size limits / pipe deadlocks on large logprob
-    payloads). Raises ``RuntimeError`` if the child crashes or ``fn`` raises.
+    ``fn`` must be a module-level (spawn-picklable) callable. The result travels back
+    through a bounded JSON-safe file (avoids mp.Queue size limits / pipe deadlocks on
+    large logprob payloads) whose decoder only reconstructs explicitly allowlisted
+    result dataclasses. A hard watchdog owns the whole launch process group; timeout cannot
+    leave an engine tree silently pinning the GPUs. Raises ``RuntimeError`` if the
+    child crashes, times out, or ``fn`` raises.
     """
     import multiprocessing as mp
     import os
-    import pickle
+    import secrets
+    import signal
     import tempfile
 
+    from optima.ipc import LaunchOutcome, WireError, load_authenticated_file
+
+    if timeout_s is None:
+        timeout_s = float(os.environ.get("OPTIMA_LAUNCH_TIMEOUT_S", "7200"))
+    if timeout_s <= 0:
+        raise ValueError("launch timeout must be positive")
     ctx = mp.get_context("spawn")
-    fd, path = tempfile.mkstemp(prefix="optima_launch_", suffix=".pkl")
+    fd, path = tempfile.mkstemp(prefix="optima_launch_", suffix=".json")
     os.close(fd)
+    # Kept in parent/driver process memory, never exported through the environment
+    # inherited by candidate scheduler ranks.  The nonce binds freshness so a valid
+    # prior result file cannot be replayed into this launch.
+    auth_key = secrets.token_bytes(32)
+    auth_nonce = secrets.token_bytes(16)
     try:
-        proc = ctx.Process(target=_subprocess_entry, args=(path, fn, args, kwargs))
+        proc = ctx.Process(
+            target=_subprocess_entry,
+            args=(path, auth_key, auth_nonce, fn, args, kwargs),
+        )
         proc.start()
-        proc.join()
+        proc.join(timeout_s)
+        if proc.is_alive():
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except OSError:
+                proc.terminate()
+            proc.join(10.0)
+            if proc.is_alive():
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    proc.kill()
+                proc.join(10.0)
+            raise RuntimeError(
+                f"launch subprocess timed out after {timeout_s:g}s and was terminated"
+            )
         try:
-            with open(path, "rb") as f:
-                payload = pickle.load(f)
-        except (EOFError, FileNotFoundError, pickle.UnpicklingError) as exc:
+            outcome = load_authenticated_file(
+                path, key=auth_key, nonce=auth_nonce
+            )
+        except (FileNotFoundError, OSError, WireError) as exc:
             raise RuntimeError(
                 f"launch subprocess crashed (exitcode={proc.exitcode}) with no result: {exc}"
             ) from None
@@ -405,6 +736,8 @@ def call_in_subprocess(fn, *args, **kwargs):
             os.unlink(path)
         except OSError:
             pass
-    if payload.get("error"):
-        raise RuntimeError("launch subprocess failed:\n" + payload["error"])
-    return payload["value"]
+    if type(outcome) is not LaunchOutcome:
+        raise RuntimeError("launch subprocess returned an invalid result envelope")
+    if outcome.error:
+        raise RuntimeError("launch subprocess failed:\n" + outcome.error)
+    return outcome.value

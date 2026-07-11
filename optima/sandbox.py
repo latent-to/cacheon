@@ -47,6 +47,11 @@ _BANNED_IMPORT_ROOTS = frozenset(
         "ftplib", "smtplib", "telnetlib", "poplib", "imaplib", "xmlrpc",
         "pickle", "dill", "marshal", "shelve", "cloudpickle",
         "importlib", "imp", "runpy", "pkg_resources", "pkgutil",
+        # Validator internals are not a miner API. In particular audit/receipt
+        # state lives under ``optima`` and is diagnostic only; letting ordinary
+        # bundle Python import it makes casual evidence forgery one line. This is
+        # defense-in-depth (native/in-process code is still not a trust boundary).
+        "optima", "sys",
         "shutil", "tempfile", "pathlib", "glob", "fileinput",
         "pty", "fcntl", "termios", "resource", "signal", "mmap",
         "webbrowser", "wsgiref", "paramiko", "fabric",
@@ -65,6 +70,12 @@ _BANNED_ATTR_CALLS = frozenset(
         "kill", "killpg", "putenv", "setuid", "setgid",
         "dlopen", "LoadLibrary", "WinDLL", "CDLL",
         "check_output", "check_call", "Popen", "urlopen",
+        # Direct filesystem primitives commonly reached through the otherwise
+        # tolerated ``os`` module. Winning bundles use getenv-style feature flags
+        # but have no reason to read/write validator receipt or result files.
+        "open", "fdopen", "read", "write", "pread", "pwrite", "listdir",
+        "scandir", "walk", "unlink", "remove", "rename", "renames", "mkdir",
+        "makedirs", "rmdir", "removedirs", "chmod", "chown", "truncate",
     }
 )
 
@@ -210,6 +221,7 @@ def scan_tree(
     *,
     declared_cuda_sources: "frozenset[Path] | set[Path] | None" = None,
     declared_dep_patches: "frozenset[Path] | set[Path] | None" = None,
+    declared_system_patches: "frozenset[Path] | set[Path] | None" = None,
 ) -> ScanResult:
     """Recursively scan EVERY ``.py`` under a bundle root — the vendored-tree guard.
 
@@ -223,6 +235,11 @@ def scan_tree(
     (``optima.manifest.all_declared_cuda_sources``) — the sanctioned "CUDA source" tier:
     a ``.cu``/``.cuh`` file the manifest declares for an op, compiled only by a
     validator-reviewed patcher (``optima/rebuild.py``), never scanned as Python here.
+
+    ``declared_dep_patches`` and ``declared_system_patches`` are separate on
+    purpose.  Both sanction structurally parsed text unified diffs, but the latter
+    is a product-level SGLang region patch and must not be attributed to component
+    slots or their dependency-overlay policy.
 
     Backward-compatible signature: ``declared_cuda_sources=None`` (the default, used by
     every existing call site that scans a tree without a loaded manifest) preserves the
@@ -241,7 +258,14 @@ def scan_tree(
     root = Path(root)
     declared = frozenset(p.resolve() for p in (declared_cuda_sources or ()))
     declared_patches = frozenset(p.resolve() for p in (declared_dep_patches or ()))
-    strict = declared_cuda_sources is not None or declared_dep_patches is not None
+    declared_system = frozenset(
+        p.resolve() for p in (declared_system_patches or ())
+    )
+    strict = (
+        declared_cuda_sources is not None
+        or declared_dep_patches is not None
+        or declared_system_patches is not None
+    )
     out: list[str] = []
     for p in sorted(root.rglob("*")):
         if "__pycache__" in p.parts:
@@ -283,10 +307,13 @@ def scan_tree(
             # structurally validated at manifest load (optima/deppatch.py) and is applied
             # only by the one reviewed patcher against an arena allowlist. An UNDECLARED
             # patch file has no sanctioned reader — reject under a manifest, skip without.
-            if p.resolve() in declared_patches:
+            if p.resolve() in declared_patches or p.resolve() in declared_system:
                 continue
             if strict:
-                out.append(f"{rel}: .patch/.diff file not declared in manifest dep_patches")
+                out.append(
+                    f"{rel}: .patch/.diff file not declared in manifest dep_patches "
+                    "or system.patches"
+                )
             continue
         if strict:
             if _is_benign_metadata(rel):

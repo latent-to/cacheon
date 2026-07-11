@@ -37,6 +37,7 @@ class Check:
 _EXPECTED_SUBTENSOR_METHODS: tuple[tuple[str, str], ...] = (
     ("set_weights", "push king-of-the-hill weights on-chain (auto-routes to the "
                     "drand commit-reveal path when the subnet enables it)"),
+    ("weights", "read authoritative sparse on-chain weight rows for reconciliation"),
     ("metagraph", "read uids / hotkeys / stake / validator_permit"),
     ("get_all_commitments", "read every hotkey's commitment (the salted commit hash)"),
     ("set_commitment", "miner posts a commitment on-chain"),

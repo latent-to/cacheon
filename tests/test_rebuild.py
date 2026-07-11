@@ -11,7 +11,11 @@ import json
 
 import pytest
 
-from optima.rebuild import RebuildError, apply_rebuild_plan
+from optima.rebuild import (
+    RebuildError,
+    apply_rebuild_plan,
+    apply_rebuild_plan_subprocess,
+)
 
 
 def _bundle(tmp_path, plan):
@@ -60,6 +64,72 @@ def test_reviewed_patcher_under_patchers_dir_runs(tmp_path, monkeypatch):
     bundle = _bundle(tmp_path, {"steps": [{"type": "repo_python", "path": "good.py"}]})
     assert apply_rebuild_plan(bundle) is True
     assert marker.exists()  # the reviewed patcher ran
+
+
+def test_rebuild_phase_is_explicitly_passed_to_patcher(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    marker = tmp_path / "phase"
+    (repo / "optima" / "patchers" / "phase.py").write_text(
+        "import os\n"
+        f"open({str(marker)!r}, 'w').write(os.environ['OPTIMA_REBUILD_PHASE'])\n"
+    )
+    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    bundle = _bundle(tmp_path, {"steps": [{"type": "repo_python", "path": "phase.py"}]})
+
+    assert apply_rebuild_plan(bundle, phase="load") is True
+    assert marker.read_text() == "load"
+
+
+def test_rebuild_binds_patcher_to_complete_bundle_hash(tmp_path, monkeypatch):
+    from optima.bundle_hash import content_hash
+
+    repo = _fake_repo(tmp_path)
+    marker = tmp_path / "bundle_hash"
+    (repo / "optima" / "patchers" / "identity.py").write_text(
+        "import os\n"
+        f"open({str(marker)!r}, 'w').write(os.environ['OPTIMA_BUNDLE_CONTENT_HASH'])\n"
+    )
+    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    bundle = _bundle(bundle_dir, {"steps": [{"type": "repo_python", "path": "identity.py"}]})
+    (bundle / "header.cuh").write_text("#define VALUE 1\n")
+
+    assert apply_rebuild_plan(bundle, phase="build") is True
+    assert marker.read_text() == content_hash(bundle)
+
+
+def test_rebuild_refuses_controller_worker_bundle_hash_mismatch(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    marker = tmp_path / "must_not_run"
+    (repo / "optima" / "patchers" / "identity.py").write_text(
+        f"open({str(marker)!r}, 'w').close()\n"
+    )
+    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    monkeypatch.setenv("OPTIMA_EXPECTED_BUNDLE_HASH", "0" * 64)
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    bundle = _bundle(bundle_dir, {"steps": [{"type": "repo_python", "path": "identity.py"}]})
+    with pytest.raises(RebuildError, match="bundle changed before rebuild"):
+        apply_rebuild_plan(bundle, phase="build")
+    assert not marker.exists()
+
+
+def test_trusted_controller_uses_disposable_rebuild_process(tmp_path, monkeypatch):
+    repo = _fake_repo(tmp_path)
+    marker = tmp_path / "worker"
+    (repo / "optima" / "patchers" / "pid.py").write_text(
+        "import os\n"
+        f"open({str(marker)!r}, 'w').write(f'{{os.getpid()}}:' + "
+        "os.environ['OPTIMA_REBUILD_PHASE'])\n"
+    )
+    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    bundle = _bundle(tmp_path, {"steps": [{"type": "repo_python", "path": "pid.py"}]})
+
+    assert apply_rebuild_plan_subprocess(bundle, phase="build", timeout_s=30) is True
+    worker_pid, phase = marker.read_text().split(":")
+    assert int(worker_pid) != __import__("os").getpid()
+    assert phase == "build"
 
 
 def test_repo_python_cannot_run_a_non_patcher_repo_module(tmp_path, monkeypatch):

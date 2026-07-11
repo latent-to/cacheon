@@ -107,12 +107,23 @@ def activate() -> None:
 
 
 def _load_bundle_into_registry(bundle: str) -> None:
-    from optima.manifest import load_manifest, resolve_source
+    from optima.manifest import (
+        VALIDATOR_DEVICE_EXECUTION,
+        load_manifest,
+        resolve_source,
+    )
     from optima.registry import REGISTRY, KernelImpl, eligibility_from_metadata
     from optima.sandbox import callable_from, load_module, scan_path, scan_tree
     from optima.slots import SLOTS
 
     manifest = load_manifest(bundle)
+    if any(op.setup for op in manifest.ops) and not _truthy(
+        os.environ.get("OPTIMA_FRAMEWORK_MODE")
+    ):
+        raise RuntimeError(
+            "bundle declares setup() but OPTIMA_FRAMEWORK_MODE is not armed; "
+            "refusing engine-wide mutation"
+        )
     # Recursive vendored-tree guard: a bundle can carry a whole vendored library; every .py
     # must clear the policy scan, not just the declared entries. Fail closed (load nothing).
     # Pass the manifest's declared cuda_sources + dep_patches so the runtime load
@@ -134,54 +145,71 @@ def _load_bundle_into_registry(bundle: str) -> None:
     # failure raises out to activate() -> load_failed receipt -> the eval refuses.
     from optima.rebuild import apply_rebuild_plan
 
-    apply_rebuild_plan(bundle)
+    # The trusted controller already compiled/materialized artifacts in a disposable
+    # build worker. Scheduler ranks may LOAD candidate native code, but must never
+    # compile it as a fallback: that would silently restore native execution to a
+    # process outside the intended phase boundary.
+    apply_rebuild_plan(bundle, phase="load")
     # ONE module instance per SOURCE FILE, shared across ops: two slots declared on
     # the same source (e.g. the shallow + deep fused-epilogue entries sharing one IPC
     # workspace in module globals) must not get two module instances — each would
     # re-init its own comm state and the second barrier could interleave across ranks.
     loaded_by_src: dict[Path, object] = {}
+    setup_done: set[tuple[Path, str]] = set()
     for op in manifest.ops:
         if op.slot not in SLOTS:
             continue
         src = resolve_source(bundle, op)
-        scan = scan_path(src)
-        if not scan.ok:  # defense-in-depth: re-scan in the worker before load
-            logger.warning("optima: skip %s, failed scan: %s", op.slot, scan.violations)
-            continue
         meta = json.loads((Path(bundle) / op.metadata).read_text()) if op.metadata else {}
-        # ONE module instance per op source: pulling entry/prepare/setup via separate
-        # load_entry calls would re-execute the module body per callable and split
-        # them across different module namespaces (module-global state shared between
-        # prepare and entry would vanish; sys.modules would point at the last copy
-        # while entry closed over an earlier one — torch.compile re-imports by name).
         src_key = Path(src).resolve()
-        module = loaded_by_src.get(src_key)
-        if module is None:
-            module = loaded_by_src[src_key] = load_module(src)
-        if getattr(op, "override_point", None):
-            # Override submission: compose the miner's epilogue into the validator-owned base
-            # kernel -> a standard (entry, prepare) that flows through the normal dispatcher.
-            from optima_kernels.override import build_override
+        if op.execution_class == VALIDATOR_DEVICE_EXECUTION:
+            # No bundle Python or host extension is imported. The cubin was built
+            # offline in the disposable compiler worker; this returns a trusted ABI
+            # adapter which owns pointer marshalling and grid/block construction.
+            from optima.device_component import load_device_entry
 
-            def _loader(name, _mod=module):
-                fn = getattr(_mod, name, None)
-                return fn if callable(fn) else None  # absent symbol (GPU-only device fn) -> None
-
-            entry, prepare = build_override(op.slot, op.override_point, op.entry, _loader)
+            entry = load_device_entry(bundle, op)
+            prepare = None
         else:
-            entry = callable_from(module, op.entry)
-            # (prepare, forward) slots: pull the 2nd callable too, so the runtime dispatcher
-            # can run the miner's weight-layout transform once and feed `prepared` to forward.
-            # (Until now prepare was only exercised by CPU `verify`; the block seam needs it
-            # live.) None for forward-only slots.
-            prepare = callable_from(module, op.prepare) if getattr(op, "prepare", None) else None
+            scan = scan_path(src)
+            if not scan.ok:  # defense-in-depth: re-scan in the worker before load
+                logger.warning("optima: skip %s, failed scan: %s", op.slot, scan.violations)
+                continue
+            # ONE module instance per op source: pulling entry/prepare/setup via separate
+            # load_entry calls would re-execute the module body per callable and split
+            # them across different module namespaces (module-global state shared between
+            # prepare and entry would vanish; sys.modules would point at the last copy
+            # while entry closed over an earlier one — torch.compile re-imports by name).
+            module = loaded_by_src.get(src_key)
+            if module is None:
+                module = loaded_by_src[src_key] = load_module(src)
+            if getattr(op, "override_point", None):
+                # Override submission: compose the miner's epilogue into the validator-owned base
+                # kernel -> a standard (entry, prepare) that flows through the normal dispatcher.
+                from optima_kernels.override import build_override
+
+                def _loader(name, _mod=module):
+                    fn = getattr(_mod, name, None)
+                    return fn if callable(fn) else None  # absent symbol (GPU-only device fn) -> None
+
+                entry, prepare = build_override(op.slot, op.override_point, op.entry, _loader)
+            else:
+                entry = callable_from(module, op.entry)
+                # (prepare, forward) slots: pull the 2nd callable too, so the runtime dispatcher
+                # can run the miner's weight-layout transform once and feed `prepared` to forward.
+                # (Until now prepare was only exercised by CPU `verify`; the block seam needs it
+                # live.) None for forward-only slots.
+                prepare = callable_from(module, op.prepare) if getattr(op, "prepare", None) else None
         REGISTRY.register(
             KernelImpl(
                 slot=op.slot,
                 bundle_id=manifest.bundle_id,
                 entry=entry,
                 prepare=prepare,
-                eligibility=eligibility_from_metadata(meta, op.dtypes),
+                eligibility=eligibility_from_metadata(
+                    meta, op.dtypes, op.architectures
+                ),
+                variant=op.variant,
             )
         )
         # FRAMEWORK MODE: an optional setup() runs ONCE here (candidate scheduler only —
@@ -192,5 +220,8 @@ def _load_bundle_into_registry(bundle: str) -> None:
         # (framework_mode) and it MUST run in the no-egress isolation worker before the
         # subnet opens to untrusted miners.
         if getattr(op, "setup", None):
-            callable_from(module, op.setup)()
-            logger.info("optima: ran setup() for %s", op.slot)
+            setup_key = (src_key, op.setup)
+            if setup_key not in setup_done:
+                callable_from(module, op.setup)()
+                setup_done.add(setup_key)
+                logger.info("optima: ran setup() for %s", op.slot)

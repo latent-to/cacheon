@@ -1,5 +1,4 @@
-"""Benchmark-based capability eval — the score is throughput, gated by task
-performance on real benchmarks.
+"""Benchmark-based capability eval — a task-quality gate, not a speed scorer.
 
 This implements the design: the quality gate is not (only) KL — it's "did the
 model's accuracy on real benchmark problems survive the kernel?" We run the same
@@ -10,13 +9,12 @@ candidate), measure throughput and per-benchmark accuracy for each, and gate:
   ANY benchmark beyond a small tolerance (Affine's "strictly not worse across all
   envs"), and (2) per-token KL vs the baseline under threshold (the dense,
   low-variance check; accuracy at small n is noisy, so KL is the primary gate).
-* **score**: the single thing maximized is THROUGHPUT speedup. The benchmarks are
-  pass/fail GATES, not score components — so there's nothing to aggregate with a
-  geometric mean. Our objective is scalar (speed); correctness is a constraint.
+* **throughput**: reported as a diagnostic only. Natural-length benchmark answers
+  stop at EOS/cues and therefore have unequal token counts; this runner's tok/s is
+  not crownable. ``optima evaluate`` is the fixed-budget throughput authority.
 
-A faithful kernel preserves accuracy and (hopefully) speeds things up. A kernel
-that secretly degrades the model drops benchmark accuracy and scores zero, even
-if it looked fast.
+A faithful kernel preserves accuracy. A kernel that secretly degrades the model
+fails quality even if its diagnostic throughput looked fast.
 """
 
 from __future__ import annotations
@@ -62,7 +60,9 @@ class CapabilityReport:
     speedup: float
     passed_quality: bool
     passed_speedup: bool  # NOISE-AWARE (see optima/eval/scoring.py)
-    score: float  # crownable speedup or 0.0 — what the ledger records
+    # Compatibility field; always 0. Natural-length benchmark generations have
+    # unequal token counts, so their tok/s is diagnostic and never crownable.
+    score: float
     kl: KLReport
     token_match: float = 1.0
     regressions: list[str] = field(default_factory=list)
@@ -234,8 +234,10 @@ def evaluate_capability(
     else:
         fidelity_ok = kl_ok
     passed_quality = len(regressions) == 0 and fidelity_ok
-    crownable = passed_quality and verdict.passed_speedup
-    score = verdict.speedup if crownable else 0.0
+    # This runner grades task fidelity. Its natural-length generations intentionally
+    # stop at EOS/benchmark cues, making its tok/s incomparable (unequal token counts).
+    # Preserve the diagnostic speed verdict, but never turn it into a ledger score.
+    score = 0.0
 
     return CapabilityReport(
         benchmarks=scores,

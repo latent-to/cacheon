@@ -13,6 +13,7 @@ bundle) must parse under this exact parser and clear the flashinfer arena policy
 from __future__ import annotations
 
 import difflib
+import runpy
 import textwrap
 from pathlib import Path
 
@@ -284,6 +285,72 @@ def test_overlay_materialization_roundtrip(tmp_path):
                                       "pkg/data/csrc/moe/extra.h"}
     # the shared "install" was never mutated
     assert (site / "pkg/data/csrc/moe/kern.cu").read_text() == OLD
+
+
+def test_overlay_identity_covers_bundle_policy_patcher_and_dependency_tree(tmp_path):
+    from dataclasses import replace
+    from optima.dep_policy import PATCHABLE_DEPS, overlay_identity
+
+    bundle = _mk_bundle(
+        tmp_path / "one", _diff(OLD, NEW, path="flashinfer/data/csrc/fused_moe/x.cu")
+    )
+    site = tmp_path / "site"
+    subtree = site / "flashinfer/data/csrc"
+    (subtree / "fused_moe").mkdir(parents=True)
+    (subtree / "fused_moe/x.cu").write_text(OLD)
+
+    first = overlay_identity(bundle, "flashinfer", site_root=site)
+    assert len(first.cache_key) == 64
+    assert first.payload["bundle_hash"]
+    assert first.payload["patcher_sha256"]
+    assert first.payload["dependency_subtree_sha256"]
+
+    (bundle / "README.md").write_text("identity-changing bundle file\n")
+    assert overlay_identity(bundle, "flashinfer", site_root=site).cache_key != first.cache_key
+    (bundle / "README.md").unlink()
+
+    (subtree / "fused_moe/x.cu").write_text(OLD + "// dependency drift\n")
+    assert overlay_identity(bundle, "flashinfer", site_root=site).cache_key != first.cache_key
+    (subtree / "fused_moe/x.cu").write_text(OLD)
+
+    old_policy = PATCHABLE_DEPS["flashinfer"]
+    try:
+        PATCHABLE_DEPS["flashinfer"] = replace(
+            old_policy, force_jit_modules=("fused_moe_103", "changed_policy")
+        )
+        assert overlay_identity(bundle, "flashinfer", site_root=site).cache_key != first.cache_key
+    finally:
+        PATCHABLE_DEPS["flashinfer"] = old_policy
+
+
+def test_dep_overlay_load_refuses_corrupt_or_stale_materialization(tmp_path, monkeypatch):
+    import optima.dep_policy as dep_policy
+
+    bundle = _mk_bundle(
+        tmp_path / "bundle-root",
+        _diff(OLD, NEW, path="flashinfer/data/csrc/fused_moe/x.cu"),
+    )
+    site = tmp_path / "site"
+    source = site / "flashinfer/data/csrc/fused_moe/x.cu"
+    source.parent.mkdir(parents=True)
+    source.write_text(OLD)
+    cache = tmp_path / "overlay-cache"
+    monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(bundle))
+    monkeypatch.setenv("OPTIMA_DEP_OVERLAY_CACHE", str(cache))
+    monkeypatch.setattr(dep_policy, "dependency_site_root", lambda policy: site)
+
+    script = Path(__file__).parent.parent / "optima/patchers/apply_dep_patch.py"
+    monkeypatch.setenv("OPTIMA_REBUILD_PHASE", "build")
+    runpy.run_path(str(script), run_name="__main__")
+    identity, _, dest = dep_policy.read_validated_overlay(bundle, "flashinfer")
+    assert identity.cache_key in dest.as_posix()
+    patched = dest / "flashinfer/data/csrc/fused_moe/x.cu"
+    assert patched.read_text() == NEW
+
+    patched.write_text(NEW + "// cache corruption\n")
+    monkeypatch.setenv("OPTIMA_REBUILD_PHASE", "load")
+    with pytest.raises(RuntimeError, match="refusing stale/missing dep overlay"):
+        runpy.run_path(str(script), run_name="__main__")
 
 
 # -- the REAL artifact ----------------------------------------------------------

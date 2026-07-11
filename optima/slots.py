@@ -53,6 +53,8 @@ from typing import Callable, Optional, Sequence
 import torch
 import torch.nn.functional as F
 
+from optima.tensor_spec import OutputSpec, TensorSpec
+
 
 @dataclass(frozen=True)
 class Tolerance:
@@ -131,6 +133,11 @@ class SlotSpec:
     invoke_reference: Callable[[dict], Sequence[torch.Tensor]]  # (inputs) -> expected outputs (HIGH PRECISION)
     invoke_entry: Callable[..., None]  # (entry, inputs, outs, prepared) -> None; writes each tensor in `outs`
     shapes: tuple[dict, ...]
+    # Additive typed-output ABI.  None preserves the historical contract exactly:
+    # every ``out_shapes`` entry inherits the verifier/live call's dtype+device and
+    # is contiguous.  New slots may describe the real live dtype/layout/stride
+    # contract once here; ``out_shapes`` remains required for old callers/bundles.
+    output_spec: Optional[Callable[[dict], OutputSpec]] = None
     # Optional 2nd miner callable for (prepare, forward) slots: `prepare` runs ONCE at
     # load on the raw weights (quant/layout transform); the validator holds the result
     # and passes it to `entry` each step as `prepared`. None -> a plain forward-only slot.
@@ -168,6 +175,11 @@ class SlotSpec:
     # reordered softmax, so a flat 5e-3 false-fails a faithful attention kernel — README
     # calibration finding 6). None -> use the eval's generic threshold.
     kl_threshold: Optional[float] = None
+    # When declarative capability filtering is active, verification only invokes a
+    # variant on shapes inside its claimed domain.  This validator-owned floor
+    # prevents a needle-thin or accidentally unreachable domain from passing on one
+    # token shape while the rest of the catalog is merely labelled N/A.
+    min_capability_shapes: int = 1
 
     def tolerance_for(self, dtype: torch.dtype) -> Tolerance:
         if dtype in self.tolerances:
@@ -175,6 +187,30 @@ class SlotSpec:
         if dtype in (torch.float16, torch.bfloat16):
             return Tolerance(atol=2e-2, rtol=2e-2)
         return Tolerance(atol=1e-4, rtol=1e-4)
+
+    def output_contract(self, inputs: dict) -> OutputSpec:
+        """Resolve the typed output declaration for one invocation.
+
+        This compatibility bridge is intentionally on ``SlotSpec`` so verifier and
+        live bindings cannot independently reinterpret ``out_shapes``.  Existing
+        slots receive the byte-for-byte historical contiguous/inherited contract.
+        """
+        if self.output_spec is not None:
+            contract = self.output_spec(inputs)
+            if not isinstance(contract, OutputSpec):
+                raise TypeError(
+                    f"slot {self.name!r} output_spec returned {type(contract).__name__}, "
+                    "expected OutputSpec"
+                )
+            return contract
+
+        shapes = self.out_shapes(inputs)
+        if isinstance(shapes, tuple) and (not shapes or isinstance(shapes[0], int)):
+            shapes = [shapes]
+        return OutputSpec(tuple(
+            TensorSpec(shape=tuple(shape), name=f"out[{index}]")
+            for index, shape in enumerate(shapes)
+        ))
 
 
 _BF16_TOL = {
@@ -1005,6 +1041,30 @@ def _msa_prefill_inputs(*, q_len: int, prefix_blocks: int, head_dim: int, block_
     }
 
 
+def _msa_prefill_out_shape(inputs: dict) -> tuple[int, int]:
+    return (
+        inputs["q"].shape[0],
+        (inputs["index_k"].shape[0] + inputs["block_size"] - 1) // inputs["block_size"],
+    )
+
+
+def _msa_prefill_output_spec(inputs: dict) -> OutputSpec:
+    # This is the ABI the live arena already supplies: block scores are FP32 even
+    # for BF16 Q/K, and each per-request/head output is a logical slice of the
+    # validator's larger [heads,total_q,max_blocks] slab.  The slice therefore has
+    # a padded row pitch whenever this request has fewer than max_blocks.  Verify
+    # allocates the same legal shape with a deterministic 7-element pitch pad.
+    return OutputSpec(outputs=(TensorSpec(
+        shape=_msa_prefill_out_shape(inputs),
+        dtype=torch.float32,
+        stride_policy="strided",
+        stride_padding=7,
+        alignment_bytes=4,
+        aliasing="disjoint",
+        name="block_scores",
+    ),))
+
+
 ATTENTION_MSA_PREFILL_BLOCK_SCORE = SlotSpec(
     name="attention.msa_prefill_block_score",
     entry="msa_prefill_block_score",
@@ -1017,8 +1077,8 @@ ATTENTION_MSA_PREFILL_BLOCK_SCORE = SlotSpec(
     ),
     kind="block",
     make_inputs=_msa_prefill_inputs,
-    out_shapes=lambda i: [(i["q"].shape[0],
-                           (i["index_k"].shape[0] + i["block_size"] - 1) // i["block_size"])],
+    out_shapes=lambda i: [_msa_prefill_out_shape(i)],
+    output_spec=_msa_prefill_output_spec,
     invoke_reference=lambda i: [_msa_prefill_block_score_reference(
         i["q"], i["index_k"], i["prefix_len"], i["scale"], i["block_size"])],
     invoke_entry=lambda entry, i, outs, prepared: entry(
@@ -1035,7 +1095,7 @@ ATTENTION_MSA_PREFILL_BLOCK_SCORE = SlotSpec(
         # per-row deficit dilutes to ~0.97-0.99 mean overlap (measured); here it lands ~0.81,
         # well under the 0.9 floor. Do not drop this shape — it is what makes the causal rule
         # enforceable through a set metric.
-        {"q_len": 1024, "prefix_blocks": 12, "head_dim": 64, "block_size": 128},  # long chunk
+        {"q_len": 1024, "prefix_blocks": 12, "head_dim": 128, "block_size": 128}, # long chunk
     ),
     # The output is a SELECTION sheet: gate on per-row top-k block SETS, not values (an fp8
     # index-K may perturb every score yet select the same blocks). The floor is 0.9, NOT the
@@ -1047,6 +1107,10 @@ ATTENTION_MSA_PREFILL_BLOCK_SCORE = SlotSpec(
     correctness=Correctness("topk_overlap", top_k=_MSA_TOPK, min_overlap=0.9),
     tolerances=_BF16_TOL,
     kl_threshold=3e-2,  # rides the attention path (same intrinsic floor as the decode slot)
+    # D128/block128 has three independent shapes, including the long-chunk
+    # causality catcher above.  A production-specialized variant must pass all
+    # three; the D64 and block64 catalog rows remain explicit validator N/A probes.
+    min_capability_shapes=3,
 )
 
 

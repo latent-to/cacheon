@@ -5,7 +5,14 @@ whose clocks can't be locked, and to refuse to crown on measurement noise. These
 tests pin both halves: a genuine win passes, and noise alone never does.
 """
 
-from optima.eval.scoring import relative_spread, score_speedup
+from optima.eval.scoring import (
+    EXTERNAL_QUALITY_GATE_V1,
+    ExternalFidelityMetrics,
+    relative_spread,
+    score_external_quality,
+    score_speedup,
+    score_system_token_match,
+)
 
 
 def test_relative_spread_two_reads_is_range_over_mean():
@@ -67,3 +74,104 @@ def test_a_real_loss_is_a_loss_not_no_decision():
     assert v.confident  # the box was stable; we trust the verdict
     assert not v.passed_speedup
     assert v.speedup < 1.0
+
+
+def _fidelity(*, positions=100, mean=0.001, argmax=0, coverage=0.001, dropped=0):
+    return ExternalFidelityMetrics(
+        num_positions=positions,
+        mean_kl=mean,
+        max_kl=max(mean, 0.002),
+        p99_kl=max(mean, 0.0015),
+        argmax_disagreements=argmax,
+        mean_coverage_dev=coverage,
+        dropped_positions=dropped,
+    )
+
+
+def test_external_quality_recomputes_candidate_against_stock_control():
+    verdict = score_external_quality(
+        _fidelity(mean=0.01), _fidelity(mean=0.005),
+        gate=EXTERNAL_QUALITY_GATE_V1,
+    )
+    assert verdict.passed
+    assert verdict.kl_limit == 0.0575
+
+
+def test_external_quality_rejects_missing_positions_and_drift():
+    control = _fidelity(positions=100, mean=0.001)
+    assert not score_external_quality(
+        _fidelity(positions=0), control, gate=EXTERNAL_QUALITY_GATE_V1
+    ).passed
+    assert not score_external_quality(
+        _fidelity(mean=0.5), control, gate=EXTERNAL_QUALITY_GATE_V1
+    ).passed
+
+
+def test_external_quality_gate_name_is_versioned():
+    try:
+        score_external_quality(_fidelity(), _fidelity(), gate="miner-selected")
+    except ValueError as exc:
+        assert "unsupported external quality gate" in str(exc)
+    else:
+        raise AssertionError("unknown external quality policy was accepted")
+
+
+def test_output_token_match_rejects_boolean_threshold():
+    try:
+        score_system_token_match(0, 100, threshold=False)
+    except ValueError as exc:
+        assert "invalid output token-match" in str(exc)
+    else:
+        raise AssertionError("boolean token-match policy was accepted as zero")
+
+
+def test_system_token_match_uses_exact_stock_control_without_new_margin():
+    # The arena floor remains load-bearing when stock clears it. If this exact
+    # bracket's stock bookend only reproduces 96%, the candidate must meet that
+    # measured control—not an invented control+epsilon envelope.
+    passed, detail = score_system_token_match(
+        96,
+        100,
+        threshold=0.99,
+        stock_matched=96,
+        stock_total=100,
+    )
+    assert passed
+    assert "policy_floor=0.990000" in detail
+    assert "stock=96/100 rate=0.960000" in detail
+    assert "limit=0.960000" in detail
+
+    failed, _ = score_system_token_match(
+        95,
+        100,
+        threshold=0.99,
+        stock_matched=96,
+        stock_total=100,
+    )
+    assert not failed
+
+    policy_failure, policy_detail = score_system_token_match(
+        98,
+        100,
+        threshold=0.99,
+        stock_matched=100,
+        stock_total=100,
+    )
+    assert not policy_failure
+    assert "limit=0.990000" in policy_detail
+
+
+def test_system_token_match_rejects_partial_or_invalid_stock_control():
+    for stock in ((96, None), (None, 100), (101, 100)):
+        try:
+            score_system_token_match(
+                100,
+                100,
+                threshold=0.99,
+                stock_matched=stock[0],
+                stock_total=stock[1],
+            )
+        except ValueError as exc:
+            assert "stock token-match evidence" in str(exc)
+        else:
+            raise AssertionError("invalid stock control was accepted")

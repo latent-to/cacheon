@@ -27,16 +27,29 @@ def receipt_dir(tmp_path, monkeypatch):
 def test_no_env_is_a_silent_noop(tmp_path, monkeypatch):
     monkeypatch.delenv("OPTIMA_SEAM_RECEIPT_DIR", raising=False)
     receipts.write("active", {"bundle": "x"})  # must not raise, must not create files
+    receipts.completed("norm.rmsnorm")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_no_env_does_not_consume_completed_once_guard(tmp_path, monkeypatch):
+    monkeypatch.setattr(receipts, "_ONCE", set())
+    monkeypatch.delenv("OPTIMA_SEAM_RECEIPT_DIR", raising=False)
+    receipts.completed("norm.rmsnorm")
+    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(tmp_path))
+    receipts.completed("norm.rmsnorm")
+    assert len(receipts.collect(tmp_path, "completed")) == 1
 
 
 def test_write_and_collect_roundtrip(receipt_dir):
     receipts.write("active", {"bundle": "b", "slots": ["s"]})
     receipts.write("fired", {"slot": "collective.ar_residual_rmsnorm"},
                    tag="collective.ar_residual_rmsnorm")
-    assert receipts.collect(receipt_dir, "active") == [{"bundle": "b", "slots": ["s"]}]
+    active = receipts.collect(receipt_dir, "active")
+    assert active[0]["bundle"] == "b" and active[0]["slots"] == ["s"]
+    assert active[0]["pid"] == os.getpid()
     fired = receipts.collect(receipt_dir, "fired")
-    assert fired == [{"slot": "collective.ar_residual_rmsnorm"}]
+    assert fired[0]["slot"] == "collective.ar_residual_rmsnorm"
+    assert {"pid", "rank", "world_size"} <= fired[0].keys()
     # tag is sanitized into the filename; pid keeps concurrent ranks from colliding
     names = [p.name for p in receipt_dir.iterdir()]
     assert any(n.startswith("fired.collective.ar_residual_rmsnorm") for n in names)
@@ -73,7 +86,7 @@ def test_registry_lookup_writes_fired_once(receipt_dir, monkeypatch):
         assert reg.lookup("activation.silu_and_mul", dtype_name="bfloat16",
                           last_dim=128, arch=None) is not None
     fired = receipts.collect(receipt_dir, "fired")
-    assert fired == [{"slot": "activation.silu_and_mul"}]
+    assert len(fired) == 1 and fired[0]["slot"] == "activation.silu_and_mul"
 
 
 def test_registry_miss_writes_nothing(receipt_dir, monkeypatch):
@@ -85,3 +98,57 @@ def test_registry_miss_writes_nothing(receipt_dir, monkeypatch):
     # Ineligible (dtype mismatch) -> no selection -> no fired receipt.
     assert reg.lookup("norm.rmsnorm", dtype_name="bfloat16", last_dim=128, arch=None) is None
     assert receipts.collect(receipt_dir, "fired") == []
+
+
+def test_completed_and_fallback_are_once_per_slot_process(receipt_dir, monkeypatch):
+    monkeypatch.setattr(receipts, "_ONCE", set())
+    for _ in range(3):
+        receipts.completed("norm.rmsnorm")
+        receipts.fallback("norm.rmsnorm", RuntimeError("candidate exploded"))
+    completed = receipts.collect(receipt_dir, "completed")
+    fallback = receipts.collect(receipt_dir, "fallback")
+    assert len(completed) == 1 and completed[0]["slot"] == "norm.rmsnorm"
+    assert len(fallback) == 1 and fallback[0]["error_type"] == "RuntimeError"
+    for item in (*completed, *fallback):
+        assert item["pid"] == os.getpid()
+        assert {"rank", "world_size"} <= item.keys()
+
+
+def test_completed_gate_requires_every_slot_on_every_active_member():
+    active = [
+        {"pid": 10, "rank": 0, "world_size": 2},
+        {"pid": 11, "rank": 1, "world_size": 2},
+    ]
+    completed = [
+        {"slot": slot, "pid": pid, "rank": rank, "world_size": 2}
+        for pid, rank in ((10, 0), (11, 1))
+        for slot in ("slot.a", "slot.b")
+    ]
+    ok, desc = receipts.completed_gate(
+        completed, expected_slots=("slot.a", "slot.b"), member_receipts=active)
+    assert ok and "4/4" in desc
+
+    ok, desc = receipts.completed_gate(
+        completed[:-1], expected_slots=("slot.a", "slot.b"), member_receipts=active)
+    assert not ok and "slot.b" in desc and "pid:11" in desc
+
+
+def test_completed_gate_fails_on_any_selected_candidate_fallback():
+    active = [{"pid": 10, "rank": 0, "world_size": 1}]
+    completed = [{"slot": "slot.a", "pid": 10, "rank": 0, "world_size": 1}]
+    fallback = [{"slot": "slot.a", "pid": 10, "rank": 0, "world_size": 1,
+                 "error_type": "RuntimeError"}]
+    ok, desc = receipts.completed_gate(
+        completed, expected_slots=("slot.a",), member_receipts=active,
+        fallback_receipts=fallback)
+    assert not ok and "fallbacks" in desc
+
+
+def test_coverage_without_active_receipts_expands_known_world_size():
+    detail = receipts.coverage_matrix(
+        [{"slot": "slot.a", "pid": 11, "rank": 1, "world_size": 2}],
+        expected_slots=("slot.a",),
+    )
+    assert not detail["ok"]
+    assert detail["basis"] == "rank"
+    assert detail["missing"] == [{"slot": "slot.a", "member": "rank:0"}]

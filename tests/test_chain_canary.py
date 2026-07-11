@@ -47,7 +47,7 @@ def _fake_bittensor(methods: tuple[str, ...]) -> types.ModuleType:
 
 def test_full_fake_sdk_passes(monkeypatch):
     fake = _fake_bittensor((
-        "set_weights", "metagraph", "get_all_commitments", "set_commitment",
+        "set_weights", "weights", "metagraph", "get_all_commitments", "set_commitment",
         "set_reveal_commitment", "get_all_revealed_commitments",
         "is_hotkey_registered", "burned_register", "get_current_block", "get_block_hash",
         "commit", "reveal_commitment",
@@ -56,6 +56,7 @@ def test_full_fake_sdk_passes(monkeypatch):
     by_name = {c.name: c for c in run_checks()}
     assert by_name["bittensor installed"].ok
     assert by_name["subtensor.set_weights"].ok
+    assert by_name["subtensor.weights"].ok
     assert by_name["subtensor.metagraph"].ok
     assert by_name["commitment/reveal API present"].ok   # found commit + reveal_commitment
     assert by_name["weights API present"].ok             # found set_weights
@@ -68,4 +69,5 @@ def test_missing_method_is_flagged(monkeypatch):
     by_name = {c.name: c for c in run_checks()}
     assert by_name["subtensor.set_weights"].ok is False
     assert "MISSING" in by_name["subtensor.set_weights"].detail
+    assert by_name["subtensor.weights"].ok is False
     assert not all(c.ok for c in by_name.values())

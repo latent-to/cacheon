@@ -141,7 +141,7 @@ def test_failed_quality_cannot_win():
 
 def test_ledger_roundtrip(tmp_path: Path):
     led = Ledger()
-    _setup_scored(led, "alice", "hashA", 1.30)
+    _setup_scored(led, "alice", "a" * 64, 1.30)
     led.settle(0)
     p = tmp_path / "led.json"
     led.save(p)

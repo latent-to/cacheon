@@ -21,13 +21,11 @@ from dataclasses import dataclass
 # The sglang version scored against. Bump DELIBERATELY and in a coordinated way —
 # see docs/SGLANG_TRACKING.md. All validators must run the same version (consensus).
 #
-# 0.5.13.post1 (CUDA 13). VALIDATION STATE — read before treating as authoritative:
-#   * static seam canary: GREEN — all chokepoints intact on 0.5.13.post1 (sglang-canary CI,
-#     2026-06-22: FusedMoE/RadixAttention/SiluAndMul/RMSNorm/all_reduce + logprob API + ServerArgs).
-#   * GPU end-to-end re-validation (broken-bundle gate FAILs, faithful kernels PASS) + champion
-#     RE-BASELINE: **PENDING** — run on a pod before this pin is authoritative for scoring.
-#     0.5.12.post1 was the last fully H100-validated pin.
-PINNED_SGLANG = "0.5.13.post1"
+# MiniMax-M3 CUDA-13 bring-up image, observed and GPU-validated on the 8xB300
+# arena.  The prior ``0.5.13.post1`` value described a generic canary environment,
+# not the package that produced the M3 serving receipts; stamping it into arena
+# reports was therefore false provenance.
+PINNED_SGLANG = "0.0.0.dev1+g56e290315"
 
 
 @dataclass
@@ -70,7 +68,7 @@ def run_checks() -> list[Check]:
     ver = getattr(sglang, "__version__", "?")
     add(
         f"sglang installed (pinned {PINNED_SGLANG})",
-        True,
+        ver == PINNED_SGLANG,
         f"found {ver}" + ("" if ver == PINNED_SGLANG else "  <-- DIFFERS from pin"),
     )
 

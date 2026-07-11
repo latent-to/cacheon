@@ -31,8 +31,10 @@ from __future__ import annotations
 import json
 import os
 import runpy
+import subprocess
 import sys
 from pathlib import Path
+from typing import Literal
 
 # Reviewed patchers live ONLY here (repo-relative). A repo_python step may select a file
 # under this dir and nowhere else, so "reviewed patcher" is an enforced boundary, not an
@@ -43,6 +45,12 @@ _PATCHER_SUBDIR = ("optima", "patchers")
 
 class RebuildError(RuntimeError):
     pass
+
+
+RebuildPhase = Literal["all", "build", "load"]
+_REBUILD_PHASES = frozenset({"all", "build", "load"})
+_BUNDLE_HASH_ENV = "OPTIMA_BUNDLE_CONTENT_HASH"
+_EXPECTED_BUNDLE_HASH_ENV = "OPTIMA_EXPECTED_BUNDLE_HASH"
 
 
 def _repo_root() -> Path:
@@ -56,17 +64,30 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def apply_rebuild_plan(bundle_path: str | Path) -> bool:
+def apply_rebuild_plan(bundle_path: str | Path, *, phase: RebuildPhase = "all") -> bool:
     """Apply ``rebuild.json`` from ``bundle_path`` if present.
 
     Returns True when a plan was found and applied. All paths are repo-relative or
-    bundle-relative and containment-checked. Network isolation is handled by the
-    caller before this function is invoked.
+    bundle-relative and containment-checked. ``phase`` lets reviewed patchers split
+    artifact construction from runtime loading: the trusted timing process invokes a
+    separate ``build`` worker, while only the untrusted scheduler invokes ``load``.
+    Patchers that do not need two phases may safely perform the same idempotent work in
+    both. Network/process isolation is handled by the caller.
     """
+    if phase not in _REBUILD_PHASES:
+        raise RebuildError(f"unsupported rebuild phase: {phase!r}")
     bundle = Path(bundle_path).resolve()
+    # ``validator_device`` components do not carry a miner-selected rebuild plan.
+    # Their offline cubin builder is an unconditional validator-owned phase, so a
+    # bundle cannot swap it for a host extension patcher in ``rebuild.json``.
+    prepared_device = False
+    if (bundle / "manifest.toml").is_file():
+        from optima.device_component import prepare_device_artifacts
+
+        prepared_device = prepare_device_artifacts(bundle, phase=phase)
     plan_path = bundle / "rebuild.json"
     if not plan_path.exists():
-        return False
+        return prepared_device
     if not plan_path.is_file():
         raise RebuildError(f"rebuild plan is not a file: {plan_path}")
 
@@ -77,6 +98,21 @@ def apply_rebuild_plan(bundle_path: str | Path) -> bool:
     if not isinstance(steps, list):
         raise RebuildError("rebuild.json 'steps' must be a list")
 
+    # A rebuild artifact is native code, so a miner-controlled display name is not a
+    # cache identity.  Bind every patcher invocation to the deterministic hash of the
+    # COMPLETE submitted tree (manifest, Python shims, .cu/.cuh closure, patches and
+    # rebuild plan).  The subprocess caller may additionally pin the hash it observed
+    # before spawning; any mutation between controller and worker then fails closed.
+    from optima.bundle_hash import content_hash
+
+    bundle_hash = content_hash(bundle)
+    expected_hash = os.environ.get(_EXPECTED_BUNDLE_HASH_ENV, "").strip()
+    if expected_hash and expected_hash != bundle_hash:
+        raise RebuildError(
+            "bundle changed before rebuild: controller expected "
+            f"{expected_hash}, worker observed {bundle_hash}"
+        )
+
     repo_root = _repo_root()
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
@@ -86,7 +122,9 @@ def apply_rebuild_plan(bundle_path: str | Path) -> bool:
             # ONLY validator-shipped, reviewed patchers under optima/patchers/. Never
             # bundle code, and never an arbitrary repo module.
             script = _safe_patcher_path(repo_root, str(step.get("path", "")))
-            _run_python_script(script, bundle=bundle)
+            _run_python_script(
+                script, bundle=bundle, phase=phase, bundle_hash=bundle_hash
+            )
         elif typ == "bundle_python":
             raise RebuildError(
                 "rebuild step 'bundle_python' is not allowed: a bundle may not execute its "
@@ -95,6 +133,64 @@ def apply_rebuild_plan(bundle_path: str | Path) -> bool:
             )
         else:
             raise RebuildError(f"unsupported rebuild step type: {typ!r}")
+    return True
+
+
+def apply_rebuild_plan_subprocess(
+    bundle_path: str | Path,
+    *,
+    phase: RebuildPhase = "build",
+    timeout_s: float | None = None,
+) -> bool:
+    """Apply a rebuild plan in a disposable child process.
+
+    This is the only API the trusted timing/controller process should use. Even a
+    validator-reviewed compiler patcher consumes attacker-controlled CUDA source; a
+    compiler bug or an accidental extension import must not gain access to the Python
+    process that owns elapsed time and result serialization.
+    """
+    if phase not in _REBUILD_PHASES:
+        raise RebuildError(f"unsupported rebuild phase: {phase!r}")
+    bundle = Path(bundle_path).resolve()
+    plan = bundle / "rebuild.json"
+    has_device_product = False
+    if (bundle / "manifest.toml").is_file():
+        from optima.manifest import VALIDATOR_DEVICE_EXECUTION, load_manifest
+
+        has_device_product = any(
+            op.execution_class == VALIDATOR_DEVICE_EXECUTION
+            for op in load_manifest(bundle).ops
+        )
+    if not plan.exists() and not has_device_product:
+        return False
+    if timeout_s is None:
+        timeout_s = float(os.environ.get("OPTIMA_REBUILD_TIMEOUT_S", "1800"))
+    from optima.bundle_hash import content_hash
+
+    bundle_hash = content_hash(bundle)
+    cmd = [sys.executable, "-m", "optima.rebuild", "--phase", phase, str(bundle)]
+    child_env = os.environ.copy()
+    # A site-wide optima bootstrap may run before ``-m optima.rebuild``. Ensure the
+    # build worker cannot inherit an active seam and import a candidate as a side
+    # effect of interpreter startup.
+    child_env.update(
+        OPTIMA_ACTIVE="0",
+        OPTIMA_BUNDLE_PATH="",
+        OPTIMA_REBUILD_PHASE=phase,
+        OPTIMA_EXPECTED_BUNDLE_HASH=bundle_hash,
+    )
+    try:
+        subprocess.run(  # noqa: S603 - fixed argv
+            cmd, check=True, timeout=timeout_s, env=child_env
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RebuildError(
+            f"rebuild {phase} worker exceeded {timeout_s:g}s for {bundle}"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RebuildError(
+            f"rebuild {phase} worker failed with exit code {exc.returncode} for {bundle}"
+        ) from exc
     return True
 
 
@@ -124,7 +220,9 @@ def _safe_patcher_path(repo_root: Path, rel: str) -> Path:
     return p
 
 
-def _run_python_script(script: Path, *, bundle: Path) -> None:
+def _run_python_script(
+    script: Path, *, bundle: Path, phase: RebuildPhase, bundle_hash: str
+) -> None:
     """Run a reviewed patcher with the triggering bundle's path in the environment.
 
     ``OPTIMA_BUNDLE_PATH`` is the patcher contract: every caller of
@@ -135,8 +233,12 @@ def _run_python_script(script: Path, *, bundle: Path) -> None:
     validated nothing)."""
     old_argv = sys.argv
     old_bundle = os.environ.get("OPTIMA_BUNDLE_PATH")
+    old_phase = os.environ.get("OPTIMA_REBUILD_PHASE")
+    old_bundle_hash = os.environ.get(_BUNDLE_HASH_ENV)
     sys.argv = [str(script)]
     os.environ["OPTIMA_BUNDLE_PATH"] = str(bundle)
+    os.environ["OPTIMA_REBUILD_PHASE"] = phase
+    os.environ[_BUNDLE_HASH_ENV] = bundle_hash
     try:
         runpy.run_path(str(script), run_name="__main__")
     finally:
@@ -145,3 +247,27 @@ def _run_python_script(script: Path, *, bundle: Path) -> None:
             os.environ.pop("OPTIMA_BUNDLE_PATH", None)
         else:
             os.environ["OPTIMA_BUNDLE_PATH"] = old_bundle
+        if old_phase is None:
+            os.environ.pop("OPTIMA_REBUILD_PHASE", None)
+        else:
+            os.environ["OPTIMA_REBUILD_PHASE"] = old_phase
+        if old_bundle_hash is None:
+            os.environ.pop(_BUNDLE_HASH_ENV, None)
+        else:
+            os.environ[_BUNDLE_HASH_ENV] = old_bundle_hash
+
+
+def _main(argv: list[str] | None = None) -> int:
+    """Internal subprocess entry point; not a miner-facing command."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m optima.rebuild")
+    parser.add_argument("--phase", choices=sorted(_REBUILD_PHASES), required=True)
+    parser.add_argument("bundle")
+    args = parser.parse_args(argv)
+    apply_rebuild_plan(args.bundle, phase=args.phase)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through subprocess tests
+    raise SystemExit(_main())

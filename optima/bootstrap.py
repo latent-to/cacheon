@@ -67,6 +67,13 @@ class _SeamFinder(importlib.abc.MetaPathFinder):
 
 
 def install() -> None:
+    # Install the system-product process-role hook before SGLang is imported.
+    # In a marked spawned scheduler this also validates/prepends the read-only,
+    # content-addressed package overlay. Driver/tokenizer/detokenizer interpreters
+    # remain on stock SGLang. Import-light and a no-op for ordinary slot bundles.
+    from optima import system_overlay
+
+    system_overlay.install()
     if any(t in sys.modules for t in _TARGETS):
         # Something already imported (e.g. re-entry); patch what's available now.
         _run_activate()

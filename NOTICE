@@ -8,3 +8,15 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 Miner submissions to the subnet are accepted under the terms in
 docs/SUBMISSION_TERMS.md, which are separate from and additional to
 this repository's license.
+
+Bundled arena overlay sources under
+optima/arena_assets/minimax_m3/sglang_patch/ are derived from the SGLang
+project (https://github.com/sgl-project/sglang), licensed under the Apache
+License, Version 2.0. The modelopt_quant.py source retains its upstream vLLM
+SPDX copyright and license notice.
+
+The pinned container seccomp profile at
+optima/eval/seccomp_moby_v0_2_1.json is copied byte-for-byte from
+moby/profiles tag seccomp/v0.2.1
+(https://github.com/moby/profiles/tree/seccomp/v0.2.1), licensed under
+the Apache License, Version 2.0.

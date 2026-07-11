@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import random
 
-PROMPT_ENGINE_VERSION: int = 1
+PROMPT_ENGINE_VERSION: int = 2
 """Bump when the corpus or sampling changes. Folded into the block seed so a version
 change reshuffles prompts even at the same block — old and new prompt sets never
 collide, and the engine version a score was produced under stays reproducible."""
@@ -85,11 +85,30 @@ def _long_prompt(rng: random.Random, input_len: int) -> str:
     return " ".join(parts)
 
 
+def _short_prompt(rng: random.Random) -> str:
+    """A prefix-disjoint short serving prompt.
+
+    The old ``n > len(CORPUS)`` path sampled with replacement and the evaluator
+    replayed the same list for warmup and every timed pass. A stateful candidate
+    could therefore cache complete prompt results during a warmup batch. Every
+    instance now carries a per-round salt even when its semantic question repeats.
+    """
+    first, second = rng.sample(CORPUS, 2)
+    marker_a = f"m{rng.getrandbits(32):08x}"
+    marker_b = f"m{rng.getrandbits(32):08x}"
+    return (
+        f"[case {rng.getrandbits(64):016x}] Synthesize these two requests: "
+        f"(A) {first} (B) {second} Give a self-contained comparison and use the "
+        f"case-specific markers {marker_a} and {marker_b} in the conclusion."
+    )
+
+
 def sample_prompts(n: int, seed: int, input_len: int | None = None) -> list[str]:
     """Deterministically sample ``n`` prompts for an epoch.
 
-    Without replacement when ``n <= len(CORPUS)``, otherwise with replacement so
-    callers can request large workloads for throughput measurement.
+    Semantic questions may repeat when ``n`` exceeds the corpus, but every concrete
+    prompt is prefix-disjoint through a random case salt. The seed is derived after
+    commitment in production, so a submission cannot pre-bake the concrete set.
 
     ``input_len`` (approximate tokens) switches to the LONG-PROMPT engine: without it
     the corpus averages 10-20 tokens per prompt, so the measured regime is pure decode
@@ -102,9 +121,37 @@ def sample_prompts(n: int, seed: int, input_len: int | None = None) -> list[str]
     rng = random.Random(seed)
     if input_len is not None and input_len > 0:
         return [_long_prompt(rng, input_len) for _ in range(n)]
-    if n <= len(CORPUS):
-        return rng.sample(list(CORPUS), n)
-    return [rng.choice(CORPUS) for _ in range(n)]
+    return [_short_prompt(rng) for _ in range(n)]
+
+
+def sample_prompt_batches(
+    num_batches: int,
+    batch_size: int,
+    seed: int,
+    input_len: int | None = None,
+) -> list[list[str]]:
+    """Generate disjoint warmup/timed batches from one post-commit seed.
+
+    Baseline and candidate receive the same plan, but no batch is repeated within a
+    launch. Batch seeds are hash-derived instead of ``seed + i`` so adjacent public
+    seeds do not create a useful relation for a shape/prompt branch.
+    """
+    if num_batches <= 0 or batch_size <= 0:
+        raise ValueError("num_batches and batch_size must be positive")
+    batches: list[list[str]] = []
+    seen: set[str] = set()
+    for index in range(num_batches):
+        digest = hashlib.sha256(
+            f"prompt-batch-v{PROMPT_ENGINE_VERSION}:{seed}:{index}".encode("utf-8")
+        ).digest()
+        batch_seed = int.from_bytes(digest[:8], "big")
+        batch = sample_prompts(batch_size, batch_seed, input_len=input_len)
+        overlap = seen.intersection(batch)
+        if overlap:
+            raise RuntimeError("prompt engine generated a repeated concrete prompt")
+        seen.update(batch)
+        batches.append(batch)
+    return batches
 
 
 def derive_seed(block_hash: str, *, version: int = PROMPT_ENGINE_VERSION) -> int:

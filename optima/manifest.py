@@ -55,7 +55,16 @@ def _load_toml(p: Path) -> dict:
 
 
 ABI_VERSION = "optima-op-abi-v0"
+SYSTEM_ABI_VERSION = "optima-system-patch-v1"
+UNTRUSTED_HOST_EXECUTION = "untrusted_host"
+VALIDATOR_DEVICE_EXECUTION = "validator_device"
+COMPONENT_EXECUTION_CLASSES = frozenset(
+    {UNTRUSTED_HOST_EXECUTION, VALIDATOR_DEVICE_EXECUTION}
+)
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
+# Existing one-implementation manifests did not name variants.  Give those rows
+# a stable identity so downstream code never has to special-case ``None``.
+DEFAULT_VARIANT = "default"
 
 
 class ManifestError(ValueError):
@@ -70,6 +79,20 @@ class OpEntry:
     dtypes: tuple[str, ...]
     architectures: tuple[str, ...]
     metadata: str | None
+    # ``untrusted_host`` means the bundle's Python module executes in the model
+    # scheduler.  It remains useful in the isolated system/experimentation lane,
+    # but it is not a component trust boundary.  ``validator_device`` removes
+    # miner-controlled host launch code: the submitted ``source`` is compiled
+    # offline to a cubin and a validator-owned ABI adapter performs every host-side
+    # launch.  It is still development/diagnostic-only because arbitrary device
+    # code receives raw pointers in the shared CUDA context; it has no settlement
+    # authority.  Legacy manifests default to ``untrusted_host``.
+    execution_class: str = UNTRUSTED_HOST_EXECUTION
+    device_abi: str | None = None
+    # Implementation identity *within* one semantic slot.  A legacy manifest
+    # receives DEFAULT_VARIANT.  Multiple rows for the same slot are accepted
+    # only when every row names a unique variant explicitly (see load_manifest).
+    variant: str = DEFAULT_VARIANT
     prepare: str | None = None  # optional 2nd callable (weight-prep) for (prepare, forward) slots
     setup: str | None = None  # optional callable run ONCE at engine init (framework mode)
     # Override-point submission (the swigluoai class): the bundle does NOT ship a whole kernel —
@@ -109,18 +132,69 @@ class DepPatchEntry:
 
 
 @dataclass(frozen=True)
+class SystemPatchEntry:
+    """An inspectable patch set against a validator-pinned inference runtime.
+
+    This is deliberately a top-level product rather than an ``OpEntry``.  A
+    system submission competes as one arena-qualified serving implementation;
+    it does not invent a fake component slot merely to get source into the
+    bundle.  ``target`` and ``region`` are only requested identities here.  The
+    validator-owned policy in :mod:`optima.system_patch` decides whether that
+    exact pair is admitted and where its diffs may land.
+    """
+
+    target: str
+    region: str
+    patches: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CompetitionEntry:
+    """A bundle's requested settlement identity.
+
+    This declaration is intentionally only syntax.  Whether ``target`` exists and
+    whether the manifest's exact op set is allowed to compete for it are
+    validator-owned policy resolved by :mod:`optima.competition`.  Keeping policy
+    out of manifest loading lets legacy multi-op bundles continue through intake
+    and correctness verification without silently making them crownable.
+    """
+
+    target: str
+    mode: str
+
+
+@dataclass(frozen=True)
 class Manifest:
     bundle_id: str
     abi_version: str
     ops: tuple[OpEntry, ...]
+    competition: CompetitionEntry | None = None
     dep_patches: tuple[DepPatchEntry, ...] = ()
+    system: SystemPatchEntry | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
-    def op_for(self, slot: str) -> OpEntry | None:
-        for op in self.ops:
-            if op.slot == slot:
-                return op
-        return None
+    def ops_for(self, slot: str) -> tuple[OpEntry, ...]:
+        """Return every implementation row for one semantic slot, in manifest order."""
+        return tuple(op for op in self.ops if op.slot == slot)
+
+    def op_for(self, slot: str, variant: str | None = None) -> OpEntry | None:
+        """Return one op row, preserving the historical singleton convenience.
+
+        A slot with multiple variants is intentionally not resolved by row order:
+        callers must name the variant or iterate :meth:`ops_for`.
+        """
+        matches = self.ops_for(slot)
+        if variant is not None:
+            for op in matches:
+                if op.variant == variant:
+                    return op
+            return None
+        if len(matches) > 1:
+            raise ManifestError(
+                f"slot {slot!r} has multiple variants; specify one of "
+                f"{tuple(op.variant for op in matches)!r}"
+            )
+        return matches[0] if matches else None
 
 
 def _require(cond: bool, msg: str) -> None:
@@ -220,6 +294,49 @@ def _validate_dep_patch(root: Path, rel: str, *, target: str) -> Path:
     return p
 
 
+def _validate_system_patch(root: Path, rel: str, *, target: str) -> Path:
+    """Validate a system-lane diff as contained, regular UTF-8 unified text.
+
+    The structural parser already enforces the important negative contract:
+    no deletion, rename, copy, binary hunk, fuzzy position, or path traversal.
+    Runtime-region policy is intentionally a second validator-owned check in
+    :mod:`optima.system_patch`; manifest intake must not make a miner-provided
+    region authoritative.
+    """
+    kind = "system patches"
+    _require(
+        isinstance(rel, str) and rel != "",
+        f"{kind} ({target}) path must be a non-empty string",
+    )
+    _require(not rel.startswith("/"), f"{kind} ({target}) path must be relative: {rel!r}")
+    unresolved = root / rel
+    _require(not unresolved.is_symlink(), f"{kind} ({target}) must not be a symlink: {rel!r}")
+    p = unresolved.resolve()
+    root_resolved = root.resolve()
+    _require(
+        p == root_resolved or root_resolved in p.parents,
+        f"{kind} ({target}) path escapes bundle root: {rel!r}",
+    )
+    _require(p.exists(), f"{kind} ({target}) not found: {rel!r}")
+    _require(not p.is_symlink(), f"{kind} ({target}) must not be a symlink: {rel!r}")
+    _require(p.is_file(), f"{kind} ({target}) must be a regular file: {rel!r}")
+    _require(
+        p.suffix in _DEP_PATCH_SUFFIXES,
+        f"{kind} ({target}) must be .patch or .diff: {rel!r}",
+    )
+    from optima.deppatch import DepPatchError, parse_patch_text
+
+    try:
+        text = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ManifestError(f"{kind} ({target}) {rel!r} is not UTF-8 text: {exc}") from exc
+    try:
+        parse_patch_text(text)
+    except DepPatchError as exc:
+        raise ManifestError(f"{kind} ({target}) {rel!r} rejected: {exc}") from exc
+    return p
+
+
 def load_manifest(bundle_root: str | Path) -> Manifest:
     """Load and structurally validate ``manifest.toml`` under ``bundle_root``.
 
@@ -241,23 +358,91 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
     _require(bool(bundle_id), "manifest must set a non-empty bundle_id")
     _require(bool(_ID_RE.match(bundle_id)), f"bundle_id has illegal chars: {bundle_id!r}")
 
+    system_raw = data.get("system")
+    expected_abi = SYSTEM_ABI_VERSION if system_raw is not None else ABI_VERSION
     abi = str(data.get("abi_version", "")).strip()
     _require(
-        abi == ABI_VERSION,
-        f"unsupported abi_version {abi!r}; this validator speaks {ABI_VERSION!r}",
+        abi == expected_abi,
+        f"unsupported abi_version {abi!r}; this product speaks {expected_abi!r}",
     )
 
-    ops_raw = data.get("ops")
-    _require(isinstance(ops_raw, list) and ops_raw, "manifest must contain a non-empty [[ops]] list")
+    system: SystemPatchEntry | None = None
+    if system_raw is not None:
+        _require(
+            isinstance(system_raw, dict),
+            "top-level 'system' must be a {target, region, patches} table",
+        )
+        unknown = set(system_raw) - {"target", "region", "patches"}
+        _require(not unknown, f"system has unknown keys: {sorted(unknown)}")
+        target = str(system_raw.get("target", "")).strip()
+        region = str(system_raw.get("region", "")).strip()
+        _require(
+            bool(target) and bool(_ID_RE.match(target)),
+            f"system 'target' must be a simple identifier: {target!r}",
+        )
+        _require(
+            bool(region) and bool(_ID_RE.match(region)),
+            f"system 'region' must be a simple identifier: {region!r}",
+        )
+        patches_raw = system_raw.get("patches")
+        _require(
+            isinstance(patches_raw, list) and bool(patches_raw),
+            "system 'patches' must be a non-empty list of paths",
+        )
+        patches: list[str] = []
+        for i, raw_patch in enumerate(patches_raw):
+            _require(
+                isinstance(raw_patch, str),
+                f"system patches[{i}] must be a string path",
+            )
+            rel = raw_patch.strip()
+            _validate_system_patch(root, rel, target=target)
+            _require(rel not in patches, f"duplicate system patch path: {rel!r}")
+            patches.append(rel)
+        system = SystemPatchEntry(
+            target=target, region=region, patches=tuple(patches)
+        )
+
+    ops_raw = data.get("ops", [])
+    _require(isinstance(ops_raw, list), "top-level 'ops' must be a list")
+    _require(
+        bool(ops_raw) != (system is not None),
+        "manifest must declare exactly one product: a non-empty [[ops]] list or "
+        "one top-level [system] patch set",
+    )
 
     ops: list[OpEntry] = []
-    seen_slots: set[str] = set()
+    # slot -> variant -> whether the row explicitly declared ``variant``.  The
+    # explicitness bit is intake-only: once validated, OpEntry.variant is always
+    # a concrete deterministic identifier.
+    seen_variants: dict[str, dict[str, bool]] = {}
     for i, op in enumerate(ops_raw):
         _require(isinstance(op, dict), f"ops[{i}] must be a table")
         slot = str(op.get("slot", "")).strip()
         _require(bool(slot), f"ops[{i}] missing 'slot'")
-        _require(slot not in seen_slots, f"duplicate slot in manifest: {slot!r}")
-        seen_slots.add(slot)
+        variant_explicit = "variant" in op
+        raw_variant = op.get("variant", DEFAULT_VARIANT)
+        _require(
+            isinstance(raw_variant, str),
+            f"ops[{i}] ({slot}) 'variant' must be a string",
+        )
+        variant = raw_variant.strip()
+        _require(
+            bool(variant) and bool(_ID_RE.match(variant)),
+            f"ops[{i}] ({slot}) 'variant' must be a simple identifier: {variant!r}",
+        )
+        prior = seen_variants.setdefault(slot, {})
+        if prior:
+            _require(
+                variant_explicit and all(prior.values()),
+                f"duplicate slot {slot!r} requires every row to declare an explicit "
+                "unique 'variant' identifier",
+            )
+        _require(
+            variant not in prior,
+            f"duplicate variant {variant!r} for slot {slot!r}",
+        )
+        prior[variant] = variant_explicit
 
         source = str(op.get("source", "")).strip()
         entry = str(op.get("entry", "")).strip()
@@ -273,6 +458,31 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
         if setup is not None:
             setup = str(setup).strip()
             _require(setup.isidentifier(), f"ops[{i}] ({slot}) 'setup' must be a python identifier")
+
+        raw_execution = op.get("execution_class", UNTRUSTED_HOST_EXECUTION)
+        _require(
+            isinstance(raw_execution, str),
+            f"ops[{i}] ({slot}) 'execution_class' must be a string",
+        )
+        execution_class = raw_execution.strip()
+        _require(
+            execution_class in COMPONENT_EXECUTION_CLASSES,
+            f"ops[{i}] ({slot}) 'execution_class' must be one of "
+            f"{tuple(sorted(COMPONENT_EXECUTION_CLASSES))!r}",
+        )
+        raw_device_abi = op.get("device_abi")
+        device_abi: str | None = None
+        if raw_device_abi is not None:
+            _require(
+                isinstance(raw_device_abi, str),
+                f"ops[{i}] ({slot}) 'device_abi' must be a string",
+            )
+            device_abi = raw_device_abi.strip()
+            _require(
+                bool(device_abi) and bool(_ID_RE.match(device_abi)),
+                f"ops[{i}] ({slot}) 'device_abi' must be a simple identifier: "
+                f"{device_abi!r}",
+            )
 
         # Path-safety check now (existence + containment); content scanning later.
         _safe_relpath(root, source, kind="source")
@@ -309,8 +519,37 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
             _validate_cuda_source(root, cs, slot=slot)
         cuda_sources = tuple(str(cs) for cs in cuda_sources_raw)
 
-        known = {"slot", "source", "entry", "prepare", "setup", "dtypes", "architectures",
-                 "metadata", "base_kernel", "override_point", "cuda_sources"}
+        if execution_class == VALIDATOR_DEVICE_EXECUTION:
+            _require(
+                Path(source).suffix == ".cu",
+                f"ops[{i}] ({slot}) validator_device source must be a .cu "
+                "compilation unit, not host Python",
+            )
+            _validate_cuda_source(root, source, slot=slot)
+            _require(
+                device_abi is not None,
+                f"ops[{i}] ({slot}) validator_device requires a validator-owned "
+                "'device_abi' identifier",
+            )
+            _require(
+                prepare is None and setup is None,
+                f"ops[{i}] ({slot}) validator_device cannot declare prepare/setup "
+                "host callables",
+            )
+            _require(
+                base_kernel is None and override_point is None,
+                f"ops[{i}] ({slot}) validator_device cannot declare Python "
+                "base-kernel override points",
+            )
+        else:
+            _require(
+                device_abi is None,
+                f"ops[{i}] ({slot}) untrusted_host may not claim a device_abi",
+            )
+
+        known = {"slot", "variant", "source", "entry", "prepare", "setup", "dtypes", "architectures",
+                 "metadata", "base_kernel", "override_point", "cuda_sources",
+                 "execution_class", "device_abi"}
         extra = {k: v for k, v in op.items() if k not in known}
 
         ops.append(
@@ -321,6 +560,9 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
                 dtypes=dtypes,
                 architectures=archs,
                 metadata=metadata,
+                execution_class=execution_class,
+                device_abi=device_abi,
+                variant=variant,
                 prepare=prepare,
                 setup=setup,
                 base_kernel=base_kernel,
@@ -329,6 +571,22 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
                 extra=extra,
             )
         )
+
+    competition_raw = data.get("competition")
+    competition: CompetitionEntry | None = None
+    if competition_raw is not None:
+        _require(isinstance(competition_raw, dict),
+                 "top-level 'competition' must be a {target, mode} table")
+        unknown = set(competition_raw) - {"target", "mode"}
+        _require(not unknown,
+                 f"competition has unknown keys: {sorted(unknown)}")
+        target = str(competition_raw.get("target", "")).strip()
+        _require(bool(target) and bool(_ID_RE.match(target)),
+                 f"competition 'target' must be a simple identifier: {target!r}")
+        mode = str(competition_raw.get("mode", "")).strip()
+        _require(mode in {"slot", "atomic", "system"},
+                 "competition 'mode' must be 'slot', 'atomic', or 'system'")
+        competition = CompetitionEntry(target=target, mode=mode)
 
     dep_raw = data.get("dep_patches", ())
     _require(
@@ -351,8 +609,30 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
         _require(not unknown, f"dep_patches[{i}] has unknown keys: {sorted(unknown)}")
         dep_patches.append(DepPatchEntry(target=target, path=rel))
 
+    _require(
+        system is None or not dep_patches,
+        "a [system] product may not also declare component dep_patches",
+    )
+    if any(op.execution_class == VALIDATOR_DEVICE_EXECUTION for op in ops):
+        _require(
+            all(op.execution_class == VALIDATOR_DEVICE_EXECUTION for op in ops),
+            "one validator_device diagnostic bundle may not mix validator_device "
+            "and untrusted_host execution classes",
+        )
+        _require(
+            not dep_patches,
+            "validator_device diagnostic bundles may not patch host dependencies; "
+            "use the isolated system lane for a wider runtime change",
+        )
+        _require(
+            not (root / "rebuild.json").exists(),
+            "validator_device diagnostic bundles use the validator-owned cubin "
+            "builder and may not select rebuild.json host patchers",
+        )
+
     return Manifest(bundle_id=bundle_id, abi_version=abi, ops=tuple(ops),
-                    dep_patches=tuple(dep_patches), raw=data)
+                    competition=competition, dep_patches=tuple(dep_patches),
+                    system=system, raw=data)
 
 
 def resolve_source(bundle_root: str | Path, op: OpEntry) -> Path:
@@ -380,6 +660,8 @@ def all_declared_cuda_sources(bundle_root: str | Path, manifest: Manifest) -> fr
     root = Path(bundle_root)
     out: set[Path] = set()
     for op in manifest.ops:
+        if op.execution_class == VALIDATOR_DEVICE_EXECUTION:
+            out.add(_validate_cuda_source(root, op.source, slot=op.slot))
         out.update(resolve_cuda_sources(root, op))
     return frozenset(out)
 
@@ -394,3 +676,23 @@ def resolve_dep_patches(bundle_root: str | Path, manifest: Manifest) -> tuple[Pa
 def all_declared_dep_patches(bundle_root: str | Path, manifest: Manifest) -> frozenset[Path]:
     """``scan_tree``-shaped allowlist of every declared dep patch (see cuda variant)."""
     return frozenset(resolve_dep_patches(bundle_root, manifest))
+
+
+def resolve_system_patches(
+    bundle_root: str | Path, manifest: Manifest
+) -> tuple[Path, ...]:
+    """Absolute, containment-checked paths of the declared system diff set."""
+    if manifest.system is None:
+        return ()
+    root = Path(bundle_root)
+    return tuple(
+        _validate_system_patch(root, rel, target=manifest.system.target)
+        for rel in manifest.system.patches
+    )
+
+
+def all_declared_system_patches(
+    bundle_root: str | Path, manifest: Manifest
+) -> frozenset[Path]:
+    """``scan_tree``-shaped allowlist for a top-level system patch set."""
+    return frozenset(resolve_system_patches(bundle_root, manifest))

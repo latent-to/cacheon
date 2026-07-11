@@ -22,7 +22,11 @@ import torch
 
 from optima import audit as _audit
 from optima import moe_export as _moe_export
+from optima import receipts as _receipts
+from optima.capabilities import msa_prefill_call_descriptor
 from optima.registry import REGISTRY, KernelRegistry
+from optima.slots import get_slot
+from optima.tensor_spec import validate_output_spec
 
 logger = logging.getLogger("optima.dispatch")
 _MOE_LOGGED_ACTIVE = False
@@ -34,6 +38,33 @@ def _arch_tag(device_index: int = 0) -> Optional[str]:
         return None
     major, minor = torch.cuda.get_device_capability(device_index)
     return f"sm{major}{minor}"
+
+
+def _runtime_parallel_sizes() -> tuple[Optional[int], Optional[int]]:
+    """Return validator-observed ``(tp_size, world_size)`` when initialized.
+
+    The MSA function itself carries no model-runner object, so these values come
+    only from sglang's already-initialized parallel-state authority.  Import or
+    initialization failure means unknown (descriptor fields omitted), never a
+    guessed value from environment variables.
+    """
+
+    tp_size: Optional[int] = None
+    world_size: Optional[int] = None
+    try:
+        from sglang.srt.distributed import parallel_state as ps
+
+        try:
+            tp_size = int(ps.get_tensor_model_parallel_world_size())
+        except Exception:  # noqa: BLE001 - parallel state may not be initialized
+            pass
+        try:
+            world_size = int(ps.get_world_size())
+        except Exception:  # noqa: BLE001 - parallel state may not be initialized
+            pass
+    except Exception:  # noqa: BLE001 - CPU/unit environments need no sglang import
+        pass
+    return tp_size, world_size
 
 
 def make_silu_and_mul_dispatcher(
@@ -67,13 +98,15 @@ def make_silu_and_mul_dispatcher(
         a_x = x.clone() if aud else None  # pre-call clone: the kernel may scribble on x
         try:
             impl.entry(x, out)
-        except Exception:
+        except Exception as exc:
             if registry.strict:
                 raise
             # Quality/throughput already protect us; a crashing kernel just loses.
+            _receipts.fallback(slot, exc)
             return baseline_forward(self, x)
         if aud:
             _audit.run(slot, (out,), lambda: baseline_forward(self, a_x))
+        _receipts.completed(slot)
         return out
 
     return dispatched
@@ -125,6 +158,7 @@ def make_rmsnorm_dispatcher(
                 impl.entry(x, weight, out, eps)
                 if aud:
                     _audit.run(slot, (out,), lambda: baseline_forward(self, a_x, None, None))
+                _receipts.completed(slot)
                 return out
             a_x, a_res = (x.clone(), residual.clone()) if aud else (None, None)
             new_residual = x + residual  # validator owns the add
@@ -133,10 +167,12 @@ def make_rmsnorm_dispatcher(
             if aud:
                 _audit.run(slot, (out, new_residual),
                            lambda: baseline_forward(self, a_x, a_res, None))
+            _receipts.completed(slot)
             return out, new_residual
-        except Exception:
+        except Exception as exc:
             if registry.strict:
                 raise
+            _receipts.fallback(slot, exc)
             return baseline_forward(self, x, residual, post_residual_addition)
 
     return dispatched
@@ -179,6 +215,7 @@ def make_attention_dispatcher(
     def dispatched(self, q, k, v, forward_batch, save_kv_cache: bool = True, **kwargs):
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_forward(self, q, k, v, forward_batch, save_kv_cache, **kwargs)
+        selected = False
         if _attention_seam_active():
             try:
                 if forward_batch.forward_mode.is_decode() and _decode_supported(self, k, v, kwargs):
@@ -189,10 +226,16 @@ def make_attention_dispatcher(
                         arch=_arch_tag(q.device.index or 0) if q.is_cuda else None,
                     )
                     if impl is not None:
-                        return _run_decode_kernel(self, q, k, v, forward_batch, save_kv_cache, impl)
-            except Exception:
+                        selected = True
+                        out = _run_decode_kernel(
+                            self, q, k, v, forward_batch, save_kv_cache, impl)
+                        _receipts.completed(slot)
+                        return out
+            except Exception as exc:
                 if registry.strict:
                     raise
+                if selected:
+                    _receipts.fallback(slot, exc)
                 # any mismatch with this sglang's internals -> trust the baseline
         return baseline_forward(self, q, k, v, forward_batch, save_kv_cache, **kwargs)
 
@@ -296,6 +339,7 @@ def make_moe_dispatcher(
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_forward(self, hidden_states, topk_output)
         _maybe_inspect_moe(self, hidden_states, topk_output)
+        selected_slot = None
         if _moe_seam_active():
             try:
                 if not (_moe_supported(self) and hidden_states.dim() == 2):
@@ -349,16 +393,20 @@ def make_moe_dispatcher(
                             # validator reduce for plain fused_experts), so comparable.
                             aud = not in_graph and _audit.sampled()
                             a_x = x.clone() if aud else None
+                            selected_slot = slot
                             out = _run_moe_kernel(self, x, routed, impl, slot)
                             if aud:
                                 _audit.run(slot, (out,) if torch.is_tensor(out) else tuple(out),
                                            lambda: baseline_forward(self, a_x, topk_output))
                             _log_once_active(slot)
                             _moe_debug(lambda s=slot, m=x.shape[0]: f"FIRED slot={s} M={m} quant={quant_fmt}")
+                            _receipts.completed(slot)
                             return out
             except Exception as exc:  # noqa: BLE001
                 if registry.strict:
                     raise
+                if selected_slot is not None:
+                    _receipts.fallback(selected_slot, exc)
                 _log_once_fallback(exc)
                 _moe_debug(lambda e=exc: f"FELL BACK after kernel error: {e!r}")
                 # any mismatch with this sglang's internals -> trust the baseline
@@ -670,6 +718,7 @@ def make_allreduce_dispatcher(
     def dispatched(self, input_, *args, **kwargs):
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_all_reduce(self, input_, *args, **kwargs)
+        selected = False
         if _collective_seam_active() and not args and not kwargs:
             try:
                 if (torch.is_tensor(input_) and input_.dim() == 2
@@ -683,6 +732,7 @@ def make_allreduce_dispatcher(
                     # Under CUDA graphs (the scoring config) only run a kernel the miner
                     # DECLARED graph-capturable; else trust the stock reduce in-graph.
                     if impl is not None and not (_in_cuda_graph() and not impl.eligibility.graph_safe):
+                        selected = True
                         # Audited baseline is COLLECTIVE (see arfusion note): rank-seeded
                         # sampling + lockstep dispatch make the extra reduce safe.
                         aud = not _in_cuda_graph() and _audit.sampled()
@@ -693,10 +743,13 @@ def make_allreduce_dispatcher(
                         if aud:
                             _audit.run(slot, (out,), lambda: baseline_all_reduce(self, a_in))
                         _log_collective_active()
+                        _receipts.completed(slot)
                         return out
             except Exception as exc:  # noqa: BLE001
                 if registry.strict:
                     raise
+                if selected:
+                    _receipts.fallback(slot, exc)
                 _log_collective_fallback(exc)
         return baseline_all_reduce(self, input_, *args, **kwargs)
 
@@ -769,6 +822,15 @@ def make_arfusion_dispatcher(
             return baseline_fn(input_tensor, residual, weight, eps, max_token_num,
                                use_oneshot, trigger_completion_at_end, fp32_acc,
                                use_attn_tp_group)
+        # FlashInfer's tuner sweeps M buckets inside one warmup forward. Candidate
+        # participation changes the pipeline being tuned and poisons the tactic table;
+        # this is validator-known call context, not a miner capability decision. Route
+        # to stock BEFORE lookup so intentional invisibility is not misclassified as a
+        # selected-candidate exception fallback.
+        if _flashinfer_tuning():
+            return baseline_fn(input_tensor, residual, weight, eps, max_token_num,
+                               use_oneshot, trigger_completion_at_end, fp32_acc,
+                               use_attn_tp_group)
         if _arfusion_seam_active():
             # DEEP consume first: if this call's input is a moe output whose in-op
             # finalize was skipped (ptr-keyed pend from the export seam), the tensor
@@ -782,6 +844,7 @@ def make_arfusion_dispatcher(
                         exp, input_tensor, residual, weight, eps, max_token_num,
                         use_oneshot, trigger_completion_at_end, fp32_acc,
                         use_attn_tp_group, registry=registry, baseline_fn=baseline_fn)
+            selected = False
             try:
                 # Contiguity guard = STOCK PARITY: the stock function refuses
                 # non-contiguous input/residual/weight (real call sites pass views —
@@ -805,6 +868,7 @@ def make_arfusion_dispatcher(
                     if impl is not None and not (_in_cuda_graph() and not impl.eligibility.graph_safe):
                         group = _arfusion_group(use_attn_tp_group)
                         if group is not None and group.size() > 1:
+                            selected = True
                             # The audited baseline is COLLECTIVE: safe only because the
                             # sampling RNG is rank-identically seeded (audit.py) and all
                             # ranks reach this dispatcher in lockstep; never under capture.
@@ -822,15 +886,27 @@ def make_arfusion_dispatcher(
                                                                trigger_completion_at_end,
                                                                fp32_acc, use_attn_tp_group))
                             _log_arfusion_active()
+                            _receipts.completed(slot)
                             return out_norm, out_residual
             except Exception as exc:  # noqa: BLE001
                 if registry.strict:
                     raise
+                if selected:
+                    _receipts.fallback(slot, exc)
                 _log_arfusion_fallback(exc)
         return baseline_fn(input_tensor, residual, weight, eps, max_token_num, use_oneshot,
                            trigger_completion_at_end, fp32_acc, use_attn_tp_group)
 
     return dispatched
+
+
+def _flashinfer_tuning() -> bool:
+    try:
+        from flashinfer.autotuner import AutoTuner
+
+        return bool(AutoTuner.get().is_tuning_mode)
+    except Exception:  # noqa: BLE001 - absent/older flashinfer means not tuning
+        return False
 
 
 def _arfusion_seam_active() -> bool:
@@ -858,6 +934,7 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
         raise RuntimeError(
             f"optima deep seam: consume T={t} exceeds export T={exp['T']} — "
             "pointer pairing broken, refusing to serve an unfinalized output")
+    selected = False
     try:
         impl = registry.lookup(
             _DEEP_SLOT,
@@ -869,6 +946,7 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
         if impl is not None and not (_in_cuda_graph() and not impl.eligibility.graph_safe):
             group = _arfusion_group(use_attn_tp_group)
             if group is not None and group.size() > 1:
+                selected = True
                 gemm_out, row_map, scales = _moe_export.export_views(
                     exp, input_tensor.device)
                 # Collective audit: rank-identical sampling (audit.py) keeps the
@@ -898,10 +976,13 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
 
                     _audit.run(_DEEP_SLOT, (out_norm, out_residual), _reference)
                 _log_arfusion_active()
+                _receipts.completed(_DEEP_SLOT)
                 return out_norm, out_residual
     except Exception as exc:  # noqa: BLE001
         if registry.strict:
             raise
+        if selected:
+            _receipts.fallback(_DEEP_SLOT, exc)
         _log_arfusion_fallback(exc)
     # Trusted recovery: fp32 finalize from the exported views (head-trimmed to this
     # call's T), then the stock fusion path on the now-FINALIZED tensor. Correct but
@@ -958,6 +1039,11 @@ def make_msa_prefill_dispatcher(
     """
     import os
 
+    # Resolve once at binding installation, not in the serving hot loop.  The
+    # logical shape is still resolved per invocation below, but dtype/layout/stride
+    # policy now comes from the same validator-owned declaration as offline verify.
+    output_slot = get_slot(slot)
+
     def dispatched(q, k_cache, v_cache, sink, req_to_token, slot_ids, cu_seqlens,
                    seq_lens, prefix_lens, max_seqlen_q, max_seqlen_k, block_size_q,
                    block_size_k, topk, init_blocks=1, local_blocks=2, sm_scale=None,
@@ -975,22 +1061,14 @@ def make_msa_prefill_dispatcher(
             return stock()
         if os.environ.get("OPTIMA_MSA_PREFILL_SEAM") != "1" or _in_cuda_graph():
             return stock()
+        selected = False
+        candidate_calls = 0
         try:
             num_kv_heads = k_cache.shape[1]
             if not (disable_index_value and score_type == "max" and sink is None
                     and num_kv_heads == 1 and q.is_cuda and q.dim() == 3):
                 return stock()
             total_q, num_heads, head_dim = q.shape
-            impl = registry.lookup(
-                slot,
-                dtype_name=_dtype_name(q.dtype),
-                last_dim=head_dim,
-                arch=_arch_tag(q.device.index or 0),
-                num_tokens=total_q,
-            )
-            if impl is None:
-                return stock()
-
             batch_size = cu_seqlens.shape[0] - 1
             scale = float(sm_scale if sm_scale is not None else head_dim ** -0.5) * 1.4426950409
 
@@ -1009,7 +1087,50 @@ def make_msa_prefill_dispatcher(
                 seq_b, pre_b = int(sls[b]), int(pls[b])
                 if qe - qs > 0 and seq_b != pre_b + (qe - qs):
                     return stock()
-                meta.append((qs, qe, seq_b, pre_b, int(sids[b])))
+                meta.append((b, qs, qe, seq_b, pre_b, int(sids[b])))
+
+            # Describe and select EVERY call before allocating/writing the shared
+            # score slab.  A mixed batch is atomic at this binding: if even one
+            # request/head lies outside all variants (or matches ambiguously), the
+            # whole batch runs byte-stock and no miner fallback is consulted.
+            architecture = _arch_tag(q.device.index or 0)
+            tp_size, world_size = _runtime_parallel_sizes()
+            planned: dict[tuple[int, int], tuple[object, object]] = {}
+            for b, qs, qe, seq_b, _pre_b, _sid in meta:
+                q_len_b = qe - qs
+                if q_len_b == 0 or seq_b == 0:
+                    continue
+                for h in range(num_heads):
+                    descriptor = msa_prefill_call_descriptor(
+                        dtype=_dtype_name(q.dtype),
+                        architecture=architecture,
+                        head_dim=head_dim,
+                        block_size=int(block_size_k),
+                        q_len=q_len_b,
+                        kv_len=seq_b,
+                        top_k=int(topk),
+                        num_kv_heads=num_kv_heads,
+                        tp_size=tp_size,
+                        world_size=world_size,
+                    )
+                    decision = registry.select(
+                        slot, descriptor, write_fired_receipt=False
+                    )
+                    if not decision.use_candidate:
+                        return stock()
+                    planned[(b, h)] = (descriptor, decision.impl)
+            if not planned:
+                return stock()
+
+            # Commit routing only after the complete batch passed preflight.  This
+            # writes the slot-level "fired" receipt without reintroducing a partial
+            # batch: registry state is immutable after engine initialization, and a
+            # changed/ambiguous decision still fails closed to stock.
+            first_descriptor, first_impl = next(iter(planned.values()))
+            committed = registry.select(slot, first_descriptor)
+            if committed.impl is not first_impl:
+                return stock()
+            selected = True
 
             # In-engine audit (per-rank independent here — the indexer is not a
             # collective): stock runs FIRST on pristine inputs; the comparison target
@@ -1022,10 +1143,23 @@ def make_msa_prefill_dispatcher(
                                 else None)
 
             max_seqblock_k = (max_seqlen_k + block_size_k - 1) // block_size_k
+            probe_contract = output_slot.output_contract({
+                "q": q[:1, 0, :],
+                "index_k": k_cache[:1, 0, :],
+                "prefix_len": 0,
+                "scale": scale,
+                "block_size": block_size_k,
+            })
+            if len(probe_contract.outputs) != 1:
+                raise RuntimeError(f"{slot} must declare exactly one score output")
+            score_tensor_spec = probe_contract.outputs[0]
+            score_dtype = score_tensor_spec.dtype or q.dtype
+            score_device = score_tensor_spec.device or q.device
             score = torch.full((num_heads, total_q, max_seqblock_k), float("-inf"),
-                               dtype=torch.float32, device=q.device)
+                               dtype=score_dtype, device=score_device)
 
-            for qs, qe, seq_b, pre_b, sid in meta:
+            contract_validated = False
+            for b, qs, qe, seq_b, pre_b, sid in meta:
                 if qe - qs == 0 or seq_b == 0:
                     continue
                 nblk_b = (seq_b + block_size_k - 1) // block_size_k
@@ -1034,9 +1168,31 @@ def make_msa_prefill_dispatcher(
                 slots_b = req_to_token[sid, :seq_b].to(torch.long)
                 kg = k_cache[slots_b, 0, :].contiguous()
                 for h in range(num_heads):
+                    _descriptor, impl = planned[(b, h)]
                     q_bh = q[qs:qe, h, :].contiguous()
-                    impl.entry(q_bh, kg, pre_b, scale, block_size_k,
-                               score[h, qs:qe, :nblk_b])
+                    out_view = score[h, qs:qe, :nblk_b]
+                    if not contract_validated:
+                        # One representative slice is enough: every per-head/request
+                        # view comes from this same slab with the same dtype, device,
+                        # layout and row pitch; logical shapes are constructed directly
+                        # from the validated metadata above.  Avoid per-head hot-path tax.
+                        live_inputs = {
+                            "q": q_bh,
+                            "index_k": kg,
+                            "prefix_len": pre_b,
+                            "scale": scale,
+                            "block_size": block_size_k,
+                        }
+                        validate_output_spec(
+                            output_slot.output_contract(live_inputs),
+                            [out_view],
+                            fallback_dtype=q.dtype,
+                            fallback_device=q.device,
+                            inputs=(q_bh, kg),
+                        )
+                        contract_validated = True
+                    impl.entry(q_bh, kg, pre_b, scale, block_size_k, out_view)
+                    candidate_calls += 1
 
             # The validator-owned top-k tail, byte-stock from the target module's own
             # pieces: the SELECTION never comes from miner code.
@@ -1063,10 +1219,14 @@ def make_msa_prefill_dispatcher(
                 else:
                     _audit.record(slot, (topk_idx,), (expected_idx,))
             _log_msa_prefill_active()
+            if candidate_calls:
+                _receipts.completed(slot)
             return None, topk_idx  # o is None in the gated (disable_index_value) mode
         except Exception as exc:  # noqa: BLE001
             if registry.strict:
                 raise
+            if selected:
+                _receipts.fallback(slot, exc)
             _log_msa_prefill_fallback(exc)
             return stock()
 

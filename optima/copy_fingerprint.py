@@ -45,8 +45,14 @@ import hashlib
 import re
 from pathlib import Path
 
-from optima.manifest import (load_manifest, resolve_cuda_sources, resolve_dep_patches,
-                             resolve_source)
+from optima.manifest import (
+    DEFAULT_VARIANT,
+    VALIDATOR_DEVICE_EXECUTION,
+    load_manifest,
+    resolve_cuda_sources,
+    resolve_dep_patches,
+    resolve_source,
+)
 
 
 def _strip_docstrings(tree: ast.AST) -> None:
@@ -269,17 +275,59 @@ def _closure_norm(root: Path, entry: Path, transform) -> str:
 
 
 def _op_identity(op) -> str:
-    """The non-source identity of an op: slot + callable names + override composition.
+    """The non-source identity: slot + callables + override + explicit variant.
 
     ``base_kernel`` / ``override_point`` are INCLUDED — an M1 override submission JIT-composes
     base+override at load, so the same epilogue source composed at a different hole (or into a
     different base) is a genuinely different kernel and must fingerprint distinctly, or honest
     work gets demoted as a self-collision.
     """
-    return "\x00".join([
+    fields = [
         op.slot, op.entry, op.prepare or "", op.setup or "",
         op.base_kernel or "", op.override_point or "",
-    ])
+    ]
+    # Preserve every legacy bundle's historical fingerprint.  Explicitly named
+    # variants are a new manifest surface and their routing identity is part of
+    # the submitted implementation.
+    if op.variant != DEFAULT_VARIANT:
+        fields.append(op.variant)
+    if op.execution_class == VALIDATOR_DEVICE_EXECUTION:
+        fields.extend((op.execution_class, op.device_abi or ""))
+    return "\x00".join(fields)
+
+
+def _device_sources(root: Path, op) -> tuple[Path, ...]:
+    """The validator-device compilation unit plus its declared CUDA closure."""
+    entry = resolve_source(root, op)
+    return tuple(dict.fromkeys((entry, *resolve_cuda_sources(root, op))))
+
+
+def _normalized_device_closure(root: Path, op) -> str:
+    parts: list[str] = []
+    for source in sorted(
+        _device_sources(root, op),
+        key=lambda path: path.resolve().relative_to(root.resolve()).as_posix(),
+    ):
+        rel = source.resolve().relative_to(root.resolve()).as_posix()
+        parts.append(rel + "\x00" + normalized_cuda_source(source.read_text(encoding="utf-8")))
+    return "\x1e".join(parts)
+
+
+def _aggregate_variant_hashes(by_slot: dict[str, list[str]]) -> dict[str, str]:
+    """Collapse variant hashes without letting a later row overwrite an earlier one.
+
+    Singleton output stays byte-for-byte compatible with the pre-variant ledger.
+    Multi-variant output is order-independent so harmless TOML row reordering does
+    not manufacture a new fingerprint.
+    """
+    out: dict[str, str] = {}
+    for slot, hashes in by_slot.items():
+        if len(hashes) == 1:
+            out[slot] = hashes[0]
+            continue
+        blob = "variants-v1\x1e" + "\x1e".join(sorted(hashes))
+        out[slot] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    return out
 
 
 def bundle_slot_fingerprints(bundle_root: str | Path) -> dict[str, str]:
@@ -288,21 +336,28 @@ def bundle_slot_fingerprints(bundle_root: str | Path) -> dict[str, str]:
     An auto-demote key (exact equality; ``bundle_slot_file_fingerprints`` adds the
     relocation-proof containment compare). Keyed by slot so a copier cannot perturb a stolen slot's
     fingerprint by PADDING the bundle with an unrelated extra op (each slot is compared
-    independently). Covers the op identity (``_op_identity``, incl. override composition)
-    and the NORMALIZED source of the whole bundle-local import closure (so a body hidden
-    in an imported module is folded in). ``{}`` if any closure source can't be parsed.
+    independently). Multiple variants of the same semantic slot are aggregated rather
+    than overwriting one another. Covers the op identity (``_op_identity``, incl.
+    override composition) and the NORMALIZED source of the whole bundle-local import
+    closure (so a body hidden in an imported module is folded in). ``{}`` if any
+    closure source can't be parsed.
     """
     root = Path(bundle_root)
     manifest = load_manifest(root)
-    out: dict[str, str] = {}
+    variant_hashes: dict[str, list[str]] = {}
     try:
         for op in manifest.ops:
-            closure = _closure_norm(root, resolve_source(root, op), normalized_source)
+            if op.execution_class == VALIDATOR_DEVICE_EXECUTION:
+                closure = _normalized_device_closure(root, op)
+            else:
+                closure = _closure_norm(root, resolve_source(root, op), normalized_source)
             blob = _op_identity(op) + "\x1e" + closure
-            out[op.slot] = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+            variant_hashes.setdefault(op.slot, []).append(
+                hashlib.sha256(blob.encode("utf-8")).hexdigest()
+            )
     except SyntaxError:
         return {}
-    return out
+    return _aggregate_variant_hashes(variant_hashes)
 
 
 # Normalized-source length below which a closure file is boilerplate (an empty
@@ -334,10 +389,12 @@ def bundle_slot_file_fingerprints(bundle_root: str | Path) -> dict[str, list[str
     closes the "ship a stolen binary/.cu behind a trivially different .py shim" gap: a
     declared cuda_source used to be invisible to copy_fingerprint's import-closure walk
     entirely (it isn't Python, isn't imported, and previously wasn't even scanned).
+    Every variant's file set is unioned under its semantic slot, so a later clean
+    variant cannot overwrite an earlier copied implementation.
     """
     root = Path(bundle_root)
     manifest = load_manifest(root)
-    out: dict[str, list[str]] = {}
+    out: dict[str, set[str]] = {}
     # Declared dep patches are BUNDLE-level (they modify the engine's dependency tree
     # for every slot the bundle claims), so their fingerprints fold into EVERY slot's
     # file set: a stolen deep-seam patch re-shipped behind a different kernel shim is
@@ -356,41 +413,54 @@ def bundle_slot_file_fingerprints(bundle_root: str | Path) -> dict[str, list[str
         for op in manifest.ops:
             entry = resolve_source(root, op)
             entry_key = entry.resolve()
-            fps: set[str] = set(patch_fps)
-            for f in _closure_files(root, entry):
-                try:
-                    norm = normalized_source(f.read_text(encoding="utf-8"))
-                except (SyntaxError, OSError, UnicodeDecodeError):
-                    if f.resolve() == entry_key:
-                        raise
-                    continue
-                if len(norm) >= _SUBSTANTIAL_NORM_LEN:
-                    fps.add(hashlib.sha256(norm.encode("utf-8")).hexdigest())
-            for cs in resolve_cuda_sources(root, op):
+            fps = out.setdefault(op.slot, set(patch_fps))
+            if op.execution_class != VALIDATOR_DEVICE_EXECUTION:
+                for f in _closure_files(root, entry):
+                    try:
+                        norm = normalized_source(f.read_text(encoding="utf-8"))
+                    except (SyntaxError, OSError, UnicodeDecodeError):
+                        if f.resolve() == entry_key:
+                            raise
+                        continue
+                    if len(norm) >= _SUBSTANTIAL_NORM_LEN:
+                        fps.add(hashlib.sha256(norm.encode("utf-8")).hexdigest())
+                cuda_sources = resolve_cuda_sources(root, op)
+            else:
+                cuda_sources = _device_sources(root, op)
+            for cs in cuda_sources:
                 try:
                     raw = cs.read_bytes()
                 except OSError:
                     continue
                 fps.add(hashlib.sha256(raw).hexdigest())
                 fps.add(cuda_source_fingerprint(raw.decode("utf-8", errors="replace")))
-            out[op.slot] = sorted(fps)
     except SyntaxError:
         return {}
-    return out
+    return {slot: sorted(fps) for slot, fps in out.items()}
 
 
 def bundle_slot_structural_fingerprints(bundle_root: str | Path) -> dict[str, str]:
     """Advisory per-slot structural (rename/constant-tweak) fingerprint over the closure."""
     root = Path(bundle_root)
     manifest = load_manifest(root)
-    out: dict[str, str] = {}
+    variant_hashes: dict[str, list[str]] = {}
     try:
         for op in manifest.ops:
-            closure = _closure_norm(root, resolve_source(root, op), structural_source)
-            out[op.slot] = hashlib.sha256((op.slot + "\x1e" + closure).encode("utf-8")).hexdigest()
+            if op.execution_class == VALIDATOR_DEVICE_EXECUTION:
+                # There is no trusted CUDA AST skeleton yet; use the documented
+                # reformat-invariant CUDA normalization as the advisory signal.
+                closure = _normalized_device_closure(root, op)
+            else:
+                closure = _closure_norm(root, resolve_source(root, op), structural_source)
+            identity = op.slot
+            if op.variant != DEFAULT_VARIANT:
+                identity += "\x00" + op.variant
+            variant_hashes.setdefault(op.slot, []).append(
+                hashlib.sha256((identity + "\x1e" + closure).encode("utf-8")).hexdigest()
+            )
     except SyntaxError:
         return {}
-    return out
+    return _aggregate_variant_hashes(variant_hashes)
 
 
 def _fold(slot_map: dict[str, str]) -> str:

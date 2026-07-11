@@ -53,6 +53,18 @@ def test_legitimate_code_not_flagged(src):
     assert scan_source(src).ok, f"false positive on: {src!r}"
 
 
+def test_validator_evidence_imports_and_os_file_io_are_rejected():
+    assert not scan_source("from optima import audit").ok
+    assert not scan_source("import optima.receipts").ok
+    assert not scan_source("import sys").ok
+    assert not scan_source("import os\nos.open('/tmp/f', 0)").ok
+    assert not scan_source("import os\nos.write(1, b'forged')").ok
+
+
+def test_environment_only_feature_flag_remains_allowed():
+    assert scan_source("import os\nFLAG = os.getenv('KERNEL_VARIANT', '0')").ok
+
+
 def test_all_example_kernels_still_scan_clean():
     # No false positives on the shipped bundles after hardening.
     for kernel in EXAMPLES.glob("*/kernels/*.py"):

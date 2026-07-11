@@ -10,6 +10,7 @@ l.json
 .claude/
 .cursor/
 .opencode/
+/.pass
 
 # Private working log — candid history, live pod access, strategy. NOT for GitHub.
 WORKLOG.md

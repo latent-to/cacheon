@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from optima.eval.prompts import (
     derive_seed,
+    sample_prompt_batches,
     sample_prompts,
     sample_prompts_for_block,
 )
@@ -37,3 +38,23 @@ def test_version_reshuffles_at_same_block():
 def test_for_block_matches_manual_seed():
     bh = "0x99"
     assert sample_prompts_for_block(bh, 5) == sample_prompts(5, derive_seed(bh))
+
+
+def test_short_prompts_remain_unique_above_corpus_size():
+    prompts = sample_prompts(256, 9)
+    assert len(prompts) == len(set(prompts)) == 256
+    assert all(prompt.startswith("[case ") for prompt in prompts)
+
+
+def test_warmup_and_timed_batches_never_repeat_concrete_prompts():
+    batches = sample_prompt_batches(6, 64, 123)
+    flattened = [prompt for batch in batches for prompt in batch]
+    assert len(flattened) == len(set(flattened))
+    assert batches == sample_prompt_batches(6, 64, 123)
+    assert batches != sample_prompt_batches(6, 64, 124)
+
+
+def test_long_batches_are_prefix_disjoint_across_iterations():
+    batches = sample_prompt_batches(4, 3, 77, input_len=256)
+    headers = [prompt.split("]", 1)[0] for batch in batches for prompt in batch]
+    assert len(headers) == len(set(headers))

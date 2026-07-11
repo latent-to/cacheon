@@ -27,6 +27,7 @@ dev = ["pytest>=7"]
 
 [project.scripts]
 optima = "optima.cli:main"
+optima-model-provision = "optima.model_provision:main"
 
 # Installs the Optima seam inside every SGLang process (incl. the spawned
 # scheduler that runs the model). This is validator-owned code. Select it with
@@ -37,3 +38,10 @@ optima = "optima.integrations.sglang_plugin:register"
 [tool.setuptools.packages.find]
 include = ["optima*"]
 exclude = ["sglang*", "examples*", "tests*"]
+
+# Setuptools discovers Python runtime-overlay assets as namespace packages.  The
+# validator-owned CuTe base source is non-Python and must be included explicitly;
+# source-release verification refuses a wheel which silently drops it.
+[tool.setuptools.package-data]
+"optima.eval" = ["seccomp_moby_v0_2_1.json"]
+"optima_kernels.collective" = ["*.cu"]

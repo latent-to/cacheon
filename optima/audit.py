@@ -1,4 +1,4 @@
-"""In-engine slot audit — direct fidelity, replacing rollout-KL as the primary gate.
+"""In-engine slot audit — high-signal diagnostics inside the candidate engine.
 
 WHY (2026-07-07, measured): rollout-KL between two engine launches measures
 BATCHING, not fidelity, on non-deterministic stacks — a bit-stock candidate
@@ -14,16 +14,15 @@ assumptions; uniform across dispatchers (every seam holds the baseline in
 closure).
 
 Gate stack this belongs to: verify (fp32 ground truth, jittered/temporal/burst)
--> THIS audit (untimed quality launch) -> paired benchmark no-regression ->
-rollout-KL demoted to advisory (still computed and reported; it is calibration
-data, not a razor).
+-> THIS audit (untimed diagnostic) -> trusted-controller one-shot paired quality
+gate. The audit is no longer crown authority by itself:
+miner Python/native code shares this scheduler process and can mutate process-local
+state or write files.  Its value is catching honest implementation bugs with precise
+slot attribution; the controller-observed secret workload is the hostile-code gate.
 
 Threat notes:
-  * Sampling comes from a process-private RNG seeded with os.urandom — a kernel
-    cannot know ex-ante whether a call is audited, so behaving only on audited
-    calls is not a strategy. (In-process miner code could in principle
-    introspect this module; full isolation is the existing roadmap item that
-    closes that class for good.)
+  * Sampling catches accidental/data-dependent drift, but is not secret from hostile
+    in-process code.  Never use audit receipts as the sole qualification signal.
   * Audits run only when OPTIMA_SLOT_AUDIT is set (the eval's untimed quality
     launch sets it); timed launches never carry the overhead.
   * A failed comparison NEVER crashes the engine: violations are counted and
@@ -98,12 +97,15 @@ def _slot_stats(slot: str) -> dict:
     return _stats.setdefault(slot, {
         "slot": slot, "n": 0, "violations": 0, "baseline_refused": 0,
         "compare_errors": 0, "worst_frac": 1.0, "min_ratio": None, "mode": None,
+        **receipts.identity(),
     })
 
 
 def _receipt(slot: str) -> None:
     # receipts.write names the file kind.tag.pid.json -> same-call-site writes
     # OVERWRITE, giving a rolling per-rank summary; the driver reads the final state.
+    # Refresh identity because seam activation can precede process-group init.
+    _stats[slot].update(receipts.identity())
     receipts.write("audit", _stats[slot], tag=slot)
 
 
@@ -216,12 +218,27 @@ def run(slot: str, actual: Sequence[torch.Tensor], baseline_thunk) -> None:
         logger.exception("optima.audit: baseline call failed (slot=%s)", slot)
 
 
-def gate(audit_receipts: list[dict], *, min_calls: int) -> tuple[bool, str]:
+def gate(
+    audit_receipts: list[dict], *, min_calls: int,
+    expected_slots: Optional[Sequence[str]] = None,
+    member_receipts: Sequence[dict] = (),
+    min_calls_per_member: Optional[int] = None,
+) -> tuple[bool, str]:
     """Eval-driver side: fold per-rank rolling receipts into a verdict.
 
     Pass iff every audited slot has zero violations and the total audited-call
     count is at least ``min_calls`` (insufficient coverage is a FAIL — an
-    unaudited kernel is unproven, not innocent)."""
+    unaudited kernel is unproven, not innocent).
+
+    The legacy call (only ``min_calls``) retains aggregate behavior.  Qualification
+    should also pass ``expected_slots`` plus the launch's ``active`` receipts: that
+    switches on the stronger slot-by-member matrix and prevents one busy slot/rank
+    from covering a bundle member that was never audited.  ``min_calls_per_member``
+    defaults to ``min_calls`` in detailed mode.
+
+    Receipts are execution/accounting evidence, not hostile trust proof; an isolated
+    candidate plus an external referee remains mandatory for untrusted miners.
+    """
     if not audit_receipts:
         return False, f"no audit receipts (need >= {min_calls} audited calls)"
     total_n = sum(r.get("n", 0) for r in audit_receipts)
@@ -234,6 +251,22 @@ def gate(audit_receipts: list[dict], *, min_calls: int) -> tuple[bool, str]:
         return False, desc
     if total_err > 0:
         return False, desc + " (audit could not compare; refusing to pass unproven)"
+    if expected_slots is not None:
+        per_member = min_calls if min_calls_per_member is None else min_calls_per_member
+        detail = receipts.coverage_matrix(
+            audit_receipts, expected_slots=expected_slots,
+            member_receipts=member_receipts, count_field="n", min_count=per_member)
+        desc += (f"; audit coverage {detail['covered_pairs']}/{detail['expected_pairs']} "
+                 f"slot/member pairs (basis={detail['basis']}, "
+                 f"need>={per_member} each)")
+        if detail["missing"]:
+            desc += f"; missing={detail['missing']}"
+        if detail["short"]:
+            desc += f"; short={detail['short']}"
+        if detail["malformed"]:
+            desc += f"; malformed={len(detail['malformed'])}"
+        if not detail["ok"]:
+            return False, desc
     if total_n < min_calls:
         return False, desc + f" (insufficient coverage; need >= {min_calls})"
     return True, desc

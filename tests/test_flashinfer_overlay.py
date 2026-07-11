@@ -9,6 +9,7 @@ getter, write the `overlay` receipt — and no-op in every non-candidate situati
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import sys
 import textwrap
@@ -86,23 +87,37 @@ def _mk_candidate(tmp_path, monkeypatch, *, materialize=True):
     monkeypatch.setenv("OPTIMA_DEP_OVERLAY_CACHE", str(cache))
     monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(bundle))
     monkeypatch.setenv("OPTIMA_ACTIVE", "1")
+    # Exact pinned-dependency source tree used by the content-addressed overlay
+    # identity. The runtime modules above are stubs and intentionally have no spec.
+    site = tmp_path / "site-packages"
+    stock_subtree = site / "flashinfer" / "data" / "csrc"
+    (stock_subtree / "fused_moe").mkdir(parents=True)
+    (stock_subtree / "fused_moe" / "x.cu").write_text("old\n")
+    import optima.dep_policy as dep_policy
+
+    monkeypatch.setattr(dep_policy, "dependency_site_root", lambda policy: site)
+    identity = dep_policy.overlay_identity(bundle, "flashinfer", site_root=site)
+    ov = dep_policy.overlay_base(identity.cache_key) / "flashinfer"
     if materialize:
-        ov = cache / "overlay-rt-test" / "flashinfer"
         subtree = ov / "flashinfer" / "data" / "csrc"
         (subtree / "fused_moe").mkdir(parents=True)
         (subtree / "fused_moe" / "x.cu").write_text("new\n")
         (ov / "overlay.json").write_text(json.dumps({
-            "bundle_id": "overlay-rt-test", "target": "flashinfer",
-            "patch_shas": {"patches/p.patch": "x"},
+            "cache_key": identity.cache_key,
+            "identity": identity.payload,
+            "patch_shas": {"patches/p.patch": hashlib.sha256(
+                (bundle / "patches" / "p.patch").read_bytes()).hexdigest()},
             "subtree": "flashinfer/data/csrc",
+            "force_jit_modules": ["fused_moe_103"],
             "files": {"flashinfer/data/csrc/fused_moe/x.cu": "y"},
+            "overlay_subtree_sha256": dep_policy.tree_hash(subtree),
         }))
-    return bundle
+    return bundle, ov
 
 
 def test_installs_rebind_forcejit_receipt(tmp_path, monkeypatch, fresh):
     env_mod, core_mod, fm_mod = _stub_flashinfer(monkeypatch)
-    _mk_candidate(tmp_path, monkeypatch)
+    _, ov = _mk_candidate(tmp_path, monkeypatch)
     rdir = tmp_path / "receipts"
     monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(rdir))
     # simulate a getter that was already consulted (must be cache_clear'd)
@@ -110,8 +125,7 @@ def test_installs_rebind_forcejit_receipt(tmp_path, monkeypatch, fresh):
 
     fov.install(registry=None)
 
-    assert env_mod.FLASHINFER_CSRC_DIR == (tmp_path / "overlay_cache" / "overlay-rt-test"
-                                           / "flashinfer" / "flashinfer" / "data" / "csrc")
+    assert env_mod.FLASHINFER_CSRC_DIR == ov / "flashinfer" / "data" / "csrc"
     assert core_mod.JitSpec("fused_moe_103").is_aot is False  # forced JIT
     assert core_mod.JitSpec("norm").is_aot is True  # everything else untouched
     assert fm_mod.get_cutlass_fused_moe_module.cache_info().currsize == 0  # cleared
@@ -127,13 +141,12 @@ def test_noop_when_not_active(tmp_path, monkeypatch, fresh):
     assert env_mod.FLASHINFER_CSRC_DIR == Path("/stock/csrc")
 
 
-def test_noop_without_materialized_overlay(tmp_path, monkeypatch, fresh, caplog):
+def test_missing_materialized_overlay_fails_closed(tmp_path, monkeypatch, fresh):
     env_mod, _, _ = _stub_flashinfer(monkeypatch)
     _mk_candidate(tmp_path, monkeypatch, materialize=False)
-    with caplog.at_level("WARNING", logger="optima.flashinfer_overlay"):
+    with pytest.raises(RuntimeError, match="stamp missing"):
         fov.install(registry=None)
     assert env_mod.FLASHINFER_CSRC_DIR == Path("/stock/csrc")
-    assert any("no overlay is materialized" in r.message for r in caplog.records)
 
 
 def test_install_is_idempotent(tmp_path, monkeypatch, fresh):

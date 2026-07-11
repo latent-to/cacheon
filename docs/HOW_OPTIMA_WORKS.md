@@ -14,6 +14,16 @@ This is the long-form explainer. By the end you should understand, with no gaps:
 It points at every file. Paths are relative to this doc (`docs/`), so
 `../optima/slots.py` is the harness module `optima/slots.py`.
 
+> **Referee-hardening branch override (2026-07-11):** the slot path is no longer the
+> only product surface. A miner may also submit a bounded, inspectable whole-serving
+> SGLang source overlay for registered engine/model-execution regions. The trusted host
+> clocks fresh B/C/B' containers and grades hidden paired outputs; it does not load miner
+> native code. Qualification v11/host-attestation v4 retain and independently regrade the
+> result. This branch is still being reduced and split, so use
+> [`REFEREE_HARDENING_AUDIT.md`](REFEREE_HARDENING_AUDIT.md) and the top status section of
+> [`STATE_OF_RECORD.md`](STATE_OF_RECORD.md) for current mechanics. Older threat-model and
+> pipeline prose below describes the pre-hardening main branch where it conflicts.
+
 > **Current scope:** ten slots across three kinds (op / block / collective) — run
 > `python -m optima.cli slots` for the live catalog; `STATE_OF_RECORD.md` carries
 > the slot list of record. Fidelity is gated by the **in-engine audit** or per-token **KL**
@@ -453,15 +463,25 @@ the one op. So any delta is attributable to the kernel.
 
 `_measure` does, per launch:
 
-- a **warmup** generate (so JIT/compile/graph costs aren't timed),
+- several disjoint **warmup** generates; every one is fidelity-graded,
+- treats the initial `warmup_iters - conditioning_iters` rounds as free setup so
+  legitimate request-lazy JIT/graph work is not mistaken for serving throughput,
+- continuously charges the final `conditioning_iters` warmups, every following
+  gap/readiness check, and the first timed completion,
 - then **K timed** generates (`timed_iters`, default 3),
-- records tokens/sec each time, reports the **median** + min/max/stdev (`spread`).
+- records tokens/sec each time and retains the **median** + min/max/stdev (`spread`).
+
+The load-bearing point is `min(timed median, conditioning floor)`. The conditioning
+floor is the minimum of every charged warmup rate, the first timed rate, and the
+aggregate continuous-tail rate. Thus a charged warmup or gap cannot be discarded as
+cooldown, while initial setup warmups remain free for throughput but not for fidelity.
 
 Tokens come from sglang's trusted `meta_info["completion_tokens"]`, not from the
 miner. Timing uses `time.perf_counter` in the driver around `engine.generate`,
 with `torch.cuda.synchronize()` on both sides so async work is fully counted.
-Median-of-K is why a single noisy sample can't swing the score (we measured ~7%
-run-to-run sd on a tiny model — exactly why the margin gate exists).
+Median-of-K keeps a single noisy timed sample from swinging the score; the charged
+conditioning floor separately prevents warmup/cooldown work from being hidden (we
+measured ~7% run-to-run sd on a tiny model — exactly why the margin gate exists).
 
 ### 6.3 Fidelity (KL)
 
