@@ -13,13 +13,16 @@ execution form does not create or deny a contribution identity.
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from functools import lru_cache
 from itertools import combinations
 from typing import Iterable, Mapping
 
 from optima.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
+from optima.stack_identity import canonical_digest
 
 
 class TargetKind(str, Enum):
@@ -69,6 +72,9 @@ _FLASHINFER_FEATURES = frozenset(
 )
 
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CATALOG_SCHEMA_VERSION = 1
+_CATALOG_POLICY_VERSION = "target-catalog.v1"
 
 
 class TargetCatalogError(ValueError):
@@ -77,6 +83,232 @@ class TargetCatalogError(ValueError):
 
 class TargetResolutionError(ValueError):
     """A bundle cannot resolve to the registered target it requested."""
+
+
+def _decimal_string(value: object, *, field: str) -> str:
+    """Return the frozen, float-free decimal representation used in identity JSON."""
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise TargetCatalogError(f"{field} must be a finite decimal") from exc
+    if not number.is_finite():
+        raise TargetCatalogError(f"{field} must be a finite decimal")
+    if number == 0:
+        return "0"
+    text = format(number, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+@dataclass(frozen=True)
+class CorrectnessContractRef:
+    mode: str = "allclose"
+    top_k: int = 0
+    min_ratio: str = "1"
+    min_cosine: str = "0"
+    max_rel_norm_err: str = "0"
+    min_overlap: str = "0"
+
+    def __post_init__(self) -> None:
+        if self.mode not in {
+            "allclose",
+            "matched_ratio",
+            "cosine",
+            "topk_overlap",
+        }:
+            raise TargetCatalogError("correctness mode is not registered")
+        if isinstance(self.top_k, bool) or not isinstance(self.top_k, int) or self.top_k < 0:
+            raise TargetCatalogError("correctness top_k must be a non-negative integer")
+        for name in (
+            "min_ratio",
+            "min_cosine",
+            "max_rel_norm_err",
+            "min_overlap",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _decimal_string(getattr(self, name), field=f"correctness {name}"),
+            )
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "top_k": self.top_k,
+            "min_ratio": self.min_ratio,
+            "min_cosine": self.min_cosine,
+            "max_rel_norm_err": self.max_rel_norm_err,
+            "min_overlap": self.min_overlap,
+        }
+
+
+@dataclass(frozen=True)
+class ToleranceContractRef:
+    dtype: str
+    atol: str
+    rtol: str
+
+    def __post_init__(self) -> None:
+        _simple_id(self.dtype, field="tolerance dtype")
+        object.__setattr__(
+            self, "atol", _decimal_string(self.atol, field=f"{self.dtype} atol")
+        )
+        object.__setattr__(
+            self, "rtol", _decimal_string(self.rtol, field=f"{self.dtype} rtol")
+        )
+
+    def snapshot(self) -> dict[str, str]:
+        return {"dtype": self.dtype, "atol": self.atol, "rtol": self.rtol}
+
+
+@dataclass(frozen=True)
+class TargetContractRef:
+    """Stdlib-only, versioned projection of one live ``SlotSpec`` contract."""
+
+    schema_version: int
+    slot_id: str
+    kind: str
+    entry: str
+    prepare: str | None
+    graph_dynamic_inputs: tuple[str, ...]
+    input_abi_id: str
+    output_abi_id: str
+    reference_id: str
+    verification_profile_id: str
+    binding_family_id: str
+    correctness: CorrectnessContractRef
+    tolerances: tuple[ToleranceContractRef, ...]
+    kl_threshold: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise TargetCatalogError("target contract schema_version must be 1")
+        _simple_id(self.slot_id, field="contract slot_id")
+        if self.kind not in {"op", "block", "collective"}:
+            raise TargetCatalogError(f"contract {self.slot_id!r} has invalid kind")
+        if not isinstance(self.entry, str) or not self.entry.isidentifier():
+            raise TargetCatalogError(f"contract {self.slot_id!r} entry is invalid")
+        if self.prepare is not None and (
+            not isinstance(self.prepare, str) or not self.prepare.isidentifier()
+        ):
+            raise TargetCatalogError(f"contract {self.slot_id!r} prepare is invalid")
+        if isinstance(self.graph_dynamic_inputs, str):
+            raise TargetCatalogError("graph_dynamic_inputs must be an ordered sequence")
+        dynamic = tuple(self.graph_dynamic_inputs)
+        if len(set(dynamic)) != len(dynamic) or not all(
+            isinstance(name, str) and name.isidentifier() for name in dynamic
+        ):
+            raise TargetCatalogError(
+                f"contract {self.slot_id!r} graph_dynamic_inputs are invalid"
+            )
+        object.__setattr__(self, "graph_dynamic_inputs", dynamic)
+        for name in (
+            "input_abi_id",
+            "output_abi_id",
+            "reference_id",
+            "verification_profile_id",
+            "binding_family_id",
+        ):
+            _simple_id(getattr(self, name), field=f"contract {name}")
+        if not isinstance(self.correctness, CorrectnessContractRef):
+            raise TargetCatalogError("contract correctness must be CorrectnessContractRef")
+        tolerances = tuple(self.tolerances)
+        if not all(isinstance(row, ToleranceContractRef) for row in tolerances):
+            raise TargetCatalogError("contract tolerances must be ToleranceContractRef rows")
+        dtype_names = tuple(row.dtype for row in tolerances)
+        if dtype_names != tuple(sorted(dtype_names)) or len(set(dtype_names)) != len(
+            dtype_names
+        ):
+            raise TargetCatalogError("contract tolerances must be dtype-sorted and unique")
+        object.__setattr__(self, "tolerances", tolerances)
+        if self.kl_threshold is not None:
+            object.__setattr__(
+                self,
+                "kl_threshold",
+                _decimal_string(self.kl_threshold, field="contract kl_threshold"),
+            )
+
+    def snapshot(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "schema_version": self.schema_version,
+            "slot_id": self.slot_id,
+            "kind": self.kind,
+            "entry": self.entry,
+            "prepare": self.prepare,
+            "graph_dynamic_inputs": list(self.graph_dynamic_inputs),
+            "input_abi_id": self.input_abi_id,
+            "output_abi_id": self.output_abi_id,
+            "reference_id": self.reference_id,
+            "verification_profile_id": self.verification_profile_id,
+            "binding_family_id": self.binding_family_id,
+            "correctness": self.correctness.snapshot(),
+            "tolerances": [row.snapshot() for row in self.tolerances],
+            "kl_threshold": self.kl_threshold,
+        }
+        return result
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest("optima.target-contract", self.snapshot())
+
+
+@dataclass(frozen=True)
+class CompositionRule:
+    schema_version: int
+    rule_id: str
+    target_ids: tuple[str, ...]
+    precedence: tuple[str, ...]
+    mode: str
+    binding_family_id: str
+    binding_contract_digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not int or self.schema_version != 1:
+            raise TargetCatalogError("composition rule schema_version must be 1")
+        if isinstance(self.target_ids, (str, bytes)) or isinstance(
+            self.precedence, (str, bytes)
+        ):
+            raise TargetCatalogError(
+                "composition rule targets and precedence must be sequences"
+            )
+        _simple_id(self.rule_id, field="composition rule_id")
+        targets = tuple(self.target_ids)
+        precedence = tuple(self.precedence)
+        if len(targets) != 2 or targets != tuple(sorted(targets)):
+            raise TargetCatalogError(
+                "composition rule target_ids must contain exactly two sorted IDs"
+            )
+        if len(set(targets)) != len(targets):
+            raise TargetCatalogError("composition rule target_ids contain duplicates")
+        for target_id in targets:
+            _simple_id(target_id, field="composition target_id")
+        if len(precedence) != len(targets) or set(precedence) != set(targets):
+            raise TargetCatalogError(
+                "composition rule precedence must order the exact target_ids"
+            )
+        if self.mode != "first_applicable":
+            raise TargetCatalogError("first_applicable is the only composition mode")
+        _simple_id(self.binding_family_id, field="composition binding_family_id")
+        if not isinstance(self.binding_contract_digest, str) or not _SHA256_RE.fullmatch(
+            self.binding_contract_digest
+        ):
+            raise TargetCatalogError(
+                "composition binding_contract_digest must be lowercase SHA-256"
+            )
+        object.__setattr__(self, "target_ids", targets)
+        object.__setattr__(self, "precedence", precedence)
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "rule_id": self.rule_id,
+            "target_ids": list(self.target_ids),
+            "precedence": list(self.precedence),
+            "mode": self.mode,
+            "binding_family_id": self.binding_family_id,
+            "binding_contract_digest": self.binding_contract_digest,
+        }
 
 
 @dataclass(frozen=True)
@@ -95,7 +327,10 @@ class TargetSpec:
     members: tuple[str, ...]
     displaces: frozenset[str] = frozenset()
     compatible_with: frozenset[str] = frozenset()
+    requires: frozenset[str] = frozenset()
     allowed_features: frozenset[str] = frozenset({FEATURE_ENTRY})
+    contract_ref: TargetContractRef | None = None
+    atomic_semantics_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.members, str):
@@ -104,6 +339,8 @@ class TargetSpec:
             object.__setattr__(self, "displaces", frozenset(self.displaces))
         if not isinstance(self.compatible_with, str):
             object.__setattr__(self, "compatible_with", frozenset(self.compatible_with))
+        if not isinstance(self.requires, str):
+            object.__setattr__(self, "requires", frozenset(self.requires))
         if not isinstance(self.allowed_features, str):
             object.__setattr__(self, "allowed_features", frozenset(self.allowed_features))
 
@@ -188,7 +425,12 @@ def manifest_declared_features(manifest: Manifest) -> frozenset[str]:
 class TargetCatalog:
     """Immutable, deterministic validator policy for registered targets."""
 
-    def __init__(self, specs: Iterable[TargetSpec]):
+    def __init__(
+        self,
+        specs: Iterable[TargetSpec],
+        *,
+        composition_rules: Iterable[CompositionRule] = (),
+    ):
         if isinstance(specs, (str, bytes, Mapping)):
             raise TargetCatalogError("target specs must be an iterable of TargetSpec")
         rows = tuple(specs)
@@ -226,9 +468,31 @@ class TargetCatalog:
                     raise TargetCatalogError(
                         f"slot target {target_id!r} must have itself as its sole member"
                     )
+                if not isinstance(spec.contract_ref, TargetContractRef):
+                    raise TargetCatalogError(
+                        f"slot target {target_id!r} requires a TargetContractRef"
+                    )
+                if spec.contract_ref.slot_id != target_id:
+                    raise TargetCatalogError(
+                        f"slot target {target_id!r} contract_ref names "
+                        f"{spec.contract_ref.slot_id!r}"
+                    )
+                if spec.atomic_semantics_id is not None:
+                    raise TargetCatalogError(
+                        f"slot target {target_id!r} may not declare atomic_semantics_id"
+                    )
             elif len(members) < 2:
                 raise TargetCatalogError(
                     f"atomic target {target_id!r} requires at least two members"
+                )
+            else:
+                if spec.contract_ref is not None:
+                    raise TargetCatalogError(
+                        f"atomic target {target_id!r} may not declare contract_ref"
+                    )
+                _simple_id(
+                    spec.atomic_semantics_id,
+                    field=f"atomic target {target_id!r} atomic_semantics_id",
                 )
 
             member_set = frozenset(members)
@@ -264,6 +528,7 @@ class TargetCatalog:
             for relation_name, related in (
                 ("displaces", spec.displaces),
                 ("compatible_with", spec.compatible_with),
+                ("requires", spec.requires),
             ):
                 if isinstance(related, str):
                     raise TargetCatalogError(
@@ -284,6 +549,12 @@ class TargetCatalog:
                 raise TargetCatalogError(
                     f"target {spec.target_id!r} both displaces and is compatible with "
                     f"{tuple(sorted(overlap))!r}"
+                )
+            required_displaced = spec.requires & spec.displaces
+            if required_displaced:
+                raise TargetCatalogError(
+                    f"target {spec.target_id!r} requires targets it displaces "
+                    f"{tuple(sorted(required_displaced))!r}"
                 )
 
             if spec.kind is TargetKind.ATOMIC:
@@ -326,10 +597,14 @@ class TargetCatalog:
             shared = set(left.members) & set(right.members)
             if not shared:
                 continue
+            if right.target_id in left.compatible_with:
+                raise TargetCatalogError(
+                    f"targets {left.target_id!r} and {right.target_id!r} share members "
+                    "but first_applicable rules do not define member ownership"
+                )
             related = (
                 right.target_id in left.displaces
                 or left.target_id in right.displaces
-                or right.target_id in left.compatible_with
             )
             if not related:
                 raise TargetCatalogError(
@@ -338,33 +613,198 @@ class TargetCatalog:
                     "displacement or compatible overlap"
                 )
 
-        self._validate_displacement_dag(by_id)
+        self._validate_relation_dag(by_id, relation="displaces")
+        self._validate_relation_dag(by_id, relation="requires")
+
+        def relation_closure(target_id: str, relation: str) -> set[str]:
+            found: set[str] = set()
+            pending = list(getattr(by_id[target_id], relation))
+            while pending:
+                current = pending.pop()
+                if current in found:
+                    continue
+                found.add(current)
+                pending.extend(getattr(by_id[current], relation))
+            return found
+
+        displacement_closures = {
+            target_id: frozenset(relation_closure(target_id, "displaces"))
+            for target_id in by_id
+        }
+        requirement_closures = {
+            target_id: frozenset(relation_closure(target_id, "requires"))
+            for target_id in by_id
+        }
+        for spec in by_id.values():
+            displaced = displacement_closures[spec.target_id]
+            required = requirement_closures[spec.target_id]
+            contradiction = displaced & required
+            if contradiction:
+                raise TargetCatalogError(
+                    f"target {spec.target_id!r} requires its displacement closure "
+                    f"{tuple(sorted(contradiction))!r}"
+                )
+            reverse = {
+                dependency
+                for dependency in required
+                if spec.target_id in displacement_closures[dependency]
+            }
+            if reverse:
+                raise TargetCatalogError(
+                    f"target {spec.target_id!r} requires targets that displace it "
+                    f"{tuple(sorted(reverse))!r}"
+                )
+
+        rules = tuple(composition_rules)
+        if not all(isinstance(rule, CompositionRule) for rule in rules):
+            raise TargetCatalogError("composition_rules must contain CompositionRule rows")
+        by_rule_id: dict[str, CompositionRule] = {}
+        by_rule_targets: dict[tuple[str, ...], CompositionRule] = {}
+        for rule in rules:
+            if rule.rule_id in by_rule_id:
+                raise TargetCatalogError(f"duplicate composition rule ID {rule.rule_id!r}")
+            if rule.target_ids in by_rule_targets:
+                raise TargetCatalogError(
+                    f"duplicate composition rule targets {rule.target_ids!r}"
+                )
+            unknown = set(rule.target_ids) - set(by_id)
+            if unknown:
+                raise TargetCatalogError(
+                    f"composition rule {rule.rule_id!r} names unknown targets "
+                    f"{tuple(sorted(unknown))!r}"
+                )
+            for left, right in combinations(rule.target_ids, 2):
+                if (
+                    right not in by_id[left].compatible_with
+                    or left not in by_id[right].compatible_with
+                ):
+                    raise TargetCatalogError(
+                        f"composition rule {rule.rule_id!r} targets must be "
+                        "explicitly compatible"
+                    )
+            for target_id in rule.target_ids:
+                contract = by_id[target_id].contract_ref
+                if (
+                    contract is not None
+                    and contract.binding_family_id != rule.binding_family_id
+                ):
+                    raise TargetCatalogError(
+                        f"composition rule {rule.rule_id!r} binding family does not "
+                        f"match target {target_id!r}"
+                    )
+            by_rule_id[rule.rule_id] = rule
+            by_rule_targets[rule.target_ids] = rule
+
+        for left, right in combinations(sorted(by_id), 2):
+            compatible = right in by_id[left].compatible_with
+            rule = by_rule_targets.get((left, right))
+            if compatible and rule is None:
+                raise TargetCatalogError(
+                    f"compatible targets {(left, right)!r} require a CompositionRule"
+                )
+            if not compatible and rule is not None:
+                raise TargetCatalogError(
+                    f"composition rule {rule.rule_id!r} has no compatible target pair"
+                )
+
+        outgoing: dict[str, set[str]] = {target_id: set() for target_id in by_id}
+        incoming: dict[str, int] = {target_id: 0 for target_id in by_id}
+        for rule in rules:
+            for earlier, later in zip(rule.precedence, rule.precedence[1:]):
+                if later not in outgoing[earlier]:
+                    outgoing[earlier].add(later)
+                    incoming[later] += 1
+        ready = [target_id for target_id, count in incoming.items() if count == 0]
+        visited = 0
+        while ready:
+            current = ready.pop()
+            visited += 1
+            for child in outgoing[current]:
+                incoming[child] -= 1
+                if incoming[child] == 0:
+                    ready.append(child)
+        if visited != len(by_id):
+            raise TargetCatalogError("composition precedence contains a cycle")
+
         ordered = dict(sorted(by_id.items()))
         self._by_id = ordered
         self._by_members = {
             members: ordered[target_id] for members, target_id in member_sets.items()
         }
+        self._composition_by_id = dict(sorted(by_rule_id.items()))
+        self._composition_by_targets = by_rule_targets
+        self._displacement_closures = displacement_closures
+        self._requirement_closures = requirement_closures
+        self._target_snapshots = {
+            target_id: self._build_target_snapshot(spec)
+            for target_id, spec in ordered.items()
+        }
+        self._snapshot = {
+            "schema_version": _CATALOG_SCHEMA_VERSION,
+            "policy_version": _CATALOG_POLICY_VERSION,
+            "targets": [self._target_snapshots[target_id] for target_id in ordered],
+            "composition_rules": [
+                self._composition_by_id[rule_id].snapshot()
+                for rule_id in self._composition_by_id
+            ],
+        }
+        self._digest = canonical_digest("optima.target-catalog", self._snapshot)
 
     @staticmethod
-    def _validate_displacement_dag(by_id: Mapping[str, TargetSpec]) -> None:
+    def _validate_relation_dag(
+        by_id: Mapping[str, TargetSpec], *, relation: str
+    ) -> None:
         visiting: set[str] = set()
         visited: set[str] = set()
 
         def visit(target_id: str) -> None:
             if target_id in visiting:
                 raise TargetCatalogError(
-                    f"target displacement graph contains a cycle at {target_id!r}"
+                    f"target {relation} graph contains a cycle at {target_id!r}"
                 )
             if target_id in visited:
                 return
             visiting.add(target_id)
-            for child in by_id[target_id].displaces:
+            for child in getattr(by_id[target_id], relation):
                 visit(child)
             visiting.remove(target_id)
             visited.add(target_id)
 
         for target_id in by_id:
             visit(target_id)
+
+    def _build_target_snapshot(self, spec: TargetSpec) -> dict[str, object]:
+        common: dict[str, object] = {
+            "target_id": spec.target_id,
+            "kind": spec.kind.value,
+            "members": list(spec.members),
+            "displaces": sorted(spec.displaces),
+            "compatible_with": sorted(spec.compatible_with),
+            "requires": sorted(spec.requires),
+            "allowed_features": sorted(spec.allowed_features),
+        }
+        if spec.kind is TargetKind.SLOT:
+            assert spec.contract_ref is not None
+            common["contract_ref"] = spec.contract_ref.snapshot()
+            common["contract_digest"] = spec.contract_ref.digest
+        else:
+            assert spec.atomic_semantics_id is not None
+            member_digests = [
+                self._by_id[member].contract_ref.digest  # type: ignore[union-attr]
+                for member in spec.members
+            ]
+            contract_payload = {
+                "schema_version": 1,
+                "target_id": spec.target_id,
+                "atomic_semantics_id": spec.atomic_semantics_id,
+                "member_contract_digests": member_digests,
+            }
+            common["atomic_semantics_id"] = spec.atomic_semantics_id
+            common["member_contract_digests"] = member_digests
+            common["contract_digest"] = canonical_digest(
+                "optima.atomic-target-contract", contract_payload
+            )
+        return common
 
     def require(self, target_id: str) -> TargetSpec:
         if not isinstance(target_id, str):
@@ -376,17 +816,73 @@ class TargetCatalog:
                 f"unknown contribution target {target_id!r}; target IDs are validator-owned"
             ) from None
 
+    def snapshot(self) -> dict[str, object]:
+        """Return a fresh canonical JSON projection of complete catalog policy."""
+        return deepcopy(self._snapshot)
+
+    @property
+    def digest(self) -> str:
+        return self._digest
+
+    def target_spec_digest(self, target_id: str) -> str:
+        self.require(target_id)
+        return canonical_digest(
+            "optima.target-spec", self._target_snapshots[target_id]
+        )
+
+    def contract_digest(self, target_id: str) -> str:
+        self.require(target_id)
+        value = self._target_snapshots[target_id]["contract_digest"]
+        assert isinstance(value, str)
+        return value
+
     def displacement_closure(self, target_id: str) -> frozenset[str]:
-        root = self.require(target_id)
-        found: set[str] = set()
-        stack = list(root.displaces)
-        while stack:
-            current = stack.pop()
-            if current in found:
+        self.require(target_id)
+        return self._displacement_closures[target_id]
+
+    def requires_closure(self, target_id: str) -> frozenset[str]:
+        self.require(target_id)
+        return self._requirement_closures[target_id]
+
+    def composition_rule(self, left: str, right: str) -> CompositionRule:
+        targets = tuple(sorted((left, right)))
+        if len(set(targets)) != 2:
+            raise TargetResolutionError("composition requires two distinct target IDs")
+        self.require(left)
+        self.require(right)
+        try:
+            return self._composition_by_targets[targets]
+        except KeyError:
+            raise TargetResolutionError(
+                f"targets {targets!r} have no registered composition rule"
+            ) from None
+
+    def ordered_active_targets(self, target_ids: Iterable[str]) -> tuple[str, ...]:
+        """Order active rows with validator-owned composition precedence."""
+        active = self.validate_active_targets(target_ids)
+        active_set = set(active)
+        outgoing: dict[str, set[str]] = {target_id: set() for target_id in active}
+        incoming: dict[str, int] = {target_id: 0 for target_id in active}
+        for rule in self._composition_by_id.values():
+            if not set(rule.target_ids) <= active_set:
                 continue
-            found.add(current)
-            stack.extend(self._by_id[current].displaces)
-        return frozenset(found)
+            for earlier, later in zip(rule.precedence, rule.precedence[1:]):
+                if later not in outgoing[earlier]:
+                    outgoing[earlier].add(later)
+                    incoming[later] += 1
+        ready = sorted(target_id for target_id, count in incoming.items() if count == 0)
+        ordered: list[str] = []
+        while ready:
+            current = ready.pop(0)
+            ordered.append(current)
+            for child in sorted(outgoing[current]):
+                incoming[child] -= 1
+                if incoming[child] == 0:
+                    ready.append(child)
+                    ready.sort()
+        if len(ordered) != len(active):
+            raise TargetResolutionError("active composition precedence contains a cycle")
+        return tuple(ordered)
 
     def validate_active_targets(self, target_ids: Iterable[str]) -> tuple[str, ...]:
         if isinstance(target_ids, (str, bytes)):
@@ -405,6 +901,12 @@ class TargetCatalog:
                 raise TargetResolutionError(
                     f"active target {target_id!r} displaces "
                     f"{tuple(sorted(conflicts))!r}"
+                )
+            missing = self.requires_closure(target_id) - active_set
+            if missing:
+                raise TargetResolutionError(
+                    f"active target {target_id!r} requires active contributions "
+                    f"{tuple(sorted(missing))!r}; stock does not satisfy requires"
                 )
         return tuple(sorted(active))
 
@@ -522,6 +1024,26 @@ class TargetCatalog:
                     "complete feature evidence selects rebuild:apply_dep_patch "
                     "without a declared dependency patch"
                 )
+            has_cuda = FEATURE_CUDA_SOURCES in features
+            builds_cuda = FEATURE_REBUILD_BUILD_CUDA_EXT in features
+            if has_cuda and not builds_cuda:
+                raise TargetResolutionError(
+                    "complete feature evidence has CUDA sources without "
+                    "rebuild:build_cuda_ext"
+                )
+            if builds_cuda and not has_cuda:
+                raise TargetResolutionError(
+                    "complete feature evidence selects rebuild:build_cuda_ext "
+                    "without declared CUDA sources"
+                )
+            if builds_cuda and not any(
+                path.endswith(".cu")
+                for op in manifest.ops
+                for path in op.cuda_sources
+            ):
+                raise TargetResolutionError(
+                    "rebuild:build_cuda_ext requires a declared .cu compilation unit"
+                )
         return ResolvedTarget(
             target_id=spec.target_id,
             kind=spec.kind,
@@ -567,6 +1089,200 @@ MOE_EPILOGUE_MEMBERS = (
     "collective.moe_finalize_ar_rmsnorm",
 )
 
+_STANDARD_TOLERANCES = (
+    ToleranceContractRef("bfloat16", "0.02", "0.02"),
+    ToleranceContractRef("float16", "0.01", "0.01"),
+    ToleranceContractRef("float32", "0.00001", "0.00001"),
+)
+
+
+def _contract_ref(
+    slot_id: str,
+    *,
+    kind: str,
+    entry: str,
+    prepare: str | None,
+    graph_dynamic_inputs: tuple[str, ...],
+    input_abi_id: str,
+    output_abi_id: str,
+    reference_id: str,
+    verification_profile_id: str,
+    binding_family_id: str,
+    correctness: CorrectnessContractRef,
+    kl_threshold: str | None = None,
+) -> TargetContractRef:
+    return TargetContractRef(
+        schema_version=1,
+        slot_id=slot_id,
+        kind=kind,
+        entry=entry,
+        prepare=prepare,
+        graph_dynamic_inputs=graph_dynamic_inputs,
+        input_abi_id=input_abi_id,
+        output_abi_id=output_abi_id,
+        reference_id=reference_id,
+        verification_profile_id=verification_profile_id,
+        binding_family_id=binding_family_id,
+        correctness=correctness,
+        tolerances=_STANDARD_TOLERANCES,
+        kl_threshold=kl_threshold,
+    )
+
+
+_SINGLETON_CONTRACTS = {
+    "activation.silu_and_mul": _contract_ref(
+        "activation.silu_and_mul",
+        kind="op",
+        entry="silu_and_mul",
+        prepare=None,
+        graph_dynamic_inputs=("x",),
+        input_abi_id="activation.silu_and_mul.input.v1",
+        output_abi_id="activation.silu_and_mul.output.v1",
+        reference_id="activation.silu_and_mul.reference.v1",
+        verification_profile_id="activation.silu_and_mul.verify.v1",
+        binding_family_id="sglang.activation.silu_and_mul.v1",
+        correctness=CorrectnessContractRef(),
+    ),
+    "attention.decode": _contract_ref(
+        "attention.decode",
+        kind="block",
+        entry="attention_decode",
+        prepare=None,
+        graph_dynamic_inputs=("q", "k", "v", "seq_lens"),
+        input_abi_id="attention.decode.input.v1",
+        output_abi_id="attention.decode.output.v1",
+        reference_id="attention.decode.reference.v1",
+        verification_profile_id="attention.decode.verify.v1",
+        binding_family_id="sglang.attention.decode.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+        kl_threshold="0.03",
+    ),
+    "attention.msa_block_score": _contract_ref(
+        "attention.msa_block_score",
+        kind="block",
+        entry="msa_block_score",
+        prepare=None,
+        graph_dynamic_inputs=("q", "index_k", "seq_lens"),
+        input_abi_id="attention.msa_block_score.input.v1",
+        output_abi_id="attention.msa_block_score.output.v1",
+        reference_id="attention.msa_block_score.reference.v1",
+        verification_profile_id="attention.msa_block_score.verify.v1",
+        binding_family_id="sglang.attention.msa.decode-score.v1",
+        correctness=CorrectnessContractRef(
+            mode="topk_overlap", top_k=8, min_overlap="0.875"
+        ),
+        kl_threshold="0.03",
+    ),
+    "attention.msa_prefill_block_score": _contract_ref(
+        "attention.msa_prefill_block_score",
+        kind="block",
+        entry="msa_prefill_block_score",
+        prepare=None,
+        graph_dynamic_inputs=("q", "index_k"),
+        input_abi_id="attention.msa_prefill_block_score.input.v1",
+        output_abi_id="attention.msa_prefill_block_score.output.v1",
+        reference_id="attention.msa_prefill_block_score.reference.v1",
+        verification_profile_id="attention.msa_prefill_block_score.verify.v1",
+        binding_family_id="sglang.attention.msa.prefill-score.v1",
+        correctness=CorrectnessContractRef(
+            mode="topk_overlap", top_k=8, min_overlap="0.9"
+        ),
+        kl_threshold="0.03",
+    ),
+    "attention.sdpa": _contract_ref(
+        "attention.sdpa",
+        kind="block",
+        entry="attention",
+        prepare=None,
+        graph_dynamic_inputs=("q", "k", "v"),
+        input_abi_id="attention.sdpa.input.v1",
+        output_abi_id="attention.sdpa.output.v1",
+        reference_id="attention.sdpa.reference.v1",
+        verification_profile_id="attention.sdpa.verify.v1",
+        binding_family_id="sglang.attention.radix.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+        kl_threshold="0.03",
+    ),
+    "collective.all_reduce": _contract_ref(
+        "collective.all_reduce",
+        kind="collective",
+        entry="all_reduce",
+        prepare=None,
+        graph_dynamic_inputs=("x",),
+        input_abi_id="collective.all_reduce.input.v1",
+        output_abi_id="collective.all_reduce.output.v1",
+        reference_id="collective.all_reduce.reference.v1",
+        verification_profile_id="collective.all_reduce.verify.v1",
+        binding_family_id="sglang.collective.all_reduce.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+    ),
+    "collective.ar_residual_rmsnorm": _contract_ref(
+        "collective.ar_residual_rmsnorm",
+        kind="collective",
+        entry="ar_residual_rmsnorm",
+        prepare=None,
+        graph_dynamic_inputs=("x", "residual"),
+        input_abi_id="collective.ar_residual_rmsnorm.input.v1",
+        output_abi_id="collective.ar_residual_rmsnorm.output.v1",
+        reference_id="collective.ar_residual_rmsnorm.reference.v1",
+        verification_profile_id="collective.ar_residual_rmsnorm.verify.v1",
+        binding_family_id="sglang.collective.ar-fusion.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+    ),
+    "collective.moe_finalize_ar_rmsnorm": _contract_ref(
+        "collective.moe_finalize_ar_rmsnorm",
+        kind="collective",
+        entry="moe_finalize_ar_rmsnorm",
+        prepare=None,
+        graph_dynamic_inputs=("gemm_out", "row_map", "scales", "residual"),
+        input_abi_id="collective.moe_finalize_ar_rmsnorm.input.v1",
+        output_abi_id="collective.moe_finalize_ar_rmsnorm.output.v1",
+        reference_id="collective.moe_finalize_ar_rmsnorm.reference.v1",
+        verification_profile_id="collective.moe_finalize_ar_rmsnorm.verify.v1",
+        binding_family_id="sglang.collective.moe-finalize.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
+    ),
+    "moe.fused_experts": _contract_ref(
+        "moe.fused_experts",
+        kind="block",
+        entry="fused_experts",
+        prepare="prepare",
+        graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
+        input_abi_id="moe.fused_experts.input.v1",
+        output_abi_id="moe.fused_experts.output.v1",
+        reference_id="moe.fused_experts.reference.v1",
+        verification_profile_id="moe.fused_experts.verify.v1",
+        binding_family_id="sglang.moe.fused-experts.dispatch.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.97"),
+    ),
+    "moe.fused_experts_reduce": _contract_ref(
+        "moe.fused_experts_reduce",
+        kind="collective",
+        entry="fused_experts_reduce",
+        prepare="prepare",
+        graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
+        input_abi_id="moe.fused_experts_reduce.input.v1",
+        output_abi_id="moe.fused_experts_reduce.output.v1",
+        reference_id="moe.fused_experts_reduce.reference.v1",
+        verification_profile_id="moe.fused_experts_reduce.verify.v1",
+        binding_family_id="sglang.moe.fused-experts.dispatch.v1",
+        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.97"),
+    ),
+    "norm.rmsnorm": _contract_ref(
+        "norm.rmsnorm",
+        kind="op",
+        entry="rmsnorm",
+        prepare=None,
+        graph_dynamic_inputs=("x",),
+        input_abi_id="norm.rmsnorm.input.v1",
+        output_abi_id="norm.rmsnorm.output.v1",
+        reference_id="norm.rmsnorm.reference.v1",
+        verification_profile_id="norm.rmsnorm.verify.v1",
+        binding_family_id="sglang.norm.rmsnorm.v1",
+        correctness=CorrectnessContractRef(),
+    ),
+}
+
 
 @lru_cache(maxsize=1)
 def default_target_catalog() -> TargetCatalog:
@@ -584,6 +1300,7 @@ def default_target_catalog() -> TargetCatalog:
                 members=(target_id,),
                 compatible_with=compatible,
                 allowed_features=features,
+                contract_ref=_SINGLETON_CONTRACTS[target_id],
             )
         )
     specs.append(
@@ -595,9 +1312,27 @@ def default_target_catalog() -> TargetCatalog:
             allowed_features=frozenset(
                 _STANDARD_COMPONENT_FEATURES | _FLASHINFER_FEATURES
             ),
+            atomic_semantics_id="collective.moe_epilogue.v1.atomic-semantics.v1",
         )
     )
-    return TargetCatalog(specs)
+    moe_rule = CompositionRule(
+        schema_version=1,
+        rule_id="sglang.moe.reduce-first.v1",
+        target_ids=tuple(sorted(moe_pair)),
+        precedence=("moe.fused_experts_reduce", "moe.fused_experts"),
+        mode="first_applicable",
+        binding_family_id="sglang.moe.fused-experts.dispatch.v1",
+        binding_contract_digest=canonical_digest(
+            "optima.binding-contract",
+            {
+                "schema_version": 1,
+                "binding_family_id": "sglang.moe.fused-experts.dispatch.v1",
+                "precedence": ["moe.fused_experts_reduce", "moe.fused_experts"],
+                "mode": "first_applicable",
+            },
+        ),
+    )
+    return TargetCatalog(specs, composition_rules=(moe_rule,))
 
 
 def resolve_target(
