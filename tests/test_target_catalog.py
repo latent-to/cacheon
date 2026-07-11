@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import difflib
+import os
+import subprocess
+import sys
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -15,6 +19,8 @@ from optima.manifest import (
     load_manifest,
 )
 from optima.target_catalog import (
+    CompositionRule,
+    CorrectnessContractRef,
     FEATURE_CUDA_SOURCES,
     FEATURE_DEP_PATCH_FLASHINFER,
     FEATURE_ENTRY,
@@ -29,14 +35,17 @@ from optima.target_catalog import (
     ResolvedTarget,
     TargetCatalog,
     TargetCatalogError,
+    TargetContractRef,
     TargetKind,
     TargetResolutionError,
     TargetSpec,
+    ToleranceContractRef,
     default_target_catalog,
     manifest_declared_features,
     resolve_intake_target,
     resolve_target,
 )
+from optima.stack_identity import canonical_digest
 
 
 SILU = "activation.silu_and_mul"
@@ -121,6 +130,7 @@ def _slot_spec(
     *,
     displaces: frozenset[str] = frozenset(),
     compatible_with: frozenset[str] = frozenset(),
+    requires: frozenset[str] = frozenset(),
     features: frozenset[str] = frozenset({FEATURE_ENTRY}),
 ) -> TargetSpec:
     return TargetSpec(
@@ -129,7 +139,23 @@ def _slot_spec(
         members=(target_id,),
         displaces=displaces,
         compatible_with=compatible_with,
+        requires=requires,
         allowed_features=features,
+        contract_ref=TargetContractRef(
+            schema_version=1,
+            slot_id=target_id,
+            kind="op",
+            entry="entry",
+            prepare=None,
+            graph_dynamic_inputs=("x",),
+            input_abi_id=f"{target_id}.input.v1",
+            output_abi_id=f"{target_id}.output.v1",
+            reference_id=f"{target_id}.reference.v1",
+            verification_profile_id=f"{target_id}.verify.v1",
+            binding_family_id="test.binding.v1",
+            correctness=CorrectnessContractRef(),
+            tolerances=(ToleranceContractRef("float32", "0.0001", "0.0001"),),
+        ),
     )
 
 
@@ -145,6 +171,22 @@ def _atomic_spec(
         members=members,
         displaces=frozenset(members) if displaces is None else displaces,
         allowed_features=frozenset({FEATURE_ENTRY}),
+        atomic_semantics_id=f"{target_id}.semantics.v1",
+    )
+
+
+def _composition(*target_ids: str, precedence: tuple[str, ...] | None = None):
+    targets = tuple(sorted(target_ids))
+    return CompositionRule(
+        schema_version=1,
+        rule_id="rule." + ".".join(target.removeprefix("slot.") for target in targets),
+        target_ids=targets,
+        precedence=precedence or targets,
+        mode="first_applicable",
+        binding_family_id="test.binding.v1",
+        binding_contract_digest=canonical_digest(
+            "test.binding", {"targets": list(targets)}
+        ),
     )
 
 
@@ -393,6 +435,234 @@ def test_default_catalog_has_exactly_one_singleton_per_live_slot():
         assert catalog.require(target_id).target_id == target_id
 
 
+def _decimal(value: object) -> str:
+    number = Decimal(str(value))
+    if number == 0:
+        return "0"
+    text = format(number, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def test_default_contract_refs_match_every_live_serializable_slot_field():
+    from optima.slots import SLOTS
+
+    catalog = default_target_catalog()
+    for slot_id, slot in sorted(SLOTS.items()):
+        ref = catalog.require(slot_id).contract_ref
+        assert ref is not None
+        assert (ref.slot_id, ref.kind, ref.entry, ref.prepare) == (
+            slot.name,
+            slot.kind,
+            slot.entry,
+            slot.prepare,
+        )
+        assert ref.graph_dynamic_inputs == slot.graph_dynamic_inputs
+        assert ref.correctness.snapshot() == {
+            "mode": slot.correctness.mode,
+            "top_k": slot.correctness.top_k,
+            "min_ratio": _decimal(slot.correctness.min_ratio),
+            "min_cosine": _decimal(slot.correctness.min_cosine),
+            "max_rel_norm_err": _decimal(slot.correctness.max_rel_norm_err),
+            "min_overlap": _decimal(slot.correctness.min_overlap),
+        }
+        assert [row.snapshot() for row in ref.tolerances] == [
+            {
+                "dtype": str(dtype).removeprefix("torch."),
+                "atol": _decimal(tolerance.atol),
+                "rtol": _decimal(tolerance.rtol),
+            }
+            for dtype, tolerance in sorted(
+                slot.tolerances.items(), key=lambda row: str(row[0])
+            )
+        ]
+        assert ref.kl_threshold == (
+            None if slot.kl_threshold is None else _decimal(slot.kl_threshold)
+        )
+        assert all(
+            value.endswith(".v1")
+            for value in (
+                ref.input_abi_id,
+                ref.output_abi_id,
+                ref.reference_id,
+                ref.verification_profile_id,
+                ref.binding_family_id,
+            )
+        )
+
+
+def test_target_catalog_import_is_stdlib_only_and_does_not_import_torch():
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import optima.target_catalog; "
+            "assert 'torch' not in sys.modules",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_catalog_snapshot_and_digests_are_canonical_complete_and_immutable():
+    a, b = _slot_spec("slot.a"), _slot_spec("slot.b")
+    first = TargetCatalog([b, a])
+    second = TargetCatalog([a, b])
+    assert first.snapshot() == second.snapshot()
+    assert first.digest == second.digest
+    assert first.target_spec_digest("slot.a") == second.target_spec_digest("slot.a")
+    assert len(first.digest) == len(first.contract_digest("slot.a")) == 64
+
+    snapshot = first.snapshot()
+    target = snapshot["targets"][0]
+    assert set(target) == {
+        "target_id",
+        "kind",
+        "members",
+        "displaces",
+        "compatible_with",
+        "requires",
+        "allowed_features",
+        "contract_ref",
+        "contract_digest",
+    }
+    target["members"].append("tamper")
+    assert first.snapshot() == second.snapshot()
+
+
+def test_contract_and_target_digest_rotate_on_manual_or_policy_change():
+    original = _slot_spec("slot.a")
+    assert original.contract_ref is not None
+    revised_ref = replace(original.contract_ref, output_abi_id="slot.a.output.v2")
+    revised = replace(original, contract_ref=revised_ref)
+    base = TargetCatalog([original])
+    changed = TargetCatalog([revised])
+    assert base.contract_digest("slot.a") != changed.contract_digest("slot.a")
+    assert base.target_spec_digest("slot.a") != changed.target_spec_digest("slot.a")
+    assert base.digest != changed.digest
+
+    with_feature = TargetCatalog(
+        [replace(original, allowed_features=frozenset({FEATURE_ENTRY, FEATURE_PREPARE}))]
+    )
+    assert base.target_spec_digest("slot.a") != with_feature.target_spec_digest("slot.a")
+
+
+def test_contract_decimal_projection_has_one_canonical_zero_and_no_floats():
+    row = CorrectnessContractRef(
+        min_ratio="1.0000",
+        min_cosine="-0.000",
+        max_rel_norm_err="1e-5",
+        min_overlap=0,
+    ).snapshot()
+    assert row["min_ratio"] == "1"
+    assert row["min_cosine"] == row["min_overlap"] == "0"
+    assert row["max_rel_norm_err"] == "0.00001"
+    assert not any(isinstance(value, float) for value in row.values())
+
+
+def test_requires_means_an_active_contribution_and_is_acyclic():
+    a = _slot_spec("slot.a")
+    b = _slot_spec("slot.b", requires=frozenset({"slot.a"}))
+    catalog = TargetCatalog([b, a])
+    with pytest.raises(TargetResolutionError, match="stock does not satisfy"):
+        catalog.validate_active_targets(("slot.b",))
+    assert catalog.validate_active_targets(("slot.b", "slot.a")) == (
+        "slot.a",
+        "slot.b",
+    )
+    assert catalog.requires_closure("slot.b") == frozenset({"slot.a"})
+
+    with pytest.raises(TargetCatalogError, match="requires graph.*cycle"):
+        TargetCatalog(
+            [
+                _slot_spec("slot.a", requires=frozenset({"slot.b"})),
+                _slot_spec("slot.b", requires=frozenset({"slot.a"})),
+            ]
+        )
+    with pytest.raises(TargetCatalogError, match="requires targets it displaces"):
+        TargetCatalog(
+            [
+                _slot_spec(
+                    "slot.a",
+                    requires=frozenset({"slot.b"}),
+                    displaces=frozenset({"slot.b"}),
+                ),
+                _slot_spec("slot.b"),
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "specs, message",
+    [
+        (
+            [
+                _slot_spec(
+                    "slot.a",
+                    requires=frozenset({"slot.b"}),
+                    displaces=frozenset({"slot.c"}),
+                ),
+                _slot_spec("slot.b", requires=frozenset({"slot.c"})),
+                _slot_spec("slot.c"),
+            ],
+            "requires its displacement closure",
+        ),
+        (
+            [
+                _slot_spec("slot.a", requires=frozenset({"slot.b"})),
+                _slot_spec("slot.b", displaces=frozenset({"slot.a"})),
+            ],
+            "requires targets that displace it",
+        ),
+    ],
+)
+def test_transitive_dependency_displacement_contradictions_reject(specs, message):
+    with pytest.raises(TargetCatalogError, match=message):
+        TargetCatalog(specs)
+
+
+def test_compatible_targets_require_explicit_rule_and_use_its_precedence():
+    a = _slot_spec("slot.a", compatible_with=frozenset({"slot.b"}))
+    b = _slot_spec("slot.b", compatible_with=frozenset({"slot.a"}))
+    with pytest.raises(TargetCatalogError, match="require a CompositionRule"):
+        TargetCatalog([a, b])
+
+    rule = _composition("slot.a", "slot.b", precedence=("slot.b", "slot.a"))
+    catalog = TargetCatalog([a, b], composition_rules=(rule,))
+    assert catalog.composition_rule("slot.a", "slot.b") == rule
+    assert catalog.ordered_active_targets(("slot.a", "slot.b")) == (
+        "slot.b",
+        "slot.a",
+    )
+
+
+def test_composition_rules_are_pairwise_until_multiway_semantics_exist():
+    with pytest.raises(TargetCatalogError, match="exactly two"):
+        CompositionRule(
+            schema_version=1,
+            rule_id="test.three-way.v1",
+            target_ids=("slot.a", "slot.b", "slot.c"),
+            precedence=("slot.a", "slot.b", "slot.c"),
+            mode="first_applicable",
+            binding_family_id="test.binding.v1",
+            binding_contract_digest=canonical_digest(
+                "test.binding", {"targets": ["slot.a", "slot.b", "slot.c"]}
+            ),
+        )
+
+
+def test_default_moe_composition_is_reduce_first_and_digest_bound():
+    catalog = default_target_catalog()
+    rule = catalog.composition_rule("moe.fused_experts", "moe.fused_experts_reduce")
+    assert rule.mode == "first_applicable"
+    assert rule.precedence == ("moe.fused_experts_reduce", "moe.fused_experts")
+    assert len(rule.binding_contract_digest) == 64
+
+
 @pytest.mark.parametrize(
     "specs, message",
     [
@@ -462,7 +732,7 @@ def test_catalog_rejects_duplicate_atomic_member_sets():
         TargetCatalog(specs)
 
 
-def test_partial_atomic_overlap_requires_an_explicit_relationship():
+def test_partial_atomic_overlap_rejects_without_member_ownership_semantics():
     singletons = [_slot_spec(f"slot.{name}") for name in ("a", "b", "c")]
     atomic_ab = _atomic_spec("atomic.ab", members=("slot.a", "slot.b"))
     atomic_bc = _atomic_spec("atomic.bc", members=("slot.b", "slot.c"))
@@ -476,11 +746,41 @@ def test_partial_atomic_overlap_requires_an_explicit_relationship():
     atomic_bc = replace(
         atomic_bc, compatible_with=frozenset({"atomic.ab"})
     )
-    catalog = TargetCatalog([*singletons, atomic_ab, atomic_bc])
-    assert catalog.validate_active_targets(("atomic.ab", "atomic.bc")) == (
-        "atomic.ab",
-        "atomic.bc",
+    with pytest.raises(TargetCatalogError, match="do not define member ownership"):
+        TargetCatalog(
+            [*singletons, atomic_ab, atomic_bc],
+            composition_rules=(_composition("atomic.ab", "atomic.bc"),),
+        )
+
+
+def test_catalog_rejects_global_composition_precedence_cycles():
+    specs = [
+        _slot_spec(
+            f"slot.{name}",
+            compatible_with=frozenset(
+                f"slot.{other}" for other in "abc" if other != name
+            ),
+        )
+        for name in "abc"
+    ]
+    rules = (
+        _composition("slot.a", "slot.b", precedence=("slot.a", "slot.b")),
+        _composition("slot.b", "slot.c", precedence=("slot.b", "slot.c")),
+        _composition("slot.a", "slot.c", precedence=("slot.c", "slot.a")),
     )
+    with pytest.raises(TargetCatalogError, match="precedence contains a cycle"):
+        TargetCatalog(specs, composition_rules=rules)
+
+
+def test_schema_versions_are_type_exact_and_rule_sequences_are_not_strings():
+    contract = default_target_catalog().require(SILU).contract_ref
+    assert contract is not None
+    with pytest.raises(TargetCatalogError, match="schema_version"):
+        replace(contract, schema_version=True)
+    with pytest.raises(TargetCatalogError, match="schema_version"):
+        replace(_composition("slot.a", "slot.b"), schema_version=True)
+    with pytest.raises(TargetCatalogError, match="must be sequences"):
+        replace(_composition("slot.a", "slot.b"), target_ids="ab")
 
 
 def test_compatible_overlap_must_be_symmetric_and_not_displaced():
@@ -715,6 +1015,43 @@ def test_complete_feature_evidence_binds_patch_declaration_to_applier(tmp_path):
     with pytest.raises(TargetResolutionError, match="without a declared"):
         resolve_intake_target(
             no_patch, observed_features=(FEATURE_REBUILD_APPLY_DEP_PATCH,)
+        )
+
+
+def test_complete_feature_evidence_pairs_cuda_units_with_builder(tmp_path):
+    cuda = load_manifest(
+        _bundle(
+            tmp_path / "cuda",
+            rows=({"slot": SILU, "cuda_sources": True},),
+            competition=_competition(SILU, "slot"),
+        )
+    )
+    with pytest.raises(TargetResolutionError, match="CUDA sources without"):
+        resolve_intake_target(cuda, observed_features=())
+
+    plain = load_manifest(_bundle(tmp_path / "plain"))
+    with pytest.raises(TargetResolutionError, match="without declared CUDA"):
+        resolve_intake_target(
+            plain, observed_features=(FEATURE_REBUILD_BUILD_CUDA_EXT,)
+        )
+
+    header_only = load_manifest(
+        _bundle(
+            tmp_path / "header",
+            rows=(
+                {
+                    "slot": SILU,
+                    "cuda_sources": True,
+                    "cuda_path": "kernels/header.cuh",
+                },
+            ),
+            competition=_competition(SILU, "slot"),
+        )
+    )
+    with pytest.raises(TargetResolutionError, match="compilation unit"):
+        resolve_intake_target(
+            header_only,
+            observed_features=(FEATURE_REBUILD_BUILD_CUDA_EXT,),
         )
 
 
