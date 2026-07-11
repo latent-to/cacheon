@@ -326,6 +326,7 @@ def _declared_metadata(bundle: str, op) -> dict:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     from optima.registry import (
+        Eligibility,
         KernelImpl,
         KernelRegistry,
         eligibility_from_metadata,
@@ -342,6 +343,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     # Per-row verification alone cannot detect two individually valid domains that
     # overlap and would make live routing ambiguous.
     metadata_by_row: dict[int, dict] = {}
+    eligibility_by_row: dict[int, Eligibility] = {}
     domain_registry = KernelRegistry()
 
     def _domain_only_entry(*_args, **_kwargs):
@@ -369,6 +371,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print(f"  [FAIL] {label}: invalid or ambiguous variant domain: {exc}")
             return 2
         metadata_by_row[row_index] = metadata
+        eligibility_by_row[row_index] = eligibility
 
     import torch
     # Mirror the ACTUAL device resolution, including verify_collective's fallback:
@@ -378,7 +381,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
                          for op in m.ops)
     cuda_ok = torch.cuda.is_available() and (
         not has_collective or torch.cuda.device_count() >= ws)
-    if (args.device or ("cuda" if cuda_ok else "cpu")) == "cpu":
+    effective_device = args.device or ("cuda" if cuda_ok else "cpu")
+    if effective_device == "cpu":
         print("[note] some or all of this verify runs on CPU: it checks op-correctness "
               "only — it does not predict GPU throughput, CUDA-graph capture, or the "
               "fidelity gates (see docs/GPU_SETUP.md).")
@@ -419,14 +423,22 @@ def cmd_verify(args: argparse.Namespace) -> int:
             ws = getattr(args, "world_size", None) or 2
             result = verify_collective(slot, str(src), op.entry, prepare_name=op.prepare,
                                        world_size=ws, device=args.device, seed=args.seed,
+                                       dtype_name=args.dtype,
                                        jitter_seed=args.seed,  # anti shape-branch, like per-op
                                        model_key=model_key,
                                        # rebuild plan (declared cuda_sources) must apply
                                        # in the ranks that load the kernel
-                                       bundle_path=str(args.bundle))
+                                       bundle_path=str(args.bundle),
+                                       graph_safe=bool(graph_safe),
+                                       eligibility=eligibility_by_row[row_index],
+                                       tp_size=getattr(args, "tp_size", None))
             print(f"  [variant {op.variant!r}]")
             print(format_verify(result))
-            if not result.passed:
+            if result.context_inapplicable:
+                context_inapplicable_rows += 1
+            elif not result.passed or (
+                effective_device == "cuda" and not result.fully_verified
+            ):
                 rc = 2
             continue
 

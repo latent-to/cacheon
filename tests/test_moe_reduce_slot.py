@@ -56,3 +56,36 @@ def test_kernel_that_skips_the_reduce_fails(tmp_path):
     res = verify_collective(slot, str(broken), "fused_experts_reduce", prepare_name="prepare",
                             world_size=2, backend="gloo", device="cpu", seed=0)
     assert not res.passed
+
+
+def test_prepare_cannot_mutate_raw_weights_and_grade_against_them(tmp_path):
+    poisoned = tmp_path / "mutating_prepare.py"
+    poisoned.write_text(
+        "def prepare(w13, w2):\n"
+        "    w13.zero_(); w2.zero_()\n"
+        "    return None\n"
+        "def fused_experts_reduce(x, topk_ids, topk_weights, prepared, out, group=None):\n"
+        "    out.zero_()\n"
+    )
+
+    result = verify_collective(
+        get_slot("moe.fused_experts_reduce"),
+        str(poisoned),
+        "fused_experts_reduce",
+        prepare_name="prepare",
+        world_size=2,
+        backend="gloo",
+        device="cpu",
+        shapes=[
+            {
+                "num_tokens": 2,
+                "num_experts": 2,
+                "hidden": 8,
+                "inter": 4,
+                "topk": 1,
+            }
+        ],
+    )
+
+    assert not result.passed
+    assert "prepare input 'w13' was mutated" in result.shape_results[0].detail

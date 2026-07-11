@@ -312,3 +312,71 @@ def test_cmd_verify_rejects_overlapping_variants_before_candidate_invocation(
     assert "variant='right'" in output
     assert "overlapping capability domains" in output
     assert "'left' and 'right'" in output
+
+
+def _write_collective_bundle(tmp_path, *, graph_safe=True):
+    (tmp_path / "kernels").mkdir()
+    (tmp_path / "metadata").mkdir()
+    (tmp_path / "kernels" / "all_reduce.py").write_text(
+        "def all_reduce(x, out, group=None):\n    raise AssertionError('mocked')\n"
+    )
+    metadata = {"graph_safe": graph_safe, "architectures": ["sm120"]}
+    (tmp_path / "metadata" / "all_reduce.json").write_text(json.dumps(metadata))
+    (tmp_path / "manifest.toml").write_text(
+        'bundle_id = "cli-collective-domain"\n'
+        'abi_version = "optima-op-abi-v0"\n\n'
+        '[[ops]]\n'
+        'slot = "collective.all_reduce"\n'
+        'source = "kernels/all_reduce.py"\n'
+        'entry = "all_reduce"\n'
+        'dtypes = ["bfloat16"]\n'
+        'architectures = ["sm120"]\n'
+        'metadata = "metadata/all_reduce.json"\n'
+    )
+
+
+@pytest.mark.parametrize("graph_verified, expected_rc", [(True, 0), (False, 2)])
+def test_cmd_verify_forwards_collective_graph_and_capability_policy(
+    tmp_path, monkeypatch, graph_verified, expected_rc
+):
+    _write_collective_bundle(tmp_path)
+    calls = []
+    monkeypatch.setattr(cli, "_recursive_scan_ok", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        cli, "scan_path", lambda path: SimpleNamespace(ok=True, violations=[])
+    )
+
+    import optima.verify_collective as collective
+
+    def fake_verify(*args, **kwargs):
+        calls.append((args, kwargs))
+        return VerifyResult(
+            slot=args[0].name,
+            dtype="bfloat16",
+            passed=True,
+            shape_results=[],
+            graph_required=True,
+            graph_verified=graph_verified,
+        )
+
+    monkeypatch.setattr(collective, "verify_collective", fake_verify)
+    args = argparse.Namespace(
+        bundle=str(tmp_path),
+        dtype="bfloat16",
+        device="cuda",
+        seed=11,
+        model=None,
+        world_size=4,
+        tp_size=4,
+    )
+
+    assert cli.cmd_verify(args) == expected_rc
+    assert len(calls) == 1
+    _, kwargs = calls[0]
+    assert kwargs["graph_safe"] is True
+    assert kwargs["dtype_name"] == "bfloat16"
+    assert kwargs["world_size"] == 4
+    assert kwargs["tp_size"] == 4
+    assert kwargs["eligibility"].graph_safe is True
+    assert kwargs["eligibility"].architectures == frozenset({"sm120"})
+    assert kwargs["eligibility"].dtypes == frozenset({"bfloat16"})

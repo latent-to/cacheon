@@ -98,6 +98,19 @@ def test_domain_missing_fields_and_mismatches_fail_closed():
     ]
 
 
+def test_collective_expert_and_export_counts_are_public_capabilities():
+    domain = capability_domain_from_metadata(
+        {"capabilities": {"num_experts": 256, "exp_tokens": {"max": 512}}}
+    )
+
+    assert domain.match(
+        CallDescriptor(num_experts=256, exp_tokens=128)
+    ).accepted
+    assert not domain.match(
+        CallDescriptor(num_experts=128, exp_tokens=1024)
+    ).accepted
+
+
 @pytest.mark.parametrize(
     "capabilities, message",
     [

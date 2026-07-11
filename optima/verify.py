@@ -307,13 +307,100 @@ class _GraphCheck:
     replays: int
 
 
+@dataclass(frozen=True)
+class _GraphReplayCase:
+    """One fresh logical request copied into already-captured tensor addresses."""
+
+    inputs: dict
+    expected: list[torch.Tensor]
+
+
+def _clone_tensor_inputs(inputs: dict) -> dict:
+    """Snapshot built-in slot inputs without retaining candidate-visible storage.
+
+    Slot generators currently return disjoint tensors plus immutable Python scalars.
+    This helper intentionally does not claim to preserve arbitrary container aliasing;
+    a future typed-input ABI must make that policy explicit before accepting it.
+    """
+
+    return {
+        name: value.detach().clone() if torch.is_tensor(value) else value
+        for name, value in inputs.items()
+    }
+
+
+def _input_mutation_detail(actual: dict, trusted: dict) -> str:
+    """Return the first tensor input changed by candidate code, else ``""``."""
+
+    for name, expected in trusted.items():
+        if not torch.is_tensor(expected):
+            continue
+        value = actual.get(name)
+        if not torch.is_tensor(value):
+            return f"input {name!r} ceased to be a tensor"
+        if (value.shape != expected.shape or value.dtype != expected.dtype
+                or value.device != expected.device):
+            return f"input {name!r} metadata changed"
+        if not torch.equal(value, expected):
+            return f"input {name!r} was mutated"
+    return ""
+
+
+def _restore_tensor_inputs(actual: dict, trusted: dict) -> None:
+    """Copy trusted values into the original tensor objects captured by CUDA graphs."""
+
+    with torch.no_grad():
+        for name, expected in trusted.items():
+            if not torch.is_tensor(expected):
+                continue
+            value = actual.get(name)
+            if not torch.is_tensor(value):
+                raise RuntimeError(f"input {name!r} ceased to be a tensor")
+            if (value.shape != expected.shape or value.dtype != expected.dtype
+                    or value.device != expected.device):
+                raise RuntimeError(f"input {name!r} metadata changed")
+            value.copy_(expected)
+
+
+def _graph_case_inputs(slot: SlotSpec, trusted: dict, generated: dict) -> dict:
+    """Merge fresh request tensors with the trusted capture-static input state."""
+
+    names = slot.graph_dynamic_inputs
+    if not names:
+        raise RuntimeError(
+            f"slot {slot.name!r} declares no graph-dynamic tensor inputs"
+        )
+    if len(set(names)) != len(names):
+        raise RuntimeError(f"slot {slot.name!r} repeats a graph-dynamic input name")
+    logical = dict(trusted)
+    for name in names:
+        base = trusted.get(name)
+        fresh = generated.get(name)
+        if not torch.is_tensor(base) or not torch.is_tensor(fresh):
+            raise RuntimeError(
+                f"slot {slot.name!r} graph-dynamic input {name!r} is not a tensor"
+            )
+        if (fresh.shape != base.shape or fresh.dtype != base.dtype
+                or fresh.device != base.device):
+            raise RuntimeError(
+                f"slot {slot.name!r} graph-dynamic input {name!r} changed metadata"
+            )
+        if torch.equal(fresh, base):
+            raise RuntimeError(
+                f"slot {slot.name!r} generator did not vary graph-dynamic input {name!r}"
+            )
+        logical[name] = fresh.detach().clone()
+    return logical
+
+
 def _verify_graph_replays(
     slot: SlotSpec,
     entry: Callable[..., None],
     inputs: dict,
     outs: list[torch.Tensor],
     prepared,
-    expected: list[torch.Tensor],
+    trusted_inputs: dict,
+    replay_cases: list[_GraphReplayCase],
     *,
     tol,
     replay_count: int = _DEFAULT_GRAPH_REPLAYS,
@@ -327,13 +414,20 @@ def _verify_graph_replays(
     """
     if replay_count < 2:
         raise ValueError("CUDA graph verification requires at least two replays")
+    if len(replay_cases) != replay_count:
+        raise ValueError("one fresh trusted case is required per graph replay")
     graph_backend = backend or _CudaGraphBackend(outs[0].device)
 
     def invoke() -> None:
         slot.invoke_entry(entry, inputs, outs, prepared)
 
     try:
+        _restore_tensor_inputs(inputs, trusted_inputs)
         graph_backend.warmup(invoke)
+        graph_backend.synchronize()
+        mutation = _input_mutation_detail(inputs, trusted_inputs)
+        if mutation:
+            raise RuntimeError(mutation)
     except Exception as exc:  # noqa: BLE001 - candidate warmup failure is a verdict
         return _GraphCheck(
             _OutputCheck(False, float("inf"), float("inf"), 0.0,
@@ -341,7 +435,12 @@ def _verify_graph_replays(
             0,
         )
     try:
+        _restore_tensor_inputs(inputs, trusted_inputs)
         graph = graph_backend.capture(invoke)
+        graph_backend.synchronize()
+        mutation = _input_mutation_detail(inputs, trusted_inputs)
+        if mutation:
+            raise RuntimeError(mutation)
     except Exception as exc:  # noqa: BLE001 - a graph_safe claim must actually capture
         return _GraphCheck(
             _OutputCheck(False, float("inf"), float("inf"), 0.0,
@@ -354,14 +453,18 @@ def _verify_graph_replays(
     min_score = 1.0
     metric = "ratio"
     completed = 0
-    for replay in range(replay_count):
+    for replay, case in enumerate(replay_cases):
         try:
+            _restore_tensor_inputs(inputs, case.inputs)
             _poison_outputs(outs, replay)
             # Be explicit about the poison-before-replay happens-before edge.  This
             # is a correctness gate, not a benchmark; the synchronization is desired.
             graph_backend.synchronize()
             graph_backend.replay(graph)
             graph_backend.synchronize()
+            mutation = _input_mutation_detail(inputs, case.inputs)
+            if mutation:
+                raise RuntimeError(mutation)
         except Exception as exc:  # noqa: BLE001 - replay failure is a failed claim
             return _GraphCheck(
                 _OutputCheck(
@@ -373,7 +476,9 @@ def _verify_graph_replays(
             )
 
         completed = replay + 1
-        current = _compare_outputs(outs, expected, tol=tol, correctness=slot.correctness)
+        current = _compare_outputs(
+            outs, case.expected, tol=tol, correctness=slot.correctness
+        )
         max_abs = max(max_abs, current.max_abs)
         max_rel = max(max_rel, current.max_rel)
         min_score = min(min_score, current.min_score)
@@ -413,7 +518,14 @@ def _jitter_shapes(shapes: list[dict], seed: int) -> list[dict]:
                 # a free count dimension; varying values and prefix length remain.
                 continue
             if k in s and isinstance(s[k], int):
-                s[k] = max(1, s[k] + rng.randint(-1, 3) + (s[k] // 3) * rng.randint(0, 1))
+                # The attention generators reserve row 0 as a full-length semantic
+                # probe. Keeping batch >= 2 leaves another request whose seq_lens can
+                # vary across graph replays instead of producing vacuous fixed input.
+                floor = 2 if k == "batch" else 1
+                s[k] = max(
+                    floor,
+                    s[k] + rng.randint(-1, 3) + (s[k] // 3) * rng.randint(0, 1),
+                )
         out.append(s)
     return out
 
@@ -763,6 +875,8 @@ def verify_entry(
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     graph_required = slot.kind == "op" if graph_safe is None else bool(graph_safe)
     graph_capable_run = str(device).startswith("cuda") or _graph_backend is not None
+    if graph_required and graph_replays < 2:
+        raise ValueError("CUDA graph verification requires at least two replays")
     tol = slot.tolerance_for(dtype)
     catalog_shapes = list(shapes) if shapes is not None else list(slot.shapes)
     domain_coverage_complete = True
@@ -854,7 +968,44 @@ def verify_entry(
                 ))
                 continue
         context_blocked.append(False)
-        expected = _as_list(slot.invoke_reference(inputs))
+        # The trusted reference is derived from storage the candidate never sees,
+        # before either prepare or entry can mutate live inputs.  These receipts are
+        # still diagnostic (the candidate shares this worker process); pristine-T in
+        # qualification is the eventual external authority.
+        trusted_inputs = _clone_tensor_inputs(inputs)
+        expected = [
+            output.detach().clone()
+            for output in _as_list(slot.invoke_reference(trusted_inputs))
+        ]
+        replay_cases: list[_GraphReplayCase] = []
+        graph_case_error = ""
+        if graph_required and graph_capable_run:
+            for replay in range(graph_replays):
+                last_error = ""
+                for attempt in range(8):
+                    fresh = slot.make_inputs(
+                        dtype=dtype,
+                        device=device,
+                        seed=(
+                            seed + i + 104_729 * (replay + 1)
+                            + 1_000_003 * attempt
+                        ),
+                        **shape,
+                    )
+                    try:
+                        logical = _graph_case_inputs(slot, trusted_inputs, fresh)
+                    except RuntimeError as exc:
+                        last_error = str(exc)
+                        continue
+                    replay_expected = [
+                        output.detach().clone()
+                        for output in _as_list(slot.invoke_reference(logical))
+                    ]
+                    replay_cases.append(_GraphReplayCase(logical, replay_expected))
+                    break
+                else:
+                    graph_case_error = last_error or "could not generate fresh graph inputs"
+                    break
         # Allocate from the same typed contract used by the live arena binding.
         # Legacy slots resolve ``out_shapes`` to inherited-dtype contiguous tensors,
         # exactly preserving their historical behavior.
@@ -865,6 +1016,19 @@ def verify_entry(
             inputs=(v for v in inputs.values() if torch.is_tensor(v)),
         )
         outs = allocation.outputs
+        if graph_case_error:
+            results.append(
+                ShapeResult(
+                    shape=shape,
+                    dtype=_name(dtype),
+                    passed=False,
+                    max_abs_err=float("inf"),
+                    max_rel_err=float("inf"),
+                    pass_ratio=0.0,
+                    detail=f"graph input refresh unavailable: {graph_case_error}",
+                )
+            )
+            continue
         try:
             prepared = None
             if slot.invoke_prepare is not None:
@@ -873,7 +1037,13 @@ def verify_entry(
                         f"slot {slot.name!r} is a (prepare, forward) slot but no 'prepare' callable was provided"
                     )
                 prepared = slot.invoke_prepare(prepare, inputs)  # runs the miner's weight-prep
+                mutation = _input_mutation_detail(inputs, trusted_inputs)
+                if mutation:
+                    raise RuntimeError(f"prepare {mutation}")
             slot.invoke_entry(entry, inputs, outs, prepared)
+            mutation = _input_mutation_detail(inputs, trusted_inputs)
+            if mutation:
+                raise RuntimeError(mutation)
         except Exception as exc:  # noqa: BLE001 - report kernel failure as a fail
             results.append(
                 ShapeResult(shape=shape, dtype=_name(dtype), passed=False,
@@ -896,7 +1066,8 @@ def verify_entry(
         # error.  Every eager-correct graph-required GPU shape must capture and replay.
         if passed and graph_required and graph_capable_run:
             graph = _verify_graph_replays(
-                slot, entry, inputs, outs, prepared, expected, tol=tol,
+                slot, entry, inputs, outs, prepared, trusted_inputs, replay_cases,
+                tol=tol,
                 replay_count=graph_replays, backend=_graph_backend,
             )
             checked_replays = graph.replays

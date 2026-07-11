@@ -133,6 +133,13 @@ class SlotSpec:
     invoke_reference: Callable[[dict], Sequence[torch.Tensor]]  # (inputs) -> expected outputs (HIGH PRECISION)
     invoke_entry: Callable[..., None]  # (entry, inputs, outs, prepared) -> None; writes each tensor in `outs`
     shapes: tuple[dict, ...]
+    # Tensor inputs whose values may change between CUDA-graph replays while their
+    # addresses/shapes remain fixed. Verification refreshes them in place and grades
+    # every replay against a fresh trusted reference, so a captured graph that merely
+    # copies a cached answer cannot pass. Model weights and prepare-time state are
+    # deliberately absent. Python scalars are capture-static; a future slot that needs
+    # one to vary within a graph bucket must tensorize it.
+    graph_dynamic_inputs: tuple[str, ...] = ()
     # Additive typed-output ABI. Existing slots inherit dtype/device and remain
     # contiguous through ``out_shapes``.
     output_spec: Optional[Callable[[dict], OutputSpec]] = None
@@ -239,6 +246,7 @@ SILU_AND_MUL = SlotSpec(
     out_shapes=lambda i: [(*i["x"].shape[:-1], i["x"].shape[-1] // 2)],
     invoke_reference=lambda i: [_silu_reference(i["x"])],
     invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], outs[0]),
+    graph_dynamic_inputs=("x",),
     shapes=(
         {"num_tokens": 1, "d": 1024},
         {"num_tokens": 8, "d": 1024},
@@ -281,6 +289,7 @@ RMSNORM = SlotSpec(
     out_shapes=lambda i: [tuple(i["x"].shape)],
     invoke_reference=lambda i: [_rmsnorm_reference(i["x"], i["weight"], i["eps"])],
     invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], i["weight"], outs[0], i["eps"]),
+    graph_dynamic_inputs=("x",),
     shapes=(
         {"num_tokens": 1, "hidden": 2880},
         {"num_tokens": 8, "hidden": 2880},
@@ -356,6 +365,7 @@ ATTENTION_SDPA = SlotSpec(
     out_shapes=lambda i: [tuple(i["q"].shape)],
     invoke_reference=lambda i: [_sdpa_reference(i["q"], i["k"], i["v"], i["sm_scale"], i["causal"])],
     invoke_entry=lambda entry, i, outs, prepared: entry(i["q"], i["k"], i["v"], outs[0], i["sm_scale"], i["causal"]),
+    graph_dynamic_inputs=("q", "k", "v"),
     shapes=(
         {"num_tokens": 1, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64},
         {"num_tokens": 16, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128},   # GQA
@@ -432,6 +442,7 @@ ATTENTION_DECODE = SlotSpec(
     out_shapes=lambda i: [tuple(i["q"].shape)],
     invoke_reference=lambda i: [_decode_attn_reference(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"])],
     invoke_entry=lambda entry, i, outs, prepared: entry(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"], outs[0]),
+    graph_dynamic_inputs=("q", "k", "v", "seq_lens"),
     shapes=(
         {"batch": 4, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64, "ctx": 16},
         {"batch": 2, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128, "ctx": 32},   # GQA
@@ -550,6 +561,7 @@ MOE_FUSED_EXPERTS = SlotSpec(
     invoke_prepare=lambda prepare_fn, i: prepare_fn(i["w13"], i["w2"]),
     prepare_from_layer=_moe_prepare_args_from_layer,
     invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], i["topk_ids"], i["topk_weights"], prepared, outs[0]),
+    graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
     shapes=(
         {"num_tokens": 4, "num_experts": 8, "hidden": 256, "inter": 128, "topk": 2},
         {"num_tokens": 16, "num_experts": 32, "hidden": 512, "inter": 256, "topk": 4},
@@ -610,6 +622,7 @@ COLLECTIVE_ALL_REDUCE = SlotSpec(
     # drives the real verification.
     invoke_reference=lambda i: [i["x"]],
     invoke_entry=lambda entry, i, outs, prepared: entry(i["x"], outs[0], i.get("__group__")),
+    graph_dynamic_inputs=("x",),
     # Distributed-verify hooks: the reference is the fp32 SUM of each rank's x.
     collective_partial=lambda i, prepared: i["x"].float(),
     invoke_collective=lambda entry, i, out, group, prepared: entry(i["x"], out, group),
@@ -693,6 +706,7 @@ COLLECTIVE_AR_RESIDUAL_RMSNORM = SlotSpec(
     invoke_reference=lambda i: _ar_norm_reference_from_sum(i, i["x"].float(), None),
     invoke_entry=lambda entry, i, outs, prepared: entry(
         i["x"], i["residual"], i["weight"], i["eps"], outs[0], outs[1], i.get("__group__")),
+    graph_dynamic_inputs=("x", "residual"),
     collective_partial=lambda i, prepared: i["x"].float(),
     invoke_collective=lambda entry, i, outs, group, prepared: entry(
         i["x"], i["residual"], i["weight"], i["eps"], outs[0], outs[1], group),
@@ -795,6 +809,7 @@ COLLECTIVE_MOE_FINALIZE_AR_RMSNORM = SlotSpec(
     invoke_entry=lambda entry, i, outs, prepared: entry(
         i["gemm_out"], i["row_map"], i["scales"], i["residual"], i["weight"], i["eps"],
         outs[0], outs[1], i.get("__group__")),
+    graph_dynamic_inputs=("gemm_out", "row_map", "scales", "residual"),
     collective_partial=_moe_fin_local_finalize,
     invoke_collective=lambda entry, i, outs, group, prepared: entry(
         i["gemm_out"], i["row_map"], i["scales"], i["residual"], i["weight"], i["eps"],
@@ -863,6 +878,7 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
     # reference is the cross-rank fp32 sum (collective_partial), driven by verify_collective.
     invoke_reference=lambda i: [_moe_reference(i["x"], i["w13"], i["w2"], i["topk_ids"], i["topk_weights"])],
     invoke_entry=lambda entry, i, outs, prepared: None,
+    graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
     invoke_prepare=lambda prepare_fn, i: prepare_fn(i["w13"], i["w2"]),
     prepare_from_layer=_moe_prepare_args_from_layer,
     # Reference partial = this rank's fp32 expert output (HP, from the RAW weights, NOT the
@@ -950,6 +966,7 @@ ATTENTION_MSA_BLOCK_SCORE = SlotSpec(
     invoke_reference=lambda i: [_msa_block_score_reference(i["q"], i["index_k"], i["seq_lens"], i["block_size"])],
     invoke_entry=lambda entry, i, outs, prepared: entry(
         i["q"], i["index_k"], i["seq_lens"], i["block_size"], outs[0]),
+    graph_dynamic_inputs=("q", "index_k", "seq_lens"),
     shapes=(
         # Every shape keeps n_blocks > _MSA_TOPK (=8): at n_blocks == top_k the overlap
         # gate is vacuous (any selection of 8-of-8 blocks scores 1.0).
@@ -1104,6 +1121,7 @@ ATTENTION_MSA_PREFILL_BLOCK_SCORE = SlotSpec(
         i["q"], i["index_k"], i["prefix_len"], i["scale"], i["block_size"])],
     invoke_entry=lambda entry, i, outs, prepared: entry(
         i["q"], i["index_k"], i["prefix_len"], i["scale"], i["block_size"], outs[0]),
+    graph_dynamic_inputs=("q", "index_k"),
     shapes=(
         # Every shape keeps EVERY row's visible blocks > _MSA_TOPK (=8) via the prefix floor
         # in make_inputs; S is never a block multiple (ragged tail always exercised).
