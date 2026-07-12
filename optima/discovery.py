@@ -593,7 +593,7 @@ DEFAULT_DISCOVERY_POLICY = DiscoveryPolicy(
                     is_disable_overlap_for_batch record_batch_in_overlap run_batch
                     stash_chunked_request update_running_batch
                 """.split()
-            }
+            ]
             + ["sglang/srt/managers/scheduler.py::dispatch_event_loop"]
         )
     ),
