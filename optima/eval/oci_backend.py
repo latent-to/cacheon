@@ -24,7 +24,6 @@ from typing import Callable, Protocol
 from optima.eval.device_state import (
     CommandRunner as DeviceCommandRunner,
     DeviceStateActiveReceipt,
-    DeviceStateError,
     DeviceStateGuard,
     DeviceStatePolicy,
     DeviceStateReceipt,
@@ -787,7 +786,7 @@ class OCIEngineExecutor:
         )
         self.session_runner = session_runner
         self.reference_session_runner = reference_session_runner
-        self._lock = threading.Lock()
+        self._lock = self.manager.transaction_lock
         self._recovered: tuple[str, ...] | None = None
 
     def _recover_once(self) -> tuple[str, ...]:
@@ -1245,6 +1244,8 @@ class OCIEngineExecutor:
                 or raw.value.preflight != expected
                 or raw.value.reference_manifest_digest != plan.reference.digest
                 or raw.value.session_plan_digest != plan.digest
+                or raw.value.request_plan_digest != plan.request_plan_digest
+                or tuple(row.request for row in raw.value.exchanges) != plan.requests
             ):
                 raise OCIBackendError("reference runtime returned malformed raw evidence")
             receipts = (raw.pre_receipt, raw.post_receipt)

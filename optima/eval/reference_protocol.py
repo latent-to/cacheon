@@ -11,7 +11,6 @@ from __future__ import annotations
 import math
 import struct
 from dataclasses import dataclass
-from enum import IntEnum
 
 from optima.stack_identity import StackIdentityError, require_sha256_hex, sha256_hex
 
@@ -26,6 +25,8 @@ MAX_PROMPT_BYTES = 2_000_000
 MAX_TOTAL_PROMPT_BYTES = 96_000_000
 MAX_TOKENS = 32_768
 MAX_SUPPORT_WIDTH = 256
+MAX_SUPPORT_UNION = 4096
+MAX_DERIVED_LOGPROBS = 16_777_216
 MAX_TOKEN_ID = 2_147_483_647
 MAX_INDEX = 0xFFFFFFFE
 
@@ -178,6 +179,15 @@ class ReferenceRequest:
                     len(row) != self.support_width for row in role.supports
                 ):
                     raise ReferenceProtocolError("request role geometry differs from its header")
+        derived = 0
+        for prompt in prompts:
+            for role in prompt.roles:
+                support_union = {token for row in role.supports for token in row}
+                if len(support_union) > MAX_SUPPORT_UNION:
+                    raise ReferenceProtocolError("reference support union exceeds its hard bound")
+                derived += len(role.output_ids) * len(support_union)
+        if derived > MAX_DERIVED_LOGPROBS:
+            raise ReferenceProtocolError("reference derived logprob work exceeds its hard bound")
         object.__setattr__(self, "prompts", prompts)
         _request_payload_size(self)
 
@@ -247,15 +257,6 @@ class ReferenceEvidence:
         if not prompts or any(type(row) is not ReferencePromptEvidence for row in prompts):
             raise ReferenceProtocolError("reference evidence prompt coverage is invalid")
         object.__setattr__(self, "prompts", prompts)
-
-
-class ReferenceFaultCode(IntEnum):
-    INPUT_TOKEN_OOV = 1
-    SUPPORT_TOKEN_OOV = 2
-    TEACHER_API_SHAPE = 3
-    TEACHER_TARGET_MISMATCH = 4
-    TEACHER_SUPPORT_MISMATCH = 5
-    NONFINITE_LOGPROB = 6
 
 
 def _request_payload_size(request: ReferenceRequest) -> int:
@@ -475,8 +476,9 @@ def decode_reference_evidence(frame: bytes, request: ReferenceRequest) -> Refere
 
 __all__ = [
     "EVIDENCE_MAGIC", "FRAME_HEADER_BYTES", "MAX_EVIDENCE_BYTES",
-    "MAX_REQUEST_BYTES", "REQUEST_MAGIC", "ROLE_NAMES", "ReferenceEvidence",
-    "ReferenceFaultCode", "ReferencePromptEvidence",
+    "MAX_DERIVED_LOGPROBS", "MAX_REQUEST_BYTES", "MAX_SUPPORT_UNION",
+    "REQUEST_MAGIC", "ROLE_NAMES", "ReferenceEvidence",
+    "ReferencePromptEvidence",
     "ReferencePromptInput", "ReferenceProtocolError", "ReferenceRequest",
     "ReferenceRoleEvidence", "ReferenceRoleInput", "ReferenceTokenEvidence",
     "decode_reference_evidence", "decode_reference_request",

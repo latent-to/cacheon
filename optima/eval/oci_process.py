@@ -18,6 +18,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import threading
 import time
 import secrets
 from dataclasses import dataclass
@@ -305,10 +306,17 @@ class OCIProcessManager:
         self.resources_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.runner = runner
         self.clock = clock
+        self.transaction_lock = threading.Lock()
         self._quiescence_sequence = 0
+
+    def _require_namespace_owner(self) -> None:
+        if getattr(self, "_namespace_lock_fd", -1) < 0:
+            raise OCIProcessError("OCI executor namespace manager is closed")
 
     def prove_quiescent(self) -> OCIQuiescenceReceipt:
         """Fail closed unless this executor has no lease, resource, or container."""
+
+        self._require_namespace_owner()
 
         def entries(root: Path) -> tuple[str, ...]:
             if root.is_symlink() or not root.is_dir():
@@ -390,6 +398,7 @@ class OCIProcessManager:
         mount_relpaths: Iterable[str] = (),
         stage_relpaths: Iterable[str] = (),
     ) -> OCILease:
+        self._require_namespace_owner()
         lease_id = _simple_id(lease_id, field="lease_id")
         container_name = _simple_id(container_name, field="container_name")
         mount_rows = tuple(

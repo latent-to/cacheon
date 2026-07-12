@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
 
+from optima.eval.engine_worker import _path_mount_is_read_only as _path_is_read_only
 from optima.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     CONTAINER_MODEL_PATH,
@@ -142,13 +143,6 @@ def _required_digest_env(name: str) -> str:
     ):
         raise SessionWorkerError(f"{name} must be a nonzero lowercase SHA-256 digest")
     return value
-
-
-def _path_is_read_only(path: Path) -> bool:
-    try:
-        return bool(os.statvfs(path).f_flag & getattr(os, "ST_RDONLY", 1))
-    except OSError:
-        return False
 
 
 def _read_only_directory(path: Path) -> bool:
@@ -414,7 +408,11 @@ def _prepare_descendant_bootstrap() -> None:
 def _engine_session(config: EngineSessionConfig, tree: object) -> Iterator[object]:
     """Construct one content-selected engine without any scheduling role."""
 
-    _prepare_descendant_bootstrap()
+    reference_mode = os.environ.get("OPTIMA_SESSION_PROTOCOL") == "reference"
+    if reference_mode:
+        os.environ["PYTHONPATH"] = ""
+    else:
+        _prepare_descendant_bootstrap()
     from optima.manifest import load_manifest
 
     tree_root = Path(getattr(tree, "root"))
@@ -454,6 +452,7 @@ def _engine_session(config: EngineSessionConfig, tree: object) -> Iterator[objec
         bundle_path=bundle_path,
         active=active,
         framework_mode=framework_mode,
+        install_seams=not reference_mode,
     ) as handle:
         yield handle
 

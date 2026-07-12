@@ -4,12 +4,12 @@ import struct
 
 import pytest
 
+import optima.eval.reference_protocol as protocol
 from optima.eval.reference_protocol import (
     EVIDENCE_MAGIC,
     FRAME_HEADER_BYTES,
     REQUEST_MAGIC,
     ReferenceEvidence,
-    ReferenceFaultCode,
     ReferencePromptEvidence,
     ReferencePromptInput,
     ReferenceProtocolError,
@@ -143,6 +143,22 @@ def test_request_rejects_prompt_reorder_and_bad_support_domains():
         ReferenceRoleInput((-1, 2), ((3, 4), (2, 3)))
 
 
+def test_request_caps_support_union_and_derived_teacher_work(monkeypatch):
+    role = ReferenceRoleInput(
+        tuple(range(17)),
+        tuple(tuple(range(index * 256, (index + 1) * 256)) for index in range(17)),
+    )
+    prompt = ReferencePromptInput("6" * 64, "prompt", (role, role, role))
+    with pytest.raises(ReferenceProtocolError, match="support union"):
+        ReferenceRequest(SESSION, LAUNCH, PLAN, REQUEST, NONCE, 0, 17, 256, (prompt,))
+
+    monkeypatch.setattr(protocol, "MAX_DERIVED_LOGPROBS", 11)
+    role = ReferenceRoleInput((1, 2), ((1, 2), (1, 2)))
+    prompt = ReferencePromptInput("6" * 64, "prompt", (role, role, role))
+    with pytest.raises(ReferenceProtocolError, match="derived logprob work"):
+        ReferenceRequest(SESSION, LAUNCH, PLAN, REQUEST, NONCE, 0, 2, 2, (prompt,))
+
+
 def test_request_decoder_rechecks_geometry_before_accepting_hostile_counts():
     frame = bytearray(encode_reference_request(_request()))
     # token_count and support_width offsets inside the fixed request header.
@@ -238,8 +254,3 @@ def test_wire_records_contain_no_verdict_timing_or_hidden_authority_fields():
         "decision", "score", "passed", "elapsed", "hidden_tasks", "judge",
         "calibration", "miner", "t_session_digest",
     }
-
-
-def test_fault_code_namespace_is_closed_and_contains_no_verdicts():
-    assert {code.value for code in ReferenceFaultCode} == set(range(1, 7))
-    assert all("PASS" not in code.name and "FAIL" not in code.name for code in ReferenceFaultCode)

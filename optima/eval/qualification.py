@@ -1268,20 +1268,96 @@ def derived_hidden_task_plan_digest(
         raise QualificationError("hidden-task prompts are not canonical")
     rows = []
     for prompt in prompts:
-        tasks = [canonical_digest("optima.qualification.hidden-task", {
+        tasks = sorted(canonical_digest("optima.qualification.hidden-task", {
             "corpus": profile.reference.hidden_corpus_commitment,
             "judge": profile.reference.hidden_judge_digest,
             "policy": profile.hidden_task_policy_digest,
             "prompt": _digest(prompt, "hidden-task prompt"),
             "index": index,
-        }) for index in range(profile.hidden_tasks_per_prompt)]
+        }) for index in range(profile.hidden_tasks_per_prompt))
         rows.append({"prompt": prompt, "tasks": tasks})
     return canonical_digest("optima.qualification.hidden-task-plan", rows)
 
 
+def _selected_prompt_texts(lifecycle: object) -> dict[str, str]:
+    from optima.eval.scoring import marginal_workload_digest
+
+    plan = lifecycle.prepared.baseline_session_plan
+    workload = marginal_workload_digest(plan)
+    result = {}
+    for batch_index, prompts in enumerate(plan.prompt_batches):
+        for prompt_index, prompt in enumerate(prompts):
+            occurrence = canonical_digest(
+                "optima.qualification.prompt-occurrence",
+                {
+                    "batch_index": batch_index,
+                    "prompt_index": prompt_index,
+                    "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                    "workload_digest": workload,
+                },
+            )
+            result[occurrence] = prompt
+    return result
+
+
+def _validate_teacher_source(raw: object, execution: object, lifecycle: object) -> None:
+    from optima.eval.oci_backend import PristineReferenceExecutionEvidence
+    from optima.eval.reference_quality import (
+        ReferenceQualityRawArtifact,
+        distribution_from_f32_logprobs,
+        target_nll_from_f32,
+    )
+
+    if (
+        type(raw) is not ReferenceQualityRawArtifact
+        or type(execution) is not PristineReferenceExecutionEvidence
+        or execution.schema != "optima.oci-pristine-reference-execution.v1"
+    ):
+        raise QualificationError("raw quality or pristine execution is not authoritative")
+    by_prompt = {}
+    for exchange in execution.session.exchanges:
+        for request, evidence in zip(
+            exchange.request.prompts, exchange.evidence.prompts, strict=True
+        ):
+            if request.prompt_digest in by_prompt:
+                raise QualificationError("pristine T repeated a selected prompt")
+            by_prompt[request.prompt_digest] = (request, evidence)
+    expected_text = _selected_prompt_texts(lifecycle)
+    if set(by_prompt) != set(raw.binding.selected_prompt_digests):
+        raise QualificationError("pristine T prompt coverage differs from selection")
+    for prompt in raw.prompts:
+        request, evidence = by_prompt[prompt.prompt_digest]
+        if request.prompt != expected_text.get(prompt.prompt_digest):
+            raise QualificationError("pristine T prompt text differs from lifecycle")
+        for rollout, role_input, role_evidence in zip(
+            (prompt.baseline, prompt.candidate, prompt.stock_control),
+            request.roles,
+            evidence.roles,
+            strict=True,
+        ):
+            for token, output_id, support, teacher in zip(
+                rollout.tokens,
+                role_input.output_ids,
+                role_input.supports,
+                role_evidence.tokens,
+                strict=True,
+            ):
+                expected = distribution_from_f32_logprobs(
+                    support,
+                    teacher.support_logprobs,
+                    true_argmax_token_id=teacher.true_argmax_token_id,
+                )
+                if (
+                    token.token_id != output_id
+                    or token.target_nll != target_nll_from_f32(teacher.target_logprob)
+                    or token.teacher_topk != expected
+                ):
+                    raise QualificationError("raw teacher evidence differs from pristine T")
+
+
 def validate_quality_binding(
     profile: QualificationProfile,
-    binding: object,
+    raw_artifact: object,
     lifecycle: object,
     *,
     selected_delta_digest: str,
@@ -1290,25 +1366,27 @@ def validate_quality_binding(
     selection: SelectionReceipt,
     calibration: object,
     graph_requirement: GraphVerificationRequirement,
-    t_session: object,
+    reference_execution: object,
 ):
     """Project frozen workload/trajectory coverage onto one raw T binding."""
 
     from optima.eval.calibration import CalibrationContext, CalibrationManifest
-    from optima.eval.oci_reference_session import ReferenceSessionEvidence
+    from optima.eval.oci_backend import PristineReferenceExecutionEvidence
     from optima.eval.reference_quality import (
-        ReferenceQualityRawBinding,
+        ReferenceQualityRawArtifact,
         retained_support_policy_digest,
     )
 
     if (
         type(profile) is not QualificationProfile
-        or type(binding) is not ReferenceQualityRawBinding
+        or type(raw_artifact) is not ReferenceQualityRawArtifact
         or type(calibration) is not CalibrationManifest
         or type(graph_requirement) is not GraphVerificationRequirement
-        or type(t_session) is not ReferenceSessionEvidence
+        or type(reference_execution) is not PristineReferenceExecutionEvidence
     ):
         raise QualificationError("quality profile/binding is not typed")
+    binding = raw_artifact.binding
+    t_session = reference_execution.session
     selection.reopen(commitment, entropy)
     plan = lifecycle.prepared.baseline_session_plan
     candidates = tuple(
@@ -1410,7 +1488,8 @@ def validate_quality_binding(
         or commitment.select_count < profile.minimum_prompt_count
     ):
         raise QualificationError("quality binding differs from frozen workload/trajectories")
-    return binding
+    _validate_teacher_source(raw_artifact, reference_execution, lifecycle)
+    return raw_artifact
 
 
 __all__ = [

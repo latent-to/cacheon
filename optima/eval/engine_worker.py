@@ -241,6 +241,7 @@ def isolated_engine_session(
     bundle_path: str,
     active: bool,
     framework_mode: bool,
+    install_seams: bool = True,
 ) -> Iterator[EngineWorkerHandle]:
     """Construct one engine only inside the already-proven OCI worker fence."""
 
@@ -254,11 +255,15 @@ def isolated_engine_session(
             _process_sandbox_is_hardened(),
         ))
         or (framework_mode and not active)
+        or (active and not install_seams)
     ):
         raise RuntimeError("isolated engine session lacks its trusted OCI fence")
-    from optima import receipts, seam
+    receipts = None
+    if install_seams:
+        from optima import receipts as receipt_module, seam
 
-    seam.mark_driver()
+        seam.mark_driver()
+        receipts = receipt_module
     receipt_dir = tempfile.mkdtemp(prefix="optima_receipts_") if active else ""
     try:
         with _environment(
@@ -268,7 +273,7 @@ def isolated_engine_session(
             OPTIMA_SEAM_RECEIPT_DIR=receipt_dir,
             OPTIMA_SLOT_AUDIT="",
             OPTIMA_SLOT_AUDIT_SEED="",
-            SGLANG_PLUGINS="optima",
+            SGLANG_PLUGINS="optima" if install_seams else "",
         ):
             import sglang as sgl
 
@@ -279,6 +284,7 @@ def isolated_engine_session(
             expected_members = int(kwargs.get("tp_size", 1) or 1)
             try:
                 if active:
+                    assert receipts is not None
                     active_receipts = receipts.require(
                         receipt_dir, "active", context="candidate engine launch"
                     )
