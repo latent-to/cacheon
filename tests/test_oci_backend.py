@@ -510,17 +510,21 @@ def test_reference_reopens_control_receipt_then_rejects_added_native_file(
     )
     _install_execution_fakes(case, executor, monkeypatch)
     control = SimpleNamespace(
-        **vars(case.publication),
-        directories=(),
-        files=(SimpleNamespace(path="prebuild.json"),),
+        **dict(
+            vars(case.publication),
+            directories=(),
+            files=(SimpleNamespace(path="prebuild.json"),),
+        )
     )
     changed = SimpleNamespace(
-        **vars(case.publication),
-        directories=("cuda",),
-        files=(
-            SimpleNamespace(path="prebuild.json"),
-            SimpleNamespace(path="cuda/kernel.so"),
-        ),
+        **dict(
+            vars(case.publication),
+            directories=("cuda",),
+            files=(
+                SimpleNamespace(path="prebuild.json"),
+                SimpleNamespace(path="cuda/kernel.so"),
+            ),
+        )
     )
     reopened = iter((control, changed))
     monkeypatch.setattr(
@@ -558,9 +562,11 @@ def test_reference_runtime_accepts_control_receipt_through_both_reopens(
     )
     _install_execution_fakes(case, executor, monkeypatch)
     control = SimpleNamespace(
-        **vars(case.publication),
-        directories=(),
-        files=(SimpleNamespace(path="prebuild.json"),),
+        **dict(
+            vars(case.publication),
+            directories=(),
+            files=(SimpleNamespace(path="prebuild.json"),),
+        )
     )
     monkeypatch.setattr(
         backend,

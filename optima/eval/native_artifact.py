@@ -34,6 +34,8 @@ from optima.stack_identity import (
 _SCHEMA = "optima.native-artifact-publication.v1"
 _MANIFEST = ".optima-native-artifact.json"
 _COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@=-]{0,254}$")
+# Discovery publishes real Python package roots; no other underscore name is admitted.
+_PYTHON_PACKAGE_INIT = "__init__.py"
 _STAGE_RE = re.compile(r"^\.stage-[0-9a-f]{16}-[0-9a-f]{32}$")
 _FILE_KEYS = frozenset({"path", "sha256", "size"})
 _MANIFEST_KEYS = frozenset(
@@ -189,7 +191,10 @@ def _require_digest(value: object, *, field: str) -> str:
 
 
 def _validate_component(component: str) -> None:
-    if not isinstance(component, str) or _COMPONENT_RE.fullmatch(component) is None:
+    if not isinstance(component, str) or (
+        component != _PYTHON_PACKAGE_INIT
+        and _COMPONENT_RE.fullmatch(component) is None
+    ):
         raise NativeArtifactError(f"native artifact path component is unsafe: {component!r}")
     try:
         component.encode("ascii", "strict")

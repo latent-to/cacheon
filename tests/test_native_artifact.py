@@ -93,6 +93,42 @@ def test_publish_is_build_addressed_canonical_immutable_and_reopenable(tmp_path)
     assert reopened == published
 
 
+def test_python_package_init_is_the_only_allowed_underscore_component(tmp_path):
+    source = tmp_path / "build"
+    package = source / "sglang" / "srt"
+    package.mkdir(parents=True)
+    (source / "sglang" / "__init__.py").write_text("# package\n")
+    (package / "__init__.py").write_text("# subpackage\n")
+    (package / "scheduler.py").write_text("VALUE = 1\n")
+
+    published = publish_native_artifact(
+        source, tmp_path / "published", build_spec_digest=BUILD
+    )
+    assert tuple(row.path for row in published.files) == (
+        "sglang/__init__.py",
+        "sglang/srt/__init__.py",
+        "sglang/srt/scheduler.py",
+    )
+    assert reopen_native_artifact(
+        published.root,
+        expected_build_spec_digest=BUILD,
+        expected_publication_digest=published.publication_digest,
+    ) == published
+
+
+@pytest.mark.parametrize(
+    "component", ("_private.py", "__main__.py", "__init__.pyc", "__pycache__")
+)
+def test_other_underscore_components_remain_forbidden(tmp_path, component):
+    source = tmp_path / "build"
+    source.mkdir()
+    (source / component).write_bytes(b"x")
+    with pytest.raises(NativeArtifactError, match="component is unsafe"):
+        publish_native_artifact(
+            source, tmp_path / "published", build_spec_digest=BUILD
+        )
+
+
 def test_exact_existing_publication_is_reused_but_different_bytes_collide(tmp_path):
     source, first = _publish(tmp_path)
     second = publish_native_artifact(

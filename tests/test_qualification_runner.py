@@ -103,6 +103,13 @@ class _Harness:
         exercise_judge_cache: bool = False,
     ) -> None:
         assert len(graph) == len(speed) == len(quality)
+        # This runner harness predates the typed authority constructor and
+        # intentionally replaces the fully validated input boundary with
+        # lightweight records. Preserve exact production type checks while
+        # identifying only these registered-lane test doubles as that type.
+        monkeypatch.setattr(
+            runner, "CandidateQualificationAuthority", SimpleNamespace
+        )
         self.calls: list[str] = []
         self.reference_calls = 0
         self.reference_request_counts: list[int] = []
