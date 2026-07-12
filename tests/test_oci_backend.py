@@ -298,7 +298,7 @@ def _case(tmp_path: Path) -> SimpleNamespace:
     config = OCIBackendConfig(prebuild=prebuild, runtime=runtime)
     resolved = ResolvedEngineLaunch(
         launch,
-        SimpleNamespace(root=tree),
+        SimpleNamespace(root=tree, runtime_manifest=None),
         native,
         physical,
         tuple(sorted(preflight.launch_identity().items())),
