@@ -130,6 +130,28 @@ def test_pr49_retains_checks_and_the_joined_negative() -> None:
     assert negative["status"] == "invalidated"
 
 
+def test_pr50_retains_checks_and_bounds_the_partial_gpu_receipt() -> None:
+    record = load_json(EVIDENCE / "records/pr-0050.json")
+    validate_record(record, ROOT, "pr50")
+    artifact = next(
+        item for item in record["artifacts"]
+        if item["id"] == "github.referee-evidence"
+    )
+    assert artifact["availability"] == "repository"
+    receipt = load_json(ROOT / artifact["locator"])
+    assert receipt["pull_request"] == 50
+    assert receipt["total_count"] == 4
+    assert {item["conclusion"] for item in receipt["check_runs"]} == {"success"}
+    assert {item["head_sha"] for item in receipt["check_runs"]} == {
+        "da6d8562e96ff199eb6686548cf563ea532ff6d4"
+    }
+    joined = next(
+        item for item in record["exit_criteria"]
+        if item["id"] == "gpu.joined-proof"
+    )
+    assert joined["status"] == "invalidated"
+
+
 def test_pr4b_contract_closes_scope_budget_and_required_replacements() -> None:
     contract = load_json(EVIDENCE / "contracts/pr4b.json")
     validate_contract_document(contract)
@@ -208,6 +230,28 @@ def test_pr4d_contract_closes_seam_transport_scope() -> None:
     over_budget = dict(changes)
     over_budget["optima/seams.py"] = ("M", 251, 0)
     with pytest.raises(EvidenceError, match="pr4d line budget"):
+        validate_scope(contract, over_budget)
+
+
+def test_pr4e_contract_closes_hardware_discovered_qualification_scope() -> None:
+    contract = load_json(EVIDENCE / "contracts/pr4e.json")
+    validate_contract_document(contract)
+    changes = {
+        item["path"]: ({"add": "A", "modify": "M"}[item["change"]], 1, 0)
+        for item in contract["required_in_place"]
+    }
+    validate_scope(contract, changes)
+    schema = load_json(EVIDENCE / "schema-v2.json")
+    validate_v2_schema_contract(schema, contract)
+
+    outside = dict(changes)
+    outside["optima/eval/qualification_runner.py"] = ("M", 1, 0)
+    with pytest.raises(EvidenceError, match="outside frozen pr4e"):
+        validate_scope(contract, outside)
+
+    over_budget = dict(changes)
+    over_budget["optima/eval/qualification.py"] = ("M", 101, 0)
+    with pytest.raises(EvidenceError, match="pr4e line budget"):
         validate_scope(contract, over_budget)
 
 
