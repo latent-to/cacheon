@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
-from decimal import Decimal, localcontext
+from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_EVEN, localcontext
 from enum import Enum
 from pathlib import Path
 from typing import ClassVar
@@ -39,6 +40,7 @@ QUALITY_SCHEMA_VERSION = 1
 QUALITY_POLICY_VERSION = "pristine-reference-quality.v1"
 RAW_QUALITY_DOMAIN = "reference-quality.raw"
 RAW_QUALITY_SCHEMA = "optima.reference-quality-raw.v1"
+SUPPORT_POLICY_ID = "retained-support-f32-q18.v1"
 QUALITY_DECISIONS = frozenset({"PASS", "FAIL", "NO_DECISION"})
 _METRICS = frozenset(
     {"mean_nll", "worst_nll", "tail_rate", "topk_kl", "argmax_rate", "coverage_dev", "task_score"}
@@ -333,9 +335,6 @@ class NormalizedTopKDistribution(_Record):
         total = _sumd([decimal_value(row.probability) for row in entries] + [decimal_value(self.tail_probability)])
         if total != 1:
             raise ReferenceQualityError("top-k entries and tail must normalize exactly to one")
-        maximum = max(decimal_value(row.probability) for row in entries)
-        if sum(decimal_value(row.probability) == maximum for row in entries) != 1:
-            raise ReferenceQualityError("top-k argmax must be unique")
         object.__setattr__(self, "true_argmax_token_id", _integer(self.true_argmax_token_id, "true argmax token"))
         object.__setattr__(self, "entries", entries)
     @property
@@ -344,6 +343,67 @@ class NormalizedTopKDistribution(_Record):
     @classmethod
     def from_dict(cls, value: object) -> "NormalizedTopKDistribution":
         return _load(cls, value, "normalized top-k", entries=lambda rows: _rows(rows, TokenProbability.from_dict, "top-k entries"))
+
+
+def retained_support_policy_digest() -> str:
+    return canonical_digest(
+        "optima.qualification.support-policy",
+        {"clamp_min_logprob": "-80", "mass_units": 10**18, "policy_id": SUPPORT_POLICY_ID},
+    )
+
+
+def distribution_from_f32_logprobs(
+    support_ids: tuple[int, ...],
+    logprobs: tuple[float, ...],
+    *,
+    true_argmax_token_id: int,
+) -> NormalizedTopKDistribution:
+    """Project binary32 support logprobs into an exact Q=1e18 distribution."""
+
+    support = tuple(_integer(value, "support token") for value in support_ids)
+    values = tuple(logprobs)
+    if (
+        not support
+        or support != tuple(sorted(set(support)))
+        or len(values) != len(support)
+        or any(type(value) is not float or not math.isfinite(value) or value > 1e-4 for value in values)
+    ):
+        raise ReferenceQualityError("retained support/logprobs are malformed")
+    values = tuple(struct.unpack(">f", struct.pack(">f", value))[0] for value in values)
+    quantum = 10**18
+    with localcontext() as context:
+        context.prec = 96
+        context.rounding = ROUND_HALF_EVEN
+        weights = [max(1, int((max(Decimal.from_float(value), Decimal(-80)).exp() * quantum)
+                              .to_integral_value(rounding=ROUND_HALF_EVEN))) for value in values]
+        total = sum(weights)
+        if total >= quantum:
+            target = quantum - 1
+            exact = [Decimal(weight) * target / total for weight in weights]
+            units = [int(value.to_integral_value(rounding=ROUND_FLOOR)) for value in exact]
+            remaining = target - sum(units)
+            order = sorted(
+                range(len(units)),
+                key=lambda index: (-(exact[index] - units[index]), support[index]),
+            )
+            for index in order[:remaining]:
+                units[index] += 1
+            weights, tail = units, 1
+        else:
+            tail = quantum - total
+    def probability(units: int) -> str:
+        return _text(Decimal(units) / quantum, "support probability", Decimal(1))
+    return NormalizedTopKDistribution(
+        tuple(TokenProbability(token, probability(units)) for token, units in zip(support, weights)),
+        probability(tail),
+        true_argmax_token_id,
+    )
+
+
+def target_nll_from_f32(logprob: float) -> str:
+    if type(logprob) is not float or not math.isfinite(logprob) or logprob > 1e-4:
+        raise ReferenceQualityError("target logprob is malformed")
+    return _text(max(Decimal(0), -Decimal.from_float(logprob)), "target NLL", _MAX_NLL)
 @dataclass(frozen=True)
 class RawTokenEvidence(_Record):
     position: int
@@ -423,15 +483,27 @@ def raw_trajectory_projection_digest(prompts: tuple[RawPromptQualityEvidence, ..
     def rollout(row: RawRolloutEvidence) -> dict[str, object]:
         return {
             "output_ids": [token.token_id for token in row.tokens],
-            "supports": [list(token.rollout_topk.support) for token in row.tokens],
-            "true_argmax_token_ids": [token.rollout_topk.true_argmax_token_id for token in row.tokens],
+            "rollout_topk": [token.rollout_topk.to_dict() for token in row.tokens],
         }
     return canonical_digest(
         "optima.qualification.selected-trajectory-projection",
-        [{"prompt": prompt.prompt_digest,
-          "rollouts": [rollout(row) for row in
-                       (prompt.baseline, prompt.candidate, prompt.stock_control)]}
-         for prompt in prompts],
+        {
+            "support_policy_digest": retained_support_policy_digest(),
+            "prompts": [
+                {
+                    "prompt": prompt.prompt_digest,
+                    "rollouts": [
+                        rollout(row)
+                        for row in (
+                            prompt.baseline,
+                            prompt.candidate,
+                            prompt.stock_control,
+                        )
+                    ],
+                }
+                for prompt in prompts
+            ],
+        },
     )
 @dataclass(frozen=True)
 class ReferenceQualityRawArtifact(_Record):
@@ -687,6 +759,8 @@ __all__ = [
     "ReferenceQualityError", "ReferenceQualityEvidence", "ReferenceQualityRawArtifact",
     "ReferenceQualityRawBinding", "ReferenceQualityVerdict", "RolloutKLEvidence",
     "RolloutQualityEvidence", "TeacherNLLEvidence", "TokenProbability",
-    "hidden_task_plan_digest", "reopen_reference_quality_evidence",
+    "SUPPORT_POLICY_ID", "distribution_from_f32_logprobs", "hidden_task_plan_digest",
+    "retained_support_policy_digest", "reopen_reference_quality_evidence",
     "score_reference_quality",
+    "target_nll_from_f32",
 ]

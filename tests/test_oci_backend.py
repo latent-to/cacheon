@@ -597,6 +597,31 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(tmp_path: Path) -> None:
     )
     assert '--gpus="device=0,1"' in multi_argv
 
+    reference_argv = build_runtime_argv(
+        lease=lease,
+        resolved=case.resolved,
+        preflight=case.preflight,
+        model_root=case.model,
+        publication=case.publication,
+        cache_root=cache,
+        seccomp_path=lease.stage_paths[0],
+        runtime=case.runtime,
+        session_protocol="reference",
+    )
+    assert "--env=OPTIMA_SESSION_PROTOCOL=reference" in reference_argv
+    with pytest.raises(OCIBackendError, match="protocol"):
+        build_runtime_argv(
+            lease=lease,
+            resolved=case.resolved,
+            preflight=case.preflight,
+            model_root=case.model,
+            publication=case.publication,
+            cache_root=cache,
+            seccomp_path=lease.stage_paths[0],
+            runtime=case.runtime,
+            session_protocol="candidate-chosen",
+        )
+
 
 def test_launch_validation_binds_runtime_model_config_and_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -755,6 +780,99 @@ def test_execute_failure_still_releases_lease_and_post_drains(
         ("pre", 200.0),
         ("post", 200.0),
     ]
+
+
+def test_execute_reference_selects_reference_transport_and_binds_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from optima.eval.oci_reference_session import (
+        ReferenceExchangeEvidence,
+        ReferenceSessionEvidence,
+    )
+    from optima.eval.reference_protocol import encode_reference_evidence, request_sha256
+    from optima.stack_identity import sha256_hex
+    from tests.test_oci_reference_session import _plan as reference_plan, _raw
+
+    case = _case(tmp_path)
+    manager = _manager(case)
+    plan = reference_plan()
+    launch = SimpleNamespace(digest=plan.reference.pristine_launch_digest)
+    exchanges = []
+    for index, request in enumerate(plan.requests):
+        evidence = _raw(request)
+        exchanges.append(ReferenceExchangeEvidence(
+            index, request, request_sha256(request),
+            sha256_hex(encode_reference_evidence(evidence, request)),
+            2.0 + index * 2, 3.0 + index * 2, evidence,
+        ))
+    session = ReferenceSessionEvidence(
+        "optima.pristine-reference-session.v1",
+        plan.requests[0].session_id,
+        launch.digest,
+        plan.reference.digest,
+        plan.digest,
+        plan.request_plan_digest,
+        plan.expected_preflight,
+        1.0,
+        tuple(exchanges),
+        7.0,
+    )
+    executor = OCIEngineExecutor(case.config, case.device_policy, manager=manager)
+    monkeypatch.setattr(
+        executor,
+        "_validate_reference_launch",
+        lambda *_args: (
+            case.resolved,
+            case.preflight,
+            case.identity,
+            plan.expected_preflight,
+            case.model,
+        ),
+    )
+    observed = []
+
+    def execute_runtime(*_args, **kwargs):
+        observed.append(kwargs["session_protocol"])
+        value = kwargs["run"](
+            SimpleNamespace(), kwargs["absolute"] - 2.0, "runtime-" + "1" * 32
+        )
+        return backend._RawRuntimeExecution(
+            "runtime-" + "1" * 32,
+            SimpleNamespace(),
+            _digest("publication"),
+            _digest("argv"),
+            _idle_receipt(case, "runtime-" + "1" * 32, "pre", 1, 1.0),
+            _idle_receipt(case, "runtime-" + "1" * 32, "post", 3, 8.0),
+            value,
+        )
+
+    monkeypatch.setattr(executor, "_execute_runtime", execute_runtime)
+    monkeypatch.setattr(backend, "AttachedReferenceTransport", SimpleNamespace)
+    executor.reference_session_runner = lambda _plan, **_kwargs: session
+    result = executor.execute_reference(
+        launch,
+        SimpleNamespace(),
+        SimpleNamespace(digest=_digest("model-mount")),
+        plan,
+        deadline=200.0,
+    )
+    assert observed == ["reference"]
+    assert result.session == session
+    assert tuple(row.phase for row in result.device_receipts) == ("pre", "post")
+
+
+def test_executors_sharing_manager_share_transaction_lock(tmp_path: Path) -> None:
+    case = _case(tmp_path)
+    manager = _manager(case)
+    first = OCIEngineExecutor(case.config, case.device_policy, manager=manager)
+    second = OCIEngineExecutor(case.config, case.device_policy, manager=manager)
+    assert first._lock is second._lock is manager.transaction_lock
+    assert first._lock.acquire(blocking=False)
+    try:
+        with pytest.raises(OCIBackendError, match="active session"):
+            second.prove_quiescent()
+    finally:
+        first._lock.release()
 
 
 def test_trusted_backend_has_no_economic_fields_or_runtime_authority() -> None:

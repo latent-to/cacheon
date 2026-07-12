@@ -10,7 +10,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from optima import receipts, seam
-from optima.eval import _launch
+from optima.eval import _launch, engine_worker
 
 
 def _active(pid: int, rank: int, slots=("a", "b"), world_size=2):
@@ -47,6 +47,11 @@ def _distributed_receipt_worker(rank, world_size, store_path, receipt_dir):
 
 
 def test_active_members_require_exact_count_and_identical_slot_set():
+    assert _launch._active_execution_members is engine_worker._active_execution_members
+    assert (
+        _launch._require_execution_completion
+        is engine_worker._require_execution_completion
+    )
     active = [_active(10, 0), _active(11, 1)]
     assert _launch._active_execution_members(
         active, expected_member_count=2

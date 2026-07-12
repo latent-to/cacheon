@@ -7,7 +7,7 @@ from unittest import TestCase, mock
 import pytest
 
 from optima import receipts, seam
-from optima.eval import _launch
+from optima.eval import _launch, engine_worker
 
 
 def _sandbox_proc_reader(*, seccomp: int = 2, filters: int = 1, caps: int = 0):
@@ -30,6 +30,18 @@ def _sandbox_proc_reader(*, seccomp: int = 2, filters: int = 1, caps: int = 0):
 
 
 class IsolationTests(TestCase):
+    def test_sandbox_probes_are_shared_engine_worker_compatibility_aliases(self):
+        for name in (
+            "_truthy_env",
+            "_loopback_is_up",
+            "_network_namespace_is_loopback_only",
+            "_egress_is_blocked",
+            "_process_sandbox_is_hardened",
+            "_path_mount_is_read_only",
+        ):
+            self.assertIs(getattr(_launch, name), getattr(engine_worker, name))
+            self.assertEqual(getattr(_launch, name).__module__, engine_worker.__name__)
+
     def test_process_hardening_requires_zero_caps_and_live_seccomp(self):
         with mock.patch.object(
             Path, "read_text", autospec=True, side_effect=_sandbox_proc_reader()
@@ -107,6 +119,35 @@ class IsolationTests(TestCase):
 
         with mock.patch.object(_launch, "isolate_network", return_value=False):
             _launch.prepare_candidate_environment(cfg, bundle_path="", active=True)
+
+
+def test_engine_kwargs_preserve_candidate_overrides_and_legacy_alias():
+    assert _launch.engine_kwargs is engine_worker.engine_kwargs
+    cfg = SimpleNamespace(
+        model_path="model",
+        dtype="float16",
+        mem_fraction_static=0.8,
+        seed=7,
+        log_level="error",
+        attention_backend="baseline-attention",
+        candidate_attention_backend="candidate-attention",
+        moe_runner_backend="baseline-moe",
+        candidate_moe_runner_backend="candidate-moe",
+        disable_custom_all_reduce=False,
+        candidate_disable_custom_all_reduce=True,
+        extra_engine_kwargs={"page_size": 32},
+        candidate_extra_engine_kwargs={"page_size": 64},
+    )
+    baseline = engine_worker.engine_kwargs(cfg, active=False)
+    candidate = engine_worker.engine_kwargs(cfg, active=True)
+    assert baseline["attention_backend"] == "baseline-attention"
+    assert baseline["moe_runner_backend"] == "baseline-moe"
+    assert baseline["page_size"] == 32
+    assert "disable_custom_all_reduce" not in baseline
+    assert candidate["attention_backend"] == "candidate-attention"
+    assert candidate["moe_runner_backend"] == "candidate-moe"
+    assert candidate["disable_custom_all_reduce"] is True
+    assert candidate["page_size"] == 64
 
 
 def test_prepare_and_entry_share_one_module_instance(tmp_path):

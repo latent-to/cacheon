@@ -18,11 +18,11 @@ import secrets
 import stat
 import struct
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
 
+from optima.eval.engine_worker import _path_mount_is_read_only as _path_is_read_only
 from optima.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     CONTAINER_MODEL_PATH,
@@ -143,13 +143,6 @@ def _required_digest_env(name: str) -> str:
     ):
         raise SessionWorkerError(f"{name} must be a nonzero lowercase SHA-256 digest")
     return value
-
-
-def _path_is_read_only(path: Path) -> bool:
-    try:
-        return bool(os.statvfs(path).f_flag & getattr(os, "ST_RDONLY", 1))
-    except OSError:
-        return False
 
 
 def _read_only_directory(path: Path) -> bool:
@@ -309,7 +302,12 @@ def _validate_live_preflight(
     """Reopen every executable input and collect facts before candidate entry."""
 
     from optima.engine_tree import reopen_materialized_engine_tree
-    from optima.eval import _launch
+    from optima.eval.engine_worker import (
+        _egress_is_blocked,
+        _loopback_is_up,
+        _network_namespace_is_loopback_only,
+        _process_sandbox_is_hardened,
+    )
     from optima.eval.native_artifact import reopen_native_artifact
 
     if os.environ.get("OPTIMA_LAUNCH_DIGEST", "").strip() != launch_digest:
@@ -340,10 +338,10 @@ def _validate_live_preflight(
         raise SessionWorkerError("model, engine tree, and native artifacts must be read-only")
     _validate_private_cache()
     if not (
-        _launch._loopback_is_up()
-        and _launch._network_namespace_is_loopback_only()
-        and _launch._egress_is_blocked()
-        and _launch._process_sandbox_is_hardened()
+        _loopback_is_up()
+        and _network_namespace_is_loopback_only()
+        and _egress_is_blocked()
+        and _process_sandbox_is_hardened()
     ):
         raise SessionWorkerError("live OCI sandbox is not loopback-only and hardened")
 
@@ -406,17 +404,15 @@ def _prepare_descendant_bootstrap() -> None:
     import optima.bootstrap  # noqa: F401 - deliberately after live preflight
 
 
-@dataclass(frozen=True)
-class _EngineHandle:
-    engine: object
-    require_completion: Any
-
-
 @contextlib.contextmanager
-def _engine_session(config: EngineSessionConfig, tree: object) -> Iterator[_EngineHandle]:
+def _engine_session(config: EngineSessionConfig, tree: object) -> Iterator[object]:
     """Construct one content-selected engine without any scheduling role."""
 
-    _prepare_descendant_bootstrap()
+    reference_mode = os.environ.get("OPTIMA_SESSION_PROTOCOL") == "reference"
+    if reference_mode:
+        os.environ["PYTHONPATH"] = ""
+    else:
+        _prepare_descendant_bootstrap()
     from optima.manifest import load_manifest
 
     tree_root = Path(getattr(tree, "root"))
@@ -444,36 +440,21 @@ def _engine_session(config: EngineSessionConfig, tree: object) -> Iterator[_Engi
         isolate=True,
         allow_unsafe_no_isolation=False,
     )
-    from optima.eval._launch import (
-        _active_execution_members,
-        _require_execution_completion,
-        launched_engine,
-    )
+    from optima.eval.engine_worker import isolated_engine_session
 
     bundle_path = str(tree_root) if active else ""
-    with launched_engine(
-        cfg, bundle_path=bundle_path, active=active, audit_rate=0.0
-    ) as engine:
-        if not active:
-            yield _EngineHandle(engine, lambda: None)
-            return
-        from optima import receipts
-
-        receipt_dir = os.environ.get("OPTIMA_SEAM_RECEIPT_DIR", "")
-        active_receipts = receipts.collect(receipt_dir, "active")
-        expected_slots = _active_execution_members(
-            active_receipts, expected_member_count=config.tp_size
-        )
-
-        def require_completion() -> None:
-            _require_execution_completion(
-                receipt_dir,
-                active_receipts=active_receipts,
-                expected_slots=expected_slots,
-                expected_member_count=config.tp_size,
-            )
-
-        yield _EngineHandle(engine, require_completion)
+    if manifest is not None and manifest.dep_patches and not os.environ.get(
+        "FLASHINFER_WORKSPACE_BASE", ""
+    ):
+        raise SessionWorkerError("dep-patched tree lacks its sealed runtime workspace")
+    with isolated_engine_session(
+        cfg,
+        bundle_path=bundle_path,
+        active=active,
+        framework_mode=framework_mode,
+        install_seams=not reference_mode,
+    ) as handle:
+        yield handle
 
 
 def _engine_outputs(outputs: object, *, request: BatchRequest) -> BatchEvidence:
@@ -543,9 +524,242 @@ def _generate(engine: object, request: BatchRequest) -> BatchEvidence:
     return _engine_outputs(outputs, request=request)
 
 
+def _canonical_prompt_ids(engine: object, prompt: str) -> list[int]:
+    manager = getattr(engine, "tokenizer_manager", None)
+    tokenizer = getattr(manager, "tokenizer", None)
+    encode = getattr(tokenizer, "encode", None)
+    if not callable(encode):
+        raise SessionProtocolError("pristine reference lacks the pinned tokenizer API")
+    ids = encode(prompt)
+    if (
+        not isinstance(ids, list)
+        or not ids
+        or any(type(token) is not int or not 0 <= token <= 2_147_483_647 for token in ids)
+    ):
+        raise SessionProtocolError("pristine reference tokenization is invalid")
+    return ids
+
+
+def _tokenizer_vocab_size(engine: object) -> int:
+    tokenizer = getattr(getattr(engine, "tokenizer_manager", None), "tokenizer", None)
+    try:
+        size = len(tokenizer)
+    except (TypeError, AttributeError):
+        size = getattr(tokenizer, "vocab_size", None)
+    if type(size) is not int or not 1 <= size <= 2_147_483_648:
+        raise SessionProtocolError("pristine reference vocabulary is invalid")
+    return size
+
+
+def _logprob_entry(value: object, *, label: str) -> tuple[float, int]:
+    if not isinstance(value, (tuple, list)) or len(value) < 2:
+        raise SessionProtocolError(f"pristine reference {label} entry is malformed")
+    logprob, token_id = value[0], value[1]
+    if (
+        isinstance(logprob, bool)
+        or not isinstance(logprob, (int, float))
+        or not math.isfinite(float(logprob))
+        or type(token_id) is not int
+    ):
+        raise SessionProtocolError(f"pristine reference {label} entry is invalid")
+    return float(logprob), token_id
+
+
+def _reference_role_evidence(
+    engine: object,
+    prompt_ids: list[list[int]],
+    role_inputs: list[object],
+    *,
+    vocab_size: int,
+) -> list[object]:
+    from optima.eval.reference_protocol import (
+        ReferenceRoleEvidence,
+        ReferenceTokenEvidence,
+    )
+
+    output_ids = [list(getattr(role, "output_ids")) for role in role_inputs]
+    support_ids = [
+        sorted({token for row in getattr(role, "supports") for token in row})
+        for role in role_inputs
+    ]
+    if any(
+        token >= vocab_size
+        for rows in (*output_ids, *support_ids)
+        for token in rows
+    ):
+        raise SessionProtocolError("pristine reference request contains an OOV token")
+    outputs = getattr(engine, "generate", None)
+    if not callable(outputs):
+        raise SessionProtocolError("pristine reference does not expose generate()")
+    rows = outputs(
+        input_ids=[
+            prefix + response
+            for prefix, response in zip(prompt_ids, output_ids, strict=True)
+        ],
+        sampling_params={"temperature": 0.0, "max_new_tokens": 0, "ignore_eos": True},
+        return_logprob=True,
+        logprob_start_len=[max(0, len(prefix) - 1) for prefix in prompt_ids],
+        top_logprobs_num=1,
+        token_ids_logprob=support_ids,
+    )
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list) or len(rows) != len(role_inputs):
+        raise SessionProtocolError("pristine reference returned wrong prompt coverage")
+    result: list[object] = []
+    for role, response, requested, row in zip(
+        role_inputs, output_ids, support_ids, rows, strict=True
+    ):
+        metadata = row.get("meta_info") if isinstance(row, dict) else None
+        if not isinstance(metadata, dict):
+            raise SessionProtocolError("pristine reference output metadata is missing")
+        targets = metadata.get("input_token_logprobs")
+        top_one = metadata.get("input_top_logprobs")
+        targeted = metadata.get("input_token_ids_logprobs")
+        if not all(isinstance(value, list) for value in (targets, top_one, targeted)):
+            raise SessionProtocolError("pristine reference omitted teacher logprobs")
+        targets = targets[-len(response):]
+        top_one = top_one[-len(response):]
+        targeted = targeted[-len(response):]
+        if not (len(targets) == len(top_one) == len(targeted) == len(response)):
+            raise SessionProtocolError("pristine reference teacher coverage is incomplete")
+        tokens = []
+        for position, (expected, raw_target, raw_top, raw_support) in enumerate(
+            zip(response, targets, top_one, targeted, strict=True)
+        ):
+            target_logprob, target_id = _logprob_entry(raw_target, label="target")
+            if target_id != expected:
+                raise SessionProtocolError("pristine reference scored the wrong target")
+            if not isinstance(raw_top, list) or len(raw_top) != 1:
+                raise SessionProtocolError("pristine reference true-argmax evidence is malformed")
+            argmax_logprob, argmax_id = _logprob_entry(raw_top[0], label="argmax")
+            if not 0 <= argmax_id < vocab_size:
+                raise SessionProtocolError("pristine reference argmax is out of vocabulary")
+            if not isinstance(raw_support, list):
+                raise SessionProtocolError("pristine reference support evidence is malformed")
+            support_map: dict[int, float] = {}
+            for entry in raw_support:
+                value, token_id = _logprob_entry(entry, label="support")
+                if token_id in support_map:
+                    raise SessionProtocolError("pristine reference duplicated a support token")
+                support_map[token_id] = value
+            if tuple(sorted(support_map)) != tuple(requested):
+                raise SessionProtocolError("pristine reference support coverage differs")
+            requested_position = getattr(role, "supports")[position]
+            if expected in support_map and not math.isclose(
+                support_map[expected], target_logprob, rel_tol=1e-4, abs_tol=1e-4
+            ):
+                raise SessionProtocolError("pristine reference target/support logprobs disagree")
+            if argmax_id in support_map and not math.isclose(
+                support_map[argmax_id], argmax_logprob, rel_tol=1e-4, abs_tol=1e-4
+            ):
+                raise SessionProtocolError("pristine reference argmax/support logprobs disagree")
+            tokens.append(ReferenceTokenEvidence(
+                target_logprob,
+                argmax_id,
+                tuple(support_map[token] for token in requested_position),
+            ))
+        result.append(ReferenceRoleEvidence(tuple(tokens)))
+    return result
+
+
+def _reference_evidence(engine: object, request: object) -> object:
+    from optima.eval.reference_protocol import (
+        ReferenceEvidence,
+        ReferencePromptEvidence,
+        request_sha256,
+    )
+
+    prompt_ids = [_canonical_prompt_ids(engine, item.prompt) for item in request.prompts]
+    vocab_size = _tokenizer_vocab_size(engine)
+    roles = [
+        _reference_role_evidence(
+            engine,
+            prompt_ids,
+            [prompt.roles[index] for prompt in request.prompts],
+            vocab_size=vocab_size,
+        )
+        for index in range(3)
+    ]
+    prompts = []
+    for index, (prompt, ids) in enumerate(zip(request.prompts, prompt_ids, strict=True)):
+        token_bytes = b"".join(int(token).to_bytes(4, "big") for token in ids)
+        prompts.append(ReferencePromptEvidence(
+            prompt.prompt_digest,
+            len(ids),
+            hashlib.sha256(token_bytes).hexdigest(),
+            tuple(role[index] for role in roles),
+        ))
+    return ReferenceEvidence(
+        request.session_id,
+        request.launch_digest,
+        request.plan_digest,
+        request_sha256(request),
+        request.request_id,
+        request.nonce,
+        request.request_index,
+        vocab_size,
+        tuple(prompts),
+    )
+
+
+def _read_reference_request(fd: int) -> object:
+    from optima.eval.reference_protocol import (
+        FRAME_HEADER_BYTES as REFERENCE_HEADER_BYTES,
+        MAX_REQUEST_BYTES,
+        REQUEST_MAGIC,
+        decode_reference_request,
+    )
+
+    header = _read_exact(fd, REFERENCE_HEADER_BYTES)
+    if header[:4] != REQUEST_MAGIC:
+        raise SessionProtocolError("reference request magic/version mismatch")
+    size = struct.unpack(">I", header[4:8])[0]
+    if size > MAX_REQUEST_BYTES:
+        raise SessionProtocolError("reference request exceeds its hard bound")
+    return decode_reference_request(header + _read_exact(fd, size))
+
+
+def _serve_reference(
+    engine: object,
+    control_fd: int,
+    protocol_fd: int,
+    *,
+    session_id: str,
+    launch_digest: str,
+) -> None:
+    from optima.eval.reference_protocol import encode_reference_evidence
+
+    expected_index = 0
+    plan_digest: str | None = None
+    seen_request_ids: set[str] = set()
+    seen_nonces: set[str] = set()
+    while True:
+        request = _read_reference_request(control_fd)
+        if plan_digest is None:
+            plan_digest = request.plan_digest
+        if (
+            request.session_id != session_id
+            or request.launch_digest != launch_digest
+            or request.plan_digest != plan_digest
+            or request.request_index != expected_index
+            or request.request_id in seen_request_ids
+            or request.nonce in seen_nonces
+        ):
+            raise SessionProtocolError("reference ordering, binding, or replay check failed")
+        seen_request_ids.add(request.request_id)
+        seen_nonces.add(request.nonce)
+        evidence = _reference_evidence(engine, request)
+        _write_all(protocol_fd, encode_reference_evidence(evidence, request))
+        expected_index += 1
+
+
 def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
     """Serve batches until the trusted host force-destroys the container."""
 
+    session_protocol = os.environ.get("OPTIMA_SESSION_PROTOCOL", "ordinary")
+    if session_protocol not in {"ordinary", "reference"}:
+        return 1
     protocol_fd = _reserve_protocol_fd() if output_fd is None else output_fd
     os.set_inheritable(protocol_fd, False)
     control_fd = _reserve_control_fd(input_fd)
@@ -581,6 +795,13 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
             expected_facts_digest=facts.digest,
         )
         stage = "engine"
+        if (
+            session_protocol == "reference"
+            and getattr(tree, "runtime_manifest", None) is not None
+        ):
+            raise SessionProtocolError(
+                "pristine reference tree must contain no contribution manifest"
+            )
         with _engine_session(config, tree) as handle:
             _write_all(
                 protocol_fd,
@@ -591,6 +812,16 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                     max_bytes=MAX_CONTROL_BYTES,
                 ),
             )
+            if session_protocol == "reference":
+                stage = "reference"
+                _serve_reference(
+                    handle.engine,
+                    control_fd,
+                    protocol_fd,
+                    session_id=session_id,
+                    launch_digest=launch_digest,
+                )
+                raise AssertionError("reference session loop returned")
             expected_index = 0
             seen_request_ids: set[str] = set()
             seen_nonces: set[str] = set()

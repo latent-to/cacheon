@@ -8,6 +8,8 @@ streaming runtime so timeout/cancellation/controller-restart cleanup has one aut
 
 from __future__ import annotations
 
+import hashlib
+import fcntl
 import json
 import math
 import os
@@ -16,6 +18,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import threading
 import time
 import secrets
 from dataclasses import dataclass
@@ -40,6 +43,54 @@ class OCIProcessError(RuntimeError):
 
 class OCIProcessTimeout(OCIProcessError):
     pass
+
+
+@dataclass(frozen=True)
+class OCIQuiescenceReceipt:
+    """Manager-owned proof that one executor namespace has no live resources."""
+
+    schema: str
+    executor_id: str
+    manager_instance_id: str
+    namespace_digest: str
+    sequence: int
+    observed_monotonic_s: float
+    lease_records: tuple[str, ...]
+    resource_entries: tuple[str, ...]
+    container_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            self.schema != "optima.oci-quiescence.v1"
+            or not isinstance(self.executor_id, str)
+            or _SIMPLE_ID.fullmatch(self.executor_id) is None
+            or not isinstance(self.manager_instance_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", self.manager_instance_id) is None
+            or not isinstance(self.namespace_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", self.namespace_digest) is None
+            or type(self.sequence) is not int
+            or self.sequence < 1
+            or type(self.observed_monotonic_s) is not float
+            or not math.isfinite(self.observed_monotonic_s)
+            or self.observed_monotonic_s < 0
+            or any((self.lease_records, self.resource_entries, self.container_ids))
+        ):
+            raise OCIProcessError("OCI quiescence receipt is malformed or nonempty")
+
+    @property
+    def digest(self) -> str:
+        payload = {
+            "container_ids": list(self.container_ids),
+            "executor_id": self.executor_id,
+            "manager_instance_id": self.manager_instance_id,
+            "namespace_digest": self.namespace_digest,
+            "lease_records": list(self.lease_records),
+            "observed_monotonic_s": format(self.observed_monotonic_s, ".17g"),
+            "resource_entries": list(self.resource_entries),
+            "schema": self.schema,
+            "sequence": self.sequence,
+        }
+        return hashlib.sha256(b"optima.oci-quiescence.v1\0" + _canonical_json(payload)).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -219,12 +270,125 @@ class OCIProcessManager:
             raise OCIProcessError("recovery_root must not be a symlink")
         root.mkdir(parents=True, exist_ok=True)
         self.recovery_root = root.resolve()
+        root_info = self.recovery_root.stat()
+        locks_root = self.recovery_root / "locks"
+        locks_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_path = locks_root / f"{self.executor_id}.lock"
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            self._namespace_lock_fd = os.open(lock_path, flags, 0o600)
+            fcntl.flock(
+                self._namespace_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB
+            )
+        except (OSError, BlockingIOError) as exc:
+            if getattr(self, "_namespace_lock_fd", -1) >= 0:
+                os.close(self._namespace_lock_fd)
+            self._namespace_lock_fd = -1
+            raise OCIProcessError(
+                f"OCI executor namespace is already owned: {exc}"
+            ) from None
+        self.manager_instance_id = secrets.token_hex(16)
+        self.namespace_digest = hashlib.sha256(
+            b"optima.oci-namespace.v1\0"
+            + _canonical_json(
+                {
+                    "docker_binary": self.docker_binary,
+                    "executor_id": self.executor_id,
+                    "recovery_device": root_info.st_dev,
+                    "recovery_inode": root_info.st_ino,
+                }
+            )
+        ).hexdigest()
         self.leases_root = self.recovery_root / "leases" / self.executor_id
         self.resources_root = self.recovery_root / "resources" / self.executor_id
         self.leases_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.resources_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.runner = runner
         self.clock = clock
+        self.transaction_lock = threading.Lock()
+        self._quiescence_sequence = 0
+
+    def _require_namespace_owner(self) -> None:
+        if getattr(self, "_namespace_lock_fd", -1) < 0:
+            raise OCIProcessError("OCI executor namespace manager is closed")
+
+    def prove_quiescent(self) -> OCIQuiescenceReceipt:
+        """Fail closed unless this executor has no lease, resource, or container."""
+
+        self._require_namespace_owner()
+
+        def entries(root: Path) -> tuple[str, ...]:
+            if root.is_symlink() or not root.is_dir():
+                raise OCIProcessError("OCI executor namespace is not a real directory")
+            return tuple(sorted(path.name for path in root.iterdir()))
+
+        leases = entries(self.leases_root)
+        resources = entries(self.resources_root)
+        listed = self._run_control(
+            (
+                self.docker_binary,
+                "container",
+                "ls",
+                "--all",
+                "--no-trunc",
+                "--filter",
+                f"label={EXECUTOR_LABEL}={self.executor_id}",
+                "--format={{.ID}}",
+            ),
+            allow_failure=False,
+        )
+        if listed.stderr.strip():
+            raise OCIProcessError("executor-labelled container listing emitted stderr")
+        try:
+            containers = tuple(
+                row for row in listed.stdout.decode("ascii", errors="strict").splitlines()
+                if row
+            )
+        except UnicodeError as exc:
+            raise OCIProcessError(f"executor-labelled container listing is not ASCII: {exc}") from None
+        if len(set(containers)) != len(containers) or any(
+            _CID.fullmatch(row) is None for row in containers
+        ):
+            raise OCIProcessError("executor-labelled container listing is malformed")
+        # Close a late registration/removal race around the container query.
+        if (leases, resources) != (entries(self.leases_root), entries(self.resources_root)):
+            raise OCIProcessError("OCI executor namespace changed during quiescence proof")
+        if leases or resources or containers:
+            raise OCIProcessError("OCI executor is not quiescent")
+        try:
+            observed = float(self.clock())
+        except Exception as exc:
+            raise OCIProcessError(f"OCI quiescence clock failed: {exc}") from None
+        if not math.isfinite(observed) or observed < 0:
+            raise OCIProcessError("OCI quiescence clock is invalid")
+        self._quiescence_sequence += 1
+        return OCIQuiescenceReceipt(
+            "optima.oci-quiescence.v1",
+            self.executor_id,
+            self.manager_instance_id,
+            self.namespace_digest,
+            self._quiescence_sequence,
+            observed,
+            leases,
+            resources,
+            containers,
+        )
+
+    def close(self) -> None:
+        """Release process-wide ownership; normally only controller exit does this."""
+
+        fd = getattr(self, "_namespace_lock_fd", -1)
+        if fd >= 0:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+            self._namespace_lock_fd = -1
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
 
     def register(
         self,
@@ -234,6 +398,7 @@ class OCIProcessManager:
         mount_relpaths: Iterable[str] = (),
         stage_relpaths: Iterable[str] = (),
     ) -> OCILease:
+        self._require_namespace_owner()
         lease_id = _simple_id(lease_id, field="lease_id")
         container_name = _simple_id(container_name, field="container_name")
         mount_rows = tuple(

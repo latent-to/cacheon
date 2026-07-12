@@ -30,6 +30,14 @@ from optima.eval.oci_session_protocol import (
     preflight_accept_message,
     validate_batch_request,
 )
+from optima.eval.reference_protocol import (
+    EVIDENCE_MAGIC as REFERENCE_EVIDENCE_MAGIC,
+    ReferencePromptInput,
+    ReferenceRequest,
+    ReferenceRoleInput,
+    decode_reference_evidence,
+    encode_reference_request,
+)
 
 
 def _digest(character: str) -> str:
@@ -134,6 +142,63 @@ def _bind_init(monkeypatch, config: EngineSessionConfig, launch: str) -> None:
     monkeypatch.setenv("OPTIMA_ENGINE_CONFIG_DIGEST", config.digest)
 
 
+def _reference_request(*, session: str, launch: str, index: int) -> ReferenceRequest:
+    role = ReferenceRoleInput((7, 8), ((7, 9), (8, 10)))
+    return ReferenceRequest(
+        session,
+        launch,
+        _digest("3"),
+        f"{index + 7:x}" * 32,
+        f"{index + 10:x}" * 32,
+        index,
+        2,
+        2,
+        (ReferencePromptInput(_digest("6"), f"prompt-{index}", (role, role, role)),),
+    )
+
+
+class _ReferenceTokenizer:
+    vocab_size = 128
+
+    def __len__(self):
+        return self.vocab_size
+
+    def encode(self, _prompt):
+        return [1, 2]
+
+
+class _ReferenceEngine:
+    tokenizer_manager = SimpleNamespace(tokenizer=_ReferenceTokenizer())
+
+    def __init__(self):
+        self.calls = []
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        rows = []
+        for full_ids, requested in zip(
+            kwargs["input_ids"], kwargs["token_ids_logprob"], strict=True
+        ):
+            response = full_ids[-2:]
+            targets = [[None, 2, None]]
+            top_one = [None]
+            targeted = [None]
+            for token in response:
+                targets.append([-token / 100.0, token, None])
+                top_one.append([[-requested[0] / 100.0, requested[0], None]])
+                targeted.append(
+                    [[-support / 100.0, support, None] for support in requested]
+                )
+            rows.append({
+                "meta_info": {
+                    "input_token_logprobs": targets,
+                    "input_top_logprobs": top_one,
+                    "input_token_ids_logprobs": targeted,
+                }
+            })
+        return rows
+
+
 def test_topology_digest_normalizes_nvidia_smi_underlined_header(monkeypatch):
     observed = (
         "\t\x1b[4mGPU0\tGPU1\tNIC0\x1b[0m\n"
@@ -214,7 +279,7 @@ def test_preflight_frame_is_published_before_engine_candidate_or_native_entry(
         assert first[:4] == CONTROL_MAGIC
         assert parse_frame_bytes(first, max_bytes=MAX_CONTROL_BYTES)["type"] == "preflight"
         order.append("engine")
-        yield worker._EngineHandle(SimpleNamespace(), lambda: None)
+        yield SimpleNamespace(engine=SimpleNamespace(), require_completion=lambda: None)
 
     monkeypatch.setattr(worker, "_validate_live_preflight", preflight)
     monkeypatch.setattr(worker, "_engine_session", engine_session)
@@ -363,8 +428,9 @@ def test_open_ended_worker_returns_only_exact_binary_batch_evidence(monkeypatch)
 
     @contextlib.contextmanager
     def engine_session(_config, _tree):
-        yield worker._EngineHandle(
-            Engine(), lambda: completions.append(len(completions))
+        yield SimpleNamespace(
+            engine=Engine(),
+            require_completion=lambda: completions.append(len(completions)),
         )
 
     monkeypatch.setattr(worker, "_engine_session", engine_session)
@@ -388,6 +454,115 @@ def test_open_ended_worker_returns_only_exact_binary_batch_evidence(monkeypatch)
         assert error["request_id"] is None
         assert completions == [0, 1]
         assert os.read(output_read, 1) == b""
+    finally:
+        os.close(input_fd)
+        try:
+            os.close(output_write)
+        except OSError:
+            pass
+        os.close(output_read)
+
+
+def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monkeypatch):
+    config = _config()
+    session, launch = "6" * 32, _digest("a")
+    requests = tuple(
+        _reference_request(session=session, launch=launch, index=index)
+        for index in range(2)
+    )
+    _bind_init(monkeypatch, config, launch)
+    monkeypatch.setenv("OPTIMA_SESSION_PROTOCOL", "reference")
+    payload = (
+        _init_frame(config, session=session, launch=launch)
+        + _accept_frame(config, session=session, launch=launch)
+        + b"".join(encode_reference_request(request) for request in requests)
+    )
+    input_fd, output_read, output_write = _session_fds(payload)
+    engine = _ReferenceEngine()
+    monkeypatch.setattr(
+        worker,
+        "_validate_live_preflight",
+        lambda _config, *, launch_digest: (
+            _facts(config, launch_digest),
+            SimpleNamespace(root="tree", runtime_manifest=None),
+        ),
+    )
+
+    @contextlib.contextmanager
+    def engine_session(_config, _tree):
+        yield SimpleNamespace(engine=engine, require_completion=lambda: None)
+
+    monkeypatch.setattr(worker, "_engine_session", engine_session)
+    try:
+        assert worker.run_session(input_fd=input_fd, output_fd=output_write) == 1
+        os.close(output_write)
+        assert parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )["type"] == "preflight"
+        assert parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )["type"] == "ready"
+        for request in requests:
+            frame = _read_frame(output_read)
+            assert frame[:4] == REFERENCE_EVIDENCE_MAGIC
+            evidence = decode_reference_evidence(frame, request)
+            assert evidence.request_index == request.request_index
+            assert evidence.prompts[0].prompt_token_count == 2
+            assert evidence.prompts[0].roles[0].tokens[0].target_logprob == pytest.approx(-0.07)
+        terminal = parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )
+        assert terminal["type"] == "session_error"
+        assert terminal["stage"] == "reference"
+        assert len(engine.calls) == 6
+        assert all(call["top_logprobs_num"] == 1 for call in engine.calls)
+        assert os.read(output_read, 1) == b""
+    finally:
+        os.close(input_fd)
+        try:
+            os.close(output_write)
+        except OSError:
+            pass
+        os.close(output_read)
+
+
+def test_reference_worker_rejects_any_contribution_manifest_before_engine(monkeypatch):
+    config = _config()
+    session, launch = "6" * 32, _digest("a")
+    _bind_init(monkeypatch, config, launch)
+    monkeypatch.setenv("OPTIMA_SESSION_PROTOCOL", "reference")
+    input_fd, output_read, output_write = _session_fds(
+        _init_frame(config, session=session, launch=launch)
+        + _accept_frame(config, session=session, launch=launch)
+    )
+    entered = []
+    monkeypatch.setattr(
+        worker,
+        "_validate_live_preflight",
+        lambda _config, *, launch_digest: (
+            _facts(config, launch_digest),
+            SimpleNamespace(root="tree", runtime_manifest="manifest.toml"),
+        ),
+    )
+
+    @contextlib.contextmanager
+    def forbidden_engine(*_args, **_kwargs):
+        entered.append(True)
+        yield
+
+    monkeypatch.setattr(worker, "_engine_session", forbidden_engine)
+    try:
+        assert worker.run_session(input_fd=input_fd, output_fd=output_write) == 1
+        os.close(output_write)
+        assert parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )["type"] == "preflight"
+        terminal = parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )
+        assert terminal["type"] == "session_error"
+        assert terminal["stage"] == "engine"
+        assert entered == []
     finally:
         os.close(input_fd)
         try:
