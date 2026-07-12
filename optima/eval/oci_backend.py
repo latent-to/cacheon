@@ -55,7 +55,13 @@ from optima.eval.oci_prebuild import (
     OCIPrebuildResult,
     run_oci_prebuild,
 )
-from optima.eval.oci_process import OCILease, OCIProcessManager
+from optima.eval.oci_process import OCILease, OCIProcessManager, OCIQuiescenceReceipt
+from optima.eval.oci_reference_session import (
+    AttachedReferenceTransport,
+    ReferenceSessionEvidence,
+    ReferenceSessionPlan,
+    run_reference_session,
+)
 from optima.eval.oci_session_protocol import RuntimePreflightFacts
 from optima.eval.runtime_preflight import (
     HOST_RECEIPT_SCHEMA,
@@ -492,9 +498,12 @@ def build_runtime_argv(
     cache_root: Path,
     seccomp_path: Path,
     runtime: OCIRuntimeResourcePolicy,
+    session_protocol: str = "ordinary",
 ) -> tuple[str, ...]:
     """Construct the exact runtime argv from trusted, already-reopened inputs."""
     launch = resolved.spec
+    if session_protocol not in {"ordinary", "reference"}:
+        raise OCIBackendError("runtime session protocol is not registered")
     if preflight.local_image_id is None or _IMAGE_ID.fullmatch(preflight.local_image_id) is None:
         raise OCIBackendError("runtime preflight local image ID is malformed")
     artifact_destination = (
@@ -520,6 +529,7 @@ def build_runtime_argv(
         "OPTIMA_NATIVE_BUILD_SPEC_DIGEST": resolved.native_build_spec.digest,
         "OPTIMA_PREBUILT_ARTIFACTS": "1",
         "OPTIMA_RUNTIME_DIGEST": launch.runtime_digest,
+        "OPTIMA_SESSION_PROTOCOL": session_protocol,
         "OPTIMA_STACK_DIGEST": launch.stack_digest,
         "OPTIMA_TARGET_GPU_ARCH": resolved.native_build_spec.target_architecture,
         "OPTIMA_WORKER_DISTRIBUTION_DIGEST": launch.worker_distribution_digest,
@@ -605,8 +615,43 @@ class EngineExecutionEvidence:
     session: SessionExecutionEvidence
 
 
+@dataclass(frozen=True)
+class PristineReferenceExecutionEvidence:
+    """Raw, verdict-free evidence from one separately launched empty-stack T."""
+
+    schema: str
+    launch_digest: str
+    runtime_identity: CandidateFreeRuntimeIdentity
+    runtime_preflight_receipt_sha256: str
+    arena_model_receipt_digest: str
+    resource_policy_digest: str
+    prebuild: OCIPrebuildResult
+    native_publication_digest: str
+    runtime_argv_sha256: str
+    recovered_lease_ids: tuple[str, ...]
+    device_receipts: tuple[DeviceStateReceipt, DeviceStateReceipt]
+    session: ReferenceSessionEvidence
+
+
 class OuterSessionRunner(Protocol):
     def __call__(self, plan: SessionExecutionPlan, **kwargs: object) -> SessionExecutionEvidence: ...
+
+
+class ReferenceSessionRunner(Protocol):
+    def __call__(
+        self, plan: ReferenceSessionPlan, **kwargs: object
+    ) -> ReferenceSessionEvidence: ...
+
+
+@dataclass(frozen=True)
+class _RawRuntimeExecution:
+    launch_id: str
+    prebuild: OCIPrebuildResult
+    publication_digest: str
+    argv_digest: str
+    pre_receipt: DeviceStateReceipt
+    post_receipt: DeviceStateReceipt
+    value: object
 
 
 class _FinalWarmupConditioner:
@@ -716,6 +761,7 @@ class OCIEngineExecutor:
         device_runner: DeviceCommandRunner = device_subprocess_runner,
         device_sleep: Callable[[float], None] = time.sleep,
         session_runner: OuterSessionRunner = run_outer_session,
+        reference_session_runner: ReferenceSessionRunner = run_reference_session,
     ) -> None:
         if type(config) is not OCIBackendConfig:
             raise OCIBackendError("executor config has the wrong type")
@@ -740,6 +786,7 @@ class OCIEngineExecutor:
             sleep=device_sleep,
         )
         self.session_runner = session_runner
+        self.reference_session_runner = reference_session_runner
         self._lock = threading.Lock()
         self._recovered: tuple[str, ...] | None = None
 
@@ -748,12 +795,25 @@ class OCIEngineExecutor:
             self._recovered = self.manager.recover_stale()
         return self._recovered
 
-    def _validate_launch(
+    def prove_quiescent(self) -> OCIQuiescenceReceipt:
+        """Serialize an executor-owned absence proof between engine lifetimes."""
+
+        if not self._lock.acquire(blocking=False):
+            raise OCIBackendError("cannot prove quiescence during an active session")
+        try:
+            return self.manager.prove_quiescent()
+        finally:
+            self._lock.release()
+
+    def _validate_launch_identity(
         self,
         launch: EngineLaunchSpec,
         binding: TrustedLaunchBinding,
         mount: TrustedArenaModelMountReceipt,
-        plan: SessionExecutionPlan,
+        *,
+        engine_config_digest: str,
+        engine_tp_size: int,
+        expected_preflight: RuntimePreflightFacts,
     ) -> tuple[
         ResolvedEngineLaunch,
         RuntimePreflightReceipt,
@@ -765,8 +825,6 @@ class OCIEngineExecutor:
             raise OCIBackendError("executor launch/binding types are invalid")
         if type(mount) is not TrustedArenaModelMountReceipt:
             raise OCIBackendError("arena/model mount receipt has the wrong type")
-        if type(plan) is not SessionExecutionPlan:
-            raise OCIBackendError("outer session plan has the wrong type")
         try:
             resolved = resolve_engine_launch(launch, binding)
         except EngineLaunchError as exc:
@@ -800,12 +858,9 @@ class OCIEngineExecutor:
             or launch.model_content_digest != mount.model_content_digest
         ):
             raise OCIBackendError("arena/model mount receipt differs from launch identity")
-        if plan.launch_digest != launch.digest:
-            raise OCIBackendError("outer session plan names another launch")
         if (
-            plan.engine_config.digest != launch.engine_config_digest
-            or plan.expected_engine_config_digest != launch.engine_config_digest
-            or plan.engine_config.tp_size != launch.hardware.tp_size
+            engine_config_digest != launch.engine_config_digest
+            or engine_tp_size != launch.hardware.tp_size
         ):
             raise OCIBackendError("engine session configuration differs from launch identity")
         validate_device_state_policy(
@@ -814,10 +869,240 @@ class OCIEngineExecutor:
             physical_hardware=resolved.physical_hardware,
         )
         expected = expected_runtime_preflight(launch, preflight)
-        if plan.expected_preflight != expected:
+        if expected_preflight != expected:
             raise OCIBackendError("outer session expected preflight differs from host policy")
         model_root = mount.reopen()
         return resolved, preflight, identity, expected, model_root
+
+    def _validate_launch(
+        self,
+        launch: EngineLaunchSpec,
+        binding: TrustedLaunchBinding,
+        mount: TrustedArenaModelMountReceipt,
+        plan: SessionExecutionPlan,
+    ) -> tuple[
+        ResolvedEngineLaunch,
+        RuntimePreflightReceipt,
+        CandidateFreeRuntimeIdentity,
+        RuntimePreflightFacts,
+        Path,
+    ]:
+        if type(plan) is not SessionExecutionPlan:
+            raise OCIBackendError("outer session plan has the wrong type")
+        if plan.engine_config.digest != plan.expected_engine_config_digest:
+            raise OCIBackendError("outer session plan has inconsistent engine identity")
+        validated = self._validate_launch_identity(
+            launch,
+            binding,
+            mount,
+            engine_config_digest=plan.expected_engine_config_digest,
+            engine_tp_size=plan.engine_config.tp_size,
+            expected_preflight=plan.expected_preflight,
+        )
+        if plan.launch_digest != launch.digest:
+            raise OCIBackendError("outer session plan names another launch")
+        return validated
+
+    def _validate_reference_launch(
+        self,
+        launch: EngineLaunchSpec,
+        binding: TrustedLaunchBinding,
+        mount: TrustedArenaModelMountReceipt,
+        plan: ReferenceSessionPlan,
+    ) -> tuple[
+        ResolvedEngineLaunch,
+        RuntimePreflightReceipt,
+        CandidateFreeRuntimeIdentity,
+        RuntimePreflightFacts,
+        Path,
+    ]:
+        if type(plan) is not ReferenceSessionPlan:
+            raise OCIBackendError("reference session plan has the wrong type")
+        if plan.reference.pristine_launch_digest != launch.digest:
+            raise OCIBackendError("reference session plan names another launch")
+        validated = self._validate_launch_identity(
+            launch,
+            binding,
+            mount,
+            engine_config_digest=plan.expected_engine_config_digest,
+            engine_tp_size=plan.engine_config.tp_size,
+            expected_preflight=plan.expected_preflight,
+        )
+        resolved = validated[0]
+        if resolved.materialized_tree.runtime_manifest is not None:
+            raise OCIBackendError("pristine reference tree contains a contribution manifest")
+        from optima.eval.marginal_runtime import MaterializedArmBinding
+
+        try:
+            rebuilt = type(plan.reference).from_pristine(
+                plan.pristine_stack,
+                launch,
+                MaterializedArmBinding(resolved.materialized_tree, binding),
+                workload_digest=plan.reference.workload_digest,
+                tokenizer_digest=plan.reference.tokenizer_digest,
+                hidden_corpus_commitment=plan.reference.hidden_corpus_commitment,
+                hidden_judge_digest=plan.reference.hidden_judge_digest,
+                selection_policy_digest=plan.reference.selection_policy_digest,
+            )
+        except (TypeError, ValueError) as exc:
+            raise OCIBackendError(f"pristine reference identity failed to reopen: {exc}") from None
+        if rebuilt != plan.reference:
+            raise OCIBackendError("reference manifest differs from the reopened empty stack")
+        return validated
+
+    def _execute_runtime(
+        self,
+        launch: EngineLaunchSpec,
+        binding: TrustedLaunchBinding,
+        mount: TrustedArenaModelMountReceipt,
+        *,
+        absolute: float,
+        resolved: ResolvedEngineLaunch,
+        preflight: RuntimePreflightReceipt,
+        model_root: Path,
+        session_protocol: str,
+        run: Callable[[AttachedSessionTransport, float, str], object],
+    ) -> _RawRuntimeExecution:
+        """Own the common prebuild/lease/mount/teardown shell for ordinary and T."""
+
+        prebuild = run_oci_prebuild(
+            launch,
+            binding,
+            self.config.prebuild,
+            manager=self.manager,
+            limits=self.config.native_limits,
+            deadline=absolute,
+        )
+        publication = reopen_native_artifact(
+            prebuild.publication.root,
+            expected_build_spec_digest=resolved.native_build_spec.digest,
+            expected_publication_digest=prebuild.publication.publication_digest,
+            limits=self.config.native_limits,
+        )
+        if session_protocol == "reference" and publication.files:
+            raise OCIBackendError("pristine reference exposes candidate native artifacts")
+        _validate_mount_roots(
+            model_root,
+            resolved.materialized_tree_root,
+            publication.root,
+            self.config.prebuild.recovery_root,
+        )
+        launch_id = _new_runtime_id()
+        pre_receipt = self.device_guard.before_launch(launch_id, deadline=absolute)
+        post_receipt: DeviceStateReceipt | None = None
+        value: object | None = None
+        argv_digest = ""
+        lease: OCILease | None = None
+        transport: AttachedSessionTransport | None = None
+        primary: BaseException | None = None
+        cleanup_failures: list[BaseException] = []
+        try:
+            lease = self.manager.register(
+                lease_id=launch_id,
+                container_name="optima-" + launch_id,
+                mount_relpaths=("runtime-cache",),
+                stage_relpaths=("seccomp.json",),
+            )
+            cache_root = lease.mount_paths[0]
+            seccomp_copy = lease.stage_paths[0]
+            _copy_seccomp(
+                self.config.prebuild.seccomp_profile,
+                seccomp_copy,
+                expected_digest=launch.seccomp_policy_digest,
+            )
+            self.manager.mount_tmpfs(
+                lease,
+                cache_root,
+                size_bytes=self.config.runtime.cache_bytes,
+                inode_limit=self.config.runtime.cache_inodes,
+                uid=self.config.runtime.uid,
+                gid=self.config.runtime.gid,
+                executable=True,
+            )
+            resolved = resolve_engine_launch(launch, binding)
+            model_root = mount.reopen()
+            publication = reopen_native_artifact(
+                publication.root,
+                expected_build_spec_digest=resolved.native_build_spec.digest,
+                expected_publication_digest=publication.publication_digest,
+                limits=self.config.native_limits,
+            )
+            if session_protocol == "reference" and (
+                resolved.materialized_tree.runtime_manifest is not None
+                or publication.files
+            ):
+                raise OCIBackendError("pristine reference inputs acquired contribution state")
+            reopen_launch_tree(launch, resolved.materialized_tree_root)
+            argv = build_runtime_argv(
+                lease=lease,
+                resolved=resolved,
+                preflight=preflight,
+                model_root=model_root,
+                publication=publication,
+                cache_root=cache_root,
+                seccomp_path=seccomp_copy,
+                runtime=self.config.runtime,
+                session_protocol=session_protocol,
+            )
+            argv_digest = hashlib.sha256(
+                json.dumps(argv, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            reserve = float(self.device_policy.drain_timeout_s)
+            remaining = _remaining(
+                absolute, clock=self.manager.clock, stage="runtime session"
+            )
+            if remaining <= reserve:
+                raise OCIBackendDeadlineError(
+                    "executor lacks time for a session and mandatory post-drain"
+                )
+            session_deadline = absolute - reserve
+            transport_type = (
+                AttachedReferenceTransport
+                if session_protocol == "reference"
+                else AttachedSessionTransport
+            )
+            transport = transport_type(
+                self.manager, lease, argv, clock=self.manager.clock
+            )
+            value = run(transport, session_deadline, launch_id)
+        except BaseException as exc:
+            primary = exc
+        finally:
+            if transport is not None:
+                try:
+                    transport.abort()
+                except BaseException as exc:
+                    cleanup_failures.append(exc)
+            if lease is not None:
+                try:
+                    self.manager.release(lease)
+                except BaseException as exc:
+                    cleanup_failures.append(exc)
+            try:
+                post_receipt = self.device_guard.after_launch(
+                    launch_id, deadline=absolute
+                )
+            except BaseException as exc:
+                cleanup_failures.append(exc)
+        if cleanup_failures:
+            cause = primary or cleanup_failures[0]
+            raise OCIBackendError(
+                "runtime cleanup or mandatory post-drain could not be proven: "
+                + "; ".join(str(item)[:256] for item in cleanup_failures)
+            ) from cause
+        if primary is not None:
+            raise primary
+        if value is None or type(post_receipt) is not DeviceStateReceipt:
+            raise OCIBackendError("runtime returned incomplete raw evidence")
+        return _RawRuntimeExecution(
+            launch_id,
+            prebuild,
+            publication.publication_digest,
+            argv_digest,
+            pre_receipt,
+            post_receipt,
+            value,
+        )
 
     def execute(
         self,
@@ -836,92 +1121,12 @@ class OCIEngineExecutor:
             resolved, preflight, identity, expected, model_root = self._validate_launch(
                 launch, binding, mount, plan
             )
-            prebuild = run_oci_prebuild(
-                launch,
-                binding,
-                self.config.prebuild,
-                manager=self.manager,
-                limits=self.config.native_limits,
-                deadline=absolute,
-            )
-            publication = reopen_native_artifact(
-                prebuild.publication.root,
-                expected_build_spec_digest=resolved.native_build_spec.digest,
-                expected_publication_digest=prebuild.publication.publication_digest,
-                limits=self.config.native_limits,
-            )
-            _validate_mount_roots(
-                model_root,
-                resolved.materialized_tree_root,
-                publication.root,
-                self.config.prebuild.recovery_root,
-            )
-            launch_id = _new_runtime_id()
-            pre_receipt = self.device_guard.before_launch(launch_id, deadline=absolute)
-            active_receipt: DeviceStateActiveReceipt | None = None
-            post_receipt: DeviceStateReceipt | None = None
-            session: SessionExecutionEvidence | None = None
-            argv_digest = ""
-            lease: OCILease | None = None
-            transport: AttachedSessionTransport | None = None
-            conditioner: _FinalWarmupConditioner | None = None
-            primary: BaseException | None = None
-            cleanup_failures: list[BaseException] = []
-            try:
-                lease = self.manager.register(
-                    lease_id=launch_id,
-                    container_name="optima-" + launch_id,
-                    mount_relpaths=("runtime-cache",),
-                    stage_relpaths=("seccomp.json",),
-                )
-                cache_root = lease.mount_paths[0]
-                seccomp_copy = lease.stage_paths[0]
-                _copy_seccomp(
-                    self.config.prebuild.seccomp_profile,
-                    seccomp_copy,
-                    expected_digest=launch.seccomp_policy_digest,
-                )
-                self.manager.mount_tmpfs(
-                    lease,
-                    cache_root,
-                    size_bytes=self.config.runtime.cache_bytes,
-                    inode_limit=self.config.runtime.cache_inodes,
-                    uid=self.config.runtime.uid,
-                    gid=self.config.runtime.gid,
-                    executable=True,
-                )
-                # Reopen every immutable source immediately before exposing paths to Docker.
-                resolved = resolve_engine_launch(launch, binding)
-                model_root = mount.reopen()
-                publication = reopen_native_artifact(
-                    publication.root,
-                    expected_build_spec_digest=resolved.native_build_spec.digest,
-                    expected_publication_digest=publication.publication_digest,
-                    limits=self.config.native_limits,
-                )
-                reopen_launch_tree(launch, resolved.materialized_tree_root)
-                argv = build_runtime_argv(
-                    lease=lease,
-                    resolved=resolved,
-                    preflight=preflight,
-                    model_root=model_root,
-                    publication=publication,
-                    cache_root=cache_root,
-                    seccomp_path=seccomp_copy,
-                    runtime=self.config.runtime,
-                )
-                argv_digest = hashlib.sha256(
-                    json.dumps(argv, separators=(",", ":")).encode("utf-8")
-                ).hexdigest()
-                reserve = float(self.device_policy.drain_timeout_s)
-                remaining = _remaining(
-                    absolute, clock=self.manager.clock, stage="runtime session"
-                )
-                if remaining <= reserve:
-                    raise OCIBackendDeadlineError(
-                        "executor lacks time for a session and mandatory post-drain"
-                    )
-                session_deadline = absolute - reserve
+
+            def run(
+                transport: AttachedSessionTransport,
+                session_deadline: float,
+                launch_id: str,
+            ) -> tuple[SessionExecutionEvidence, DeviceStateActiveReceipt]:
                 conditioner = _FinalWarmupConditioner(
                     self.device_guard,
                     launch_id=launch_id,
@@ -930,62 +1135,46 @@ class OCIEngineExecutor:
                     deadline=session_deadline,
                     clock=self.manager.clock,
                 )
-                transport = AttachedSessionTransport(
-                    self.manager, lease, argv, clock=self.manager.clock
-                )
-                session = self.session_runner(
-                    plan,
-                    transport=transport,
-                    deadline=session_deadline,
-                    init_timeout_s=self.config.runtime.init_timeout_seconds,
-                    batch_timeout_s=self.config.runtime.batch_timeout_seconds,
-                    clock=self.manager.clock,
-                    boundary_callback=conditioner.boundary,
-                )
-                active_receipt = conditioner.require_complete()
-            except BaseException as exc:
-                primary = exc
-            finally:
-                if conditioner is not None:
-                    try:
-                        conditioner.cancel()
-                    except BaseException as exc:
-                        cleanup_failures.append(exc)
-                if transport is not None:
-                    try:
-                        transport.abort()
-                    except BaseException as exc:
-                        cleanup_failures.append(exc)
-                if lease is not None:
-                    try:
-                        self.manager.release(lease)
-                    except BaseException as exc:
-                        cleanup_failures.append(exc)
                 try:
-                    post_receipt = self.device_guard.after_launch(
-                        launch_id, deadline=absolute
+                    session = self.session_runner(
+                        plan,
+                        transport=transport,
+                        deadline=session_deadline,
+                        init_timeout_s=self.config.runtime.init_timeout_seconds,
+                        batch_timeout_s=self.config.runtime.batch_timeout_seconds,
+                        clock=self.manager.clock,
+                        boundary_callback=conditioner.boundary,
                     )
-                except BaseException as exc:
-                    cleanup_failures.append(exc)
+                    return session, conditioner.require_complete()
+                finally:
+                    conditioner.cancel()
 
-            if cleanup_failures:
-                cause = primary or cleanup_failures[0]
-                raise OCIBackendError(
-                    "runtime cleanup or mandatory post-drain could not be proven: "
-                    + "; ".join(str(item)[:256] for item in cleanup_failures)
-                ) from cause
-            if primary is not None:
-                raise primary
+            raw = self._execute_runtime(
+                launch,
+                binding,
+                mount,
+                absolute=absolute,
+                resolved=resolved,
+                preflight=preflight,
+                model_root=model_root,
+                session_protocol="ordinary",
+                run=run,
+            )
             if (
-                type(session) is not SessionExecutionEvidence
-                or session.launch_digest != launch.digest
-                or session.preflight != expected
-                or type(active_receipt) is not DeviceStateActiveReceipt
-                or type(post_receipt) is not DeviceStateReceipt
+                type(raw.value) is not tuple
+                or len(raw.value) != 2
+                or type(raw.value[0]) is not SessionExecutionEvidence
+                or type(raw.value[1]) is not DeviceStateActiveReceipt
             ):
                 raise OCIBackendError("runtime returned malformed raw execution evidence")
-            receipts = (pre_receipt, active_receipt, post_receipt)
-            _validate_device_receipts(receipts, launch_id=launch_id)
+            session, active_receipt = raw.value
+            if (
+                session.launch_digest != launch.digest
+                or session.preflight != expected
+            ):
+                raise OCIBackendError("runtime returned malformed raw execution evidence")
+            receipts = (raw.pre_receipt, active_receipt, raw.post_receipt)
+            _validate_device_receipts(receipts, launch_id=raw.launch_id)
             return EngineExecutionEvidence(
                 "optima.oci-engine-execution.v1",
                 launch.digest,
@@ -993,12 +1182,86 @@ class OCIEngineExecutor:
                 preflight.sha256,
                 mount.digest,
                 self.config.runtime.digest,
-                prebuild,
-                publication.publication_digest,
-                argv_digest,
+                raw.prebuild,
+                raw.publication_digest,
+                raw.argv_digest,
                 recovered,
                 receipts,
                 session,
+            )
+        finally:
+            self._lock.release()
+
+    def execute_reference(
+        self,
+        launch: EngineLaunchSpec,
+        binding: TrustedLaunchBinding,
+        mount: TrustedArenaModelMountReceipt,
+        plan: ReferenceSessionPlan,
+        *,
+        deadline: float,
+    ) -> PristineReferenceExecutionEvidence:
+        """Launch a separate empty-stack T and return only its raw transcript."""
+
+        if not self._lock.acquire(blocking=False):
+            raise OCIBackendError("one executor instance cannot run concurrent sessions")
+        try:
+            absolute = _deadline(deadline, clock=self.manager.clock)
+            recovered = self._recover_once()
+            resolved, preflight, identity, expected, model_root = (
+                self._validate_reference_launch(launch, binding, mount, plan)
+            )
+
+            def run(
+                transport: AttachedSessionTransport,
+                session_deadline: float,
+                _launch_id: str,
+            ) -> ReferenceSessionEvidence:
+                if type(transport) is not AttachedReferenceTransport:
+                    raise OCIBackendError("reference runtime received the wrong transport")
+                return self.reference_session_runner(
+                    plan,
+                    transport=transport,
+                    deadline=session_deadline,
+                    init_timeout_s=self.config.runtime.init_timeout_seconds,
+                    batch_timeout_s=self.config.runtime.batch_timeout_seconds,
+                    clock=self.manager.clock,
+                )
+
+            raw = self._execute_runtime(
+                launch,
+                binding,
+                mount,
+                absolute=absolute,
+                resolved=resolved,
+                preflight=preflight,
+                model_root=model_root,
+                session_protocol="reference",
+                run=run,
+            )
+            if (
+                type(raw.value) is not ReferenceSessionEvidence
+                or raw.value.launch_digest != launch.digest
+                or raw.value.preflight != expected
+                or raw.value.reference_manifest_digest != plan.reference.digest
+                or raw.value.session_plan_digest != plan.digest
+            ):
+                raise OCIBackendError("reference runtime returned malformed raw evidence")
+            receipts = (raw.pre_receipt, raw.post_receipt)
+            _validate_reference_device_receipts(receipts, launch_id=raw.launch_id)
+            return PristineReferenceExecutionEvidence(
+                "optima.oci-pristine-reference-execution.v1",
+                launch.digest,
+                identity,
+                preflight.sha256,
+                mount.digest,
+                self.config.runtime.digest,
+                raw.prebuild,
+                raw.publication_digest,
+                raw.argv_digest,
+                recovered,
+                receipts,
+                raw.value,
             )
         finally:
             self._lock.release()
@@ -1059,6 +1322,28 @@ def _validate_device_receipts(
         raise OCIBackendError("device pre/active/post receipt triplet is invalid")
 
 
+def _validate_reference_device_receipts(
+    receipts: tuple[DeviceStateReceipt, DeviceStateReceipt],
+    *,
+    launch_id: str,
+) -> None:
+    pre, post = receipts
+    if (
+        type(pre) is not DeviceStateReceipt
+        or type(post) is not DeviceStateReceipt
+        or (pre.phase, post.phase) != ("pre", "post")
+        or pre.launch_id != launch_id
+        or post.launch_id != launch_id
+        or pre.sequence >= post.sequence
+        or pre.selected_physical_gpu_ids != post.selected_physical_gpu_ids
+        or pre.configuration_sha256 != post.configuration_sha256
+        or pre.policy_sha256 != post.policy_sha256
+        or pre.completed_monotonic_s > post.started_monotonic_s
+        or post.started_monotonic_s > post.completed_monotonic_s
+    ):
+        raise OCIBackendError("reference device pre/post receipt pair is invalid")
+
+
 __all__ = [
     "CandidateFreeRuntimeIdentity",
     "EngineExecutionEvidence",
@@ -1067,6 +1352,7 @@ __all__ = [
     "OCIBackendError",
     "OCIEngineExecutor",
     "OCIRuntimeResourcePolicy",
+    "PristineReferenceExecutionEvidence",
     "TrustedArenaModelMountReceipt",
     "build_runtime_argv",
     "expected_runtime_preflight",

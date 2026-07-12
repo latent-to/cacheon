@@ -597,6 +597,31 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(tmp_path: Path) -> None:
     )
     assert '--gpus="device=0,1"' in multi_argv
 
+    reference_argv = build_runtime_argv(
+        lease=lease,
+        resolved=case.resolved,
+        preflight=case.preflight,
+        model_root=case.model,
+        publication=case.publication,
+        cache_root=cache,
+        seccomp_path=lease.stage_paths[0],
+        runtime=case.runtime,
+        session_protocol="reference",
+    )
+    assert "--env=OPTIMA_SESSION_PROTOCOL=reference" in reference_argv
+    with pytest.raises(OCIBackendError, match="protocol"):
+        build_runtime_argv(
+            lease=lease,
+            resolved=case.resolved,
+            preflight=case.preflight,
+            model_root=case.model,
+            publication=case.publication,
+            cache_root=cache,
+            seccomp_path=lease.stage_paths[0],
+            runtime=case.runtime,
+            session_protocol="candidate-chosen",
+        )
+
 
 def test_launch_validation_binds_runtime_model_config_and_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

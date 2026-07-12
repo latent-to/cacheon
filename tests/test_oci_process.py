@@ -12,6 +12,7 @@ import pytest
 import optima.eval.oci_process as process_mod
 from optima.eval.oci_process import (
     CommandResult,
+    OCIQuiescenceReceipt,
     OCIProcessError,
     OCIProcessManager,
     OCIProcessTimeout,
@@ -31,8 +32,9 @@ class Commands:
         row = tuple(argv)
         self.rows.append(row)
         if row[1:3] == ("container", "ls"):
-            name = next(value for value in row if value.startswith("name=^/"))[7:-1]
-            return CommandResult(0, (CONTAINER_ID + "\n").encode() if name in self.present else b"", b"")
+            names = [value for value in row if value.startswith("name=^/")]
+            present = bool(self.present) if not names else names[0][7:-1] in self.present
+            return CommandResult(0, (CONTAINER_ID + "\n").encode() if present else b"", b"")
         if row[1:3] == ("container", "inspect"):
             name = next(iter(self.present))
             executor, lease = self.labels.get(name, ("validator-a", "lease-1"))
@@ -136,6 +138,48 @@ def test_register_writes_exact_lease_and_run_prefix(tmp_path: Path) -> None:
         "--label=optima.lease_id=lease-1",
     )
     assert lease.record_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_quiescence_receipt_requires_empty_executor_namespace(tmp_path: Path) -> None:
+    commands = Commands()
+    times = iter((10.0, 11.0))
+    manager = OCIProcessManager(
+        docker_binary="/usr/bin/docker",
+        recovery_root=tmp_path / "recovery",
+        executor_id="validator-a",
+        runner=commands,
+        clock=lambda: next(times),
+    )
+    first = manager.prove_quiescent()
+    second = manager.prove_quiescent()
+    assert type(first) is OCIQuiescenceReceipt
+    assert (first.sequence, second.sequence) == (1, 2)
+    assert first.digest != second.digest
+
+    lease = manager.register(lease_id="lease-1", container_name="container-1")
+    with pytest.raises(OCIProcessError, match="not quiescent"):
+        manager.prove_quiescent()
+    manager.release(lease)
+    commands.present.add("container-1")
+    with pytest.raises(OCIProcessError, match="not quiescent"):
+        manager.prove_quiescent()
+
+
+def test_executor_namespace_has_one_live_manager_owner(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    with pytest.raises(OCIProcessError, match="already owned"):
+        _manager(tmp_path)
+    manager.close()
+    replacement = _manager(tmp_path)
+    assert replacement.namespace_digest == manager.namespace_digest
+    assert replacement.manager_instance_id != manager.manager_instance_id
+
+
+def test_quiescence_rejects_malformed_label_listing(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    manager.runner = lambda *_args, **_kwargs: CommandResult(0, b"not-a-container\n", b"")
+    with pytest.raises(OCIProcessError, match="malformed"):
+        manager.prove_quiescent()
 
 
 @pytest.mark.parametrize(
@@ -604,6 +648,7 @@ def test_fresh_manager_recovers_only_its_stale_leases(tmp_path: Path) -> None:
         runner=commands,
     ).register(lease_id="other", container_name="container-other")
 
+    own.close()  # simulate controller death; the kernel releases its namespace lock
     restarted = _manager(tmp_path, commands)
     assert restarted.recover_stale(active_lease_ids=("active",)) == ("stale",)
     assert not stale.record_path.exists()
@@ -619,6 +664,7 @@ def test_recovery_is_idempotent_after_resource_removal_before_record_unlink(
     __import__("shutil").rmtree(lease.resource_root)
     assert lease.record_path.exists()
 
+    manager.close()  # simulate controller death before restart recovery
     restarted = _manager(tmp_path)
     assert restarted.recover_stale() == ("stale",)
     assert not lease.record_path.exists()
@@ -668,6 +714,7 @@ def test_recovery_reaps_bounded_native_publication_copy_residue(
     residue.mkdir(parents=True)
     (residue / "partial.so").write_bytes(b"partial")
 
+    manager.close()  # simulate controller death before restart recovery
     restarted = _manager(tmp_path)
     assert restarted.recover_stale() == ("stale-publish",)
     assert not lease.resource_root.exists()

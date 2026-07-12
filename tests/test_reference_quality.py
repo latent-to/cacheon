@@ -39,9 +39,11 @@ from optima.eval.reference_quality import (
     TeacherNLLEvidence,
     TokenProbability,
     hidden_task_plan_digest,
+    distribution_from_f32_logprobs,
     raw_trajectory_projection_digest,
     reopen_reference_quality_evidence,
     score_reference_quality,
+    target_nll_from_f32,
 )
 from optima.stack_identity import canonical_json_bytes
 
@@ -434,6 +436,20 @@ def test_raw_token_contract_rejects_bad_support_normalization_order_and_bounds()
         replace(_raw_rollout(), tokens=tuple(reversed(_raw_rollout().tokens)))
     with pytest.raises(ReferenceQualityError, match="bounded"):
         TokenProbability(1, "0." + "1" * 96)
+
+
+def test_retained_support_projection_is_exact_deterministic_and_allows_ties():
+    first = distribution_from_f32_logprobs((3, 7), (-2.0, -2.0), true_argmax_token_id=11)
+    second = distribution_from_f32_logprobs((3, 7), (-2.0, -2.0), true_argmax_token_id=11)
+    assert first == second
+    assert first.entries[0].probability == first.entries[1].probability
+    assert first.true_argmax_token_id == 11
+    assert sum(Decimal(row.probability) for row in first.entries) + Decimal(
+        first.tail_probability
+    ) == 1
+    saturated = distribution_from_f32_logprobs((3, 7), (0.0, 0.0), true_argmax_token_id=3)
+    assert Decimal(saturated.tail_probability) == Decimal(1) / Decimal(10**18)
+    assert target_nll_from_f32(-2.5) == "2.5"
 
 
 @pytest.mark.parametrize(

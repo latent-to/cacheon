@@ -1068,6 +1068,107 @@ def cohort_trajectory_digest(lifecycle: object) -> str:
     )
 
 
+def candidate_lifecycle_digest(
+    lifecycle: object, *, selected_delta_digest: str
+) -> str:
+    """Bind the exact retained B/C/B-prime execution used by one qualifier."""
+
+    from optima.eval.marginal_runtime import MarginalLifecycleEvidence
+
+    if type(lifecycle) is not MarginalLifecycleEvidence:
+        raise QualificationError("candidate lifecycle is not typed")
+    candidates = tuple(
+        row
+        for row in lifecycle.candidates
+        if row.arm.selected_delta_digest == selected_delta_digest
+    )
+    if len(candidates) != 1:
+        raise QualificationError("candidate lifecycle is absent or ambiguous")
+    candidate = candidates[0]
+    executions = (
+        lifecycle.baseline_before,
+        candidate.execution,
+        lifecycle.baseline_after,
+    )
+
+    def execution_row(execution):
+        session = execution.session
+        return {
+            "device": [
+                [row.launch_id, row.sequence] for row in execution.device_receipts
+            ],
+            "launch_digest": execution.launch_digest,
+            "native_publication_digest": execution.native_publication_digest,
+            "requests": [
+                [
+                    row.request_id,
+                    row.nonce,
+                    row.token_numerator,
+                    format(row.request_started_at, ".17g"),
+                    format(row.response_completed_at, ".17g"),
+                ]
+                for row in session.batches
+            ],
+            "resource_policy_digest": execution.resource_policy_digest,
+            "runtime_argv_sha256": execution.runtime_argv_sha256,
+            "session_id": session.session_id,
+        }
+
+    return canonical_digest(
+        "optima.qualification.candidate-lifecycle",
+        {
+            "arm_digest": candidate.arm.digest,
+            "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
+            "executions": [execution_row(row) for row in executions],
+            "selected_delta_digest": _digest(
+                selected_delta_digest, "selected delta"
+            ),
+            "source_digest": lifecycle.source.digest,
+        },
+    )
+
+
+def qualification_identity_digest(
+    profile: QualificationProfile,
+    *,
+    graph_requirement: GraphVerificationRequirement,
+    selection: SelectionReceipt,
+    calibration: object,
+    candidate_lifecycle: str,
+    t_session: object,
+    selected_delta_digest: str,
+) -> str:
+    """Derive the raw-quality identity from typed validator authority."""
+
+    from optima.eval.calibration import CalibrationManifest
+    from optima.eval.oci_reference_session import ReferenceSessionEvidence
+
+    if (
+        type(profile) is not QualificationProfile
+        or type(graph_requirement) is not GraphVerificationRequirement
+        or type(selection) is not SelectionReceipt
+        or type(calibration) is not CalibrationManifest
+        or type(t_session) is not ReferenceSessionEvidence
+    ):
+        raise QualificationError("qualification identity inputs are not typed")
+    return canonical_digest(
+        "optima.qualification.candidate-identity",
+        {
+            "calibration_digest": calibration.digest,
+            "candidate_lifecycle_digest": _digest(
+                candidate_lifecycle, "candidate lifecycle"
+            ),
+            "graph_requirement_digest": graph_requirement.digest,
+            "profile_digest": profile.digest,
+            "selected_delta_digest": _digest(
+                selected_delta_digest, "selected delta"
+            ),
+            "selection_digest": selection.digest,
+            "t_session_digest": t_session.digest,
+        },
+    )
+
+
 def selected_trajectory_digest(
     lifecycle: object,
     *,
@@ -1116,17 +1217,42 @@ def selected_trajectory_projection_digest(
         raise QualificationError("selected trajectory prompts differ from the lifecycle")
     by_prompt = dict(rows)
 
+    from optima.eval.reference_quality import (
+        distribution_from_f32_logprobs,
+        retained_support_policy_digest,
+    )
+
     def project(frame):
+        distributions = []
+        for position in frame["top_logprobs"]:
+            by_token = sorted(position, key=lambda row: row[1])
+            distributions.append(
+                distribution_from_f32_logprobs(
+                    tuple(row[1] for row in by_token),
+                    tuple(float(row[0]) for row in by_token),
+                    true_argmax_token_id=position[0][1],
+                ).to_dict()
+            )
         return {
             "output_ids": frame["output_ids"],
-            "supports": [sorted(row[1] for row in position) for position in frame["top_logprobs"]],
-            "true_argmax_token_ids": [position[0][1] for position in frame["top_logprobs"]],
+            "rollout_topk": distributions,
         }
 
     return canonical_digest(
         "optima.qualification.selected-trajectory-projection",
-        [{"prompt": prompt, "rollouts": [project(by_prompt[prompt][index])
-          for index in (0, candidate_index, -1)]} for prompt in selected],
+        {
+            "support_policy_digest": retained_support_policy_digest(),
+            "prompts": [
+                {
+                    "prompt": prompt,
+                    "rollouts": [
+                        project(by_prompt[prompt][index])
+                        for index in (0, candidate_index, -1)
+                    ],
+                }
+                for prompt in selected
+            ],
+        },
     )
 
 
@@ -1162,15 +1288,80 @@ def validate_quality_binding(
     commitment: SelectionCommitment,
     entropy: SelectionEntropyReceipt,
     selection: SelectionReceipt,
+    calibration: object,
+    graph_requirement: GraphVerificationRequirement,
+    t_session: object,
 ):
     """Project frozen workload/trajectory coverage onto one raw T binding."""
 
-    from optima.eval.reference_quality import ReferenceQualityRawBinding
+    from optima.eval.calibration import CalibrationContext, CalibrationManifest
+    from optima.eval.oci_reference_session import ReferenceSessionEvidence
+    from optima.eval.reference_quality import (
+        ReferenceQualityRawBinding,
+        retained_support_policy_digest,
+    )
 
-    if type(profile) is not QualificationProfile or type(binding) is not ReferenceQualityRawBinding:
+    if (
+        type(profile) is not QualificationProfile
+        or type(binding) is not ReferenceQualityRawBinding
+        or type(calibration) is not CalibrationManifest
+        or type(graph_requirement) is not GraphVerificationRequirement
+        or type(t_session) is not ReferenceSessionEvidence
+    ):
         raise QualificationError("quality profile/binding is not typed")
     selection.reopen(commitment, entropy)
     plan = lifecycle.prepared.baseline_session_plan
+    candidates = tuple(
+        row for row in lifecycle.candidates
+        if row.arm.selected_delta_digest == selected_delta_digest
+    )
+    if len(candidates) != 1:
+        raise QualificationError("quality candidate lifecycle is absent or ambiguous")
+    candidate = candidates[0]
+    arm = candidate.arm
+    expected_graph_binding = (
+        arm.digest,
+        candidate.candidate.launch.digest,
+        arm.transition.replacement.digest,
+        arm.selected_delta_digest,
+        arm.transition.target_id,
+        arm.transition.target_spec_digest,
+        arm.candidate.catalog_digest,
+    )
+    actual_graph_binding = (
+        graph_requirement.binding.marginal_arm_digest,
+        graph_requirement.binding.candidate_launch_digest,
+        graph_requirement.binding.contribution_ref_digest,
+        graph_requirement.binding.selected_delta_digest,
+        graph_requirement.binding.target_id,
+        graph_requirement.binding.target_spec_digest,
+        graph_requirement.binding.catalog_digest,
+    )
+    expected_calibration_context = CalibrationContext(
+        profile.reference.digest,
+        profile.reference.arena_digest,
+        profile.reference.runtime_digest,
+        profile.reference.base_engine_digest,
+        profile.reference.model_revision_digest,
+        profile.reference.model_manifest_digest,
+        profile.reference.model_content_digest,
+        profile.reference.logical_hardware_digest,
+        profile.reference.workload_digest,
+        graph_requirement.binding.verification_policy_digest,
+        profile.reference.controller_distribution_digest,
+    )
+    lifecycle_digest = candidate_lifecycle_digest(
+        lifecycle, selected_delta_digest=selected_delta_digest
+    )
+    identity_digest = qualification_identity_digest(
+        profile,
+        graph_requirement=graph_requirement,
+        selection=selection,
+        calibration=calibration,
+        candidate_lifecycle=lifecycle_digest,
+        t_session=t_session,
+        selected_delta_digest=selected_delta_digest,
+    )
     if (
         commitment.source_plan_digest != lifecycle.source.digest
         or commitment.reference_manifest_digest != profile.reference.digest
@@ -1192,14 +1383,29 @@ def validate_quality_binding(
         or binding.selected_prompt_digests != selection.selected_prompt_digests
         or binding.hidden_task_plan_digest
         != derived_hidden_task_plan_digest(profile, selection.selected_prompt_digests)
+        or binding.qualification_identity_digest
+        != identity_digest
+        or binding.candidate_lifecycle_digest
+        != lifecycle_digest
+        or binding.t_session_digest != t_session.digest
+        or t_session.reference_manifest_digest != profile.reference.digest
+        or t_session.launch_digest != profile.reference.pristine_launch_digest
         or binding.reference_manifest_digest != profile.reference.digest
         or binding.calibration_digest != profile.calibration_digest
+        or calibration.digest != profile.calibration_digest
+        or calibration.context != expected_calibration_context
+        or calibration.context.digest != profile.calibration_context_digest
+        or tuple(row.name for row in calibration.quality_metrics)
+        != profile.required_quality_metrics
+        or graph_requirement.digest != profile.graph_requirement_digest
+        or actual_graph_binding != expected_graph_binding
         or binding.selection_digest != selection.digest
         or (binding.tokens_per_prompt, binding.topk_width, binding.hidden_tasks_per_prompt)
         != (profile.tokens_per_prompt, profile.topk_width, profile.hidden_tasks_per_prompt)
         or (plan.max_new_tokens, plan.top_logprobs_num)
         != (profile.tokens_per_prompt, profile.topk_width)
         or binding.support_policy_digest != profile.support_policy_digest
+        or profile.support_policy_digest != retained_support_policy_digest()
         or binding.nll_tail_threshold != profile.nll_tail_threshold
         or commitment.select_count < profile.minimum_prompt_count
     ):
@@ -1230,9 +1436,11 @@ __all__ = [
     "SelectionCommitment",
     "SelectionEntropyReceipt",
     "SelectionReceipt",
+    "candidate_lifecycle_digest",
     "cohort_trajectory_digest",
     "derived_hidden_task_plan_digest",
     "lifecycle_prompt_digests",
+    "qualification_identity_digest",
     "reopen_graph_verification",
     "regrade_graph_verification",
     "selected_trajectory_digest",

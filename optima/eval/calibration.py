@@ -1,31 +1,48 @@
 """Content-addressed calibration authority for qualification gates.
 
 Calibration is policy, not a convenient collection of local floats.  A frozen
-manifest binds the derivation algorithm, pristine reference, exact arena/runtime/
-hardware/workload context, verifier policy, raw evidence, seeds, and controls.
-Qualification may use its thresholds only when every binding reopens exactly.
+manifest binds an independently configured validator threshold policy, pristine
+reference, exact arena/runtime/hardware/workload context, verifier policy, raw
+evidence, seeds, and controls.  Qualification may use its thresholds only when
+every binding reopens exactly.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
+from pathlib import Path
+
+from optima.eval.evidence_store import (
+    DEFAULT_MAX_EVIDENCE_BYTES,
+    EvidenceArtifactRef,
+    EvidenceStoreError,
+    publish_evidence,
+    reopen_evidence,
+)
 
 from optima.stack_identity import (
     StackIdentityError,
     canonical_digest,
+    canonical_json_bytes,
     require_sha256_hex,
 )
 
 
 CALIBRATION_SCHEMA_VERSION = 1
 CALIBRATION_POLICY_VERSION = "qualification-calibration.v1"
+CALIBRATION_EVIDENCE_DOMAIN = "qualification-calibration"
+CALIBRATION_EVIDENCE_SCHEMA = "calibration-evidence-set-v1"
+CALIBRATION_EVIDENCE_POLICY_VERSION = "qualification-calibration-evidence.v1"
+CALIBRATION_THRESHOLD_POLICY_VERSION = "qualification-calibration-thresholds.v1"
 _NAME = re.compile(r"[a-z][a-z0-9._-]*\Z")
 _DECIMAL = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?\Z")
 _STATUSES = frozenset({"frozen", "provisional"})
 _CONTROL_OUTCOMES = {"stock": "PASS", "positive": "PASS", "negative": "FAIL"}
+_CALIBRATION_ALGORITHMS = frozenset({"teacher-familywise-v1"})
 _METRIC_DIRECTIONS = {
     "argmax_rate": "lower",
     "coverage_dev": "lower",
@@ -36,6 +53,7 @@ _METRIC_DIRECTIONS = {
     "worst_nll": "lower",
 }
 _UNIT_METRICS = frozenset({"argmax_rate", "coverage_dev", "tail_rate", "task_score"})
+_CONTROL_ORDER = ("negative", "positive", "stock")
 
 
 class CalibrationError(ValueError):
@@ -382,13 +400,533 @@ class CalibrationManifest:
         return canonical_digest("optima.qualification.calibration", self.to_dict())
 
 
+@dataclass(frozen=True)
+class CalibrationThresholdPolicy:
+    """Independently committed validator policy for calibration thresholds.
+
+    These values are economic/referee policy, not facts inferred from an opaque
+    evidence artifact.  Raw controls demonstrate and bind their calibration;
+    they do not get to redefine the thresholds during reopen.
+    """
+
+    context: CalibrationContext
+    algorithm_id: str
+    status: str
+    speed: SpeedCalibration
+    quality_metrics: tuple[MetricCalibration, ...]
+    familywise_z: str
+    policy_version: str = CALIBRATION_THRESHOLD_POLICY_VERSION
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if type(self.context) is not CalibrationContext or type(self.speed) is not SpeedCalibration:
+            raise CalibrationError("threshold policy context/speed is not typed")
+        if (
+            self.policy_version != CALIBRATION_THRESHOLD_POLICY_VERSION
+            or type(self.schema_version) is not int
+            or self.schema_version != 1
+        ):
+            raise CalibrationError("unsupported calibration threshold policy/schema version")
+        object.__setattr__(self, "algorithm_id", _name(self.algorithm_id, field="algorithm_id"))
+        if self.algorithm_id not in _CALIBRATION_ALGORITHMS:
+            raise CalibrationError("calibration threshold policy names an unknown algorithm")
+        if not isinstance(self.status, str) or self.status not in _STATUSES:
+            raise CalibrationError("calibration status must be frozen or provisional")
+        object.__setattr__(
+            self,
+            "familywise_z",
+            _decimal(self.familywise_z, field="familywise_z", positive=True),
+        )
+        if decimal_value(self.familywise_z) > 10:
+            raise CalibrationError("familywise_z exceeds the supported statistical bound")
+        if not isinstance(self.quality_metrics, Sequence) or isinstance(
+            self.quality_metrics, (str, bytes)
+        ):
+            raise CalibrationError("threshold policy quality metrics must be an array")
+        metrics = tuple(self.quality_metrics)
+        if not metrics or any(type(row) is not MetricCalibration for row in metrics):
+            raise CalibrationError("quality metrics must be unique and name-sorted")
+        names = tuple(row.name for row in metrics)
+        if names != tuple(sorted(set(names))):
+            raise CalibrationError("quality metrics must be unique and name-sorted")
+        object.__setattr__(self, "quality_metrics", metrics)
+
+    @classmethod
+    def from_manifest(cls, manifest: CalibrationManifest) -> "CalibrationThresholdPolicy":
+        if type(manifest) is not CalibrationManifest:
+            raise CalibrationError("configured calibration manifest is not exact and typed")
+        return cls(
+            context=manifest.context,
+            algorithm_id=manifest.algorithm_id,
+            status=manifest.status,
+            speed=manifest.speed,
+            quality_metrics=manifest.quality_metrics,
+            familywise_z=manifest.familywise_z,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "algorithm_id": self.algorithm_id,
+            "context": self.context.to_dict(),
+            "familywise_z": self.familywise_z,
+            "policy_version": self.policy_version,
+            "quality_metrics": [row.to_dict() for row in self.quality_metrics],
+            "schema_version": self.schema_version,
+            "speed": self.speed.to_dict(),
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "CalibrationThresholdPolicy":
+        raw = _strict(
+            value,
+            frozenset(
+                {
+                    "algorithm_id",
+                    "context",
+                    "familywise_z",
+                    "policy_version",
+                    "quality_metrics",
+                    "schema_version",
+                    "speed",
+                    "status",
+                }
+            ),
+            label="calibration threshold policy",
+        )
+        metrics = raw["quality_metrics"]
+        if not isinstance(metrics, Sequence) or isinstance(metrics, (str, bytes)):
+            raise CalibrationError("threshold policy quality metrics must be an array")
+        return cls(
+            context=CalibrationContext.from_dict(raw["context"]),
+            algorithm_id=raw["algorithm_id"],
+            status=raw["status"],
+            speed=SpeedCalibration.from_dict(raw["speed"]),
+            quality_metrics=tuple(MetricCalibration.from_dict(row) for row in metrics),
+            familywise_z=raw["familywise_z"],
+            policy_version=raw["policy_version"],
+            schema_version=raw["schema_version"],
+        )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest("optima.qualification.calibration-threshold-policy", self.to_dict())
+
+
+@dataclass(frozen=True)
+class CalibrationMeasurement:
+    """One named raw measurement series from a calibration control."""
+
+    name: str
+    values: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _name(self.name, field="measurement name"))
+        if not isinstance(self.values, Sequence) or isinstance(self.values, (str, bytes)):
+            raise CalibrationError("calibration measurement values must be an array")
+        values = tuple(
+            _decimal(value, field=f"{self.name} measurement") for value in self.values
+        )
+        if not values:
+            raise CalibrationError("calibration measurement values must be nonempty")
+        object.__setattr__(self, "values", values)
+
+    def to_dict(self) -> dict[str, object]:
+        return {"name": self.name, "values": list(self.values)}
+
+    @classmethod
+    def from_dict(cls, value: object) -> "CalibrationMeasurement":
+        raw = _strict(value, frozenset({"name", "values"}), label="calibration measurement")
+        values = raw["values"]
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            raise CalibrationError("calibration measurement values must be an array")
+        return cls(name=raw["name"], values=tuple(values))
+
+
+@dataclass(frozen=True)
+class CalibrationObservation:
+    """Canonical raw observations for exactly one registered control."""
+
+    control_kind: str
+    seed_digest: str
+    measurements: tuple[CalibrationMeasurement, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.control_kind, str) or self.control_kind not in _CONTROL_OUTCOMES:
+            raise CalibrationError("calibration observation has an unknown control kind")
+        object.__setattr__(
+            self, "seed_digest", _digest(self.seed_digest, field="observation seed digest")
+        )
+        if not isinstance(self.measurements, Sequence) or isinstance(
+            self.measurements, (str, bytes)
+        ):
+            raise CalibrationError("calibration measurements must be an array")
+        measurements = tuple(self.measurements)
+        if (
+            not measurements
+            or any(type(row) is not CalibrationMeasurement for row in measurements)
+        ):
+            raise CalibrationError("calibration measurements must be nonempty, unique, and sorted")
+        names = tuple(row.name for row in measurements)
+        if names != tuple(sorted(set(names))):
+            raise CalibrationError("calibration measurements must be nonempty, unique, and sorted")
+        sample_counts = {len(row.values) for row in measurements}
+        if len(sample_counts) != 1:
+            raise CalibrationError("calibration measurement series must have equal sample counts")
+        object.__setattr__(self, "measurements", measurements)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "control_kind": self.control_kind,
+            "measurements": [row.to_dict() for row in self.measurements],
+            "seed_digest": self.seed_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "CalibrationObservation":
+        raw = _strict(
+            value,
+            frozenset({"control_kind", "measurements", "seed_digest"}),
+            label="calibration observation",
+        )
+        rows = raw["measurements"]
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            raise CalibrationError("calibration measurements must be an array")
+        return cls(
+            control_kind=raw["control_kind"],
+            seed_digest=raw["seed_digest"],
+            measurements=tuple(CalibrationMeasurement.from_dict(row) for row in rows),
+        )
+
+
+def _familywise_bounds(values: tuple[str, ...], z: Decimal) -> tuple[Decimal, Decimal]:
+    """Return deterministic lower/upper mean bounds for canonical decimals."""
+
+    with localcontext() as context:
+        context.prec = 50
+        samples = tuple(Decimal(value) for value in values)
+        count = Decimal(len(samples))
+        mean = sum(samples, Decimal(0)) / count
+        if len(samples) == 1:
+            error = Decimal(0)
+        else:
+            variance = sum((value - mean) ** 2 for value in samples) / Decimal(
+                len(samples) - 1
+            )
+            error = (variance / count).sqrt() * z
+        return mean - error, mean + error
+
+
+def _upper_bounded(values: tuple[str, ...], limit: Decimal, z: Decimal) -> str:
+    low, high = _familywise_bounds(values, z)
+    if high <= limit:
+        return "PASS"
+    if low > limit:
+        return "FAIL"
+    return "NO_DECISION"
+
+
+def _lower_bounded(values: tuple[str, ...], floor: Decimal, z: Decimal) -> str:
+    low, high = _familywise_bounds(values, z)
+    if low >= floor:
+        return "PASS"
+    if high < floor:
+        return "FAIL"
+    return "NO_DECISION"
+
+
+def _grade_control(
+    threshold_policy: CalibrationThresholdPolicy,
+    observation: CalibrationObservation,
+) -> str:
+    """Apply the closed teacher-familywise-v1 control-grade algorithm."""
+
+    if threshold_policy.algorithm_id != "teacher-familywise-v1":
+        raise CalibrationError("calibration control grading algorithm is not registered")
+    rows = {row.name: row.values for row in observation.measurements}
+    z = decimal_value(threshold_policy.familywise_z)
+    decisions = [
+        _upper_bounded(rows["speed_noise"], decimal_value(threshold_policy.speed.max_noise), z)
+    ]
+    for metric in threshold_policy.quality_metrics:
+        limit = metric.stock_envelope if observation.control_kind == "stock" else metric.candidate_delta
+        decisions.append(_upper_bounded(rows[metric.name], decimal_value(limit), z))
+        if metric.absolute_floor is not None:
+            decisions.append(
+                _lower_bounded(
+                    rows[f"{metric.name}.absolute"],
+                    decimal_value(metric.absolute_floor),
+                    z,
+                )
+            )
+    if "FAIL" in decisions:
+        return "FAIL"
+    if "NO_DECISION" in decisions:
+        return "NO_DECISION"
+    return "PASS"
+
+
+def derive_calibration_manifest(
+    threshold_policy: CalibrationThresholdPolicy,
+    observations: Sequence[CalibrationObservation],
+) -> CalibrationManifest:
+    """Purely project committed threshold policy and raw controls into a manifest."""
+
+    if type(threshold_policy) is not CalibrationThresholdPolicy:
+        raise CalibrationError("calibration threshold policy is not exact and typed")
+    observations = tuple(observations)
+    if (
+        len(observations) != 3
+        or any(type(row) is not CalibrationObservation for row in observations)
+        or tuple(row.control_kind for row in observations) != _CONTROL_ORDER
+    ):
+        raise CalibrationError("raw calibration controls must be exactly negative, positive, stock")
+    seeds = tuple(sorted(row.seed_digest for row in observations))
+    if len(set(seeds)) != 3:
+        raise CalibrationError("raw calibration controls must use distinct seeds")
+    names = tuple(row.name for row in observations[0].measurements)
+    if any(tuple(item.name for item in row.measurements) != names for row in observations):
+        raise CalibrationError("calibration controls measured different metric sets")
+    required = {"speed_noise", *(row.name for row in threshold_policy.quality_metrics)}
+    required.update(
+        f"{row.name}.absolute"
+        for row in threshold_policy.quality_metrics
+        if row.absolute_floor is not None
+    )
+    if required != set(names):
+        raise CalibrationError("raw controls do not exactly cover the registered metric set")
+    for observation in observations:
+        if _grade_control(threshold_policy, observation) != _CONTROL_OUTCOMES[
+            observation.control_kind
+        ]:
+            raise CalibrationError(
+                f"{observation.control_kind} control outcome contradicts raw measurements"
+            )
+    raw_rows = [row.to_dict() for row in observations]
+    raw_digest = canonical_digest(
+        "optima.qualification.calibration-raw-evidence",
+        {"policy_version": CALIBRATION_EVIDENCE_POLICY_VERSION, "observations": raw_rows},
+    )
+    controls = tuple(
+        CalibrationControl(
+            kind=row.control_kind,
+            seed_digest=row.seed_digest,
+            raw_evidence_digest=canonical_digest(
+                "optima.qualification.calibration-control-evidence", row.to_dict()
+            ),
+            expected_outcome=_CONTROL_OUTCOMES[row.control_kind],
+        )
+        for row in observations
+    )
+    return CalibrationManifest(
+        context=threshold_policy.context,
+        algorithm_id=threshold_policy.algorithm_id,
+        status=threshold_policy.status,
+        speed=threshold_policy.speed,
+        quality_metrics=threshold_policy.quality_metrics,
+        familywise_z=threshold_policy.familywise_z,
+        raw_evidence_digest=raw_digest,
+        seed_digests=seeds,
+        controls=controls,
+    )
+
+
+@dataclass(frozen=True)
+class CalibrationEvidenceSet:
+    """Raw controls bound to external policy and derived-manifest digests."""
+
+    threshold_policy_digest: str
+    configured_manifest_digest: str
+    observations: tuple[CalibrationObservation, ...]
+    policy_version: str = CALIBRATION_EVIDENCE_POLICY_VERSION
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "threshold_policy_digest",
+            _digest(self.threshold_policy_digest, field="threshold policy digest"),
+        )
+        object.__setattr__(
+            self,
+            "configured_manifest_digest",
+            _digest(self.configured_manifest_digest, field="configured manifest digest"),
+        )
+        if (
+            self.policy_version != CALIBRATION_EVIDENCE_POLICY_VERSION
+            or type(self.schema_version) is not int
+            or self.schema_version != 1
+        ):
+            raise CalibrationError("unsupported calibration evidence policy/schema version")
+        observations = tuple(self.observations)
+        if (
+            len(observations) != 3
+            or any(type(row) is not CalibrationObservation for row in observations)
+            or tuple(row.control_kind for row in observations) != _CONTROL_ORDER
+        ):
+            raise CalibrationError("raw calibration controls must be exactly negative, positive, stock")
+        object.__setattr__(self, "observations", observations)
+
+    @classmethod
+    def create(
+        cls,
+        threshold_policy: CalibrationThresholdPolicy,
+        observations: Sequence[CalibrationObservation],
+    ) -> "CalibrationEvidenceSet":
+        """Bind an independent threshold policy and raw controls into a manifest."""
+
+        rows = tuple(observations)
+        manifest = derive_calibration_manifest(threshold_policy, rows)
+        return cls(
+            threshold_policy_digest=threshold_policy.digest,
+            configured_manifest_digest=manifest.digest,
+            observations=rows,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "configured_manifest_digest": self.configured_manifest_digest,
+            "observations": [row.to_dict() for row in self.observations],
+            "policy_version": self.policy_version,
+            "schema_version": self.schema_version,
+            "threshold_policy_digest": self.threshold_policy_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "CalibrationEvidenceSet":
+        raw = _strict(
+            value,
+            frozenset(
+                {
+                    "configured_manifest_digest",
+                    "observations",
+                    "policy_version",
+                    "schema_version",
+                    "threshold_policy_digest",
+                }
+            ),
+            label="calibration evidence set",
+        )
+        rows = raw["observations"]
+        if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+            raise CalibrationError("calibration observations must be an array")
+        return cls(
+            threshold_policy_digest=raw["threshold_policy_digest"],
+            configured_manifest_digest=raw["configured_manifest_digest"],
+            observations=tuple(CalibrationObservation.from_dict(row) for row in rows),
+            policy_version=raw["policy_version"],
+            schema_version=raw["schema_version"],
+        )
+
+
+def _parse_calibration_evidence(payload: bytes) -> CalibrationEvidenceSet:
+    def reject(_value: str) -> None:
+        raise CalibrationError("calibration evidence JSON contains a float or nonfinite number")
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in items:
+            if key in result:
+                raise CalibrationError("calibration evidence JSON contains a duplicate key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            payload.decode("utf-8"),
+            parse_float=reject,
+            parse_constant=reject,
+            object_pairs_hook=pairs,
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise CalibrationError(f"calibration evidence JSON is invalid: {exc}") from None
+    try:
+        if canonical_json_bytes(value) != payload:
+            raise CalibrationError("calibration evidence JSON is not canonically encoded")
+    except StackIdentityError as exc:
+        raise CalibrationError(f"calibration evidence JSON is invalid: {exc}") from None
+    return CalibrationEvidenceSet.from_dict(value)
+
+
+def publish_calibration_evidence(
+    root: str | Path,
+    evidence: CalibrationEvidenceSet,
+    *,
+    max_bytes: int = DEFAULT_MAX_EVIDENCE_BYTES,
+) -> EvidenceArtifactRef:
+    if type(evidence) is not CalibrationEvidenceSet:
+        raise CalibrationError("calibration evidence set is not exact and typed")
+    try:
+        return publish_evidence(
+            root,
+            canonical_json_bytes(evidence.to_dict()),
+            domain=CALIBRATION_EVIDENCE_DOMAIN,
+            media_type="application/json",
+            schema=CALIBRATION_EVIDENCE_SCHEMA,
+            max_bytes=max_bytes,
+        )
+    except (EvidenceStoreError, StackIdentityError) as exc:
+        raise CalibrationError(f"cannot publish calibration evidence: {exc}") from None
+
+
+def reopen_calibration_evidence(
+    root: str | Path,
+    reference: EvidenceArtifactRef,
+    *,
+    expected_threshold_policy: CalibrationThresholdPolicy,
+    expected_manifest: CalibrationManifest,
+    expected_context: CalibrationContext,
+    max_bytes: int = DEFAULT_MAX_EVIDENCE_BYTES,
+) -> CalibrationManifest:
+    """Authenticate raw bytes, pure-rederive the manifest, and bind live context."""
+
+    if (
+        type(reference) is not EvidenceArtifactRef
+        or type(expected_threshold_policy) is not CalibrationThresholdPolicy
+        or type(expected_manifest) is not CalibrationManifest
+        or type(expected_context) is not CalibrationContext
+    ):
+        raise CalibrationError(
+            "calibration reference, threshold policy, manifest, and context must be exact and typed"
+        )
+    if (reference.domain, reference.media_type, reference.schema) != (
+        CALIBRATION_EVIDENCE_DOMAIN,
+        "application/json",
+        CALIBRATION_EVIDENCE_SCHEMA,
+    ):
+        raise CalibrationError("calibration evidence artifact type is not authoritative")
+    try:
+        payload = reopen_evidence(root, reference, max_bytes=max_bytes)
+    except EvidenceStoreError as exc:
+        raise CalibrationError(f"cannot reopen calibration evidence: {exc}") from None
+    evidence = _parse_calibration_evidence(payload)
+    if evidence.threshold_policy_digest != expected_threshold_policy.digest:
+        raise CalibrationError("calibration evidence names another validator threshold policy")
+    rederived = derive_calibration_manifest(expected_threshold_policy, evidence.observations)
+    if evidence.configured_manifest_digest != rederived.digest or rederived != expected_manifest:
+        raise CalibrationError("calibration evidence names another configured manifest")
+    rederived.require_context(expected_context)
+    return rederived
+
+
 __all__ = [
+    "CALIBRATION_EVIDENCE_DOMAIN",
+    "CALIBRATION_EVIDENCE_POLICY_VERSION",
+    "CALIBRATION_EVIDENCE_SCHEMA",
     "CALIBRATION_POLICY_VERSION",
+    "CALIBRATION_THRESHOLD_POLICY_VERSION",
     "CalibrationContext",
     "CalibrationControl",
+    "CalibrationEvidenceSet",
     "CalibrationError",
     "CalibrationManifest",
+    "CalibrationMeasurement",
+    "CalibrationObservation",
+    "CalibrationThresholdPolicy",
     "MetricCalibration",
     "SpeedCalibration",
     "decimal_value",
+    "derive_calibration_manifest",
+    "publish_calibration_evidence",
+    "reopen_calibration_evidence",
 ]

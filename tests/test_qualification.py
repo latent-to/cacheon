@@ -31,9 +31,11 @@ from optima.eval.qualification import (
     SelectionCommitment,
     SelectionEntropyReceipt,
     SelectionReceipt,
+    candidate_lifecycle_digest,
     cohort_trajectory_digest,
     derived_hidden_task_plan_digest,
     lifecycle_prompt_digests,
+    qualification_identity_digest,
     reopen_graph_verification,
     regrade_graph_verification,
     selected_trajectory_digest,
@@ -636,7 +638,26 @@ def test_trajectory_projection_rejects_subset_relabel_and_short_topk(tmp_path: P
 
 
 def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
-    from optima.eval.reference_quality import ReferenceQualityRawBinding
+    from optima.eval.calibration import CalibrationContext
+    from optima.eval.oci_reference_session import (
+        ReferenceExchangeEvidence,
+        ReferenceSessionEvidence,
+    )
+    from optima.eval.reference_protocol import (
+        encode_reference_evidence,
+        request_sha256,
+    )
+    from optima.eval.reference_quality import (
+        ReferenceQualityRawBinding,
+        retained_support_policy_digest,
+    )
+    from optima.stack_identity import sha256_hex
+    from tests.test_oci_reference_session import (
+        _config as reference_config,
+        _facts as reference_facts,
+        _raw as reference_raw,
+        _request as reference_request,
+    )
     from tests.test_scoring import _lifecycle
 
     lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
@@ -650,10 +671,42 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         calibration.context.workload_digest, _d("tokenizer"), _d("hidden-corpus"),
         _d("hidden-judge"), _d("entropy-source"),
     )
+    arm = lifecycle.candidates[0].arm
+    candidate = lifecycle.candidates[0].candidate
+    requirement = _requirement()
+    requirement = replace(
+        requirement,
+        binding=replace(
+            requirement.binding,
+            marginal_arm_digest=arm.digest,
+            candidate_launch_digest=candidate.launch.digest,
+            contribution_ref_digest=arm.transition.replacement.digest,
+            selected_delta_digest=delta,
+            target_id=arm.transition.target_id,
+            target_spec_digest=arm.transition.target_spec_digest,
+            catalog_digest=arm.candidate.catalog_digest,
+        ),
+    )
+    calibration = replace(
+        calibration,
+        context=CalibrationContext(
+            reference.digest,
+            reference.arena_digest,
+            reference.runtime_digest,
+            reference.base_engine_digest,
+            reference.model_revision_digest,
+            reference.model_manifest_digest,
+            reference.model_content_digest,
+            reference.logical_hardware_digest,
+            reference.workload_digest,
+            requirement.binding.verification_policy_digest,
+            reference.controller_distribution_digest,
+        ),
+    )
     profile = QualificationProfile(
-        reference, calibration.context.digest, calibration.digest, _d("graph-requirement"),
+        reference, calibration.context.digest, calibration.digest, requirement.digest,
         tuple(row.name for row in calibration.quality_metrics), "2", 10, 1, 2,
-        _d("support-policy"), _d("hidden-task-policy"), runtime_policy, True, 2,
+        retained_support_policy_digest(), _d("hidden-task-policy"), runtime_policy, True, 2,
     )
     prompts = lifecycle_prompt_digests(lifecycle)
     commitment = SelectionCommitment.seal(
@@ -669,9 +722,48 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         commitment, secret=b"s" * 32, entropy=entropy,
         sealed_cohort_trajectory_digest=cohort_trajectory_digest(lifecycle),
     )
+    config = reference_config()
+    request_plan = _d("reference-request-plan")
+    request = reference_request(
+        reference, session_id="1" * 32, plan_digest=request_plan, index=0
+    )
+    raw = reference_raw(request)
+    exchange = ReferenceExchangeEvidence(
+        0,
+        request,
+        request_sha256(request),
+        sha256_hex(encode_reference_evidence(raw, request)),
+        1.0,
+        2.0,
+        raw,
+    )
+    t_session = ReferenceSessionEvidence(
+        "optima.pristine-reference-session.v1",
+        request.session_id,
+        reference.pristine_launch_digest,
+        reference.digest,
+        _d("reference-session-plan"),
+        request_plan,
+        reference_facts(reference, config),
+        0.5,
+        (exchange,),
+        3.0,
+    )
+    lifecycle_digest = candidate_lifecycle_digest(
+        lifecycle, selected_delta_digest=delta
+    )
+    identity_digest = qualification_identity_digest(
+        profile,
+        graph_requirement=requirement,
+        selection=selection,
+        calibration=calibration,
+        candidate_lifecycle=lifecycle_digest,
+        t_session=t_session,
+        selected_delta_digest=delta,
+    )
     binding = ReferenceQualityRawBinding(
-        _d("qualification"), reference.digest, calibration.digest, selection.digest,
-        _d("lifecycle"), selected_trajectory_digest(
+        identity_digest, reference.digest, calibration.digest, selection.digest,
+        lifecycle_digest, selected_trajectory_digest(
             lifecycle, selected_delta_digest=delta,
             selected_prompt_digests=selection.selected_prompt_digests,
         ),
@@ -679,23 +771,29 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
             lifecycle, selected_delta_digest=delta,
             selected_prompt_digests=selection.selected_prompt_digests,
         ), selection.selected_prompt_digests,
-        _d("t-session"), profile.support_policy_digest,
+        t_session.digest, profile.support_policy_digest,
         derived_hidden_task_plan_digest(profile, selection.selected_prompt_digests),
         profile.nll_tail_threshold, 10, 1, 2,
     )
     assert validate_quality_binding(
         profile, binding, lifecycle, selected_delta_digest=delta,
         commitment=commitment, entropy=entropy, selection=selection,
+        calibration=calibration, graph_requirement=requirement,
+        t_session=t_session,
     ) == binding
     with pytest.raises(QualificationError, match="frozen workload"):
         validate_quality_binding(
             replace(profile, hidden_task_policy_digest=_d("other-hidden-policy")),
             binding, lifecycle, selected_delta_digest=delta,
             commitment=commitment, entropy=entropy, selection=selection,
+            calibration=calibration, graph_requirement=requirement,
+            t_session=t_session,
         )
     with pytest.raises(QualificationError, match="frozen workload"):
         validate_quality_binding(
             profile, replace(binding, tokens_per_prompt=1), lifecycle,
             selected_delta_digest=delta, commitment=commitment,
-            entropy=entropy, selection=selection,
+            entropy=entropy, selection=selection, calibration=calibration,
+            graph_requirement=requirement,
+            t_session=t_session,
         )
