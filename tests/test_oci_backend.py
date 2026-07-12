@@ -578,6 +578,25 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(tmp_path: Path) -> None:
     for forbidden in (".pass", "credentials", "docker.sock", "result-output"):
         assert forbidden not in encoded
 
+    multi_resolved = replace(
+        case.resolved,
+        physical_hardware=replace(
+            case.resolved.physical_hardware,
+            physical_gpu_ids=("0", "1"),
+        ),
+    )
+    multi_argv = build_runtime_argv(
+        lease=lease,
+        resolved=multi_resolved,
+        preflight=case.preflight,
+        model_root=case.model,
+        publication=case.publication,
+        cache_root=cache,
+        seccomp_path=lease.stage_paths[0],
+        runtime=case.runtime,
+    )
+    assert '--gpus="device=0,1"' in multi_argv
+
 
 def test_launch_validation_binds_runtime_model_config_and_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

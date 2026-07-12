@@ -534,6 +534,12 @@ def build_runtime_argv(
         "XDG_CACHE_HOME": f"{CONTAINER_CACHE}/xdg",
     }
     gpu_csv = ",".join(resolved.physical_hardware.physical_gpu_ids)
+    # Docker parses --gpus with a CSV decoder. A multi-device request must be one
+    # quoted CSV field even though argv is passed directly without a shell;
+    # otherwise Docker interprets the tail as a second Count request.
+    gpu_request = f"device={gpu_csv}"
+    if len(resolved.physical_hardware.physical_gpu_ids) > 1:
+        gpu_request = f'"{gpu_request}"'
     argv = [
         *lease.run_prefix(preflight.docker_binary),
         "--rm",
@@ -558,7 +564,7 @@ def build_runtime_argv(
         f"--tmpfs=/tmp:rw,nosuid,nodev,noexec,size={runtime.tmpfs_bytes},"
         f"uid={runtime.uid},gid={runtime.gid},mode=0700",
         f"--shm-size={runtime.shm_bytes}",
-        f"--gpus=device={gpu_csv}",
+        f"--gpus={gpu_request}",
         "--stop-timeout=1",
         "--no-healthcheck",
         "--log-driver=none",
