@@ -106,6 +106,20 @@ PR4D_TESTS = [
 ]
 PR4D_AUTHORITY_ROOTS = ["optima.eval.oci_session_protocol"]
 PR4D_FORBIDDEN_MODULES = PR4C_FORBIDDEN_MODULES
+PR4E_BASE = "39f1bbf4e8f341d1f443ec7e71b6d3fdb07dccf0"
+PR4E_PRODUCTION = [
+    "optima/eval/oci_backend.py",
+    "optima/eval/qualification.py",
+]
+PR4E_TESTS = [
+    "tests/test_oci_backend.py",
+    "tests/test_qualification.py",
+]
+PR4E_AUTHORITY_ROOTS = [
+    "optima.eval.oci_backend",
+    "optima.eval.qualification",
+]
+PR4E_FORBIDDEN_MODULES = PR4C_FORBIDDEN_MODULES
 
 
 class EvidenceError(ValueError):
@@ -403,6 +417,19 @@ def validate_contract_document(contract: dict[str, Any], where: str = "contract"
                 {"change": "modify", "path": "optima/seams.py"},
             ],
             "authority": {"forbidden_modules": PR4D_FORBIDDEN_MODULES, "roots": PR4D_AUTHORITY_ROOTS},
+        },
+        "pr4e": {
+            "schema_version": 2,
+            "architectural_unit": "4e",
+            "base_commit": PR4E_BASE,
+            "budget": {"exemption_policy": "none", "production_additions_max": 100, "test_additions_max": 150},
+            "production": PR4E_PRODUCTION,
+            "test": PR4E_TESTS,
+            "required": [
+                {"change": "modify", "path": "optima/eval/oci_backend.py"},
+                {"change": "modify", "path": "optima/eval/qualification.py"},
+            ],
+            "authority": {"forbidden_modules": PR4E_FORBIDDEN_MODULES, "roots": PR4E_AUTHORITY_ROOTS},
         },
     }
     spec = specs.get(contract["contract_id"])
@@ -746,7 +773,7 @@ def validate_repository(root: Path, *, records_only: bool = False, pr_base: str 
     evidence = root / "evidence/referee-hardening"
     load_json(evidence / "schema-v1.json")
     schema_v2 = load_json(evidence / "schema-v2.json")
-    expected = set(range(40, 50))
+    expected = set(range(40, 51))
     seen: set[int] = set()
     for path in sorted((evidence / "records").glob("pr-*.json")):
         record = load_json(path)
@@ -765,7 +792,7 @@ def validate_repository(root: Path, *, records_only: bool = False, pr_base: str 
             raise EvidenceError(f"duplicate scope contract: {contract['contract_id']}")
         contract_ids.add(contract["contract_id"])
         contracts.append((contract_path, contract))
-    if contract_ids != {"pr4a", "pr4b", "pr4c", "pr4d"}:
+    if contract_ids != {"pr4a", "pr4b", "pr4c", "pr4d", "pr4e"}:
         raise EvidenceError(f"scope contract set differs: {sorted(contract_ids)}")
     if records_only:
         return

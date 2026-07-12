@@ -298,7 +298,7 @@ def _case(tmp_path: Path) -> SimpleNamespace:
     config = OCIBackendConfig(prebuild=prebuild, runtime=runtime)
     resolved = ResolvedEngineLaunch(
         launch,
-        SimpleNamespace(root=tree),
+        SimpleNamespace(root=tree, runtime_manifest=None),
         native,
         physical,
         tuple(sorted(preflight.launch_identity().items())),
@@ -473,6 +473,125 @@ def _install_execution_fakes(
     monkeypatch.setattr(executor.manager, "mount_tmpfs", mount_tmpfs)
     executor.device_guard = _DeviceGuard(case)  # type: ignore[assignment]
     return prebuild_deadlines
+
+
+def test_pristine_native_publication_accepts_only_the_prebuild_receipt() -> None:
+    def publication(*paths: str, directories: tuple[str, ...] = ()):
+        return SimpleNamespace(
+            directories=directories,
+            files=tuple(SimpleNamespace(path=path) for path in paths),
+        )
+
+    assert backend._reference_publication_is_control_only(
+        publication("prebuild.json")
+    )
+    assert not backend._reference_publication_is_control_only(publication())
+    assert not backend._reference_publication_is_control_only(
+        publication("renamed-prebuild.json")
+    )
+    assert not backend._reference_publication_is_control_only(
+        publication("prebuild.json", "cuda/kernel.so", directories=("cuda",))
+    )
+    assert not backend._reference_publication_is_control_only(
+        publication("metadata/prebuild.json", directories=("metadata",))
+    )
+
+
+def test_reference_reopens_control_receipt_then_rejects_added_native_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _case(tmp_path)
+    executor = OCIEngineExecutor(
+        case.config,
+        case.device_policy,
+        manager=_manager(case),
+    )
+    _install_execution_fakes(case, executor, monkeypatch)
+    control = SimpleNamespace(
+        **vars(case.publication),
+        directories=(),
+        files=(SimpleNamespace(path="prebuild.json"),),
+    )
+    changed = SimpleNamespace(
+        **vars(case.publication),
+        directories=("cuda",),
+        files=(
+            SimpleNamespace(path="prebuild.json"),
+            SimpleNamespace(path="cuda/kernel.so"),
+        ),
+    )
+    reopened = iter((control, changed))
+    monkeypatch.setattr(
+        backend,
+        "reopen_native_artifact",
+        lambda *args, **kwargs: next(reopened),
+    )
+
+    with pytest.raises(OCIBackendError, match="acquired contribution state"):
+        executor._execute_runtime(
+            case.launch,
+            case.binding,
+            case.mount,
+            absolute=200.0,
+            resolved=case.resolved,
+            preflight=case.preflight,
+            model_root=case.model,
+            session_protocol="reference",
+            run=lambda *_args: object(),
+        )
+    assert executor.device_guard.deadlines == [  # type: ignore[attr-defined]
+        ("pre", 200.0),
+        ("post", 200.0),
+    ]
+
+
+def test_reference_runtime_accepts_control_receipt_through_both_reopens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _case(tmp_path)
+    executor = OCIEngineExecutor(
+        case.config,
+        case.device_policy,
+        manager=_manager(case),
+    )
+    _install_execution_fakes(case, executor, monkeypatch)
+    control = SimpleNamespace(
+        **vars(case.publication),
+        directories=(),
+        files=(SimpleNamespace(path="prebuild.json"),),
+    )
+    monkeypatch.setattr(
+        backend,
+        "reopen_native_artifact",
+        lambda *args, **kwargs: control,
+    )
+
+    class Transport:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.aborted = False
+
+        def abort(self) -> None:
+            self.aborted = True
+
+    monkeypatch.setattr(backend, "AttachedReferenceTransport", Transport)
+    marker = object()
+    raw = executor._execute_runtime(
+        case.launch,
+        case.binding,
+        case.mount,
+        absolute=200.0,
+        resolved=case.resolved,
+        preflight=case.preflight,
+        model_root=case.model,
+        session_protocol="reference",
+        run=lambda *_args: marker,
+    )
+    assert raw.value is marker
+    assert raw.publication_digest == control.publication_digest
+    assert executor.device_guard.deadlines == [  # type: ignore[attr-defined]
+        ("pre", 200.0),
+        ("post", 200.0),
+    ]
 
 
 def test_runtime_identity_and_backend_policy_are_closed(tmp_path: Path) -> None:
