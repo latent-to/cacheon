@@ -13,9 +13,51 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import stat
+import sys
+from importlib import abc, import_module, machinery
 from pathlib import Path
 
 logger = logging.getLogger("optima.seam")
+_ENGINE_TREE = "/optima/engine-tree"
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_NAMESPACE = re.compile(r"optima_c_[0-9a-f]{64}\Z")
+
+
+class _MaterializedNamespaceFinder(abc.MetaPathFinder):
+    def __init__(self, root: str):
+        self.root = root
+
+    def find_spec(self, fullname, path=None, target=None):
+        if path is not None or _NAMESPACE.fullmatch(fullname) is None:
+            return None
+        return machinery.PathFinder.find_spec(fullname, [self.root])
+
+
+def _install_materialized_namespace() -> bool:
+    """Expose only sealed contribution namespaces after child spawn preparation."""
+
+    root = _ENGINE_TREE
+    if (
+        os.environ.get("OPTIMA_ENGINE_WORKER") != "1"
+        or os.environ.get("OPTIMA_BUNDLE_PATH") != root
+        or _DIGEST.fullmatch(os.environ.get("OPTIMA_ENGINE_TREE_DIGEST", "")) is None
+        or _DIGEST.fullmatch(os.environ.get("OPTIMA_STACK_DIGEST", "")) is None
+    ):
+        return False
+    try:
+        info = os.lstat(root)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode) or os.path.realpath(root) != root:
+        return False
+    if not any(
+        isinstance(finder, _MaterializedNamespaceFinder) and finder.root == root
+        for finder in sys.meta_path
+    ):
+        sys.meta_path.insert(0, _MaterializedNamespaceFinder(root))
+    return True
 
 
 def _truthy(v: str | None) -> bool:
@@ -51,14 +93,15 @@ def activate() -> None:
     (optima/seams.py) — the same table the bootstrap watch-list and the compat canary
     use, so there is no parallel list to keep in sync.
     """
-    import importlib
+    if not _IS_DRIVER:
+        _install_materialized_namespace()
 
     from optima.registry import REGISTRY
     from optima.seams import SEAM_ADAPTERS
 
     for adapter in SEAM_ADAPTERS:
         try:
-            mod = importlib.import_module(f"optima.integrations.{adapter.integration}")
+            mod = import_module(f"optima.integrations.{adapter.integration}")
             mod.install(REGISTRY)
         except Exception:  # noqa: BLE001 - never break engine startup
             logger.exception("optima: failed to install seam %s", adapter.name)

@@ -842,3 +842,57 @@ print(module.__name__)
         "hotkey",
         "weight",
     }
+
+
+def test_sglang_plugin_resolves_only_materialized_namespace_after_spawn(
+    tmp_path: Path,
+) -> None:
+    trusted = tmp_path / "trusted"
+    tree = tmp_path / "engine-tree"
+    module = tree / ("optima_c_" + "a" * 64) / "kernels"
+    module.mkdir(parents=True)
+    trusted.mkdir()
+    (trusted / "torch.py").write_text("origin = 'installed'\n")
+    (tree / "torch.py").write_text("origin = 'candidate'\n")
+    (module / "kernel.py").write_text("loaded = True\n")
+    for path in sorted(tree.rglob("*"), reverse=True):
+        path.chmod(0o755 if path.is_dir() else 0o444)
+    tree.chmod(0o755)
+    namespace = module.parent.name
+    script = tmp_path / "spawn_probe.py"
+    script.write_text(f"""import importlib, multiprocessing as mp, os, sys
+sys.path[:0] = [{str(ROOT)!r}, {str(trusted)!r}]
+TREE, NAMESPACE = {str(tree)!r}, {namespace!r}
+def child(send, bundle):
+    import optima.integrations.sglang_plugin as plugin
+    from optima import seam, seams
+    seam._ENGINE_TREE = TREE; seams.SEAM_ADAPTERS = ()
+    os.environ.update(OPTIMA_ENGINE_WORKER='1', OPTIMA_BUNDLE_PATH=bundle,
+        OPTIMA_ENGINE_TREE_DIGEST='1' * 64, OPTIMA_STACK_DIGEST='2' * 64,
+        OPTIMA_ACTIVE='0')
+    plugin.register()
+    found = importlib.util.find_spec(NAMESPACE)
+    if bundle == TREE:
+        import torch
+        kernel = importlib.import_module(NAMESPACE + '.kernels.kernel')
+        send.send((TREE in sys.path, torch.origin, kernel.loaded, found is not None))
+    else:
+        send.send(found is None)
+if __name__ == '__main__':
+    results = []
+    for bundle in (TREE, '/raw/miner/bundle'):
+        receive, send = mp.get_context('spawn').Pipe(False)
+        process = mp.get_context('spawn').Process(target=child, args=(send, bundle))
+        process.start(); process.join(10)
+        assert process.exitcode == 0
+        results.append(receive.recv())
+    assert results == [(False, 'installed', True, True), True]
+""")
+    completed = subprocess.run(
+        [sys.executable, "-I", str(script)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
