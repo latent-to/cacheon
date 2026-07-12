@@ -16,5 +16,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - run: python -m pip install ".[dev]"
       - run: python scripts/check_referee_evidence.py --pr-base "${{ github.event.pull_request.base.sha }}"
       - run: python -m pytest -q tests/test_referee_evidence.py
