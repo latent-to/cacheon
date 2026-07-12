@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -130,6 +132,34 @@ def _session_fds(payload: bytes) -> tuple[int, int, int]:
 def _bind_init(monkeypatch, config: EngineSessionConfig, launch: str) -> None:
     monkeypatch.setenv("OPTIMA_LAUNCH_DIGEST", launch)
     monkeypatch.setenv("OPTIMA_ENGINE_CONFIG_DIGEST", config.digest)
+
+
+def test_topology_digest_normalizes_nvidia_smi_underlined_header(monkeypatch):
+    observed = (
+        "\t\x1b[4mGPU0\tGPU1\tNIC0\x1b[0m\n"
+        "GPU0\t X \tPIX\tPIX\n"
+        "GPU1\tPIX\t X \tPIX\n"
+    )
+    monkeypatch.setattr(worker, "_run_nvidia_smi", lambda *_args: observed)
+    payload = json.dumps(
+        {
+            "matrix": [["X", "PIX"], ["PIX", "X"]],
+            "schema": "optima-gpu-topology-v1",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    assert worker._topology_digest() == hashlib.sha256(payload).hexdigest()
+
+
+def test_topology_digest_rejects_unknown_escape(monkeypatch):
+    monkeypatch.setattr(
+        worker,
+        "_run_nvidia_smi",
+        lambda *_args: "\x1b[31mGPU0\x1b[0m\nGPU0 X\n",
+    )
+    with pytest.raises(worker.SessionWorkerError, match="unknown escape"):
+        worker._topology_digest()
 
 
 def test_importing_worker_loads_no_torch_sglang_or_candidate(tmp_path):

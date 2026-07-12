@@ -247,6 +247,11 @@ def _topology_digest() -> str:
     """Digest the visible GPU topology square using the host provisioning schema."""
 
     clean = _run_nvidia_smi("topo", "-m")
+    # nvidia-smi underlines the topology header even without a TTY on some
+    # drivers. Normalize only its known SGR pair and reject every other escape.
+    clean = clean.replace("\x1b[4m", "").replace("\x1b[0m", "")
+    if "\x1b" in clean:
+        raise SessionWorkerError("live GPU topology contains an unknown escape")
     rows = [line.split() for line in clean.splitlines() if line.strip()]
     header: list[str] | None = None
     for row in rows:
