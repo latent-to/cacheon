@@ -33,7 +33,11 @@ from optima.stack_identity import (
 
 _SCHEMA = "optima.native-artifact-publication.v1"
 _MANIFEST = ".optima-native-artifact.json"
-_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@=-]{0,254}$")
+# SGLang ships declarative tuning tables whose canonical filenames contain
+# commas, brackets, and spaces (for example ``block_shape=[128, 128].json``).
+# Keep a finite ASCII alphabet: path separators, dotfiles, quotes, shell
+# metacharacters, controls, and non-ASCII remain inadmissible.
+_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+@=,\-\[\] ]{0,254}$")
 _PRIVATE_PYTHON_MODULE_RE = re.compile(
     r"^_{1,2}[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_+-]+)*\.(?:py|so)$"
 )

@@ -93,7 +93,7 @@ def test_publish_is_build_addressed_canonical_immutable_and_reopenable(tmp_path)
     assert reopened == published
 
 
-def test_private_python_module_leaves_are_canonical_and_reopenable(tmp_path):
+def test_real_sglang_components_are_canonical_and_reopenable(tmp_path):
     source = tmp_path / "build"
     package = source / "sglang" / "srt"
     package.mkdir(parents=True)
@@ -102,6 +102,8 @@ def test_private_python_module_leaves_are_canonical_and_reopenable(tmp_path):
     (package / "__main__.py").write_text("# module entry\n")
     (package / "_version.py").write_text("VERSION = 1\n")
     (package / "_core.cpython-312-x86_64-linux-gnu.so").write_bytes(b"elf")
+    tuning = "E=128,N=384,device_name=NVIDIA_B200,block_shape=[128, 128].json"
+    (package / tuning).write_text("{}\n")
     (package / "scheduler.py").write_text("VALUE = 1\n")
 
     published = publish_native_artifact(
@@ -109,6 +111,7 @@ def test_private_python_module_leaves_are_canonical_and_reopenable(tmp_path):
     )
     assert tuple(row.path for row in published.files) == (
         "sglang/__init__.py",
+        f"sglang/srt/{tuning}",
         "sglang/srt/__init__.py",
         "sglang/srt/__main__.py",
         "sglang/srt/_core.cpython-312-x86_64-linux-gnu.so",
@@ -123,7 +126,17 @@ def test_private_python_module_leaves_are_canonical_and_reopenable(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "component", ("_private", "_.py", "__init__.pyc", "__pycache__", ".hidden.py")
+    "component",
+    (
+        "_private",
+        "_.py",
+        "__init__.pyc",
+        "__pycache__",
+        ".hidden.py",
+        "bad$name.json",
+        "bad;name.json",
+        "bad(name).json",
+    ),
 )
 def test_non_module_private_components_remain_forbidden(tmp_path, component):
     source = tmp_path / "build"
