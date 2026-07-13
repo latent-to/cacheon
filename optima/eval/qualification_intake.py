@@ -806,8 +806,15 @@ def run_qualification_intake(
     )
     outcomes = []
     retry_reservations = []
-    for reservation, prepared, report in zip(
-        manifest.reservations, value.prepared.candidates, attempt.reports, strict=True
+    from optima.eval.marginal_runtime import PreparedMarginalRuntime
+
+    prepared_candidates = (
+        value.prepared.candidates
+        if type(value.prepared) is PreparedMarginalRuntime
+        else ()
+    )
+    for index, (reservation, report) in enumerate(
+        zip(manifest.reservations, attempt.reports, strict=True)
     ):
         if (
             type(report) is not expected_report_type
@@ -815,7 +822,10 @@ def run_qualification_intake(
         ):
             raise QualificationIntakeError("qualification report order differs")
         settlement_candidate = None
-        if report.decision is QualificationDecision.PASS:
+        if (
+            report.decision is QualificationDecision.PASS
+            and prepared_candidates
+        ):
             from optima.settlement import SettlementCandidate
 
             settlement_candidate = SettlementCandidate.from_qualification(
@@ -826,7 +836,7 @@ def run_qualification_intake(
                 hotkey=reservation.hotkey,
                 target_id=reservation.target_id,
                 members=reservation.target_members,
-                prepared=prepared,
+                prepared=prepared_candidates[index],
                 report=report,
                 authority=manifest,
                 attempt_ref=reference,
