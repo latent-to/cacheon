@@ -157,6 +157,12 @@ def _validated_https_url(url: str, *, deadline: float):
     return parsed, _resolve_addresses(parsed.hostname, port, deadline=deadline)
 
 
+def _tls_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def _open_pinned_https(
     hostname: str,
     port: int,
@@ -166,7 +172,7 @@ def _open_pinned_https(
 ) -> http.client.HTTPSConnection:
     """Connect to reviewed IPs while retaining TLS SNI/hostname checks."""
 
-    context = ssl.create_default_context()
+    context = _tls_context()
     failures: list[str] = []
     for raw_address in addresses:
         address = _public_ip(raw_address, context="bundle host")

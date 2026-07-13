@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import socket
+import ssl
 import stat
 import tarfile
 
@@ -221,3 +222,12 @@ def test_dns_rejects_any_nonpublic_answer(monkeypatch):
     )
     with pytest.raises(FetchError, match="non-public"):
         fetch_mod._resolve_addresses("example.com", 443, deadline=fetch_mod.time.monotonic() + 5)
+
+
+def test_production_tls_context_requires_tls_1_2_or_newer():
+    import optima.chain.fetch as fetch_mod
+
+    context = fetch_mod._tls_context()
+    assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
