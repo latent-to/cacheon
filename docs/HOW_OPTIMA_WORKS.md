@@ -575,7 +575,7 @@ on gpt-oss-120b:
 ## Part 7 — Anti-copy and emissions
 
 [../optima/bundle_hash.py](../optima/bundle_hash.py) and
-[../optima/commit_reveal.py](../optima/commit_reveal.py).
+[../optima/copy_fingerprint.py](../optima/copy_fingerprint.py).
 
 ### 7.1 Bundle identity
 
@@ -617,8 +617,7 @@ side effect of evaluation.
 
 Commitments live on-chain, `hotkey` is the miner's SS58 address, and weights are the
 validator's finalized projection. `optima/chain/` is the production path and persists its
-authority in SQLite. `commit_reveal.py` and its JSON ledger remain a local mechanism
-simulator for development and compatibility; they are not settlement authority.
+authority in SQLite.
 
 ---
 
@@ -773,7 +772,7 @@ The harness package, [../optima/](../optima):
 | [slots.py](../optima/slots.py) | The slot ABI. `SlotSpec` (`invoke_reference`/`invoke_entry` for non-uniform signatures, `kind` = op/block/collective, a `Correctness` mode, `prepare`/`prepare_from_layer` for quant-layout slots), the **11 slots** (silu, rmsnorm ops; attention.sdpa/decode/msa decode+prefill block scores + moe.fused_experts blocks; all_reduce, moe.fused_experts_reduce, ar_residual_rmsnorm, moe_finalize_ar_rmsnorm collectives), references, input generators, tolerances. Adding a slot = editing here. |
 | [manifest.py](../optima/manifest.py) | Parse + validate `manifest.toml`. Schema + ABI check + **path-safety** (`_safe_relpath`). Pure-Python. |
 | [target_catalog.py](../optima/target_catalog.py) | Pure validator policy for canonical singleton/atomic contribution identity, exact members, displacement/compatible overlap, and allowed features. It contains no crown, chain, or settlement policy; stack manifests bind catalog identity in the later assembly layer. |
-| [sandbox.py](../optima/sandbox.py) | `scan_source` (AST policy tripwire), `load_entry` (import the kernel — isolate in prod), `probe_in_subprocess`. |
+| [sandbox.py](../optima/sandbox.py) | `scan_source` (AST policy tripwire), `load_entry` (import the kernel — isolate in prod). |
 | [arena_service.py](../optima/arena_service.py) | Validator-owned arena identity, capacity/retry policy, fixed non-crown screen, admission, and qualification planning. |
 | [stack_manifest.py](../optima/stack_manifest.py) | Evaluation and release stack identity, exact marginal replacement, integrated contribution refs, and integration-review authority. |
 | [settlement.py](../optima/settlement.py) | Two-PASS reproduction candidate, conservative speed, transactional target-level settlement plan and evidence. |
@@ -781,7 +780,7 @@ The harness package, [../optima/](../optima):
 | [dispatch.py](../optima/dispatch.py) | `make_{silu_and_mul,rmsnorm,attention,moe,allreduce}_dispatcher` — the one place a miner kernel is called; validator owns the allocation, the call site, + fallback. |
 | [seam.py](../optima/seam.py) | `activate()` (install seam + env-driven load), `mark_driver()` (tamper-resistant timing). Shared by bootstrap + plugin. |
 | [bootstrap.py](../optima/bootstrap.py) | The `.pth`-loaded post-import hook that installs the seam in every interpreter, incl. the spawned scheduler. |
-| [integrations/sglang_silu.py](../optima/integrations/sglang_silu.py) | Patches `SiluAndMul.forward_cuda/native`; `rebind_existing` safety net. |
+| [integrations/sglang_silu.py](../optima/integrations/sglang_silu.py) | Patches `SiluAndMul.forward_cuda/native`. |
 | [integrations/sglang_norm.py](../optima/integrations/sglang_norm.py) | Patches `RMSNorm.forward_cuda/native` (fires on gpt-oss and every transformer). |
 | [integrations/sglang_attention.py](../optima/integrations/sglang_attention.py) | Patches `RadixAttention.forward` (the attention **block** chokepoint; gathers paged KV for the decode swap). |
 | [integrations/sglang_moe.py](../optima/integrations/sglang_moe.py) | Patches `FusedMoE.forward` (the MoE **block** chokepoint; opt-in `OPTIMA_MOE_SEAM=1`). |
@@ -803,7 +802,6 @@ The harness package, [../optima/](../optima):
 | [bundle_hash.py](../optima/bundle_hash.py) | `content_hash` — deterministic bundle identity. |
 | [chain/intake.py](../optima/chain/intake.py) | SQLite production authority for finalized intake, screens, qualifications, reproductions, stacks, settlement and weight-publication journal state. |
 | [chain/validator_loop.py](../optima/chain/validator_loop.py) | Finalized reveal → private fetch → immutable publication → registered arena screen/qualification → transactional settlement. |
-| [commit_reveal.py](../optima/commit_reveal.py) | Legacy local commit/reveal and settlement simulator; not the production chain authority. |
 | [model_provision.py](../optima/model_provision.py) | Exact all-file model-tree hashing and independently reopenable content-addressed receipts. |
 | [release.py](../optima/release.py) | Signed chain-independent Engine release descriptor, deterministic source/wheel, SBOM/provenance, and OCI build context. |
 | [cli.py](../optima/cli.py) | User/operator commands for verification/evaluation, chain intake, weight reconciliation, model provisioning, and release verification/context construction. |
@@ -840,12 +838,6 @@ python -m optima.cli verify   examples/miner_silu_triton --device cuda --dtype b
 # end-to-end gate: faithful PASSes, broken FAILs
 python -m optima.cli evaluate examples/miner_silu_triton --model Qwen/Qwen2.5-0.5B-Instruct --no-deterministic
 python -m optima.cli evaluate examples/miner_silu_broken  --model Qwen/Qwen2.5-0.5B-Instruct --no-deterministic
-# legacy local mechanism simulation (production uses finalized chain intake + SQLite)
-optima commit  examples/miner_silu_triton --hotkey alice --salt s1 --round 0 --ledger l.json
-optima reveal  examples/miner_silu_triton --hotkey alice --salt s1 --round 0 --ledger l.json
-python -m optima.cli evaluate examples/miner_silu_triton --model Qwen/Qwen2.5-0.5B-Instruct \
-    --no-deterministic --ledger l.json --hotkey alice --round 0
-optima settle  --round 0 --ledger l.json
 ```
 
 ---

@@ -20,7 +20,7 @@ Side by side:
 |---|---|---|
 | Miners submit | `(HF model, revision)` committed on chain | a kernel bundle (commit-reveal) |
 | Validator runs the compute | yes (Targon / B300 fleet hosts inference) | yes (our validator runs the model) |
-| Champion / challenger | yes | yes (`Ledger.settle`) |
+| Champion / challenger | yes | yes (transactional target settlement, `optima/settlement.py`) |
 | Dethrone rule | win **strictly across all envs** by a per-env **margin** | beat champion by **speedup margin** |
 | Reward | **winner-take-all** to champion (+ burn) | `weights = {champion: 1.0}` |
 | Anti-copy | behavioral fingerprint, earliest-committer-wins | content-hash, earliest-commit-wins |
@@ -73,10 +73,11 @@ through the DB. State is *implicit* — the scheduler/executor infer what to do 
                   └───────────┘
 ```
 
-Our current code maps cleanly onto this: `commit_reveal.Ledger` → the **DB + the
-king-of-the-hill part of the scheduler**; `eval.throughput_kl.evaluate` → the
-**executor**; `cli.py` → the seams of all of them. What's new is the **chain
-plumbing (monitor + validator)**, a **real DB**, and the **service split**.
+Our current code maps cleanly onto this: `chain/intake.py` (the SQLite authority)
+→ the **DB + the settlement part of the scheduler**; the qualification runner →
+the **executor**; `cli.py` → the seams of all of them. What was new at the time of
+this study was the **chain plumbing (monitor + validator)**, a **real DB**, and the
+**service split** — all since built (`optima/chain/`).
 
 ---
 
@@ -121,16 +122,17 @@ data=json_str, blocks_until_reveal=1)`.
 
 ### The big realization: **Bittensor gives you commit-reveal for free**
 
-We built `commit_reveal.py` from scratch. We don't need the *transport* — the
-chain has native commit-reveal (`set_reveal_commitment` /
-`get_all_revealed_commitments`). So the design simplifies:
+We had built a local commit-reveal simulator from scratch (since deleted). We
+don't need the *transport* — the chain has native commit-reveal
+(`set_reveal_commitment` / `get_all_revealed_commitments`). So the design
+simplifies:
 
 - **Miner** commits a small JSON on chain: the **bundle hash + a URL** to fetch the
   bundle from (content-addressed store / R2 / HF). The chain timestamps it
   (`first_block`) — that's our anti-copy priority for free.
 - **Validator** reads commitments, fetches bundles, evaluates.
-- Our `commit_reveal.py` keeps only the **off-chain half**: copy detection +
-  king-of-the-hill `settle`. The commit/reveal *binding* moves to the chain.
+- Off-chain we keep only copy detection (`copy_fingerprint.py` + intake's copy
+  disposition) and settlement. The commit/reveal *binding* moves to the chain.
 
 Affine uses **plain `set_weights`** (no commit-reveal weights, no `version_key`),
 emitted every ~180 blocks, epoch-aligned. Winner gets 1.0, a configurable **burn
@@ -194,8 +196,8 @@ behavior**. Exact-hash copy detection misses it. We need a **functional
 fingerprint** alongside the source hash — e.g., hash the kernel's **outputs on a
 fixed canonical input set** (and/or a normalized-AST hash). Two kernels with the
 same output fingerprint within tolerance, where one committed earlier, → the later
-is a copy. This is a concrete next-step for `commit_reveal.py` /
-`bundle_hash.py`.
+is a copy. The normalized-AST half of this has since been built
+(`copy_fingerprint.py`); the behavioral half remains open.
 
 (Affine's behavioral approach is heavy — separate worker, R2 storage, async
 verdict backfill — because their submissions are giant models. Ours is lighter: a

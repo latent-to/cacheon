@@ -74,24 +74,3 @@ def is_installed() -> bool:
     except Exception:  # noqa: BLE001
         return False
     return bool(getattr(SiluAndMul, _PATCH_FLAG, False))
-
-
-def rebind_existing(root_module) -> int:
-    """Safety net for ordering: re-dispatch already-constructed SiluAndMul ops.
-
-    ``MultiPlatformOp`` binds ``self._forward_method`` at ``__init__``. If the
-    model was built *before* ``install()`` ran (e.g. plugin load ordering), those
-    instances still point at the original method. Call this with the loaded model
-    to re-run dispatch so each SiluAndMul picks up the patched class method.
-    Returns the number of instances rebound.
-    """
-    from sglang.srt.layers.activation import SiluAndMul
-
-    if not is_installed():
-        return 0
-    count = 0
-    for module in root_module.modules():
-        if isinstance(module, SiluAndMul):
-            module._forward_method = module.dispatch_forward()
-            count += 1
-    return count

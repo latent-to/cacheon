@@ -24,8 +24,8 @@ the whole *mechanism* — typed op-slots, fused-*block* slots, **and cross-GPU *
 slots** (a slot can be one op, a region behind one typed tensor boundary, or a collective
 handed the process group), the seam that swaps an untrusted kernel into a spawned model
 process, op-correctness, bookended throughput measurement, the fidelity gates (in-engine
-audit / KL), a real-task capability gate (GSM8K + MMLU), commit-reveal + king-of-the-hill
-scoring, and tamper-resistant timing. **Ten slots:** `activation.silu_and_mul`,
+audit / KL), a real-task capability gate (GSM8K + MMLU), chain-native commit-reveal
+intake with cumulative copy disposition, and tamper-resistant timing. **Ten slots:** `activation.silu_and_mul`,
 `norm.rmsnorm` (ops); `attention.sdpa` / `attention.decode` / `attention.msa_block_score`,
 `moe.fused_experts` (blocks); `collective.all_reduce`, `moe.fused_experts_reduce`,
 `collective.ar_residual_rmsnorm`, and `collective.moe_finalize_ar_rmsnorm` (collectives,
@@ -238,7 +238,6 @@ optima/
   release.py                # signed chain-independent Engine release artifacts
   chain/intake.py           # SQLite production authority
   bundle_hash.py            # deterministic bundle identity
-  commit_reveal.py          # legacy local mechanism simulator
   cli.py                    # developer, chain-intake, weights, model and release commands
 optima_kernels/
   collective/               # validator-owned reference lib for the fused AR+norm family (sm103 CUDA + wrapper)
@@ -376,37 +375,36 @@ targets a block/collective slot also declares `graph_safe` in its metadata to be
   hand them to the kernel at the deferred fusion call, and a **last-layer veto** keeps
   the finalize in-op for any layer whose deferred call has no consumer.
 
-## Anti-copy & scoring: commit-reveal + king of the hill
+## Anti-copy & settlement
 
-A round is `commit → reveal → evaluate → settle`:
+Production intake is the chain's NATIVE timelock commit-reveal (`optima chain-validate`,
+runbook `docs/TESTNET.md`); copy disposition, qualification, and settlement are
+transactional inside the SQLite intake authority (`optima/chain/intake.py`). The legacy
+local JSON-ledger round simulator (`optima commit/reveal/ledger/legacy-settle`,
+`optima/commit_reveal.py`) was deleted after the chain path superseded it.
 
-```bash
-optima commit  examples/miner_silu_triton --hotkey alice --salt s1 --round 0 --ledger l.json
-optima reveal  examples/miner_silu_triton --hotkey alice --salt s1 --round 0 --ledger l.json
-optima evaluate examples/miner_silu_triton --model Qwen/Qwen2.5-0.5B-Instruct \
-    --ledger l.json --hotkey alice --round 0 --no-deterministic
-optima settle  --round 0 --margin 0.02 --ledger l.json
-```
-
-- **commit-reveal** binds `H(content_hash, hotkey, salt)`; a reveal must match a
-  prior commitment by that hotkey, so you can't reveal a bundle you didn't commit
-  to (copying at reveal time is impossible). In production this is Bittensor's
-  native commit-reveal (we keep only the off-chain scoring half).
-- **copy detection** (`optima/copy_fingerprint.py`): cumulative **across rounds** (a copy
-  in a later round is caught, not just same-round), on the exact content hash OR a
-  **reformat-invariant fingerprint** (AST-normalized — a reflowed/recommented/renamed-
-  whitespace copy with a fresh hash is still demoted). Fingerprints are computed **per slot**
-  over each op's transitive bundle-local **import closure**, and the ledger also compares
-  per-FILE fingerprint sets by **containment** — so padding the bundle with an extra op, or
-  relocating a stolen body into an imported `_impl.py` behind a re-export shim, still demotes
-  (while two miners merely vendoring the same public utility never match). A **structural**
-  fingerprint (names and constants blanked) additionally flags rename + constant-tweak
-  near-copies as an **advisory** at reveal (surfaced for review, never auto-demoted —
-  skeletons can collide).
-- **king of the hill**: a champion holds the emission; a challenger takes the title only by
-  beating it by a margin. A copy ties → earns nothing. `optima settle --per-slot` runs a
-  **champion per slot** and splits emission across slots, so a specialist who owns one slot
-  is paid (vs winner-take-all giving 100% to the single best end-to-end bundle).
+- **commit-reveal** binds the content hash on chain before the URL is readable; the
+  reveal block is the anti-copy priority timestamp, so you can't commit to a bundle
+  you saw revealed (copying at reveal time is impossible).
+- **copy detection** (`optima/copy_fingerprint.py`): cumulative in **finalized chain
+  order** (a copy revealed later is caught and retroactively demotable), on the exact
+  content hash OR a **reformat-invariant fingerprint** (AST-normalized — a
+  reflowed/recommented/renamed-whitespace copy with a fresh hash is still demoted).
+  Fingerprints are computed **per slot** over each op's transitive bundle-local
+  **import closure**, and intake also compares per-FILE fingerprint sets by
+  **containment** — relocating a stolen body into an imported `_impl.py` behind a
+  re-export shim, or padding the stolen slot with extra variants, still demotes
+  (while two miners merely vendoring the same public utility never match; a padded
+  multi-op submission cannot even resolve a registered competition target). A
+  **structural** fingerprint (names and constants blanked) additionally flags
+  rename + constant-tweak near-copies as an **advisory** at intake (surfaced for
+  review, never auto-demoted — skeletons can collide).
+- **settlement**: explicit singleton or atomic competition targets with transactional
+  stack state (`optima/settlement.py`); one passing qualification is retained as
+  `reproduction_pending`, a second independent passing authority is required, and the
+  settled speedup is the **lower** of the two. Emission projection is separate and
+  policy-driven (`docs/EMISSIONS_POLICY.md`) — relative improvement with time decay,
+  not winner-take-all.
 
 Robust scoring (see `optima/eval/scoring.py`), built for a validator that **can't lock GPU
 clocks**: each launch does median-of-K timed passes; the candidate is **bracketed by a

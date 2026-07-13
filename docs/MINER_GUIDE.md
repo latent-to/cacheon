@@ -570,10 +570,6 @@ commit on a public testnet through GPU evaluation to settlement — was run
 end-to-end on 2026-07-08 ([TESTNET.md](TESTNET.md) is the operator-side runbook
 with the record).
 
-The `optima commit` / `optima reveal` / `optima settle` subcommands are the same
-protocol against a **local ledger file** — useful for testing the round logic
-offline; they are not the production submission path.
-
 **Ready to submit when:**
 
 - [ ] `optima scan` and `optima verify --device cuda` pass on your bundle

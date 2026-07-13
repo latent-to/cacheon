@@ -394,23 +394,6 @@ def test_post_reveal_commitment_dry_run_and_submit():
     assert st.set_reveal_commitment_calls == [("payload", 10)]
 
 
-def test_ledger_current_weights_is_the_policy_seam():
-    from optima.commit_reveal import Champion, Ledger
-
-    led = Ledger()
-    assert led.current_weights() == {}
-    led.champion = Champion("h1", "hkA", 1.05, 0)
-    assert led.current_weights(per_slot=False) == {"hkA": 1.0}
-    assert led.current_weights() == {"hkA": 1.0}  # no per-slot state -> falls back
-    led.champions = {
-        "slot.x": Champion("h1", "hkA", 1.05, 0),
-        "slot.y": Champion("h2", "hkB", 1.10, 0),
-        "slot.z": Champion("h3", "hkA", 1.02, 0),
-    }
-    w = led.current_weights()
-    assert w["hkA"] == pytest.approx(2 / 3) and w["hkB"] == pytest.approx(1 / 3)
-
-
 def test_preflight_registered_with_permit():
     st = _MockSubtensor(hotkeys=["valX"], registered=["valX"])
     checks = chain.preflight(st, _wallet("valX"), netuid=1)

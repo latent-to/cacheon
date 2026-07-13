@@ -37,16 +37,6 @@ def _json_obj(raw: str | None) -> dict:
     return out
 
 
-def _dtype(name: str):
-    import torch
-
-    return {
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-        "float32": torch.float32,
-    }[name]
-
-
 def cmd_slots(_: argparse.Namespace) -> int:
     from optima.slots import SLOTS, list_slots
 
@@ -813,115 +803,6 @@ def cmd_bench(args: argparse.Namespace) -> int:
     return 0 if report.passed_quality else 3
 
 
-def cmd_hash(args: argparse.Namespace) -> int:
-    from optima.bundle_hash import content_hash
-
-    print(content_hash(args.bundle))
-    return 0
-
-
-def cmd_commit(args: argparse.Namespace) -> int:
-    from optima.bundle_hash import content_hash
-    from optima.commit_reveal import Ledger, make_commitment
-
-    ch = content_hash(args.bundle)
-    com = make_commitment(ch, args.hotkey, args.salt)
-    led = Ledger.load(args.ledger)
-    seq = led.commit(args.hotkey, com, args.round)
-    led.save(args.ledger)
-    print(f"committed hotkey={args.hotkey} round={args.round} seq={seq}")
-    print(f"commitment={com}")
-    print("keep your --salt and bundle; you'll need both to reveal")
-    return 0
-
-
-def cmd_reveal(args: argparse.Namespace) -> int:
-    from optima.bundle_hash import content_hash
-    from optima.commit_reveal import Ledger, RevealError
-    from optima.copy_fingerprint import (
-        bundle_fingerprint,
-        bundle_slot_file_fingerprints,
-        bundle_slot_fingerprints,
-        bundle_structural_fingerprint,
-    )
-
-    ch = content_hash(args.bundle)
-    fp = bundle_fingerprint(args.bundle)  # reformat-invariant near-copy signal (auto-demotes)
-    slot_fps = bundle_slot_fingerprints(args.bundle)  # per-slot: a padded bundle can't hide a stolen slot
-    file_fps = bundle_slot_file_fingerprints(args.bundle)  # per-file: nor a RELOCATED stolen body
-    sfp = bundle_structural_fingerprint(args.bundle)  # rename/constant-tweak skeleton (advisory)
-    led = Ledger.load(args.ledger)
-    # Query advisory structural matches BEFORE recording this reveal (so we don't match self).
-    advisory = led.structural_near_copies(sfp, args.hotkey)
-    try:
-        rev = led.reveal(args.hotkey, ch, args.salt, args.round, fingerprint=fp,
-                         structural_fingerprint=sfp, slot_fingerprints=slot_fps,
-                         slot_file_fingerprints=file_fps)
-    except RevealError as e:
-        print(f"REJECTED: {e}")
-        return 2
-    led.save(args.ledger)
-    print(f"revealed hotkey={args.hotkey} content={ch[:16]}... original={rev.original}")
-    if not rev.original:
-        print("  -> flagged as a COPY (an earlier commit to this exact content, its "
-              "reformatted-but-identical structure, or a bundle whose kernel source "
-              "this one contains exists); earns 0")
-    elif advisory:
-        print(f"  ⚠ ADVISORY: structurally similar to earlier submission(s) by {', '.join(advisory)} "
-              "(possible rename/constant-tweak copy) — flagged for review, not auto-demoted")
-    return 0
-
-
-def cmd_ledger(args: argparse.Namespace) -> int:
-    from optima.commit_reveal import Ledger
-
-    led = Ledger.load(args.ledger)
-    print(f"commitments={len(led.commitments)} reveals={len(led.reveals)} scores={len(led.scores)}")
-    if led.champion:
-        c = led.champion
-        print(f"champion: hotkey={c.hotkey} score={c.score:.3f} round={c.round_id} "
-              f"content={c.content_hash[:16]}...")
-    else:
-        print("champion: (none yet)")
-    return 0
-
-
-def cmd_settle(args: argparse.Namespace) -> int:
-    from optima.commit_reveal import Ledger
-    from optima.compat import PINNED_SGLANG
-
-    if not args.development_only:
-        raise SystemExit(
-            "legacy JSON settlement is development-only; production settlement is "
-            "transactional inside chain-validate"
-        )
-    led = Ledger.load(args.ledger)
-    if getattr(args, "per_slot", False):
-        res = led.settle_per_slot(args.round, margin=args.margin, current_sglang_version=PINNED_SGLANG)
-        led.save(args.ledger)
-        print("per-slot championships (emission split across slots):")
-        for slot, champ in sorted(res.champions.items()):
-            changed = " (NEW)" if res.title_changes.get(slot) else ""
-            stale = "  ⚠ STALE pin — re-baseline" if slot in res.stale_slots else ""
-            print(f"  {slot or '(unlabeled)':32s} {champ.hotkey} score={champ.score:.3f}{changed}{stale}")
-        if res.rejected_copies:
-            print(f"rejected copies: {', '.join(res.rejected_copies)}")
-        print(f"weights: {res.weights}")
-        return 0
-    res = led.settle(args.round, margin=args.margin, current_sglang_version=PINNED_SGLANG)
-    led.save(args.ledger)
-    print(f"title_changed={res.title_changed} challenger_score={res.challenger_score:.3f}")
-    if res.champion:
-        print(f"champion: {res.champion.hotkey} score={res.champion.score:.3f}")
-    if res.champion_stale:
-        print(f"  ⚠ champion was crowned under a DIFFERENT sglang pin than {PINNED_SGLANG}; "
-              "re-baseline it (re-evaluate the champion bundle on the current pin).")
-    if res.rejected_copies:
-        print(f"rejected copies: {', '.join(res.rejected_copies)}")
-    print(f"weights: {res.weights}")
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="optima",
@@ -930,10 +811,9 @@ def build_parser() -> argparse.ArgumentParser:
             "\n"
             "Commands by workflow:\n"
             "  develop a kernel (miner) ... slots, scan, verify, evaluate, bench\n"
-            "  submit on-chain (miner) .... hash, chain-register, chain-package,\n"
+            "  submit on-chain (miner) .... chain-register, chain-package,\n"
             "                               chain-submit, chain-status\n"
             "  referee + settlement ....... chain-validate, set-weights\n"
-            "  local simulation ........... commit, reveal, ledger, legacy-settle\n"
             "  environment checks ......... compat, chain-compat\n"
             "\n"
             "New to Optima? Start with docs/MINER_GUIDE.md."
@@ -1245,44 +1125,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--allow-unsafe-no-isolation", action="store_true",
                     help="DEV ONLY: continue if candidate no-egress isolation is unavailable")
     sp.set_defaults(func=cmd_bench)
-
-    # ---- commit-reveal / scoring ledger ----
-    sp = sub.add_parser("hash", help="print a bundle's deterministic content hash")
-    sp.add_argument("bundle")
-    sp.set_defaults(func=cmd_hash)
-
-    sp = sub.add_parser("commit", help="post a commitment for a bundle (commit phase)")
-    sp.add_argument("bundle")
-    sp.add_argument("--hotkey", required=True)
-    sp.add_argument("--salt", required=True)
-    sp.add_argument("--round", type=int, default=0)
-    sp.add_argument("--ledger", default="optima_ledger.json")
-    sp.set_defaults(func=cmd_commit)
-
-    sp = sub.add_parser("reveal", help="reveal a previously committed bundle (reveal phase)")
-    sp.add_argument("bundle")
-    sp.add_argument("--hotkey", required=True)
-    sp.add_argument("--salt", required=True)
-    sp.add_argument("--round", type=int, default=0)
-    sp.add_argument("--ledger", default="optima_ledger.json")
-    sp.set_defaults(func=cmd_reveal)
-
-    sp = sub.add_parser("ledger", help="show ledger state (champion, counts)")
-    sp.add_argument("--ledger", default="optima_ledger.json")
-    sp.set_defaults(func=cmd_ledger)
-
-    sp = sub.add_parser(
-        "legacy-settle",
-        help="development-only JSON-ledger settlement simulation",
-    )
-    sp.add_argument("--round", type=int, default=0)
-    sp.add_argument("--margin", type=float, default=0.02)
-    sp.add_argument("--ledger", default="optima_ledger.json")
-    sp.add_argument("--per-slot", action="store_true",
-                    help="per-slot championships (one champion per slot, emission split) — pays "
-                         "specialists, vs the winner-take-all default")
-    sp.add_argument("--development-only", action="store_true", required=True)
-    sp.set_defaults(func=cmd_settle)
 
     return p
 

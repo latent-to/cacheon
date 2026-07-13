@@ -42,15 +42,6 @@ def test_direct_diagnostics_reject_legacy_settlement_options(
     assert exc_info.value.code == 2
 
 
-def test_chain_simulation_keeps_its_own_ledger_options():
-    args = cli.build_parser().parse_args(
-        ["commit", "bundle", "--hotkey", "miner", "--salt", "secret"]
-    )
-    assert args.ledger == "optima_ledger.json"
-    assert args.hotkey == "miner"
-    assert args.round == 0
-
-
 def test_root_help_labels_direct_commands_as_diagnostics():
     help_text = cli.build_parser().format_help()
     assert "evaluate" in help_text and "development diagnostic" in help_text

@@ -23,8 +23,7 @@ NATIVE timelock commit-reveal (`set_reveal_commitment`):
 Everything else happens on the validator. `FinalizedIntakeStore` records finalized
 priority, private fetch, immutable worker publication, copy disposition, arena-screen
 receipts, qualifications, reproduction state, settlement, stack state, and weight-
-publication journal entries in SQLite. The legacy JSON `commit_reveal.Ledger` remains a
-development simulator; it is not the production chain authority.
+publication journal entries in SQLite.
 
 ## Prerequisites
 
