@@ -1,10 +1,11 @@
-"""Finalized chain intake, immutable publication, and causal qualification.
+"""Finalized chain intake, immutable publication, qualification, and settlement.
 
-This production loop deliberately stops before settlement and weights.  It reserves
+This production loop deliberately stops before weight signing.  It reserves
 the complete finalized event order before network transport, publishes submitted bytes
-into a separate immutable worker tree, and optionally invokes the current batch causal
-qualification authority.  The old shell/CPU fake-score evaluator and immediate JSON
-Ledger settlement do not exist on this path.
+into a separate immutable worker tree, optionally invokes the current batch causal
+qualification authority, and transactionally adopts its retained PASS projection. The
+old shell/CPU fake-score evaluator and JSON Ledger settlement do not exist on this path;
+wallet access belongs only to the separate control-plane signer.
 """
 
 from __future__ import annotations
@@ -96,6 +97,7 @@ class PassResult:
     rejected: dict[str, str] = field(default_factory=dict)
     decisions: dict[str, str] = field(default_factory=dict)
     held: list[str] = field(default_factory=list)
+    settlements: dict[str, str] = field(default_factory=dict)
 
 
 def _finalized_arrivals(snapshot) -> tuple[FinalizedArrival, ...]:
@@ -174,6 +176,11 @@ def _qualification_reservations(
                 fingerprint.target_id,
                 fingerprint.selected_delta_digest,
                 index,
+                reservation.arrival.hotkey,
+                reservation.arrival.block,
+                reservation.arrival.event_index,
+                reservation.arrival.event_subindex,
+                reservation.target_members,
             )
         )
     return tuple(rows)
@@ -222,6 +229,31 @@ def _apply_qualification(
         raise IntakeControllerError("qualification outcomes changed cohort authority")
     store.apply_qualification_batch(batch)
     return batch
+
+
+def _settle_pending(
+    store: FinalizedIntakeStore,
+    *,
+    current_block: int,
+) -> dict[str, str]:
+    """Settle every causally ready retained PASS without chain or wallet access."""
+
+    from optima.settlement import plan_settlement
+
+    committed: dict[str, str] = {}
+    while True:
+        lease = store.lease_settlement_cohort(current_block=current_block)
+        if lease is None:
+            return committed
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        store.commit_settlement(lease, plan)
+        committed[lease.lease_id] = plan.digest
 
 
 def run_pass(
@@ -331,6 +363,9 @@ def run_pass(
                     (row.reservation_digest, row.decision.value)
                     for row in batch.outcomes
                 )
+            result.settlements.update(
+                _settle_pending(store, current_block=snapshot.finalized_block)
+            )
         result.rejected.update(
             (row.reservation_id, row.reason)
             for row in inserted
@@ -374,7 +409,7 @@ def run_validator(
             failures = 0
             logger.info(
                 "intake @finalized %d: seen=%d reserved=%d published=%d copies=%d "
-                "rejected=%d decisions=%d held=%d",
+                "rejected=%d decisions=%d settlements=%d held=%d",
                 last.finalized_block,
                 last.seen,
                 len(last.reserved),
@@ -382,6 +417,7 @@ def run_validator(
                 len(last.copies),
                 len(last.rejected),
                 len(last.decisions),
+                len(last.settlements),
                 len(last.held),
             )
         except Exception:  # validator-side fault; a supervisor may restart cleanly
