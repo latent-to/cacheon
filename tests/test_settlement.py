@@ -10,6 +10,7 @@ from optima.settlement import (
     SettlementCandidate,
     SettlementError,
     SettlementEvidence,
+    SettlementEvent,
     SettlementEventType,
     SettlementQualification,
     plan_settlement,
@@ -322,6 +323,7 @@ def test_highest_speedup_wins_and_events_form_hash_chain() -> None:
     assert [row.sequence for row in plan.events] == [7, 8, 9, 10]
     for prior, current in zip(plan.events, plan.events[1:]):
         assert current.previous_event_digest == prior.digest
+    assert SettlementEvent.from_dict(plan.events[1].to_dict()) == plan.events[1]
 
 
 def test_equal_speedup_uses_finalized_order_not_input_order() -> None:

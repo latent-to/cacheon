@@ -56,6 +56,7 @@ from optima.release_runtime import (
     _closed_serving_environment,
     verify_serving_release,
 )
+from optima.release_host import _reopen_context
 from optima.stack_identity import canonical_json_bytes
 from optima.stack_manifest import (
     EngineReleaseManifest,
@@ -254,7 +255,7 @@ def _prepared(tmp_path: Path):
         reference_manifest_payload=canonical_json_bytes(reference.to_dict()) + b"\n",
         calibration_manifest_payload=canonical_json_bytes(_calibration(reference).to_dict()) + b"\n",
         upstream_repository="https://github.com/sgl-project/sglang",
-        upstream_revision="c" * 40,
+        upstream_revision="56e290315b8fdb4c8c10f8e31360d9bc3d878633",
         sglang_version="0.0.0.dev1+g56e290315",
         serve=serve,
     )
@@ -379,6 +380,11 @@ def test_signed_release_reopens_native_model_and_chain_free_context(tmp_path: Pa
     deployment = json.loads((context / "deployment.json").read_bytes())
     assert deployment["required_seccomp_profile"] == "seccomp.json"
     assert deployment["required_read_only_rootfs"] is True
+    assert _reopen_context(
+        context,
+        expected_descriptor_digest=descriptor.digest,
+        expected_public_key=signature.public_key,
+    )[1].descriptor == descriptor
 
 
 def test_public_key_model_native_and_canonical_evidence_fail_closed(tmp_path: Path) -> None:

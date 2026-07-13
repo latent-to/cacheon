@@ -21,7 +21,9 @@ from optima.stack_identity import canonical_digest, require_sha256_hex
 
 if TYPE_CHECKING:
     from optima.chain.weights import WeightProjection, WeightPublicationRecord
-    from optima.settlement import SettlementCandidate, SettlementPlan
+    from optima.settlement import (
+        SettlementCandidate, SettlementEvidence, SettlementEvent, SettlementPlan,
+    )
     from optima.stack_manifest import EvaluationStackManifest
 
 
@@ -303,6 +305,32 @@ class SettlementLease:
         ):
             raise IntakeError("settlement lease candidates are inconsistent")
         object.__setattr__(self, "candidates", candidates)
+
+
+@dataclass(frozen=True)
+class CrownedSettlement:
+    """One active crown reopened from durable candidate, evidence, and event bytes."""
+
+    candidate: SettlementCandidate
+    evidence: SettlementEvidence
+    event: SettlementEvent
+
+    def __post_init__(self) -> None:
+        from optima.settlement import (
+            SettlementCandidate, SettlementEvidence, SettlementEvent,
+            SettlementEventType,
+        )
+
+        if (
+            type(self.candidate) is not SettlementCandidate
+            or type(self.evidence) is not SettlementEvidence
+            or type(self.event) is not SettlementEvent
+            or self.event.event_type is not SettlementEventType.CROWN
+            or self.evidence.candidate_digest != self.candidate.digest
+            or self.event.candidate_digest != self.candidate.digest
+            or self.event.target_id != self.candidate.target_id
+        ):
+            raise IntakeError("active crown authority is inconsistent")
 
 
 class FinalizedIntakeStore:
@@ -2104,6 +2132,81 @@ class FinalizedIntakeStore:
             discovery.append(claim)
         return tuple(standing), tuple(discovery)
 
+    def reopen_active_crown(
+        self, arena_digest: str, target_id: str
+    ) -> CrownedSettlement:
+        """Reopen the exact active CROWN needed by reviewed source promotion."""
+
+        from optima.economics import StandingRewardClaim, WEIGHT_PPM
+        from optima.settlement import SettlementEvent
+
+        require_sha256_hex(arena_digest, field="arena_digest")
+        if not isinstance(target_id, str) or not target_id:
+            raise IntakeError("active crown target_id is malformed")
+        claim_row = self._db.execute(
+            "SELECT claim_digest,claim_json,event_id FROM standing_reward_claims "
+            "WHERE arena_id=? AND target_id=? AND status='active'",
+            (arena_digest, target_id),
+        ).fetchone()
+        if claim_row is None:
+            raise IntakeError("active crown is not retained")
+        try:
+            claim = StandingRewardClaim.from_dict(json.loads(claim_row["claim_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise IntakeError(f"active crown claim is corrupt: {exc}") from None
+        if claim.digest != claim_row["claim_digest"]:
+            raise IntakeError("active crown claim digest differs")
+        candidate_row = self._db.execute(
+            "SELECT * FROM settlement_candidates WHERE settlement_evidence_digest=? "
+            "AND status='crowned'",
+            (claim.retained_evidence_digest,),
+        ).fetchone()
+        event_row = self._db.execute(
+            "SELECT event_digest,event_json FROM settlement_events WHERE event_id=? "
+            "AND event_type='CROWN'",
+            (claim_row["event_id"],),
+        ).fetchone()
+        if candidate_row is None or event_row is None:
+            raise IntakeError("active crown lacks retained settlement authority")
+        candidate = self._settlement_candidate(candidate_row)
+        evidence = self.reopen_settlement_evidence(candidate)
+        try:
+            event = SettlementEvent.from_dict(json.loads(event_row["event_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise IntakeError(f"active crown event is corrupt: {exc}") from None
+        replacement = (
+            None
+            if candidate.candidate_manifest is None
+            else candidate.candidate_manifest.entries.get(candidate.target_id)
+        )
+        current = self.evaluation_stack(arena_digest)
+        speedup_ppm = int(
+            (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
+                rounding=ROUND_FLOOR
+            )
+        )
+        if (
+            event.digest != event_row["event_digest"]
+            or replacement is None
+            or current.manifest.entries.get(target_id) != replacement
+            or claim.arena_digest != candidate.arena_digest
+            or claim.target_id != candidate.target_id
+            or claim.target_spec_digest != replacement.target_spec_digest
+            or claim.contribution_digest != replacement.digest
+            or claim.hotkey != candidate.hotkey
+            or claim.speedup_ppm != speedup_ppm
+            or claim.crowned_block != candidate.finalized_block
+            or claim.retained_evidence_digest != evidence.digest
+            or event.subject_digest != replacement.digest
+            or event.from_stack_digest != candidate.incumbent_stack_digest
+            or event.from_tree_digest != candidate.incumbent_tree_digest
+            or event.to_stack_digest != candidate.incumbent_stack_digest
+            or event.to_tree_digest != candidate.incumbent_tree_digest
+            or event.reason != "qualified_win"
+        ):
+            raise IntakeError("active crown differs from retained settlement authority")
+        return CrownedSettlement(candidate, evidence, event)
+
     def _reopen_claim_evidence(self, retained_digest: str, status: str):
         require_sha256_hex(retained_digest, field="retained_evidence_digest")
         row = self._db.execute(
@@ -2534,7 +2637,8 @@ class SQLiteWeightPublicationJournal:
 
 
 __all__ = [
-    "EvaluationStackState", "FinalizedArrival", "FinalizedIntakeStore", "IntakeError",
+    "CrownedSettlement", "EvaluationStackState", "FinalizedArrival",
+    "FinalizedIntakeStore", "IntakeError",
     "IntakePolicy", "IntakeReservation", "IntakeScope", "SQLiteWeightPublicationJournal",
     "SettlementLease",
 ]

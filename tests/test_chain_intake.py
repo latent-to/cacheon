@@ -29,7 +29,8 @@ from optima.economics import (
     StandingRewardClaim,
 )
 from optima.settlement import (
-    SettlementCandidate, SettlementQualification, plan_settlement,
+    SettlementCandidate, SettlementEventType, SettlementQualification,
+    plan_settlement,
 )
 from optima.stack_identity import sha256_hex
 from optima.stack_manifest import (
@@ -645,6 +646,10 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
         assert len(standing) == 1
         assert standing[0].arena_digest == candidate.arena_digest
         assert standing[0].retained_evidence_digest == evidence[0].digest
+        crown = store.reopen_active_crown(candidate.arena_digest, candidate.target_id)
+        assert crown.candidate == candidate
+        assert crown.evidence == evidence[0]
+        assert crown.event.event_type is SettlementEventType.CROWN
         assert store.lease_settlement_cohort(current_block=12) is None
 
     with _store(tmp_path) as reopened:
@@ -652,6 +657,16 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
         assert current.generation == 1
         assert current.manifest.digest == candidate.candidate_stack_digest
         assert reopened.active_reward_claims()[0][0].hotkey == candidate.hotkey
+        crown = reopened.reopen_active_crown(
+            candidate.arena_digest, candidate.target_id
+        )
+        assert crown.candidate == candidate
+        reopened._db.execute(
+            "UPDATE settlement_events SET event_json='{}' WHERE event_id=?",
+            (crown.event.digest,),
+        )
+        with pytest.raises(IntakeError, match="event is corrupt"):
+            reopened.reopen_active_crown(candidate.arena_digest, candidate.target_id)
 
 
 def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp_path):

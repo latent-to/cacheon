@@ -245,6 +245,7 @@ PR8_PRODUCTION = [
     "optima/eval/qualification_runner.py",
     "optima/model_provision.py",
     "optima/release.py",
+    "optima/release_host.py",
     "optima/release_runtime.py",
     "optima/seam.py",
     "optima/settlement.py",
@@ -262,6 +263,7 @@ PR8_TESTS = [
     "tests/test_qualification_intake.py",
     "tests/test_qualification_runner.py",
     "tests/test_release.py",
+    "tests/test_release_host.py",
     "tests/test_settlement.py",
     "tests/test_stack_manifest.py",
     "tests/test_vendor_provenance.py",
@@ -274,6 +276,7 @@ PR8_AUTHORITY_ROOTS = [
     "optima.chain.weights",
     "optima.eval.qualification_intake",
     "optima.release",
+    "optima.release_host",
     "optima.settlement",
 ]
 PR8_FORBIDDEN_MODULES = PR7_FORBIDDEN_MODULES

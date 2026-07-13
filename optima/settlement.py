@@ -698,6 +698,18 @@ class SettlementEvent:
             "to_tree_digest": self.to_tree_digest,
         }
 
+    @classmethod
+    def from_dict(cls, value: object) -> "SettlementEvent":
+        fields = set(cls.__dataclass_fields__)
+        if type(value) is not dict or set(value) != fields:
+            raise SettlementError("settlement event fields do not match")
+        row = dict(value)
+        try:
+            row["event_type"] = SettlementEventType(row["event_type"])
+        except (TypeError, ValueError):
+            raise SettlementError("settlement event type is unsupported") from None
+        return cls(**row)  # type: ignore[arg-type]
+
     @property
     def digest(self) -> str:
         return canonical_digest("optima.settlement.event", self.to_dict())

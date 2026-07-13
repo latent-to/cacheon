@@ -1614,6 +1614,52 @@ def reopen_release(
     return PublishedRelease(path, descriptor, signature, native, _release_tree_digest(path))
 
 
+def _container_deployment(
+    release: PublishedRelease, trusted_key: str, overlay_digest: str
+) -> dict[str, object]:
+    return {
+        "descriptor_digest": release.descriptor.digest,
+        "required_read_only_rootfs": True,
+        "required_writable_tmpfs": "/tmp",
+        "serve_receipt_directory": "/tmp/optima-release-receipts",
+        "required_seccomp_profile": "seccomp.json",
+        "runtime_overlay_digest": overlay_digest,
+        "seccomp_sha256": release.descriptor.seccomp.sha256,
+        "trusted_release_public_key": trusted_key,
+    }
+
+
+def _container_dockerfile(release: PublishedRelease, overlay_digest: str) -> bytes:
+    descriptor = release.descriptor
+    return (
+        f"FROM {descriptor.serve.base_image}\n"
+        "COPY release/artifacts/" + RUNTIME_WHEEL + " /tmp/optima-engine.whl\n"
+        "RUN /usr/bin/python3 -m pip install --no-deps /tmp/optima-engine.whl && rm /tmp/optima-engine.whl\n"
+        + "RUN /usr/bin/python3 -m optima.release_runtime install-reviewed-overlays"
+        + " --expected-sglang-version " + shlex.quote(descriptor.sglang_version)
+        + " --expected-upstream-revision " + shlex.quote(descriptor.upstream_revision)
+        + " --expected-overlay-digest " + overlay_digest + "\n"
+        "COPY release /optima\n"
+        "COPY trusted-release-key /etc/optima/trusted-release-key\n"
+        "COPY seccomp.json /etc/optima/seccomp.json\n"
+        + "".join(
+            f"ENV {key}={json.dumps(value, ensure_ascii=True)}\n"
+            for key, value in descriptor.serve.environment
+        )
+        + "LABEL org.optima.release.descriptor=\"" + descriptor.digest + "\" "
+        + "org.optima.seccomp.sha256=\"" + descriptor.seccomp.sha256 + "\" "
+        + "org.optima.runtime-overlays=\"" + overlay_digest + "\"\n"
+        + "ENTRYPOINT [\"/usr/bin/python3\",\"-m\",\"optima.release_runtime\","
+        + "\"--release-root\",\"/optima\","
+        + "\"--expected-public-key-file\",\"/etc/optima/trusted-release-key\","
+        + "\"--model-root\"," + json.dumps(descriptor.serve.model_mount) + ","
+        + "\"--require-seccomp\",\"--\",\"/usr/bin/python3\",\"-m\",\"sglang.launch_server\"]\n"
+        + "CMD "
+        + json.dumps(list(descriptor.serve.command_arguments), ensure_ascii=True)
+        + "\n"
+    ).encode("utf-8")
+
+
 def container_context(
     release: PublishedRelease, destination: str | Path, *,
     expected_public_key: bytes | str,
@@ -1642,47 +1688,15 @@ def container_context(
         expected_sglang_version=reopened.descriptor.sglang_version,
         expected_upstream_revision=reopened.descriptor.upstream_revision,
     )
-    deployment = {
-        "descriptor_digest": reopened.descriptor.digest,
-        "required_read_only_rootfs": True,
-        "required_writable_tmpfs": "/tmp",
-        "serve_receipt_directory": "/tmp/optima-release-receipts",
-        "required_seccomp_profile": "seccomp.json",
-        "runtime_overlay_digest": overlay_digest,
-        "seccomp_sha256": reopened.descriptor.seccomp.sha256,
-        "trusted_release_public_key": trusted_key,
-    }
     (dest / "deployment.json").write_bytes(
-        canonical_json_bytes(deployment) + b"\n"
-    )
-    dockerfile = (
-        f"FROM {reopened.descriptor.serve.base_image}\n"
-        "COPY release/artifacts/" + RUNTIME_WHEEL + " /tmp/optima-engine.whl\n"
-        "RUN /usr/bin/python3 -m pip install --no-deps /tmp/optima-engine.whl && rm /tmp/optima-engine.whl\n"
-        + "RUN /usr/bin/python3 -m optima.release_runtime install-reviewed-overlays"
-        + " --expected-sglang-version " + shlex.quote(reopened.descriptor.sglang_version)
-        + " --expected-upstream-revision " + shlex.quote(reopened.descriptor.upstream_revision)
-        + " --expected-overlay-digest " + overlay_digest + "\n"
-        "COPY release /optima\n"
-        "COPY trusted-release-key /etc/optima/trusted-release-key\n"
-        "COPY seccomp.json /etc/optima/seccomp.json\n"
-        + "".join(
-            f"ENV {key}={json.dumps(value, ensure_ascii=True)}\n"
-            for key, value in reopened.descriptor.serve.environment
+        canonical_json_bytes(
+            _container_deployment(reopened, trusted_key, overlay_digest)
         )
-        + "LABEL org.optima.release.descriptor=\"" + reopened.descriptor.digest + "\" "
-        + "org.optima.seccomp.sha256=\"" + reopened.descriptor.seccomp.sha256 + "\" "
-        + "org.optima.runtime-overlays=\"" + overlay_digest + "\"\n"
-        + "ENTRYPOINT [\"/usr/bin/python3\",\"-m\",\"optima.release_runtime\","
-        + "\"--release-root\",\"/optima\","
-        + "\"--expected-public-key-file\",\"/etc/optima/trusted-release-key\","
-        + "\"--model-root\"," + json.dumps(reopened.descriptor.serve.model_mount) + ","
-        + "\"--require-seccomp\",\"--\",\"/usr/bin/python3\",\"-m\",\"sglang.launch_server\"]\n"
-        + "CMD "
-        + json.dumps(list(reopened.descriptor.serve.command_arguments), ensure_ascii=True)
-        + "\n"
-    ).encode("utf-8")
-    (dest / "Dockerfile").write_bytes(dockerfile)
+        + b"\n"
+    )
+    (dest / "Dockerfile").write_bytes(
+        _container_dockerfile(reopened, overlay_digest)
+    )
     _freeze_tree(dest)
     return dest
 
