@@ -8,8 +8,10 @@ from optima.chain.weights import (
     WeightProjection,
     WeightPublicationError,
     WeightPublicationRecord,
+    release_weight_publication_hold,
     reconcile_weight_publication,
 )
+from optima.stack_identity import canonical_digest
 
 
 def _d(char: str) -> str:
@@ -75,10 +77,25 @@ class Chain:
         self.last_update[0] = update
 
 
-def _projection(*, crowns=1, weights=(('alice', 1_000_000),), marker="a"):
+def _projection(
+    *, crowns=1, weights=(("alice", 1_000_000),), marker="a", block=100
+):
+    metagraph_digest = canonical_digest(
+        "optima.economics.metagraph-membership",
+        {
+            "block": block,
+            "block_hash": "0x" + f"{block:064x}",
+            "chain_scope_digest": _d("1"),
+            "members": [
+                {"hotkey": hotkey, "uid": uid}
+                for uid, hotkey in enumerate(("validator", "alice", "bob"))
+            ],
+        },
+    )
     return WeightProjection(
         _d("1"), 1, "validator", _d("2"), _d(marker), _d("4"),
-        3, 90, crowns, ((_d("5"),) if crowns else ()), tuple(weights),
+        metagraph_digest, (_d("6"),), 3, block, crowns,
+        ((_d("5"),) if crowns else ()), tuple(weights),
     )
 
 
@@ -135,7 +152,7 @@ def test_unresolved_or_changed_pending_projection_holds_without_signing():
     reconcile_weight_publication(chain2, _wallet(), projection, journal2, refresh_blocks=20)
     chain2.block = 120
     expired = reconcile_weight_publication(
-        chain2, _wallet(), projection, journal2, refresh_blocks=20
+        chain2, _wallet(), _projection(block=120), journal2, refresh_blocks=20
     )
     assert expired.status == "held" and chain2.submit_calls == 1
 
@@ -172,3 +189,35 @@ def test_confirmed_vector_mismatch_holds_and_refresh_due_resubmits():
     )
     assert refreshed.status == "confirmed" and chain2.submit_calls == 1
     assert [row.status for row in journal2.history] == ["intent", "pending", "confirmed"]
+
+
+def test_stale_projection_is_rejected_before_journal_or_signing():
+    chain, journal = Chain(block=101), Journal()
+    with pytest.raises(WeightPublicationError, match="stale"):
+        reconcile_weight_publication(
+            chain, _wallet(), _projection(block=100), journal, refresh_blocks=20
+        )
+    assert journal.history == [] and chain.submit_calls == 0
+
+
+def test_held_publication_requires_explicit_append_only_release():
+    projection = _projection()
+    held = WeightPublicationRecord(
+        projection.digest,
+        "held",
+        reason="operator_review_required",
+    )
+    journal = Journal(held)
+    released = release_weight_publication_hold(
+        journal, reason="review_ticket_123"
+    )
+    assert released.status == "released"
+    assert released.prior_record_digest == held.digest
+    chain = Chain(apply=True)
+    result = reconcile_weight_publication(
+        chain, _wallet(), projection, journal, refresh_blocks=20
+    )
+    assert result.status == "confirmed"
+    assert [row.status for row in journal.history] == [
+        "released", "intent", "pending", "confirmed"
+    ]

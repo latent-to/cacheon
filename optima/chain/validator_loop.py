@@ -37,6 +37,7 @@ from optima.chain.publication import (
 )
 from optima.copy_fingerprint import fingerprint_submitted_delta
 from optima.eval.qualification_intake import (
+    QualificationAuthorityManifest,
     QualificationIntakeBatch,
     QualificationPlanFactory,
     QualificationReservation,
@@ -205,6 +206,20 @@ def _apply_qualification(
     authority_rows = _qualification_reservations(reservations, publications)
     work = planner(reservations, publications, authority_rows)
     _validate_work(work, authority_rows)
+    prepared = None
+    if type(work.factory.manifest) is QualificationAuthorityManifest:
+        prepared = work.factory.build()
+        arms = tuple(row.arm for row in prepared.prepared.candidates)
+        if (
+            not arms
+            or len({row.baseline_before for row in arms}) != 1
+            or any(row.incumbent != arms[0].incumbent for row in arms)
+        ):
+            raise IntakeControllerError("qualification planner has no single incumbent")
+        store.initialize_evaluation_stack(
+            arms[0].incumbent,
+            tree_digest=arms[0].baseline_before.tree_digest,
+        )
     authority_digest = work.factory.manifest.digest
     authority_manifest = work.factory.manifest.to_dict()
     for row in reservations:
@@ -227,7 +242,10 @@ def _apply_qualification(
         != tuple(row.selected_delta_digest for row in authority_rows)
     ):
         raise IntakeControllerError("qualification outcomes changed cohort authority")
-    store.apply_qualification_batch(batch)
+    store.apply_qualification_batch(
+        batch,
+        evidence_root=None if prepared is None else prepared.evidence_root,
+    )
     return batch
 
 
@@ -252,7 +270,16 @@ def _settle_pending(
             initial_event_sequence=lease.initial_event_sequence,
             previous_event_digest=lease.previous_event_digest,
         )
-        store.commit_settlement(lease, plan)
+        evidence = tuple(
+            store.reopen_settlement_evidence(candidate)
+            for candidate in lease.candidates
+        )
+        store.commit_settlement(
+            lease,
+            plan,
+            evidence,
+            current_block=current_block,
+        )
         committed[lease.lease_id] = plan.digest
 
 

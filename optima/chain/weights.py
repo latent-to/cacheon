@@ -17,7 +17,9 @@ from optima.stack_identity import canonical_digest, require_sha256_hex
 
 
 WEIGHT_PARTS = 1_000_000
-PUBLICATION_STATUSES = frozenset({"intent", "pending", "held", "confirmed"})
+PUBLICATION_STATUSES = frozenset(
+    {"intent", "pending", "held", "confirmed", "released"}
+)
 
 
 class WeightPublicationError(RuntimeError):
@@ -37,6 +39,8 @@ class WeightProjection:
     policy_digest: str
     settlement_state_digest: str
     evaluation_state_digest: str
+    metagraph_digest: str
+    arena_state_digests: tuple[str, ...]
     stack_generation: int
     effective_block: int
     crown_count: int
@@ -49,6 +53,7 @@ class WeightProjection:
             "policy_digest",
             "settlement_state_digest",
             "evaluation_state_digest",
+            "metagraph_digest",
         ):
             object.__setattr__(
                 self, field, require_sha256_hex(getattr(self, field), field=field)
@@ -67,13 +72,18 @@ class WeightProjection:
             if type(value) is not int or value < 0:
                 raise WeightPublicationError(f"projection {field} is malformed")
         evidence = tuple(self.evidence_digests)
+        arenas = tuple(self.arena_state_digests)
         if (
             evidence != tuple(sorted(set(evidence)))
             or any(require_sha256_hex(value, field="evidence_digest") != value for value in evidence)
             or self.crown_count > len(evidence)
+            or not arenas
+            or arenas != tuple(sorted(set(arenas)))
+            or any(require_sha256_hex(value, field="arena_state_digest") != value for value in arenas)
         ):
             raise WeightPublicationError("projection evidence inventory is malformed")
         object.__setattr__(self, "evidence_digests", evidence)
+        object.__setattr__(self, "arena_state_digests", arenas)
         raw_rows = tuple(self.weights_ppm)
         if any(type(row) is not tuple or len(row) != 2 for row in raw_rows):
             raise WeightPublicationError("projection weights are not canonical ppm")
@@ -103,11 +113,13 @@ class WeightProjection:
     def to_dict(self) -> dict[str, object]:
         return {
             "chain_scope_digest": self.chain_scope_digest,
+            "arena_state_digests": list(self.arena_state_digests),
             "crown_count": self.crown_count,
             "effective_block": self.effective_block,
             "evaluation_state_digest": self.evaluation_state_digest,
             "evidence_digests": list(self.evidence_digests),
             "netuid": self.netuid,
+            "metagraph_digest": self.metagraph_digest,
             "policy_digest": self.policy_digest,
             "settlement_state_digest": self.settlement_state_digest,
             "stack_generation": self.stack_generation,
@@ -120,7 +132,11 @@ class WeightProjection:
         fields = set(cls.__dataclass_fields__)
         if type(value) is not dict or set(value) != fields:
             raise WeightPublicationError("weight projection fields do not match")
-        if type(value["evidence_digests"]) is not list or type(value["weights_ppm"]) is not list:
+        if (
+            type(value["evidence_digests"]) is not list
+            or type(value["arena_state_digests"]) is not list
+            or type(value["weights_ppm"]) is not list
+        ):
             raise WeightPublicationError("weight projection arrays are malformed")
         rows = value["weights_ppm"]
         if any(type(row) is not list or len(row) != 2 for row in rows):
@@ -129,6 +145,7 @@ class WeightProjection:
             **{
                 **value,
                 "evidence_digests": tuple(value["evidence_digests"]),
+                "arena_state_digests": tuple(value["arena_state_digests"]),
                 "weights_ppm": tuple(tuple(row) for row in rows),
             }
         )  # type: ignore[arg-type]
@@ -204,6 +221,8 @@ class WeightPublicationRecord:
             )
         ):
             raise WeightPublicationError("confirmation chronology is malformed")
+        if self.status == "released" and not self.reason:
+            raise WeightPublicationError("publication release requires an audit reason")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -291,6 +310,25 @@ def _matches(snapshot: chain.ValidatorWeightSnapshot, projection: WeightProjecti
     )
 
 
+def _metagraph_digest(projection: WeightProjection, metagraph: chain.MetagraphView) -> str:
+    members = [
+        {"hotkey": hotkey, "uid": uid}
+        for uid, hotkey in sorted(
+            zip(metagraph.uids, metagraph.hotkeys, strict=True),
+            key=lambda row: (row[0], row[1]),
+        )
+    ]
+    return canonical_digest(
+        "optima.economics.metagraph-membership",
+        {
+            "block": metagraph.block,
+            "block_hash": metagraph.block_hash.lower(),
+            "chain_scope_digest": projection.chain_scope_digest,
+            "members": members,
+        },
+    )
+
+
 def _reveal_round(result: object) -> int:
     if not isinstance(result, dict):
         return 0
@@ -333,6 +371,39 @@ def _held(
     )
 
 
+def release_weight_publication_hold(
+    journal: WeightPublicationJournal,
+    *,
+    reason: str,
+) -> WeightPublicationRecord:
+    """Append an audited release; never delete or rewrite the retained hold."""
+
+    if (
+        not isinstance(reason, str)
+        or not reason
+        or len(reason) > 2_048
+        or any(char in reason for char in "\x00\r\n")
+    ):
+        raise WeightPublicationError("publication release reason is malformed")
+    current = journal.load()
+    if type(current) is not WeightPublicationRecord or current.status != "held":
+        raise WeightPublicationError("only a retained publication hold may be released")
+    return _advance(
+        journal,
+        current,
+        WeightPublicationRecord(
+            current.projection_digest,
+            "released",
+            submit_block=current.submit_block,
+            retry_after_block=current.retry_after_block,
+            reveal_round=current.reveal_round,
+            confirmed_block=current.confirmed_block,
+            confirmed_last_update=current.confirmed_last_update,
+            reason=reason,
+        ),
+    )
+
+
 def reconcile_weight_publication(
     subtensor,
     signer_wallet,
@@ -354,11 +425,19 @@ def reconcile_weight_publication(
         raise WeightPublicationError("weight projection is not exactly typed")
     if type(refresh_blocks) is not int or refresh_blocks <= 0:
         raise WeightPublicationError("weight refresh cadence is malformed")
+    live_metagraph = chain.fetch_metagraph(subtensor, projection.netuid)
+    if (
+        live_metagraph.block != projection.effective_block
+        or _metagraph_digest(projection, live_metagraph) != projection.metagraph_digest
+    ):
+        raise WeightPublicationError(
+            "weight projection is stale for the immediately refreshed metagraph"
+        )
     pre = chain.read_validator_weight_snapshot(
         subtensor, projection.netuid, projection.validator_hotkey
     )
     observed_block = _block(subtensor)
-    if pre.last_update_block > observed_block or projection.effective_block > observed_block:
+    if pre.last_update_block > observed_block or projection.effective_block != observed_block:
         raise chain.ChainWeightStateError("weight authority chronology is inconsistent")
     matches = _matches(pre, projection)
 
@@ -529,5 +608,6 @@ __all__ = [
     "WeightPublicationJournal",
     "WeightPublicationRecord",
     "WeightPublicationResult",
+    "release_weight_publication_hold",
     "reconcile_weight_publication",
 ]

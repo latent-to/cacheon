@@ -10,12 +10,17 @@ from optima.chain.intake import (
 )
 from optima.chain.weights import WeightProjection, WeightPublicationRecord
 from optima.copy_fingerprint import SubmittedDeltaFingerprint
-from optima.eval.evidence_store import EvidenceArtifactRef
+from optima.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from optima.eval.qualification import QualificationDecision
 from optima.eval.qualification_intake import (
     QualificationIntakeBatch,
     QualificationIntakeOutcome,
     QualificationRetryPlan,
+)
+from optima.economics import (
+    EmissionsPolicyManifest,
+    GlobalRewardProjectionContext,
+    MetagraphMember,
 )
 from optima.settlement import SettlementCandidate, plan_settlement
 from optima.stack_identity import sha256_hex
@@ -117,6 +122,17 @@ def _qualified_settlement_candidate(store: FinalizedIntakeStore) -> SettlementCa
         candidate_tree_digest=_h("candidate-tree"),
         expected_context=_stack_context(catalog),
     )
+    store.initialize_evaluation_stack(
+        incumbent, tree_digest=arm.baseline_before.tree_digest
+    )
+    evidence_root = store.path.parent / "evidence"
+    attempt = publish_evidence(
+        evidence_root,
+        b"retained qualification attempt",
+        domain="qualification.cohort-attempt",
+        media_type="application/json",
+        schema="optima.qualification.cohort-attempt.v1",
+    )
     row = store.reserve_finalized(
         (_arrival(0),),
         finalized_block=10,
@@ -147,7 +163,7 @@ def _qualified_settlement_candidate(store: FinalizedIntakeStore) -> SettlementCa
         selected_delta_digest=arm.selected_delta_digest,
         qualification_authority_digest="7" * 64,
         qualification_plan_digest="6" * 64,
-        qualification_attempt_digest=ATTEMPT.sha256,
+        qualification_attempt_digest=attempt.sha256,
         qualification_report_digest="4" * 64,
         arm_digest=arm.digest,
         incumbent_stack_digest=arm.baseline_before.stack_digest,
@@ -165,12 +181,13 @@ def _qualified_settlement_candidate(store: FinalizedIntakeStore) -> SettlementCa
         QualificationDecision.PASS,
         "qualified",
         False,
-        attempt_artifact_sha256=ATTEMPT.sha256,
+        attempt_artifact_sha256=attempt.sha256,
         report_digest="4" * 64,
         settlement_candidate=candidate,
     )
     store.apply_qualification_batch(
-        QualificationIntakeBatch("7" * 64, (outcome,), ATTEMPT)
+        QualificationIntakeBatch("7" * 64, (outcome,), attempt),
+        evidence_root=evidence_root,
     )
     return candidate
 
@@ -554,14 +571,19 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
             initial_event_sequence=lease.initial_event_sequence,
             previous_event_digest=lease.previous_event_digest,
         )
-        current = store.commit_settlement(lease, plan)
+        evidence = tuple(
+            store.reopen_settlement_evidence(row) for row in lease.candidates
+        )
+        current = store.commit_settlement(
+            lease, plan, evidence, current_block=11
+        )
         assert current.generation == 1
         assert current.manifest.digest == candidate.candidate_stack_digest
         standing, discovery = store.active_reward_claims()
         assert discovery == ()
         assert len(standing) == 1
         assert standing[0].arena_digest == candidate.arena_digest
-        assert standing[0].retained_evidence_digest == candidate.digest
+        assert standing[0].retained_evidence_digest == evidence[0].digest
         assert store.lease_settlement_cohort(current_block=12) is None
 
     with _store(tmp_path) as reopened:
@@ -582,6 +604,76 @@ def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp
         assert second.candidates == (candidate,)
         assert second.generation > first.generation
         assert second.lease_id != first.lease_id
+
+
+def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path):
+    catalog = default_target_catalog()
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        evidence = tuple(
+            store.reopen_settlement_evidence(row) for row in lease.candidates
+        )
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+        context = GlobalRewardProjectionContext(
+            SCOPE.digest,
+            "validator",
+            12,
+            "0x" + f"{12:064x}",
+            (MetagraphMember(0, "validator"), MetagraphMember(1, "miner")),
+        )
+        projection = store.build_weight_projection(
+            policy=EmissionsPolicyManifest(100, 20, 100_000),
+            context=context,
+            catalogs={candidate.arena_digest: catalog},
+            netuid=SCOPE.netuid,
+        )
+        assert projection.crown_count == 1
+        assert projection.weights_ppm == (("miner", 1_000_000),)
+
+        artifact = (
+            store.path.parent
+            / "evidence"
+            / evidence[0].attempt_ref.domain
+            / evidence[0].attempt_ref.sha256[:2]
+            / evidence[0].attempt_ref.sha256
+        )
+        artifact.unlink()
+        with pytest.raises(IntakeError, match="cannot reopen"):
+            store.build_weight_projection(
+                policy=EmissionsPolicyManifest(100, 20, 100_000),
+                context=context,
+                catalogs={candidate.arena_digest: catalog},
+                netuid=SCOPE.netuid,
+            )
+
+
+def test_expired_settlement_lease_cannot_commit(tmp_path):
+    with _store(tmp_path) as store:
+        _qualified_settlement_candidate(store)
+        lease = store.lease_settlement_cohort(current_block=11, lease_blocks=2)
+        assert lease is not None
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        evidence = tuple(
+            store.reopen_settlement_evidence(row) for row in lease.candidates
+        )
+        with pytest.raises(IntakeError, match="deadline"):
+            store.commit_settlement(lease, plan, evidence, current_block=13)
+        assert store.evaluation_stack(lease.stack.arena_digest) == lease.stack
 
 
 def test_pass_without_exact_settlement_projection_is_rejected_atomically(tmp_path):
@@ -624,6 +716,8 @@ def test_sqlite_weight_journal_is_cas_bound_and_restart_reopenable(tmp_path):
         _h("policy"),
         _h("settlement"),
         _h("evaluation"),
+        _h("metagraph"),
+        (_h("arena-state"),),
         1,
         10,
         1,
@@ -659,3 +753,6 @@ def test_sqlite_weight_journal_is_cas_bound_and_restart_reopenable(tmp_path):
         )
         journal.compare_and_swap(intent.digest, pending)
         assert journal.load() == pending
+        assert reopened._db.execute(
+            "SELECT COUNT(*) AS n FROM weight_publications"
+        ).fetchone()["n"] == 2

@@ -83,7 +83,10 @@ def cmd_set_weights(args: argparse.Namespace) -> int:
         IntakeScope,
         SQLiteWeightPublicationJournal,
     )
-    from optima.chain.weights import reconcile_weight_publication
+    from optima.chain.weights import (
+        reconcile_weight_publication,
+        release_weight_publication_hold,
+    )
     from optima.economics import (
         EmissionsPolicyManifest,
         GlobalRewardProjectionContext,
@@ -124,6 +127,17 @@ def cmd_set_weights(args: argparse.Namespace) -> int:
             netuid=args.netuid,
         )
         journal = SQLiteWeightPublicationJournal(store, projection)
+        if args.release_hold:
+            if args.dry_run:
+                raise SystemExit("--release-hold cannot be combined with --dry-run")
+            released = release_weight_publication_hold(
+                journal, reason=args.release_hold
+            )
+            print(
+                f"released held weight publication {released.projection_digest}; "
+                "run set-weights again to refresh and reconcile"
+            )
+            return 0
         result = reconcile_weight_publication(
             subtensor,
             None if args.dry_run else wallet,
@@ -884,6 +898,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--discovery-lifetime-blocks", type=int, required=True)
     sp.add_argument("--discovery-pool-ppm", type=int, required=True)
     sp.add_argument("--refresh-blocks", type=int, required=True)
+    sp.add_argument(
+        "--release-hold",
+        default="",
+        metavar="REASON",
+        help="append an audited release of the current held publication; does not submit",
+    )
     sp.add_argument("--dry-run", action="store_true",
                     help="build + print the (uids, weights) payload, do NOT submit")
     sp.set_defaults(func=cmd_set_weights)

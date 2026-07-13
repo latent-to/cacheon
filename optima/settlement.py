@@ -14,6 +14,7 @@ from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Iterable
 
+from optima.eval.evidence_store import EvidenceArtifactRef
 from optima.stack_identity import canonical_digest, require_sha256_hex
 from optima.stack_manifest import EvaluationStackManifest
 from optima.stack_plan import StackArmIdentity
@@ -342,6 +343,51 @@ class SettlementCandidate:
         return canonical_digest("optima.settlement.candidate", self.to_dict())
 
 
+@dataclass(frozen=True)
+class SettlementEvidence:
+    """Receipt that retained attempt bytes were reopened for one exact candidate."""
+
+    candidate_digest: str
+    reservation_digest: str
+    authority_digest: str
+    attempt_ref: EvidenceArtifactRef
+    report_digest: str
+
+    def __post_init__(self) -> None:
+        for field in (
+            "candidate_digest", "reservation_digest", "authority_digest", "report_digest"
+        ):
+            object.__setattr__(self, field, _digest(getattr(self, field), field))
+        if type(self.attempt_ref) is not EvidenceArtifactRef:
+            raise SettlementError("settlement attempt reference is not exactly typed")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "attempt_ref": self.attempt_ref.to_dict(),
+            "authority_digest": self.authority_digest,
+            "candidate_digest": self.candidate_digest,
+            "report_digest": self.report_digest,
+            "reservation_digest": self.reservation_digest,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "SettlementEvidence":
+        fields = set(cls.__dataclass_fields__)
+        if type(value) is not dict or set(value) != fields:
+            raise SettlementError("settlement evidence fields do not match")
+        return cls(
+            value["candidate_digest"],  # type: ignore[arg-type]
+            value["reservation_digest"],  # type: ignore[arg-type]
+            value["authority_digest"],  # type: ignore[arg-type]
+            EvidenceArtifactRef.from_dict(value["attempt_ref"]),
+            value["report_digest"],  # type: ignore[arg-type]
+        )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest("optima.settlement.evidence", self.to_dict())
+
+
 class SettlementEventType(str, Enum):
     HOLD = "HOLD"
     CROWN = "CROWN"
@@ -600,7 +646,7 @@ def plan_settlement(
 
 
 __all__ = [
-    "SettlementCandidate", "SettlementError", "SettlementEvent",
+    "SettlementCandidate", "SettlementError", "SettlementEvidence", "SettlementEvent",
     "SettlementEventType", "SettlementPlan", "StackTransitionOutput",
     "plan_settlement",
 ]

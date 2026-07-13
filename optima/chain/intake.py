@@ -440,6 +440,8 @@ class FinalizedIntakeStore:
                 authority_digest TEXT NOT NULL,
                 candidate_digest TEXT NOT NULL UNIQUE,
                 candidate_json TEXT NOT NULL,
+                evidence_root TEXT NOT NULL,
+                settlement_evidence_digest TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL,
                 lease_id TEXT NOT NULL DEFAULT '',
                 lease_generation INTEGER NOT NULL DEFAULT 0,
@@ -483,8 +485,9 @@ class FinalizedIntakeStore:
                 event_id TEXT NOT NULL
             ) STRICT;
             CREATE TABLE IF NOT EXISTS weight_publications (
-                projection_digest TEXT PRIMARY KEY,
-                generation INTEGER NOT NULL,
+                record_digest TEXT PRIMARY KEY,
+                sequence INTEGER NOT NULL UNIQUE,
+                projection_digest TEXT NOT NULL,
                 projection_json TEXT NOT NULL,
                 record_json TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -977,7 +980,12 @@ class FinalizedIntakeStore:
             result.append(value)
         return tuple(result)
 
-    def apply_qualification_batch(self, batch) -> tuple[IntakeReservation, ...]:
+    def apply_qualification_batch(
+        self,
+        batch,
+        *,
+        evidence_root: str | Path | None = None,
+    ) -> tuple[IntakeReservation, ...]:
         """Persist one typed cohort result and its retry groups atomically."""
 
         from optima.eval.qualification_intake import QualificationIntakeBatch
@@ -992,6 +1000,16 @@ class FinalizedIntakeStore:
             for outcome in batch.outcomes
         ):
             raise IntakeError("PASS qualification lacks a settlement projection")
+        root = None if evidence_root is None else Path(evidence_root)
+        if any(
+            outcome.decision is QualificationDecision.PASS
+            for outcome in batch.outcomes
+        ) and (
+            root is None
+            or not root.is_absolute()
+            or root != Path(os.path.normpath(root))
+        ):
+            raise IntakeError("PASS qualification lacks a canonical evidence root")
         retry: dict[str, tuple[str, int, str]] = {}
         if batch.retry_plan is not None:
             for group_index, group in enumerate(batch.retry_plan.reservation_groups):
@@ -1088,21 +1106,20 @@ class FinalizedIntakeStore:
                         raise IntakeError(
                             "settlement candidate differs from retained qualification"
                         )
-                    self._initialize_evaluation_stack_row(
-                        candidate.incumbent_manifest,
-                        tree_digest=candidate.incumbent_tree_digest,
-                    )
+                    self.evaluation_stack(candidate.arena_digest)
                     candidate_json = json.dumps(
                         candidate.to_dict(), separators=(",", ":"), sort_keys=True
                     )
                     self._db.execute(
                         "INSERT INTO settlement_candidates(reservation_id,authority_digest,"
-                        "candidate_digest,candidate_json,status) VALUES(?,?,?,?, 'pending')",
+                        "candidate_digest,candidate_json,evidence_root,status) "
+                        "VALUES(?,?,?,?,?, 'pending')",
                         (
                             reservation_id,
                             batch.authority_manifest_digest,
                             candidate.digest,
                             candidate_json,
+                            str(root),
                         ),
                     )
                 if reservation_id in retry:
@@ -1236,6 +1253,71 @@ class FinalizedIntakeStore:
         ).fetchone()
         return (0, "") if row is None else (row["sequence"] + 1, row["event_digest"])
 
+    def _settlement_evidence_metadata(
+        self,
+        candidate: SettlementCandidate,
+    ):
+        from optima.eval.evidence_store import EvidenceArtifactRef
+        from optima.settlement import SettlementEvidence
+
+        row = self._db.execute(
+            "SELECT sc.evidence_root,sc.candidate_digest,r.status,r.decision,"
+            "qd.authority_digest,qd.attempt_ref_json,qd.report_digest,qd.decision AS qdecision "
+            "FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
+            "JOIN qualification_dispositions qd USING(reservation_id) "
+            "WHERE sc.reservation_id=? AND qd.evidence_digest=? "
+            "ORDER BY qd.attempt_index DESC LIMIT 1",
+            (candidate.reservation_digest, candidate.qualification_attempt_digest),
+        ).fetchone()
+        if (
+            row is None
+            or row["candidate_digest"] != candidate.digest
+            or row["status"] != "qualified"
+            or row["decision"] != "PASS"
+            or row["qdecision"] != "PASS"
+            or row["authority_digest"] != candidate.qualification_authority_digest
+            or row["report_digest"] != candidate.qualification_report_digest
+            or not row["attempt_ref_json"]
+            or not row["evidence_root"]
+        ):
+            raise IntakeError("settlement evidence no longer has standing authority")
+        try:
+            reference = EvidenceArtifactRef.from_dict(
+                json.loads(row["attempt_ref_json"])
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise IntakeError(f"settlement evidence reference is corrupt: {exc}") from None
+        if reference.sha256 != candidate.qualification_attempt_digest:
+            raise IntakeError("settlement attempt reference differs from candidate")
+        return (
+            Path(row["evidence_root"]),
+            SettlementEvidence(
+                candidate.digest,
+                candidate.reservation_digest,
+                candidate.qualification_authority_digest,
+                reference,
+                candidate.qualification_report_digest,
+            ),
+        )
+
+    def reopen_settlement_evidence(
+        self,
+        candidate: SettlementCandidate,
+    ):
+        """Reopen retained qualification bytes without duplicating their grader."""
+
+        from optima.eval.evidence_store import EvidenceStoreError, reopen_evidence
+        from optima.settlement import SettlementCandidate
+
+        if type(candidate) is not SettlementCandidate:
+            raise IntakeError("settlement evidence candidate is not exactly typed")
+        root, receipt = self._settlement_evidence_metadata(candidate)
+        try:
+            reopen_evidence(root, receipt.attempt_ref)
+        except (EvidenceStoreError, OSError) as exc:
+            raise IntakeError(f"retained settlement evidence cannot reopen: {exc}") from None
+        return receipt
+
     def _economic_blockers(
         self,
         candidate: SettlementCandidate,
@@ -1250,7 +1332,7 @@ class FinalizedIntakeStore:
                 break
             if row.reservation_id in cohort_ids:
                 continue
-            if row.status in {"failed", "expired", "held", "no_decision"}:
+            if row.status in {"failed", "expired"}:
                 continue
             if row.target_members and not (
                 set(row.target_members) & set(candidate.members)
@@ -1285,6 +1367,12 @@ class FinalizedIntakeStore:
             raise IntakeError("settlement lease bounds are malformed")
         with self._transaction():
             self._db.execute(
+                "UPDATE settlement_candidates SET status='held',lease_id='',"
+                "lease_expires_block=0,reason='intake_no_longer_qualified' "
+                "WHERE status IN ('pending','leased') AND reservation_id IN "
+                "(SELECT reservation_id FROM reservations WHERE status!='qualified')"
+            )
+            self._db.execute(
                 "UPDATE settlement_candidates SET status='pending',lease_id='',"
                 "lease_generation=lease_generation+1,lease_expires_block=0,"
                 "reason='settlement_lease_expired' WHERE status='leased' "
@@ -1295,7 +1383,8 @@ class FinalizedIntakeStore:
                 self._db.execute(
                     "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
                     "FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
-                    "WHERE sc.status='pending' ORDER BY r.block,r.event_index,"
+                    "WHERE sc.status='pending' AND r.status='qualified' "
+                    "ORDER BY r.block,r.event_index,"
                     "r.event_subindex,r.hotkey,r.content_hash"
                 )
             )
@@ -1358,14 +1447,33 @@ class FinalizedIntakeStore:
         self,
         lease: SettlementLease,
         plan: SettlementPlan,
+        evidence,
+        *,
+        current_block: int,
     ) -> EvaluationStackState:
         """Atomically commit one independently planned retained-evidence disposition."""
 
         from optima.economics import DiscoveryBountyClaim, StandingRewardClaim, WEIGHT_PPM
-        from optima.settlement import SettlementEventType, SettlementPlan, plan_settlement
+        from optima.settlement import (
+            SettlementEvidence,
+            SettlementEventType,
+            SettlementPlan,
+            plan_settlement,
+        )
 
         if type(lease) is not SettlementLease or type(plan) is not SettlementPlan:
             raise IntakeError("settlement commit is not exactly typed")
+        receipts = tuple(evidence)
+        if (
+            type(current_block) is not int
+            or current_block < 0
+            or current_block >= lease.expires_block
+            or len(receipts) != len(lease.candidates)
+            or any(type(row) is not SettlementEvidence for row in receipts)
+            or {row.candidate_digest for row in receipts}
+            != {row.digest for row in lease.candidates}
+        ):
+            raise IntakeError("settlement evidence or lease deadline is invalid")
         expected = plan_settlement(
             lease.candidates,
             current_manifest=lease.stack.manifest,
@@ -1376,6 +1484,7 @@ class FinalizedIntakeStore:
         if expected.to_dict() != plan.to_dict():
             raise IntakeError("settlement plan differs from its leased authority")
         by_digest = {row.digest: row for row in lease.candidates}
+        evidence_by_candidate = {row.candidate_digest: row for row in receipts}
         with self._transaction():
             current = self.evaluation_stack(lease.stack.arena_digest)
             if current != lease.stack or self._event_head() != (
@@ -1389,6 +1498,10 @@ class FinalizedIntakeStore:
                 for candidate in lease.candidates
             ):
                 raise IntakeError("settlement priority changed while evidence was open")
+            for candidate in lease.candidates:
+                _root, expected_receipt = self._settlement_evidence_metadata(candidate)
+                if expected_receipt != evidence_by_candidate[candidate.digest]:
+                    raise IntakeError("settlement evidence changed after reopening")
             marks = ",".join("?" for _ in ids)
             active = tuple(
                 self._db.execute(
@@ -1446,7 +1559,7 @@ class FinalizedIntakeStore:
                     )
                     claim = DiscoveryBountyClaim(
                         candidate.proposal_digest,
-                        candidate.digest,
+                        evidence_by_candidate[candidate.digest].digest,
                         candidate.hotkey,
                         max(1, speedup_ppm - WEIGHT_PPM),
                         candidate.finalized_block,
@@ -1479,7 +1592,7 @@ class FinalizedIntakeStore:
                         candidate.hotkey,
                         speedup_ppm,
                         candidate.finalized_block,
-                        candidate.digest,
+                        evidence_by_candidate[candidate.digest].digest,
                     )
                     self._db.execute(
                         "INSERT INTO standing_reward_claims(arena_id,target_id,claim_digest,"
@@ -1503,8 +1616,14 @@ class FinalizedIntakeStore:
                 candidate = by_digest[digest]
                 self._db.execute(
                     "UPDATE settlement_candidates SET status=?,lease_id='',"
-                    "lease_expires_block=0,reason=? WHERE reservation_id=?",
-                    (status, status, candidate.reservation_digest),
+                    "lease_expires_block=0,reason=?,settlement_evidence_digest=? "
+                    "WHERE reservation_id=?",
+                    (
+                        status,
+                        status,
+                        evidence_by_candidate[digest].digest,
+                        candidate.reservation_digest,
+                    ),
                 )
 
             if plan.transition is not None:
@@ -1563,6 +1682,37 @@ class FinalizedIntakeStore:
             discovery.append(claim)
         return tuple(standing), tuple(discovery)
 
+    def _reopen_claim_evidence(self, retained_digest: str, status: str):
+        require_sha256_hex(retained_digest, field="retained_evidence_digest")
+        row = self._db.execute(
+            "SELECT * FROM settlement_candidates WHERE settlement_evidence_digest=? "
+            "AND status=?",
+            (retained_digest, status),
+        ).fetchone()
+        if row is None:
+            raise IntakeError("active reward claim has no standing settlement candidate")
+        candidate = self._settlement_candidate(row)
+        receipt = self.reopen_settlement_evidence(candidate)
+        if receipt.digest != retained_digest:
+            raise IntakeError("active reward claim differs from reopened settlement evidence")
+        return receipt
+
+    def _bind_emissions_policy(self, policy_digest: str) -> None:
+        require_sha256_hex(policy_digest, field="policy_digest")
+        with self._transaction():
+            row = self._db.execute(
+                "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
+            ).fetchone()
+            if row is None:
+                self._db.execute(
+                    "INSERT INTO metadata(key,value) VALUES('emissions_policy_digest',?)",
+                    (policy_digest,),
+                )
+            elif row["value"] != policy_digest:
+                raise IntakeError(
+                    "emissions policy differs from the bound validator consensus state"
+                )
+
     def build_weight_projection(
         self,
         *,
@@ -1590,11 +1740,20 @@ class FinalizedIntakeStore:
             or netuid < 0
         ):
             raise IntakeError("weight projection authority is malformed")
+        self._bind_emissions_policy(policy.digest)
         standing, discovery = self.active_reward_claims()
+        for claim in standing:
+            self._reopen_claim_evidence(claim.retained_evidence_digest, "crowned")
+        for claim in discovery:
+            self._reopen_claim_evidence(
+                claim.retained_evidence_digest, "discovery_bounty"
+            )
         by_arena: dict[str, list[object]] = {}
         for claim in standing:
             by_arena.setdefault(claim.arena_digest, []).append(claim)
         states = self.evaluation_stacks()
+        if set(by_arena) - {row.arena_digest for row in states}:
+            raise IntakeError("active reward claim belongs to an absent evaluation arena")
         if set(catalogs) != {row.arena_digest for row in states}:
             raise IntakeError("reward catalogs do not cover every evaluation arena")
         authorities = []
@@ -1628,6 +1787,8 @@ class FinalizedIntakeStore:
             policy.digest,
             self.settlement_state_digest(),
             projection.digest,
+            context.metagraph_digest,
+            projection.arena_authority_digests,
             max((row.generation for row in states), default=0),
             context.current_block,
             len(standing),
@@ -1801,8 +1962,8 @@ class SQLiteWeightPublicationJournal:
         if head is None:
             return None
         row = self.store._db.execute(
-            "SELECT record_json FROM weight_publications WHERE projection_digest=?",
-            (head[0],),
+            "SELECT record_json FROM weight_publications WHERE record_digest=?",
+            (head[1],),
         ).fetchone()
         if row is None:
             raise IntakeError("weight publication head has no retained record")
@@ -1812,6 +1973,31 @@ class SQLiteWeightPublicationJournal:
             raise IntakeError(f"weight publication record is corrupt: {exc}") from None
         if record.digest != head[1] or record.projection_digest != head[0]:
             raise IntakeError("weight publication head differs from retained record")
+        seen: set[str] = set()
+        current = record
+        while True:
+            if current.digest in seen:
+                raise IntakeError("weight publication journal contains a cycle")
+            seen.add(current.digest)
+            prior = current.prior_record_digest
+            if prior is None:
+                break
+            predecessor = self.store._db.execute(
+                "SELECT record_json FROM weight_publications WHERE record_digest=?",
+                (prior,),
+            ).fetchone()
+            if predecessor is None:
+                raise IntakeError("weight publication predecessor is missing")
+            try:
+                current = WeightPublicationRecord.from_dict(
+                    json.loads(predecessor["record_json"])
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise IntakeError(
+                    f"weight publication predecessor is corrupt: {exc}"
+                ) from None
+            if current.digest != prior:
+                raise IntakeError("weight publication predecessor digest differs")
         return record
 
     def compare_and_swap(
@@ -1833,8 +2019,8 @@ class SQLiteWeightPublicationJournal:
             if observed != expected_record_digest:
                 raise IntakeError("weight publication journal compare-and-swap failed")
             previous = self.store._db.execute(
-                "SELECT generation,projection_json FROM weight_publications "
-                "WHERE projection_digest=?",
+                "SELECT sequence,projection_json FROM weight_publications "
+                "WHERE projection_digest=? ORDER BY sequence DESC LIMIT 1",
                 (replacement.projection_digest,),
             ).fetchone()
             if replacement.projection_digest == self.projection.digest:
@@ -1845,7 +2031,9 @@ class SQLiteWeightPublicationJournal:
                 projection_json = previous["projection_json"]
             else:
                 raise IntakeError("publication record has no retained projection")
-            generation = 1 if previous is None else previous["generation"] + 1
+            sequence = self.store._db.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 AS value FROM weight_publications"
+            ).fetchone()["value"]
             record_json = json.dumps(
                 replacement.to_dict(), separators=(",", ":"), sort_keys=True
             )
@@ -1855,14 +2043,12 @@ class SQLiteWeightPublicationJournal:
                 replacement.confirmed_last_update,
             )
             self.store._db.execute(
-                "INSERT INTO weight_publications(projection_digest,generation,projection_json,"
-                "record_json,status,updated_block) VALUES(?,?,?,?,?,?) "
-                "ON CONFLICT(projection_digest) DO UPDATE SET generation=excluded.generation,"
-                "projection_json=excluded.projection_json,record_json=excluded.record_json,"
-                "status=excluded.status,updated_block=excluded.updated_block",
+                "INSERT INTO weight_publications(record_digest,sequence,projection_digest,"
+                "projection_json,record_json,status,updated_block) VALUES(?,?,?,?,?,?,?)",
                 (
+                    replacement.digest,
+                    sequence,
                     replacement.projection_digest,
-                    generation,
                     projection_json,
                     record_json,
                     replacement.status,
@@ -1888,7 +2074,8 @@ class SQLiteWeightPublicationJournal:
 
         require_sha256_hex(projection_digest, field="projection_digest")
         row = self.store._db.execute(
-            "SELECT projection_json FROM weight_publications WHERE projection_digest=?",
+            "SELECT projection_json FROM weight_publications WHERE projection_digest=? "
+            "ORDER BY sequence DESC LIMIT 1",
             (projection_digest,),
         ).fetchone()
         if row is None:

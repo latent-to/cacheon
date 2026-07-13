@@ -956,7 +956,9 @@ def validate_repository(root: Path, *, records_only: bool = False, pr_base: str 
             raise EvidenceError(f"duplicate scope contract: {contract['contract_id']}")
         contract_ids.add(contract["contract_id"])
         contracts.append((contract_path, contract))
-    if contract_ids != {"pr4a", "pr4b", "pr4c", "pr4d", "pr4e", "pr5", "pr6"}:
+    if contract_ids != {
+        "pr4a", "pr4b", "pr4c", "pr4d", "pr4e", "pr5", "pr6", "pr7"
+    }:
         raise EvidenceError(f"scope contract set differs: {sorted(contract_ids)}")
     if records_only:
         return
