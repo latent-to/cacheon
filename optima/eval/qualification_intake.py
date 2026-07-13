@@ -580,6 +580,20 @@ class QualificationIntakeBatch:
             _digest(self.authority_manifest_digest, "authority manifest"),
         )
         outcomes = tuple(self.outcomes)
+        retry_ids = (
+            tuple(
+                reservation
+                for group in self.retry_plan.reservation_groups
+                for reservation in group
+            )
+            if self.retry_plan is not None
+            else ()
+        )
+        no_decision_ids = tuple(
+            row.reservation_digest
+            for row in outcomes
+            if row.decision is QualificationDecision.NO_DECISION
+        )
         if (
             not outcomes
             or any(type(row) is not QualificationIntakeOutcome for row in outcomes)
@@ -603,6 +617,7 @@ class QualificationIntakeBatch:
                     for row in outcomes
                 )
             )
+            or retry_ids != no_decision_ids
         ):
             raise QualificationIntakeError("qualification batch is internally inconsistent")
         object.__setattr__(self, "outcomes", outcomes)

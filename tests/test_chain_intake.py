@@ -10,6 +10,12 @@ from optima.chain.intake import (
 )
 from optima.copy_fingerprint import SubmittedDeltaFingerprint
 from optima.eval.evidence_store import EvidenceArtifactRef
+from optima.eval.qualification import QualificationDecision
+from optima.eval.qualification_intake import (
+    QualificationIntakeBatch,
+    QualificationIntakeOutcome,
+    QualificationRetryPlan,
+)
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
@@ -237,6 +243,12 @@ def test_transport_retry_exhaustion_becomes_an_explicit_hold(tmp_path):
         assert held.status == "held"
         assert held.decision == "NO_DECISION"
         assert held.reason == "transport_retry_limit"
+        released = store.release_hold(
+            row.reservation_id, reason="operator granted one fresh transport budget"
+        )
+        assert released.status == "transport_retry"
+        assert released.transport_attempts == 0
+        assert store.pending() == (released,)
 
 
 def test_qualification_no_decision_is_retained_before_bounded_requeue(tmp_path):
@@ -323,6 +335,53 @@ def test_retry_groups_are_selected_separately_in_finalized_order(tmp_path):
         assert store.published() == (store.get(second.reservation_id),)
 
 
+def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_path):
+    with _store(tmp_path, max_cohort=2) as store:
+        rows = store.reserve_finalized(
+            (_arrival(0), _arrival(1, hotkey="other")),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )
+        for row, marker in zip(rows, ("a", "b"), strict=True):
+            store.mark_fetching(row.reservation_id)
+            store.mark_published(
+                row.reservation_id,
+                delta_fingerprint=_fingerprint(
+                    f"target.{marker}", f"slot.{marker}", marker
+                ),
+                publication_digest=marker * 64,
+                publication_root=f"/published/{marker}",
+            )
+            store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+        failure = "6" * 64
+        outcomes = tuple(
+            QualificationIntakeOutcome(
+                row.reservation_id,
+                "3" * 64,
+                "7" * 64,
+                QualificationDecision.NO_DECISION,
+                "shared_failure",
+                True,
+                failure_digest=failure,
+            )
+            for row in rows
+        )
+        retry = QualificationRetryPlan(
+            "7" * 64,
+            "bisect",
+            tuple((row.reservation_id,) for row in rows),
+            failure,
+        )
+        stored = store.apply_qualification_batch(
+            QualificationIntakeBatch("7" * 64, outcomes, retry_plan=retry)
+        )
+        assert [row.status for row in stored] == ["published", "published"]
+        assert store.published() == (store.get(rows[0].reservation_id),)
+        assert store.qualification_dispositions(rows[0].reservation_id)[0][
+            "authority_manifest"
+        ] == AUTHORITY
+
+
 def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_path):
     with _store(tmp_path) as store:
         first, later = store.reserve_finalized(
@@ -353,8 +412,8 @@ def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_
             publication_digest="a" * 64,
             publication_root="/published/first",
         )
-        assert store.copy_successors(first.reservation_id) == (
-            store.get(later.reservation_id),
+        assert store.reconcile_copies() == (
+            (later.reservation_id, first.reservation_id),
         )
-        copied = store.mark_copy(later.reservation_id, first.reservation_id)
+        copied = store.get(later.reservation_id)
         assert copied.status == "failed" and copied.decision == "FAIL"

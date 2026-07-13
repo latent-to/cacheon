@@ -41,7 +41,6 @@ from optima.eval.qualification_intake import (
     QualificationReservation,
     run_qualification_intake,
 )
-from optima.stack_identity import canonical_digest
 
 
 logger = logging.getLogger("optima.chain.validator")
@@ -221,39 +220,7 @@ def _apply_qualification(
         != tuple(row.selected_delta_digest for row in authority_rows)
     ):
         raise IntakeControllerError("qualification outcomes changed cohort authority")
-    for outcome in batch.outcomes:
-        store.mark_outcome(
-            outcome.reservation_digest,
-            decision=outcome.decision.value,
-            attempt_ref=(
-                batch.attempt_ref
-                if outcome.attempt_artifact_sha256 is not None
-                else None
-            ),
-            report_digest=outcome.report_digest or "",
-            failure_digest=outcome.failure_digest or "",
-            reason=outcome.reason,
-        )
-    if batch.retry_plan is not None:
-        for group_index, group in enumerate(
-            batch.retry_plan.reservation_groups
-        ):
-            group_digest = canonical_digest(
-                "optima.chain.qualification-retry-group",
-                {
-                    "authority_manifest_digest": batch.authority_manifest_digest,
-                    "group_index": group_index,
-                    "members": list(group),
-                    "strategy": batch.retry_plan.strategy,
-                },
-            )
-            for retry_position, reservation_id in enumerate(group):
-                store.requeue_qualification(
-                    reservation_id,
-                    reason=f"qualification_{batch.retry_plan.strategy}",
-                    retry_group_digest=group_digest,
-                    retry_position=retry_position,
-                )
+    store.apply_qualification_batch(batch)
     return batch
 
 
@@ -337,19 +304,14 @@ def run_pass(
             if published.status != "published":
                 result.rejected[published.reservation_id] = published.reason
                 continue
-            predecessors = store.copy_predecessors(published.reservation_id)
-            if predecessors:
-                copied = store.mark_copy(
-                    published.reservation_id, predecessors[0].reservation_id
-                )
-                result.copies[copied.reservation_id] = predecessors[0].reservation_id
-                continue
             result.published[published.reservation_id] = publication.digest
-            for successor in store.copy_successors(published.reservation_id):
-                copied = store.mark_copy(
-                    successor.reservation_id, published.reservation_id
-                )
-                result.copies[copied.reservation_id] = published.reservation_id
+
+        # Publication and copy disposition are separate durable operations. Run a
+        # complete idempotent reconciliation every pass so a crash in that window
+        # cannot permanently bypass finalized priority.
+        for copied, predecessor in store.reconcile_copies():
+            result.copies[copied] = predecessor
+            result.published.pop(copied, None)
 
         if qualification_planner is not None:
             cohort = store.published(limit=policy.max_cohort)

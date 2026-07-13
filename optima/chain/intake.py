@@ -687,25 +687,19 @@ class FinalizedIntakeStore:
                 matches.append(row)
         return tuple(matches)
 
-    def copy_successors(self, reservation_id: str) -> tuple[IntakeReservation, ...]:
-        predecessor = self.get(reservation_id)
-        if predecessor.delta_fingerprint is None:
-            raise IntakeError("copy predecessor has no submitted-delta fingerprint")
-        matches = []
+    def reconcile_copies(self) -> tuple[tuple[str, str], ...]:
+        """Idempotently demote every unresolved later copy in finalized order."""
+
+        dispositions = []
         for row in self.all():
-            if row.arrival.arrival_key <= predecessor.arrival.arrival_key:
+            if row.delta_fingerprint is None or row.status in {"failed", "expired"}:
                 continue
-            if (
-                row.arrival.hotkey == predecessor.arrival.hotkey
-                or row.delta_fingerprint is None
-                or row.status in {"failed", "expired"}
-            ):
-                continue
-            if compare_submitted_deltas(
-                predecessor.delta_fingerprint, row.delta_fingerprint
-            ).authoritative:
-                matches.append(row)
-        return tuple(matches)
+            predecessors = self.copy_predecessors(row.reservation_id)
+            if predecessors:
+                predecessor = predecessors[0]
+                self.mark_copy(row.reservation_id, predecessor.reservation_id)
+                dispositions.append((row.reservation_id, predecessor.reservation_id))
+        return tuple(dispositions)
 
     def mark_copy(self, reservation_id: str, predecessor_id: str) -> IntakeReservation:
         predecessor = self.get(predecessor_id)
@@ -834,6 +828,112 @@ class FinalizedIntakeStore:
             result.append(value)
         return tuple(result)
 
+    def apply_qualification_batch(self, batch) -> tuple[IntakeReservation, ...]:
+        """Persist one typed cohort result and its retry groups atomically."""
+
+        from optima.eval.qualification_intake import QualificationIntakeBatch
+
+        if type(batch) is not QualificationIntakeBatch:
+            raise IntakeError("qualification batch is not exactly typed")
+        retry: dict[str, tuple[str, int, str]] = {}
+        if batch.retry_plan is not None:
+            for group_index, group in enumerate(batch.retry_plan.reservation_groups):
+                group_digest = canonical_digest(
+                    "optima.chain.qualification-retry-group",
+                    {
+                        "authority_manifest_digest": batch.authority_manifest_digest,
+                        "group_index": group_index,
+                        "members": list(group),
+                        "strategy": batch.retry_plan.strategy,
+                    },
+                )
+                for position, reservation_id in enumerate(group):
+                    retry[reservation_id] = (
+                        group_digest,
+                        position,
+                        f"qualification_{batch.retry_plan.strategy}",
+                    )
+        with self._transaction():
+            for outcome in batch.outcomes:
+                reservation_id = outcome.reservation_digest
+                row = self.get(reservation_id)
+                if (
+                    row.status != "qualifying"
+                    or row.qualification_authority_digest
+                    != batch.authority_manifest_digest
+                    or row.delta_fingerprint is None
+                    or row.delta_fingerprint.selected_delta_digest
+                    != outcome.selected_delta_digest
+                ):
+                    raise IntakeError("qualification batch differs from active authority")
+                authority_json = self._db.execute(
+                    "SELECT qualification_authority_json FROM reservations WHERE reservation_id=?",
+                    (reservation_id,),
+                ).fetchone()["qualification_authority_json"]
+                attempt_ref = (
+                    batch.attempt_ref
+                    if outcome.attempt_artifact_sha256 is not None
+                    else None
+                )
+                attempt_json = (
+                    json.dumps(
+                        attempt_ref.to_dict(), separators=(",", ":"), sort_keys=True
+                    )
+                    if attempt_ref is not None
+                    else ""
+                )
+                evidence = (
+                    attempt_ref.sha256
+                    if attempt_ref is not None
+                    else outcome.failure_digest or ""
+                )
+                attempt = self._db.execute(
+                    "SELECT COUNT(*) AS n FROM qualification_dispositions WHERE reservation_id=?",
+                    (reservation_id,),
+                ).fetchone()["n"]
+                self._db.execute(
+                    "INSERT INTO qualification_dispositions(reservation_id,attempt_index,"
+                    "authority_digest,authority_manifest_json,evidence_digest,attempt_ref_json,"
+                    "report_digest,failure_digest,decision,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        reservation_id, attempt, batch.authority_manifest_digest,
+                        authority_json, evidence, attempt_json,
+                        outcome.report_digest or "", outcome.failure_digest or "",
+                        outcome.decision.value, outcome.reason,
+                    ),
+                )
+                if reservation_id in retry:
+                    group, position, reason = retry[reservation_id]
+                    status = (
+                        "published"
+                        if attempt + 1 < self.policy.max_qualification_retries
+                        else "held"
+                    )
+                    self._db.execute(
+                        "UPDATE reservations SET status=?,decision=?,reason=?,"
+                        "retry_group_digest=?,retry_position=?,qualification_authority_digest='',"
+                        "qualification_authority_json='',qualification_evidence_digest='' "
+                        "WHERE reservation_id=?",
+                        (
+                            status, "" if status == "published" else "NO_DECISION",
+                            reason, group, position, reservation_id,
+                        ),
+                    )
+                else:
+                    status = {
+                        "PASS": "qualified", "FAIL": "failed"
+                    }[outcome.decision.value]
+                    self._db.execute(
+                        "UPDATE reservations SET status=?,decision=?,reason=?,"
+                        "qualification_evidence_digest=?,retry_group_digest='',retry_position=0 "
+                        "WHERE reservation_id=?",
+                        (
+                            status, outcome.decision.value, outcome.reason,
+                            evidence, reservation_id,
+                        ),
+                    )
+        return tuple(self.get(row.reservation_digest) for row in batch.outcomes)
+
     def requeue_qualification(
         self,
         reservation_id: str,
@@ -915,16 +1015,19 @@ class FinalizedIntakeStore:
             if row.status not in {"held", "no_decision"}:
                 raise IntakeError("only held intake may be released")
             status = "published" if row.publication_digest else "transport_retry"
+            attempts = row.transport_attempts if row.publication_digest else 0
             self._db.execute(
                 "UPDATE reservations SET status=?,decision='',reason=?,"
-                "qualification_authority_digest='',qualification_evidence_digest='' "
+                "transport_attempts=?,retry_group_digest='',retry_position=0,"
+                "qualification_authority_digest='',qualification_authority_json='',"
+                "qualification_evidence_digest='' "
                 "WHERE reservation_id=?",
-                (status, reason, reservation_id),
+                (status, reason, attempts, reservation_id),
             )
         return self.get(reservation_id)
 
 
 __all__ = [
     "FinalizedArrival", "FinalizedIntakeStore", "IntakeError", "IntakePolicy",
-    "IntakeReservation",
+    "IntakeReservation", "IntakeScope",
 ]
