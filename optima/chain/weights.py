@@ -434,9 +434,12 @@ def reconcile_weight_publication(
             "weight projection is stale for the immediately refreshed metagraph"
         )
     pre = chain.read_validator_weight_snapshot(
-        subtensor, projection.netuid, projection.validator_hotkey
+        subtensor,
+        projection.netuid,
+        projection.validator_hotkey,
+        metagraph_view=live_metagraph,
     )
-    observed_block = _block(subtensor)
+    observed_block = live_metagraph.block
     if pre.last_update_block > observed_block or projection.effective_block != observed_block:
         raise chain.ChainWeightStateError("weight authority chronology is inconsistent")
     matches = _matches(pre, projection)

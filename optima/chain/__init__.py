@@ -117,6 +117,7 @@ class MetagraphView:
     uids: list[int] = field(default_factory=list)
     hotkeys: list[str] = field(default_factory=list)  # index-aligned with uids
     validator_permit: list[bool] = field(default_factory=list)
+    last_update: list[int] = field(default_factory=list)
 
     def uid_of(self, hotkey: str) -> Optional[int]:
         try:
@@ -201,7 +202,11 @@ def _weight_uint(raw: object, field: str, *, maximum: int | None = None) -> int:
 
 
 def read_validator_weight_snapshot(
-    subtensor, netuid: int, validator_hotkey: str
+    subtensor,
+    netuid: int,
+    validator_hotkey: str,
+    *,
+    metagraph_view: MetagraphView | None = None,
 ) -> ValidatorWeightSnapshot:
     """Read one validator's live sparse row without trusting a local journal.
 
@@ -214,15 +219,22 @@ def read_validator_weight_snapshot(
         raise ChainWeightStateError("netuid must be a non-negative integer")
     if not isinstance(validator_hotkey, str) or not validator_hotkey:
         raise ChainWeightStateError("validator hotkey must be non-empty")
-    try:
-        metagraph = subtensor.metagraph(netuid=netuid)
-        hotkeys = list(metagraph.hotkeys)
-        raw_uids = list(metagraph.uids)
-        raw_last_updates = list(metagraph.last_update)
-    except Exception as exc:
-        raise ChainWeightStateError(
-            f"cannot fetch metagraph for active-weight verification: {exc}"
-        ) from None
+    if metagraph_view is not None:
+        if type(metagraph_view) is not MetagraphView or metagraph_view.netuid != netuid:
+            raise ChainWeightStateError("supplied metagraph view is not authoritative")
+        hotkeys = list(metagraph_view.hotkeys)
+        raw_uids = list(metagraph_view.uids)
+        raw_last_updates = list(metagraph_view.last_update)
+    else:
+        try:
+            metagraph = subtensor.metagraph(netuid=netuid)
+            hotkeys = list(metagraph.hotkeys)
+            raw_uids = list(metagraph.uids)
+            raw_last_updates = list(metagraph.last_update)
+        except Exception as exc:
+            raise ChainWeightStateError(
+                f"cannot fetch metagraph for active-weight verification: {exc}"
+            ) from None
     if len(raw_uids) != len(hotkeys) or len(raw_last_updates) != len(hotkeys):
         raise ChainWeightStateError("metagraph UID/hotkey/last-update widths differ")
     if any(not isinstance(hotkey, str) or not hotkey for hotkey in hotkeys):
@@ -328,6 +340,7 @@ def fetch_metagraph(subtensor, netuid: int) -> MetagraphView:
         uids=[int(u) for u in mg.uids],
         hotkeys=list(mg.hotkeys),
         validator_permit=[bool(p) for p in getattr(mg, "validator_permit", [])],
+        last_update=[int(value) for value in getattr(mg, "last_update", [])],
     )
 
 
