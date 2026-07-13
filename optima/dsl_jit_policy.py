@@ -6,28 +6,42 @@ policy (optima/engine_tree.py): a call like ``cute.compile(<@cute.jit fn>, ...)`
 WHY A CARVE-OUT AT ALL.  The engine-tree policy bans ``compile``/``eval``/
 ``exec``/``__import__`` (bare and as attribute calls) because each is a
 string-to-code path that defeats the static inspectability the whole intake
-pipeline rests on: every executable byte a candidate can reach must already be
-in the scanned source tree.  A DSL *tracing JIT* entrypoint is different in
-kind, not degree.  ``cutlass.cute.compile`` consumes a Python *callable object*
-(the ``@cute.jit``-decorated kernel, whose body is in the already-scanned
-bundle source) and lowers it to PTX; there is no ``source_string -> code``
-step, so the inspectability property is preserved.  Triton needs no entry here
-at all — ``@triton.jit`` compiles lazily on first launch, with no explicit
-``compile`` call to admit.
+pipeline rests on.  A DSL *tracing JIT* entrypoint is different in kind:
+``cutlass.cute.compile`` consumes a Python *callable object* (the ``@cute.jit``
+kernel, whose body is in the already-scanned bundle source) and lowers it to
+PTX — there is no ``source_string -> code`` step.  Triton needs no entry here
+at all — ``@triton.jit`` compiles lazily on first launch, no explicit call.
 
-The admission is deliberately narrow and fail-closed (see ``admitted_receivers``
-/ ``is_admitted_call``): the receiver name must be bound EXACTLY ONCE in the
-whole module, by a plain absolute import alias of a table module, that does not
-resolve inside the contribution tree (a vendored ``cutlass/`` withdraws it — the
-compile must reach the trusted pinned DSL, never bundle code); and the call's
-first positional argument must not be a string/bytes literal (a tracing JIT is
-handed an object, never source text).  Any other binding of the name anywhere
-in the file — assignment, parameter, def/class, loop/with/except target, del,
-match capture, a second import — withdraws the admission.
+WHAT ACTUALLY KEEPS THIS SOUND (read before trusting the admission).  The
+carve-out only decides whether ``<recv>.<attr>(...)`` raises during static
+intake; it NEVER exempts any file from the full policy scan or from the no-egress
+OCI execution fence.  So the load-bearing invariant is *not* "the receiver is
+provably the pinned DSL" — a module global can always be rebound (reflection,
+a wildcard import, a sibling file mutating ``sys.modules[...].recv``).  The real
+invariant is stronger and reflection-proof: **every ``.compile`` target a
+candidate can reach is either the trusted pinned DSL or a bundle symbol that was
+itself scanned by the same two gates and runs only inside the OCI fence.**  A
+substituted receiver therefore routes the call to scanned, sandboxed bundle code
+that can do no more than the bundle's own module body already does — never to
+unscanned code and never to ``builtins.compile``/``eval``/``exec`` (those stay
+banned everywhere).  So substitution is a harmless routing detail, not an escape.
 
-Adding a DSL is one row in ``DSL_JIT_ENTRYPOINTS``.  Import-light on purpose
-(stdlib only): both the engine-tree materializer and the AST sandbox import this
-without pulling torch/sglang.
+Given that, the admission below is still made as tight and *sound-as-stated* as
+cheap same-file analysis allows (fail-closed on the vectors an adversarial review
+found — wildcard import, in-file namespace reflection, PEP 695 type-param
+shadowing, string-literal compile arguments), so the static picture matches
+runtime for the common case and a reviewer is not misled by a false "bound once"
+claim.  Cross-file / reflective substitution is the documented residual above,
+and is safe for the reason stated (scanned + OCI-fenced), not because it cannot
+happen.
+
+Adding a DSL is one row in ``DSL_JIT_ENTRYPOINTS`` — but first verify, against
+the pinned version, that the entrypoint truly never accepts a source *string*
+(some Triton ``compile`` surfaces accept raw IR text; those must NOT be added).
+Import-light on purpose (stdlib only): the engine-tree materializer imports this
+without pulling torch/sglang; the AST sandbox (optima/sandbox.py) is an
+independent gate with a deliberately different, broader compile stance and does
+not consume this table.
 """
 
 from __future__ import annotations
@@ -60,20 +74,35 @@ DSL_JIT_ENTRYPOINTS: tuple[DslJitEntrypoint, ...] = (
     ),
 )
 
-# attr names that a table entry may admit — used to keep the engine-tree ban and
-# this carve-out talking about the same set (only 'compile' today).
+# attr names that a table entry may admit — keeps the engine-tree ban and this
+# carve-out talking about the same set (only 'compile' today).
 ADMITTED_ATTRS: frozenset[str] = frozenset(e.attr for e in DSL_JIT_ENTRYPOINTS)
 
 # Module dotted-paths, for quick membership tests during alias analysis.
 _ENTRY_BY_MODULE: dict[str, DslJitEntrypoint] = {e.module: e for e in DSL_JIT_ENTRYPOINTS}
+
+# Bare-name calls that manipulate a namespace by reflection — their presence in a
+# file poisons the carve-out for that file (an unbounded, statically-unenumerable
+# rebinding of the receiver could follow). globals/vars/locals are also banned by
+# the AST sandbox; kept here so the carve-out is self-sufficient.
+_REFLECTION_CALLS: frozenset[str] = frozenset(
+    {"setattr", "delattr", "globals", "vars", "locals"}
+)
+# Reflective attribute names that reach or mutate a module/global namespace.
+_REFLECTION_ATTRS: frozenset[str] = frozenset(
+    {"__setattr__", "__delattr__", "__dict__", "__globals__", "__builtins__"}
+)
 
 
 def _all_bound_names(tree: ast.AST) -> dict[str, int]:
     """Count every binding of every name in the module, across all scopes.
 
     Fail-closed by construction: any construct that could rebind or shadow a
-    name is counted, so a receiver admitted below is provably bound exactly
-    once and only by the import alias we inspected.
+    name is counted (including PEP 695 type parameters), so a receiver admitted
+    below is provably bound exactly once *by the import alias we inspected*
+    within this file.  In-file reflection and wildcard imports — which can
+    rebind names this pass cannot enumerate — are handled separately by
+    ``_has_namespace_reflection`` (they poison the whole file's admission).
     """
 
     counts: dict[str, int] = {}
@@ -100,12 +129,65 @@ def _all_bound_names(tree: ast.AST) -> dict[str, int]:
                 bind(alias.asname or alias.name.split(".", 1)[0])
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
-                bind(alias.asname or alias.name)
+                if alias.name != "*":  # wildcard handled by _has_namespace_reflection
+                    bind(alias.asname or alias.name)
         elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
             bind(node.name)
         elif isinstance(node, ast.MatchMapping):
             bind(node.rest)
+        else:
+            # PEP 695 type parameters (def f[T] / class C[T] / type X[T] = ...):
+            # ast.TypeVar / ast.ParamSpec / ast.TypeVarTuple all carry a .name str.
+            type_param = getattr(ast, "TypeVar", ())
+            param_spec = getattr(ast, "ParamSpec", ())
+            type_var_tuple = getattr(ast, "TypeVarTuple", ())
+            if isinstance(node, (type_param, param_spec, type_var_tuple)):
+                bind(getattr(node, "name", None))
     return counts
+
+
+def _sys_module_names(tree: ast.AST) -> set[str]:
+    """Names bound to the ``sys`` module (``import sys`` / ``import sys as s``)."""
+
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sys":
+                    names.add(alias.asname or "sys")
+    return names
+
+
+def _has_namespace_reflection(tree: ast.AST) -> bool:
+    """Whether the module can rebind an unbounded set of names at runtime.
+
+    Wildcard imports and in-file namespace reflection (setattr/delattr/globals/
+    vars/locals, ``sys.modules`` access, ``__dict__``/``__setattr__`` and kin)
+    can substitute the admitted receiver in ways ``_all_bound_names`` cannot see.
+    Their mere presence in a file poisons that file's DSL-JIT carve-out — a
+    fail-closed, whole-file disqualifier.  No kernel bundle in-repo uses any of
+    these, so this never withdraws a legitimate admission.
+    """
+
+    sys_names = _sys_module_names(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if any(alias.name == "*" for alias in node.names):
+                return True
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in _REFLECTION_CALLS:
+                return True
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _REFLECTION_ATTRS:
+                return True
+            # sys.modules[...] — the reflective handle to every module global.
+            if (
+                node.attr == "modules"
+                and isinstance(node.value, ast.Name)
+                and node.value.id in sys_names
+            ):
+                return True
+    return False
 
 
 def _import_alias_modules(tree: ast.AST) -> dict[str, str]:
@@ -142,13 +224,18 @@ def admitted_receivers(
 ) -> dict[str, DslJitEntrypoint]:
     """Names usable as ``<name>.<attr>(...)`` DSL-JIT receivers (fail-closed).
 
-    A name qualifies iff its SINGLE binding in the whole module is a plain
-    absolute import alias of a table module, and — when a resolver is supplied —
-    that module does not resolve inside the contribution tree.  Without a
-    resolver (e.g. the single-file sandbox has no tree context) the local-shadow
-    check is simply skipped; callers that own a tree MUST pass the resolver.
+    A name qualifies iff (1) the file performs no namespace reflection or
+    wildcard import that could rebind names opaquely, (2) its SINGLE binding in
+    the whole module is a plain absolute import alias of a table module, and
+    (3) — when a resolver is supplied — that module does not resolve inside the
+    contribution tree.  The resolver is optional only so this stdlib-only module
+    imports cleanly without tree context; the sole in-tree caller
+    (engine_tree.py) always supplies it, and any future caller MUST too or it
+    silently reopens the vendored-``cutlass/`` shadow.
     """
 
+    if _has_namespace_reflection(tree):
+        return {}  # opaque rebinding possible -> withdraw the whole file
     counts = _all_bound_names(tree)
     aliases = _import_alias_modules(tree)
     admitted: dict[str, DslJitEntrypoint] = {}
@@ -165,23 +252,19 @@ def admitted_receivers(
     return admitted
 
 
-def _first_positional(node: ast.Call) -> ast.expr | None:
-    for arg in node.args:
-        if isinstance(arg, ast.Starred):
-            return None  # *args -> first real positional is opaque; treat as absent
-        return arg
-    return None
+def _is_string_literal(node: ast.expr | None) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes))
 
 
-def is_admitted_call(
-    node: ast.Call, receivers: dict[str, DslJitEntrypoint]
-) -> bool:
-    """True iff ``node`` is an admitted ``<receiver>.<attr>(<non-string>, ...)`` call.
+def is_admitted_call(node: ast.Call, receivers: dict[str, DslJitEntrypoint]) -> bool:
+    """True iff ``node`` is an admitted ``<receiver>.<attr>(<object>, ...)`` call.
 
-    Requires: an attribute call whose base is a bare Name in ``receivers``,
-    whose attribute equals that entry's ``attr``, and whose first positional
-    argument (if any) is not a string/bytes literal — a tracing JIT is handed a
-    callable object, never source text.
+    Requires: an attribute call whose base is a bare Name in ``receivers`` and
+    whose attribute equals that entry's ``attr``; a first positional argument
+    that exists and is statically NOT a string/bytes literal (a tracing JIT is
+    handed a callable object, never source text); and no string/bytes literal in
+    any keyword argument.  A starred first argument (``*args``) is opaque and so
+    rejected — fail closed rather than skip the check.
     """
 
     func = node.func
@@ -190,7 +273,10 @@ def is_admitted_call(
     entry = receivers.get(func.value.id)
     if entry is None or func.attr != entry.attr:
         return False
-    first = _first_positional(node)
-    if isinstance(first, ast.Constant) and isinstance(first.value, (str, bytes)):
+    if not node.args or isinstance(node.args[0], ast.Starred):
+        return False  # no inspectable first positional -> fail closed
+    if _is_string_literal(node.args[0]):
+        return False
+    if any(_is_string_literal(kw.value) for kw in node.keywords):
         return False
     return True

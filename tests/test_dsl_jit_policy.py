@@ -53,9 +53,8 @@ def test_from_import_renamed_is_admitted():
     assert _admits("from cutlass import cute as cc\nx = cc.compile(fn)\n")
 
 
-def test_no_positional_args_is_admitted():
-    # kwargs-only compile still traces an object, no source string possible
-    assert _admits("import cutlass.cute as cute\nx = cute.compile(fn=fn)\n")
+def test_multiple_positional_args_admitted():
+    assert _admits("import cutlass.cute as cute\nx = cute.compile(fn, a, b, c)\n")
 
 
 # ---- fail-closed: receiver rebinding / shadowing ------------------------
@@ -105,7 +104,7 @@ def test_local_module_shadow_withdraws():
     assert _admits(src, local=["kernels.helper"])
 
 
-# ---- fail-closed: string-source first argument --------------------------
+# ---- fail-closed: argument-shape guard ----------------------------------
 
 @pytest.mark.parametrize(
     "arg",
@@ -116,11 +115,58 @@ def test_string_first_arg_not_admitted(arg):
     assert not _admits(src)
 
 
+def test_string_keyword_arg_not_admitted():
+    assert not _admits('import cutlass.cute as cute\nx = cute.compile(src="import os")\n')
+
+
 def test_starred_first_arg_not_admitted():
-    # *args hides the real first positional -> treat as absent -> but the call
-    # is still a legitimate trace call shape; the guard only rejects a literal
-    # source string, so a starred call is admitted (object, not source text).
-    assert _admits("import cutlass.cute as cute\nx = cute.compile(*args)\n")
+    # *args hides the real first positional -> cannot verify it is not source
+    # text -> fail closed.
+    assert not _admits("import cutlass.cute as cute\nx = cute.compile(*args)\n")
+
+
+def test_no_args_not_admitted():
+    # no inspectable first positional -> fail closed
+    assert not _admits("import cutlass.cute as cute\nx = cute.compile()\n")
+
+
+# ---- fail-closed: namespace reflection poisons the whole file -----------
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # wildcard import can inject any name, incl. the receiver, at runtime
+        "import cutlass.cute as cute\nfrom helper import *\nx = cute.compile(fn)\n",
+        # sys.modules reflection can rebind the module global
+        "import cutlass.cute as cute\nimport sys\n"
+        "sys.modules[__name__].cute = evil\nx = cute.compile(fn)\n",
+        "import cutlass.cute as cute\nimport sys as s\n"
+        "s.modules[__name__].cute = evil\nx = cute.compile(fn)\n",
+        # setattr / delattr reflective rebind
+        "import cutlass.cute as cute\nsetattr(m, 'cute', evil)\nx = cute.compile(fn)\n",
+        "import cutlass.cute as cute\nobj.__setattr__('cute', evil)\nx = cute.compile(fn)\n",
+        "import cutlass.cute as cute\nd = m.__dict__\nx = cute.compile(fn)\n",
+        "import cutlass.cute as cute\ng = globals()\nx = cute.compile(fn)\n",
+    ],
+)
+def test_namespace_reflection_withdraws(src):
+    assert not _admits(src)
+
+
+def test_unrelated_modules_method_is_not_sys_modules():
+    # model.modules() (torch) must NOT be mistaken for sys.modules reflection
+    assert _admits("import cutlass.cute as cute\nfor m in model.modules():\n    pass\nx = cute.compile(fn)\n")
+
+
+# ---- fail-closed: PEP 695 type-parameter shadowing ----------------------
+
+def test_pep695_type_param_shadow_withdraws():
+    # 'def f[cute]()' introduces a type-param binder named cute -> >1 binding
+    src = "import cutlass.cute as cute\ndef f[cute](x):\n    return x\ny = cute.compile(fn)\n"
+    import sys as _sys
+    if _sys.version_info < (3, 12):
+        pytest.skip("PEP 695 syntax requires Python 3.12+")
+    assert not _admits(src)
 
 
 # ---- table integrity ----------------------------------------------------
