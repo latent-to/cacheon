@@ -6,8 +6,9 @@ import pytest
 
 from optima.chain.intake import (
     FinalizedArrival, FinalizedIntakeStore, IntakeError, IntakePolicy,
-    IntakeScope,
+    IntakeScope, SQLiteWeightPublicationJournal,
 )
+from optima.chain.weights import WeightProjection, WeightPublicationRecord
 from optima.copy_fingerprint import SubmittedDeltaFingerprint
 from optima.eval.evidence_store import EvidenceArtifactRef
 from optima.eval.qualification import QualificationDecision
@@ -16,6 +17,15 @@ from optima.eval.qualification_intake import (
     QualificationIntakeOutcome,
     QualificationRetryPlan,
 )
+from optima.settlement import SettlementCandidate, plan_settlement
+from optima.stack_identity import sha256_hex
+from optima.stack_manifest import (
+    EvaluationStackContext,
+    EvaluationStackManifest,
+    ProposalContributionRef,
+)
+from optima.stack_plan import plan_marginal_arm
+from optima.target_catalog import TargetCatalog, default_target_catalog
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
@@ -48,11 +58,121 @@ def _store(tmp_path, **policy):
     )
 
 
-def _fingerprint(target: str, member: str, marker: str = "a"):
+def _fingerprint(
+    target: str,
+    member: str,
+    marker: str = "a",
+    *,
+    selected_delta: str = "3" * 64,
+):
     return SubmittedDeltaFingerprint(
-        "component", target, "1" * 64, (member,), "2" * 64, "3" * 64,
-        "4" * 64, (marker * 64,), ("5" * 64,),
+        "component", target, "1" * 64, (member,), "2" * 64,
+        selected_delta, "4" * 64, (marker * 64,), ("5" * 64,),
     )
+
+
+def _h(label: str) -> str:
+    return sha256_hex(label.encode())
+
+
+def _stack_context(catalog: TargetCatalog) -> EvaluationStackContext:
+    targets = catalog.snapshot()["targets"]
+    assert isinstance(targets, list)
+    return EvaluationStackContext(
+        runtime_digest=_h("runtime"),
+        base_engine_digest=_h("base"),
+        arena_digest=_h("arena"),
+        catalog_snapshot=catalog.snapshot(),
+        catalog_digest=catalog.digest,
+        target_spec_digests={
+            row["target_id"]: catalog.target_spec_digest(row["target_id"])
+            for row in targets
+        },
+    )
+
+
+def _qualified_settlement_candidate(store: FinalizedIntakeStore) -> SettlementCandidate:
+    catalog = default_target_catalog()
+    target = "activation.silu_and_mul"
+    incumbent = EvaluationStackManifest(
+        runtime_digest=_h("runtime"),
+        base_engine_digest=_h("base"),
+        arena_digest=_h("arena"),
+        catalog_snapshot=catalog.snapshot(),
+        catalog_digest=catalog.digest,
+        entries={},
+    )
+    replacement = ProposalContributionRef(
+        target_id=target,
+        target_spec_digest=catalog.target_spec_digest(target),
+        artifact_digest=_h("artifact"),
+        selected_payload_digest=_h("payload"),
+        attribution_digest=_h("attribution"),
+    )
+    arm = plan_marginal_arm(
+        incumbent,
+        replacement,
+        catalog=catalog,
+        incumbent_tree_digest=_h("incumbent-tree"),
+        candidate_tree_digest=_h("candidate-tree"),
+        expected_context=_stack_context(catalog),
+    )
+    row = store.reserve_finalized(
+        (_arrival(0),),
+        finalized_block=10,
+        finalized_block_hash="0x" + f"{10:064x}",
+    )[0]
+    store.mark_fetching(row.reservation_id)
+    store.mark_published(
+        row.reservation_id,
+        delta_fingerprint=_fingerprint(
+            target,
+            target,
+            selected_delta=arm.selected_delta_digest,
+        ),
+        publication_digest="d" * 64,
+        publication_root="/published/candidate",
+    )
+    store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+    candidate = SettlementCandidate(
+        lane="registered",
+        arena_digest=incumbent.arena_digest,
+        reservation_digest=row.reservation_id,
+        finalized_block=row.arrival.block,
+        event_index=row.arrival.event_index,
+        event_subindex=row.arrival.event_subindex,
+        hotkey=row.arrival.hotkey,
+        target_id=target,
+        members=(target,),
+        selected_delta_digest=arm.selected_delta_digest,
+        qualification_authority_digest="7" * 64,
+        qualification_plan_digest="6" * 64,
+        qualification_attempt_digest=ATTEMPT.sha256,
+        qualification_report_digest="4" * 64,
+        arm_digest=arm.digest,
+        incumbent_stack_digest=arm.baseline_before.stack_digest,
+        incumbent_tree_digest=arm.baseline_before.tree_digest,
+        candidate_stack_digest=arm.challenger.stack_digest,
+        candidate_tree_digest=arm.challenger.tree_digest,
+        speedup="1.05",
+        incumbent_manifest=incumbent,
+        candidate_manifest=arm.candidate,
+    )
+    outcome = QualificationIntakeOutcome(
+        row.reservation_id,
+        arm.selected_delta_digest,
+        "7" * 64,
+        QualificationDecision.PASS,
+        "qualified",
+        False,
+        attempt_artifact_sha256=ATTEMPT.sha256,
+        report_digest="4" * 64,
+        settlement_candidate=candidate,
+    )
+    store.apply_qualification_batch(
+        QualificationIntakeBatch("7" * 64, (outcome,), ATTEMPT)
+    )
+    return candidate
 
 
 def test_finalized_batch_is_reserved_atomically_before_transport(tmp_path):
@@ -417,3 +537,125 @@ def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_
         )
         copied = store.get(later.reservation_id)
         assert copied.status == "failed" and copied.decision == "FAIL"
+
+
+def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_path):
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        genesis = store.evaluation_stack(candidate.arena_digest)
+        assert genesis.generation == 0
+        assert genesis.manifest.digest == candidate.incumbent_stack_digest
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None and lease.candidates == (candidate,)
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        current = store.commit_settlement(lease, plan)
+        assert current.generation == 1
+        assert current.manifest.digest == candidate.candidate_stack_digest
+        standing, discovery = store.active_reward_claims()
+        assert discovery == ()
+        assert len(standing) == 1
+        assert standing[0].arena_digest == candidate.arena_digest
+        assert standing[0].retained_evidence_digest == candidate.digest
+        assert store.lease_settlement_cohort(current_block=12) is None
+
+    with _store(tmp_path) as reopened:
+        current = reopened.evaluation_stack(candidate.arena_digest)
+        assert current.generation == 1
+        assert current.manifest.digest == candidate.candidate_stack_digest
+        assert reopened.active_reward_claims()[0][0].hotkey == candidate.hotkey
+
+
+def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp_path):
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        first = store.lease_settlement_cohort(current_block=11, lease_blocks=10)
+        assert first is not None
+    with _store(tmp_path) as reopened:
+        second = reopened.lease_settlement_cohort(current_block=12, lease_blocks=10)
+        assert second is not None
+        assert second.candidates == (candidate,)
+        assert second.generation > first.generation
+        assert second.lease_id != first.lease_id
+
+
+def test_pass_without_exact_settlement_projection_is_rejected_atomically(tmp_path):
+    with _store(tmp_path) as store:
+        row = store.reserve_finalized(
+            (_arrival(0),), finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )[0]
+        store.mark_fetching(row.reservation_id)
+        store.mark_published(
+            row.reservation_id,
+            delta_fingerprint=_fingerprint("target.a", "slot.a"),
+            publication_digest="d" * 64,
+            publication_root="/published/a",
+        )
+        store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+        outcome = QualificationIntakeOutcome(
+            row.reservation_id,
+            "3" * 64,
+            "7" * 64,
+            QualificationDecision.PASS,
+            "qualified",
+            False,
+            attempt_artifact_sha256=ATTEMPT.sha256,
+            report_digest="4" * 64,
+        )
+        with pytest.raises(IntakeError, match="settlement projection"):
+            store.apply_qualification_batch(
+                QualificationIntakeBatch("7" * 64, (outcome,), ATTEMPT)
+            )
+        assert store.get(row.reservation_id).status == "qualifying"
+        assert store.qualification_dispositions(row.reservation_id) == ()
+
+
+def test_sqlite_weight_journal_is_cas_bound_and_restart_reopenable(tmp_path):
+    projection = WeightProjection(
+        _h("scope"),
+        307,
+        "validator",
+        _h("policy"),
+        _h("settlement"),
+        _h("evaluation"),
+        1,
+        10,
+        1,
+        (_h("evidence"),),
+        (("miner", 1_000_000),),
+    )
+    intent = WeightPublicationRecord(
+        projection.digest,
+        "intent",
+        submit_block=10,
+        retry_after_block=20,
+        reason="before_sdk_submission",
+    )
+    with _store(tmp_path) as store:
+        journal = SQLiteWeightPublicationJournal(store, projection)
+        assert journal.load() is None
+        journal.compare_and_swap(None, intent)
+        assert journal.load() == intent
+        with pytest.raises(IntakeError, match="compare-and-swap"):
+            journal.compare_and_swap(None, intent)
+
+    with _store(tmp_path) as reopened:
+        journal = SQLiteWeightPublicationJournal(reopened, projection)
+        assert journal.load() == intent
+        assert journal.retained_projection(projection.digest) == projection
+        pending = WeightPublicationRecord(
+            projection.digest,
+            "pending",
+            prior_record_digest=intent.digest,
+            submit_block=10,
+            retry_after_block=20,
+            reason="sdk_result_unconfirmed",
+        )
+        journal.compare_and_swap(intent.digest, pending)
+        assert journal.load() == pending

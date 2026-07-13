@@ -1825,6 +1825,8 @@ class SQLiteWeightPublicationJournal:
             raise IntakeError("weight publication replacement is not exactly typed")
         if expected_record_digest is not None:
             require_sha256_hex(expected_record_digest, field="expected_record_digest")
+        if replacement.prior_record_digest != expected_record_digest:
+            raise IntakeError("weight publication replacement does not bind the CAS head")
         with self.store._transaction():
             head = self._head()
             observed = None if head is None else head[1]
