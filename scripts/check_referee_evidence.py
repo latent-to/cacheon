@@ -777,6 +777,7 @@ def validate_contract_document(contract: dict[str, Any], where: str = "contract"
                 {"change": "modify", "path": "optima/eval/qualification_intake.py"},
                 {"change": "add", "path": "optima/model_provision.py"},
                 {"change": "add", "path": "optima/release.py"},
+                {"change": "add", "path": "optima/release_host.py"},
                 {"change": "add", "path": "optima/release_runtime.py"},
                 {"change": "modify", "path": "optima/seam.py"},
                 {"change": "modify", "path": "optima/settlement.py"},
