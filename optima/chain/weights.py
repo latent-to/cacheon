@@ -489,7 +489,11 @@ def reconcile_weight_publication(
             projection.digest, "held", current, False, False, False, observed_block
         )
 
-    if current is not None and current.projection_digest == projection.digest:
+    if (
+        current is not None
+        and current.status == "confirmed"
+        and current.projection_digest == projection.digest
+    ):
         if not matches:
             current = _held(journal, current, "confirmed_vector_changed_on_chain")
             return WeightPublicationResult(
