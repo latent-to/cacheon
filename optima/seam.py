@@ -188,6 +188,30 @@ def load_candidate_bundle() -> None:
     _load_candidate_bundle_locked(bundle, REGISTRY, release_required)
 
 
+def teardown_candidate_bundle(*, suppress_errors: bool = False) -> None:
+    """Release sealed-artifact lifecycle state at scheduler-process exit.
+
+    The scheduler gate invokes this after the engine function unwinds, never from
+    an import hook or output-path process.  Direct artifact entries synchronize,
+    run declared destroy exports, and retain accounting on any failure.
+    """
+
+    try:
+        from optima.artifact_runtime import shutdown_direct_artifact_runtimes
+
+        shutdown_direct_artifact_runtimes()
+    except Exception as exc:  # noqa: BLE001 - teardown evidence must survive
+        logger.exception("optima: candidate artifact teardown failed")
+        try:
+            from optima import receipts
+
+            receipts.write("teardown_failed", {"reason": str(exc)[:4096]})
+        except Exception:  # noqa: BLE001 - preserve the initiating teardown error
+            logger.exception("optima: failed to write teardown failure receipt")
+        if not suppress_errors:
+            raise
+
+
 def _load_candidate_bundle_locked(bundle, REGISTRY, release_required: bool) -> None:
     global _bundle_loaded
     try:
@@ -262,10 +286,29 @@ def _load_bundle_into_registry(bundle: str) -> None:
     # failure raises out to activate() -> load_failed receipt -> the eval refuses.
     from optima.rebuild import apply_rebuild_plan
 
-    # The trusted prebuild worker already compiled and materialized every native
-    # product.  Scheduler ranks may validate/load that sealed product, but must
-    # never compile or repair it as a fallback.
-    apply_rebuild_plan(bundle, phase="load")
+    # Production scheduler ranks consume only the publication produced by the
+    # trusted OCI prebuild worker.  The explicit direct-eval lane has no native
+    # publication (it uses the content-addressed development cache), so replay
+    # the already-selected development plan there.  Never infer production from
+    # one marker alone: a partial marker set must fail rather than downgrade a
+    # hardened worker into the build-capable development lane.
+    prebuilt = _truthy(os.environ.get("OPTIMA_PREBUILT_ARTIFACTS"))
+    engine_worker = _truthy(os.environ.get("OPTIMA_ENGINE_WORKER"))
+    if prebuilt != engine_worker:
+        raise RuntimeError(
+            "candidate scheduler has an incomplete native-artifact authority"
+        )
+    apply_rebuild_plan(bundle, phase="load" if prebuilt else "all")
+    from optima.artifact_runtime import resolve_direct_artifact_entry
+
+    # Resolve every direct-AOT binding before importing ANY candidate module.  A
+    # mixed/atomic bundle therefore cannot monkeypatch CuTe, torch, an artifact path,
+    # or adapter globals and redirect a later direct row.
+    direct_entries = {
+        (op.slot, op.variant): resolve_direct_artifact_entry(op)
+        for op in manifest.ops
+        if op.aot_exports
+    }
     # ONE module instance per SOURCE FILE, shared across ops: two slots declared on
     # the same source (e.g. the shallow + deep fused-epilogue entries sharing one IPC
     # workspace in module globals) must not get two module instances — each would
@@ -289,10 +332,24 @@ def _load_bundle_into_registry(bundle: str) -> None:
         # prepare and entry would vanish; sys.modules would point at the last copy
         # while entry closed over an earlier one — torch.compile re-imports by name).
         src_key = Path(src).resolve()
-        module = loaded_by_src.get(src_key)
-        if module is None:
-            module = loaded_by_src[src_key] = load_module(src)
-        if getattr(op, "override_point", None):
+        module = None
+        if op.aot_exports:
+            entry = direct_entries[(op.slot, op.variant)]
+            if entry is None:
+                raise RuntimeError("direct CuTe AOT row resolved no validator entry")
+            # Direct artifacts may carry validator-generated init/prepare/storage
+            # lifecycle.  The runtime entry owns this method; no candidate Python
+            # callable is imported in the scheduler process.
+            prepare = getattr(entry, "prepare", None)
+            if prepare is not None and not callable(prepare):
+                raise RuntimeError("direct CuTe AOT prepare boundary is not callable")
+        else:
+            module = loaded_by_src.get(src_key)
+            if module is None:
+                module = loaded_by_src[src_key] = load_module(src)
+        if op.aot_exports:
+            pass
+        elif getattr(op, "override_point", None):
             # Override submission: compose the miner's epilogue into the validator-owned base
             # kernel -> a standard (entry, prepare) that flows through the normal dispatcher.
             from optima_kernels.override import build_override
@@ -329,6 +386,7 @@ def _load_bundle_into_registry(bundle: str) -> None:
         # (framework_mode) and it MUST run in the no-egress isolation worker before the
         # subnet opens to untrusted miners.
         if getattr(op, "setup", None):
+            assert module is not None  # direct-AOT rows forbid setup at manifest load
             setup_key = (src_key, op.setup)
             if setup_key not in setup_done:
                 callable_from(module, op.setup)()

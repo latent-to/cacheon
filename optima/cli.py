@@ -547,7 +547,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
                                        bundle_path=str(args.bundle),
                                        graph_safe=bool(graph_safe),
                                        eligibility=eligibility_by_row[row_index],
-                                       tp_size=getattr(args, "tp_size", None))
+                                       tp_size=getattr(args, "tp_size", None),
+                                       variant_name=op.variant)
             print(f"  [variant {op.variant!r}]")
             print(format_verify(result))
             if result.context_inapplicable:
@@ -576,6 +577,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
             manifest_architectures=op.architectures,
             tp_size=getattr(args, "tp_size", None),
             world_size=getattr(args, "world_size", None),
+            bundle_path=str(args.bundle),
+            variant_name=op.variant,
         )
         print(f"  [variant {op.variant!r}]")
         print(format_verify(result))

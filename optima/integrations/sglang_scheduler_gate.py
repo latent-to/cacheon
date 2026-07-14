@@ -52,7 +52,16 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
         from optima import seam
 
         seam.load_candidate_bundle()
-        return fn(*args, **kwargs)
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException:
+            # Preserve the initiating engine failure. Teardown still attempts to
+            # fence/release direct artifacts, but a secondary cleanup error must
+            # not replace the rank traceback the controller needs to diagnose.
+            seam.teardown_candidate_bundle(suppress_errors=True)
+            raise
+        seam.teardown_candidate_bundle()
+        return result
 
     setattr(run_scheduler_process, _GATE_FLAG, True)
     run_scheduler_process._optima_orig = fn  # type: ignore[attr-defined]

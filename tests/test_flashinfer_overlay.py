@@ -9,6 +9,7 @@ import sys
 import textwrap
 import types
 from dataclasses import asdict
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 
 import pytest
@@ -256,6 +257,34 @@ def test_install_is_idempotent(tmp_path, monkeypatch, fresh):
     replacement = source.gen_cutlass_fused_moe_sm103_module
     fov.install(registry=None)
     assert source.gen_cutlass_fused_moe_sm103_module is replacement
+
+
+def test_install_defers_atomically_during_flashinfer_partial_import(
+    tmp_path, monkeypatch, fresh
+):
+    environment, source, consumer, _loaded = _stub_flashinfer(monkeypatch)
+    _bundle_path, artifact = _candidate(tmp_path, monkeypatch)
+    stock_source = source.gen_cutlass_fused_moe_sm103_module
+    stock_consumer = consumer.gen_cutlass_fused_moe_sm103_module
+
+    partial = types.ModuleType("flashinfer.jit.cubin_loader")
+    partial.__spec__ = ModuleSpec(partial.__name__, loader=None)
+    partial.__spec__._initializing = True  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, partial.__name__, partial)
+
+    fov.install(registry=None)
+
+    assert fov._installed is False
+    assert environment.FLASHINFER_CSRC_DIR == Path("/stock/csrc")
+    assert source.gen_cutlass_fused_moe_sm103_module is stock_source
+    assert consumer.gen_cutlass_fused_moe_sm103_module is stock_consumer
+
+    partial.__spec__._initializing = False  # type: ignore[attr-defined]
+    fov.install(registry=None)
+    expected_subtree = artifact / "dep_overlays/flashinfer/flashinfer/data/csrc"
+    assert fov._installed is True
+    assert environment.FLASHINFER_CSRC_DIR == expected_subtree
+    assert source.gen_cutlass_fused_moe_sm103_module is not stock_source
 
 
 def test_seam_table_row_and_canary_form():

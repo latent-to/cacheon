@@ -53,6 +53,20 @@ from typing import Callable, Optional, Sequence
 import torch
 import torch.nn.functional as F
 
+from optima.artifact_abi import (
+    ATTENTION_DECODE_CALL_ABI,
+    ATTENTION_SDPA_CALL_ABI,
+    COLLECTIVE_ALL_REDUCE_CALL_ABI,
+    COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
+    COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
+    MSA_BLOCK_SCORE_CALL_ABI,
+    MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+    MOE_FUSED_EXPERTS_CALL_ABI,
+    MOE_FUSED_EXPERTS_REDUCE_CALL_ABI,
+    RMSNORM_CALL_ABI,
+    SILU_AND_MUL_CALL_ABI,
+    SlotCallABI,
+)
 from optima.tensor_spec import OutputSpec, TensorSpec
 
 
@@ -180,6 +194,12 @@ class SlotSpec:
     # reordered softmax, so a flat 5e-3 false-fails a faithful attention kernel — README
     # calibration finding 6). None -> use the eval's generic threshold.
     kl_threshold: Optional[float] = None
+    # Provider-neutral, declarative resource ABI for sealed AOT/native artifacts.
+    # It is additive and intentionally appended after historical fields. A miner's
+    # launch plan may only bind these validator-owned resources; it cannot name a
+    # per-submission Python adapter. Every catalog slot points at the shared immutable
+    # row in artifact_abi; provider support may still fail closed at build/runtime.
+    call_abi: Optional[SlotCallABI] = None
 
     def tolerance_for(self, dtype: torch.dtype) -> Tolerance:
         if dtype in self.tolerances:
@@ -256,6 +276,7 @@ SILU_AND_MUL = SlotSpec(
     ),
     correctness=Correctness("allclose"),
     tolerances=_BF16_TOL,
+    call_abi=SILU_AND_MUL_CALL_ABI,
 )
 
 
@@ -299,6 +320,7 @@ RMSNORM = SlotSpec(
     ),
     correctness=Correctness("allclose"),
     tolerances=_BF16_TOL,
+    call_abi=RMSNORM_CALL_ABI,
 )
 
 
@@ -380,6 +402,7 @@ ATTENTION_SDPA = SlotSpec(
     # Attention's intrinsic end-to-end KL floor (~6e-3 vs flash) is above the generic
     # 5e-3 gate; calibrate to ~5x the floor so a faithful attention kernel isn't false-failed.
     kl_threshold=3e-2,
+    call_abi=ATTENTION_SDPA_CALL_ABI,
 )
 
 
@@ -452,6 +475,7 @@ ATTENTION_DECODE = SlotSpec(
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
     kl_threshold=3e-2,  # attention's higher intrinsic floor (see attention.sdpa)
+    call_abi=ATTENTION_DECODE_CALL_ABI,
 )
 
 
@@ -572,6 +596,7 @@ MOE_FUSED_EXPERTS = SlotSpec(
     # gate on a matched ratio vs the fp32 reference, calibrated to the stock noise floor.
     correctness=Correctness("matched_ratio", min_ratio=0.97),
     tolerances=_BF16_TOL,
+    call_abi=MOE_FUSED_EXPERTS_CALL_ABI,
 )
 
 
@@ -635,6 +660,7 @@ COLLECTIVE_ALL_REDUCE = SlotSpec(
     # gate on matched_ratio vs the fp32 sum, with the end-to-end token/KL gate mandatory.
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
+    call_abi=COLLECTIVE_ALL_REDUCE_CALL_ABI,
 )
 
 
@@ -728,6 +754,7 @@ COLLECTIVE_AR_RESIDUAL_RMSNORM = SlotSpec(
     # gate on matched_ratio vs the fp32 composed reference, e2e token/KL gate mandatory.
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
+    call_abi=COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
 )
 
 
@@ -824,6 +851,7 @@ COLLECTIVE_MOE_FINALIZE_AR_RMSNORM = SlotSpec(
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.99),
     tolerances=_BF16_TOL,
+    call_abi=COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
 )
 
 
@@ -894,6 +922,7 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.97),
     tolerances=_BF16_TOL,
+    call_abi=MOE_FUSED_EXPERTS_REDUCE_CALL_ABI,
 )
 
 
@@ -980,6 +1009,7 @@ ATTENTION_MSA_BLOCK_SCORE = SlotSpec(
     correctness=Correctness("topk_overlap", top_k=_MSA_TOPK, min_overlap=0.875),
     tolerances=_BF16_TOL,
     kl_threshold=3e-2,  # attention's higher intrinsic floor (this rides the attention path)
+    call_abi=MSA_BLOCK_SCORE_CALL_ABI,
 )
 
 
@@ -1157,6 +1187,7 @@ ATTENTION_MSA_PREFILL_BLOCK_SCORE = SlotSpec(
     correctness=Correctness("topk_overlap", top_k=_MSA_TOPK, min_overlap=0.9),
     tolerances=_BF16_TOL,
     kl_threshold=3e-2,  # rides the attention path (same intrinsic floor as the decode slot)
+    call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
 )
 
 

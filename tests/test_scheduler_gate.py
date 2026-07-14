@@ -123,3 +123,41 @@ def test_gate_install_noops_without_the_module(monkeypatch):
     monkeypatch.delitem(sys.modules, _SCHED_MODULE, raising=False)
     gate.install()  # must not raise
     assert not gate.is_installed()
+
+
+def test_gate_tears_down_after_success(monkeypatch, fake_scheduler_module):
+    observed: list[object] = []
+    monkeypatch.setattr(seam, "load_candidate_bundle", lambda: observed.append("load"))
+    monkeypatch.setattr(
+        seam,
+        "teardown_candidate_bundle",
+        lambda *, suppress_errors=False: observed.append(("close", suppress_errors)),
+    )
+    gate.install()
+
+    assert fake_scheduler_module.run_scheduler_process() == "scheduler-ran"
+    assert observed == ["load", ("close", False)]
+
+
+def test_gate_preserves_engine_error_and_suppresses_secondary_teardown(
+    monkeypatch, fake_scheduler_module
+):
+    observed: list[object] = []
+
+    def fail_engine(*_args, **_kwargs):
+        raise RuntimeError("initiating rank failure")
+
+    fake_scheduler_module.run_scheduler_process = fail_engine
+    monkeypatch.setattr(seam, "load_candidate_bundle", lambda: observed.append("load"))
+
+    def teardown(*, suppress_errors=False):
+        observed.append(("close", suppress_errors))
+        if not suppress_errors:
+            raise RuntimeError("secondary teardown failure")
+
+    monkeypatch.setattr(seam, "teardown_candidate_bundle", teardown)
+    gate.install()
+
+    with pytest.raises(RuntimeError, match="initiating rank failure"):
+        fake_scheduler_module.run_scheduler_process()
+    assert observed == ["load", ("close", True)]

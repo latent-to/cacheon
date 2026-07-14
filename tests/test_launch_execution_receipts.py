@@ -125,6 +125,71 @@ def test_any_selected_path_fallback_disqualifies(tmp_path):
         )
 
 
+def test_sealed_aot_requires_load_and_use_on_every_active_member(tmp_path):
+    active = [_active(10, 0, slots=("a",)), _active(11, 1, slots=("a",))]
+    for index, (rank, pid) in enumerate(((0, 10), (1, 11))):
+        identity = {"slot": "a", "pid": pid, "rank": rank, "world_size": 2}
+        _write(tmp_path, "completed", identity, index)
+        _write(tmp_path, "aot_loaded", identity, index)
+    _write(
+        tmp_path,
+        "aot_invoked",
+        {"slot": "a", "pid": 10, "rank": 0, "world_size": 2},
+        0,
+    )
+
+    with pytest.raises(RuntimeError, match="failed sealed CuTe AOT use coverage"):
+        _launch._require_execution_completion(
+            str(tmp_path),
+            active_receipts=active,
+            expected_slots=["a"],
+            expected_member_count=2,
+        )
+
+    _write(
+        tmp_path,
+        "aot_invoked",
+        {"slot": "a", "pid": 11, "rank": 1, "world_size": 2},
+        1,
+    )
+    detail = _launch._require_execution_completion(
+        str(tmp_path),
+        active_receipts=active,
+        expected_slots=["a"],
+        expected_member_count=2,
+    )
+    assert "sealed CuTe AOT" in detail
+
+
+def test_sealed_aot_rejects_use_without_load_or_inactive_slot(tmp_path):
+    active = [_active(10, 0, slots=("a",), world_size=1)]
+    complete = {"slot": "a", "pid": 10, "rank": 0, "world_size": 1}
+    _write(tmp_path, "completed", complete, 0)
+    _write(tmp_path, "aot_invoked", complete, 0)
+    with pytest.raises(RuntimeError, match="without matching load evidence"):
+        _launch._require_execution_completion(
+            str(tmp_path),
+            active_receipts=active,
+            expected_slots=["a"],
+            expected_member_count=1,
+        )
+
+    (tmp_path / "aot_invoked.0.json").unlink()
+    _write(
+        tmp_path,
+        "aot_loaded",
+        {"slot": "other", "pid": 10, "rank": 0, "world_size": 1},
+        0,
+    )
+    with pytest.raises(RuntimeError, match="inactive slot"):
+        _launch._require_execution_completion(
+            str(tmp_path),
+            active_receipts=active,
+            expected_slots=["a"],
+            expected_member_count=1,
+        )
+
+
 @pytest.mark.parametrize("active", (False, True))
 def test_launched_engine_calls_completion_gate_only_for_active_run(monkeypatch, active):
     calls = []
