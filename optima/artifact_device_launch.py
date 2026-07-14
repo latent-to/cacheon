@@ -1,17 +1,18 @@
 """Import-light schema and runtime for sealed device-only CUDA launch plans.
 
-The serialized plan is the single ABI authority: it names the complete CUBIN
-symbol set, every formal parameter width, and an ordered bounded launch list.
-The CUBIN byte identity is supplied only when the plan derives its
-``CudaCubinContract``.  Runtime admission and launch retain one exact CUDA
-library handle; there is no candidate host object or executable callback.
+The serialized plan is the single ABI authority: it declares a complete logical
+kernel inventory, every formal parameter width, and an ordered bounded launch
+list.  Canonical logical-name order defines kernel ordinal; runtime binds those
+ordinals to the complete physical inventory observed from the exact sealed
+CUBIN.  Runtime admission and launch retain one exact CUDA library handle; there
+is no candidate host object or executable callback.
 """
 
 from __future__ import annotations
 
 import math
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Mapping, Sequence
 
 from optima.cuda_cubin import (
@@ -328,6 +329,37 @@ class DeviceLaunchPlan:
             )
         except CudaCubinError as exc:
             raise _device_error(exc) from None
+
+    def bind_observed_contract(
+        self, observed: CudaCubinContract
+    ) -> "DeviceLaunchPlan":
+        """Resolve logical aliases against a complete physical inventory.
+
+        Both inventories are canonical, so their tuple positions are the only
+        selector.  Widths are checked per position rather than searched or
+        matched, which remains unambiguous when multiple kernels share an ABI.
+        """
+
+        if type(observed) is not CudaCubinContract:
+            raise DeviceLaunchError("observed device contract has the wrong type")
+        declared_widths = tuple(kernel.parameter_sizes for kernel in self.kernels)
+        observed_widths = tuple(kernel.parameter_sizes for kernel in observed.kernels)
+        if observed_widths != declared_widths:
+            raise DeviceLaunchError(
+                "observed device kernel ordinal widths differ from the declaration"
+            )
+        names = {
+            declared.name: physical.name
+            for declared, physical in zip(self.kernels, observed.kernels, strict=True)
+        }
+        return DeviceLaunchPlan(
+            kernels=observed.kernels,
+            launches=tuple(
+                replace(launch, kernel=names[launch.kernel])
+                for launch in self.launches
+            ),
+            schema=self.schema,
+        )
 
     def validate_bindings(
         self,
@@ -732,7 +764,7 @@ class DeviceArtifactRuntime:
         try:
             raw, cubin_sha256, cubin_size = cuda_cubin_identity(cubin)
             contract = plan.cuda_contract(cubin_sha256, cubin_size)
-            library = CudaCubinLibrary.open_contract(
+            library = CudaCubinLibrary.open_ordered_contract(
                 raw,
                 expected_contract=contract,
                 driver=captured_driver,
@@ -740,7 +772,8 @@ class DeviceArtifactRuntime:
         except (CudaCubinError, TypeError, ValueError) as exc:
             raise _device_error(exc) from None
         try:
-            return cls(library, plan, registry)
+            resolved_plan = plan.bind_observed_contract(library.abi.contract)
+            return cls(library, resolved_plan, registry)
         except BaseException:
             library.close()
             raise

@@ -235,6 +235,59 @@ def test_open_contract_unloads_an_observed_ordinal_width_mismatch() -> None:
     assert driver.unload_calls == [driver.library]
 
 
+def test_open_ordered_contract_accepts_generated_names_and_retains_handle() -> None:
+    cubin = _cubin()
+    driver = _FakeDriver(_default_rows())
+    observed = _expected_abi(cubin).contract
+    logical = replace(
+        observed,
+        kernels=(
+            CudaKernelContract("entry_000", (8, 4)),
+            CudaKernelContract("entry_001", (8,)),
+        ),
+    )
+
+    library = CudaCubinLibrary.open_ordered_contract(
+        cubin,
+        expected_contract=logical,
+        driver=driver,
+    )
+
+    assert library.abi.contract == observed
+    assert library.function("alpha_kernel") == "function:handle-alpha"
+    assert driver.unload_calls == []
+    library.close()
+    assert driver.unload_calls == [driver.library]
+
+
+@pytest.mark.parametrize(
+    "kernels",
+    (
+        (CudaKernelContract("entry_000", (8,)),),
+        (
+            CudaKernelContract("entry_000", (8,)),
+            CudaKernelContract("entry_001", (8, 4)),
+        ),
+    ),
+)
+def test_open_ordered_contract_rejects_count_or_per_ordinal_width_mismatch(
+    kernels: tuple[CudaKernelContract, ...],
+) -> None:
+    cubin = _cubin()
+    driver = _FakeDriver(_default_rows())
+    observed = _expected_abi(cubin).contract
+    logical = replace(observed, kernels=kernels)
+
+    with pytest.raises(CudaCubinError, match="ordinal widths differ"):
+        CudaCubinLibrary.open_ordered_contract(
+            cubin,
+            expected_contract=logical,
+            driver=driver,
+        )
+
+    assert driver.unload_calls == [driver.library]
+
+
 def test_open_rejects_wrong_bytes_before_initializing_driver() -> None:
     sealed_cubin = _cubin(b"sealed")
     different_cubin = _cubin(b"different")

@@ -236,7 +236,9 @@ class CudaKernelContract:
 
     CUDA is the authority for parameter offsets.  The compiler-side declaration
     must nevertheless bind every ordinal and its exact width, so runtime admission
-    cannot reinterpret an unexpected device entry or silently ignore one.
+    cannot reinterpret an unexpected device entry or silently ignore one.  The
+    name may be a logical alias when the caller uses ordered-contract admission;
+    exact-name admission continues to treat it as a physical CUDA symbol.
     """
 
     name: str
@@ -278,7 +280,11 @@ class CudaKernelContract:
 
 @dataclass(frozen=True)
 class CudaCubinContract:
-    """Exact CUBIN bytes plus its complete GPU-free device symbol contract."""
+    """Exact CUBIN bytes plus a complete GPU-free kernel inventory.
+
+    ``open_contract`` interprets names as physical symbols.  The ordered path
+    interprets them as logical aliases whose canonical order defines ordinals.
+    """
 
     cubin_sha256: str
     cubin_size: int
@@ -722,6 +728,72 @@ class CudaCubinLibrary:
                 ) from None
             raise CudaCubinError(
                 "CUDA driver-observed CUBIN contract differs from sealed authority"
+            )
+        return cls(
+            driver=captured_driver,
+            library=library,
+            abi=abi,
+            kernels=kernels,
+            _construction_token=_LIBRARY_CONSTRUCTION_TOKEN,
+        )
+
+    @classmethod
+    def open_ordered_contract(
+        cls,
+        cubin: bytes | bytearray | memoryview,
+        *,
+        expected_contract: CudaCubinContract,
+        driver: object | None = None,
+    ) -> "CudaCubinLibrary":
+        """Bind logical kernel aliases to the exact sealed CUBIN by ordinal.
+
+        CuTe derives physical symbols from its materialized Python module name,
+        so a submission cannot stably declare those names.  Canonical contract
+        order is instead the selector: the complete driver-observed inventory
+        must have the same count and the same parameter-width vector at every
+        ordinal.  Names and offsets remain captured in ``abi`` evidence, and the
+        successfully checked library handle is the one retained for launch.
+        """
+
+        if cls is not CudaCubinLibrary:
+            raise CudaCubinError(
+                "CUDA CUBIN library authority may not be subclassed"
+            )
+        if type(expected_contract) is not CudaCubinContract:
+            raise CudaCubinError("expected CUDA CUBIN contract has the wrong type")
+        raw = _cubin_bytes(cubin)
+        _require_elf_cubin(raw)
+        cubin_sha256 = hashlib.sha256(raw).hexdigest()
+        if (
+            expected_contract.cubin_sha256 != cubin_sha256
+            or expected_contract.cubin_size != len(raw)
+        ):
+            raise CudaCubinError("CUDA CUBIN bytes differ from sealed contract")
+
+        captured_driver = cls._capture_driver(driver)
+        library, abi, kernels = cls._load_and_observe(
+            raw,
+            cubin_sha256=cubin_sha256,
+            driver=captured_driver,
+            expected_abi=None,
+        )
+        expected_widths = tuple(
+            kernel.parameter_sizes for kernel in expected_contract.kernels
+        )
+        observed_widths = tuple(
+            kernel.parameter_sizes for kernel in abi.contract.kernels
+        )
+        if observed_widths != expected_widths:
+            try:
+                _unload_library(captured_driver, library)
+            except CudaCubinCleanupError as cleanup:
+                raise CudaCubinCleanupError(
+                    "CUDA CUBIN ordered-contract admission failed and its library "
+                    "could not be unloaded; isolated CUDA worker must terminate: "
+                    f"{cleanup}"
+                ) from None
+            raise CudaCubinError(
+                "CUDA driver-observed CUBIN ordinal widths differ from sealed authority"
             )
         return cls(
             driver=captured_driver,

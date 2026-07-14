@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
@@ -23,6 +24,7 @@ from optima.artifact_runtime import (
 )
 from optima.cuda_cubin import (
     CudaCubinABI,
+    CudaCubinContract,
     CudaCubinLibrary,
     CudaKernelABI,
     CudaKernelContract,
@@ -117,6 +119,65 @@ def test_plan_rejects_referenced_missing_symbol_but_allows_sealed_auxiliary_symb
             kernels=(CudaKernelContract("run", (8,)),),
             launches=(_invocation((pointer,), kernel="missing"),),
         )
+
+
+def test_plan_binds_generated_symbols_by_ordinal_even_with_duplicate_widths() -> None:
+    pointer = CudaParameterPlan(kind="pointer", size=8, binding=0)
+    plan = DeviceLaunchPlan(
+        kernels=(
+            CudaKernelContract("logical_a", (8,)),
+            CudaKernelContract("logical_b", (8,)),
+        ),
+        launches=(_invocation((pointer,), kernel="logical_b"),),
+    )
+    observed = CudaCubinABI(
+        "1" * 64,
+        64,
+        (
+            CudaKernelABI(
+                "generated_alpha",
+                (CudaKernelParameter(index=0, offset=0, size=8),),
+            ),
+            CudaKernelABI(
+                "generated_zeta",
+                (CudaKernelParameter(index=0, offset=16, size=8),),
+            ),
+        ),
+    ).contract
+
+    resolved = plan.bind_observed_contract(observed)
+
+    assert resolved.kernels == observed.kernels
+    assert resolved.launches[0].kernel == "generated_zeta"
+    assert plan.launches[0].kernel == "logical_b"
+
+
+def test_plan_rejects_width_multiset_that_differs_by_ordinal() -> None:
+    pointer = CudaParameterPlan(kind="pointer", size=8, binding=0)
+    plan = DeviceLaunchPlan(
+        kernels=(
+            CudaKernelContract("logical_a", (4,)),
+            CudaKernelContract("logical_b", (8,)),
+        ),
+        launches=(_invocation((pointer,), kernel="logical_b"),),
+    )
+    observed = CudaCubinABI(
+        "1" * 64,
+        64,
+        (
+            CudaKernelABI(
+                "generated_alpha",
+                (CudaKernelParameter(index=0, offset=0, size=8),),
+            ),
+            CudaKernelABI(
+                "generated_zeta",
+                (CudaKernelParameter(index=0, offset=0, size=4),),
+            ),
+        ),
+    ).contract
+
+    with pytest.raises(DeviceLaunchError, match="ordinal widths differ"):
+        plan.bind_observed_contract(observed)
 
 
 def test_plan_statically_joins_tensor_stream_and_parameter_widths() -> None:
@@ -287,6 +348,74 @@ def test_artifact_entry_calls_device_runtime_with_live_tensors_and_orders_teardo
     assert runtime.closed
     with pytest.raises(ArtifactRuntimeError, match="closing or closed"):
         wrapped(source, output)
+
+
+def test_admit_launches_driver_observed_symbol_from_logical_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    driver = _Driver(events)
+    pointer = CudaParameterPlan(kind="pointer", size=8, binding=0)
+    invocation = replace(
+        _invocation((pointer,), kernel="entry_000"),
+        grid=_dim3(_const(1)),
+    )
+    declared = DeviceLaunchPlan(
+        kernels=(CudaKernelContract("entry_000", (8,)),),
+        launches=(invocation,),
+    )
+    registry = make_cuda_primitive_registry(
+        driver=driver,
+        tma_descriptor=lambda _descriptor: bytes(128),
+        synchronize=lambda: events.append("sync"),
+    )
+    physical = CudaCubinContract(
+        cubin_sha256="1" * 64,
+        cubin_size=64,
+        kernels=(CudaKernelContract("generated_kernel", (8,)),),
+    )
+    library = _library(driver, declared.bind_observed_contract(physical))
+    admitted: list[CudaCubinContract] = []
+
+    def open_ordered(
+        cls, cubin, *, expected_contract, driver
+    ) -> CudaCubinLibrary:
+        assert cls is CudaCubinLibrary
+        assert cubin == b"sealed"
+        assert driver is registry.driver
+        admitted.append(expected_contract)
+        return library
+
+    monkeypatch.setattr(
+        device_launch,
+        "cuda_cubin_identity",
+        lambda cubin: (b"sealed", "1" * 64, 64),
+    )
+    monkeypatch.setattr(
+        CudaCubinLibrary,
+        "open_ordered_contract",
+        classmethod(open_ordered),
+    )
+    runtime = DeviceArtifactRuntime.admit(b"sealed", declared, registry)
+    launches: list[tuple[object, ...]] = []
+
+    def capture_launch(library, spec, materialized, *, stream):
+        launches.append((library, spec, materialized, stream))
+
+    monkeypatch.setattr(device_launch, "launch_cuda_kernel", capture_launch)
+    runtime(0x1000)
+
+    assert len(launches) == 1
+    assert admitted == [declared.cuda_contract("1" * 64, 64)]
+    assert launches[0][1].kernel == "generated_kernel"
+    assert launches[0][2] == (CudaPointer(0x1000),)
+    assert (
+        runtime.admission.observed_contract_digest
+        == runtime._library.abi.contract.digest
+    )
+
+    runtime.close()
+    assert events == ["sync", "unload"]
 
 
 def test_entry_close_failure_retains_device_handle_without_synchronizing() -> None:
