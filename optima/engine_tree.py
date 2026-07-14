@@ -1545,9 +1545,14 @@ def _toml_value(value: object) -> str:
     if isinstance(value, list):
         return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     if isinstance(value, dict):
+        # TOML has no null. Canonical artifact plans use ``None`` only for
+        # inactive/default fields in their tagged unions; omit those fields on
+        # the wire and let the typed manifest decoder reconstruct and validate
+        # the canonical defaults. A top-level/list null remains unsupported.
         return "{ " + ", ".join(
             f"{_toml_string(str(key))} = {_toml_value(item)}"
             for key, item in sorted(value.items(), key=lambda row: str(row[0]))
+            if item is not None
         ) + " }"
     raise EngineTreeError(f"runtime manifest contains an unsupported TOML value: {value!r}")
 

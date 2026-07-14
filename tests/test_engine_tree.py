@@ -1081,6 +1081,14 @@ def test_cute_dsl_compile_alias_is_admitted(tmp_path: Path, source_text: str) ->
     assert "kernels/blockscore.py" in inspected.python_files
 
 
+def test_runtime_toml_omits_only_inline_table_null_fields() -> None:
+    from optima.engine_tree import _toml_value
+
+    assert _toml_value({"active": 7, "inactive": None}) == '{ "active" = 7 }'
+    with pytest.raises(EngineTreeError, match="unsupported TOML value"):
+        _toml_value([None])
+
+
 @pytest.mark.parametrize(
     "source_text",
     [
