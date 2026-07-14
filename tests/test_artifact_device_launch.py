@@ -110,6 +110,25 @@ def test_plan_round_trip_digest_preserves_signed_zero_and_auxiliary_symbols() ->
     )
 
 
+def test_invocation_from_dict_allows_omitted_optional_cluster_only() -> None:
+    encoded = _invocation(()).to_dict()
+    encoded.pop("cluster")
+
+    parsed = DeviceLaunchInvocation.from_dict(encoded)
+
+    assert parsed.cluster is None
+    assert parsed == _invocation(())
+
+    missing_required = dict(encoded)
+    missing_required.pop("grid")
+    with pytest.raises(DeviceLaunchError, match="fields mismatch"):
+        DeviceLaunchInvocation.from_dict(missing_required)
+
+    with_unknown = {**encoded, "miner_extension": {}}
+    with pytest.raises(DeviceLaunchError, match="fields mismatch"):
+        DeviceLaunchInvocation.from_dict(with_unknown)
+
+
 def test_plan_rejects_referenced_missing_symbol_but_allows_sealed_auxiliary_symbol() -> None:
     pointer = CudaParameterPlan(kind="pointer", size=8, binding=0)
     assert _plan((pointer,), auxiliary=True).launches[0].kernel == "run"

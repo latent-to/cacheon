@@ -235,12 +235,17 @@ class DeviceLaunchInvocation:
             "shared_mem_bytes",
             "stream_binding",
         }
-        if type(value) is not dict or set(value) != expected:
+        required = expected - {"cluster"}
+        if (
+            type(value) is not dict
+            or not required <= set(value)
+            or not set(value) <= expected
+        ):
             raise DeviceLaunchError("device invocation fields mismatch")
         parameters = value["parameters"]
         if type(parameters) is not list:
             raise DeviceLaunchError("device invocation parameters must be a list")
-        cluster = value["cluster"]
+        cluster = value.get("cluster")
         try:
             return cls(
                 ordinal=value["ordinal"],  # type: ignore[arg-type]

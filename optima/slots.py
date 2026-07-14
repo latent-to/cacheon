@@ -315,6 +315,7 @@ RMSNORM = SlotSpec(
         {"num_tokens": 1, "hidden": 2880},
         {"num_tokens": 8, "hidden": 2880},
         {"num_tokens": 128, "hidden": 2880},
+        {"num_tokens": 64, "hidden": 6144},
         {"num_tokens": 4096, "hidden": 4096},
         {"num_tokens": 333, "hidden": 1536},
     ),
@@ -1086,8 +1087,11 @@ def _msa_prefill_inputs(*, q_len: int, prefix_blocks: int, head_dim: int, block_
         # row. Feature dimensions cycle when q_len > head_dim; each newly exposed
         # future block still displaces a trusted-prefix block. A kernel that ignores
         # the per-row causal mask therefore fails even when random probes dilute it.
-        q.zero_()
-        index_k.zero_()
+        # Preserve seed-dependent low-amplitude values so these adversarial cases
+        # remain genuine fresh-input CUDA-graph replay probes.  The explicit
+        # causal signals below dominate this noise by three to five orders.
+        q.mul_(2**-10)
+        index_k.mul_(2**-10)
         row = torch.arange(q_len, device=device)
         feature = row % head_dim
         q[row, feature] = 1

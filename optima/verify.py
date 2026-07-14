@@ -582,6 +582,53 @@ _MSA_PROBE_MAX_MATMUL_WORK = 300_000_000
 _MSA_PROBE_MAX_TOTAL_WORK = 600_000_000
 _MSA_MAX_CANDIDATE_COMBINATIONS = 64
 _MSA_MAX_SYNTHESIZED_SHAPES = 32
+_MSA_PREFILL_SHAPE_FIELDS = frozenset(
+    {"q_len", "prefix_blocks", "head_dim", "block_size"}
+)
+_MSA_PREFILL_INPUT_FIELDS = frozenset(
+    {"q", "index_k", "prefix_len", "scale", "block_size"}
+)
+_MSA_SYNTHESIZED_CAPABILITY_FIELDS = frozenset(
+    {"head_dim", "last_dim", "block_size", "q_len", "num_tokens", "kv_len"}
+)
+
+
+def _has_msa_prefill_probe_schema(
+    slot: SlotSpec, eligibility: Eligibility, catalog_shapes: list[dict]
+) -> bool:
+    """Recognize the semantic probe schema without consulting slot identity."""
+
+    constrained = eligibility.capabilities.constrained_fields
+    has_legacy_shape_bound = any(
+        value is not None
+        for value in (
+            eligibility.max_last_dim,
+            eligibility.min_num_tokens,
+            eligibility.max_num_tokens,
+        )
+    )
+    return (
+        slot.correctness.mode == "topk_overlap"
+        and (
+            bool(constrained & _MSA_SYNTHESIZED_CAPABILITY_FIELDS)
+            or has_legacy_shape_bound
+        )
+        and bool(catalog_shapes)
+        and all(_MSA_PREFILL_SHAPE_FIELDS <= set(shape) for shape in catalog_shapes)
+    )
+
+
+def _has_msa_prefill_call_contract(slot: SlotSpec, inputs: dict) -> bool:
+    """Recognize the canonical score-sheet call from validator-owned values."""
+
+    return (
+        slot.correctness.mode == "topk_overlap"
+        and _MSA_PREFILL_INPUT_FIELDS <= set(inputs)
+        and torch.is_tensor(inputs["q"])
+        and inputs["q"].dim() == 2
+        and torch.is_tensor(inputs["index_k"])
+        and inputs["index_k"].dim() == 2
+    )
 
 
 def _msa_shape_descriptor(
@@ -925,7 +972,9 @@ def verify_entry(
     catalog_shapes = list(shapes) if shapes is not None else list(slot.shapes)
     domain_coverage_complete = True
     domain_coverage_detail = ""
-    if eligibility is not None and slot.name == "attention.msa_prefill_block_score":
+    if eligibility is not None and _has_msa_prefill_probe_schema(
+        slot, eligibility, catalog_shapes
+    ):
         resolved_arch = architecture or _device_architecture(device)
         synthesized, domain_coverage_complete, domain_coverage_detail = (
             _synthesize_msa_capability_shapes(
@@ -1193,7 +1242,7 @@ def _verification_call_descriptor(
     """
 
     resolved_arch = architecture or _device_architecture(device)
-    if slot.name != "attention.msa_prefill_block_score":
+    if not _has_msa_prefill_call_contract(slot, inputs):
         primary = next(
             (
                 inputs[name]
