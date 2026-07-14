@@ -1181,6 +1181,14 @@ def make_arfusion_dispatcher(
                                use_oneshot, trigger_completion_at_end, fp32_acc,
                                use_attn_tp_group)
         if _arfusion_seam_active():
+            # FlashInfer profiles stock tactics under this same epilogue call site.
+            # Miner collectives must be invisible to that lifecycle: decide before
+            # deep consume, capability preflight, or the receipted commit boundary.
+            if _moe_export.flashinfer_tuning():
+                return baseline_fn(
+                    input_tensor, residual, weight, eps, max_token_num, use_oneshot,
+                    trigger_completion_at_end, fp32_acc, use_attn_tp_group
+                )
             # DEEP consume first: if this call's input is a moe output whose in-op
             # finalize was skipped (ptr-keyed pend from the export seam), the tensor
             # is UNFINALIZED — it must never reach the shallow kernel or the stock
