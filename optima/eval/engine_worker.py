@@ -202,6 +202,8 @@ def _require_execution_completion(
 
     completed = receipts.collect(receipt_dir, "completed")
     fallbacks = receipts.collect(receipt_dir, "fallback")
+    aot_loaded = receipts.collect(receipt_dir, "aot_loaded")
+    aot_invoked = receipts.collect(receipt_dir, "aot_invoked")
     passed, detail = receipts.completed_gate(
         completed,
         expected_slots=expected_slots,
@@ -210,9 +212,16 @@ def _require_execution_completion(
         fallback_receipts=fallbacks,
     )
     if not passed:
-        raise RuntimeError("candidate engine run failed execution coverage: " + detail)
-    aot_loaded = receipts.collect(receipt_dir, "aot_loaded")
-    aot_invoked = receipts.collect(receipt_dir, "aot_invoked")
+        observed = (
+            f"observed_receipts=completed:{len(completed)},fallback:{len(fallbacks)},"
+            f"aot_loaded:{len(aot_loaded)},aot_invoked:{len(aot_invoked)}"
+        )
+        raise RuntimeError(
+            "candidate engine run failed execution coverage: "
+            + detail
+            + "; "
+            + observed
+        )
     if aot_invoked and not aot_loaded:
         raise RuntimeError(
             "candidate engine run has sealed CuTe AOT use evidence without "

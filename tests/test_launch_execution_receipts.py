@@ -81,7 +81,13 @@ def test_fired_without_completed_fails_execution_gate(tmp_path):
         {"slot": "a", "pid": 10, "rank": 0, "world_size": 1},
         0,
     )
-    with pytest.raises(RuntimeError, match="failed execution coverage"):
+    _write(
+        tmp_path,
+        "aot_loaded",
+        {"slot": "a", "pid": 10, "rank": 0, "world_size": 1},
+        0,
+    )
+    with pytest.raises(RuntimeError, match="aot_loaded:1,aot_invoked:0"):
         _launch._require_execution_completion(
             str(tmp_path),
             active_receipts=active,
