@@ -424,6 +424,25 @@ def test_finalized_snapshot_scans_only_blocks_after_durable_cursor():
     assert visited == [10, 11, 12]
 
 
+def test_stale_cursor_uses_complete_history_without_scanning_empty_blocks():
+    st = _MockSubtensor(
+        hotkeys=["alice"],
+        block=100,
+        revealed={"alice": ((7, "old"), (99, "new"))},
+    )
+    visited: list[int] = []
+    original = st.substrate.get_events
+
+    def get_events(*, block_hash):
+        visited.append(int(block_hash[2:], 16))
+        return original(block_hash=block_hash)
+
+    st.substrate.get_events = get_events
+    snapshot = chain.read_finalized_reveal_history(st, netuid=1, after_block=9)
+    assert [(row.block, row.data) for row in snapshot.reveals] == [(99, "new")]
+    assert visited == [99]
+
+
 def test_same_hotkey_same_block_payloads_use_lexical_suborder_only():
     st = _MockSubtensor(
         hotkeys=["alice", "bob"],

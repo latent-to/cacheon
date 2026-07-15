@@ -2262,9 +2262,22 @@ def materialize_engine_tree(
                 source_kind = "proposal_artifact"
                 source_digest = ref.artifact_digest
                 if content_hash(staged) != source_digest:
-                    raise EngineTreeError(
-                        f"proposal artifact digest mismatch for {target_id!r}"
+                    # Published worker bundles carry one validator-owned native-
+                    # artifact receipt beside the exact miner files.  That carrier
+                    # byte is deliberately outside the miner's committed content
+                    # hash, so admit the mismatch only when the original source
+                    # independently reopens as that exact typed publication.
+                    from optima.chain.publication import (
+                        WorkerBundlePublicationError,
+                        reopen_worker_bundle,
                     )
+
+                    try:
+                        reopen_worker_bundle(source, source_digest)
+                    except (WorkerBundlePublicationError, OSError, TypeError, ValueError):
+                        raise EngineTreeError(
+                            f"proposal artifact digest mismatch for {target_id!r}"
+                        ) from None
             elif isinstance(ref, IntegratedContributionRef):
                 source_kind = "integrated_source"
                 source_digest = ref.integrated_source_tree_digest

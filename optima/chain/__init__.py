@@ -38,6 +38,7 @@ CHAIN_REVEAL_HISTORY_CAP = 10
 MAX_REVEAL_HISTORY_PAGES = 4_096
 MAX_REVEAL_HISTORY_ROWS = 1_000_000
 MAX_REVEAL_EVENT_BLOCKS = 4_096
+MAX_INCREMENTAL_REVEAL_BLOCK_SCAN = 64
 MAX_REVEAL_MESSAGE_BYTES = 4_096
 _BLOCK_HASH_RE = re.compile(r"0x[0-9a-fA-F]{64}\Z")
 _HEX_BYTES_RE = re.compile(r"0x(?:[0-9a-fA-F]{2})+\Z")
@@ -729,12 +730,23 @@ def read_finalized_reveal_history(
     if type(netuid) is not int or netuid < 0:
         raise ValueError("netuid must be a non-negative integer")
     finalized_block, finalized_hash = _finalized_head(subtensor)
-    storage = _storage_history(
-        subtensor, netuid, finalized_block=finalized_block, after_block=after_block
+    scan_incrementally = (
+        after_block is not None
+        and finalized_block - after_block <= MAX_INCREMENTAL_REVEAL_BLOCK_SCAN
     )
+    storage = _storage_history(
+        subtensor,
+        netuid,
+        finalized_block=finalized_block,
+        after_block=after_block if scan_incrementally else None,
+    )
+    if after_block is not None and not scan_incrementally:
+        storage = Counter(
+            {key: count for key, count in storage.items() if key[0] > after_block}
+        )
     blocks = (
         tuple(range(after_block + 1, finalized_block + 1))
-        if after_block is not None
+        if scan_incrementally
         else tuple(sorted({key[0] for key in storage}))
     )
     if len(blocks) > MAX_REVEAL_EVENT_BLOCKS:

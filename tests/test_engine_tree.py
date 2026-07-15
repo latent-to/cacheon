@@ -15,6 +15,7 @@ import pytest
 
 import optima.engine_tree as engine_tree
 from optima.bundle_hash import content_hash
+from optima.chain.publication import publish_worker_bundle
 from optima.discovery import (
     DEFAULT_DISCOVERY_POLICY,
     DISCOVERY_ABI_VERSION,
@@ -244,6 +245,38 @@ def test_singleton_materialization_projects_metadata_and_reopens(tmp_path: Path)
     assert "notes" not in metadata
     assert "regime" not in metadata
     assert all(path.stat().st_mode & 0o777 == 0o444 for path in result.root.rglob("*") if path.is_file())
+
+
+def test_materialization_accepts_exact_typed_worker_bundle_carrier(tmp_path: Path) -> None:
+    source = tmp_path / "private-source"
+    shutil.copytree(MSA, source)
+    for path in source.rglob("*"):
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    source.chmod(0o700)
+
+    catalog = default_target_catalog()
+    context = _evaluation_context(catalog)
+    ref = _proposal_ref(source, catalog)
+    publication = publish_worker_bundle(
+        source,
+        tmp_path / "publications",
+        ref.artifact_digest,
+    )
+    assert content_hash(publication.root) != ref.artifact_digest
+
+    stack = _evaluation_stack(catalog, context, ref)
+    result = materialize_engine_tree(
+        stack,
+        context=context,
+        catalog=catalog,
+        resolver=_sources((ref, publication.root)),
+        destination=tmp_path / "engine",
+    )
+
+    assert result.stack_digest == stack.digest
+    assert reopen_materialized_engine_tree(
+        result.root, expected_tree_digest=result.tree_digest
+    ) == result
 
 
 def test_multiple_variants_share_selected_source_without_order_authority(
