@@ -23,9 +23,6 @@ What this module DOES provide:
   2. ``load_entry`` — import the module and pull out the slot's ``entry``
      callable, in-process, *after* the scan passes. Intended to be called from
      inside the isolated worker, never from the trusted validator process.
-  3. ``probe_in_subprocess`` — best-effort: import the module in a
-     resource-limited child (Linux) just to surface import/JIT errors and
-     import-time payloads away from the caller.
 """
 
 from __future__ import annotations
@@ -354,44 +351,3 @@ def load_entry(source_path: str | Path, entry: str) -> Callable:
     return callable_from(load_module(source_path), entry)
 
 
-def probe_in_subprocess(source_path: str | Path, entry: str, *, cpu_seconds: int = 20, mem_mb: int = 4096) -> tuple[bool, str]:
-    """Best-effort import probe in a resource-limited child process.
-
-    Surfaces import-time errors / payloads away from the caller. On Linux applies
-    RLIMIT_CPU and RLIMIT_AS. Returns ``(ok, message)``. This is a smoke check,
-    not isolation — a real deployment runs the whole worker namespaced.
-    """
-    import subprocess
-    import textwrap
-
-    code = textwrap.dedent(
-        f"""
-        import resource, sys
-        try:
-            soft = {cpu_seconds}
-            resource.setrlimit(resource.RLIMIT_CPU, (soft, soft + 2))
-            resource.setrlimit(resource.RLIMIT_AS, ({mem_mb} * 1024 * 1024,) * 2)
-        except Exception:
-            pass
-        from optima.sandbox import load_entry
-        fn = load_entry({str(Path(source_path).resolve())!r}, {entry!r})
-        sys.stdout.write("OK:" + getattr(fn, "__name__", "?"))
-        """
-    )
-    env = {
-        "PATH": os.environ.get("PATH", ""),
-        "PYTHONPATH": os.pathsep.join(sys.path),
-        # No proxy/network creds; production should also drop the net namespace.
-    }
-    try:
-        proc = subprocess.run(  # noqa: S603 - controlled argv, isolated child
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=cpu_seconds + 30,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return False, "import probe timed out"
-    ok = proc.returncode == 0 and proc.stdout.startswith("OK:")
-    return ok, (proc.stdout + proc.stderr).strip()

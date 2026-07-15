@@ -616,33 +616,6 @@ def bundle_slot_structural_fingerprints(bundle_root: str | Path) -> dict[str, st
     }
 
 
-def _fold(slot_map: dict[str, str]) -> str:
-    """Fold a per-slot map into one canonical hash (for logging / audit; "" if empty)."""
-    if not slot_map:
-        return ""
-    blob = "\x1e".join(f"{slot}\x00{fp}" for slot, fp in sorted(slot_map.items()))
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
-def bundle_structural_fingerprint(bundle_root: str | Path) -> str:
-    """Advisory whole-bundle structural fingerprint (fold of the per-slot map). "" if
-    any source can't be parsed."""
-    return _fold(bundle_slot_structural_fingerprints(bundle_root))
-
-
-def bundle_fingerprint(bundle_root: str | Path) -> str:
-    """A reformat-invariant fingerprint over a bundle's kernels + slot wiring.
-
-    Whole-bundle fold of ``bundle_slot_fingerprints`` (retained for audit/logging); the
-    LOAD-BEARING copy-compare is per-slot via ``bundle_slot_fingerprints`` so an extra
-    padding op cannot perturb a stolen slot. Covers, per op: the slot id, the
-    entry/prepare/setup callable names, the override composition, and the NORMALIZED
-    source of the op's transitive bundle-local import closure. Deliberately excludes
-    ``bundle_id`` and the manifest's formatting. "" if any source can't be parsed.
-    """
-    return _fold(bundle_slot_fingerprints(bundle_root))
-
-
 @dataclass(frozen=True)
 class SubmittedDeltaFingerprint:
     """Copy/provenance identity for submitted bytes only.

@@ -1054,22 +1054,6 @@ class FinalizedIntakeStore:
             )
         return self.get(reservation_id)
 
-    def screen_dispositions(
-        self, reservation_id: str
-    ) -> tuple[dict[str, object], ...]:
-        self.get(reservation_id)
-        result = []
-        for row in self._db.execute(
-            "SELECT attempt_index,service_digest,candidate_digest,receipt_digest,"
-            "receipt_json,decision,stage_count,lane FROM arena_screen_dispositions "
-            "WHERE reservation_id=? ORDER BY attempt_index",
-            (reservation_id,),
-        ):
-            value = dict(row)
-            value["receipt"] = json.loads(value.pop("receipt_json"))
-            result.append(value)
-        return tuple(result)
-
     def latest_promoted_screen(self, reservation_id: str):
         from optima.arena_service import (
             ArenaScreenReceipt, PromotionDecision, ScreenGrade, ScreenStageResult,
