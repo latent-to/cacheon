@@ -72,6 +72,8 @@ def test_engine_kwargs_preserve_candidate_overrides():
     assert candidate["page_size"] == 64
 
 
+
+
 def test_prepare_and_entry_share_one_module_instance(tmp_path):
     # A (prepare, forward) op's callables must come from ONE module execution: the
     # seam/verify loaders pull both off a single load_module. Two load_entry calls
