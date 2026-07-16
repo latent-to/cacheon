@@ -8,7 +8,6 @@ signer supplies a wallet. An SDK return value is never confirmation authority.
 from __future__ import annotations
 
 import math
-import operator
 from dataclasses import dataclass, replace
 from typing import Protocol
 
@@ -295,16 +294,6 @@ class WeightPublicationResult:
             raise WeightPublicationError("publication result status is unsupported")
 
 
-def _block(subtensor) -> int:
-    try:
-        value = operator.index(subtensor.get_current_block())
-    except (AttributeError, TypeError, OverflowError, ValueError) as exc:
-        raise chain.ChainWeightStateError(f"cannot read current chain block: {exc}") from None
-    if value < 0:
-        raise chain.ChainWeightStateError("current chain block is negative")
-    return value
-
-
 def _matches(snapshot: chain.ValidatorWeightSnapshot, projection: WeightProjection) -> bool:
     expected = projection.weights
     return set(snapshot.weights) == set(expected) and all(
@@ -332,6 +321,21 @@ def _metagraph_digest(projection: WeightProjection, metagraph: chain.MetagraphVi
             "chain_scope_digest": projection.chain_scope_digest,
             "members": members,
         },
+    )
+
+
+def _authority_uids_unchanged(
+    projection: WeightProjection,
+    bound: chain.MetagraphView,
+    observed: chain.MetagraphView,
+) -> bool:
+    """Whether every identity that can affect this signed row kept its UID."""
+
+    hotkeys = (projection.validator_hotkey, *(row[0] for row in projection.weights_ppm))
+    return all(
+        bound.uid_of(hotkey) is not None
+        and bound.uid_of(hotkey) == observed.uid_of(hotkey)
+        for hotkey in hotkeys
     )
 
 
@@ -474,10 +478,18 @@ def reconcile_weight_publication(
         else None
     )
     live_metagraph = chain.fetch_metagraph(subtensor, projection.netuid)
-    if in_flight is None and (
-        live_metagraph.block != projection.effective_block
-        or _metagraph_digest(projection, live_metagraph) != projection.metagraph_digest
-    ):
+    bound_metagraph = (
+        live_metagraph
+        if live_metagraph.block == projection.effective_block
+        else chain.fetch_metagraph(
+            subtensor, projection.netuid, block=projection.effective_block
+        )
+    )
+    if _metagraph_digest(projection, bound_metagraph) != projection.metagraph_digest:
+        raise WeightPublicationError(
+            "weight projection metagraph binding cannot be reopened"
+        )
+    if in_flight is None and live_metagraph.block != projection.effective_block:
         raise WeightPublicationError(
             "weight projection is stale for the immediately refreshed metagraph"
         )
@@ -504,7 +516,12 @@ def reconcile_weight_publication(
 
     if dry_run:
         chain.set_weights(
-            subtensor, None, projection.netuid, projection.weights, dry_run=True
+            subtensor,
+            None,
+            projection.netuid,
+            projection.weights,
+            dry_run=True,
+            metagraph_view=live_metagraph,
         )
         return WeightPublicationResult(
             projection.digest, "dry_run", None, matches, False, True, observed_block
@@ -519,6 +536,13 @@ def reconcile_weight_publication(
         if current.status == "held":
             return WeightPublicationResult(
                 projection.digest, "held", current, matches, False, False, observed_block
+            )
+        if not _authority_uids_unchanged(
+            projection, bound_metagraph, live_metagraph
+        ):
+            current = _held(journal, current, "metagraph_uid_mapping_changed")
+            return WeightPublicationResult(
+                projection.digest, "held", current, False, False, False, observed_block
             )
         if matches and pre.last_update_block >= current.submit_block:
             current = _advance(
@@ -589,6 +613,20 @@ def reconcile_weight_publication(
     if observed_block <= 0:
         raise chain.ChainWeightStateError("real publication requires a positive chain block")
 
+    # Re-open the finalized authority immediately before journaling intent and
+    # handing its exact UID mapping to the signer. A projection that raced a new
+    # finalized block is rebuilt rather than signed under a stale label.
+    signing_metagraph = chain.fetch_metagraph(subtensor, projection.netuid)
+    if (
+        signing_metagraph.block != projection.effective_block
+        or _metagraph_digest(projection, signing_metagraph)
+        != projection.metagraph_digest
+    ):
+        raise WeightPublicationError(
+            "weight projection became stale before signing"
+        )
+    observed_block = signing_metagraph.block
+
     intent = _advance(
         journal,
         current,
@@ -610,6 +648,9 @@ def reconcile_weight_publication(
             projection.netuid,
             projection.weights,
             dry_run=False,
+            wait_for_inclusion=True,
+            wait_for_finalization=True,
+            metagraph_view=signing_metagraph,
         )
         submitted = bool(response.get("submitted")) if isinstance(response, dict) else False
     except Exception as exc:
@@ -627,10 +668,27 @@ def reconcile_weight_publication(
         ),
     )
     try:
+        post_metagraph = chain.fetch_metagraph(subtensor, projection.netuid)
+        if not _authority_uids_unchanged(
+            projection, signing_metagraph, post_metagraph
+        ):
+            held = _held(journal, pending, "post_submit_uid_mapping_changed")
+            return WeightPublicationResult(
+                projection.digest,
+                "held",
+                held,
+                False,
+                submitted,
+                False,
+                post_metagraph.block,
+            )
         post = chain.read_validator_weight_snapshot(
-            subtensor, projection.netuid, projection.validator_hotkey
+            subtensor,
+            projection.netuid,
+            projection.validator_hotkey,
+            metagraph_view=post_metagraph,
         )
-        post_block = _block(subtensor)
+        post_block = post_metagraph.block
         if post.last_update_block > post_block or post_block < observed_block:
             raise chain.ChainWeightStateError("post-submit chronology is inconsistent")
     except chain.ChainWeightStateError:

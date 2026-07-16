@@ -46,18 +46,27 @@ class Chain:
         self.apply = apply
         self.submit_calls = 0
         self.weight_reads = 0
+        self.metagraph_reads: list[int | None] = []
+        self.weight_read_blocks: list[int | None] = []
+        self.submit_options: list[tuple[bool, bool]] = []
 
-    def metagraph(self, netuid=None):
+    def metagraph(self, netuid=None, block=None):
+        self.metagraph_reads.append(block)
         return types.SimpleNamespace(
             uids=[0, 1, 2], hotkeys=self.hotkeys,
             last_update=self.last_update, validator_permit=[True, True, True],
+            block=self.block if block is None else block,
         )
 
-    def weights(self, netuid=None):
+    def weights(self, netuid=None, block=None):
         self.weight_reads += 1
+        self.weight_read_blocks.append(block)
         return [(0, list(self.row))] if self.row else []
 
     def get_current_block(self):
+        return self.block
+
+    def get_finalized_block_number(self):
         return self.block
 
     def get_block_hash(self, block):
@@ -65,6 +74,9 @@ class Chain:
 
     def set_weights(self, **kwargs):
         self.submit_calls += 1
+        self.submit_options.append(
+            (kwargs["wait_for_inclusion"], kwargs["wait_for_finalization"])
+        )
         if self.apply:
             self.row = [
                 (uid, round(weight * 65_535))
@@ -80,6 +92,38 @@ class Chain:
             for hotkey, weight in weights.items()
         ]
         self.last_update[0] = update
+
+
+class ReassigningChain(Chain):
+    """Historical UID 1 is alice; finalized block 101 reassigns it."""
+
+    def __init__(self, *, finalized_heads, apply=False):
+        super().__init__(apply=apply, block=100)
+        self._finalized_heads = iter(finalized_heads)
+        self._last_finalized_head = 100
+
+    def get_finalized_block_number(self):
+        try:
+            self._last_finalized_head = next(self._finalized_heads)
+        except StopIteration:
+            pass
+        return self._last_finalized_head
+
+    def metagraph(self, netuid=None, block=None):
+        self.metagraph_reads.append(block)
+        requested = self._last_finalized_head if block is None else block
+        hotkeys = (
+            ["validator", "alice", "bob"]
+            if requested <= 100
+            else ["validator", "mallory", "alice"]
+        )
+        return types.SimpleNamespace(
+            uids=[0, 1, 2],
+            hotkeys=hotkeys,
+            last_update=self.last_update,
+            validator_permit=[True, True, True],
+            block=requested,
+        )
 
 
 def _projection(
@@ -247,6 +291,84 @@ def test_stale_projection_is_rejected_before_journal_or_signing():
             chain, _wallet(), _projection(block=100), journal, refresh_blocks=20
         )
     assert journal.history == [] and chain.submit_calls == 0
+
+
+def test_finalized_head_advance_before_signing_aborts_without_intent():
+    chain = ReassigningChain(finalized_heads=[100, 100, 101])
+    journal = Journal()
+
+    with pytest.raises(WeightPublicationError, match="became stale before signing"):
+        reconcile_weight_publication(
+            chain, _wallet(), _projection(block=100), journal, refresh_blocks=20
+        )
+
+    assert journal.history == []
+    assert chain.submit_calls == 0
+
+
+def test_pending_readback_holds_if_recipient_uid_was_reassigned():
+    projection = _projection(block=100)
+    pending = WeightPublicationRecord(
+        projection.digest,
+        "pending",
+        submit_block=100,
+        retry_after_block=120,
+        reason="sdk_result_unconfirmed",
+    )
+    journal = Journal(pending, retained=(projection,))
+    chain = ReassigningChain(finalized_heads=[101])
+
+    result = reconcile_weight_publication(
+        chain, _wallet(), projection, journal, refresh_blocks=20
+    )
+
+    assert result.status == "held"
+    assert result.record is not None
+    assert result.record.reason == "metagraph_uid_mapping_changed"
+    assert chain.submit_calls == 0
+
+
+def test_post_submit_uid_reassignment_cannot_be_confirmed():
+    chain = ReassigningChain(
+        finalized_heads=[100, 100, 100, 100, 101], apply=True
+    )
+    journal = Journal()
+
+    result = reconcile_weight_publication(
+        chain, _wallet(), _projection(block=100), journal, refresh_blocks=20
+    )
+
+    assert result.status == "held"
+    assert result.record is not None
+    assert result.record.reason == "post_submit_uid_mapping_changed"
+    assert result.submitted is True
+    assert [row.status for row in journal.history] == ["intent", "pending", "held"]
+    assert chain.submit_options == [(True, True)]
+
+
+def test_best_head_only_sparse_row_never_confirms():
+    class BestHeadOnlyChain(Chain):
+        def set_weights(self, **kwargs):
+            self.submit_calls += 1
+            self.submit_options.append(
+                (kwargs["wait_for_inclusion"], kwargs["wait_for_finalization"])
+            )
+            # Simulate a misleading best-head row which the exact finalized
+            # weights(block=100) reader below intentionally never exposes.
+            self.best_head_row = [(1, 65_535)]
+            return True
+
+    chain = BestHeadOnlyChain()
+    journal = Journal()
+    result = reconcile_weight_publication(
+        chain, _wallet(), _projection(block=100), journal, refresh_blocks=20
+    )
+
+    assert result.status == "pending"
+    assert result.chain_matches is False
+    assert result.submitted is True
+    assert set(chain.weight_read_blocks) == {100}
+    assert chain.submit_options == [(True, True)]
 
 
 def test_held_publication_requires_explicit_append_only_release():
