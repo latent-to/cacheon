@@ -77,6 +77,7 @@ _RESERVED_ENGINE_FLAGS = frozenset(
 _RUNTIME_TOP_LEVEL = frozenset(
     {
         "__init__.py",
+        "_strict.py",
         "bootstrap.py",
         "bundle_hash.py",
         "capabilities.py",
