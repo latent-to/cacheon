@@ -581,6 +581,120 @@ def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_pat
         ] == AUTHORITY
 
 
+def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
+    with _store(
+        tmp_path, max_cohort=2, max_qualification_retries=2
+    ) as store:
+        offender, peer = store.reserve_finalized(
+            (_arrival(0), _arrival(1, hotkey="peer")),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )
+        for row, marker in zip((offender, peer), ("a", "b"), strict=True):
+            store.mark_fetching(row.reservation_id)
+            store.mark_published(
+                row.reservation_id,
+                delta_fingerprint=_fingerprint(
+                    f"target.{marker}", f"slot.{marker}", marker
+                ),
+                publication_digest=marker * 64,
+                publication_root=f"/published/{marker}",
+            )
+            _promote(store, row.reservation_id)
+            store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+
+        first_failure = "6" * 64
+        first_outcomes = tuple(
+            QualificationIntakeOutcome(
+                row.reservation_id,
+                "3" * 64,
+                "7" * 64,
+                QualificationDecision.NO_DECISION,
+                "candidate_worker",
+                True,
+                failure_digest=first_failure,
+            )
+            for row in (offender, peer)
+        )
+        first_retry = QualificationRetryPlan(
+            "7" * 64,
+            "bisect",
+            ((offender.reservation_id,), (peer.reservation_id,)),
+            first_failure,
+        )
+        store.apply_qualification_batch(
+            QualificationIntakeBatch(
+                "7" * 64, first_outcomes, retry_plan=first_retry
+            )
+        )
+
+        # Finalized order selects the offender's isolated retry without pulling
+        # the unrelated retry group back into the same failing cohort.
+        assert tuple(row.reservation_id for row in store.published()) == (
+            offender.reservation_id,
+        )
+        _promote(store, offender.reservation_id)
+        store.mark_qualifying(offender.reservation_id, "8" * 64, AUTHORITY)
+        singleton_failure = "9" * 64
+        store.apply_qualification_batch(
+            QualificationIntakeBatch(
+                "8" * 64,
+                (
+                    QualificationIntakeOutcome(
+                        offender.reservation_id,
+                        "3" * 64,
+                        "8" * 64,
+                        QualificationDecision.NO_DECISION,
+                        "candidate_worker",
+                        True,
+                        failure_digest=singleton_failure,
+                    ),
+                ),
+                retry_plan=QualificationRetryPlan(
+                    "8" * 64,
+                    "requeue",
+                    ((offender.reservation_id,),),
+                    singleton_failure,
+                ),
+            )
+        )
+
+        held = store.get(offender.reservation_id)
+        assert held.status == "held"
+        assert held.decision == "NO_DECISION"
+        assert len(store.qualification_dispositions(offender.reservation_id)) == 2
+
+        # Once the bounded offender is held, the peer's isolated group remains
+        # runnable and can retain an independently evidenced terminal decision.
+        assert tuple(row.reservation_id for row in store.published()) == (
+            peer.reservation_id,
+        )
+        _promote(store, peer.reservation_id)
+        store.mark_qualifying(peer.reservation_id, "a" * 64, AUTHORITY)
+        store.apply_qualification_batch(
+            QualificationIntakeBatch(
+                "a" * 64,
+                (
+                    QualificationIntakeOutcome(
+                        peer.reservation_id,
+                        "3" * 64,
+                        "a" * 64,
+                        QualificationDecision.FAIL,
+                        "peer_completed",
+                        False,
+                        attempt_artifact_sha256=ATTEMPT.sha256,
+                        report_digest="4" * 64,
+                    ),
+                ),
+                ATTEMPT,
+            )
+        )
+        completed = store.get(peer.reservation_id)
+        assert completed.status == "failed"
+        assert completed.decision == "FAIL"
+        assert completed.reason == "peer_completed"
+
+
 def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_path):
     with _store(tmp_path) as store:
         first, later = store.reserve_finalized(

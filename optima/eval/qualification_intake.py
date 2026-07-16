@@ -47,7 +47,11 @@ from optima.eval.qualification_runner import (
     run_causal_qualification,
 )
 from optima.eval.oci_backend import OCIBackendError
-from optima.eval.oci_outer_session import OuterSessionProcessError
+from optima.eval.oci_outer_session import (
+    OuterSessionProcessError,
+    OuterSessionWorkerError,
+)
+from optima.eval.marginal_runtime import CandidateArmWorkerError
 from optima.eval.scoring import RawSpeedEvidenceError
 from optima.stack_identity import canonical_digest, canonical_json_bytes
 
@@ -776,6 +780,26 @@ def run_qualification_intake(
         return _no_decision_batch(manifest, exc, reason="raw_speed_evidence")
     except OuterSessionProcessError as exc:
         return _no_decision_batch(manifest, exc, reason="outer_session_process")
+    except CandidateArmWorkerError as exc:
+        # The marginal lifecycle creates this type only while an exact C arm is
+        # active.  A failed multi-candidate run has no complete causal evidence,
+        # so retain NO_DECISION and use manifest-bound bisection; the offending
+        # singleton is eventually held while unrelated retry groups continue.
+        if (
+            exc.candidate_index >= len(manifest.reservations)
+            or manifest.reservations[
+                exc.candidate_index
+            ].selected_delta_digest
+            != exc.selected_delta_digest
+        ):
+            raise QualificationIntakeError(
+                "candidate worker identity differs from intake authority"
+            ) from exc
+        return _no_decision_batch(manifest, exc, reason="candidate_worker")
+    except OuterSessionWorkerError as exc:
+        # Raw worker errors can come from B/B-prime or pristine T.  They are
+        # shared-authority failures, never evidence against a candidate arm.
+        return _no_decision_batch(manifest, exc, reason="outer_session_worker")
     except OCIBackendError as exc:
         return _no_decision_batch(manifest, exc, reason="oci_backend")
     except QualificationRunnerError as exc:

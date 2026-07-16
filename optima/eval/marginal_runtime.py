@@ -34,7 +34,10 @@ from optima.eval.oci_backend import (
     expected_runtime_preflight,
     runtime_identity_from_preflight,
 )
-from optima.eval.oci_outer_session import SessionExecutionPlan
+from optima.eval.oci_outer_session import (
+    OuterSessionWorkerError,
+    SessionExecutionPlan,
+)
 from optima.eval.runtime_preflight import RuntimePreflightReceipt
 from optima.discovery import DiscoveryArmPlan, reopen_discovery_engine_binding
 from optima.discovery_overlay import DiscoveryActivationReceipt
@@ -76,6 +79,36 @@ class EngineExecutor(Protocol):
 
 def _digest(value: object, *, field: str) -> str:
     return require_digest(value, field=field, error=MarginalRuntimeError)
+
+
+class CandidateArmWorkerError(RuntimeError):
+    """One valid worker error emitted while an exact C arm was active."""
+
+    def __init__(
+        self,
+        *,
+        candidate_index: int,
+        selected_delta_digest: str,
+        arm_digest: str,
+        launch_digest: str,
+        worker_error: OuterSessionWorkerError,
+    ) -> None:
+        if type(candidate_index) is not int or candidate_index < 0:
+            raise MarginalRuntimeError("candidate worker index is malformed")
+        if type(worker_error) is not OuterSessionWorkerError:
+            raise MarginalRuntimeError("candidate worker failure is not exactly typed")
+        self.candidate_index = candidate_index
+        self.selected_delta_digest = _digest(
+            selected_delta_digest, field="candidate worker selected delta"
+        )
+        self.arm_digest = _digest(arm_digest, field="candidate worker arm")
+        self.launch_digest = _digest(launch_digest, field="candidate worker launch")
+        self.worker_error = worker_error
+        super().__init__(
+            "candidate arm worker failed "
+            f"at index {candidate_index} for delta {self.selected_delta_digest}, "
+            f"arm {self.arm_digest}, launch {self.launch_digest}: {worker_error}"
+        )
 
 
 def _native_environment(binding: TrustedLaunchBinding) -> dict[str, object]:
@@ -828,12 +861,21 @@ def run_marginal_lifecycle(
         prepared.baseline_session_plan,
     )
     candidates: list[CandidateLifecycleEvidence] = []
-    for candidate in prepared.candidates:
-        execution = execute(
-            candidate.launch,
-            candidate.binding.launch_binding,
-            candidate.session_plan,
-        )
+    for candidate_index, candidate in enumerate(prepared.candidates):
+        try:
+            execution = execute(
+                candidate.launch,
+                candidate.binding.launch_binding,
+                candidate.session_plan,
+            )
+        except OuterSessionWorkerError as exc:
+            raise CandidateArmWorkerError(
+                candidate_index=candidate_index,
+                selected_delta_digest=candidate.arm.selected_delta_digest,
+                arm_digest=candidate.arm.digest,
+                launch_digest=candidate.launch.digest,
+                worker_error=exc,
+            ) from exc
         candidates.append(
             CandidateLifecycleEvidence(
                 candidate,
@@ -854,6 +896,7 @@ def run_marginal_lifecycle(
 
 
 __all__ = [
+    "CandidateArmWorkerError",
     "CandidateLifecycleEvidence",
     "EngineExecutor",
     "MarginalLifecycleEvidence",

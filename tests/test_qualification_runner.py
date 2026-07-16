@@ -13,6 +13,7 @@ import optima.eval.qualification_runner as runner
 from optima.eval.device_state import DeviceStateReceipt, DeviceStateSample
 from optima.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
 from optima.eval.oci_backend import OCIBackendError, OCIEngineExecutor
+from optima.eval.oci_outer_session import OuterSessionWorkerError
 from optima.eval.oci_process import OCIQuiescenceReceipt
 from optima.eval.qualification import (
     DiscoveryQualificationProfile,
@@ -720,6 +721,24 @@ def test_causal_order_uses_one_multi_candidate_t_lifetime(monkeypatch) -> None:
         QualificationDecision.PASS,
         QualificationDecision.PASS,
     ]
+
+
+def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> None:
+    harness = _Harness(
+        monkeypatch,
+        graph=(QualificationDecision.PASS, QualificationDecision.PASS),
+        speed=(QualificationDecision.PASS, QualificationDecision.PASS),
+        quality=(QualificationDecision.PASS, QualificationDecision.PASS),
+    )
+
+    def fail_reference(*_args, **_kwargs):
+        raise OuterSessionWorkerError("pristine teacher failed")
+
+    monkeypatch.setattr(OCIEngineExecutor, "execute_reference", fail_reference)
+    with pytest.raises(OuterSessionWorkerError, match="pristine teacher"):
+        harness.run()
+    assert "lifecycle" in harness.calls
+    assert "reference" not in harness.calls
 
 
 def test_discovery_authority_attempt_roundtrip_and_cross_lane_rejection(
