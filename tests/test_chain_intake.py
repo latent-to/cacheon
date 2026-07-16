@@ -24,7 +24,7 @@ from optima.eval.qualification_intake import (
     QualificationRetryPlan,
 )
 from optima.economics import (
-    DiscoveryBountyClaim,
+    DiscoveryBountyClaim, EconomicsError,
     EmissionsPolicyManifest,
     GlobalRewardProjectionContext,
     MetagraphMember,
@@ -479,6 +479,27 @@ def test_finalized_cursor_rejects_hash_change_or_regression(tmp_path):
             )
 
 
+def test_cursor_rejection_rolls_back_automatic_expiry(tmp_path, monkeypatch):
+    with _store(tmp_path, expiry_blocks=20) as store:
+        row = store.reserve_finalized(
+            (_arrival(0),), finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )[0]
+        # Force the cursor check after the in-transaction expiry update to reject
+        # this proposed head.  No partial liveness transition may survive.
+        monkeypatch.setattr(
+            store,
+            "_cursor",
+            lambda: (31, "0x" + f"{31:064x}"),
+        )
+        with pytest.raises(IntakeError, match="cursor"):
+            store.reserve_finalized(
+                (), finalized_block=30,
+                finalized_block_hash="0x" + f"{30:064x}",
+            )
+        assert store.get(row.reservation_id).status == "reserved"
+
+
 def test_restart_holds_interrupted_work_instead_of_replaying(tmp_path):
     with _store(tmp_path) as store:
         row = store.reserve_finalized(
@@ -490,6 +511,36 @@ def test_restart_holds_interrupted_work_instead_of_replaying(tmp_path):
         held = reopened.get(row.reservation_id)
         assert held.status == "held" and held.decision == "NO_DECISION"
         assert reopened.pending() == ()
+
+
+def test_restart_applies_finalized_sla_before_admitting_a_new_arrival(tmp_path):
+    with _store(tmp_path, max_pending=1, max_cohort=1, expiry_blocks=20) as store:
+        stale = store.reserve_finalized(
+            (_arrival(0),), finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )[0]
+        store.mark_fetching(stale.reservation_id)
+
+    with _store(
+        tmp_path, max_pending=1, max_cohort=1, expiry_blocks=20
+    ) as reopened:
+        assert reopened.get(stale.reservation_id).status == "held"
+        delayed, admitted = reopened.reserve_finalized(
+            (
+                _arrival(2, hotkey="late-miner", block=10),
+                _arrival(1, block=30),
+            ), finalized_block=30,
+            finalized_block_hash="0x" + f"{30:064x}",
+        )
+        expired = reopened.get(stale.reservation_id)
+        assert (expired.status, expired.decision, expired.reason) == (
+            "expired", "NO_DECISION", "finalized_block_sla_expired",
+        )
+        assert (delayed.status, delayed.reason) == (
+            "expired", "finalized_block_sla_expired",
+        )
+        assert admitted.status == "reserved"
+        assert reopened.pending() == (admitted,)
 
 
 def test_admission_bounds_and_epoch_cutoff_are_durable(tmp_path):
@@ -593,6 +644,45 @@ def test_transport_retry_exhaustion_becomes_an_explicit_hold(tmp_path):
         assert released.status == "transport_retry"
         assert released.transport_attempts == 0
         assert store.pending() == (released,)
+
+
+def test_finalized_sla_removes_old_blocker_but_preserves_settled_candidate(tmp_path):
+    with _store(tmp_path, max_transport_retries=1, expiry_blocks=20) as store:
+        blocker = store.reserve_finalized(
+            (_arrival(99, block=9),), finalized_block=9,
+            finalized_block_hash="0x" + f"{9:064x}",
+        )[0]
+        store.mark_fetching(blocker.reservation_id)
+        blocker = store.mark_transport_retry(
+            blocker.reservation_id, "host unavailable"
+        )
+        assert blocker.status == "held" and blocker.target_members == ()
+
+        candidate = _qualified_settlement_candidate(store)
+        assert store.lease_settlement_cohort(current_block=28) is None
+        lease = store.lease_settlement_cohort(current_block=29)
+        assert lease is not None and lease.candidates == (candidate,)
+        expired = store.get(blocker.reservation_id)
+        assert (expired.status, expired.reason) == (
+            "expired", "finalized_block_sla_expired",
+        )
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        evidence = tuple(
+            store.reopen_settlement_evidence(row) for row in lease.candidates
+        )
+        store.commit_settlement(lease, plan, evidence, current_block=30)
+        assert store.get(candidate.reservation_digest).status == "qualified"
+        assert store.expire_stale(current_block=100) == ()
+        assert store.get(candidate.reservation_digest).status == "qualified"
+        assert store.reopen_active_crown(
+            candidate.arena_digest, candidate.target_id
+        ).candidate == candidate
 
 
 def test_qualification_no_decision_is_retained_before_bounded_requeue(tmp_path):
@@ -1208,6 +1298,97 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
                 catalogs={candidate.arena_digest: catalog},
                 netuid=SCOPE.netuid,
             )
+
+
+def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
+    catalog = default_target_catalog()
+    policy = EmissionsPolicyManifest(100, 20, 100_000)
+    context = GlobalRewardProjectionContext(
+        SCOPE.digest,
+        "validator",
+        12,
+        "0x" + f"{12:064x}",
+        (MetagraphMember(0, "validator"), MetagraphMember(1, "miner")),
+    )
+    staging = EvaluationStackManifest(
+        runtime_digest=_h("staging-runtime"),
+        base_engine_digest=_h("staging-base"),
+        arena_digest=_h("staging-arena"),
+        catalog_snapshot=catalog.snapshot(),
+        catalog_digest=catalog.digest,
+        entries={},
+    )
+
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        evidence = tuple(
+            store.reopen_settlement_evidence(row) for row in lease.candidates
+        )
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+        store.initialize_evaluation_stack(staging, tree_digest=_h("staging-tree"))
+
+        projection = store.build_weight_projection(
+            policy=policy,
+            context=context,
+            catalogs={candidate.arena_digest: catalog, staging.arena_digest: catalog},
+            netuid=SCOPE.netuid,
+        )
+        assert projection.weights_ppm == (("miner", 1_000_000),)
+        assert projection.crown_count == 1
+        assert len(projection.arena_state_digests) == 1
+        assert store.evaluation_stack(staging.arena_digest).generation == 0
+
+    with _store(tmp_path) as reopened:
+        # A restart must not reactivate a persisted generation-zero arena.  Its
+        # catalog is optional because it has no economic authority yet.
+        projection = reopened.build_weight_projection(
+            policy=policy,
+            context=context,
+            catalogs={candidate.arena_digest: catalog},
+            netuid=SCOPE.netuid,
+        )
+        assert projection.weights_ppm == (("miner", 1_000_000),)
+        assert len(projection.arena_state_digests) == 1
+
+
+def test_all_uncrowned_bootstrap_remains_an_explicit_fail_closed_policy(tmp_path):
+    catalog = default_target_catalog()
+    staging = EvaluationStackManifest(
+        runtime_digest=_h("bootstrap-runtime"),
+        base_engine_digest=_h("bootstrap-base"),
+        arena_digest=_h("bootstrap-arena"),
+        catalog_snapshot=catalog.snapshot(),
+        catalog_digest=catalog.digest,
+        entries={},
+    )
+    context = GlobalRewardProjectionContext(
+        SCOPE.digest,
+        "validator",
+        12,
+        "0x" + f"{12:064x}",
+        (MetagraphMember(0, "validator"),),
+    )
+    with _store(tmp_path) as store:
+        store.initialize_evaluation_stack(staging, tree_digest=_h("bootstrap-tree"))
+        with pytest.raises(EconomicsError, match="typed arena authorities"):
+            store.build_weight_projection(
+                policy=EmissionsPolicyManifest(100, 20, 100_000),
+                context=context,
+                catalogs={staging.arena_digest: catalog},
+                netuid=SCOPE.netuid,
+            )
+        assert store._db.execute(
+            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
+        ).fetchone() is None
 
 
 def test_expired_settlement_lease_cannot_commit(tmp_path):

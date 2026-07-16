@@ -35,6 +35,11 @@ _ACTIVE = (
 )
 _TERMINAL = ("failed", "expired", "qualified")
 _STATUSES = frozenset((*_ACTIVE, *_TERMINAL, "held", "no_decision"))
+_EXPIRABLE = (
+    "reserved", "transport_retry", "published", "promoted",
+    "reproduction_pending", "held", "no_decision",
+)
+_AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
 
 
 class IntakeError(RuntimeError):
@@ -712,6 +717,10 @@ class FinalizedIntakeStore:
 
         inserted: list[str] = []
         with self._transaction():
+            # Admission capacity is finalized-chain state, not an operator-maintained
+            # cache.  Apply the already-bound arrival-block SLA in the same write
+            # transaction before counting unresolved rows.
+            self._expire_stale_rows(finalized_block)
             cursor = self._cursor()
             if cursor is not None and (
                 finalized_block < cursor[0]
@@ -744,6 +753,8 @@ class FinalizedIntakeStore:
                 status, reason = "reserved", ""
                 if not arrival.valid:
                     status, reason = "failed", arrival.invalid_reason
+                elif finalized_block - arrival.block >= self.policy.expiry_blocks:
+                    status, reason = "expired", _AUTOMATIC_EXPIRY_REASON
                 elif hotkey_count >= self.policy.max_per_hotkey_epoch:
                     status, reason = "failed", "hotkey_epoch_admission_limit"
                 elif pending >= self.policy.max_pending:
@@ -1863,6 +1874,10 @@ class FinalizedIntakeStore:
         ):
             raise IntakeError("settlement lease bounds are malformed")
         with self._transaction():
+            # A stale unresolved predecessor must not retain economic priority
+            # after the finalized-block SLA.  Do this atomically with leasing so
+            # no caller can forget the liveness transition.
+            self._expire_stale_rows(current_block)
             self._db.execute(
                 "UPDATE settlement_candidates SET status='held',lease_id='',"
                 "lease_expires_block=0,reason='intake_no_longer_qualified' "
@@ -1984,6 +1999,9 @@ class FinalizedIntakeStore:
         by_digest = {row.digest: row for row in lease.candidates}
         evidence_by_candidate = {row.candidate_digest: row for row in receipts}
         with self._transaction():
+            # Re-evaluate the same finalized-block SLA at commit time.  Opening
+            # retained evidence may cross the boundary after the lease was made.
+            self._expire_stale_rows(current_block)
             current = self.evaluation_stack(lease.stack.arena_digest)
             if current != lease.stack or self._event_head() != (
                 lease.initial_event_sequence, lease.previous_event_digest
@@ -2353,10 +2371,17 @@ class FinalizedIntakeStore:
         for claim in standing:
             by_arena.setdefault(claim.arena_digest, []).append(claim)
         states = self.evaluation_stacks()
-        if set(by_arena) - {row.arena_digest for row in states}:
+        state_ids = {row.arena_digest for row in states}
+        active_states = tuple(row for row in states if row.generation > 0)
+        active_ids = {row.arena_digest for row in active_states}
+        if set(by_arena) - state_ids:
             raise IntakeError("active reward claim belongs to an absent evaluation arena")
-        if set(catalogs) != {row.arena_digest for row in states}:
-            raise IntakeError("reward catalogs do not cover every evaluation arena")
+        if set(by_arena) - active_ids:
+            raise IntakeError("active reward claim belongs to an uncrowned evaluation arena")
+        if set(catalogs) - state_ids:
+            raise IntakeError("reward catalog names an absent evaluation arena")
+        if active_ids - set(catalogs):
+            raise IntakeError("reward catalogs do not cover every crowned evaluation arena")
         for claim in standing:
             self._reopen_claim_evidence(claim.retained_evidence_digest, "crowned")
         for claim in discovery:
@@ -2364,7 +2389,7 @@ class FinalizedIntakeStore:
                 claim.retained_evidence_digest, "discovery_bounty"
             )
         authorities = []
-        for state in states:
+        for state in active_states:
             catalog = catalogs[state.arena_digest]
             if type(catalog) is not TargetCatalog:
                 raise IntakeError("reward catalog is not exactly typed")
@@ -2397,7 +2422,7 @@ class FinalizedIntakeStore:
             projection.digest,
             context.metagraph_digest,
             projection.arena_authority_digests,
-            max((row.generation for row in states), default=0),
+            max((row.generation for row in active_states), default=0),
             context.current_block,
             len(standing),
             evidence,
@@ -2508,16 +2533,46 @@ class FinalizedIntakeStore:
             )
         return self.get(reservation_id)
 
+    def _expire_stale_rows(self, current_block: int) -> tuple[str, ...]:
+        """Expire SLA-old unresolved rows inside the caller's transaction."""
+
+        threshold = current_block - self.policy.expiry_blocks
+        if threshold < 0:
+            return ()
+        placeholders = ",".join("?" for _ in _EXPIRABLE)
+        rows = tuple(
+            row["reservation_id"]
+            for row in self._db.execute(
+                f"SELECT reservation_id FROM reservations WHERE block<=? "
+                f"AND status IN ({placeholders}) ORDER BY block,event_index,"
+                "event_subindex,hotkey,content_hash",
+                (threshold, *_EXPIRABLE),
+            )
+        )
+        if rows:
+            self._db.execute(
+                f"UPDATE reservations SET status='expired',decision='NO_DECISION',"
+                f"reason=? WHERE block<=? AND status IN ({placeholders})",
+                (_AUTOMATIC_EXPIRY_REASON, threshold, *_EXPIRABLE),
+            )
+        return rows
+
+    def expire_stale(self, *, current_block: int) -> tuple[IntakeReservation, ...]:
+        """Apply the finalized-block arrival SLA to every unresolved row."""
+
+        if type(current_block) is not int or current_block < 0:
+            raise IntakeError("automatic expiry block is malformed")
+        with self._transaction():
+            expired = self._expire_stale_rows(current_block)
+        return tuple(self.get(reservation_id) for reservation_id in expired)
+
     def expire(self, reservation_id: str, *, current_block: int, reason: str) -> IntakeReservation:
         row = self.get(reservation_id)
         if type(current_block) is not int or current_block - row.arrival.block < self.policy.expiry_blocks:
             raise IntakeError("reservation is not old enough for explicit expiry")
         return self._transition(
             reservation_id,
-            {
-                "reserved", "transport_retry", "published", "promoted",
-                "reproduction_pending", "held", "no_decision",
-            },
+            set(_EXPIRABLE),
             "expired",
             "NO_DECISION",
             reason,

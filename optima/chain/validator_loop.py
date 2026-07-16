@@ -377,6 +377,10 @@ def run_pass(
                 finalized_block=snapshot.finalized_block,
                 finalized_block_hash=snapshot.finalized_block_hash.lower(),
             )
+        # Retained-only operation has no reservation transaction in which to
+        # apply the finalized-block SLA.  The call is idempotent for normal
+        # intake passes and keeps all downstream screening/settlement bounded.
+        store.expire_stale(current_block=result.finalized_block)
         result.reserved.extend(row.reservation_id for row in inserted)
 
         for pending in store.pending(limit=policy.max_cohort):
