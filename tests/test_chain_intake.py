@@ -15,6 +15,7 @@ from optima.chain.intake import (
 )
 from optima.chain.weights import WeightProjection, WeightPublicationRecord
 from optima.copy_fingerprint import SubmittedDeltaFingerprint
+from optima.discovery import DiscoveryArmPlan
 from optima.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from optima.eval.qualification import QualificationDecision
 from optima.eval.qualification_intake import (
@@ -23,6 +24,7 @@ from optima.eval.qualification_intake import (
     QualificationRetryPlan,
 )
 from optima.economics import (
+    DiscoveryBountyClaim,
     EmissionsPolicyManifest,
     GlobalRewardProjectionContext,
     MetagraphMember,
@@ -247,6 +249,153 @@ def _qualified_settlement_candidate(store: FinalizedIntakeStore) -> SettlementCa
         if index == 0:
             assert store.get(row.reservation_id).status == "reproduction_pending"
             assert store.lease_settlement_cohort(current_block=11) is None
+    return SettlementCandidate.from_reproductions(*qualifications)
+
+
+def _discovery_fingerprint(
+    proposal_digest: str, *, selected_delta_digest: str | None = None
+) -> SubmittedDeltaFingerprint:
+    return SubmittedDeltaFingerprint(
+        "discovery",
+        "discovery",
+        "",
+        ("discovery",),
+        proposal_digest,
+        selected_delta_digest or proposal_digest,
+        _h(f"normalized:{proposal_digest}"),
+        (),
+        (),
+    )
+
+
+def _qualified_discovery_candidate(
+    store: FinalizedIntakeStore,
+    *,
+    index: int,
+    proposal_digest: str,
+    hotkey: str = "miner",
+    bypass_publication_dedup: bool = False,
+) -> SettlementCandidate:
+    catalog = default_target_catalog()
+    incumbent = EvaluationStackManifest(
+        runtime_digest=_h("runtime"),
+        base_engine_digest=_h("base"),
+        arena_digest=_h("arena"),
+        catalog_snapshot=catalog.snapshot(),
+        catalog_digest=catalog.digest,
+        entries={},
+    )
+    arm = DiscoveryArmPlan.create(
+        incumbent=incumbent,
+        incumbent_tree_digest=_h("incumbent-tree"),
+        candidate_tree_digest=_h(f"discovery-tree:{index}"),
+        proposal_digest=proposal_digest,
+        policy_digest=_h("discovery-policy"),
+        build_profile_digest=_h("build-profile"),
+        overlay_identity_digest=_h(f"overlay:{index}"),
+    )
+    store.initialize_evaluation_stack(
+        incumbent, tree_digest=arm.baseline_before.tree_digest
+    )
+    evidence_root = store.path.parent / "evidence"
+    attempts = tuple(
+        publish_evidence(
+            evidence_root,
+            f"retained discovery {index} {lane}".encode(),
+            domain="qualification.cohort-attempt",
+            media_type="application/json",
+            schema="optima.qualification.cohort-attempt.v1",
+        )
+        for lane in ("primary", "reproduction")
+    )
+    row = store.reserve_finalized(
+        (_arrival(index, hotkey=hotkey),),
+        finalized_block=10,
+        finalized_block_hash="0x" + f"{10:064x}",
+    )[0]
+    store.mark_fetching(row.reservation_id)
+    published = store.mark_published(
+        row.reservation_id,
+        delta_fingerprint=_discovery_fingerprint(
+            proposal_digest, selected_delta_digest=arm.selected_delta_digest
+        ),
+        publication_digest=_h(f"publication:{index}"),
+        publication_root=f"/published/discovery-{index}",
+    )
+    if bypass_publication_dedup:
+        assert published.status == "failed"
+        awarded = store._db.execute(
+            "SELECT 1 FROM discovery_bounty_claims WHERE proposal_digest=?",
+            (proposal_digest,),
+        ).fetchone()
+        assert published.reason == (
+            "already_awarded" if awarded is not None else "duplicate_proposal"
+        )
+        store._db.execute(
+            "UPDATE reservations SET status='published',decision='',reason='' "
+            "WHERE reservation_id=?",
+            (row.reservation_id,),
+        )
+    else:
+        assert published.status == "published"
+
+    def qualification(lane: str, attempt, speedup: str) -> SettlementQualification:
+        return SettlementQualification(
+            lane="discovery",
+            arena_digest=incumbent.arena_digest,
+            reservation_digest=row.reservation_id,
+            finalized_block=row.arrival.block,
+            event_index=row.arrival.event_index,
+            event_subindex=row.arrival.event_subindex,
+            hotkey=row.arrival.hotkey,
+            target_id="discovery",
+            members=("discovery",),
+            selected_delta_digest=arm.selected_delta_digest,
+            qualification_authority_digest=_h(f"authority:{index}:{lane}"),
+            qualification_plan_digest=_h(f"plan:{index}:{lane}"),
+            qualification_attempt_digest=attempt.sha256,
+            qualification_report_digest=_h(f"report:{index}:{lane}"),
+            selection_commitment_digest=_h(f"commitment:{index}:{lane}"),
+            selection_secret_commitment_digest=_h(f"secret:{index}:{lane}"),
+            selection_evidence_digest=_h(f"selection:{index}:{lane}"),
+            arm_digest=arm.digest,
+            incumbent_stack_digest=arm.baseline_before.stack_digest,
+            incumbent_tree_digest=arm.baseline_before.tree_digest,
+            candidate_stack_digest=arm.challenger.stack_digest,
+            candidate_tree_digest=arm.challenger.tree_digest,
+            speedup=speedup,
+            incumbent_manifest=incumbent,
+            proposal_digest=proposal_digest,
+        )
+
+    qualifications = (
+        qualification("primary", attempts[0], "1.03"),
+        qualification("reproduction", attempts[1], "1.02"),
+    )
+    for attempt, settled in zip(attempts, qualifications, strict=True):
+        _promote(store, row.reservation_id)
+        store.mark_qualifying(
+            row.reservation_id,
+            settled.qualification_authority_digest,
+            AUTHORITY,
+        )
+        outcome = QualificationIntakeOutcome(
+            row.reservation_id,
+            arm.selected_delta_digest,
+            settled.qualification_authority_digest,
+            QualificationDecision.PASS,
+            "qualified",
+            False,
+            attempt_artifact_sha256=attempt.sha256,
+            report_digest=settled.qualification_report_digest,
+            settlement_qualification=settled,
+        )
+        store.apply_qualification_batch(
+            QualificationIntakeBatch(
+                settled.qualification_authority_digest, (outcome,), attempt
+            ),
+            evidence_root=evidence_root,
+        )
     return SettlementCandidate.from_reproductions(*qualifications)
 
 
@@ -794,6 +943,170 @@ def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp
         assert second.candidates == (candidate,)
         assert second.generation > first.generation
         assert second.lease_id != first.lease_id
+
+
+@pytest.mark.parametrize("hotkey", ("miner", "other-miner"))
+def test_discovery_proposal_replay_is_terminal_before_screening(tmp_path, hotkey):
+    proposal = _h("one discovery proposal")
+    with _store(tmp_path) as store:
+        first, replay, distinct = store.reserve_finalized(
+            (
+                _arrival(0),
+                _arrival(1, hotkey=hotkey),
+                _arrival(2, hotkey=hotkey),
+            ),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )
+        for row, fingerprint in (
+            (first, _discovery_fingerprint(proposal)),
+            (replay, _discovery_fingerprint(proposal)),
+            (distinct, _discovery_fingerprint(_h("distinct proposal"))),
+        ):
+            store.mark_fetching(row.reservation_id)
+            store.mark_published(
+                row.reservation_id,
+                delta_fingerprint=fingerprint,
+                publication_digest=_h(f"publication:{row.reservation_id}"),
+                publication_root=f"/published/{row.reservation_id}",
+            )
+
+        rejected = store.get(replay.reservation_id)
+        assert rejected.status == "failed"
+        assert rejected.decision == "FAIL"
+        assert rejected.reason == "duplicate_proposal"
+        assert replay.reservation_id not in {
+            row.reservation_id for row in store.screenable()
+        }
+        assert store.get(distinct.reservation_id).status == "published"
+        assert store.reconcile_copies() == ()
+        if hotkey == first.arrival.hotkey:
+            # Same-hotkey exemption remains a plagiarism-policy rule only; it
+            # no longer permits repeated validator work or repeated bounty.
+            assert store.copy_predecessors(replay.reservation_id) == ()
+
+
+def test_legacy_awarded_discovery_replay_stays_terminal_across_restart(tmp_path):
+    proposal = _h("legacy duplicate proposal")
+    with _store(tmp_path) as store:
+        first = _qualified_discovery_candidate(
+            store, index=0, proposal_digest=proposal
+        )
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None and lease.candidates == (first,)
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        evidence = tuple(
+            store.reopen_settlement_evidence(row) for row in lease.candidates
+        )
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+        assert len(store.active_reward_claims()[1]) == 1
+
+        # Simulate a pending row retained by a pre-fix database. The current
+        # publication path would stop it before screening; lease recovery must
+        # also dispose it so restart cannot reproduce the old crash loop.
+        replay = _qualified_discovery_candidate(
+            store,
+            index=1,
+            proposal_digest=proposal,
+            bypass_publication_dedup=True,
+        )
+        assert store.copy_predecessors(replay.reservation_digest) == ()
+        assert store.lease_settlement_cohort(current_block=12) is None
+        duplicate = store._db.execute(
+            "SELECT status,reason FROM settlement_candidates WHERE reservation_id=?",
+            (replay.reservation_digest,),
+        ).fetchone()
+        assert tuple(duplicate) == ("duplicate_proposal", "already_awarded")
+
+    with _store(tmp_path) as reopened:
+        assert not reopened.has_pending_settlement()
+        duplicate = reopened._db.execute(
+            "SELECT status,reason FROM settlement_candidates WHERE reservation_id=?",
+            (replay.reservation_digest,),
+        ).fetchone()
+        assert tuple(duplicate) == ("duplicate_proposal", "already_awarded")
+
+
+def test_legacy_pending_discovery_replays_are_deduplicated_before_lease(tmp_path):
+    proposal = _h("pending duplicate proposal")
+    with _store(tmp_path) as store:
+        first = _qualified_discovery_candidate(
+            store, index=0, proposal_digest=proposal
+        )
+        replay = _qualified_discovery_candidate(
+            store,
+            index=1,
+            proposal_digest=proposal,
+            bypass_publication_dedup=True,
+        )
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None and lease.candidates == (first,)
+        duplicate = store._db.execute(
+            "SELECT status,reason FROM settlement_candidates WHERE reservation_id=?",
+            (replay.reservation_digest,),
+        ).fetchone()
+        assert tuple(duplicate) == ("duplicate_proposal", "duplicate_proposal")
+
+
+def test_discovery_award_race_is_an_idempotent_no_bounty_commit(tmp_path):
+    proposal = _h("raced discovery proposal")
+    with _store(tmp_path) as store:
+        candidate = _qualified_discovery_candidate(
+            store, index=0, proposal_digest=proposal
+        )
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None and lease.candidates == (candidate,)
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        evidence = tuple(
+            store.reopen_settlement_evidence(row) for row in lease.candidates
+        )
+
+        competing = DiscoveryBountyClaim(
+            proposal,
+            _h("competing retained evidence"),
+            "other-miner",
+            1,
+            candidate.finalized_block,
+        )
+        store._db.execute(
+            "INSERT INTO discovery_bounty_claims(claim_digest,proposal_digest,"
+            "claim_json,status,event_id) VALUES(?,?,?,?,?)",
+            (
+                competing.digest,
+                competing.proposal_digest,
+                json.dumps(
+                    competing.to_dict(), separators=(",", ":"), sort_keys=True
+                ),
+                "active",
+                _h("competing event"),
+            ),
+        )
+
+        state = store.commit_settlement(lease, plan, evidence, current_block=11)
+        assert state == lease.stack
+        disposition = store._db.execute(
+            "SELECT status,reason FROM settlement_candidates WHERE reservation_id=?",
+            (candidate.reservation_digest,),
+        ).fetchone()
+        assert tuple(disposition) == ("duplicate_proposal", "already_awarded")
+        assert store._event_head() == (
+            lease.initial_event_sequence,
+            lease.previous_event_digest,
+        )
+        assert store.active_reward_claims()[1] == (competing,)
+        assert not store.has_pending_settlement()
 
 
 def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path):

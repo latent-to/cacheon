@@ -895,16 +895,38 @@ class FinalizedIntakeStore:
                 "SELECT COUNT(*) AS n FROM reservations WHERE admission_epoch=? AND target_id=?",
                 (row.admission_epoch, target_id),
             ).fetchone()["n"]
-            status, reason = "published", ""
+            status, decision, reason = "published", "", ""
             if count >= self.policy.max_per_target_epoch:
                 status, reason = "failed", "target_epoch_admission_limit"
+            if delta_fingerprint.product_kind == "discovery":
+                awarded = self._db.execute(
+                    "SELECT 1 FROM discovery_bounty_claims WHERE proposal_digest=? LIMIT 1",
+                    (delta_fingerprint.exact_payload_digest,),
+                ).fetchone()
+                predecessor = next(
+                    (
+                        prior
+                        for prior in self.all()
+                        if prior.arrival.arrival_key < row.arrival.arrival_key
+                        and prior.delta_fingerprint is not None
+                        and prior.delta_fingerprint.product_kind == "discovery"
+                        and prior.delta_fingerprint.exact_payload_digest
+                        == delta_fingerprint.exact_payload_digest
+                    ),
+                    None,
+                )
+                if awarded is not None:
+                    status, decision, reason = "failed", "FAIL", "already_awarded"
+                elif predecessor is not None:
+                    status, decision, reason = "failed", "FAIL", "duplicate_proposal"
             self._db.execute(
                 "UPDATE reservations SET status=?,target_id=?,target_members_json=?,delta_fingerprint_json=?,"
-                "publication_digest=?,publication_root=?,decision='',reason=? WHERE reservation_id=?",
+                "publication_digest=?,publication_root=?,decision=?,reason=? WHERE reservation_id=?",
                 (
                     status, target_id, json.dumps(members, separators=(",", ":")),
                     json.dumps(delta_fingerprint.to_dict(), separators=(",", ":"), sort_keys=True),
-                    publication_digest, str(publication_root), reason, reservation_id,
+                    publication_digest, str(publication_root), decision, reason,
+                    reservation_id,
                 ),
             )
         return self.get(reservation_id)
@@ -1776,11 +1798,47 @@ class FinalizedIntakeStore:
                     (row.reservation_id,),
                 ).fetchone()
                 if economic is not None and economic["status"] in {
-                    "crowned", "neutralized", "held", "discovery_bounty"
+                    "crowned", "neutralized", "held", "discovery_bounty",
+                    "duplicate_proposal",
                 }:
                     continue
             blockers.append(row.reservation_id)
         return tuple(blockers)
+
+    def _dispose_duplicate_discovery_candidates(self) -> None:
+        """Terminally dispose legacy/recovered proposal replays before leasing."""
+
+        awarded = {
+            row["proposal_digest"]
+            for row in self._db.execute(
+                "SELECT proposal_digest FROM discovery_bounty_claims"
+            )
+        }
+        seen: set[str] = set()
+        rows = tuple(
+            self._db.execute(
+                "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
+                "FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
+                "WHERE sc.status='pending' "
+                "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
+            )
+        )
+        for row in rows:
+            candidate = self._settlement_candidate(row)
+            if candidate.lane != "discovery":
+                continue
+            proposal = candidate.proposal_digest
+            if proposal in awarded or proposal in seen:
+                self._db.execute(
+                    "UPDATE settlement_candidates SET status='duplicate_proposal',"
+                    "lease_id='',lease_expires_block=0,reason=? WHERE reservation_id=? "
+                    "AND status='pending'",
+                    (
+                        "already_awarded" if proposal in awarded else "duplicate_proposal",
+                        candidate.reservation_digest,
+                    ),
+                )
+            seen.add(proposal)
 
     def has_pending_settlement(self) -> bool:
         """Return whether retained settlement work is waiting for a lease."""
@@ -1818,6 +1876,7 @@ class FinalizedIntakeStore:
                 "AND lease_expires_block<=?",
                 (current_block,),
             )
+            self._dispose_duplicate_discovery_candidates()
             pending = tuple(
                 self._db.execute(
                     "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
@@ -1958,8 +2017,37 @@ class FinalizedIntakeStore:
             } != set(by_digest):
                 raise IntakeError("settlement lease is stale or incomplete")
 
+            awarded_proposals = {
+                row["proposal_digest"]
+                for row in self._db.execute(
+                    "SELECT proposal_digest FROM discovery_bounty_claims"
+                )
+            }
+            duplicate_digests = {
+                candidate.digest
+                for candidate in lease.candidates
+                if candidate.lane == "discovery"
+                and candidate.proposal_digest in awarded_proposals
+            }
+            commit_candidates = tuple(
+                candidate
+                for candidate in lease.candidates
+                if candidate.digest not in duplicate_digests
+            )
+            commit_plan = (
+                plan
+                if not duplicate_digests
+                else plan_settlement(
+                    commit_candidates,
+                    current_manifest=lease.stack.manifest,
+                    current_tree_digest=lease.stack.tree_digest,
+                    initial_event_sequence=lease.initial_event_sequence,
+                    previous_event_digest=lease.previous_event_digest,
+                )
+            )
+
             # Retire/neutralize old families before installing the winner family.
-            for event in plan.events:
+            for event in commit_plan.events:
                 if event.event_type in {
                     SettlementEventType.RETIREMENT,
                     SettlementEventType.NEUTRALIZATION,
@@ -1970,8 +2058,10 @@ class FinalizedIntakeStore:
                         (event.digest, lease.stack.arena_digest, event.target_id),
                     )
 
-            disposition: dict[str, str] = {}
-            for event in plan.events:
+            disposition: dict[str, str] = {
+                digest: "duplicate_proposal" for digest in duplicate_digests
+            }
+            for event in commit_plan.events:
                 candidate = by_digest[event.candidate_digest]
                 event_json = json.dumps(
                     event.to_dict(), separators=(",", ":"), sort_keys=True
@@ -2061,25 +2151,27 @@ class FinalizedIntakeStore:
                     "WHERE reservation_id=?",
                     (
                         status,
-                        status,
+                        "already_awarded"
+                        if status == "duplicate_proposal"
+                        else status,
                         evidence_by_candidate[digest].digest,
                         candidate.reservation_digest,
                     ),
                 )
 
-            if plan.transition is not None:
-                manifest = plan.transition.manifest
+            if commit_plan.transition is not None:
+                manifest = commit_plan.transition.manifest
                 encoded = json.dumps(
                     manifest.to_dict(), separators=(",", ":"), sort_keys=True
                 )
-                transition_id = plan.events[-1].digest
+                transition_id = commit_plan.events[-1].digest
                 cursor = self._db.execute(
                     "UPDATE evaluation_stacks SET generation=generation+1,stack_digest=?,"
                     "tree_digest=?,stack_json=?,transition_event_id=? WHERE arena_id=? "
                     "AND generation=? AND stack_digest=? AND tree_digest=?",
                     (
                         manifest.digest,
-                        plan.transition.after.tree_digest,
+                        commit_plan.transition.after.tree_digest,
                         encoded,
                         transition_id,
                         lease.stack.arena_digest,
