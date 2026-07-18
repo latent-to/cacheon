@@ -6,9 +6,11 @@
 ## What this is
 
 **Optima** is a Bittensor-style subnet that incentivizes **inference-throughput
-optimization**. Miners submit GPU **kernels** (Triton / CuteDSL) for individual
-ops in a *fixed* model; a validator swaps each kernel into the model it controls,
-runs it, and scores it on **throughput** gated by **output fidelity**. The intended
+optimization**. The normal lane lets miners submit GPU **kernels** (Triton /
+CuteDSL) for registered targets in a *fixed* model; a separate fenced review lane
+handles cross-cutting discovery proposals without silently turning them into a
+registered title. A validator swaps each kernel into the model it controls, runs
+it, and scores it on **throughput** gated by **output fidelity**. The intended
 gate combines an in-engine audit with pristine-reference distribution and task checks;
 the current production-wiring caveat is called out below. The endgame is a continuously-improving SOTA
 inference stack sold as a managed service; the validator endgame is an 8×B200
@@ -163,17 +165,96 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   Runbook: `docs/TESTNET.md`; canary: `optima chain-compat` (SDK 10.3.2; note
   `bittensor-drand<2.0.0`). The first pass kept weights dry-run; a later permitted
   netuid-307 pass validated real commit-reveal weight publication and restart safety.
+- **Incentive composition selected; V2 remains inactive.** D-012's deterministic
+  224,000-run sweep, byte-identically replayed locally and on the RTX pod, selected
+  registered-CROWN finite debt in multiplicative 1%-log units with a rational
+  10%-capped family-time bonus (`tau=648,000` blocks), `k=1`, 90-day expiry,
+  10% reserve, digest-ordered near-equal integer family shares, and a family-clock
+  reset on every accepted CROWN. Its selected cell
+  `15623f7679f5c1099ab48ecc88b1fe6aac926f58b309d07b3a788180848477a4`
+  paid 98.7203% of principal over the simulation horizon with maximum measured
+  split/withhold/sybil distortion 3.0287%. The live pod
+  `chain-incentive-shadow` receipt tested this registered-CROWN class only.
+  D-013 then selected a separately reviewed discovery bounty capped at 50,000 ppm
+  per epoch and at one such epoch of principal per award, with 648,000-block
+  expiry and no family share, clock, time bonus, renewal, or permanent title.
+  The selected pure policy intends one reviewed win to choose promotion into a
+  registered target followed by fresh requalification/CROWN, or the finite bounty,
+  never both. Durable schema-5 does not yet implement both branches: it retains
+  qualified discovery wins as `review_pending` and can issue bounded `bounty_only`
+  debt, but deliberately rejects `registered_promotion` until typed
+  `DiscoveryWinRecord`/`DiscoveryPromotion` transport, target registration, fresh
+  requalification/CROWN linkage, and cross-lane work identity exist. “Never both”
+  is therefore policy intent, not end-to-end same-work enforcement today. A bounty's
+  648,000-block life starts at the retained qualified-win block; review delay consumes
+  that window, and review at or after expiry cannot mint. The durable terminal
+  review-expiry API records `review_expired` plus `discovery_review_expired`, but its
+  production scheduling remains part of the unfinished control plane. The selected
+  D-013 cell is `8561028c943738da2fe622e5f5c9fd43ebec16fdd59feab3561de25fbfa450d9`;
+  report digest
+  `6bdfce26e4e6090e0dcc8814a636c665f28d1ff20945a09d43a9a90dc94151fc`.
+  Its 3,240-row synthetic sweep replayed byte-identically locally and on the pod;
+  non-departed principal paid 273,000,000/273,000,000 units, departed debt
+  cancelled 9,000,000 units, and saturated CROWN-capacity dilution was 55,555 ppm.
+  D-014 then tested review delay in 288 synthetic rows and replayed byte-identically
+  on arm64/Python 3.11 and x86_64/Python 3.12. Its preregistered 0/1/7-day review
+  SLA passed all 108 rows: discovery paid 100%, expiry/unissued was zero, maximum
+  instantaneous CROWN-capacity dilution was 55,555 ppm, and CROWN paid-fraction
+  regression versus zero delay was zero. The 90/120-day cases issued no stale
+  debt; 30/60/89 days were diagnostic only. Report digest:
+  `f0939d67241dffa49aac95c035c43dd7ea14b51eb2671fe106cb09347511b7ef`.
+  This is deterministic accounting sensitivity evidence, not external review,
+  publication, activation, durable-state completion, or GPU-performance evidence.
+  Pure arithmetic, schema-5 review-pending/bounty-only durable state, and the signer-free
+  `chain-incentive-composition-shadow` surface are implemented. A live read-only
+  final hardened-source run on testnet netuid 307 at finalized block 7,586,146 (metagraph size 6)
+  projected explicitly synthetic states to 850,000 ppm registered-CROWN payout,
+  50,000 ppm reviewed-discovery payout, and 100,000 ppm reserve, totaling
+  1,000,000 ppm; it wrote `submitted=false`. Receipt semantic digest:
+  `3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`;
+  receipt-file SHA-256:
+  `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`.
+  It constructed no wallet and supplied no review, settlement, publication, or
+  activation authority. A separate multi-pass restart audit now binds exact paired
+  qualification/evidence/CROWN speed to principal, derives family clocks and balance
+  transitions all-and-only from their journals, validates every retained discovery
+  lifecycle before filtering status, and reopens terminal histories before upgrades.
+  The reproduced substitution/cardinality cases are regressions; final local tests:
+  2,135 passed/19 skipped, final pod conformance: 111 passed. A fresh final-source
+  `chain-validate --intake-only` pass at finalized block 7,586,142 saw/reserved 19,
+  rejected five malformed payloads, and did no qualification/settlement; its restart
+  at block 7,586,144 had all counters zero. Schema-5 migration starts empty and creates
+  no retroactive debt; activation rejects any retained legacy discovery row because V1
+  has no journal that proves mutable terminal status, and active composition
+  disables legacy discovery auto-award. Legacy V1 remains the sole wired publisher.
+  A landed finalized `invalidate_finite_debt_family` API can cancel one registered
+  family's open debt and reset its next-CROWN clock, but the runtime-invalidity
+  decision/digest is still external authority. Meaningful V2 emissions still require:
+  the actual production family catalog and reserve identity followed by an exact
+  rerun/manifest; an atomic or quiescent two-step V1→core→composition cutover (the
+  interval between the two activations can still race legacy work/publication);
+  retained-boundary publication confirmation and debt-debit catch-up (a missed or
+  slow boundary currently wedges gapless epochs); independently graded review and
+  runtime-invalidation authority; retained membership-departure history rather than
+  only a current snapshot; the promotion transport/linkage above; and production
+  audit evidence transport.
 - **Release path:** evaluation and serving are separate products. Approved integration
   reviews authorize contributions in an `EngineReleaseManifest`; model provisioning
   receipts seal every model file; signed, chain-independent releases carry deterministic
   source/wheel artifacts, SBOM/provenance, a pinned serving specification, and an OCI
   build context. Chain or wallet code is not included in the serving wheel.
-- **Open — the next goals:** mainnet economics and operations (owned subnet, validator
-  permits, hosted bundle storage); more slots (MLA/weight-absorbed attention, FP8/FP4
+- **Open — the next goals:** V2 activation/publication authority and mainnet operations
+  (production family catalog/reserve plus exact rerun, independently graded discovery
+  review and runtime invalidation, retained-boundary publication/debit catch-up,
+  atomic/quiescent V1→core→composition cutover, membership history, discovery
+  promotion transport/linkage, owned subnet, validator permits, hosted bundle
+  storage); more slots
+  (MLA/weight-absorbed attention, FP8/FP4
   GEMM, graph-safe paged attention); and B300-only qualification of SM103/CuTe,
   NVLink/custom-collective behavior, topology-specific calibration, and the existing
-  MiniMax-M3 campaign kernels. NOTE: emissions will NOT stay winner-take-all
-  (relative-improvement + time-decay direction) — don't design around argmax-only scoring.
+  MiniMax-M3 campaign kernels. Emissions will not stay winner-take-all; the selected
+  direction is finite log-relative CROWN debt plus bounded reviewed discovery debt,
+  not perpetual argmax credit.
 
 ## How to run
 

@@ -168,8 +168,14 @@ Loading rows and contribution identity are separate. An optional syntax-only
 semantic slots (deduplicating variants) to a validator-owned singleton or exact atomic
 target. The catalog supplies canonical member order and explicit displacement/compatible-
 overlap policy; miners cannot declare those relationships. Unknown multi-slot work is
-classified as unregistered for the future discovery lane rather than inheriting `ops[0]`
-as an accidental reward identity. Identity-only resolution marks external feature evidence
+classified as unregistered for the fenced reviewed-discovery lane rather than inheriting
+`ops[0]` as an accidental reward identity. It cannot auto-earn or reset a registered
+family clock. The selected pure policy intends either promotion into a registered target
+followed by fresh requalification/CROWN, or one finite bounty. Durable schema 5 currently
+retains review-pending wins and can issue `bounty_only`; it rejects promotion until typed
+promotion transport, target registration, requalification linkage, and one cross-lane
+work identity exist. The “never both” rule is therefore not yet end-to-end enforcement.
+Identity-only resolution marks external feature evidence
 incomplete; intake resolution requires a trusted projection of exact rebuild capabilities.
 Neither duplicates nor executes `rebuild.json`, whose reviewed-patcher policy remains separate.
 Legacy CLI/chain score records are intentionally not wired to this catalog yet; stack assembly,
@@ -276,10 +282,23 @@ The production stages are:
 5. **Independent reproduction.** The first PASS is retained as
    `reproduction_pending`. A second PASS must bind the same arena, target, delta, incumbent
    and candidate stack identities while using independent authority and selection evidence.
-6. **Settlement and weights.** `settlement.py` plans the target-level stack transition from
-   the paired candidate and uses the lower speedup. `FinalizedIntakeStore` commits it
-   transactionally. `set-weights` separately reconciles a journaled global reward projection
-   against finalized metagraph state.
+6. **Settlement and incentives.** `settlement.py` plans the target-level stack transition
+   from the paired candidate and uses the lower speedup. `FinalizedIntakeStore` commits it
+   transactionally. The current `set-weights` command separately reconciles the retained
+   legacy-V1 projection against finalized metagraph state; it remains the sole wired
+   publisher. The selected V2 registered-CROWN and reviewed-discovery classes have inactive
+   schema-4/5 durable state APIs, including review-pending retention, bounded bounty issuance,
+   terminal pending-review expiry, and registered-family runtime invalidation. Promotion is
+   deliberately fail-closed and the invalidity decision remains external authority.
+   `chain-incentive-shadow` has a live registered-CROWN-only
+   synthetic receipt; the signer-free `chain-incentive-composition-shadow` also passed
+   live finalized-membership projection over explicitly synthetic states and wrote
+   `submitted=false`. Neither receipt is review, settlement, publication, debt-debit,
+   or activation authority. Activation still needs the actual catalog/reserve rerun;
+   atomic or quiescent V1→core→composition cutover; retained-boundary publication/debit
+   catch-up; independently graded review and runtime-invalidity authority; membership-
+   departure history; reliable pending-review-expiry scheduling; promotion
+   transport/linkage; and production audit transport.
 7. **Integration and release.** An approved `IntegrationReviewRecord` binds the two crown
    attempts, exact source, provenance/license/security/compatibility/test evidence, and
    review commit. Only integrated refs enter `EngineReleaseManifest`. Model provisioning and
@@ -570,10 +589,67 @@ the exact incumbent stack plus that one delta, checks target displacement and co
 and produces an append-only event plan. SQLite commits the event and resulting evaluation
 stack atomically. Copy-demoted and non-passing submissions never enter this path.
 
-Emission projection is separate from target settlement. The policy uses retained
-relative-improvement and time-decay state plus bounded discovery rewards, then maps hotkeys
-to the finalized metagraph. Weight submission is journaled and fail-closed rather than a
+Emission projection is separate from target settlement. The live, retained policy generation
+is legacy V1: standing relative-improvement credit with reciprocal time decay plus bounded
+discovery rewards. Its `set-weights` submission is journaled and fail-closed rather than a
 side effect of evaluation.
+
+The selected V2 registered-CROWN rule instead issues finite principal in multiplicative
+1%-log units, uses a rational elapsed-family bonus capped at 10%, keeps a 10% reserve, and
+expires unpaid principal after 90 days. D-013 composes one separately reviewed discovery
+class without weakening that reserve floor:
+
+```text
+P_d     = min(50,000, live discovery debt)
+P_c     = min(900,000 - P_d, live registered-CROWN debt)
+reserve = 1,000,000 - P_d - P_c
+```
+
+Each class has its own claim-digest largest-remainder allocation. A discovery award is
+capped at one 50,000-unit pool epoch and has no family share, clock, time bonus, renewal,
+or permanent title. Its 648,000-block lifetime starts at the retained qualified-win block,
+not review; delay consumes the window, and review at or after expiry cannot mint. The
+landed finalized expiry path records `review_expired`/`discovery_review_expired` for pending
+wins.
+
+The pure D-013 disposition type expresses promotion plus fresh registered
+qualification/CROWN versus finite bounty as mutually exclusive choices. The durable store
+does not implement both branches: it retains `ReviewPendingDiscoveryWin`, issues only
+bounded `bounty_only`, and rejects `registered_promotion`. Promotion still needs typed
+`DiscoveryWinRecord`/`DiscoveryPromotion` transport, target registration, fresh
+requalification/CROWN linkage, and cross-lane same-work identity. Until then, “never both”
+is policy intent rather than an enforced work-level fact. The selected D-013 cell is
+`8561028c943738da2fe622e5f5c9fd43ebec16fdd59feab3561de25fbfa450d9` and its report
+digest is `6bdfce26e4e6090e0dcc8814a636c665f28d1ff20945a09d43a9a90dc94151fc`.
+
+D-014's 288-row review-delay sensitivity replayed byte-identically across
+arm64/Python 3.11 and x86_64/Python 3.12. Its preregistered 0/1/7-day SLA passed
+all 108 rows with 100% discovery payout, no expiry/unissued debt, at most 55,555 ppm
+instantaneous CROWN-capacity dilution, and no CROWN paid-fraction regression; the
+90/120-day cases issued no stale debt, while 30/60/89 days remained diagnostic.
+This is synthetic accounting evidence only; see [INCENTIVES.md](INCENTIVES.md) for
+the report digest and limits.
+
+This composition is not active. Production must freeze the actual family catalog/reserve
+identity and rerun the exact selection/shadow; quiesce or atomically bridge the two-step
+V1→core→composition cutover; retain and catch up a missed/slow publication boundary before
+later gapless epochs; grade review and runtime invalidation independently; retain membership
+departure history rather than only a current snapshot; schedule pending-review expiry
+reliably; complete promotion linkage; and transport production audit evidence. The landed
+family-invalidation API only consumes an
+external authority digest, while `review_digest` is controller-supplied/content-bound.
+The signer-free
+`chain-incentive-composition-shadow` command projects explicitly synthetic claims against
+exact finalized membership and always records `submitted=false`. Its live testnet-netuid-307
+run retained finalized block 7,586,146 and metagraph size 6, allocating 850,000 ppm to
+registered-CROWN claims, 50,000 ppm to reviewed-discovery claims, and 100,000 ppm to the
+reserve, exactly 1,000,000 ppm. Receipt semantic digest:
+`3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`; file SHA-256:
+`ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`. The states were
+explicitly synthetic, no wallet was constructed, and the receipt supplies no review,
+settlement, publication, debt-debit, or activation authority. See
+[INCENTIVES.md](INCENTIVES.md) and
+[EMISSIONS_POLICY.md](EMISSIONS_POLICY.md).
 
 ### 7.4 Mapping to Bittensor
 
@@ -651,7 +727,7 @@ specific coverage remain ongoing concerns rather than isolation gaps.
 |---|---|---|---|
 | 17 | Copy the champion's bundle | **Mitigated** | Finalized timelock priority + exact/structural copy disposition; copied content never enters qualification or settlement. |
 | 18 | Front-run a rival's reveal | **Mitigated** | Can't reveal what you have no prior commitment to. |
-| 19 | Sybil (many identities split reward) | **Mitigated-ish** | Only improvement-over-best earns; copies earn 0; chain registration has a cost. |
+| 19 | Sybil / discovery double-dip | **Partial; promotion open** | The active V1 path uses canonical reward families, improvement over the frontier, copy demotion, and registration cost. V2 log accounting removes the base CROWN split advantage, and schema 5 bounds/uniquifies bounty-only claims. But registered promotion is rejected rather than linked, so cross-lane work identity does not yet enforce the pure policy's “never both” intent. Independent review, promotion transport, and cross-family collusion remain open. |
 | 20 | Overfit the eval distribution (great on eval prompts, useless in production) | **Ongoing risk** | Fresh per-epoch prompts from a corpus; rotate/expand toward the real serving distribution. This never fully "closes" — it's a tuning discipline. |
 | 21 | Self-dealing validator | **Needs consensus** | Multiple validators + reproducible scoring so Bittensor consensus catches an outlier. Determinism work (Part 10) enables this. |
 
@@ -760,11 +836,17 @@ The harness package, [../optima/](../optima):
 | [eval/oci_outer_session.py](../optima/eval/oci_outer_session.py) | Trusted-controller protocol for isolated candidate engine sessions and bounded evidence frames. |
 | [eval/qualification_runner.py](../optima/eval/qualification_runner.py) | B/C/B′/pristine-T role schedule, authenticated raw evidence, quality authority, graph proof, and aggregate verdict. |
 | [bundle_hash.py](../optima/bundle_hash.py) | `content_hash` — deterministic bundle identity. |
-| [chain/intake.py](../optima/chain/intake.py) | SQLite production authority for finalized intake, screens, qualifications, reproductions, stacks, settlement and weight-publication journal state. |
+| [finite_debt.py](../optima/finite_debt.py) | Pure content-addressed finite-claim issuance, expiry/cancellation, pro-rata allocation, and reserve-conserving projection arithmetic. |
+| [incentive_shadow.py](../optima/incentive_shadow.py) | Signer-free, explicitly synthetic finite-debt projection against twice-reopened finalized membership; writes only `submitted=false` receipts. |
+| [incentive_composition.py](../optima/incentive_composition.py) | Pure reviewed-discovery issuance/lifecycle and deterministic two-class epoch composition. |
+| [incentive_composition_shadow.py](../optima/incentive_composition_shadow.py) | Signer-free synthetic composed projection against twice-reopened finalized membership; writes only `submitted=false` receipts. |
+| [chain/intake.py](../optima/chain/intake.py) | SQLite production authority for finalized intake, screens, qualifications, reproductions, stacks, settlement and legacy weight-publication journal state; exposes the inactive schema-5 finite-debt/composition stores. |
+| [chain/finite_debt_store.py](../optima/chain/finite_debt_store.py) | Additive schema-4 V2 authority: exact activation, seeded clocks, atomic CROWN claim issuance, lifecycle, finalized family invalidation, projection, and idempotent confirmed-epoch close. Runtime-invalidity truth and publication confirmation remain external. |
+| [chain/incentive_composition_store.py](../optima/chain/incentive_composition_store.py) | Additive schema-5 authority: exact D-013 activation, review-pending win retention/expiry, bounded bounty-only disposition, discovery balances, gapless composed projection, and externally confirmed epoch close. Registered promotion is intentionally rejected; inactive by default. |
 | [chain/validator_loop.py](../optima/chain/validator_loop.py) | Finalized reveal → private fetch → immutable publication → registered arena screen/qualification → transactional settlement. |
 | [model_provision.py](../optima/model_provision.py) | Exact all-file model-tree hashing and independently reopenable content-addressed receipts. |
 | [release.py](../optima/release.py) | Signed chain-independent Engine release descriptor, deterministic source/wheel, SBOM/provenance, and OCI build context. |
-| [cli.py](../optima/cli.py) | User/operator commands for verification/evaluation, chain intake, weight reconciliation, model provisioning, and release verification/context construction. |
+| [cli.py](../optima/cli.py) | User/operator commands for verification/evaluation, chain intake, legacy weight reconciliation, signer-free registered and composed incentive shadows, model provisioning, and release verification/context construction. |
 
 Examples [../examples/](../examples): one (or more) bundle per slot —
 `miner_silu_{triton,torch,broken,sparse}`, `miner_rmsnorm_{triton,broken}`,

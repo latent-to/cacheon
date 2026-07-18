@@ -11,8 +11,16 @@ import fcntl
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Mapping
+from typing import TYPE_CHECKING, Iterable, Mapping, NoReturn
 
+from optima.chain.finite_debt_store import (
+    FiniteDebtStore, FiniteDebtStoreError, migrate_schema3_to4,
+)
+from optima.chain.incentive_composition_store import (
+    IncentiveCompositionStore,
+    IncentiveCompositionStoreError,
+    migrate_schema4_to5,
+)
 from optima.copy_fingerprint import (
     SubmittedDeltaFingerprint, compare_submitted_deltas,
 )
@@ -20,7 +28,27 @@ from optima.eval.evidence_store import EvidenceArtifactRef
 from optima.stack_identity import canonical_digest, require_sha256_hex
 
 if TYPE_CHECKING:
+    from optima.chain.finite_debt_store import (
+        FiniteDebtFamilyClock, FiniteDebtPolicyActivation, FiniteDebtRewardEpoch,
+        SeededFamilyClock,
+    )
+    from optima.chain.incentive_composition_store import (
+        ComposedLifecycleChanges,
+        IncentiveCompositionActivation,
+        IncentiveCompositionRewardEpoch,
+        ReviewPendingDiscoveryWin,
+        ReviewedDiscoveryDispositionRecord,
+    )
     from optima.chain.weights import WeightProjection, WeightPublicationRecord
+    from optima.finite_debt import (
+        DebtClaimState, DebtEpochProjection, FiniteDebtPolicyManifest,
+    )
+    from optima.incentive_composition import (
+        ComposedEpochProjection,
+        DiscoveryClaimState,
+        IncentiveCompositionPolicyManifest,
+        ReviewedDiscoveryDisposition,
+    )
     from optima.settlement import (
         SettlementCandidate, SettlementEvidence, SettlementEvent, SettlementPlan,
     )
@@ -418,6 +446,23 @@ class FinalizedIntakeStore:
             self._db.execute("PRAGMA foreign_keys=ON")
             self._create_schema()
             self._bind_scope()
+            try:
+                self._finite_debt = FiniteDebtStore(
+                    self._db,
+                    chain_scope_digest=self.scope.digest,
+                    transaction=self._transaction,
+                    finalized_cursor=self._cursor,
+                )
+                self._incentive_composition = IncentiveCompositionStore(
+                    self._db,
+                    chain_scope_digest=self.scope.digest,
+                    transaction=self._transaction,
+                    finalized_cursor=self._cursor,
+                    core_store=self._finite_debt,
+                    reopen_settlement_evidence=self.reopen_settlement_evidence,
+                )
+            except (FiniteDebtStoreError, IncentiveCompositionStoreError) as exc:
+                raise IntakeError(f"reward store cannot open: {exc}") from None
         except Exception:
             if hasattr(self, "_db"):
                 self._db.close()
@@ -641,8 +686,16 @@ class FinalizedIntakeStore:
                 "(SELECT reservation_id FROM settlement_candidates)"
             )
             self._db.execute("UPDATE metadata SET value='3' WHERE key='schema'")
-        elif schema["value"] != "3":
+        elif schema["value"] not in {"3", "4", "5"}:
             raise IntakeError("intake database schema is unsupported")
+        try:
+            migrate_schema3_to4(self._db)
+        except FiniteDebtStoreError as exc:
+            raise IntakeError(f"intake schema-4 migration failed: {exc}") from None
+        try:
+            migrate_schema4_to5(self._db)
+        except IncentiveCompositionStoreError as exc:
+            raise IntakeError(f"intake schema-5 migration failed: {exc}") from None
 
     def _bind_scope(self) -> None:
         encoded = json.dumps(self.scope.to_dict(), separators=(",", ":"), sort_keys=True)
@@ -931,7 +984,10 @@ class FinalizedIntakeStore:
                 status, reason = "failed", "target_epoch_admission_limit"
             if delta_fingerprint.product_kind == "discovery":
                 awarded = self._db.execute(
-                    "SELECT 1 FROM discovery_bounty_claims WHERE proposal_digest=? LIMIT 1",
+                    "SELECT 1 FROM ("
+                    "SELECT proposal_digest FROM discovery_bounty_claims UNION "
+                    "SELECT proposal_digest FROM incentive_discovery_wins"
+                    ") WHERE proposal_digest=? LIMIT 1",
                     (delta_fingerprint.exact_payload_digest,),
                 ).fetchone()
                 predecessor = next(
@@ -1840,7 +1896,9 @@ class FinalizedIntakeStore:
                 ).fetchone()
                 if economic is not None and economic["status"] in {
                     "crowned", "neutralized", "held", "discovery_bounty",
-                    "duplicate_proposal",
+                    "duplicate_proposal", "review_pending", "reviewed_bounty",
+                    "reviewed_promotion", "review_ineligible",
+                    "review_expired",
                 }:
                     continue
             blockers.append(row.reservation_id)
@@ -1852,7 +1910,8 @@ class FinalizedIntakeStore:
         awarded = {
             row["proposal_digest"]
             for row in self._db.execute(
-                "SELECT proposal_digest FROM discovery_bounty_claims"
+                "SELECT proposal_digest FROM discovery_bounty_claims UNION "
+                "SELECT proposal_digest FROM incentive_discovery_wins"
             )
         }
         seen: set[str] = set()
@@ -1993,6 +2052,7 @@ class FinalizedIntakeStore:
         evidence,
         *,
         current_block: int,
+        current_block_hash: str | None = None,
     ) -> EvaluationStackState:
         """Atomically commit one independently planned retained-evidence disposition."""
 
@@ -2017,6 +2077,11 @@ class FinalizedIntakeStore:
             != {row.digest for row in lease.candidates}
         ):
             raise IntakeError("settlement evidence or lease deadline is invalid")
+        if current_block_hash is not None and (
+            not isinstance(current_block_hash, str)
+            or _BLOCK_HASH.fullmatch(current_block_hash) is None
+        ):
+            raise IntakeError("settlement block hash is malformed")
         expected = plan_settlement(
             lease.candidates,
             current_manifest=lease.stack.manifest,
@@ -2068,7 +2133,8 @@ class FinalizedIntakeStore:
             awarded_proposals = {
                 row["proposal_digest"]
                 for row in self._db.execute(
-                    "SELECT proposal_digest FROM discovery_bounty_claims"
+                    "SELECT proposal_digest FROM discovery_bounty_claims UNION "
+                    "SELECT proposal_digest FROM incentive_discovery_wins"
                 )
             }
             duplicate_digests = {
@@ -2131,30 +2197,63 @@ class FinalizedIntakeStore:
                 if event.event_type is SettlementEventType.HOLD:
                     disposition[candidate.digest] = "held"
                 elif event.event_type is SettlementEventType.DISCOVERY_BOUNTY:
-                    speedup_ppm = int(
-                        (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
-                            rounding=ROUND_FLOOR
+                    if self._finite_debt.composition_active_at(current_block):
+                        if current_block_hash is None:
+                            raise IntakeError(
+                                "active incentive composition requires discovery "
+                                "settlement block-hash authority"
+                            )
+                        composition = (
+                            self._incentive_composition.active_policy_activation(
+                                at_block=current_block
+                            )
                         )
-                    )
-                    claim = DiscoveryBountyClaim(
-                        candidate.proposal_digest,
-                        evidence_by_candidate[candidate.digest].digest,
-                        candidate.hotkey,
-                        max(1, speedup_ppm - WEIGHT_PPM),
-                        candidate.finalized_block,
-                    )
-                    self._db.execute(
-                        "INSERT INTO discovery_bounty_claims(claim_digest,proposal_digest,"
-                        "claim_json,status,event_id) VALUES(?,?,?,?,?)",
-                        (
-                            claim.digest,
-                            claim.proposal_digest,
-                            json.dumps(claim.to_dict(), separators=(",", ":"), sort_keys=True),
-                            "active",
-                            event.digest,
-                        ),
-                    )
-                    disposition[candidate.digest] = "discovery_bounty"
+                        assert composition is not None
+                        if candidate.finalized_block < composition.activation_block:
+                            disposition[candidate.digest] = "review_ineligible"
+                        else:
+                            try:
+                                self._incentive_composition.retain_review_pending_win_in_transaction(
+                                    candidate,
+                                    evidence_by_candidate[candidate.digest],
+                                    settlement_block=current_block,
+                                    settlement_block_hash=current_block_hash,
+                                    settlement_event_digest=event.digest,
+                                )
+                            except IncentiveCompositionStoreError as exc:
+                                raise IntakeError(
+                                    f"review-pending discovery win failed: {exc}"
+                                ) from None
+                            disposition[candidate.digest] = "review_pending"
+                    else:
+                        speedup_ppm = int(
+                            (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
+                                rounding=ROUND_FLOOR
+                            )
+                        )
+                        claim = DiscoveryBountyClaim(
+                            candidate.proposal_digest,
+                            evidence_by_candidate[candidate.digest].digest,
+                            candidate.hotkey,
+                            max(1, speedup_ppm - WEIGHT_PPM),
+                            candidate.finalized_block,
+                        )
+                        self._db.execute(
+                            "INSERT INTO discovery_bounty_claims(claim_digest,proposal_digest,"
+                            "claim_json,status,event_id) VALUES(?,?,?,?,?)",
+                            (
+                                claim.digest,
+                                claim.proposal_digest,
+                                json.dumps(
+                                    claim.to_dict(),
+                                    separators=(",", ":"),
+                                    sort_keys=True,
+                                ),
+                                "active",
+                                event.digest,
+                            ),
+                        )
+                        disposition[candidate.digest] = "discovery_bounty"
                 elif event.event_type is SettlementEventType.CROWN:
                     assert candidate.candidate_manifest is not None
                     contribution = candidate.candidate_manifest.entries[candidate.target_id]
@@ -2187,6 +2286,45 @@ class FinalizedIntakeStore:
                             event.digest,
                         ),
                     )
+                    arrival = self._db.execute(
+                        "SELECT block,block_hash,event_index,event_subindex,hotkey "
+                        "FROM reservations WHERE reservation_id=?",
+                        (candidate.reservation_digest,),
+                    ).fetchone()
+                    if (
+                        arrival is None
+                        or arrival["block"] != candidate.finalized_block
+                        or arrival["event_index"] != candidate.event_index
+                        or arrival["event_subindex"] != candidate.event_subindex
+                        or arrival["hotkey"] != candidate.hotkey
+                    ):
+                        raise IntakeError(
+                            "CROWN candidate differs from finalized arrival authority"
+                        )
+                    try:
+                        self._finite_debt.issue_crown_in_transaction(
+                            arena_digest=candidate.arena_digest,
+                            target_id=candidate.target_id,
+                            target_spec_digest=contribution.target_spec_digest,
+                            candidate_digest=candidate.digest,
+                            retained_evidence_digest=(
+                                evidence_by_candidate[candidate.digest].digest
+                            ),
+                            hotkey=candidate.hotkey,
+                            settled_speedup=candidate.speedup,
+                            accepted_crown_block=candidate.finalized_block,
+                            accepted_crown_block_hash=arrival["block_hash"],
+                            event_index=candidate.event_index,
+                            event_subindex=candidate.event_subindex,
+                            reservation_digest=candidate.reservation_digest,
+                            settlement_block=current_block,
+                            settlement_block_hash=current_block_hash,
+                            settlement_event_digest=event.digest,
+                        )
+                    except FiniteDebtStoreError as exc:
+                        raise IntakeError(
+                            f"finite-debt CROWN failed: {exc}"
+                        ) from None
                     disposition[candidate.digest] = "crowned"
 
             if set(disposition) != set(by_digest):
@@ -2231,6 +2369,298 @@ class FinalizedIntakeStore:
                 if cursor.rowcount != 1:
                     raise IntakeError("evaluation stack changed during settlement commit")
         return self.evaluation_stack(lease.stack.arena_digest)
+
+    # ---- additive finite-debt authority (inactive until explicit activation) ----
+
+    @staticmethod
+    def _raise_finite_debt_error(exc: FiniteDebtStoreError) -> NoReturn:
+        raise IntakeError(f"finite-debt authority failed: {exc}") from None
+
+    def activate_finite_debt_policy(
+        self,
+        policy: FiniteDebtPolicyManifest,
+        *,
+        activation_block: int,
+        activation_block_hash: str,
+        seeded_family_clocks: Iterable[SeededFamilyClock] = (),
+    ) -> FiniteDebtPolicyActivation:
+        """Activate exact policy bytes at one exact finalized block/hash."""
+
+        try:
+            return self._finite_debt.activate_policy(
+                policy,
+                activation_block=activation_block,
+                activation_block_hash=activation_block_hash,
+                seeded_family_clocks=seeded_family_clocks,
+            )
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def active_finite_debt_policy(
+        self,
+        *,
+        at_block: int,
+    ) -> FiniteDebtPolicyActivation | None:
+        try:
+            return self._finite_debt.active_policy_activation(at_block=at_block)
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def finite_debt_family_clocks(
+        self,
+        *,
+        policy_digest: str | None = None,
+        family_id: str | None = None,
+    ) -> tuple[FiniteDebtFamilyClock, ...]:
+        try:
+            return self._finite_debt.family_clocks(
+                policy_digest=policy_digest,
+                family_id=family_id,
+            )
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def finite_debt_claim_states(
+        self,
+        *,
+        policy_digest: str | None = None,
+    ) -> tuple[DebtClaimState, ...]:
+        try:
+            return self._finite_debt.claim_states(policy_digest=policy_digest)
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def finite_debt_reward_events(self) -> tuple[dict[str, object], ...]:
+        try:
+            return self._finite_debt.reward_events()
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def reconcile_finite_debt_lifecycle(
+        self,
+        *,
+        current_block: int,
+        current_block_hash: str,
+        eligible_hotkeys: Iterable[str],
+    ) -> tuple[DebtClaimState, ...]:
+        try:
+            return self._finite_debt.reconcile_lifecycle(
+                current_block=current_block,
+                current_block_hash=current_block_hash,
+                eligible_hotkeys=eligible_hotkeys,
+            )
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def invalidate_finite_debt_family(
+        self,
+        *,
+        policy_digest: str,
+        family_id: str,
+        invalidation_digest: str,
+        current_block: int,
+        current_block_hash: str,
+    ) -> tuple[DebtClaimState, ...]:
+        """Cancel one runtime-invalid family's debt and reset its crown clock."""
+
+        try:
+            return self._finite_debt.invalidate_family(
+                policy_digest=policy_digest,
+                family_id=family_id,
+                invalidation_digest=invalidation_digest,
+                current_block=current_block,
+                current_block_hash=current_block_hash,
+            )
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def project_finite_debt_epoch(
+        self,
+        *,
+        effective_block: int,
+        eligible_hotkeys: Iterable[str],
+    ) -> DebtEpochProjection:
+        try:
+            return self._finite_debt.project_epoch(
+                effective_block=effective_block,
+                eligible_hotkeys=eligible_hotkeys,
+            )
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def close_confirmed_debt_epoch(
+        self,
+        projection: DebtEpochProjection,
+        *,
+        expected_projection_digest: str,
+        finalized_block: int,
+        finalized_block_hash: str,
+        publication_record_digest: str,
+        eligible_hotkeys: Iterable[str],
+    ) -> FiniteDebtRewardEpoch:
+        try:
+            return self._finite_debt.close_confirmed_epoch(
+                projection,
+                expected_projection_digest=expected_projection_digest,
+                finalized_block=finalized_block,
+                finalized_block_hash=finalized_block_hash,
+                publication_record_digest=publication_record_digest,
+                eligible_hotkeys=eligible_hotkeys,
+            )
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    def finite_debt_reward_epochs(self) -> tuple[FiniteDebtRewardEpoch, ...]:
+        try:
+            return self._finite_debt.reward_epochs()
+        except FiniteDebtStoreError as exc:
+            self._raise_finite_debt_error(exc)
+
+    # ---- reviewed discovery/core composition (inactive until activation) ----
+
+    @staticmethod
+    def _raise_composition_error(exc: IncentiveCompositionStoreError) -> NoReturn:
+        raise IntakeError(f"incentive composition authority failed: {exc}") from None
+
+    def activate_incentive_composition(
+        self,
+        policy: IncentiveCompositionPolicyManifest,
+        *,
+        activation_block: int,
+        activation_block_hash: str,
+    ) -> IncentiveCompositionActivation:
+        try:
+            return self._incentive_composition.activate_policy(
+                policy,
+                activation_block=activation_block,
+                activation_block_hash=activation_block_hash,
+            )
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def active_incentive_composition(
+        self, *, at_block: int
+    ) -> IncentiveCompositionActivation | None:
+        try:
+            return self._incentive_composition.active_policy_activation(
+                at_block=at_block
+            )
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def record_reviewed_discovery_disposition(
+        self,
+        disposition: ReviewedDiscoveryDisposition,
+        *,
+        authority_block_hash: str,
+    ) -> ReviewedDiscoveryDispositionRecord:
+        try:
+            return self._incentive_composition.record_disposition(
+                disposition,
+                authority_block_hash=authority_block_hash,
+            )
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def reviewed_discovery_dispositions(
+        self,
+    ) -> tuple[ReviewedDiscoveryDispositionRecord, ...]:
+        try:
+            return self._incentive_composition.disposition_records()
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def review_pending_discovery_wins(
+        self,
+    ) -> tuple[ReviewPendingDiscoveryWin, ...]:
+        try:
+            return self._incentive_composition.review_pending_wins()
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def expire_review_pending_discovery_wins(
+        self,
+        *,
+        current_block: int,
+        current_block_hash: str,
+    ) -> tuple[ReviewPendingDiscoveryWin, ...]:
+        try:
+            return self._incentive_composition.expire_review_pending_wins(
+                current_block=current_block,
+                current_block_hash=current_block_hash,
+            )
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def discovery_debt_claim_states(
+        self, *, policy_digest: str | None = None
+    ) -> tuple[DiscoveryClaimState, ...]:
+        try:
+            return self._incentive_composition.discovery_claim_states(
+                policy_digest=policy_digest
+            )
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def reconcile_incentive_composition_lifecycle(
+        self,
+        *,
+        current_block: int,
+        current_block_hash: str,
+        eligible_hotkeys: Iterable[str],
+    ) -> ComposedLifecycleChanges:
+        try:
+            return self._incentive_composition.reconcile_lifecycle(
+                current_block=current_block,
+                current_block_hash=current_block_hash,
+                eligible_hotkeys=eligible_hotkeys,
+            )
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def project_incentive_composition_epoch(
+        self,
+        *,
+        effective_block: int,
+        eligible_hotkeys: Iterable[str],
+    ) -> ComposedEpochProjection:
+        try:
+            return self._incentive_composition.project_epoch(
+                effective_block=effective_block,
+                eligible_hotkeys=eligible_hotkeys,
+            )
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def close_confirmed_composed_epoch(
+        self,
+        projection: ComposedEpochProjection,
+        *,
+        expected_projection_digest: str,
+        finalized_block: int,
+        finalized_block_hash: str,
+        publication_record_digest: str,
+        eligible_hotkeys: Iterable[str],
+    ) -> IncentiveCompositionRewardEpoch:
+        try:
+            return self._incentive_composition.close_confirmed_epoch(
+                projection,
+                expected_projection_digest=expected_projection_digest,
+                finalized_block=finalized_block,
+                finalized_block_hash=finalized_block_hash,
+                publication_record_digest=publication_record_digest,
+                eligible_hotkeys=eligible_hotkeys,
+            )
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
+
+    def incentive_composition_reward_epochs(
+        self,
+    ) -> tuple[IncentiveCompositionRewardEpoch, ...]:
+        try:
+            return self._incentive_composition.reward_epochs()
+        except IncentiveCompositionStoreError as exc:
+            self._raise_composition_error(exc)
 
     def active_reward_claims(self) -> tuple[tuple[object, ...], tuple[object, ...]]:
         """Reopen all active standing and discovery claims, or fail as one unit."""
@@ -2396,6 +2826,10 @@ class FinalizedIntakeStore:
             or netuid < 0
         ):
             raise IntakeError("weight projection authority is malformed")
+        if self._finite_debt.composition_activated():
+            raise IntakeError(
+                "legacy V1 weight projection is disabled after incentive composition activation"
+            )
         standing, discovery = self.active_reward_claims()
         by_arena: dict[str, list[object]] = {}
         for claim in standing:
@@ -2794,13 +3228,25 @@ class SQLiteWeightPublicationJournal:
 
         if type(store) is not FinalizedIntakeStore or type(projection) is not WeightProjection:
             raise IntakeError("weight publication journal authority is not exactly typed")
+        self._require_legacy_v1_allowed(store)
         self.store = store
         self.projection = projection
+
+    @staticmethod
+    def _require_legacy_v1_allowed(store: FinalizedIntakeStore) -> None:
+        if (
+            type(store) is not FinalizedIntakeStore
+            or store._finite_debt.composition_activated()
+        ):
+            raise IntakeError(
+                "legacy V1 weight publication is disabled after incentive composition activation"
+            )
 
     @staticmethod
     def _read_head(
         store: FinalizedIntakeStore,
     ) -> tuple[str, str] | None:
+        SQLiteWeightPublicationJournal._require_legacy_v1_allowed(store)
         row = store._db.execute(
             "SELECT value FROM metadata WHERE key='weight_publication_head'"
         ).fetchone()
@@ -2981,6 +3427,7 @@ class SQLiteWeightPublicationJournal:
     def retained_projection(self, projection_digest: str) -> WeightProjection:
         from optima.chain.weights import WeightProjection
 
+        self._require_legacy_v1_allowed(self.store)
         require_sha256_hex(projection_digest, field="projection_digest")
         row = self.store._db.execute(
             "SELECT projection_json FROM weight_publications WHERE projection_digest=? "

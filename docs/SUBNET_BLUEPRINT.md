@@ -6,13 +6,15 @@ the chain plumbing, the service decomposition, the state/DB layer, deployment �
 independent of its specific incentive (Affine evaluates submitted **models** on RL
 tasks; Optima evaluates submitted **kernels** for throughput).
 
-The headline: **Affine's incentive mechanism is almost identical to the one we
-designed.** That's strong independent validation. What we're missing is the
-operational machinery around it. This doc captures both.
+The durable lesson from Affine is its **operational scaffolding**, not its
+winner-take-all economics. This document began before Optima's chain and incentive
+work matured; the incentive comparison below is retained as historical research.
+The current authority is [EMISSIONS_POLICY.md](EMISSIONS_POLICY.md), with the
+miner-facing selected curve in [INCENTIVES.md](INCENTIVES.md).
 
 ---
 
-## 1. Our incentive design is validated
+## 1. Historical comparison (incentive column superseded)
 
 Side by side:
 
@@ -22,12 +24,14 @@ Side by side:
 | Validator runs the compute | yes (Targon / B300 fleet hosts inference) | yes (our validator runs the model) |
 | Champion / challenger | yes | yes (transactional target settlement, `optima/settlement.py`) |
 | Dethrone rule | win **strictly across all envs** by a per-env **margin** | beat champion by **speedup margin** |
-| Reward | **winner-take-all** to champion (+ burn) | `weights = {champion: 1.0}` |
+| Reward | **winner-take-all** to champion (+ burn) | **Superseded:** legacy V1 is the sole wired publisher. Selected V2 intends finite log-relative CROWN debt plus promotion-or-bounded-bounty discovery; durable schema 5 currently supports review-pending + bounty-only and rejects promotion. V2 is inactive. |
 | Anti-copy | behavioral fingerprint, earliest-committer-wins | content-hash, earliest-commit-wins |
 | Anti-overfit | refresh task pool every ~24h, re-sample champion | per-epoch prompt sampling |
 | Fairness | judge both on the **same task_ids** in the same window | judge both on the **same prompts** |
 
-We got the mechanism right. Affine adds four refinements worth adopting (§7).
+The comparison validated the champion/challenger and service architecture. It did
+not validate winner-take-all rewards for Optima. Affine adds four operational
+refinements worth adopting (§7).
 
 ---
 
@@ -108,7 +112,8 @@ ref = json.loads(payload)                 # e.g. {"bundle_hash": ..., "url": ...
 blk = await st.get_current_block()
 await st.wait_for_block(blk + 1)
 
-# set weights (winner-take-all to champion)
+# Affine example: set winner-take-all weights to its champion.
+# Optima does not use this reward rule; see docs/EMISSIONS_POLICY.md.
 await st.set_weights(wallet=wallet, netuid=netuid,
                      uids=uids, weights=weights,
                      wait_for_inclusion=True, wait_for_finalization=True)
@@ -218,8 +223,11 @@ kernel's output fingerprint is cheap to compute during the eval we already run.)
 3. **Overlap-based fairness + oversampling.** Judge champion and challenger on the
    **exact same** task set in the same window; oversample ~10% and abandon the long
    tail so the comparison set is always fully covered.
-4. **Burn fraction.** A configurable share of emission to UID 0 — a lever for
-   emission control / quality floor.
+4. **Burn / reserve fraction.** Affine's configurable UID-0 burn is an emission-control
+   lever. Optima's selected analogue is an explicit policy-bound reserve hotkey with a
+   100,000-ppm floor: composed payout is `P_d=min(50,000, discovery debt)`, then
+   `P_c=min(900,000-P_d, CROWN debt)`, with the remainder to reserve. This is not
+   implicitly UID 0, and the production reserve identity is still an activation input.
 
 ---
 
@@ -280,5 +288,31 @@ Concretely, to go from "validated harness" to "shippable subnet":
    context + watchdog.
 6. **Provider abstraction**: rented box now, owned 8×B200 later, one interface.
 
-The incentive core is done and validated. The above is the productionization, and
-Affine is a working reference implementation for every piece of it.
+The selected incentive arithmetic and inactive schema-5 bounty-only state are
+implemented and synthetically validated, including finite log-relative CROWN debt
+and bounded reviewed discovery debt. A signer-free testnet-netuid-307 shadow also
+reopened finalized block
+7,586,146 (metagraph size 6) and mapped explicitly synthetic states to 850,000 ppm
+CROWN, 50,000 ppm discovery, and 100,000 ppm reserve, totaling 1,000,000 ppm
+(`submitted=false`; semantic
+digest `3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`, file
+SHA-256 `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`). It
+constructed no wallet and supplies no review, settlement, publication, or activation
+authority. Production activation is not done: the family catalog/reserve identity,
+independent review/runtime-invalidity authority, retained-boundary
+publication/debit catch-up, atomic or quiescent V1→core→composition cutover,
+membership-departure history, reliable pending-review-expiry scheduling, promotion
+transport/linkage, exact rerun, and production audit transport remain open. The durable bounty lifetime begins at the
+retained qualified win, and the pending-review expiry API is landed; the selected
+“never both” rule is still policy intent because cross-lane work identity is absent.
+A registered-family invalidation API is landed, but it consumes rather than creates
+external invalidity authority. Affine remains a working reference for the operational
+scaffolding, not evidence that those Optima authorities are complete.
+
+D-014 adds bounded review-delay evidence, not missing infrastructure: its 288-row
+cross-architecture replay passed every preregistered 0/1/7-day SLA row with full
+discovery payout, zero expiry/unissued debt, no CROWN paid-fraction regression, and
+at most 55,555 ppm instantaneous CROWN-capacity dilution; 90/120-day review issued
+no stale debt and 30/60/89 days were diagnostic only. It does not supply the external
+review service, publication path, activation authority, durable-state completion,
+or GPU-performance evidence still called out above.

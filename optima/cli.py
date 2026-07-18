@@ -111,6 +111,70 @@ def cmd_release_context(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_incentive_shadow(args: argparse.Namespace) -> int:
+    """Write one signer-free synthetic projection against finalized membership."""
+
+    from optima import chain
+    from optima.incentive_shadow import execute_chain_incentive_shadow
+
+    receipt = execute_chain_incentive_shadow(
+        network=args.network,
+        netuid=args.netuid,
+        policy_path=args.policy,
+        claims_fixture_path=args.claims_fixture,
+        expected_policy_digest=args.expected_policy_digest,
+        expected_claims_digest=args.expected_claims_digest,
+        output_path=args.output,
+        connect=chain.connect,
+        read_finalized_head=chain.read_finalized_head,
+        fetch_metagraph=chain.fetch_metagraph,
+    )
+    print(json.dumps(
+        {
+            "output": args.output,
+            "receipt_digest": receipt.digest,
+            "submitted": receipt.submitted,
+        },
+        sort_keys=True,
+    ))
+    return 0
+
+
+def cmd_chain_incentive_composition_shadow(args: argparse.Namespace) -> int:
+    """Write one signer-free synthetic composed projection receipt."""
+
+    from optima import chain
+    from optima.incentive_composition_shadow import (
+        execute_chain_incentive_composition_shadow,
+    )
+
+    receipt = execute_chain_incentive_composition_shadow(
+        network=args.network,
+        netuid=args.netuid,
+        core_policy_path=args.core_policy,
+        core_claims_fixture_path=args.core_claims_fixture,
+        discovery_policy_path=args.discovery_policy,
+        discovery_claims_fixture_path=args.discovery_claims_fixture,
+        expected_core_policy_digest=args.expected_core_policy_digest,
+        expected_core_claims_digest=args.expected_core_claims_digest,
+        expected_discovery_policy_digest=args.expected_discovery_policy_digest,
+        expected_discovery_claims_digest=args.expected_discovery_claims_digest,
+        output_path=args.output,
+        connect=chain.connect,
+        read_finalized_head=chain.read_finalized_head,
+        fetch_metagraph=chain.fetch_metagraph,
+    )
+    print(json.dumps(
+        {
+            "output": args.output,
+            "receipt_digest": receipt.digest,
+            "submitted": receipt.submitted,
+        },
+        sort_keys=True,
+    ))
+    return 0
+
+
 def cmd_set_weights(args: argparse.Namespace) -> int:
     from optima import chain
     from optima.chain.intake import (
@@ -700,6 +764,62 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--expected-public-key", required=True)
     sp.add_argument("--descriptor-digest")
     sp.set_defaults(func=cmd_release_context)
+
+    sp = sub.add_parser(
+        "chain-incentive-shadow",
+        help=(
+            "project an explicitly synthetic finite-debt fixture against exact "
+            "finalized membership; writes a receipt and never constructs a signer"
+        ),
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument(
+        "--network",
+        required=True,
+        help="named network or an explicit wss:// endpoint URL",
+    )
+    sp.add_argument("--policy", required=True, help="canonical finite-debt policy JSON")
+    sp.add_argument(
+        "--claims-fixture",
+        required=True,
+        help="canonical explicitly synthetic claim-state fixture JSON",
+    )
+    sp.add_argument("--expected-policy-digest", required=True)
+    sp.add_argument("--expected-claims-digest", required=True)
+    sp.add_argument(
+        "--output",
+        required=True,
+        help="new canonical receipt path; an existing path is never replaced",
+    )
+    sp.set_defaults(func=cmd_chain_incentive_shadow)
+
+    sp = sub.add_parser(
+        "chain-incentive-composition-shadow",
+        help=(
+            "project explicitly synthetic reviewed-discovery and registered-CROWN "
+            "fixtures against exact finalized membership; never constructs a signer"
+        ),
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument(
+        "--network",
+        required=True,
+        help="named network or an explicit wss:// endpoint URL",
+    )
+    sp.add_argument("--core-policy", required=True)
+    sp.add_argument("--core-claims-fixture", required=True)
+    sp.add_argument("--discovery-policy", required=True)
+    sp.add_argument("--discovery-claims-fixture", required=True)
+    sp.add_argument("--expected-core-policy-digest", required=True)
+    sp.add_argument("--expected-core-claims-digest", required=True)
+    sp.add_argument("--expected-discovery-policy-digest", required=True)
+    sp.add_argument("--expected-discovery-claims-digest", required=True)
+    sp.add_argument(
+        "--output",
+        required=True,
+        help="new canonical receipt path; an existing path is never replaced",
+    )
+    sp.set_defaults(func=cmd_chain_incentive_composition_shadow)
 
     sp = sub.add_parser(
         "set-weights",

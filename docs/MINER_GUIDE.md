@@ -12,8 +12,10 @@ guide is the on-ramp; that's the reference.
 
 ## 1. What Optima is, and how you earn
 
-Optima is a Bittensor-style subnet that **pays you for making LLM inference faster
-without making it worse.**
+Optima is a Bittensor-style subnet designed to **pay you for making LLM inference
+faster without making it worse.** The ordinary competition route is a registered
+singleton or atomic kernel target. Cross-cutting work has a separate fenced
+reviewed-discovery route; it never silently inherits a registered target or reward.
 
 The validator runs a fixed, public model on its GPUs. You submit a **kernel** — a
 small piece of GPU code for one operation in that model (an activation, a norm, an
@@ -25,7 +27,8 @@ runs the model, and measures two things:
    an in-engine audit of your kernel's real calls against the stock baseline, plus
    per-token distribution checks against a pristine reference transcript.
 
-**You earn if and only if your kernel is *both* faster *and* faithful.** A kernel
+**On the registered route, you earn if and only if your kernel is *both* faster and
+faithful.** A kernel
 that's 30% faster but changes the model's answers scores **zero**. A kernel that's
 perfectly faithful but slower than stock also scores zero (no speedup). The
 requirement is a genuine speedup at equal quality.
@@ -111,19 +114,63 @@ disagree by more than ~10%, the box is too noisy → **NO-DECISION** (the round 
 discarded, nobody is crowned on a number that can't be reproduced). Token budgets are
 held equal (`ignore_eos` on), so you can't win by emitting fewer tokens.
 
-### Holding the slot — king-of-the-hill
-The current best kernel for a slot is the **champion**. To take the title you must
-beat it by the margin: `your_score ≥ champion_score × (1 + 2%)`. A bit-identical copy
-ties, never clears the margin, and earns 0. There's **one champion per slot** and
-emission is split across slots that have a champion — so you can win by *specializing*
-in one slot, you don't need to beat everyone everywhere.
+### Moving the frontier — finite reward, not a perpetual throne
+
+The current best kernel for a canonical target is the **champion** used as the next
+baseline. A bit-identical copy ties, never clears the measured confidence bar, and
+earns 0. You can still win by specializing in one target; you do not need to optimize
+the complete model.
+
+Under the selected but inactive V2 rule, two independent passing measurements and
+a settled crown create a **finite claim**. Its base size is proportional to
+`ln(your relative speedup) / ln(1.01)`, with a mild same-family elapsed-time bonus
+that reaches 5% after 90 days and can never reach 10%. With no activation-seeded
+prior family clock, the first crown has no age windfall. Claims are capped at their
+issued principal and expire after 90 days,
+so neither a champion nor a tiny lone win is normalized into permanent full emission.
+
+The registered-CROWN rule is implemented and its signer-free testnet shadow passed.
+The selected discovery rule separately caps one reviewed bounty at 50,000
+weight-ppm epoch units and gives it no family clock, time bonus, renewal, or
+permanent title. Its 90-day clock starts when the qualified discovery win is
+retained, not when review finishes: delay consumes the window and review at or
+after expiry cannot mint. Overdue pending reviews have a landed terminal expiry
+record, though production still has to schedule it reliably.
+
+The preregistered D-014 sensitivity test supports a seven-day review-service target:
+all 108 synthetic 0/1/7-day rows paid discovery principal fully, with no
+expiry/unissued debt or CROWN paid-fraction regression and no more than the selected
+55,555-ppm instantaneous CROWN-capacity dilution. Longer 30/60/89-day delays were
+diagnostic only, and 90/120-day review issued no stale debt. This does not mean the
+external review service, publication path, or V2 activation exists yet.
+
+The selected pure policy intends promotion plus fresh requalification/CROWN or the
+finite bounty, never both. The durable implementation currently retains
+`review_pending` wins and can issue `bounty_only`, but rejects promotion until typed
+promotion transport, target registration, fresh CROWN linkage, and cross-lane work
+identity exist. So “never both” is not yet an end-to-end same-work guarantee. The
+composed signer-free shadow passed on testnet netuid 307 at finalized
+block 7,586,146 (metagraph size 6): explicitly synthetic states projected
+850,000 ppm registered-CROWN, 50,000 ppm reviewed-discovery, and 100,000 ppm
+reserve, totaling 1,000,000 ppm, with `submitted=false` (semantic digest
+`3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`,
+file SHA-256
+`ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`).
+It constructed no wallet and carries no review, settlement, publication, or
+activation authority. Meaningful-emission activation has not been authorized.
+It also still needs the actual catalog/reserve rerun, atomic or quiescent
+V1→core→composition cutover, retained-boundary publication/debit catch-up,
+independent review/runtime-invalidity authority, membership-departure history, the
+promotion linkage above, and production audit transport.
+The exact formulas, examples, payout rules, and activation status are in
+[INCENTIVES.md](INCENTIVES.md).
 
 ---
 
 ## 3. The slots — pick your target
 
 A **slot** is one typed boundary the validator will swap your kernel into. Run
-`python -m optima.cli slots` for the live list; today there are ten:
+`python -m optima.cli slots` for the live list; today there are eleven:
 
 | slot | kind | what it computes | entry signature |
 |---|---|---|---|
@@ -132,6 +179,7 @@ A **slot** is one typed boundary the validator will swap your kernel into. Run
 | `attention.sdpa` | block | `softmax(qkᵀ·scale + causal) v` (GQA/MQA) | `entry(q, k, v, out, sm_scale, causal)` |
 | `attention.decode` | block | decode attention over each request's cached K/V | `entry(q, k, v, seq_lens, sm_scale, out)` |
 | `attention.msa_block_score` | block | per-block scores for sparse-attention selection (the validator owns the top-k selection + the attend) | `entry(q, index_k, seq_lens, block_size, out)` |
+| `attention.msa_prefill_block_score` | block | causal per-row block scores for sparse-attention prefill (the validator owns top-k selection + attend) | `entry(q, index_k, prefix_len, scale, block_size, out)` |
 | `moe.fused_experts` | block | fused MoE experts (SwiGLU-MLP), a **(prepare, forward)** pair | `prepare(w13, w2)` + `forward(x, topk_ids, topk_weights, prepared, out)` |
 | `collective.all_reduce` | collective | tensor-parallel all-reduce (sum across GPUs) | `entry(x, out, group)` |
 | `moe.fused_experts_reduce` | collective | MoE experts that **own their trailing all-reduce** (the compute-comm overlap lever) | `prepare(...)` + `forward(x, topk_ids, topk_weights, prepared, out, group)` |
@@ -269,8 +317,14 @@ mode = "atomic"
 
 The catalog—not manifest row order—owns that target's canonical members, overlap,
 displacement, compatible targets, and permitted contribution features. Unknown
-multi-slot work is classified as unregistered for the future fenced discovery lane; this
-PR does not yet implement that router. It cannot silently become a slot/atomic target.
+multi-slot work is classified as unregistered and cannot silently become a
+slot/atomic target or auto-earn. A separate fenced discovery ABI/review can retain
+that qualified work as review-pending and, under the inactive selected composition,
+can durably issue only one bounded bounty. Promotion into a registered boundary is
+the selected policy direction but is deliberately rejected today until its typed
+transport, target registration, fresh requalification/CROWN linkage, and same-work
+identity across lanes are complete. The review decision is validator-owned, not
+selected by the miner.
 Shape or architecture specialization within a registered slot is still metadata/bundle-
 only; it does not require a new target or Optima code change. Donor-era `mode = "system"`
 syntax remains parseable only for migration and never creates a registered system title.
