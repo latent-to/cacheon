@@ -1367,6 +1367,79 @@ def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
     )
 
 
+def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
+    policy = runner.SlotAuditPolicy(
+        "a" * 32,
+        250_000,
+        32,
+        ("norm.rmsnorm",),
+        1,
+    )
+    receipt = runner.AuditReceiptFacts(
+        "norm.rmsnorm",
+        32,
+        0,
+        0,
+        0,
+        1.0,
+        0.995,
+        "allclose",
+        901,
+        0,
+        1,
+    )
+    assert type(receipt.to_dict()["worst_frac"]) is float
+    assert type(receipt.to_dict()["min_ratio"]) is float
+    execution = runner.EngineExecutionEvidence(
+        "optima.oci-engine-execution.v1",
+        _d("audit-launch"),
+        SimpleNamespace(),
+        _d("audit-preflight"),
+        _d("audit-model"),
+        _d("audit-runtime-policy"),
+        SimpleNamespace(build_spec_digest=_d("audit-build")),
+        _d("audit-publication"),
+        _d("audit-argv"),
+        (),
+        (),
+        SimpleNamespace(
+            audit_policy_digest=policy.digest,
+            audit_receipts=(receipt,),
+            session_id="1" * 32,
+        ),
+    )
+
+    witness = runner.AuditWitness.from_execution(
+        execution,
+        selected_delta_digest=_d("audit-delta"),
+        policy=policy,
+    )
+    durable = witness.to_dict()
+    durable_receipt = durable["receipts"][0]
+    assert durable_receipt == runner._record_dict(receipt)
+    assert durable_receipt["worst_frac"] == "1"
+    assert durable_receipt["min_ratio"] == "0.995"
+    assert runner.AuditWitness.from_dict(durable) == witness
+
+    # A durable authority record must never acquire a JSON float, even when it
+    # spells the same numeric value as the canonical decimal string.
+    float_tamper = witness.to_dict()
+    float_tamper["receipts"][0]["worst_frac"] = 1.0
+    with pytest.raises(
+        runner.QualificationRunnerError,
+        match="worst_frac is not a canonical decimal string",
+    ):
+        runner.AuditWitness.from_dict(float_tamper)
+
+    spelling_tamper = witness.to_dict()
+    spelling_tamper["receipts"][0]["worst_frac"] = "1.0"
+    with pytest.raises(
+        runner.QualificationRunnerError,
+        match="worst_frac is not canonical",
+    ):
+        runner.AuditWitness.from_dict(spelling_tamper)
+
+
 def test_durable_attempt_roundtrip_rejects_nested_decision_tamper(
     monkeypatch, tmp_path
 ) -> None:

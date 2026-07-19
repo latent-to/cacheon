@@ -677,7 +677,13 @@ class AuditWitness:
                 "runtime_resource_policy": execution.resource_policy_digest,
                 "session_id": session.session_id,
                 "audit_policy": policy.digest,
-                "receipts": [row.to_dict() for row in session.audit_receipts],
+                # The isolated-session protocol carries bounded JSON numbers for
+                # these raw runtime facts.  Authority identities do not: stack
+                # canonical JSON deliberately rejects floats.  Encode through
+                # the same lossless ``.17g`` projection used by the durable
+                # witness before hashing, so the live witness and its reopened
+                # record name exactly the same receipt semantics.
+                "receipts": [_record_dict(row) for row in session.audit_receipts],
             },
         )
         from optima.audit import gate
