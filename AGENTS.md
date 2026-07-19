@@ -198,7 +198,7 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   saturated discovery. Its semantic digest is
   `505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`.
   The raw D-015 sweep remains a local-only experiment record. Current local
-  validation is 2,191 passed/19 skipped repository-wide; the tracked 64-cell
+  validation is 2,193 passed/19 skipped repository-wide; the tracked 64-cell
   D-015 supplement replays at the digest above. D-015 has no pod receipt.
   The old testnet shadow does not test D-015 bytes.
   D-013 then selected a separately reviewed discovery bounty capped at 50,000 ppm

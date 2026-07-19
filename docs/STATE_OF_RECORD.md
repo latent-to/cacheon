@@ -85,6 +85,15 @@ Unauditable attention slots fail closed. In-process tampering, audit-role finger
 and timed-workload fingerprinting remain open even after that canary; see
 [FIDELITY.md](FIDELITY.md).
 
+The bounded 2026-07-19 B300 run did not satisfy that launch gate. The sabotage control was
+correctly rejected. The honest primary produced no qualification verdict because two
+concurrent legs shared an executor label, so its final quiescence proof saw the other live
+leg. The honest reproduction passed graph and pristine-T quality, but its deep slot had
+only 4 audited calls per TP rank against the required 32 and its speed gate failed at
+1.005507x. It is retained as failure evidence, not an activation canary or a performance
+authority. The separate audit role observed zero comparison violations, but insufficient
+coverage is still a fail.
+
 **The production intake and arena path uses SQLite and explicit target/stack identity.**
 `FinalizedIntakeStore` persists finalized ordering, copy disposition, screen receipts,
 qualification attempts, stack transitions, settlement, and weight-publication state. A
@@ -184,7 +193,7 @@ A tracked one-campaign supplement closes the simultaneous-family evidence gap wi
 This is deterministic accounting/ROI evidence, not a pod, chain, GPU-performance,
 token-value, or miner-equilibrium receipt. After the one-campaign activation,
 publication-fence, and audit-transport changes, the exact repository suite is
-2,191 passed with 19 skips; the tracked supplement reproduces the digest above.
+2,193 passed with 19 skips; the tracked supplement reproduces the digest above.
 
 The earlier live testnet-netuid-307 `chain-incentive-shadow` receipt exercised
 **only the historical D-012 registered-CROWN class**: it twice reopened exact
@@ -285,7 +294,10 @@ first 1–2 week operation assumes stable reserve, validator, and positively wei
 registrations; any departure or UID change halts publication rather than remapping or
 skipping the gapless boundary. The 90-day claim lifetime prevents ordinary expiry during
 that window. No production manifest set, shadow, or live activation receipt exists
-yet.
+yet. The activation command binds the independently approved canary digest but does not
+parse or regrade the canary receipt. Non-PASS evidence must be rejected by the external
+reviewed evidence-package and approval process; digest equality alone is not a PASS
+judgment.
 
 `optima/chain/debt_publication.py` and `set-debt-weights` implement the active V2
 publication authority. The command retains the earliest gapless economic boundary,

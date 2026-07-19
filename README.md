@@ -118,8 +118,8 @@ scored on GPU — setup in [docs/GPU_SETUP.md](docs/GPU_SETUP.md).
   `7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`;
   the raw D-015 sweep is retained in local-only experiment records.
   The one-campaign policy, atomic activation, confirmed publisher/debit path, and
-  audit witness transport are implemented in this draft but remain inactive.
-  Current local validation is 2,191 passed/19 skipped; the tracked 64-cell D-015
+  audit witness transport are implemented but remain inactive.
+  Current local validation is 2,193 passed/19 skipped; the tracked 64-cell D-015
   launch-load replay has semantic digest
   `505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`.
   There is no D-015 pod, activation, publication, or new audit-path GPU receipt.

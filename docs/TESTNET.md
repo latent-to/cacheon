@@ -193,6 +193,11 @@ arena/chain facts. The complete approved roster
 must match that retained arena/catalog, and the campaign ID is derived from the
 arena/catalog/roster rather than chosen independently.
 
+`chain-activate-incentives` binds the digest of an independently approved canary; it does
+not parse or regrade the canary receipt. Rejecting a non-PASS or incomplete canary belongs
+to the external reviewed evidence package and approval process. A matching digest proves
+which evidence was approved, not that the evidence passed.
+
 Activation also requires quiescent pre-cutover intake, no open V2 debt, no retained
 legacy discovery row, and **a database that has never retained V1 projection/publication
 state**. There is intentionally no automatic V1-history bridge in this command: launch
@@ -224,7 +229,7 @@ cells, rotation, and successor activation are unsupported historical research.
 Sustained simultaneous per-family wins were not the normal-tape assumption. Report
 semantic digest:
 `7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
-The raw sweep is a local-only experiment record. Current validation is 2,191
+The raw sweep is a local-only experiment record. Current validation is 2,193
 passed/19 skipped repository-wide. It is
 deterministic control-plane and ROI evidence, not a new GPU or testnet run.
 
