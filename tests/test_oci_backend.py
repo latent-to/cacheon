@@ -732,6 +732,7 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         "--env=OPTIMA_TARGET_GPU_ARCH=sm120",
         f"--env=OPTIMA_NATIVE_BUILD_SPEC_DIGEST={case.native.digest}",
         f"--env=OPTIMA_NATIVE_ARTIFACT_PUBLICATION_DIGEST={case.publication.publication_digest}",
+        "--env=OPTIMA_REBUILD_PHASE=load",
     ):
         assert exact in argv
     assert not any(row.startswith("--cap-add") for row in argv)
