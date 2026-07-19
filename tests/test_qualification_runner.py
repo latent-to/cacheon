@@ -1440,6 +1440,70 @@ def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
         runner.AuditWitness.from_dict(spelling_tamper)
 
 
+def test_audit_witness_host_regrade_does_not_import_torch(monkeypatch) -> None:
+    """The trusted controller is intentionally lean and has no worker torch."""
+    import sys
+
+    import optima
+
+    # Force both audit modules through a clean import boundary.  The old host
+    # path imported optima.audit here and therefore raised ModuleNotFoundError
+    # in the production controller venv before it could grade the receipts.
+    for name in ("optima.audit", "optima.audit_gate"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.delattr(optima, name.rsplit(".", 1)[-1], raising=False)
+    monkeypatch.setitem(sys.modules, "torch", None)
+
+    policy = runner.SlotAuditPolicy(
+        "b" * 32,
+        250_000,
+        32,
+        ("norm.rmsnorm",),
+        1,
+    )
+    receipt = runner.AuditReceiptFacts(
+        "norm.rmsnorm",
+        32,
+        0,
+        0,
+        0,
+        1.0,
+        0.995,
+        "allclose",
+        902,
+        0,
+        1,
+    )
+    execution = runner.EngineExecutionEvidence(
+        "optima.oci-engine-execution.v1",
+        _d("torch-free-audit-launch"),
+        SimpleNamespace(),
+        _d("torch-free-audit-preflight"),
+        _d("torch-free-audit-model"),
+        _d("torch-free-audit-runtime-policy"),
+        SimpleNamespace(build_spec_digest=_d("torch-free-audit-build")),
+        _d("torch-free-audit-publication"),
+        _d("torch-free-audit-argv"),
+        (),
+        (),
+        SimpleNamespace(
+            audit_policy_digest=policy.digest,
+            audit_receipts=(receipt,),
+            session_id="2" * 32,
+        ),
+    )
+
+    witness = runner.AuditWitness.from_execution(
+        execution,
+        selected_delta_digest=_d("torch-free-audit-delta"),
+        policy=policy,
+    )
+    assert witness.decision is QualificationDecision.PASS
+    assert runner.AuditWitness.from_dict(witness.to_dict()) == witness
+    assert "optima.audit" not in sys.modules
+    assert sys.modules["torch"] is None
+
+
 def test_durable_attempt_roundtrip_rejects_nested_decision_tamper(
     monkeypatch, tmp_path
 ) -> None:

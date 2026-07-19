@@ -637,7 +637,7 @@ class AuditWitness:
             )
 
     def regrade(self) -> tuple[bool, str]:
-        from optima.audit import gate
+        from optima.audit_gate import gate
 
         return gate(
             [row.to_gate_dict() for row in self.receipts],
@@ -686,7 +686,7 @@ class AuditWitness:
                 "receipts": [_record_dict(row) for row in session.audit_receipts],
             },
         )
-        from optima.audit import gate
+        from optima.audit_gate import gate
 
         passed, detail = gate(
             [row.to_gate_dict() for row in session.audit_receipts],
