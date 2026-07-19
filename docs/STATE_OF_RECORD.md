@@ -71,18 +71,28 @@ publications. Candidate import, hermetic native compilation, engine construction
 execution occur inside validator-owned OCI sessions with no network egress, read-only
 root filesystems, bounded mounts/protocols, and controller-owned teardown. The trusted
 controller supplies the incumbent, candidate delta, workload, role schedule, and evidence
-schema; it does not load miner Python or native extensions. Qualification is B/C/B′ with a
-separate pristine teacher-forced T authority, including graph-capture/replay and raw quality
-evidence.
+schema; it does not load miner Python or native extensions. Qualification uses graph-on,
+audit-free charged B/C/B′ roles, a mandatory separate eager/untimed audit role with a typed
+host-regraded witness, and a separate pristine teacher-forced T authority.
 
-**Current production fidelity gap (2026-07-16):** that causal qualification path does
-**not** currently run or grade the in-engine audit described by the historical results.
-`optima/eval/engine_worker.py` clears `OPTIMA_SLOT_AUDIT` and
-`OPTIMA_SLOT_AUDIT_SEED`; the session protocol and aggregate report carry no audit facts;
-settlement has no audit-compatibility field. Current production qualification therefore
-grades graph execution, calibrated speed, and pristine-T distribution/task evidence only.
-The audit must be wired as a separate untimed candidate role with host-regraded, exact
-slot×rank evidence before meaningful-emission launch; see [FIDELITY.md](FIDELITY.md).
+**Current production fidelity gap:** the separate audit role, policy-bound transport,
+exact slot×TP-rank coverage, typed aggregate/durable witness, and trusted-host regrade are
+implemented and CPU/mock-covered. Charged B/C/B′ roles reject audit state and receipts.
+These new causal transport/report bytes are not GPU-qualified: meaningful-emission launch
+remains blocked until the exact production MiniMax-M3 canary proves honest primary plus
+reproduction, sabotage rejection, audit-free charged legs, and fail-closed mutation/reopen.
+Unauditable attention slots fail closed. In-process tampering, audit-role fingerprinting,
+and timed-workload fingerprinting remain open even after that canary; see
+[FIDELITY.md](FIDELITY.md).
+
+The bounded 2026-07-19 B300 run did not satisfy that launch gate. The sabotage control was
+correctly rejected. The honest primary produced no qualification verdict because two
+concurrent legs shared an executor label, so its final quiescence proof saw the other live
+leg. The honest reproduction passed graph and pristine-T quality, but its deep slot had
+only 4 audited calls per TP rank against the required 32 and its speed gate failed at
+1.005507x. It is retained as failure evidence, not an activation canary or a performance
+authority. The separate audit role observed zero comparison violations, but insufficient
+coverage is still a fail.
 
 **The production intake and arena path uses SQLite and explicit target/stack identity.**
 `FinalizedIntakeStore` persists finalized ordering, copy disposition, screen receipts,
@@ -136,6 +146,198 @@ chain-submit/chain-status/chain-validate/chain-register` are the operator surfac
 `docs/TESTNET.md` is the runbook. Weight publication is a separate, journaled control-
 plane reconciliation over the transactional global reward projection.
 
+**The one-campaign V2 incentive composition is selected and inactive. Its arithmetic,
+bounty-only durable subset, atomic activation boundary, and restart-safe publisher are
+implemented, but neither activation nor V2 publication has a live receipt.** D-012's now-superseded
+1,600-cell/224,000-run synthetic sweep replayed byte-identically on local
+arm64/Python 3.11 and the RTX pod's x86_64/Python 3.12. Its registered-CROWN
+selected cell
+`15623f7679f5c1099ab48ecc88b1fe6aac926f58b309d07b3a788180848477a4`
+uses gross multiplicative 1%-log units, `beta=100,000 ppm`, `tau=648,000`
+blocks, `k=1,000,000`, a 648,000-block claim life, a 100,000-ppm reserve,
+digest-ordered near-equal integer family shares, and a clock reset on every
+accepted CROWN. It paid 98.7203% of issued principal over the synthetic horizon;
+maximum measured split/withhold/sybil distortion was 3.0287%. The D-012
+hash-gated selection report digest is
+`9cdec61232343b663f24291c13af6b283db064370fd89a1f3b9ad6084c47cce1`.
+
+D-015 replaced only the claim-sizing hierarchy: the funded unit is now a model
+campaign, while target families remain independent frontiers and elapsed-time
+clocks. Pure schema-2 `optima.finite-debt.v2` arithmetic represented 100% sizing for
+one campaign and 50% sizing for each of two research campaigns. The implemented
+activation approval and durable store accept exactly one immutable MiniMax-M3 campaign;
+model rotation, a second campaign, and successor activation are unsupported future work.
+Every family maps exactly once.
+Adding 1, 10, or 100 target families changed principal by zero. All 14
+preregistered screens passed. At selected `k=1`, the normal weekly tape issued one
+full-sized 4.4%/5% claim for one campaign, or—in the historical research cells—one
+half-sized claim in each of two campaigns (one full share in aggregate), rotating
+across families. Those tapes paid
+100%, expired zero, drained to zero outstanding, and reached at most five days of
+payment latency under zero and saturated discovery. Worst normal
+utilization was 77.4136%; five-day cadence was marginal and four-day cadence was
+overloaded. `k=1.25` was already marginal; at `k=1.5` the worst rows overloaded
+while other rows remained marginal, and `k=2` was plainly overloaded. D-015 semantic
+report digest:
+`7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
+This is deterministic control-plane/ROI sensitivity, not token-value, validator-
+influence, GPU-performance, or miner-equilibrium evidence. Its normal tape does not
+model sustained simultaneous wins in every active family. The raw D-015 config,
+simulator, ledger, and report are local-only experiment records; tracked code binds
+the report digest but this PR alone cannot reproduce the sweep. D-015 has no pod receipt.
+
+A tracked one-campaign supplement closes the simultaneous-family evidence gap with
+64 launch/stress cells over 1/2/5/10 independently winning M3 families,
+7/14/30/90-day cadences, and empty/saturated discovery. Its semantic report digest is
+`505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`.
+This is deterministic accounting/ROI evidence, not a pod, chain, GPU-performance,
+token-value, or miner-equilibrium receipt. After the one-campaign activation,
+publication-fence, and audit-transport changes, the exact repository suite is
+2,193 passed with 19 skips; the tracked supplement reproduces the digest above.
+
+The earlier live testnet-netuid-307 `chain-incentive-shadow` receipt exercised
+**only the historical D-012 registered-CROWN class**: it twice reopened exact
+finalized membership, mapped
+three explicitly synthetic claims to 900,000 miner ppm plus 100,000 reserve ppm,
+and wrote `submitted=false` (receipt digest
+`a4006912ec3e34b98fe51031fe25864915e4a2d588209877c41a459a6094dcf3`).
+No wallet or chain mutation was used. It does not test D-015 campaign bytes; a fresh
+campaign-policy shadow remains activation work.
+
+D-013 selected the separate reviewed-discovery composition. Its cell
+`8561028c943738da2fe622e5f5c9fd43ebec16fdd59feab3561de25fbfa450d9`
+sets a 50,000-ppm discovery epoch cap, caps each award at one such epoch of
+principal (50,000 weight-ppm epoch units), and gives it no campaign share, family
+clock, time bonus, renewal, or permanent title. Its 648,000-block lifetime begins
+when the qualified discovery win is retained, not at later review; review delay
+consumes the window and review at or after expiry cannot mint. The pure policy
+intends registered promotion followed by fresh requalification/CROWN, or one finite
+bounty, never both. Durable schema 5 currently implements review-pending retention
+and `bounty_only`, not the promotion branch, so this is not yet end-to-end
+same-work enforcement. The exact composed payout is:
+
+```text
+P_d     = min(50,000, live discovery debt)
+P_c     = min(900,000 - P_d, live registered-CROWN debt)
+reserve = 1,000,000 - P_d - P_c
+```
+
+Each class has its own claim-digest largest-remainder allocation. The D-013 report
+digest is `6bdfce26e4e6090e0dcc8814a636c665f28d1ff20945a09d43a9a90dc94151fc`;
+the retained report-file SHA-256 is
+`7369c6890dcc880b5f7295a94d07f915d59241e23d95b2c9328295780c99fb38`.
+Its 9-cell × 36-scenario × 10-seed matrix produced 3,240 rows and replayed
+byte-identically locally and on the RTX pod. The selected cell paid
+273,000,000/273,000,000 units of non-departed principal with zero expiry or
+outstanding balance and 100% worst-run payout; 9,000,000 units of departed debt
+were forfeited/cancelled. Analytic and measured saturated CROWN-capacity dilution
+was 55,555 ppm (5.5555%), while saturated tapes eventually paid 100% CROWN
+principal. These are synthetic accounting results, not miner-equilibrium,
+token-value, or GPU-performance evidence. Selector checks passed 11/11. After a
+multi-pass restart/cardinality audit, the pre-D-015 implementation passed 98
+focused tests and the repository passed 2,135 tests with 19 skips; historical pod
+conformance passed 111 tests under Python 3.12 with CUDA hidden. Those pod receipts
+do not cover D-015.
+
+D-014 held the selected D-013 policy fixed and measured review-delay sensitivity in
+8 delays × 3 service modes × 4 scenarios × 3 seeds = 288 rows. The artifacts
+replayed byte-identically on local arm64/Python 3.11 and pod x86_64/Python 3.12.
+Its preregistered 0/1/7-day SLA covered 108 rows and passed all of them: discovery
+paid 100%, expiry/unissued principal was zero, maximum instantaneous CROWN-capacity
+dilution was 55,555 ppm, and CROWN paid-fraction regression versus zero delay was
+zero percentage points. The 90/120-day cases issued no stale debt. The 30/60/89-day
+cases were retained as diagnostics only and do not expand the review SLA. Report
+digest: `f0939d67241dffa49aac95c035c43dd7ea14b51eb2671fe106cb09347511b7ef`.
+This is deterministic synthetic accounting evidence, not external review authority,
+publication, activation, by itself proof of durable-state hardening, or GPU
+performance evidence.
+
+Pure arithmetic lives in `optima/incentive_composition.py`; schema-5 pre-activation
+durable authority lives in `optima/chain/incentive_composition_store.py`; and the signer-free
+`chain-incentive-composition-shadow` surface lives in
+`optima/incentive_composition_shadow.py`. Before D-015, its live signer-free
+testnet-netuid-307 run passed at finalized block 7,586,146 with metagraph size 6.
+Explicitly synthetic
+states allocated 850,000 ppm to registered-CROWN claims, 50,000 ppm to
+reviewed-discovery claims, and 100,000 ppm to reserve, exactly 1,000,000 ppm total;
+the receipt wrote `submitted=false`. Semantic digest:
+`3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`;
+receipt-file SHA-256:
+`ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`.
+The command constructed no wallet and the receipt supplies no independent review,
+settlement, publication, debt-debit, D-015 policy, or activation authority.
+Schema-4→5 migration
+creates empty composition tables and no retroactive debt.
+Activation fails with any retained legacy discovery row (and requires validated,
+clean open-debt state), because V1 has no journal that can prove a mutable terminal
+flag. Active composition disables legacy discovery auto-award. The restart audit also
+requires exact paired qualification, evidence, CROWN speed, principal, family clocks,
+lifecycle events, and all-and-only balance revisions; every reproduced
+substitution/cardinality case now fails closed.
+
+`optima/chain/incentive_activation.py` and `chain-activate-incentives` implement the
+one-way wallet-free cutover. They bind canonical core/composition/approval files plus
+an independently recorded approval digest at the approval's exact finalized intake
+cursor. Preflight requires the complete catalog-derived reward-family roster to identify
+exactly one retained evaluation arena and derives the campaign ID deterministically from
+that arena/catalog/roster. Arena, evaluation-stack, catalog, and finalized-membership
+digests are fields of the independently pinned approval itself, not receipt-only facts;
+preflight must reproduce all four, and the activation JSON plus reward event retain and
+reopen those exact bytes. That approval also requires and retains the production
+audit-control manifest, final B300 canary receipt, and explicit audit-residual-risk
+acceptance digests. Core and composition activate in one SQLite transaction and
+raise schema 5→6, which fences older runtimes. Existing V1 projection/publication state
+is deliberately not bridged: launch needs a fresh/quiescent activation database, and an
+existing V1 publisher database remains a fail-closed blocker rather than an invitation to
+delete history. This includes metadata-only V1 projection/dry-run state. The constrained
+first 1–2 week operation assumes stable reserve, validator, and positively weighted miner
+registrations; any departure or UID change halts publication rather than remapping or
+skipping the gapless boundary. The 90-day claim lifetime prevents ordinary expiry during
+that window. No production manifest set, shadow, or live activation receipt exists
+yet. The activation command binds the independently approved canary digest but does not
+parse or regrade the canary receipt. Non-PASS evidence must be rejected by the external
+reviewed evidence-package and approval process; digest equality alone is not a PASS
+judgment.
+
+`optima/chain/debt_publication.py` and `set-debt-weights` implement the active V2
+publication authority. The command retains the earliest gapless economic boundary,
+binds the exact signer-facing vector, resumes in-flight journals after restart, grades
+finalized chain readback, and debits only after the intake cursor catches the readback.
+Late boundaries remain nominally gapless and catch up no faster than one full policy
+cadence after the prior confirmation. There is no live V2 publication receipt yet.
+
+The final hardened-source pod cycle also ran a fresh live
+`chain-validate --intake-only --once`: at finalized block 7,586,142 it saw/reserved
+19 retained entries, rejected five malformed payloads, and performed no screens,
+decisions, settlements, or holds. Reopening the same database at finalized block
+7,586,144 produced zero work in every counter. This is live reveal/intake/restart
+evidence without a new candidate, qualification, wallet, signature, or publication.
+
+The current durable boundary is narrower than the selected pure policy. Active
+discovery settlement can atomically retain a `ReviewPendingDiscoveryWin`; reviewed
+issuance can create one bounded `bounty_only` claim whose award/expiry remain anchored
+to that win. `registered_promotion` is intentionally rejected until existing typed
+`DiscoveryWinRecord`/`DiscoveryPromotion` authority is transported and reopened,
+the target is registered, fresh requalification/CROWN is linked, and one work
+identity spans discovery and registered lanes. Bounty uniqueness does not substitute
+for that cross-lane identity. The finalized
+`expire_review_pending_discovery_wins` API terminalizes overdue pending wins as
+`review_expired` and appends `discovery_review_expired`; production orchestration
+must still call it reliably.
+
+A finalized registered-family invalidation API is also landed: it cancels open debt
+and inserts an invalidation clock marker so the next CROWN acts as a first CROWN.
+It accepts an external invalidation digest and does not independently decide or
+grade runtime invalidity.
+
+Meaningful V2 emissions still require: exact production MiniMax-M3 family and reserve
+manifests plus a fresh campaign-policy shadow; retained membership-departure history
+rather than only a current snapshot; independently graded review and runtime-
+invalidation authority; the promotion transport/linkage above; the production audit GPU
+canary; and actual activation/mainnet operations. The current
+`review_digest` remains controller-supplied and content-bound. Model rotation, a second
+campaign, and successor activation are unsupported future work, not launch settings.
+
 **The serving release is separate from evaluation and chain state.** Approved
 `IntegrationReviewRecord`s authorize exact contributions in an
 `EngineReleaseManifest`; deterministic model provisioning seals every file in a clean model
@@ -144,12 +346,17 @@ chain-independent release module emits signed descriptors, deterministic source
 and wheel artifacts, SPDX SBOM, provenance, a pinned serve specification, and an OCI build
 context. The serving wheel excludes chain, wallet, settlement, and evaluation-control code.
 
-**Still open:** mainnet economics and operations (owned subnet, stake/permits, hosted
-bundle storage); broader optimization targets (MLA / weight-absorbed attention, GEMM,
+**Still open:** execution and live validation of the implemented V2 activation/publication
+authority plus mainnet operations (production family catalog/reserve plus exact shadow,
+independently graded discovery review and runtime invalidation, membership-departure
+history, discovery-promotion transport/linkage, the production audit GPU canary,
+owned subnet,
+stake/permits, hosted bundle storage); broader optimization targets (MLA /
+weight-absorbed attention, GEMM,
 comms-overlap blocks); and B300-only proof for SM103/CuTe, NVLink/custom collectives,
 topology-specific calibration, TP4 role swaps, and the existing MiniMax-M3 campaign
-kernels. Production audit wiring and the global-versus-per-arena SGLang pin policy are
-also open. The earlier measured calibration findings remain below.
+kernels. The global-versus-per-arena SGLang pin policy is also open. The earlier measured
+calibration findings remain below.
 
 ## Status: validated end-to-end
 
@@ -183,7 +390,11 @@ op-correctness (bf16 tolerance) passed**. What this validates: the RMSNorm seam 
 is inert but `RMSNorm` fires), the cheat is caught hard (75%→0%), and the gate
 caught a *subtle* real drift a per-op check missed.
 
-### Calibration findings (from running on real hardware)
+### Historical deterministic-arena KL calibration findings
+
+These measurements remain valid for arenas whose stock-vs-stock control is approximately
+zero. They are not the MiniMax-M3 launch policy: M3 requires the separate audit role and
+typed host-regraded witness, with rollout-KL advisory.
 
 1. **The KL threshold must be calibrated to the model's nondeterminism noise
    floor**, not hand-picked. We measured it on gpt-oss-120b: stock-vs-stock KL with
@@ -192,8 +403,9 @@ caught a *subtle* real drift a per-op check missed.
    kernel drift is cleanly attributable. (The faithful rmsnorm above sat at 24×
    the floor — genuinely above any sane threshold, correctly flagged.)
 2. **Benchmark accuracy needs large n.** At n=12, GSM8K has a ~12% std; a 2-problem
-   flip reads as "−16.7%." Use **KL as the dense, low-variance primary gate** and
-   **benchmark accuracy as a capability floor at ~100–200 samples**.
+   flip reads as "−16.7%." On a deterministic arena with a near-zero stock control,
+   KL can be the dense, low-variance gate while benchmark accuracy remains a capability
+   floor at ~100–200 samples. M3 does not satisfy that premise.
 3. **For a quantized model there's no fp32 ground truth** (gpt-oss is natively quantized), so the
    KL reference is the stock-kernel run; the threshold must tolerate benign
    rounding in either direction.
@@ -205,17 +417,18 @@ caught a *subtle* real drift a per-op check missed.
    is **~0** (a clean gate — validated: a no-op scores KL `0.0`, PASS). In
    **non-deterministic** mode the floor on the realistic long-generation workload is
    **1.17e-2** — *above* a 5e-3 gate — so a faithful kernel false-fails. Takeaway:
-   **score big MoE in deterministic mode**; where that's unavailable, run
-   `--kl-advisory` and let the **accuracy gate** carry quality. (KL is also now
-   hardened: a genuinely degenerate candidate — all-non-finite logprobs — reads as
-   maximal divergence, not 0.)
+   **score big MoE in deterministic mode**. The historical diagnostic used
+   `--kl-advisory` where that was unavailable; current causal qualification instead
+   requires the separate audit witness plus pristine-T evidence. (KL is also hardened:
+   a genuinely degenerate candidate — all-non-finite logprobs — reads as maximal
+   divergence, not 0.)
 5. **The KL gate is not mean-only.** `kl_gate_ok` also caps the **argmax-disagreement
    rate** (default 1%) and an opt-in **p99 KL** — so a *sparse* cheat (bit-exact
    almost everywhere, a few tokens flipped) that keeps `mean_kl` under the threshold
    is still caught by the magnitude-independent flip rate. Calibrate the rate to the
    noise floor: in deterministic mode a faithful kernel sits at **0 flips**, so the
-   default is safe; in advisory mode (big MoE) all KL checks are off and accuracy
-   carries quality.
+   default is safe. On M3, KL is advisory while the mandatory audit witness and
+   pristine-T evidence carry fidelity authority.
 6. **Attention has a higher intrinsic KL floor than elementwise ops** (measured on
    the decode-attention swap). A faithful decode kernel — *any* reference SDPA — sits
    at **~6e-3 mean KL vs fa3's flash attention** (flash's online-softmax reduction
@@ -229,7 +442,7 @@ caught a *subtle* real drift a per-op check missed.
 
 ```
 optima/
-  slots.py                  # the slot ABI: SlotSpec catalog (10 slots; kind = op|block|collective)
+  slots.py                  # the slot ABI: SlotSpec catalog (11 slots; kind = op|block|collective)
   seams.py                  # single source of truth for the seam adapters (bootstrap/activate/compat derive from it)
   eval/scoring.py           # noise-robust speedup verdict (bookended A/B, noise-derived margin, no-decision)
   audit.py                  # the IN-ENGINE AUDIT: sampled per-call stock-baseline comparison inside the scored engine
@@ -259,16 +472,24 @@ optima/
     scoring.py              # bookended B/C/B' pairing, noise-derived bar, NO-DECISION
     reference_quality.py    # pristine-T quality record (NLL/top-k KL/argmax/coverage/task)
     oci_backend.py          # validator-owned no-egress worker lifecycle and native prebuild
-    qualification_runner.py # B/C/B'/pristine-T authority and aggregate verdict
+    qualification_runner.py # charged B/C/B', separate audit witness, pristine-T, aggregate verdict
     engine_worker.py / _launch.py
   arena_service.py          # registered runtime/model/topology/workload + non-crown screen
   stack_manifest.py         # evaluation/release stack identity + integration review
   settlement.py             # paired reproduction and transactional target settlement
+  finite_debt.py            # pure finite-claim issuance, lifecycle and epoch projection arithmetic
+  incentive_shadow.py       # signer-free synthetic projection against exact finalized membership
+  incentive_composition.py  # pure reviewed discovery + two-class projection arithmetic
+  incentive_composition_shadow.py # signer-free synthetic composed membership projection
   model_provision.py        # exact model-tree content receipt
   release.py                # signed chain-independent Engine release artifacts
-  chain/intake.py           # SQLite production authority
+  chain/intake.py           # SQLite production authority + schema-5 preactivation/schema-6 active incentive facades
+  chain/finite_debt_store.py # schema-4 activation/clock/claim/invalidation/epoch authority
+  chain/incentive_composition_store.py # schema-5 state + atomic one-campaign schema-6 activation
+  chain/incentive_activation.py # wallet-free retained-arena/catalog/membership activation preflight
+  chain/debt_publication.py # gapless restart-safe V2 projection/readback/debit authority
   bundle_hash.py            # deterministic bundle identity
-  cli.py                    # developer, chain-intake, weights, model and release commands
+  cli.py                    # developer, chain intake, legacy/V2 weights, activation, shadows, model/release commands
 optima_kernels/
   collective/               # validator-owned reference lib for the fused AR+norm family (sm103 CUDA + wrapper)
 examples/
@@ -302,8 +523,9 @@ is the shim); the `.pth` path is kept primary today because it is version-indepe
 known spawn-safe.
 
 The direct developer evaluator retains baseline/candidate launches. Crownable
-qualification uses B/C/B′ bookends plus a separately launched pristine T quality
-authority, and repeats a passing candidate under independent authority before settlement.
+qualification uses graph-on/audit-free B/C/B′ bookends, a mandatory separate eager/untimed
+audit role with a typed host-regraded witness, and a separately launched pristine T quality
+authority; it repeats a passing candidate under independent authority before settlement.
 The exact evaluation stack differs from its incumbent by one registered singleton or
 atomic target.
 
@@ -342,8 +564,9 @@ export TORCH_CUDA_ARCH_LIST=9.0                        # set to your GPU arch (9
 .venv/bin/python -m optima.cli verify examples/miner_rmsnorm_broken --device cuda
 ```
 
-End-to-end throughput + fidelity scoring is validator-side: the chain intake loop
-runs the qualification bracket (B/C/B′ + pristine-T) in no-egress workers and
+End-to-end throughput + fidelity scoring is validator-side: the chain intake loop runs
+graph-on/audit-free charged B/C/B′, the separate eager/untimed audit role and typed
+host-regraded witness, and pristine-T in no-egress workers, then
 settles only after independent reproduction (TESTNET.md is the runbook; the
 legacy local `evaluate`/`bench` diagnostics were deleted in the post-arc trim —
 the numbers recorded in this file were measured with them while they existed).
@@ -428,8 +651,12 @@ local JSON-ledger round simulator (`optima commit/reveal/ledger/legacy-settle`,
   stack state (`optima/settlement.py`); one passing qualification is retained as
   `reproduction_pending`, a second independent passing authority is required, and the
   settled speedup is the **lower** of the two. Emission projection is separate and
-  policy-driven (`docs/EMISSIONS_POLICY.md`) — relative improvement with time decay,
-  not winner-take-all.
+  policy-driven (`docs/EMISSIONS_POLICY.md`). The wired authority is legacy V1
+  standing/discovery credit; the selected but inactive V2 instead uses finite
+  multiplicative-log CROWN principal plus separately bounded reviewed-discovery
+  principal, with independent payout classes and expiry. Durable discovery issuance
+  is currently bounty-only; selected promotion remains fail-closed pending typed
+  cross-lane authority. Neither generation is winner-take-all.
 
 Robust scoring (see `optima/eval/scoring.py`), built for a validator that **can't lock GPU
 clocks**: each arm recomputes one charged rate from the pooled conditioning and timed
@@ -438,10 +665,11 @@ baseline before and after** (B,C,B'); the speedup is paired against the baseline
 bar is **derived from the measured baseline noise** (`1 + max(margin, k·noise)`) not a
 hand-picked constant; a round whose bracketing baselines disagree past a tolerance is
 **NO-DECISION** and cannot crown. The ledger records a crownable speedup or 0.0. Fidelity
-gating beyond mean-KL: a **coverage (tail-mass) guard** catches a flattened distribution
-whose visible head matches (top-k KL is blind to it), the argmax-rate catches sparse flips,
-**per-slot KL thresholds** calibrate to each slot's floor (attention's ~6e-3 vs silu's), and
-`aligned_kl` now counts early-stop as dropped positions. Plus per-epoch seeded prompts
+uses the mandatory separate audit witness plus pristine-T evidence; M3 treats rollout-KL
+as advisory. Where a deterministic arena gates KL, a **coverage (tail-mass) guard** catches
+a flattened distribution whose visible head matches, argmax-rate catches sparse flips,
+per-slot thresholds calibrate to each slot's floor, and `aligned_kl` counts early-stop as
+dropped positions. Plus per-epoch seeded prompts
 (anti-overfit), **shape jitter** on the per-op verify (count dims vary per run, so a kernel
 can't hard-code the verify shapes), `ignore_eos` so both sides emit identical token counts
 and the throughput numerator is a driver-known fixed budget (not a scheduler-reported
@@ -471,7 +699,7 @@ cross-validator consensus catches a rogue validator.
 | Slots | 11: silu/rmsnorm, attention ×4, MoE ×2, all-reduce, AR+norm epilogues ×2 (deep via dep_patches) | + MLA, FP8/FP4 GEMM, graph-safe paged attention |
 | Throughput gain | **two crowned bundles on M3-NVFP4/4×B300: 1.044×/1.049× (shallow) and 1.074×/1.071× (deep), each double-proven** | keep beating the pinned baseline as it advances |
 | Model | gpt-oss-120b (1×H100); MiniMax-M3-NVFP4 (4×B300, TP4) | DSV4-scale (multi-GPU, TP/PD/EP) |
-| Quality gate | Current causal path: pristine-T distribution/task evidence; in-engine audit code and historical B300 receipts exist but are not transported or graded in production | wire host-regraded exact slot×rank audit evidence, then add full-vocab reference-seam checks + large-n (100–200) benchmarks |
+| Quality gate | Mandatory separate eager/untimed audit role + typed host-regraded exact slot×TP-rank witness is implemented and CPU/mock-covered; charged B/C/B′ are graph-on/audit-free; historical B300 receipts validate the underlying mechanism, not the new bytes | pass the exact production M3 GPU canary; retain explicit risk acceptance for in-process tampering, audit-role fingerprinting, and timed-workload fingerprinting; then add full-vocab reference-seam checks + large-n (100–200) benchmarks |
 | Scoring noise | noise-derived margin + calibrated v1 B/C/B′ + no-decision (no clock-lock needed); v2 B/C/B′/C′/B″ is explicit and uncalibrated | + calibrate v2 repeat reads; interleaved per-iter A/B + locked clocks where available |
 | Isolation | validator-owned no-egress OCI worker; trusted controller never loads candidate code | deploy the same policy on each validator's production runtime |
 | Champion | explicit singleton/atomic targets; two independent PASSes; transactional stack settlement | continued whole-stack regression and re-baseline on pin changes |

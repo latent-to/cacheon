@@ -578,6 +578,7 @@ def build_runtime_argv(
         "OPTIMA_NATIVE_ARTIFACT_ROOT": artifact_destination,
         "OPTIMA_NATIVE_BUILD_SPEC_DIGEST": resolved.native_build_spec.digest,
         "OPTIMA_PREBUILT_ARTIFACTS": "1",
+        "OPTIMA_REBUILD_PHASE": "load",
         "OPTIMA_RUNTIME_DIGEST": launch.runtime_digest,
         "OPTIMA_SESSION_PROTOCOL": session_protocol,
         "OPTIMA_STACK_DIGEST": launch.stack_digest,

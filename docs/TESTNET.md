@@ -81,11 +81,15 @@ registered service binds the runtime, model, topology, workload mixture, capacit
 retry policy, screen policy, and qualification-plan factory. Its non-crown screen runs
 the fixed static/build/ABI/graph/abbreviated-serving stages before promotion.
 
-Full qualification uses the isolated B/C/B′/pristine-T authority. One passing report is
-stored as `reproduction_pending`; a second pass must use independent authority and
-selection evidence while matching the same arena, target, delta, incumbent and candidate
-stack identities. Settlement receives only the paired candidate and uses the lower
-speedup. Weight submission is a separate control-plane reconciliation:
+Full qualification uses isolated graph-on/audit-free charged B/C/B′ roles, a mandatory
+separate eager/untimed audit role whose exact slot×TP-rank receipts are host-regraded into
+a typed witness, and pristine-T authority. This wiring is implemented and CPU/mock-covered
+but not yet GPU-qualified; unauditable attention slots fail closed. One passing report is
+stored as `reproduction_pending`; a second pass must use independent authority and selection
+evidence while matching the same arena, target, delta, incumbent and candidate stack
+identities. Settlement receives only the paired candidate and uses the lower speedup. The
+currently wired weight command below is the retained **legacy-V1**
+standing-credit/discovery policy. It does not exercise or activate finite debt:
 
 ```bash
 optima set-weights --intake-db chain_intake/intake.sqlite3 \
@@ -93,6 +97,227 @@ optima set-weights --intake-db chain_intake/intake.sqlite3 \
   --half-life-blocks <N> --discovery-lifetime-blocks <N> \
   --discovery-pool-ppm <PPM> --refresh-blocks <N> --dry-run
 ```
+
+The signer-free synthetic shadow surface constructs no wallet, accepts no intake
+database, and cannot submit
+weights:
+
+```bash
+optima chain-incentive-shadow \
+  --network "$NET" --netuid 307 \
+  --policy <canonical-synthetic-policy.json> \
+  --claims-fixture <canonical-explicitly-synthetic-claims.json> \
+  --expected-policy-digest <sha256-semantic-policy-digest> \
+  --expected-claims-digest <sha256-semantic-fixture-digest> \
+  --output <new-shadow-receipt.json>
+```
+
+The command reopens the exact finalized height/hash and historical metagraph
+twice, requires every positive miner plus the reserve anchor to be registered,
+and writes `submitted=false`. Its claim fixture is deliberately non-authoritative:
+this tests projection and membership mapping, not settlement, a production family
+catalog, a reserve-governance decision, or emission publication.
+
+The 2026-07-18 feasibility pass ran this command with the now-historical D-012
+family-share policy from the RTX pod against netuid
+307: three synthetic claims mapped to three registered miners, the reserve mapped
+separately, the vector conserved 900,000/100,000 ppm, and the retained receipt
+recorded `submitted=false` (semantic digest
+`a4006912ec3e34b98fe51031fe25864915e4a2d588209877c41a459a6094dcf3`).
+That receipt exercised the historical registered-CROWN class only; it did **not**
+exercise D-013 reviewed-discovery composition or D-015 campaign-policy bytes.
+
+The selected but inactive D-013 composition has a distinct signer-free command for
+explicitly synthetic registered-CROWN and discovery fixtures:
+
+```bash
+optima chain-incentive-composition-shadow \
+  --network "$NET" --netuid 307 \
+  --core-policy <canonical-synthetic-core-policy.json> \
+  --core-claims-fixture <canonical-synthetic-core-claims.json> \
+  --discovery-policy <canonical-synthetic-composition-policy.json> \
+  --discovery-claims-fixture <canonical-synthetic-discovery-claims.json> \
+  --expected-core-policy-digest <semantic-core-policy-digest> \
+  --expected-core-claims-digest <semantic-core-fixture-digest> \
+  --expected-discovery-policy-digest <semantic-composition-policy-digest> \
+  --expected-discovery-claims-digest <semantic-discovery-fixture-digest> \
+  --output <new-composed-shadow-receipt.json>
+```
+
+It also constructs no signer or wallet, accepts no intake database, reopens exact
+finalized membership twice, maps each payout class separately, verifies the
+1,000,000-ppm vector, and can only write `submitted=false` to a new output path.
+The selected allocation is
+`P_d=min(50,000, live discovery debt)`,
+`P_c=min(900,000-P_d, live registered-CROWN debt)`, with the remainder to the
+reserve.
+
+Before D-015, the live RTX-pod feasibility run passed against testnet netuid 307 at finalized
+block 7,586,146 with metagraph size 6. Its explicitly synthetic states produced
+850,000 ppm registered-CROWN payout, 50,000 ppm reviewed-discovery payout, and
+100,000 ppm reserve, conserving 1,000,000 ppm; the receipt recorded
+`submitted=false`. Receipt semantic digest:
+`3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`;
+receipt-file SHA-256:
+`ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`.
+The command constructed no wallet. This is projection/membership feasibility
+evidence for the historical D-012 core only—not review, settlement, publication,
+debt-debit, D-015 policy, or activation authority. Do not reuse those fixture
+digests as a campaign-policy activation shadow.
+
+Opening an existing intake database migrates schema 4→5 by creating empty immutable
+composition tables; it imports no historical CROWN or discovery claims and creates
+no retroactive debt. Activation is now one wallet-free atomic command, but **do not
+run it with placeholder or historical-shadow bytes**:
+
+```bash
+optima chain-activate-incentives \
+  --intake-db chain_intake/intake.sqlite3 \
+  --network "$NET" --netuid 307 \
+  --core-policy <canonical-minimax-m3-core-policy.json> \
+  --composition-policy <canonical-composition-policy.json> \
+  --approval <independently-reviewed-activation-approval.json> \
+  --expected-approval-digest <independently-recorded-approval-digest>
+```
+
+The command constructs no wallet and signs nothing. It accepts exactly one immutable
+MiniMax-M3 campaign, reopens chain genesis and finalized ancestry, requires the intake
+cursor to equal the approval's exact finalized block/hash, and atomically binds the
+core policy, composition policy, approval, family roster, and reserve. The independently
+pinned approval itself contains the arena, evaluation-stack, catalog, and finalized
+membership digests. It also requires the production audit-control manifest digest, the
+exact final B300 canary receipt digest, and a separate digest of the operator's explicit
+acceptance of the three residual risks named in `FIDELITY.md`; these are retained in the
+atomic activation row and public result. Preflight must reproduce the four retained
+arena/chain facts. The complete approved roster
+must match that retained arena/catalog, and the campaign ID is derived from the
+arena/catalog/roster rather than chosen independently.
+
+`chain-activate-incentives` binds the digest of an independently approved canary; it does
+not parse or regrade the canary receipt. Rejecting a non-PASS or incomplete canary belongs
+to the external reviewed evidence package and approval process. A matching digest proves
+which evidence was approved, not that the evidence passed.
+
+Activation also requires quiescent pre-cutover intake, no open V2 debt, no retained
+legacy discovery row, and **a database that has never retained V1 projection/publication
+state**. There is intentionally no automatic V1-history bridge in this command: launch
+must use a fresh/quiescent activation database, while an existing V1 publisher database
+remains an explicit fail-closed blocker. Do not delete or rewrite V1 history to force the
+cutover. “Fresh” is literal: even a metadata-only `emissions_policy_digest` left by
+building or dry-running a V1 projection makes that database ineligible. Success raises
+the database schema floor 5→6 in the same transaction; an older
+schema-5 runtime then fails closed. There is no live activation receipt yet.
+
+The selected pure policy describes promotion-or-bounty, but the schema-5 settlement
+surface currently retains qualified discovery wins as `review_pending` and can issue
+only bounded `bounty_only`. It intentionally rejects `registered_promotion` until
+typed `DiscoveryWinRecord`/`DiscoveryPromotion` transport, target registration,
+fresh requalification/CROWN linkage, and cross-lane work identity exist. Do not
+interpret “never both” as end-to-end same-work enforcement yet. The bounty lifetime
+starts at the retained qualified-win block, so review delay consumes its 648,000
+blocks and review at or after expiry cannot mint. A finalized durable API can mark
+overdue pending wins `review_expired` and append `discovery_review_expired`, but no
+operator scheduler for that reconciliation is established here.
+
+D-015 tested the one/two-campaign arithmetic hierarchy offline. All 14 preregistered
+screens passed: target-family counts caused zero principal dilution; the normal weekly
+tape issued one full-sized 4.4%/5% claim for one campaign, or one half-sized claim in
+each of two research campaigns (one full share aggregate), and paid fully with zero
+expiry/outstanding; and the required marginal/overload controls were detected. The
+operator activation path nevertheless accepts only one MiniMax-M3 campaign; two-campaign
+cells, rotation, and successor activation are unsupported historical research.
+Sustained simultaneous per-family wins were not the normal-tape assumption. Report
+semantic digest:
+`7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
+The raw sweep is a local-only experiment record. Current validation is 2,193
+passed/19 skipped repository-wide. It is
+deterministic control-plane and ROI evidence, not a new GPU or testnet run.
+
+A tracked one-campaign supplement covers 64 launch/stress cells over 1/2/5/10
+independently winning M3 families, 7/14/30/90-day cadences, and empty/saturated
+discovery. Its semantic report digest is
+`505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`.
+This is deterministic accounting evidence and has no pod or live-chain receipt.
+
+D-014 tested that win-anchored lifetime offline rather than through a chain command.
+The 288-row matrix replayed byte-identically on arm64/Python 3.11 and
+x86_64/Python 3.12. Every one of the 108 preregistered 0/1/7-day SLA rows paid
+100% of discovery principal, left zero expiry/unissued principal, imposed at most
+55,555 ppm instantaneous CROWN-capacity dilution, and had zero CROWN paid-fraction
+regression versus zero delay. The 90/120-day cases issued no stale debt; 30/60/89
+days were diagnostic only. Report digest:
+`f0939d67241dffa49aac95c035c43dd7ea14b51eb2671fe106cb09347511b7ef`.
+This is synthetic accounting sensitivity evidence, not testnet publication,
+external review, activation, durable-state completion, or GPU-performance evidence.
+
+The final hardened-source feasibility pass separately exercised the real intake
+loop without a new winner. A fresh GPU-disabled `chain-validate --intake-only --once`
+at finalized block 7,586,142 saw/reserved 19 retained entries, rejected five malformed
+payloads, and ran no screens, decisions, settlements, or holds. Reopening the same
+database at finalized block 7,586,144 produced zero work in every counter. Final pod
+conformance passed 111 tests. No wallet, signature, candidate qualification, weight
+publication, or GPU kernel was involved.
+
+Likewise, `invalidate_finite_debt_family` can durably cancel a registered family's
+open debt and reset its next-CROWN clock, but it accepts an external invalidation
+digest and is not an independent runtime-invalidity authority.
+
+Legacy V1 remains the only publisher exercised live. After a successful schema-6
+activation, the implemented V2 publisher is:
+
+```bash
+# First inspect the exact next retained projection without signing.
+optima set-debt-weights \
+  --intake-db chain_intake/intake.sqlite3 \
+  --network "$NET" --netuid 307 \
+  --wallet default --hotkey default \
+  --refresh-blocks <FINALITY_PLUS_REVEAL_MARGIN> --dry-run
+
+# Remove --dry-run only after reviewing the retained projection.
+optima set-debt-weights \
+  --intake-db chain_intake/intake.sqlite3 \
+  --network "$NET" --netuid 307 \
+  --wallet default --hotkey default \
+  --refresh-blocks <FINALITY_PLUS_REVEAL_MARGIN>
+```
+
+`set-debt-weights` always targets the earliest unclosed nominal boundary. It reuses
+an in-flight journal after restart, binds the economic projection to the exact signer-
+facing vector, confirms only from finalized chain readback, and debits claims only when
+the intake cursor has reached that readback. If a boundary lands late, later boundaries
+remain gapless and catch up no faster than one full policy cadence after the preceding
+confirmation. The dry run prints a canonical JSON object containing the complete
+economic projection and exact hotkey/UID/PPM signer binding; review and retain those
+bytes before enabling the wallet-backed invocation. Exit 3 means a submission is still
+pending, readback/intake work remains, or a confirmed row is refresh-due; it is not
+permission to skip the boundary. `--reconcile-only --validator-hotkey <SS58>` reopens an in-flight
+publication without constructing a wallet. The existing `--release-hold <REASON>` flow
+is also available for an audited V2 hold. This command has no live receipt yet.
+
+For the constrained first 1–2 week launch, keep the reserve and validator registrations
+stable and monitor every positively weighted miner at each boundary. Claims live for 90
+days, so ordinary expiry cannot arise in that window. If the reserve, validator, or a
+positive recipient departs or changes UID, stop the publisher. There is deliberately no
+launch-day remap or abandon protocol: do not skip the gapless boundary, rebuild an
+in-flight vector against different UIDs, release the hold as if it fixed membership, or
+rewrite the journal. General retained membership/departure reconciliation remains
+post-launch work.
+
+Before activation/mainnet operation, operators still need:
+
+- exact MiniMax-M3 family and reserve manifests, followed by a fresh campaign-policy
+  shadow and independently reviewed activation approval;
+- retained membership-departure history rather than only the current metagraph snapshot;
+- independently graded review and runtime-invalidation authority;
+- the discovery promotion transport/linkage above;
+- the production audit GPU canary plus explicit acceptance of in-process tampering,
+  audit-role fingerprinting, and timed-workload fingerprinting; and
+- owned-subnet operational authority, stake/permits, storage, and the actual activation.
+
+Model rotation, a second campaign, and successor activation are unsupported future work,
+not options in this launch runbook.
+
+### Legacy-V1 publication reconciliation
 
 **Commit-reveal timing:** `--refresh-blocks` is both the normal refresh cadence
 and the bounded deadline for authoritative readback of an in-flight publication.
@@ -144,7 +369,7 @@ The following receipts established the chain SDK, timelock, fetch, copy, restart
 weight-publication behavior before the SQLite authority replacement. They do not claim a
 joined production-arena run for the current implementation.
 
-### Netuid 307 (2026-07-08)
+### Netuid 307 (2026-07-08) — legacy-V1 outcome
 
 - Registered validator (uid 3) + miner (uid 4) hotkeys; burn ≈ 0.0005 tTAO each.
 - Committed `miner_silu_torch` (178-byte payload, 5-block timelock) from the
@@ -159,7 +384,7 @@ joined production-arena run for the current implementation.
   weights_rate_limit 100 (skipped under commit-reveal). The control-plane
   readback deadline must therefore use 400 blocks, as described above.
 
-### Netuid 307, round 2 (2026-07-10) — real weights
+### Netuid 307, round 2 (2026-07-10) — real legacy-V1 weights
 
 Everything the 07-08 pass left dry-run, landed for real (the subnet owner
 start-called 307 around 07-08, so `SubtokenEnabled` and permits now work there):

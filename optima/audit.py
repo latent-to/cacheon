@@ -45,6 +45,7 @@ from typing import Optional, Sequence
 import torch
 
 from optima import receipts
+from optima.audit_gate import gate
 
 logger = logging.getLogger("optima.audit")
 
@@ -214,26 +215,3 @@ def run(slot: str, actual: Sequence[torch.Tensor], baseline_thunk) -> None:
         except Exception:  # noqa: BLE001
             pass
         logger.exception("optima.audit: baseline call failed (slot=%s)", slot)
-
-
-def gate(audit_receipts: list[dict], *, min_calls: int) -> tuple[bool, str]:
-    """Eval-driver side: fold per-rank rolling receipts into a verdict.
-
-    Pass iff every audited slot has zero violations and the total audited-call
-    count is at least ``min_calls`` (insufficient coverage is a FAIL — an
-    unaudited kernel is unproven, not innocent)."""
-    if not audit_receipts:
-        return False, f"no audit receipts (need >= {min_calls} audited calls)"
-    total_n = sum(r.get("n", 0) for r in audit_receipts)
-    total_viol = sum(r.get("violations", 0) for r in audit_receipts)
-    total_err = sum(r.get("compare_errors", 0) for r in audit_receipts)
-    worst = min((r.get("worst_frac", 1.0) for r in audit_receipts), default=1.0)
-    desc = (f"{total_n} audited calls, {total_viol} violations, "
-            f"worst_frac={worst:.4f}, compare_errors={total_err}")
-    if total_viol > 0:
-        return False, desc
-    if total_err > 0:
-        return False, desc + " (audit could not compare; refusing to pass unproven)"
-    if total_n < min_calls:
-        return False, desc + f" (insufficient coverage; need >= {min_calls})"
-    return True, desc
