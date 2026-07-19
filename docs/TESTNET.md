@@ -95,8 +95,8 @@ optima set-weights --intake-db chain_intake/intake.sqlite3 \
   --discovery-pool-ppm <PPM> --refresh-blocks <N> --dry-run
 ```
 
-The D-012 registered-CROWN finite-debt curve has a separate signer-free synthetic
-shadow. It constructs no wallet, accepts no intake database, and cannot submit
+The signer-free synthetic shadow surface constructs no wallet, accepts no intake
+database, and cannot submit
 weights:
 
 ```bash
@@ -115,13 +115,14 @@ and writes `submitted=false`. Its claim fixture is deliberately non-authoritativ
 this tests projection and membership mapping, not settlement, a production family
 catalog, a reserve-governance decision, or emission publication.
 
-The 2026-07-18 feasibility pass ran this command from the RTX pod against netuid
+The 2026-07-18 feasibility pass ran this command with the now-historical D-012
+family-share policy from the RTX pod against netuid
 307: three synthetic claims mapped to three registered miners, the reserve mapped
 separately, the vector conserved 900,000/100,000 ppm, and the retained receipt
 recorded `submitted=false` (semantic digest
 `a4006912ec3e34b98fe51031fe25864915e4a2d588209877c41a459a6094dcf3`).
-That receipt exercised the registered-CROWN class only; it did **not** exercise
-D-013 reviewed-discovery composition.
+That receipt exercised the historical registered-CROWN class only; it did **not**
+exercise D-013 reviewed-discovery composition or D-015 campaign-policy bytes.
 
 The selected but inactive D-013 composition has a distinct signer-free command for
 explicitly synthetic registered-CROWN and discovery fixtures:
@@ -148,7 +149,7 @@ The selected allocation is
 `P_c=min(900,000-P_d, live registered-CROWN debt)`, with the remainder to the
 reserve.
 
-The live RTX-pod feasibility run passed against testnet netuid 307 at finalized
+Before D-015, the live RTX-pod feasibility run passed against testnet netuid 307 at finalized
 block 7,586,146 with metagraph size 6. Its explicitly synthetic states produced
 850,000 ppm registered-CROWN payout, 50,000 ppm reviewed-discovery payout, and
 100,000 ppm reserve, conserving 1,000,000 ppm; the receipt recorded
@@ -157,8 +158,9 @@ block 7,586,146 with metagraph size 6. Its explicitly synthetic states produced
 receipt-file SHA-256:
 `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`.
 The command constructed no wallet. This is projection/membership feasibility
-evidence only—not review, settlement, publication, debt-debit, or activation
-authority.
+evidence for the historical D-012 core only—not review, settlement, publication,
+debt-debit, D-015 policy, or activation authority. Do not reuse those fixture
+digests as a campaign-policy activation shadow.
 
 Opening an existing intake database migrates schema 4→5 by creating empty immutable
 composition tables; it imports no historical CROWN or discovery claims and creates
@@ -178,6 +180,18 @@ starts at the retained qualified-win block, so review delay consumes its 648,000
 blocks and review at or after expiry cannot mint. A finalized durable API can mark
 overdue pending wins `review_expired` and append `discovery_review_expired`, but no
 operator scheduler for that reconciliation is established here.
+
+D-015 tested the one/two-campaign hierarchy offline. All 14 preregistered screens
+passed: target-family counts caused zero principal dilution; the normal weekly tape
+issued one full-sized 4.4%/5% claim for one campaign, or one half-sized claim in
+each of two campaigns (one full share aggregate), and paid fully with zero
+expiry/outstanding; and the required marginal/overload controls were detected.
+Sustained simultaneous per-family wins were not the normal-tape assumption. Report
+semantic digest:
+`7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
+The raw sweep is a local-only experiment record. Current validation is 2,137
+passed/19 skipped repository-wide plus 8/8 local simulator tests. It is
+deterministic control-plane and ROI evidence, not a new GPU or testnet run.
 
 D-014 tested that win-anchored lifetime offline rather than through a chain command.
 The 288-row matrix replayed byte-identically on arm64/Python 3.11 and
@@ -204,8 +218,8 @@ digest and is not an independent runtime-invalidity authority.
 
 Legacy V1 remains the sole wired publisher. Before activation, operators still need:
 
-- the actual production family catalog and reserve identity, followed by an exact
-  selection/shadow rerun and activation manifest;
+- the exact MiniMax-M3 campaign identity, production family map, and reserve,
+  followed by a fresh campaign-policy shadow and activation manifest;
 - an atomic handoff or enforced quiescence across the two distinct
   V1→core→composition activation steps—the interval can otherwise race legacy
   settlement or publication;
@@ -214,6 +228,8 @@ Legacy V1 remains the sole wired publisher. Before activation, operators still n
 - independently graded review and runtime-invalidation authority;
 - retained membership-departure history rather than only the current metagraph
   snapshot;
+- an atomic core-plus-composition successor protocol for later model rotation or
+  one-to-two campaign expansion;
 - the promotion transport/linkage above; and
 - production audit-evidence transport.
 

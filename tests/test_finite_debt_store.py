@@ -7,11 +7,12 @@ import pytest
 from optima.chain.finite_debt_store import SeededFamilyClock, reward_family_id
 from optima.chain.intake import IntakeError
 from optima.finite_debt import (
+    CampaignBudgetShare,
     IMPROVEMENT_GROSS,
     PPM,
     DebtClaimBalance,
-    FamilyBudgetShare,
     FiniteDebtPolicyManifest,
+    RewardFamilyCampaign,
     cancel_claim_balance,
     issue_innovation_claim,
     pay_claim_balance,
@@ -42,8 +43,13 @@ def _policy(
     lifetime_blocks: int = 100,
     beta_ppm: int = 100_000,
 ) -> FiniteDebtPolicyManifest:
+    campaign_id = _h("minimax-m3 campaign")
     return FiniteDebtPolicyManifest(
-        family_budget_shares=(FamilyBudgetShare(family_id, PPM),),
+        campaign_budget_shares=(CampaignBudgetShare(campaign_id, PPM),),
+        reward_family_campaigns=(
+            RewardFamilyCampaign(family_id, campaign_id),
+        ),
+        selection_report_digest=_h("d015 selection report"),
         reserve_hotkey="reserve",
         reserve_ppm=100_000,
         epoch_blocks=epoch_blocks,
@@ -175,6 +181,33 @@ def test_schema3_reopen_creates_no_retro_debt_and_preserves_v1_bytes(tmp_path) -
         assert reopened.finite_debt_family_clocks() == ()
         assert reopened.finite_debt_reward_events() == ()
         assert reopened.finite_debt_reward_epochs() == ()
+
+
+def test_schema1_family_share_activation_fails_closed_during_open(tmp_path) -> None:
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        assert isinstance(candidate, SettlementCandidate)
+        policy, activation = _activate(store, candidate)
+        legacy_policy = policy.to_dict()
+        legacy_policy.pop("campaign_budget_shares")
+        legacy_policy.pop("reward_family_campaigns")
+        legacy_policy.pop("selection_report_digest")
+        legacy_policy["family_budget_shares"] = [
+            {"family_id": _family(candidate), "share_ppm": PPM}
+        ]
+        legacy_policy["policy_version"] = "optima.finite-debt.v1"
+        legacy_policy["schema_version"] = 1
+        legacy_activation = activation.to_dict()
+        legacy_activation["policy"] = legacy_policy
+        _drop_immutable_guard(store, "finite_debt_policy_activations", "update")
+        store._db.execute(
+            "UPDATE finite_debt_policy_activations SET activation_json=?",
+            (json.dumps(legacy_activation, separators=(",", ":"), sort_keys=True),),
+        )
+        _restore_immutable_guard(store, "finite_debt_policy_activations", "update")
+
+    with pytest.raises(IntakeError, match="reward store cannot open.*fields"):
+        _store(tmp_path)
 
 
 def test_active_policy_crown_atomically_issues_claim_clock_and_v1_claim(tmp_path) -> None:
@@ -404,7 +437,7 @@ def test_missing_family_rolls_back_entire_crown_and_non_crowns_issue_nothing(
         assert isinstance(candidate, SettlementCandidate)
         missing_family_policy = _policy(_h("absent-family"))
         _activate(store, candidate, policy=missing_family_policy)
-        with pytest.raises(IntakeError, match="absent from the policy budget"):
+        with pytest.raises(IntakeError, match="absent from the policy campaign map"):
             _commit(store, candidate)
         assert store.finite_debt_claim_states() == ()
         assert store.finite_debt_family_clocks() == ()
@@ -710,15 +743,16 @@ def test_zero_principal_crown_commits_and_advances_clock_without_debt(
         candidate = _qualified_settlement_candidate(store)
         assert isinstance(candidate, SettlementCandidate)
         family = _family(candidate)
-        other_family = _h("large reference-pool family")
         base = _policy(family)
+        campaign_id = _h("minimax-m3 campaign")
         policy = FiniteDebtPolicyManifest(
-            family_budget_shares=(
-                FamilyBudgetShare(family, 2),
-                FamilyBudgetShare(other_family, PPM - 2),
+            campaign_budget_shares=(CampaignBudgetShare(campaign_id, PPM),),
+            reward_family_campaigns=(
+                RewardFamilyCampaign(family, campaign_id),
             ),
+            selection_report_digest=base.selection_report_digest,
             reserve_hotkey=base.reserve_hotkey,
-            reserve_ppm=base.reserve_ppm,
+            reserve_ppm=999_999,
             epoch_blocks=base.epoch_blocks,
             beta_ppm=base.beta_ppm,
             tau_blocks=base.tau_blocks,
@@ -772,10 +806,16 @@ def test_family_invalidation_event_rejects_cross_family_balance_forgery(
         family_b = _h("unrelated invalidation family")
         policy = _policy(family_a)
         policy = FiniteDebtPolicyManifest(
-            family_budget_shares=(
-                FamilyBudgetShare(family_a, 500_000),
-                FamilyBudgetShare(family_b, 500_000),
+            campaign_budget_shares=policy.campaign_budget_shares,
+            reward_family_campaigns=(
+                RewardFamilyCampaign(
+                    family_a, policy.campaign_budget_shares[0].campaign_id
+                ),
+                RewardFamilyCampaign(
+                    family_b, policy.campaign_budget_shares[0].campaign_id
+                ),
             ),
+            selection_report_digest=policy.selection_report_digest,
             reserve_hotkey=policy.reserve_hotkey,
             reserve_ppm=policy.reserve_ppm,
             epoch_blocks=policy.epoch_blocks,

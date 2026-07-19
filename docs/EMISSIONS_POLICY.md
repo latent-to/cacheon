@@ -7,17 +7,17 @@ inferred from submissions or historical ledger state.
 
 ## Authority status
 
-There are currently two deliberately separate policy generations:
+There are currently three deliberately separate policy authorities:
 
 - **Legacy V1 authority:** the standing-claim policy described later in this
   document remains reopenable for retained testnet projections and publication
   journals. Its bytes and digest are not reinterpreted.
 - **Selected finite-debt V2:** “V2” names the emissions-generation migration from
   standing legacy claims; the serialized registered-CROWN manifest itself correctly
-  says `policy_version="optima.finite-debt.v1"` and schema 1. D-012's pure
-  arithmetic, additive durable state, and signer-free chain shadow are implemented
-  but inactive. That registered-CROWN-only live synthetic testnet shadow passed with
-  `submitted=false`.
+  says `policy_version="optima.finite-debt.v2"` and schema 2. D-015's pure
+  campaign-sized arithmetic and additive durable validation are implemented but
+  inactive. D-012 and its signer-free chain shadow are immutable historical evidence
+  for the superseded family-share manifest; they do not authorize D-015 bytes.
 - **Selected reviewed-discovery composition:** D-013 adds a separately versioned
   `optima.incentive-composition.v1` manifest, pure two-class arithmetic, schema-5
   review-pending/bounty-only durable state, and signer-free
@@ -26,11 +26,13 @@ There are currently two deliberately separate policy generations:
   explicitly synthetic states with `submitted=false`; its exact bounded receipt is
   recorded below and carries no review, settlement, publication, or activation authority.
 
-Legacy V1 remains the sole wired publisher. Activation still lacks the actual
-production family catalog and reserve identity plus an exact rerun/manifest; an
+Legacy V1 remains the sole wired publisher. Activation still lacks the exact
+MiniMax-M3 campaign identity, production family map, and reserve identity plus a
+fresh campaign-policy shadow; an
 atomic or quiescent V1→core→composition cutover; retained-boundary publication,
 confirmation, catch-up, and debt debit; independently graded review and
-runtime-invalidation authority; retained membership-departure history rather than
+runtime-invalidation authority; an atomic successor protocol for later campaign
+rotation or one-to-two expansion; retained membership-departure history rather than
 only a current snapshot; durable promotion transport/linkage; and production audit
 evidence transport. The current `review_digest` is controller-supplied and
 content-bound, not independently reopened and graded. See
@@ -64,21 +66,32 @@ bonus therefore reaches 5% at 648,000 blocks (about 90 days) and is capped below
 10%.
 
 One policy epoch is 7,200 blocks and contains 1,000,000 accounting units. After
-the 10% minimum reserve, the reference claim capacity is 900,000 units. For
-normalized family share `B_f` in ppm and `k=1_000_000`, principal uses this
+the 10% minimum reserve, the reference claim capacity is 900,000 units. Every
+validator-owned family maps once to model campaign `c`. For campaign claim-sizing
+share `B_c` in ppm and `k=1_000_000`, principal uses this
 exact flooring order:
 
 ```text
-F_f = floor(900_000 * B_f / 1_000_000)
-Q   = floor(F_f * k * G * M / 1_000_000^3)
+F_c = floor(900_000 * B_c / 1_000_000)
+Q   = floor(F_c * k * G * M / 1_000_000^3)
 ```
 
-The selected launch rule gives the activation-approved eligible families shares
-as equally as integer ppm permits: quotient allocation plus one ppm to each of the
-lexicographically earliest family digests until the remainder is exhausted. The
-shares sum to 1,000,000 ppm; the exact family catalog is not yet frozen. Unequal
-value-weighted budgets require a separately retained demand/governance manifest;
-they are not inferred from target count, miner identity, or synthetic traffic.
+The manifest enforces 1,000,000-ppm claim sizing for a sole campaign or
+500,000-ppm claim sizing for claims in either of two campaigns, and rejects more
+than two. Every family maps exactly once and every
+campaign has a family. Target count never divides a campaign share: adding 1, 10,
+or 100 unused families changes principal by zero, while each family retains its
+own elapsed-time clock. Campaign shares size claims rather than creating hard
+epoch silos; all registered claims later share global `P_c` pro rata.
+
+D-015's 14 preregistered screens all passed. At `k=1`, the weekly 4.4%/5% normal
+envelope paid 100%, expired zero, drained to zero outstanding, and had five-day
+maximum latency under both zero and saturated discovery; worst utilization was
+77.4136%. Five-day 4.4% cadence was marginal and four-day cadence overloaded.
+The sensitivity sweep made `k=1.25` marginal. At `k=1.5` the worst rows crossed
+into overload while other rows remained marginal; `k=2` was plainly overloaded,
+retaining `k=1`. Report semantic digest:
+`7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
 
 Registered-CROWN claims start aging at settlement. Discovery bounty age instead
 starts at the retained qualified-win block, so a later review consumes rather than
@@ -117,7 +130,7 @@ policy intends one reviewed discovery win to take exactly one economic path:
 
 The selected bounty has a 50,000-ppm epoch cap, a per-award principal cap of one
 discovery-pool epoch (50,000 weight-ppm epoch units), and a 648,000-block lifetime
-anchored to the retained qualified win. It has no family share, family clock, time
+anchored to the retained qualified win. It has no campaign share, family clock, time
 bonus, renewal, or permanent title.
 
 That two-branch statement is policy intent, not the current durable execution
@@ -161,7 +174,7 @@ This is synthetic accounting sensitivity evidence only; it supplies no external
 review, publication, activation, durable-state-completion, or GPU-performance
 authority.
 
-The signer-free composed shadow subsequently passed on testnet netuid 307 at
+Before D-015, the signer-free composed shadow passed on testnet netuid 307 at
 finalized block 7,586,146 with metagraph size 6. Explicitly synthetic states
 projected 850,000 ppm registered-CROWN payout, 50,000 ppm reviewed-discovery
 payout, and 100,000 ppm reserve, conserving 1,000,000 ppm. The receipt records
@@ -170,7 +183,9 @@ payout, and 100,000 ppm reserve, conserving 1,000,000 ppm. The receipt records
 file SHA-256
 `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`.
 It constructed no wallet and did not supply or exercise review, settlement,
-publication, debt-debit, or activation authority.
+publication, debt-debit, D-015 policy, or activation authority. Its core policy is
+the historical D-012 family-share generation; a campaign-policy shadow is still
+required before activation.
 
 ## Migration and activation invariants
 
@@ -192,6 +207,8 @@ publication, debt-debit, or activation authority.
 - A reserve anchor is a policy-bound hotkey, not a UID. Missing reserve authority
   fails closed, and the reserve cannot own a miner claim.
 - Policy upgrades with open debt are forbidden in the first implementation.
+  The current composition generation also permits only one activation, so model
+  rotation or one-to-two campaign expansion requires an atomic successor protocol.
 - Schema-4→5 migration creates only empty immutable composition tables: it imports
   no historical CROWNs or legacy discovery awards and creates no retroactive debt.
   Composition activation additionally requires clean open-debt state and fails if
@@ -218,8 +235,9 @@ publication, debt-debit, or activation authority.
 - Lifecycle reconciliation currently consumes an eligible-hotkey snapshot. Production
   must retain boundary-specific membership/departure history so a later snapshot is
   not misread as the authoritative historical departure event.
-- The real production family catalog and reserve identity must be frozen into exact
-  manifests and the selection/shadow rerun against those bytes before activation.
+- The MiniMax-M3 campaign identity, its real production family map, and reserve
+  identity must be frozen into exact manifests and a campaign-policy shadow run
+  against those bytes before activation.
 
 ## Legacy V1 standing reward families
 

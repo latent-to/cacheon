@@ -129,7 +129,25 @@ prior family clock, the first crown has no age windfall. Claims are capped at th
 issued principal and expire after 90 days,
 so neither a champion nor a tiny lone win is normalized into permanent full emission.
 
-The registered-CROWN rule is implemented and its signer-free testnet shadow passed.
+At launch, MiniMax M3 is the only model campaign, so its claims use 100% of
+registered claim sizing. A first 1% CROWN earns `0.9` full-vector days of principal; 4.4%
+earns about `3.895`, and 5% about `4.413`. Adding more M3 target families does not
+divide those amounts. If Optima later runs two model campaigns simultaneously,
+claims in either campaign use 50% sizing and those examples halve. This policy version rejects
+more than two campaigns. Campaign share sizes the finite claim; it is not a hard
+daily payout silo, so all open claims share available CROWN capacity pro rata and
+can wait or expire under overload.
+
+At 25% success probability and the historical conservative collection factor, a
+`$1,000-$1,500` campaign targeting a 4.4% launch win breaks even only if a full
+Optima vector-day is worth roughly `$1,040-$1,561`; for 5%, roughly
+`$918-$1,377`. With two active campaigns those thresholds double. These are
+sensitivity figures, not promised token prices. A 1% optimization is much harder to
+justify at that rental budget unless success odds or emissions are materially higher.
+
+The campaign-sized registered-CROWN rule is implemented but inactive. The earlier
+family-share rule's signer-free testnet shadow passed; it is historical evidence and
+does not test the current campaign-policy bytes.
 The selected discovery rule separately caps one reviewed bounty at 50,000
 weight-ppm epoch units and gives it no family clock, time bonus, renewal, or
 permanent title. Its 90-day clock starts when the qualified discovery win is
@@ -158,9 +176,11 @@ file SHA-256
 `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`).
 It constructed no wallet and carries no review, settlement, publication, or
 activation authority. Meaningful-emission activation has not been authorized.
-It also still needs the actual catalog/reserve rerun, atomic or quiescent
+It also still needs the exact MiniMax-M3 campaign/family map and reserve plus a
+fresh campaign-policy shadow, atomic or quiescent
 V1→core→composition cutover, retained-boundary publication/debit catch-up,
-independent review/runtime-invalidity authority, membership-departure history, the
+independent review/runtime-invalidity authority, membership-departure history, an
+atomic successor protocol for later model rotation or two-campaign expansion, the
 promotion linkage above, and production audit transport.
 The exact formulas, examples, payout rules, and activation status are in
 [INCENTIVES.md](INCENTIVES.md).

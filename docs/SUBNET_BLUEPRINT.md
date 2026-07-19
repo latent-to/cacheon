@@ -278,7 +278,7 @@ Concretely, to go from "validated harness" to "shippable subnet":
    helper. (Use Bittensor's native commit-reveal; drop our custom transport.)
 2. **Real DB** behind the `Ledger` interface (Postgres to start): `miners`,
    `scores`, `snapshots`, `system_config`. Single-writer weights.
-3. **Service split**: `monitor` (chain→DB), `scheduler` (king-of-the-hill driver
+3. **Service split**: `monitor` (chain→DB), `scheduler` (per-family frontier driver
    over blocks, with champion re-sample on refresh + loser termination),
    `executor` (our `evaluate`, as a pool), `validator` (thin weight-setter),
    `api` (leaderboard).
@@ -289,25 +289,36 @@ Concretely, to go from "validated harness" to "shippable subnet":
 6. **Provider abstraction**: rented box now, owned 8×B200 later, one interface.
 
 The selected incentive arithmetic and inactive schema-5 bounty-only state are
-implemented and synthetically validated, including finite log-relative CROWN debt
-and bounded reviewed discovery debt. A signer-free testnet-netuid-307 shadow also
+implemented and synthetically validated, including D-015 campaign-sized finite
+log-relative CROWN debt and bounded reviewed discovery debt. Claims in one model
+campaign use 100% sizing, or claims in either of two campaigns use 50% sizing;
+target families keep independent clocks without dividing campaign claim size. The earlier D-012 signer-free
+testnet-netuid-307 shadow also
 reopened finalized block
 7,586,146 (metagraph size 6) and mapped explicitly synthetic states to 850,000 ppm
 CROWN, 50,000 ppm discovery, and 100,000 ppm reserve, totaling 1,000,000 ppm
 (`submitted=false`; semantic
 digest `3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`, file
 SHA-256 `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`). It
-constructed no wallet and supplies no review, settlement, publication, or activation
-authority. Production activation is not done: the family catalog/reserve identity,
+constructed no wallet and supplies no review, settlement, publication, D-015 policy,
+or activation authority. Production activation is not done: the MiniMax-M3 campaign
+identity, production family map, reserve, and fresh campaign-policy shadow,
 independent review/runtime-invalidity authority, retained-boundary
 publication/debit catch-up, atomic or quiescent V1→core→composition cutover,
-membership-departure history, reliable pending-review-expiry scheduling, promotion
+membership-departure history, a successor protocol for later campaign rotation or
+one-to-two expansion, reliable pending-review-expiry scheduling, promotion
 transport/linkage, exact rerun, and production audit transport remain open. The durable bounty lifetime begins at the
 retained qualified win, and the pending-review expiry API is landed; the selected
 “never both” rule is still policy intent because cross-lane work identity is absent.
 A registered-family invalidation API is landed, but it consumes rather than creates
 external invalidity authority. Affine remains a working reference for the operational
 scaffolding, not evidence that those Optima authorities are complete.
+
+D-015 passed all 14 preregistered screens: 1/10/100-family catalogs had zero
+principal dilution; weekly 4.4%/5% normal tapes paid fully with zero expiry or
+terminal debt; five-day cadence was marginal and four-day cadence overloaded.
+Report semantic digest:
+`7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
 
 D-014 adds bounded review-delay evidence, not missing infrastructure: its 288-row
 cross-architecture replay passed every preregistered 0/1/7-day SLA row with full

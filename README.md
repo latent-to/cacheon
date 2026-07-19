@@ -59,8 +59,8 @@ scored on GPU — setup in [docs/GPU_SETUP.md](docs/GPU_SETUP.md).
   307): timelock commit-reveal → hash-verified fetch → copy fingerprinting →
   the GPU referee, no human in the path. The deep bundle scored **1.072× (bar
   1.026; audit 12,824 / 0)** — its third independent reproduction.
-- **2026-07-18 — V2 economics were selected; arithmetic and the bounty-only
-  durable subset were implemented but remain inactive.**
+- **2026-07-18 — the initial V2 economics and discovery composition were
+  selected; their historical evidence remains retained.**
   D-012 selected finite log-relative registered-CROWN debt after 224,000
   synthetic runs; D-013 selected a separate 5%-capped, one-epoch, 90-day reviewed
   discovery bounty after 3,240 synthetic rows. Both sweeps replayed byte-identically
@@ -80,8 +80,9 @@ scored on GPU — setup in [docs/GPU_SETUP.md](docs/GPU_SETUP.md).
   file SHA-256
   `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`).
   A separate restart/cardinality audit made exact settlement speed, principal,
-  clocks, lifecycle events, and balance transitions fail-closed; final results were
-  2,135 passed/19 skipped locally and 111 passed on the pod. A fresh live
+  clocks, lifecycle events, and balance transitions fail-closed; its pre-D-015
+  results were 2,135 passed/19 skipped locally and 111 historical conformance tests
+  on the pod. D-015 itself has no pod receipt. A fresh live
   intake-only pass then restarted with zero duplicate work. It used no wallet and
   supplies no review, settlement, publication, or activation authority; legacy V1
   remains the sole wired publisher. The selected pure policy's
@@ -94,7 +95,30 @@ scored on GPU — setup in [docs/GPU_SETUP.md](docs/GPU_SETUP.md).
   V1→core→composition cutover, retained-boundary publication/debit catch-up,
   independent review/runtime-invalidation authority, membership-departure history,
   reliable review-expiry scheduling, promotion/cross-lane linkage, and production
-  audit transport.
+  audit transport. Its registered-CROWN policy divided capacity by target family;
+  D-015 below supersedes that claim-sizing hierarchy, so the old testnet shadows do
+  not authorize current policy bytes.
+- **2026-07-19 — D-015 selected model-campaign claim sizing.** Claims in the sole
+  MiniMax-M3 campaign use 100% sizing; in a later two-model roster, claims in either
+  campaign use 50% sizing. Schema 2 rejects more than two. Target families remain
+  independent frontiers and clocks, but adding 1, 10, or 100 of them causes zero
+  principal dilution. All 14 preregistered screens passed. With `k=1`, the normal
+  weekly load was one full-sized 4.4%/5% claim for one campaign, or one half-sized
+  claim in each of two campaigns (one full share aggregate), rotated across
+  families. It paid 100%, expired zero, drained to zero, and had five-day maximum
+  latency under empty and saturated discovery; sustained simultaneous per-family
+  wins were not the normal-tape assumption. Five-day cadence
+  was marginal and four-day cadence overloaded. `k=1.25` was already marginal; at
+  `k=1.5` the worst rows overloaded while other rows remained marginal, and `k=2`
+  was plainly overloaded. Report digest
+  `7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`;
+  the raw D-015 sweep is retained in local-only experiment records.
+  The `optima.finite-debt.v2` manifest, durable validation, and tests are implemented
+  in this draft but remain inactive. Current local validation is 2,137 passed/19
+  skipped repository-wide plus 8/8 D-015 simulator tests; there is no D-015 pod
+  receipt. A fresh MiniMax-M3 roster/reserve shadow plus
+  an atomic successor protocol for later model rotation or one-to-two expansion
+  remain activation work.
 - Most faithful kernels measure *slower* than the pinned baseline — sglang's
   kernels are heavily tuned. The record above is what passing actually looks
   like: a ~1.04–1.07× measured speedup at zero fidelity violations.

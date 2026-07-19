@@ -27,7 +27,7 @@ from optima.finite_debt import (
     DebtClaimState,
     FiniteDebtError,
     cancel_claim_balance,
-    equal_family_budget_shares,
+    equal_campaign_budget_shares,
     expire_claim_balance,
 )
 from optima.incentive_composition import (
@@ -57,6 +57,9 @@ SELECTED_RESERVE_PPM = 100_000
 SELECTED_EPOCH_BLOCKS = 7_200
 SELECTED_SELECTION_REPORT_DIGEST = (
     "6bdfce26e4e6090e0dcc8814a636c665f28d1ff20945a09d43a9a90dc94151fc"
+)
+SELECTED_CORE_SELECTION_REPORT_DIGEST = (
+    "7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590"
 )
 
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
@@ -737,6 +740,9 @@ class IncentiveCompositionStore:
             )
         self._reopen_settlement_evidence = reopen_settlement_evidence
         _verify_schema(db)
+        # Reopen exact selected bytes eagerly.  A D-013 composition over the
+        # superseded family-share core must not appear healthy until payout.
+        self.policy_activations()
 
     def _require_finalized_authority(self, block: int, block_hash: str) -> None:
         height = _integer(block, "finalized block")
@@ -776,9 +782,11 @@ class IncentiveCompositionStore:
             and core_policy.k_ppm == PPM
             and core_policy.improvement_basis == IMPROVEMENT_GROSS
             and core_policy.clock_reset_threshold_log_units_ppm == 1
-            and core_policy.family_budget_shares
-            == equal_family_budget_shares(
-                row.family_id for row in core_policy.family_budget_shares
+            and core_policy.selection_report_digest
+            == SELECTED_CORE_SELECTION_REPORT_DIGEST
+            and core_policy.campaign_budget_shares
+            == equal_campaign_budget_shares(
+                row.campaign_id for row in core_policy.campaign_budget_shares
             )
         )
         try:
@@ -789,7 +797,7 @@ class IncentiveCompositionStore:
             ) from None
         if not expected or not selected_core:
             raise IncentiveCompositionStoreError(
-                "composition activation differs from the exact D-013 selection"
+                "composition activation differs from the exact D-013/D-015 selection"
             )
 
     def _activation_from_row(
@@ -883,7 +891,7 @@ class IncentiveCompositionStore:
         activation_block: int,
         activation_block_hash: str,
     ) -> IncentiveCompositionActivation:
-        """Activate exact D-013 bytes only from a clean, aligned debt state."""
+        """Activate exact D-013 composition over the selected D-015 core."""
 
         height = _integer(activation_block, "activation_block")
         authority_hash = _block_hash(activation_block_hash, "activation_block_hash")
@@ -2737,6 +2745,7 @@ __all__ = [
     "ReviewPendingDiscoveryWin",
     "ReviewedDiscoveryDispositionRecord",
     "SCHEMA_VERSION",
+    "SELECTED_CORE_SELECTION_REPORT_DIGEST",
     "SELECTED_DISCOVERY_CAP_UNITS",
     "SELECTED_DISCOVERY_LIFETIME_BLOCKS",
     "SELECTED_EPOCH_BLOCKS",

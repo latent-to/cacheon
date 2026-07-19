@@ -28,8 +28,9 @@ PPM = 1_000_000
 REFERENCE_EPOCH_UNITS = PPM
 LOG_UNIT_STEP = Decimal("1.01")
 DECIMAL_PRECISION = 80
-POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "optima.finite-debt.v1"
+POLICY_SCHEMA_VERSION = 2
+POLICY_VERSION = "optima.finite-debt.v2"
+MAX_ACTIVE_CAMPAIGNS = 2
 IMPROVEMENT_GROSS = "gross"
 IMPROVEMENT_EXCESS = "excess_over_threshold"
 IMPROVEMENT_BASES = frozenset({IMPROVEMENT_GROSS, IMPROVEMENT_EXCESS})
@@ -108,46 +109,72 @@ def _canonical_decimal(
 
 
 @dataclass(frozen=True)
-class FamilyBudgetShare:
-    """One reward-family share of reference claim-pool capacity."""
+class CampaignBudgetShare:
+    """One model campaign's claim-sizing share of reference capacity."""
 
-    family_id: str
+    campaign_id: str
     share_ppm: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "family_id", _digest(self.family_id, "family_id"))
-        _integer(self.share_ppm, "family share_ppm", minimum=1, maximum=PPM)
+        object.__setattr__(
+            self, "campaign_id", _digest(self.campaign_id, "campaign_id")
+        )
+        _integer(self.share_ppm, "campaign share_ppm", minimum=1, maximum=PPM)
 
     def to_dict(self) -> dict[str, object]:
-        return {"family_id": self.family_id, "share_ppm": self.share_ppm}
+        return {"campaign_id": self.campaign_id, "share_ppm": self.share_ppm}
 
     @classmethod
-    def from_dict(cls, value: object) -> "FamilyBudgetShare":
-        row = _strict(value, set(cls.__dataclass_fields__), "family budget share")
+    def from_dict(cls, value: object) -> "CampaignBudgetShare":
+        row = _strict(value, set(cls.__dataclass_fields__), "campaign budget share")
         return cls(**row)  # type: ignore[arg-type]
 
 
-def equal_family_budget_shares(family_ids: Iterable[str]) -> tuple[FamilyBudgetShare, ...]:
-    """Normalize one catalog as equally as integer ppm permits.
+@dataclass(frozen=True)
+class RewardFamilyCampaign:
+    """Validator-owned mapping from one technical frontier to one campaign."""
 
-    Families are first sorted by digest.  Every family receives ``PPM // n``;
-    the lexicographically earliest ``PPM % n`` digests receive one additional
-    ppm.  This makes the unavoidable remainder deterministic and independent of
-    catalog input order.
+    family_id: str
+    campaign_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "family_id", _digest(self.family_id, "family_id"))
+        object.__setattr__(
+            self, "campaign_id", _digest(self.campaign_id, "campaign_id")
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {"campaign_id": self.campaign_id, "family_id": self.family_id}
+
+    @classmethod
+    def from_dict(cls, value: object) -> "RewardFamilyCampaign":
+        row = _strict(value, set(cls.__dataclass_fields__), "reward-family campaign")
+        return cls(**row)  # type: ignore[arg-type]
+
+
+def equal_campaign_budget_shares(
+    campaign_ids: Iterable[str],
+) -> tuple[CampaignBudgetShare, ...]:
+    """Return the only supported launch roster: 100%, or two equal 50% shares.
+
+    Model campaigns are the funded economic unit.  Reward families remain
+    independent technical frontiers and clocks, but adding a family to a model
+    campaign must not dilute the principal earned by another family.
     """
 
     try:
-        families = tuple(sorted(_digest(value, "family_id") for value in family_ids))
+        campaigns = tuple(
+            sorted(_digest(value, "campaign_id") for value in campaign_ids)
+        )
     except TypeError:
-        raise FiniteDebtError("family_ids must be iterable") from None
-    if not families or len(set(families)) != len(families):
-        raise FiniteDebtError("equal family catalog must be nonempty and unique")
-    if len(families) > PPM:
-        raise FiniteDebtError("equal family catalog exceeds positive ppm capacity")
-    quotient, remainder = divmod(PPM, len(families))
+        raise FiniteDebtError("campaign_ids must be iterable") from None
+    if not campaigns or len(set(campaigns)) != len(campaigns):
+        raise FiniteDebtError("campaign catalog must be nonempty and unique")
+    if len(campaigns) > MAX_ACTIVE_CAMPAIGNS:
+        raise FiniteDebtError("policy supports at most two active campaigns")
+    share = PPM // len(campaigns)
     return tuple(
-        FamilyBudgetShare(family, quotient + (index < remainder))
-        for index, family in enumerate(families)
+        CampaignBudgetShare(campaign, share) for campaign in campaigns
     )
 
 
@@ -159,7 +186,9 @@ class FiniteDebtPolicyManifest:
     mechanism defaults in this module.
     """
 
-    family_budget_shares: tuple[FamilyBudgetShare, ...]
+    campaign_budget_shares: tuple[CampaignBudgetShare, ...]
+    reward_family_campaigns: tuple[RewardFamilyCampaign, ...]
+    selection_report_digest: str
     reserve_hotkey: str
     reserve_ppm: int
     epoch_blocks: int
@@ -173,25 +202,45 @@ class FiniteDebtPolicyManifest:
     policy_version: str = POLICY_VERSION
 
     def __post_init__(self) -> None:
-        shares = tuple(self.family_budget_shares)
-        if any(type(row) is not FamilyBudgetShare for row in shares):
-            raise FiniteDebtError("family budget shares are not exactly typed")
-        shares = tuple(sorted(shares, key=lambda row: row.family_id))
+        shares = tuple(self.campaign_budget_shares)
+        if any(type(row) is not CampaignBudgetShare for row in shares):
+            raise FiniteDebtError("campaign budget shares are not exactly typed")
+        shares = tuple(sorted(shares, key=lambda row: row.campaign_id))
         if (
             not shares
-            or len({row.family_id for row in shares}) != len(shares)
-            or sum(row.share_ppm for row in shares) != PPM
+            or len({row.campaign_id for row in shares}) != len(shares)
+            or shares
+            != equal_campaign_budget_shares(row.campaign_id for row in shares)
         ):
             raise FiniteDebtError(
-                "family budget shares must be unique and sum to 1_000_000 ppm"
+                "campaign budget must be one 100% campaign or two 50% campaigns"
             )
-        object.__setattr__(self, "family_budget_shares", shares)
+        object.__setattr__(self, "campaign_budget_shares", shares)
+        mappings = tuple(self.reward_family_campaigns)
+        if any(type(row) is not RewardFamilyCampaign for row in mappings):
+            raise FiniteDebtError("reward-family campaigns are not exactly typed")
+        mappings = tuple(sorted(mappings, key=lambda row: row.family_id))
+        campaign_ids = {row.campaign_id for row in shares}
+        if (
+            not mappings
+            or len({row.family_id for row in mappings}) != len(mappings)
+            or {row.campaign_id for row in mappings} != campaign_ids
+        ):
+            raise FiniteDebtError(
+                "every reward family must map once and every campaign must have a family"
+            )
+        object.__setattr__(self, "reward_family_campaigns", mappings)
+        object.__setattr__(
+            self,
+            "selection_report_digest",
+            _digest(self.selection_report_digest, "selection_report_digest"),
+        )
         object.__setattr__(self, "reserve_hotkey", _hotkey(self.reserve_hotkey, "reserve_hotkey"))
         _integer(self.reserve_ppm, "reserve_ppm", maximum=PPM - 1)
         reference_pool = (PPM - self.reserve_ppm) * REFERENCE_EPOCH_UNITS // PPM
         if any(reference_pool * row.share_ppm // PPM <= 0 for row in shares):
             raise FiniteDebtError(
-                "a family reference claim pool rounds to zero"
+                "a campaign reference claim pool rounds to zero"
             )
         _integer(self.epoch_blocks, "epoch_blocks", minimum=1)
         _integer(self.beta_ppm, "beta_ppm", maximum=PPM)
@@ -211,15 +260,22 @@ class FiniteDebtPolicyManifest:
             raise FiniteDebtError("finite-debt policy_version is unsupported")
 
     @property
-    def family_shares(self) -> Mapping[str, int]:
-        return {row.family_id: row.share_ppm for row in self.family_budget_shares}
+    def campaign_shares(self) -> Mapping[str, int]:
+        return {row.campaign_id: row.share_ppm for row in self.campaign_budget_shares}
 
-    def family_share_ppm(self, family_id: str) -> int:
+    @property
+    def family_ids(self) -> tuple[str, ...]:
+        return tuple(row.family_id for row in self.reward_family_campaigns)
+
+    def campaign_for_family(self, family_id: str) -> str:
         family = _digest(family_id, "family_id")
-        try:
-            return self.family_shares[family]
-        except KeyError:
-            raise FiniteDebtError("claim family is absent from the policy budget") from None
+        for row in self.reward_family_campaigns:
+            if row.family_id == family:
+                return row.campaign_id
+        raise FiniteDebtError("claim family is absent from the policy campaign map")
+
+    def campaign_share_ppm_for_family(self, family_id: str) -> int:
+        return self.campaign_shares[self.campaign_for_family(family_id)]
 
     @property
     def reference_claim_pool_units(self) -> int:
@@ -228,27 +284,39 @@ class FiniteDebtPolicyManifest:
     def to_dict(self) -> dict[str, object]:
         return {
             "beta_ppm": self.beta_ppm,
+            "campaign_budget_shares": [
+                row.to_dict() for row in self.campaign_budget_shares
+            ],
             "clock_reset_threshold_log_units_ppm": self.clock_reset_threshold_log_units_ppm,
             "epoch_blocks": self.epoch_blocks,
-            "family_budget_shares": [row.to_dict() for row in self.family_budget_shares],
             "improvement_basis": self.improvement_basis,
             "k_ppm": self.k_ppm,
             "lifetime_blocks": self.lifetime_blocks,
             "policy_version": self.policy_version,
             "reserve_hotkey": self.reserve_hotkey,
             "reserve_ppm": self.reserve_ppm,
+            "reward_family_campaigns": [
+                row.to_dict() for row in self.reward_family_campaigns
+            ],
             "schema_version": self.schema_version,
+            "selection_report_digest": self.selection_report_digest,
             "tau_blocks": self.tau_blocks,
         }
 
     @classmethod
     def from_dict(cls, value: object) -> "FiniteDebtPolicyManifest":
         row = _strict(value, set(cls.__dataclass_fields__), "finite-debt policy")
-        shares = row["family_budget_shares"]
+        shares = row["campaign_budget_shares"]
         if type(shares) is not list:
-            raise FiniteDebtError("family_budget_shares must be an array")
-        row["family_budget_shares"] = tuple(
-            FamilyBudgetShare.from_dict(item) for item in shares
+            raise FiniteDebtError("campaign_budget_shares must be an array")
+        mappings = row["reward_family_campaigns"]
+        if type(mappings) is not list:
+            raise FiniteDebtError("reward_family_campaigns must be an array")
+        row["campaign_budget_shares"] = tuple(
+            CampaignBudgetShare.from_dict(item) for item in shares
+        )
+        row["reward_family_campaigns"] = tuple(
+            RewardFamilyCampaign.from_dict(item) for item in mappings
         )
         return cls(**row)  # type: ignore[arg-type]
 
@@ -364,19 +432,20 @@ def _claim_principal_units(
     family_id: str,
     log_units_ppm: int,
     time_multiplier_ppm: int,
-) -> tuple[int, int]:
-    family_share = policy.family_share_ppm(family_id)
-    family_pool = policy.reference_claim_pool_units * family_share // PPM
+) -> tuple[str, int, int, int]:
+    campaign_id = policy.campaign_for_family(family_id)
+    campaign_share = policy.campaign_share_ppm_for_family(family_id)
+    campaign_pool = policy.reference_claim_pool_units * campaign_share // PPM
     principal = (
-        family_pool
+        campaign_pool
         * policy.k_ppm
         * log_units_ppm
         * time_multiplier_ppm
         // (PPM * PPM * PPM)
     )
-    if family_pool <= 0 or principal <= 0:
+    if campaign_pool <= 0 or principal <= 0:
         raise FiniteDebtError("claim principal rounds to zero")
-    return family_pool, principal
+    return campaign_id, campaign_share, campaign_pool, principal
 
 
 @dataclass(frozen=True)
@@ -385,6 +454,7 @@ class InnovationDebtClaim:
 
     policy_digest: str
     family_id: str
+    campaign_id: str
     candidate_digest: str
     retained_evidence_digest: str
     hotkey: str
@@ -394,8 +464,8 @@ class InnovationDebtClaim:
     prior_accepted_crown_block: int | None
     settlement_block: int
     expires_block: int
-    family_budget_ppm: int
-    reference_family_pool_units: int
+    campaign_budget_ppm: int
+    reference_campaign_pool_units: int
     log_units_ppm: int
     time_multiplier_ppm: int
     principal_units: int
@@ -405,6 +475,7 @@ class InnovationDebtClaim:
         for field in (
             "policy_digest",
             "family_id",
+            "campaign_id",
             "candidate_digest",
             "retained_evidence_digest",
         ):
@@ -435,8 +506,17 @@ class InnovationDebtClaim:
             )
             if prior > accepted:
                 raise FiniteDebtError("claim prior family crown is newer than this crown")
-        _integer(self.family_budget_ppm, "family_budget_ppm", minimum=1, maximum=PPM)
-        _integer(self.reference_family_pool_units, "reference_family_pool_units", minimum=1)
+        _integer(
+            self.campaign_budget_ppm,
+            "campaign_budget_ppm",
+            minimum=1,
+            maximum=PPM,
+        )
+        _integer(
+            self.reference_campaign_pool_units,
+            "reference_campaign_pool_units",
+            minimum=1,
+        )
         _integer(self.log_units_ppm, "log_units_ppm", minimum=1)
         _integer(self.time_multiplier_ppm, "time_multiplier_ppm", minimum=PPM)
         _integer(self.principal_units, "principal_units", minimum=1)
@@ -458,7 +538,7 @@ class InnovationDebtClaim:
             accepted_crown_block=self.accepted_crown_block,
             prior_accepted_crown_block=self.prior_accepted_crown_block,
         )
-        family_pool, principal = _claim_principal_units(
+        campaign, campaign_share, campaign_pool, principal = _claim_principal_units(
             policy,
             family_id=self.family_id,
             log_units_ppm=units,
@@ -466,8 +546,9 @@ class InnovationDebtClaim:
         )
         if (
             self.expires_block != self.settlement_block + policy.lifetime_blocks
-            or self.family_budget_ppm != policy.family_share_ppm(self.family_id)
-            or self.reference_family_pool_units != family_pool
+            or self.campaign_id != campaign
+            or self.campaign_budget_ppm != campaign_share
+            or self.reference_campaign_pool_units != campaign_pool
             or self.log_units_ppm != units
             or self.time_multiplier_ppm != multiplier
             or self.principal_units != principal
@@ -522,30 +603,31 @@ def issue_innovation_claim(
         accepted_crown_block=accepted,
         prior_accepted_crown_block=prior_accepted_crown_block,
     )
-    family_pool, principal = _claim_principal_units(
+    campaign, campaign_share, campaign_pool, principal = _claim_principal_units(
         policy,
         family_id=family,
         log_units_ppm=units,
         time_multiplier_ppm=multiplier,
     )
     claim = InnovationDebtClaim(
-        policy.digest,
-        family,
-        candidate_digest,
-        retained_evidence_digest,
-        hotkey,
-        settled_speedup,
-        threshold_speedup,
-        accepted,
-        prior_accepted_crown_block,
-        settled,
-        settled + policy.lifetime_blocks,
-        policy.family_share_ppm(family),
-        family_pool,
-        units,
-        multiplier,
-        principal,
-        resets_family_clock(policy, units),
+        policy_digest=policy.digest,
+        family_id=family,
+        campaign_id=campaign,
+        candidate_digest=candidate_digest,
+        retained_evidence_digest=retained_evidence_digest,
+        hotkey=hotkey,
+        settled_speedup=settled_speedup,
+        threshold_speedup=threshold_speedup,
+        accepted_crown_block=accepted,
+        prior_accepted_crown_block=prior_accepted_crown_block,
+        settlement_block=settled,
+        expires_block=settled + policy.lifetime_blocks,
+        campaign_budget_ppm=campaign_share,
+        reference_campaign_pool_units=campaign_pool,
+        log_units_ppm=units,
+        time_multiplier_ppm=multiplier,
+        principal_units=principal,
+        resets_clock=resets_family_clock(policy, units),
     )
     claim.validate_policy(policy)
     return claim
@@ -1040,7 +1122,7 @@ __all__ = [
     "DebtEpochAllocation",
     "DebtEpochProjection",
     "DebtHotkeyWeight",
-    "FamilyBudgetShare",
+    "CampaignBudgetShare",
     "FiniteDebtError",
     "FiniteDebtPolicyManifest",
     "IMPROVEMENT_BASES",
@@ -1048,14 +1130,16 @@ __all__ = [
     "IMPROVEMENT_GROSS",
     "InnovationDebtClaim",
     "LOG_UNIT_STEP",
+    "MAX_ACTIVE_CAMPAIGNS",
     "POLICY_SCHEMA_VERSION",
     "POLICY_VERSION",
     "PPM",
     "REFERENCE_EPOCH_UNITS",
+    "RewardFamilyCampaign",
     "apply_debt_epoch_projection",
     "cancel_claim_balance",
     "expire_claim_balance",
-    "equal_family_budget_shares",
+    "equal_campaign_budget_shares",
     "issue_innovation_claim",
     "log_improvement_units_ppm",
     "pay_claim_balance",

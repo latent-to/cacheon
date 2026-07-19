@@ -596,7 +596,13 @@ side effect of evaluation.
 
 The selected V2 registered-CROWN rule instead issues finite principal in multiplicative
 1%-log units, uses a rational elapsed-family bonus capped at 10%, keeps a 10% reserve, and
-expires unpaid principal after 90 days. D-013 composes one separately reviewed discovery
+expires unpaid principal after 90 days. D-015 makes the model campaign the claim-sizing
+unit: claims in the sole MiniMax M3 campaign use 100% sizing, or claims in either
+campaign of a later two-model roster use 50% sizing; more than two is rejected.
+Reward families remain independent frontiers and clocks, and
+adding families within a campaign causes no principal dilution. Campaign shares size
+claims rather than hard-siloing epoch payout; registered claims share the global pool pro
+rata. D-013 composes one separately reviewed discovery
 class without weakening that reserve floor:
 
 ```text
@@ -605,8 +611,16 @@ P_c     = min(900,000 - P_d, live registered-CROWN debt)
 reserve = 1,000,000 - P_d - P_c
 ```
 
+All 14 preregistered D-015 screens passed. At `k=1`, the normal weekly load was
+one full-sized 4.4%/5% claim with one campaign, or one half-sized claim in each of
+two campaigns (one full share aggregate), rotated across families. It paid 100%,
+expired zero, and drained to zero; five-day cadence was marginal and four-day
+cadence overloaded. Sustained simultaneous per-family wins were not the normal-tape
+assumption. Report semantic digest:
+`7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
+
 Each class has its own claim-digest largest-remainder allocation. A discovery award is
-capped at one 50,000-unit pool epoch and has no family share, clock, time bonus, renewal,
+capped at one 50,000-unit pool epoch and has no campaign share, family clock, time bonus, renewal,
 or permanent title. Its 648,000-block lifetime starts at the retained qualified-win block,
 not review; delay consumes the window, and review at or after expiry cannot mint. The
 landed finalized expiry path records `review_expired`/`discovery_review_expired` for pending
@@ -630,24 +644,25 @@ instantaneous CROWN-capacity dilution, and no CROWN paid-fraction regression; th
 This is synthetic accounting evidence only; see [INCENTIVES.md](INCENTIVES.md) for
 the report digest and limits.
 
-This composition is not active. Production must freeze the actual family catalog/reserve
-identity and rerun the exact selection/shadow; quiesce or atomically bridge the two-step
+This composition is not active. Production must freeze the MiniMax-M3 campaign identity,
+family map, and reserve then run a fresh campaign-policy shadow; quiesce or atomically bridge the two-step
 V1→core→composition cutover; retain and catch up a missed/slow publication boundary before
 later gapless epochs; grade review and runtime invalidation independently; retain membership
 departure history rather than only a current snapshot; schedule pending-review expiry
-reliably; complete promotion linkage; and transport production audit evidence. The landed
+reliably; add an atomic successor protocol for later model rotation or one-to-two campaign
+expansion; complete promotion linkage; and transport production audit evidence. The landed
 family-invalidation API only consumes an
 external authority digest, while `review_digest` is controller-supplied/content-bound.
 The signer-free
 `chain-incentive-composition-shadow` command projects explicitly synthetic claims against
-exact finalized membership and always records `submitted=false`. Its live testnet-netuid-307
-run retained finalized block 7,586,146 and metagraph size 6, allocating 850,000 ppm to
+exact finalized membership and always records `submitted=false`. Before D-015, its live
+testnet-netuid-307 run retained finalized block 7,586,146 and metagraph size 6, allocating 850,000 ppm to
 registered-CROWN claims, 50,000 ppm to reviewed-discovery claims, and 100,000 ppm to the
 reserve, exactly 1,000,000 ppm. Receipt semantic digest:
 `3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`; file SHA-256:
 `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`. The states were
 explicitly synthetic, no wallet was constructed, and the receipt supplies no review,
-settlement, publication, debt-debit, or activation authority. See
+settlement, publication, debt-debit, D-015 policy, or activation authority. See
 [INCENTIVES.md](INCENTIVES.md) and
 [EMISSIONS_POLICY.md](EMISSIONS_POLICY.md).
 
@@ -842,7 +857,7 @@ The harness package, [../optima/](../optima):
 | [incentive_composition_shadow.py](../optima/incentive_composition_shadow.py) | Signer-free synthetic composed projection against twice-reopened finalized membership; writes only `submitted=false` receipts. |
 | [chain/intake.py](../optima/chain/intake.py) | SQLite production authority for finalized intake, screens, qualifications, reproductions, stacks, settlement and legacy weight-publication journal state; exposes the inactive schema-5 finite-debt/composition stores. |
 | [chain/finite_debt_store.py](../optima/chain/finite_debt_store.py) | Additive schema-4 V2 authority: exact activation, seeded clocks, atomic CROWN claim issuance, lifecycle, finalized family invalidation, projection, and idempotent confirmed-epoch close. Runtime-invalidity truth and publication confirmation remain external. |
-| [chain/incentive_composition_store.py](../optima/chain/incentive_composition_store.py) | Additive schema-5 authority: exact D-013 activation, review-pending win retention/expiry, bounded bounty-only disposition, discovery balances, gapless composed projection, and externally confirmed epoch close. Registered promotion is intentionally rejected; inactive by default. |
+| [chain/incentive_composition_store.py](../optima/chain/incentive_composition_store.py) | Additive schema-5 authority: exact D-013 discovery plus D-015 campaign-core selection, review-pending win retention/expiry, bounded bounty-only disposition, discovery balances, gapless composed projection, and externally confirmed epoch close. Registered promotion is intentionally rejected; inactive by default. |
 | [chain/validator_loop.py](../optima/chain/validator_loop.py) | Finalized reveal → private fetch → immutable publication → registered arena screen/qualification → transactional settlement. |
 | [model_provision.py](../optima/model_provision.py) | Exact all-file model-tree hashing and independently reopenable content-addressed receipts. |
 | [release.py](../optima/release.py) | Signed chain-independent Engine release descriptor, deterministic source/wheel, SBOM/provenance, and OCI build context. |

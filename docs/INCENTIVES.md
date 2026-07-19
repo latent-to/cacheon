@@ -1,21 +1,30 @@
 # Optima incentives
 
-> **Activation status:** this is the selected but inactive V2 composition. D-012's
-> registered-CROWN finite-debt arithmetic, durable state, and signer-free shadow are
-> implemented; that class's live testnet shadow passed with `submitted=false`.
+> **Activation status:** this is the selected but inactive V2 composition. D-015
+> replaces D-012's target-family budget division with model-campaign claim sizing:
+> claims in one campaign use 100% sizing, while claims in either of two campaigns
+> use 50% sizing. Target families keep independent frontiers and clocks without
+> diluting one another's issued principal; open claims still share payout capacity.
+> The schema-2 `optima.finite-debt.v2` arithmetic and durable validation are
+> implemented. D-012 and its registered-CROWN testnet shadow remain immutable
+> historical evidence for the superseded family-share policy; they do not select or
+> test the D-015 policy bytes.
 > D-013's separately reviewed discovery-bounty arithmetic, schema-5
 > review-pending/bounty-only durable state, and signer-free composed-shadow command
 > are also implemented. A live testnet
 > shadow passed over explicitly synthetic states with `submitted=false`; exact
 > receipt facts are retained below. It supplied no wallet, review, settlement,
 > publication, or activation authority. Legacy V1 remains the sole wired publisher.
-> Meaningful V2 emissions still require the actual production family catalog and
-> reserve identity followed by an exact rerun/manifest; an atomic or quiescent
+> Meaningful V2 emissions still require the exact MiniMax-M3 campaign identity,
+> production family mapping, reserve identity, and a fresh campaign-policy shadow;
+> an atomic or quiescent
 > two-step V1→core→composition cutover; retained-boundary publication confirmation,
 > catch-up, and debt debit; independently graded review and runtime-invalidation
 > authority; membership-departure history rather than only a current snapshot;
 > durable discovery-promotion transport/linkage; and production audit-evidence
-> transport.
+> transport. Rotation to a successor model and one-to-two-campaign expansion also
+> require a successor-policy protocol; the current store intentionally cannot do
+> either live.
 
 For registered-family rewards, this curve pays for an independently reproduced
 improvement over the current validator-controlled frontier. A submission earns
@@ -32,11 +41,15 @@ determined by:
 1. the multiplicative throughput improvement over the prior frontier;
 2. a small bonus for how long that reward family had gone without an accepted
    crown; and
-3. that family's explicit share of the global claim budget.
+3. the active model campaign's claim-sizing share: claims use 100% sizing with
+   one campaign, or 50% sizing in either campaign when two are active.
 
 The claim is paid down from later confirmed weight epochs. It cannot receive more
 than its issued principal and expires after 90 days. A tiny lone claim is therefore
 paid only what it earned; it is never normalized into the entire emission vector.
+Adding target families within MiniMax M3 changes neither an existing family's
+principal nor its clock. More actual wins still create more total debt, so target
+count does not make the system economically free.
 
 The selected pure policy intends a separately reviewed discovery win to take exactly
 one economic path: promotion into a registered target followed by fresh
@@ -93,42 +106,96 @@ One confirmed payout epoch is 7,200 blocks (approximately one day) and contains
 `E = 1,000,000` weight-parts. The minimum reserve is 10%, so the reference miner
 claim pool is `C = 900,000` parts per epoch.
 
-If reward family `f` has normalized policy share `B_f_ppm`, the exact issuance
-order is:
+Every validator-owned reward family `f` maps exactly once to model campaign `c`.
+If that campaign has claim-sizing share `B_c_ppm`, the exact issuance order is:
 
 ```text
-F_f = floor(C * B_f_ppm / 1,000,000)
-Q   = floor(F_f * k_ppm * G_ppm * M_ppm / 1,000,000^3)
+F_c = floor(C * B_c_ppm / 1,000,000)
+Q   = floor(F_c * k_ppm * G_ppm * M_ppm / 1,000,000^3)
 ```
 
-Here `k_ppm = 1,000,000`: one family-budget share of a claim-pool epoch per
-1%-log unit. Family shares are explicit, content-addressed policy data and sum
-to 100%. The selected launch rule assigns
-shares as equally as integer ppm permits to whichever eligible catalog is approved
-at activation: each family gets the quotient, then any one-ppm remainder goes to
-the lexicographically earliest family digests. The catalog has not yet been frozen.
-We will not invent unequal "commercial value" weights without separately retained
-demand and governance evidence.
+Here `k_ppm = 1,000,000`: one campaign-share of a claim-pool epoch per 1%-log
+unit. Schema 2 permits exactly these rosters:
 
-The frozen selection sweep used four exactly equal synthetic families; the
-digest-ordered remainder rule is the production-safe generalization for a real
-catalog whose size may not divide 1,000,000.
+- launch: claims in one campaign use `1,000,000 ppm` sizing (MiniMax M3);
+- expansion: claims in either of two campaigns use `500,000 ppm` sizing; and
+- never three or more under this policy version. Exceeding two requires a new,
+  explicitly reviewed policy version rather than a configuration loophole.
 
-For intuition, with four equal families:
+Campaign and family mappings are explicit, content-addressed validator policy.
+Every family maps once, every campaign has at least one family, and submissions
+cannot choose or infer their own campaign. Adding 1, 10, or 100 unused target
+families to a campaign changes claim principal by exactly zero.
 
-- a first 1% crown issues `900,000 * 25% = 225,000` weight-part epochs;
-- the same 1% crown after a 90-day family drought issues `236,250`;
-- a first 5% crown has about `4.90` log units and issues about `1.10 million`,
-  equal to about `1.23` claim-pool epochs of capacity; because payout epochs are
-  discrete, an otherwise uncontended claim finishes in the second epoch.
+For launch intuition with one 100% campaign:
 
-With ten equal families, the first example is `90,000`, not `225,000`. After
-activation, miners must read the exact active policy manifest rather than assume a
-family count. There is no active finite-debt manifest today.
+- a first 1% CROWN issues `900,000` units, or `0.9` full-vector days;
+- the same 1% CROWN after a 90-day family drought issues `945,000` units;
+- the measured 4.4% example issues exactly `3,894,697` units, about `3.895`
+  vector-days; and
+- a first 5% CROWN issues `4,413,033` units, about `4.413` vector-days.
+
+With two campaigns, each number is approximately half: a first 1% CROWN is
+`450,000`, 4.4% is `1,947,348`, and 5% is `2,206,516` units. Families inside the
+same campaign do not divide these numbers.
+
+The campaign share sizes principal; it is not a hard per-epoch payout silo. All
+open registered-CROWN claims share the global post-discovery pool pro rata, so
+capacity is not stranded when one campaign is quiet. Under equal arrival load,
+the claim sizes give two campaigns equal economic weight. Under excess load,
+claims wait and can expire rather than manufacturing additional emissions.
+
+The roster is immutable within one policy generation. Rotating from MiniMax M3 to
+another model, or expanding from one to two simultaneous models, must occur at a
+declared quiescent successor-policy boundary after open debt is resolved. The
+current inactive composition store deliberately fences core upgrades after its
+single activation; the atomic core-plus-composition successor protocol remains an
+activation prerequisite, not an automatic live feature.
 
 An improvement smaller than 1% can still earn proportionally if it clears the
 validator's measured confidence bar and reproduces. The 1% figure is an accounting
 unit, not a minimum accepted speedup.
+
+### D-015 feasibility and rental economics
+
+D-015 preregistered the campaign hierarchy before opening its results. All 14
+screens passed. One, ten, and one hundred target-family catalogs had zero principal
+difference; sibling family clocks had zero multiplier or principal cross-talk. At
+selected `k=1`, the normal tape issued one campaign-sized 4.4% or 5% CROWN every
+seven days for a year, followed by a 90-day drain: one full-sized claim per cadence
+with one campaign, or one half-sized claim in each campaign per cadence with two
+(one full share in aggregate), rotating across families. Those tested tapes paid
+100%, expired zero, ended with zero outstanding, and had at most five days of
+payment latency with both empty and saturated 5% discovery load. Worst normal
+utilization was 77.4136%. This result is conditional on that aggregate campaign
+cadence; sustained simultaneous per-family wins would create more debt and were not
+the normal-tape assumption.
+
+The required boundary controls also behaved correctly: five-day 4.4% cadence was
+marginal; four-day cadence was overloaded and expired at least 3,967,136 units.
+With saturated discovery, a same-day burst of nineteen 4.4% claims cleared while
+twenty expired 1,393,940 units. The `k` sweep made `k=1.25` marginal; at `k=1.5`
+the worst rows crossed into overload and expired 2,475 units while other rows
+remained marginal, and `k=2` was plainly overloaded. Increasing `k` merely to make
+rewards look larger would therefore create promises the pool cannot reliably honor.
+Report semantic digest:
+`7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
+The D-015 config, simulator, ledger, and full report are retained as local-only
+feasibility artifacts under the repository's experiment-record convention; this
+draft binds their semantic digest but does not make the raw sweep independently
+reproducible from tracked files alone. The current branch passes 2,137 tests with
+19 skips repository-wide plus 8/8 local D-015 simulator tests; no D-015 pod run was
+performed.
+
+For a `$1,000-$1,500` optimization campaign, 25% success probability, and the
+conservative historical 98.7203% collection factor, a one-campaign 4.4% win breaks
+even when a full Optima vector-day is worth roughly `$1,040-$1,561`; a 5% win needs
+about `$918-$1,377`. With two campaigns those thresholds double to roughly
+`$2,081-$3,121` and `$1,836-$2,754`. A 1% launch win needs roughly
+`$4,502-$6,753` per vector-day at that success probability. These are break-even
+sensitivity figures, not a token-price forecast or payout promise. If realized
+emission value is below them, the honest remedy is a separately funded launch
+bounty or GPU credit, not an insolvent `k` increase.
 
 ## How claims are paid
 
@@ -172,7 +239,7 @@ perpetual royalty. Expiry places a hard bound on historical liability.
 
 ## Discovery-lane boundary
 
-The D-012 curve covers registered singleton or atomic reward-family CROWNs. A
+The D-015 campaign curve covers registered singleton or atomic reward-family CROWNs. A
 cross-cutting discovery prototype does not automatically mint log-relative
 principal or reset a family clock. D-013 selected the separate reviewed rule:
 
@@ -182,7 +249,7 @@ principal or reset a family clock. D-013 selected the separate reviewed rule:
 - the 648,000-block lifetime (about 90 days) starts at the retained qualified-win
   block, so delayed review consumes the available payout window and review at or
   after expiry cannot mint;
-- it has no family share, family clock, elapsed-time bonus, renewal, or permanent
+- it has no campaign share, family clock, elapsed-time bonus, renewal, or permanent
   title; and
 - the pure disposition type expresses `registered_promotion` versus `bounty_only`
   as mutually exclusive policy choices.
@@ -235,7 +302,7 @@ review delays. It does not provide an external review authority, activate V2,
 publish weights, by itself prove durable-state hardening, or measure GPU
 performance.
 
-The signer-free composed shadow subsequently passed on testnet netuid 307 at
+Before D-015, the signer-free composed shadow passed on testnet netuid 307 at
 finalized block 7,586,146 with metagraph size 6. Its explicitly synthetic states
 projected 850,000 ppm of registered-CROWN payout, 50,000 ppm of reviewed-discovery
 payout, and 100,000 ppm of reserve, exactly 1,000,000 ppm total. It wrote
@@ -243,18 +310,20 @@ payout, and 100,000 ppm of reserve, exactly 1,000,000 ppm total. It wrote
 `3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`,
 receipt-file SHA-256
 `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`.
-This is read-only projection/membership feasibility evidence. It constructed no
-wallet and provides no review, settlement, publication, debt-debit, or activation
-authority.
+This remains read-only projection/membership feasibility evidence for the historical
+D-012 family-share core. It constructed no wallet and provides no review,
+settlement, publication, debt-debit, D-015 policy, or activation authority. A fresh
+campaign-policy shadow belongs in the production activation change.
 
 A separate multi-pass restart audit then exercised claim/event/cardinality
 substitution cases. Reopen now derives exact paired qualification/evidence/CROWN
 speed, principal, family clocks, discovery lifecycle, and all balance transitions
 from their immutable journals before filtering status or allowing an upgrade. The
-reproduced cases are retained regressions; final results were 98/98 focused,
-2,135 passed with 19 skips repository-wide, and 111/111 on the pod. This hardens
-the inactive state implementation; it does not close the production authorities
-listed below.
+reproduced cases are retained regressions; before D-015, final results were 98/98
+focused, 2,135 passed with 19 skips repository-wide, and 111/111 on the pod. Those
+pod receipts are historical D-012/D-013/D-014 conformance, not D-015 validation.
+This hardens the inactive state implementation; it does not close the production
+authorities listed below.
 
 The implementation retains a controller-supplied, content-bound `review_digest`,
 but does not independently reopen or grade an external review system. That review
@@ -297,9 +366,11 @@ composition activate in two steps, leaving a race unless the operator quiesces l
 settlement/publication. Production must also retain and catch up the exact missed
 publication boundary before later gapless epochs, retain membership departure history
 instead of applying only a latest snapshot, bind independently graded review and
-runtime-invalidation authority, freeze the real family catalog/reserve and rerun the
-selection/shadow, complete promotion linkage, and transport the production audit.
-Parameter changes cannot silently rewrite existing claims.
+runtime-invalidation authority, freeze the MiniMax-M3 campaign identity, exact
+family mapping, and reserve then run a fresh campaign-policy shadow, complete the
+successor-policy protocol needed for later model rotation or two-campaign expansion,
+complete promotion linkage, and transport the production audit. Parameter changes
+cannot silently rewrite existing claims.
 
 For the retained technical authority and migration boundary, see
 [EMISSIONS_POLICY.md](EMISSIONS_POLICY.md). For the evaluation gates that must be

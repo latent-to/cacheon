@@ -6,14 +6,15 @@ from typing import Callable
 import pytest
 
 from optima.finite_debt import (
+    CampaignBudgetShare,
     IMPROVEMENT_GROSS,
     POLICY_SCHEMA_VERSION,
     POLICY_VERSION,
     PPM,
     DebtClaimBalance,
     DebtClaimState,
-    FamilyBudgetShare,
     FiniteDebtPolicyManifest,
+    RewardFamilyCampaign,
     issue_innovation_claim,
     pay_claim_balance,
 )
@@ -42,6 +43,10 @@ from optima.stack_identity import sha256_hex
 
 
 FAMILY = sha256_hex(b"composition-family")
+CAMPAIGN = sha256_hex(b"minimax-m3-campaign")
+CORE_SELECTION_REPORT_DIGEST = (
+    "7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590"
+)
 SELECTION_REPORT_DIGEST = (
     "7369c6890dcc880b5f7295a94d07f915d59241e23d95b2c9328295780c99fb38"
 )
@@ -56,10 +61,12 @@ def _innovation_policy(
     reserve_ppm: int = 100_000,
     epoch_blocks: int = 7_200,
 ) -> FiniteDebtPolicyManifest:
-    """The selected D-012 registered-CROWN policy, with every term explicit."""
+    """The selected D-015 registered-CROWN policy, with every term explicit."""
 
     return FiniteDebtPolicyManifest(
-        family_budget_shares=(FamilyBudgetShare(FAMILY, PPM),),
+        campaign_budget_shares=(CampaignBudgetShare(CAMPAIGN, PPM),),
+        reward_family_campaigns=(RewardFamilyCampaign(FAMILY, CAMPAIGN),),
+        selection_report_digest=CORE_SELECTION_REPORT_DIGEST,
         reserve_hotkey="reserve",
         reserve_ppm=reserve_ppm,
         epoch_blocks=epoch_blocks,
@@ -239,11 +246,11 @@ def test_selected_policy_and_discovery_values_have_golden_strict_serialization()
     assert DiscoveryClaimBalance.from_dict(balance.to_dict()) == balance
 
     # These literals make any consensus-serialization drift an explicit change.
-    assert policy.digest == "f90a6bd08f214df6aebffbea6034c58deca26d010886c19fbaf57c2a0f1b0a66"
-    assert disposition.digest == "99ca90556a4ffc4c1fbfb1a3d12c664bf3bc9cef5a74e6e830e20d1ae00d9df7"
-    assert claim.digest == "9ca7373a781f53f47ea1e08c2d24a6110b327b1dc1c4f4aa19280e86d04706fe"
-    assert balance.digest == "1a6028e64a2fc0f2de737db7402a9843d7345d795dea6d92fa2e84ff10e067ac"
-    assert state.digest == "fe3c83988090667057a978b15baa5791c5f156e366a4e67d10634fad396ace8a"
+    assert policy.digest == "47da366bcc2abf80153fda3d206bef7fc06e31bebceaa58b09630e1c6df7b013"
+    assert disposition.digest == "a7d5ebf011c0765c3212f586fd0728f76d9752fcb07446a6ec61d1c21d6da234"
+    assert claim.digest == "fa34d13594e125eaccf60d8b31a4472f005a6b004eb1a7065d676ca17d6909ae"
+    assert balance.digest == "a40049ed2b1fbd6d4ccd57361c23560b078c06ae8887bf32be4c10c5a6dd376b"
+    assert state.digest == "66ed679cb6fae27f0dc34f150a30ab2ed3fcb03ab7bca4a6e0bf0da23c4c679e"
 
 
 def test_every_public_payload_parser_rejects_missing_extra_and_non_plain_dicts() -> None:
@@ -557,7 +564,7 @@ def test_projection_is_input_order_invariant_and_roundtrips_to_one_golden_digest
     assert forward.to_dict() == reversed_inputs.to_dict()
     assert forward.digest == reversed_inputs.digest
     assert ComposedEpochProjection.from_dict(forward.to_dict()) == forward
-    assert forward.digest == "def7c5230d9bc1fb3e6aba67b9cdf231c1a9db5cccf0f643a0886043724900fe"
+    assert forward.digest == "03931bbea5d60050ff34f6bf6be6dcc3689c5d04960b06e79aa68d1ddb07b29f"
 
 
 def test_weights_aggregate_both_classes_by_hotkey_and_conserve_reserve() -> None:

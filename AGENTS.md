@@ -165,7 +165,8 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   Runbook: `docs/TESTNET.md`; canary: `optima chain-compat` (SDK 10.3.2; note
   `bittensor-drand<2.0.0`). The first pass kept weights dry-run; a later permitted
   netuid-307 pass validated real commit-reveal weight publication and restart safety.
-- **Incentive composition selected; V2 remains inactive.** D-012's deterministic
+- **Incentive composition selected; V2 remains inactive.** D-012's historical
+  deterministic
   224,000-run sweep, byte-identically replayed locally and on the RTX pod, selected
   registered-CROWN finite debt in multiplicative 1%-log units with a rational
   10%-capped family-time bonus (`tau=648,000` blocks), `k=1`, 90-day expiry,
@@ -174,10 +175,28 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   `15623f7679f5c1099ab48ecc88b1fe6aac926f58b309d07b3a788180848477a4`
   paid 98.7203% of principal over the simulation horizon with maximum measured
   split/withhold/sybil distortion 3.0287%. The live pod
-  `chain-incentive-shadow` receipt tested this registered-CROWN class only.
+  `chain-incentive-shadow` receipt tested this registered-CROWN class only. D-015
+  supersedes its target-family claim division with schema-2 model-campaign sizing:
+  claims in one campaign use 100% sizing, or claims in either of two campaigns use
+  50% sizing; more than two is rejected.
+  Families remain independent frontiers and clocks, but 1/10/100-family catalogs
+  caused zero principal dilution. All 14 preregistered D-015 screens passed. At
+  `k=1`, the normal weekly load was one full-sized 4.4%/5% claim for one campaign,
+  or one half-sized claim in each of two campaigns (one full share aggregate),
+  rotated across families. It paid 100%, expired zero, drained to zero, and had
+  five-day maximum latency under empty and saturated discovery; sustained
+  simultaneous per-family wins were not the normal-tape assumption.
+  five-day cadence was marginal, four-day cadence overloaded, and `k=1.25`
+  marginal. At `k=1.5` the worst rows overloaded while other rows remained
+  marginal; `k=2` was plainly overloaded. Report semantic digest:
+  `7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
+  The raw D-015 sweep remains a local-only experiment record. Current local
+  validation is 2,137 passed/19 skipped repository-wide plus 8/8 D-015 simulator
+  tests; D-015 has no pod receipt.
+  The old testnet shadow does not test D-015 bytes.
   D-013 then selected a separately reviewed discovery bounty capped at 50,000 ppm
   per epoch and at one such epoch of principal per award, with 648,000-block
-  expiry and no family share, clock, time bonus, renewal, or permanent title.
+  expiry and no campaign share, family clock, time bonus, renewal, or permanent title.
   The selected pure policy intends one reviewed win to choose promotion into a
   registered target followed by fresh requalification/CROWN, or the finite bounty,
   never both. Durable schema-5 does not yet implement both branches: it retains
@@ -214,13 +233,14 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   `3dbb3cc27dfd013023c42ba68dd03413d5e5ab1dc8e8626dda3c1a0db18cabaa`;
   receipt-file SHA-256:
   `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`.
-  It constructed no wallet and supplied no review, settlement, publication, or
-  activation authority. A separate multi-pass restart audit now binds exact paired
+  It constructed no wallet and supplied no review, settlement, publication,
+  D-015 policy, or activation authority. A separate multi-pass restart audit now binds exact paired
   qualification/evidence/CROWN speed to principal, derives family clocks and balance
   transitions all-and-only from their journals, validates every retained discovery
   lifecycle before filtering status, and reopens terminal histories before upgrades.
-  The reproduced substitution/cardinality cases are regressions; final local tests:
-  2,135 passed/19 skipped, final pod conformance: 111 passed. A fresh final-source
+  The reproduced substitution/cardinality cases are regressions; pre-D-015 local
+  tests were 2,135 passed/19 skipped and historical pod conformance was 111 passed.
+  D-015 itself has no pod receipt. A fresh final-source
   `chain-validate --intake-only` pass at finalized block 7,586,142 saw/reserved 19,
   rejected five malformed payloads, and did no qualification/settlement; its restart
   at block 7,586,144 had all counters zero. Schema-5 migration starts empty and creates
@@ -230,23 +250,26 @@ This repo is the **validator harness** (the referee), plus example miner bundles
   A landed finalized `invalidate_finite_debt_family` API can cancel one registered
   family's open debt and reset its next-CROWN clock, but the runtime-invalidity
   decision/digest is still external authority. Meaningful V2 emissions still require:
-  the actual production family catalog and reserve identity followed by an exact
-  rerun/manifest; an atomic or quiescent two-step V1→core→composition cutover (the
+  the exact MiniMax-M3 campaign identity, production family map, and reserve plus a
+  fresh campaign-policy shadow; an atomic or quiescent two-step
+  V1→core→composition cutover (the
   interval between the two activations can still race legacy work/publication);
   retained-boundary publication confirmation and debt-debit catch-up (a missed or
   slow boundary currently wedges gapless epochs); independently graded review and
   runtime-invalidation authority; retained membership-departure history rather than
-  only a current snapshot; the promotion transport/linkage above; and production
-  audit evidence transport.
+  only a current snapshot; an atomic successor protocol for later model rotation or
+  one-to-two campaign expansion; the promotion transport/linkage above; and
+  production audit evidence transport.
 - **Release path:** evaluation and serving are separate products. Approved integration
   reviews authorize contributions in an `EngineReleaseManifest`; model provisioning
   receipts seal every model file; signed, chain-independent releases carry deterministic
   source/wheel artifacts, SBOM/provenance, a pinned serving specification, and an OCI
   build context. Chain or wallet code is not included in the serving wheel.
 - **Open — the next goals:** V2 activation/publication authority and mainnet operations
-  (production family catalog/reserve plus exact rerun, independently graded discovery
+  (MiniMax-M3 campaign/family map/reserve plus a fresh shadow, independently graded discovery
   review and runtime invalidation, retained-boundary publication/debit catch-up,
-  atomic/quiescent V1→core→composition cutover, membership history, discovery
+  atomic/quiescent V1→core→composition cutover, campaign-successor protocol,
+  membership history, discovery
   promotion transport/linkage, owned subnet, validator permits, hosted bundle
   storage); more slots
   (MLA/weight-absorbed attention, FP8/FP4

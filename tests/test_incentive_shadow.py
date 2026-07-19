@@ -12,11 +12,12 @@ import pytest
 from optima import chain
 import optima.cli as cli
 from optima.finite_debt import (
+    CampaignBudgetShare,
     PPM,
     DebtClaimBalance,
     DebtClaimState,
-    FamilyBudgetShare,
     FiniteDebtPolicyManifest,
+    RewardFamilyCampaign,
     issue_innovation_claim,
 )
 from optima.incentive_shadow import (
@@ -30,6 +31,7 @@ from optima.stack_identity import canonical_json_bytes, sha256_hex
 
 
 FAMILY = sha256_hex(b"shadow-family")
+CAMPAIGN = sha256_hex(b"minimax-m3-campaign")
 
 
 def _digest(label: str) -> str:
@@ -38,7 +40,9 @@ def _digest(label: str) -> str:
 
 def _policy(*, reserve_hotkey: str = "reserve") -> FiniteDebtPolicyManifest:
     return FiniteDebtPolicyManifest(
-        family_budget_shares=(FamilyBudgetShare(FAMILY, PPM),),
+        campaign_budget_shares=(CampaignBudgetShare(CAMPAIGN, PPM),),
+        reward_family_campaigns=(RewardFamilyCampaign(FAMILY, CAMPAIGN),),
+        selection_report_digest=_digest("d015-selection-report"),
         reserve_hotkey=reserve_hotkey,
         reserve_ppm=100_000,
         epoch_blocks=7_200,

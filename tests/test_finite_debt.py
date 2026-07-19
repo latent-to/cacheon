@@ -6,18 +6,19 @@ from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 import pytest
 
 from optima.finite_debt import (
+    CampaignBudgetShare,
     IMPROVEMENT_EXCESS,
     IMPROVEMENT_GROSS,
     PPM,
     DebtClaimBalance,
     DebtClaimState,
     DebtEpochProjection,
-    FamilyBudgetShare,
     FiniteDebtError,
     FiniteDebtPolicyManifest,
+    RewardFamilyCampaign,
     apply_debt_epoch_projection,
     cancel_claim_balance,
-    equal_family_budget_shares,
+    equal_campaign_budget_shares,
     expire_claim_balance,
     issue_innovation_claim,
     log_improvement_units_ppm,
@@ -31,6 +32,9 @@ from optima.stack_identity import sha256_hex
 
 FAMILY_A = sha256_hex(b"family-a")
 FAMILY_B = sha256_hex(b"family-b")
+CAMPAIGN_A = sha256_hex(b"campaign-a")
+CAMPAIGN_B = sha256_hex(b"campaign-b")
+SELECTION_REPORT = sha256_hex(b"d015-selection-report")
 
 
 def _d(label: str) -> str:
@@ -39,7 +43,8 @@ def _d(label: str) -> str:
 
 def _policy(
     *,
-    shares: tuple[FamilyBudgetShare, ...] | None = None,
+    campaign_shares: tuple[CampaignBudgetShare, ...] | None = None,
+    family_campaigns: tuple[RewardFamilyCampaign, ...] | None = None,
     reserve_ppm: int = 100_000,
     epoch_blocks: int = 7_200,
     beta_ppm: int = 500_000,
@@ -50,7 +55,11 @@ def _policy(
     reset_threshold: int = 1,
 ) -> FiniteDebtPolicyManifest:
     return FiniteDebtPolicyManifest(
-        family_budget_shares=shares or (FamilyBudgetShare(FAMILY_A, PPM),),
+        campaign_budget_shares=campaign_shares
+        or (CampaignBudgetShare(CAMPAIGN_A, PPM),),
+        reward_family_campaigns=family_campaigns
+        or (RewardFamilyCampaign(FAMILY_A, CAMPAIGN_A),),
+        selection_report_digest=SELECTION_REPORT,
         reserve_hotkey="reserve",
         reserve_ppm=reserve_ppm,
         epoch_blocks=epoch_blocks,
@@ -93,48 +102,72 @@ def _state(claim) -> DebtClaimState:
     return DebtClaimState(claim, DebtClaimBalance.open(claim))
 
 
-def test_policy_is_strict_content_addressed_and_budget_shares_sum_to_ppm() -> None:
+def test_policy_is_strict_content_addressed_and_campaign_map_is_canonical() -> None:
     shares = (
-        FamilyBudgetShare(FAMILY_B, 400_000),
-        FamilyBudgetShare(FAMILY_A, 600_000),
+        CampaignBudgetShare(CAMPAIGN_B, 500_000),
+        CampaignBudgetShare(CAMPAIGN_A, 500_000),
     )
-    policy = _policy(shares=shares)
-    assert tuple(row.family_id for row in policy.family_budget_shares) == tuple(
-        sorted((FAMILY_A, FAMILY_B))
+    mappings = (
+        RewardFamilyCampaign(FAMILY_B, CAMPAIGN_B),
+        RewardFamilyCampaign(FAMILY_A, CAMPAIGN_A),
     )
+    policy = _policy(campaign_shares=shares, family_campaigns=mappings)
+    assert tuple(row.campaign_id for row in policy.campaign_budget_shares) == tuple(
+        sorted((CAMPAIGN_A, CAMPAIGN_B))
+    )
+    assert policy.family_ids == tuple(sorted((FAMILY_A, FAMILY_B)))
     assert FiniteDebtPolicyManifest.from_dict(policy.to_dict()) == policy
     assert FiniteDebtPolicyManifest.from_dict(policy.to_dict()).digest == policy.digest
-    with pytest.raises(FiniteDebtError, match="sum"):
-        _policy(shares=(FamilyBudgetShare(FAMILY_A, 999_999),))
+    with pytest.raises(FiniteDebtError, match="one 100% campaign or two 50%"):
+        _policy(
+            campaign_shares=(CampaignBudgetShare(CAMPAIGN_A, 999_999),)
+        )
+    with pytest.raises(FiniteDebtError, match="every reward family"):
+        _policy(
+            campaign_shares=shares,
+            family_campaigns=(RewardFamilyCampaign(FAMILY_A, CAMPAIGN_A),),
+        )
+    with pytest.raises(FiniteDebtError, match="every reward family"):
+        _policy(
+            family_campaigns=(
+                RewardFamilyCampaign(FAMILY_A, CAMPAIGN_A),
+                RewardFamilyCampaign(FAMILY_A, CAMPAIGN_A),
+            )
+        )
     with pytest.raises(FiniteDebtError, match="fields"):
         FiniteDebtPolicyManifest.from_dict({**policy.to_dict(), "extra": 1})
     with pytest.raises(FiniteDebtError, match="reserve_ppm"):
         _policy(reserve_ppm=PPM)
     with pytest.raises(FiniteDebtError, match="epoch_blocks"):
         _policy(epoch_blocks=0)
-    with pytest.raises(FiniteDebtError, match="reference claim pool rounds to zero"):
+    with pytest.raises(FiniteDebtError, match="campaign reference claim pool"):
         _policy(
-            shares=(
-                FamilyBudgetShare(FAMILY_A, 1),
-                FamilyBudgetShare(FAMILY_B, PPM - 1),
-            ),
-            reserve_ppm=100_000,
+            campaign_shares=shares,
+            family_campaigns=mappings,
+            reserve_ppm=999_999,
         )
 
 
-def test_equal_family_budget_shares_assigns_digest_ordered_integer_remainder() -> None:
-    families = tuple(_d(f"family:{index}") for index in range(11))
-    shares = equal_family_budget_shares(reversed(families))
-    assert tuple(row.family_id for row in shares) == tuple(sorted(families))
-    assert sum(row.share_ppm for row in shares) == PPM
-    assert [row.share_ppm for row in shares].count(90_910) == 1
-    assert [row.share_ppm for row in shares].count(90_909) == 10
-    assert shares[0].share_ppm == 90_910
-    assert equal_family_budget_shares(families) == shares
+def test_campaign_roster_supports_only_one_full_or_two_equal_campaigns() -> None:
+    one = equal_campaign_budget_shares((CAMPAIGN_A,))
+    assert one == (CampaignBudgetShare(CAMPAIGN_A, PPM),)
+    two = equal_campaign_budget_shares((CAMPAIGN_B, CAMPAIGN_A))
+    assert tuple(row.campaign_id for row in two) == tuple(
+        sorted((CAMPAIGN_A, CAMPAIGN_B))
+    )
+    assert tuple(row.share_ppm for row in two) == (500_000, 500_000)
     with pytest.raises(FiniteDebtError, match="nonempty"):
-        equal_family_budget_shares(())
+        equal_campaign_budget_shares(())
     with pytest.raises(FiniteDebtError, match="unique"):
-        equal_family_budget_shares((FAMILY_A, FAMILY_A))
+        equal_campaign_budget_shares((CAMPAIGN_A, CAMPAIGN_A))
+    with pytest.raises(FiniteDebtError, match="at most two"):
+        equal_campaign_budget_shares(
+            (
+                CAMPAIGN_A,
+                CAMPAIGN_B,
+                _d("campaign-c"),
+            ),
+        )
 
 
 def test_selected_curve_policy_vector_binds_epoch_cadence_and_claim_terms() -> None:
@@ -150,18 +183,22 @@ def test_selected_curve_policy_vector_binds_epoch_cadence_and_claim_terms() -> N
     )
     assert policy.to_dict() == {
         "beta_ppm": 100_000,
+        "campaign_budget_shares": [
+            {"campaign_id": CAMPAIGN_A, "share_ppm": PPM}
+        ],
         "clock_reset_threshold_log_units_ppm": 1,
         "epoch_blocks": 7_200,
-        "family_budget_shares": [
-            {"family_id": FAMILY_A, "share_ppm": PPM}
-        ],
         "improvement_basis": IMPROVEMENT_GROSS,
         "k_ppm": PPM,
         "lifetime_blocks": 648_000,
-        "policy_version": "optima.finite-debt.v1",
+        "policy_version": "optima.finite-debt.v2",
         "reserve_hotkey": "reserve",
         "reserve_ppm": 100_000,
-        "schema_version": 1,
+        "reward_family_campaigns": [
+            {"campaign_id": CAMPAIGN_A, "family_id": FAMILY_A}
+        ],
+        "schema_version": 2,
+        "selection_report_digest": SELECTION_REPORT,
         "tau_blocks": 648_000,
     }
     assert FiniteDebtPolicyManifest.from_dict(policy.to_dict()) == policy
@@ -172,6 +209,8 @@ def test_selected_curve_policy_vector_binds_epoch_cadence_and_claim_terms() -> N
     assert claim.time_multiplier_ppm == PPM
     assert claim.principal_units == 3_894_697
     assert claim.expires_block == claim.settlement_block + 648_000
+    five_percent = _claim(policy, label="five-percent", speedup="1.05", prior=None)
+    assert five_percent.principal_units == 4_413_033
 
 
 def test_production_floor_conforms_to_frozen_v2_half_even_within_one_unit() -> None:
@@ -205,7 +244,7 @@ def test_production_floor_conforms_to_frozen_v2_half_even_within_one_unit() -> N
         * policy.k_ppm
         * v2_log_units_nano
         * PPM  # first-crown time multiplier
-        * policy.family_share_ppm(FAMILY_A)
+        * policy.campaign_share_ppm_for_family(FAMILY_A)
         // (1_000_000_000 * PPM * PPM * PPM)
     )
 
@@ -215,12 +254,13 @@ def test_production_floor_conforms_to_frozen_v2_half_even_within_one_unit() -> N
     assert abs(production.principal_units - v2_principal) <= 1
 
 
-def test_one_log_unit_one_epoch_principal_uses_post_reserve_family_pool() -> None:
+def test_one_log_unit_one_epoch_principal_uses_post_reserve_campaign_pool() -> None:
     policy = _policy(reserve_ppm=100_000, k_ppm=PPM)
     claim = _claim(policy, prior=None)
     assert claim.log_units_ppm == PPM
     assert claim.time_multiplier_ppm == PPM
-    assert claim.reference_family_pool_units == 900_000
+    assert claim.campaign_id == CAMPAIGN_A
+    assert claim.reference_campaign_pool_units == 900_000
     assert claim.principal_units == 900_000
     assert claim.expires_block == claim.settlement_block + policy.lifetime_blocks
 
@@ -234,18 +274,52 @@ def test_one_log_unit_one_epoch_principal_uses_post_reserve_family_pool() -> Non
     assert paid.status == "paid" and paid.paid_units == claim.principal_units
 
 
-def test_family_share_scales_post_reserve_principal_without_changing_catalog() -> None:
-    policy = _policy(
-        shares=(
-            FamilyBudgetShare(FAMILY_A, 600_000),
-            FamilyBudgetShare(FAMILY_B, 400_000),
+def test_family_count_does_not_dilute_campaign_principal() -> None:
+    one_campaign = _policy(
+        family_campaigns=(
+            RewardFamilyCampaign(FAMILY_A, CAMPAIGN_A),
+            RewardFamilyCampaign(FAMILY_B, CAMPAIGN_A),
+        ),
+    )
+    left = _claim(one_campaign, family=FAMILY_A, label="left")
+    right = _claim(one_campaign, family=FAMILY_B, label="right")
+    assert (left.principal_units, right.principal_units) == (900_000, 900_000)
+
+    hundred_families = (FAMILY_A,) + tuple(
+        _d(f"unused-family:{index}") for index in range(99)
+    )
+    large_catalog = _policy(
+        family_campaigns=tuple(
+            RewardFamilyCampaign(family, CAMPAIGN_A)
+            for family in hundred_families
         )
     )
-    left = _claim(policy, family=FAMILY_A, label="left")
-    right = _claim(policy, family=FAMILY_B, label="right")
-    assert left.reference_family_pool_units == 540_000
-    assert right.reference_family_pool_units == 360_000
-    assert (left.principal_units, right.principal_units) == (540_000, 360_000)
+    large_claim = _claim(large_catalog, family=FAMILY_A, label="large-catalog")
+    assert large_claim.principal_units == left.principal_units
+    assert large_claim.reference_campaign_pool_units == 900_000
+
+    two_campaigns = _policy(
+        campaign_shares=(
+            CampaignBudgetShare(CAMPAIGN_A, 500_000),
+            CampaignBudgetShare(CAMPAIGN_B, 500_000),
+        ),
+        family_campaigns=(
+            RewardFamilyCampaign(FAMILY_A, CAMPAIGN_A),
+            RewardFamilyCampaign(FAMILY_B, CAMPAIGN_B),
+        ),
+    )
+    left = _claim(two_campaigns, family=FAMILY_A, label="half-left")
+    right = _claim(two_campaigns, family=FAMILY_B, label="half-right")
+    assert left.reference_campaign_pool_units == 450_000
+    assert right.reference_campaign_pool_units == 450_000
+    assert (left.principal_units, right.principal_units) == (450_000, 450_000)
+    material = _claim(
+        two_campaigns,
+        family=FAMILY_A,
+        label="half-material",
+        speedup="1.044",
+    )
+    assert material.principal_units == 1_947_348
 
 
 def test_one_percent_log_units_are_path_independent_on_exact_power_vectors() -> None:
@@ -437,3 +511,7 @@ def test_claim_balance_and_projection_identities_reject_inconsistent_terms() -> 
         replace(claim, principal_units=claim.principal_units + 1).validate_policy(
             policy
         )
+    with pytest.raises(FiniteDebtError, match="derived terms"):
+        replace(claim, campaign_id=CAMPAIGN_B).validate_policy(policy)
+    with pytest.raises(FiniteDebtError, match="derived terms"):
+        replace(claim, campaign_budget_ppm=500_000).validate_policy(policy)

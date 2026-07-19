@@ -137,7 +137,7 @@ chain-submit/chain-status/chain-validate/chain-register` are the operator surfac
 plane reconciliation over the transactional global reward projection.
 
 **The V2 incentive composition is selected; its arithmetic and bounty-only durable
-subset are implemented but inactive.** D-012's
+subset are implemented but inactive.** D-012's now-superseded
 1,600-cell/224,000-run synthetic sweep replayed byte-identically on local
 arm64/Python 3.11 and the RTX pod's x86_64/Python 3.12. Its registered-CROWN
 selected cell
@@ -150,17 +150,43 @@ maximum measured split/withhold/sybil distortion was 3.0287%. The D-012
 hash-gated selection report digest is
 `9cdec61232343b663f24291c13af6b283db064370fd89a1f3b9ad6084c47cce1`.
 
-The live testnet-netuid-307 `chain-incentive-shadow` receipt exercised **only that
-registered-CROWN class**: it twice reopened exact finalized membership, mapped
+D-015 replaced only the claim-sizing hierarchy: the funded unit is now a model
+campaign, while target families remain independent frontiers and elapsed-time
+clocks. The schema-2 `optima.finite-debt.v2` manifest makes claims in one campaign
+use 100% sizing or claims in either of two campaigns use 50% sizing, and rejects
+more than two; every family maps exactly once.
+Adding 1, 10, or 100 target families changed principal by zero. All 14
+preregistered screens passed. At selected `k=1`, the normal weekly tape issued one
+full-sized 4.4%/5% claim for one campaign, or one half-sized claim in each of two
+campaigns (one full share in aggregate), rotating across families. Those tapes paid
+100%, expired zero, drained to zero outstanding, and reached at most five days of
+payment latency under zero and saturated discovery. Worst normal
+utilization was 77.4136%; five-day cadence was marginal and four-day cadence was
+overloaded. `k=1.25` was already marginal; at `k=1.5` the worst rows overloaded
+while other rows remained marginal, and `k=2` was plainly overloaded. D-015 semantic
+report digest:
+`7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590`.
+This is deterministic control-plane/ROI sensitivity, not token-value, validator-
+influence, GPU-performance, or miner-equilibrium evidence. Its normal tape does not
+model sustained simultaneous wins in every active family. The raw D-015 config,
+simulator, ledger, and report are local-only experiment records; tracked code binds
+the report digest but this PR alone cannot reproduce the sweep. Current branch
+validation is 2,137 passed/19 skipped repository-wide plus 8/8 local D-015
+simulator tests; D-015 has no pod receipt.
+
+The earlier live testnet-netuid-307 `chain-incentive-shadow` receipt exercised
+**only the historical D-012 registered-CROWN class**: it twice reopened exact
+finalized membership, mapped
 three explicitly synthetic claims to 900,000 miner ppm plus 100,000 reserve ppm,
 and wrote `submitted=false` (receipt digest
 `a4006912ec3e34b98fe51031fe25864915e4a2d588209877c41a459a6094dcf3`).
-No wallet or chain mutation was used.
+No wallet or chain mutation was used. It does not test D-015 campaign bytes; a fresh
+campaign-policy shadow remains activation work.
 
 D-013 selected the separate reviewed-discovery composition. Its cell
 `8561028c943738da2fe622e5f5c9fd43ebec16fdd59feab3561de25fbfa450d9`
 sets a 50,000-ppm discovery epoch cap, caps each award at one such epoch of
-principal (50,000 weight-ppm epoch units), and gives it no family share, family
+principal (50,000 weight-ppm epoch units), and gives it no campaign share, family
 clock, time bonus, renewal, or permanent title. Its 648,000-block lifetime begins
 when the qualified discovery win is retained, not at later review; review delay
 consumes the window and review at or after expiry cannot mint. The pure policy
@@ -187,9 +213,10 @@ were forfeited/cancelled. Analytic and measured saturated CROWN-capacity dilutio
 was 55,555 ppm (5.5555%), while saturated tapes eventually paid 100% CROWN
 principal. These are synthetic accounting results, not miner-equilibrium,
 token-value, or GPU-performance evidence. Selector checks passed 11/11. After a
-multi-pass restart/cardinality audit, the final implementation passed 98 focused
-tests and the repository passed 2,135 tests with 19 skips; final pod conformance
-passed 111 tests under Python 3.12 with CUDA hidden.
+multi-pass restart/cardinality audit, the pre-D-015 implementation passed 98
+focused tests and the repository passed 2,135 tests with 19 skips; historical pod
+conformance passed 111 tests under Python 3.12 with CUDA hidden. Those pod receipts
+do not cover D-015.
 
 D-014 held the selected D-013 policy fixed and measured review-delay sensitivity in
 8 delays × 3 service modes × 4 scenarios × 3 seeds = 288 rows. The artifacts
@@ -207,8 +234,9 @@ performance evidence.
 Pure arithmetic lives in `optima/incentive_composition.py`; schema-5 durable
 authority lives in `optima/chain/incentive_composition_store.py`; and the signer-free
 `chain-incentive-composition-shadow` surface lives in
-`optima/incentive_composition_shadow.py`. Its live signer-free testnet-netuid-307
-run passed at finalized block 7,586,146 with metagraph size 6. Explicitly synthetic
+`optima/incentive_composition_shadow.py`. Before D-015, its live signer-free
+testnet-netuid-307 run passed at finalized block 7,586,146 with metagraph size 6.
+Explicitly synthetic
 states allocated 850,000 ppm to registered-CROWN claims, 50,000 ppm to
 reviewed-discovery claims, and 100,000 ppm to reserve, exactly 1,000,000 ppm total;
 the receipt wrote `submitted=false`. Semantic digest:
@@ -216,7 +244,8 @@ the receipt wrote `submitted=false`. Semantic digest:
 receipt-file SHA-256:
 `ac695810671cdc6f635a9b30a7fb67f1a885e13bd4fba7e64f2456a08ae88aed`.
 The command constructed no wallet and the receipt supplies no independent review,
-settlement, publication, debt-debit, or activation authority. Schema-4→5 migration
+settlement, publication, debt-debit, D-015 policy, or activation authority.
+Schema-4→5 migration
 creates empty composition tables and no retroactive debt.
 Activation fails with any retained legacy discovery row (and requires validated,
 clean open-debt state), because V1 has no journal that can prove a mutable terminal
@@ -249,15 +278,16 @@ and inserts an invalidation clock marker so the next CROWN acts as a first CROWN
 It accepts an external invalidation digest and does not independently decide or
 grade runtime invalidity.
 
-Meaningful V2 emissions still require: the actual production family catalog and
-reserve identity followed by an exact rerun/manifest; an atomic or quiescent
+Meaningful V2 emissions still require: the exact MiniMax-M3 campaign identity,
+production family map, reserve, and fresh campaign-policy shadow; an atomic or quiescent
 two-step V1→core→composition cutover (legacy work/publication can race between the
 steps); retained-boundary publication confirmation/debt-debit catch-up (a missed or
 slow boundary currently wedges later gapless epochs); independently graded review
 and runtime-invalidation authority; retained membership-departure history rather
-than only a current snapshot; the promotion transport/linkage above; and production
-audit-evidence transport. The current `review_digest` remains controller-supplied
-and content-bound.
+than only a current snapshot; an atomic successor protocol for later campaign
+rotation or one-to-two expansion; the promotion transport/linkage above; and
+production audit-evidence transport. The current `review_digest` remains
+controller-supplied and content-bound.
 
 **The serving release is separate from evaluation and chain state.** Approved
 `IntegrationReviewRecord`s authorize exact contributions in an

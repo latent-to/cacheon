@@ -5,14 +5,16 @@ import pytest
 from optima.chain.finite_debt_store import reward_family_id
 from optima.chain.incentive_composition_store import (
     IncentiveCompositionStoreError,
+    SELECTED_CORE_SELECTION_REPORT_DIGEST,
     SELECTED_SELECTION_REPORT_DIGEST,
 )
 from optima.chain.intake import IntakeError
 from optima.finite_debt import (
+    CampaignBudgetShare,
     IMPROVEMENT_GROSS,
     PPM,
-    FamilyBudgetShare,
     FiniteDebtPolicyManifest,
+    RewardFamilyCampaign,
     pay_claim_balance,
     project_debt_epoch,
 )
@@ -34,8 +36,11 @@ from tests.test_finite_debt_store import _commit, _family
 
 
 def _selected_core(family_id: str) -> FiniteDebtPolicyManifest:
+    campaign_id = _h("minimax-m3 campaign")
     return FiniteDebtPolicyManifest(
-        family_budget_shares=(FamilyBudgetShare(family_id, PPM),),
+        campaign_budget_shares=(CampaignBudgetShare(campaign_id, PPM),),
+        reward_family_campaigns=(RewardFamilyCampaign(family_id, campaign_id),),
+        selection_report_digest=SELECTED_CORE_SELECTION_REPORT_DIGEST,
         reserve_hotkey="reserve",
         reserve_ppm=100_000,
         epoch_blocks=7_200,
@@ -238,15 +243,52 @@ def test_activation_is_exact_and_legacy_discovery_fails_closed(tmp_path) -> None
                 activation_block_hash=block_hash,
             )
 
-    unequal_root = tmp_path / "unequal-family-budget"
-    with _store(unequal_root) as store:
+    stale_core_root = tmp_path / "stale-core-selection"
+    with _store(stale_core_root) as store:
         candidate = _qualified_settlement_candidate(store)
         assert isinstance(candidate, SettlementCandidate)
-        unequal = FiniteDebtPolicyManifest(
-            family_budget_shares=(
-                FamilyBudgetShare(_family(candidate), 600_000),
-                FamilyBudgetShare(_h("second family"), 400_000),
+        selected = _selected_core(_family(candidate))
+        stale = FiniteDebtPolicyManifest(
+            **{
+                **{
+                    field: getattr(selected, field)
+                    for field in selected.__dataclass_fields__
+                },
+                "selection_report_digest": _h("stale D-012 selection report"),
+            }
+        )
+        block_hash = "0x" + f"{10:064x}"
+        store.activate_finite_debt_policy(
+            stale,
+            activation_block=10,
+            activation_block_hash=block_hash,
+        )
+        with pytest.raises(IntakeError, match="exact D-013"):
+            store.activate_incentive_composition(
+                _selected_composition(stale),
+                activation_block=10,
+                activation_block_hash=block_hash,
+            )
+
+
+def test_selected_composition_accepts_two_equal_model_campaigns(tmp_path) -> None:
+    with _store(tmp_path) as store:
+        candidate = _qualified_settlement_candidate(store)
+        assert isinstance(candidate, SettlementCandidate)
+        family_a = _family(candidate)
+        family_b = _h("second model family")
+        campaign_a = _h("minimax-m3 campaign")
+        campaign_b = _h("second model campaign")
+        core = FiniteDebtPolicyManifest(
+            campaign_budget_shares=(
+                CampaignBudgetShare(campaign_a, 500_000),
+                CampaignBudgetShare(campaign_b, 500_000),
             ),
+            reward_family_campaigns=(
+                RewardFamilyCampaign(family_a, campaign_a),
+                RewardFamilyCampaign(family_b, campaign_b),
+            ),
+            selection_report_digest=SELECTED_CORE_SELECTION_REPORT_DIGEST,
             reserve_hotkey="reserve",
             reserve_ppm=100_000,
             epoch_blocks=7_200,
@@ -259,16 +301,20 @@ def test_activation_is_exact_and_legacy_discovery_fails_closed(tmp_path) -> None
         )
         block_hash = "0x" + f"{10:064x}"
         store.activate_finite_debt_policy(
-            unequal,
+            core,
             activation_block=10,
             activation_block_hash=block_hash,
         )
-        with pytest.raises(IntakeError, match="exact D-013"):
-            store.activate_incentive_composition(
-                _selected_composition(unequal),
-                activation_block=10,
-                activation_block_hash=block_hash,
-            )
+        activation = store.activate_incentive_composition(
+            _selected_composition(core),
+            activation_block=10,
+            activation_block_hash=block_hash,
+        )
+        assert activation.policy.innovation_policy_digest == core.digest
+        assert tuple(row.share_ppm for row in core.campaign_budget_shares) == (
+            500_000,
+            500_000,
+        )
 
 
 def test_legacy_standing_title_survives_composition_without_retro_debt(tmp_path) -> None:

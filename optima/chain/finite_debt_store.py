@@ -215,7 +215,7 @@ class FiniteDebtPolicyActivation:
             or tuple(row.family_id for row in seeds)
             != tuple(sorted({row.family_id for row in seeds}))
             or any(row.accepted_crown_block > self.activation_block for row in seeds)
-            or any(row.family_id not in self.policy.family_shares for row in seeds)
+            or any(row.family_id not in self.policy.family_ids for row in seeds)
         ):
             raise FiniteDebtStoreError("activation family-clock seeds are not canonical")
         object.__setattr__(self, "seeded_family_clocks", seeds)
@@ -686,6 +686,10 @@ class FiniteDebtStore:
         self._transaction = transaction
         self._finalized_cursor = finalized_cursor
         _verify_schema(db)
+        # Policy v1 was never activated.  Refuse a retained legacy or corrupt
+        # activation at open time rather than discovering incompatible bytes
+        # only when the first payout path is exercised.
+        self.policy_activations()
 
     def _require_finalized_authority(self, block: int, block_hash: str) -> None:
         height = _integer(block, "finalized block")
@@ -1377,7 +1381,7 @@ class FiniteDebtStore:
             payload["invalidation_digest"], "invalidation_digest"
         )
         try:
-            activation.policy.family_share_ppm(family)
+            activation.policy.campaign_for_family(family)
         except FiniteDebtError as exc:
             raise FiniteDebtStoreError(
                 f"finite-debt family invalidation is outside its policy: {exc}"
@@ -1957,7 +1961,7 @@ class FiniteDebtStore:
                     "family invalidation policy is not the active finalized policy"
                 )
             try:
-                activation.policy.family_share_ppm(family)
+                activation.policy.campaign_for_family(family)
             except FiniteDebtError as exc:
                 raise FiniteDebtStoreError(
                     f"family invalidation is outside the policy: {exc}"
