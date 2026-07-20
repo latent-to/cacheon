@@ -180,6 +180,16 @@ class SwapReceipt:
     def swap_seconds(self) -> float:
         return self.completed_at - self.requested_at
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "bundle_digest": self.bundle_digest,
+            "completed_at": format(self.completed_at, ".17g"),
+            "generation": self.generation,
+            "requested_at": format(self.requested_at, ".17g"),
+            "slots": list(self.slots),
+            "swap_index": self.swap_index,
+        }
+
 
 @dataclass(frozen=True)
 class ResidentBatchEvidence:

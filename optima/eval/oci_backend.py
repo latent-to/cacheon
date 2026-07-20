@@ -1679,44 +1679,57 @@ def stage_swap_bundle(
     convenience, not a trust boundary.  Symlinks are preserved (not followed):
     bundle identity skips them and the load-time scan rejects them, so a
     symlinked source fails closed rather than folding foreign bytes in.
+
+    Worker-storage metadata is not part of bundle identity: the root-level
+    native-artifact receipt that immutable publication plants next to the
+    committed bytes is skipped, so staging from a worker publication
+    reproduces the chain-committed content hash exactly.  The digest is
+    computed over the staged COPY (the bytes actually published), never over
+    the source it was copied from.
     """
 
     from optima.bundle_hash import content_hash
+    from optima.eval.native_artifact import _MANIFEST as _PUBLICATION_RECEIPT
 
     root, _ = _reopen_directory(swap_intake_root, field="swap intake root")
     source, _ = _reopen_directory(source_tree, field="staged bundle source")
-    try:
-        digest = content_hash(source)
-    except (OSError, ValueError) as exc:
-        raise OCIBackendError(f"staged bundle source is unhashable: {exc}") from None
-    if expected_digest is not None and digest != _digest(
-        expected_digest, field="expected bundle digest"
-    ):
-        raise OCIBackendError("staged bundle differs from its committed digest")
-    destination = root / digest
-    if destination.is_symlink():
-        raise OCIBackendError("swap intake destination must not be a symlink")
-    if destination.exists():
-        try:
-            if content_hash(destination) != digest:
-                raise OCIBackendError(
-                    "swap intake already holds different bytes for this digest"
-                )
-        except (OSError, ValueError) as exc:
-            raise OCIBackendError(
-                f"existing staged bundle is unreadable: {exc}"
-            ) from None
-        return digest
+
+    def _ignore_receipt(directory: str, names: list[str]) -> set[str]:
+        if Path(directory) == source:
+            return {name for name in names if name == _PUBLICATION_RECEIPT}
+        return set()
+
     staging = root / f".staging-{secrets.token_hex(16)}"
     try:
-        shutil.copytree(source, staging, symlinks=True)
-        if content_hash(staging) != digest:
-            raise OCIBackendError("staged bundle changed while being copied")
+        shutil.copytree(source, staging, symlinks=True, ignore=_ignore_receipt)
+        try:
+            digest = content_hash(staging)
+        except (OSError, ValueError) as exc:
+            raise OCIBackendError(
+                f"staged bundle source is unhashable: {exc}"
+            ) from None
+        if expected_digest is not None and digest != _digest(
+            expected_digest, field="expected bundle digest"
+        ):
+            raise OCIBackendError("staged bundle differs from its committed digest")
+        destination = root / digest
+        if destination.is_symlink():
+            raise OCIBackendError("swap intake destination must not be a symlink")
+        if destination.exists():
+            try:
+                if content_hash(destination) != digest:
+                    raise OCIBackendError(
+                        "swap intake already holds different bytes for this digest"
+                    )
+            except (OSError, ValueError) as exc:
+                raise OCIBackendError(
+                    f"existing staged bundle is unreadable: {exc}"
+                ) from None
+            return digest
         os.rename(staging, destination)
-    except BaseException:
+        return digest
+    finally:
         shutil.rmtree(staging, ignore_errors=True)
-        raise
-    return digest
 
 
 def _new_runtime_id() -> str:

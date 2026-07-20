@@ -43,6 +43,11 @@ from optima.stack_identity import require_sha256_hex
 
 _CANDIDATE_ID = re.compile(r"[A-Za-z0-9_.:+-]{1,128}\Z")
 
+# The exact failure recorded when a tripped canary voids the just-closed
+# verdict.  Consumers branch on CandidateScreenVerdict.withdrawn, never on
+# this string.
+WITHDRAWN_FAILURE = "stock canary drifted beyond tolerance; evidence withdrawn"
+
 
 class ResidentQueueError(ValueError):
     """A queue plan, policy, or session interaction is invalid."""
@@ -144,6 +149,46 @@ class CandidateScreenVerdict:
             and self.verdict.passed_speedup
         )
 
+    @property
+    def withdrawn(self) -> bool:
+        """Evidence voided by a tripped canary; re-screen on a fresh lifetime."""
+        return self.failure == WITHDRAWN_FAILURE
+
+    @property
+    def rejected_dispatch(self) -> bool:
+        """The engine registered slots other than the candidate declared."""
+        return self.failure is not None and not self.withdrawn
+
+    def to_dict(self) -> dict[str, object]:
+        verdict = self.verdict
+        return {
+            "baseline_throughputs": [
+                format(row, ".17g") for row in self.baseline_throughputs
+            ],
+            "batch_indices": list(self.batch_indices),
+            "bundle_digest": self.bundle_digest,
+            "candidate_id": self.candidate_id,
+            "candidate_throughputs": [
+                format(row, ".17g") for row in self.candidate_throughputs
+            ],
+            "escalated": self.escalated,
+            "failure": self.failure,
+            "slots": list(self.slots),
+            "swap_receipts": [row.to_dict() for row in self.swap_receipts],
+            "verdict": None
+            if verdict is None
+            else {
+                "confident": verdict.confident,
+                "detail": verdict.detail,
+                "n_baselines": verdict.n_baselines,
+                "n_candidates": verdict.n_candidates,
+                "noise": format(verdict.noise, ".17g"),
+                "passed_speedup": verdict.passed_speedup,
+                "required": format(verdict.required, ".17g"),
+                "speedup": format(verdict.speedup, ".17g"),
+            },
+        }
+
 
 @dataclass(frozen=True)
 class ScreenReport:
@@ -179,57 +224,78 @@ def _is_borderline(verdict: SpeedupVerdict, *, band: float) -> bool:
     return abs(verdict.speedup - verdict.required) <= band
 
 
-def run_resident_screen(
-    session: ScreenSession,
-    candidates: Sequence[ScreenCandidate],
-    *,
-    prompts: Sequence[str],
-    policy: ScreenPolicy = ScreenPolicy(),
-) -> ScreenReport:
-    """Screen every candidate through one live engine; stop early on drift.
+class ResidentScreenLoop:
+    """Incremental screen: one candidate at a time on one live session.
 
-    The caller owns the engine lifetime: it opens the resident session, calls
-    this, then closes.  When ``stopped_reason`` is set, the remaining
-    candidates in ``unprocessed_candidate_ids`` must be re-screened on a fresh
-    lifetime (recycle) — their absence here is scheduling state, not a verdict.
-    A canary drift additionally WITHDRAWS the just-closed candidate's verdict
-    (failure set, verdict ``None``, receipts retained for the record) and lists
-    that candidate as unprocessed too: re-screen it on the fresh lifetime.
+    The batch entry point :func:`run_resident_screen` drives this over a fixed
+    list; the arena provider drives it over arrivals — candidates trickle in
+    while the engine stays resident between them, so the loop carries the
+    shared bracket (the last stock read), the lifetime's full stock band (the
+    canary reference), and the stop condition across calls.
+
+    ``screen`` returns ``None`` when the lifetime cannot accept the candidate
+    (budget exhausted or already stopped) — the candidate was NOT touched and
+    must be re-screened on a fresh lifetime.  A returned verdict can still be
+    terminal for the lifetime: a tripped canary returns the WITHDRAWN verdict
+    and sets ``stopped_reason``, so callers check it after every call.
     """
 
-    rows = tuple(candidates)
-    if not rows or any(type(row) is not ScreenCandidate for row in rows):
-        raise ResidentQueueError("screen candidates must be typed and nonempty")
-    if len({row.candidate_id for row in rows}) != len(rows):
-        raise ResidentQueueError("screen candidate ids must be unique")
-    if type(policy) is not ScreenPolicy:
-        raise ResidentQueueError("screen policy has the wrong type")
-    prompt_plan = tuple(prompts)
-    if not prompt_plan:
-        raise ResidentQueueError("screen prompt plan is empty")
+    def __init__(
+        self,
+        session: ScreenSession,
+        *,
+        prompts: Sequence[str],
+        policy: ScreenPolicy = ScreenPolicy(),
+    ) -> None:
+        if type(policy) is not ScreenPolicy:
+            raise ResidentQueueError("screen policy has the wrong type")
+        prompt_plan = tuple(prompts)
+        if not prompt_plan:
+            raise ResidentQueueError("screen prompt plan is empty")
+        self._session = session
+        self._prompts = prompt_plan
+        self._policy = policy
+        self._stock: list[float] = []
+        self._baseline_prev: float | None = None
+        self._processed = 0
+        self._stopped: str | None = None
 
-    verdicts: list[CandidateScreenVerdict] = []
-    stock_throughputs: list[float] = []
-    stopped_reason: str | None = None
+    @property
+    def stopped_reason(self) -> str | None:
+        return self._stopped
 
-    opening = session.execute_batch(prompt_plan, canary=True)
-    baseline_prev = _throughput(opening)
-    stock_throughputs.append(baseline_prev)
+    @property
+    def stock_throughputs(self) -> tuple[float, ...]:
+        return tuple(self._stock)
 
-    processed = 0
-    for candidate in rows:
-        if processed >= policy.max_candidates_per_lifetime:
-            stopped_reason = "lifetime candidate budget exhausted"
-            break
+    @property
+    def processed(self) -> int:
+        """Candidates with retained verdicts (a withdrawn one does not count)."""
+        return self._processed
+
+    def screen(self, candidate: ScreenCandidate) -> CandidateScreenVerdict | None:
+        if type(candidate) is not ScreenCandidate:
+            raise ResidentQueueError("screen candidate is not exactly typed")
+        if self._stopped is not None:
+            return None
+        policy = self._policy
+        if self._processed >= policy.max_candidates_per_lifetime:
+            self._stopped = "lifetime candidate budget exhausted"
+            return None
+        session = self._session
+        prompt_plan = self._prompts
+        if self._baseline_prev is None:
+            opening = session.execute_batch(prompt_plan, canary=True)
+            self._baseline_prev = _throughput(opening)
+            self._stock.append(self._baseline_prev)
 
         receipts: list[SwapReceipt] = []
         batch_indices: list[int] = []
         failure: str | None = None
         candidate_reads: list[float] = []
-        baseline_reads: list[float] = [baseline_prev]
+        baseline_reads: list[float] = [self._baseline_prev]
         verdict: SpeedupVerdict | None = None
         escalated = False
-        slots: tuple[str, ...] = ()
 
         swap_in = session.swap(candidate.bundle_digest)
         receipts.append(swap_in)
@@ -251,7 +317,7 @@ def run_resident_screen(
         closing = session.execute_batch(prompt_plan, canary=True)
         batch_indices.append(closing.batch_index)
         closing_throughput = _throughput(closing)
-        stock_throughputs.append(closing_throughput)
+        self._stock.append(closing_throughput)
         baseline_reads.append(closing_throughput)
 
         if failure is None:
@@ -277,7 +343,7 @@ def run_resident_screen(
                 closing_2 = session.execute_batch(prompt_plan, canary=True)
                 batch_indices.append(closing_2.batch_index)
                 closing_throughput = _throughput(closing_2)
-                stock_throughputs.append(closing_throughput)
+                self._stock.append(closing_throughput)
                 baseline_reads.append(closing_throughput)
                 if failure is None:
                     verdict = score_speedup(
@@ -288,68 +354,100 @@ def run_resident_screen(
                         max_noise=policy.max_noise,
                     )
 
-        verdicts.append(
-            CandidateScreenVerdict(
-                candidate.candidate_id,
-                candidate.bundle_digest,
-                slots,
-                tuple(baseline_reads),
-                tuple(candidate_reads),
-                verdict,
-                escalated,
-                failure,
-                tuple(receipts),
-                tuple(batch_indices),
-            )
+        result = CandidateScreenVerdict(
+            candidate.candidate_id,
+            candidate.bundle_digest,
+            slots,
+            tuple(baseline_reads),
+            tuple(candidate_reads),
+            verdict,
+            escalated,
+            failure,
+            tuple(receipts),
+            tuple(batch_indices),
         )
-        processed += 1
-        baseline_prev = closing_throughput
+        self._processed += 1
+        self._baseline_prev = closing_throughput
 
         if _canary_drifted(
-            stock_throughputs, closing_throughput, tolerance=policy.canary_tolerance
+            self._stock, closing_throughput, tolerance=policy.canary_tolerance
         ):
             # The drifted read closed THIS candidate's bracket, so its verdict
             # is built on suspect evidence: withdraw it and re-screen the
             # candidate on the fresh lifetime along with the remainder.
-            contaminated = verdicts.pop()
-            verdicts.append(
-                CandidateScreenVerdict(
-                    contaminated.candidate_id,
-                    contaminated.bundle_digest,
-                    contaminated.slots,
-                    contaminated.baseline_throughputs,
-                    contaminated.candidate_throughputs,
-                    None,
-                    contaminated.escalated,
-                    "stock canary drifted beyond tolerance; evidence withdrawn",
-                    contaminated.swap_receipts,
-                    contaminated.batch_indices,
-                )
+            result = CandidateScreenVerdict(
+                result.candidate_id,
+                result.bundle_digest,
+                result.slots,
+                result.baseline_throughputs,
+                result.candidate_throughputs,
+                None,
+                result.escalated,
+                WITHDRAWN_FAILURE,
+                result.swap_receipts,
+                result.batch_indices,
             )
-            processed -= 1
-            stopped_reason = (
+            self._processed -= 1
+            self._stopped = (
                 "stock canary drifted beyond tolerance after "
                 f"{candidate.candidate_id}; lifetime requires recycle"
             )
-            break
+        return result
 
-    unprocessed = tuple(row.candidate_id for row in rows[processed:])
-    if unprocessed and stopped_reason is None:
-        stopped_reason = "lifetime candidate budget exhausted"
+
+def run_resident_screen(
+    session: ScreenSession,
+    candidates: Sequence[ScreenCandidate],
+    *,
+    prompts: Sequence[str],
+    policy: ScreenPolicy = ScreenPolicy(),
+) -> ScreenReport:
+    """Screen every candidate through one live engine; stop early on drift.
+
+    The caller owns the engine lifetime: it opens the resident session, calls
+    this, then closes.  When ``stopped_reason`` is set, the remaining
+    candidates in ``unprocessed_candidate_ids`` must be re-screened on a fresh
+    lifetime (recycle) — their absence here is scheduling state, not a verdict.
+    A canary drift additionally WITHDRAWS the just-closed candidate's verdict
+    (failure set, verdict ``None``, receipts retained for the record) and lists
+    that candidate as unprocessed too: re-screen it on the fresh lifetime.
+    """
+
+    rows = tuple(candidates)
+    if not rows or any(type(row) is not ScreenCandidate for row in rows):
+        raise ResidentQueueError("screen candidates must be typed and nonempty")
+    if len({row.candidate_id for row in rows}) != len(rows):
+        raise ResidentQueueError("screen candidate ids must be unique")
+
+    loop = ResidentScreenLoop(session, prompts=prompts, policy=policy)
+    verdicts: list[CandidateScreenVerdict] = []
+    for candidate in rows:
+        result = loop.screen(candidate)
+        if result is None:
+            break
+        verdicts.append(result)
+        if loop.stopped_reason is not None:
+            break
+    # loop.processed is the exact list position of the first candidate that
+    # must be re-screened: the loop was fresh and fed in list order, and a
+    # withdrawn candidate does not count as processed.
+    unprocessed = tuple(row.candidate_id for row in rows[loop.processed :])
     return ScreenReport(
         tuple(verdicts),
-        tuple(stock_throughputs),
+        loop.stock_throughputs,
         unprocessed,
-        stopped_reason,
+        loop.stopped_reason,
     )
 
 
 __all__ = [
     "CandidateScreenVerdict",
     "ResidentQueueError",
+    "ResidentScreenLoop",
     "ScreenCandidate",
     "ScreenPolicy",
     "ScreenReport",
     "ScreenSession",
+    "WITHDRAWN_FAILURE",
     "run_resident_screen",
 ]
