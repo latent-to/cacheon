@@ -19,7 +19,10 @@ from optima.eval.qualification import (
     GraphVerificationRequirement,
     QualificationDecision,
 )
-from optima.eval.qualification_runner import QualificationRunnerError
+from optima.eval.qualification_runner import (
+    QualificationRunnerError,
+    SpeedStageDisposition,
+)
 from optima.eval.scoring import RawSpeedEvidenceError
 from optima.verify import VerifyResult
 
@@ -68,6 +71,7 @@ def _fake_plan(monkeypatch, *, count: int = 2, discovery: bool = False):
         for index in range(count)
     )
     plan.evidence_root = SimpleNamespace()
+    plan.speed_stage_disposition = SpeedStageDisposition.TERMINAL
     monkeypatch.setattr(
         intake, "qualification_authority_digest", lambda _value: _d("authority")
     )
@@ -412,6 +416,39 @@ def test_speed_stage_exit_projects_terminal_outcome_without_settlement(
         )
     else:
         assert result.retry_plan is None
+
+
+def test_intake_rejects_calibration_observation_before_runner(
+    monkeypatch,
+) -> None:
+    plan, manifest = _fake_plan(monkeypatch, count=1)
+    plan.speed_stage_disposition = SpeedStageDisposition.CALIBRATION_OBSERVATION
+    monkeypatch.setattr(
+        intake,
+        "run_causal_qualification",
+        lambda *_args, **_kwargs: pytest.fail(
+            "economic intake must reject calibration authority before the runner"
+        ),
+    )
+
+    result = intake.run_qualification_intake(
+        _factory(plan, manifest),
+        executor=object(),
+        resident_baseline_executor=object(),
+        entropy_provider=lambda *_args: None,
+        hidden_judge=lambda **_kwargs: None,
+        deadline=100.0,
+    )
+
+    assert result.attempt_ref is None
+    assert len(result.outcomes) == 1
+    outcome = result.outcomes[0]
+    assert outcome.decision is QualificationDecision.NO_DECISION
+    assert outcome.reason == "qualification_plan"
+    assert outcome.retryable is True
+    assert outcome.report_digest is None
+    assert outcome.failure_digest is not None
+    assert outcome.settlement_qualification is None
 
 
 def test_batch_service_projects_per_reservation_tristate_and_retry(monkeypatch) -> None:

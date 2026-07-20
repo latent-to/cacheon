@@ -247,6 +247,7 @@ class _Harness:
                 if repeat
                 else runner.SpeedEvidencePolicy.legacy()
             ),
+            speed_stage_disposition=runner.SpeedStageDisposition.TERMINAL,
             audit_policies=tuple(
                 runner.SlotAuditPolicy(
                     f"{700 + index:032x}",
@@ -925,6 +926,40 @@ def test_resident_speed_fail_exits_before_audit_t_and_legacy_lifecycle(
         "stage.reopen",
     ]
     assert harness.reference_calls == 0
+
+
+def test_resident_calibration_continuation_collects_audit_and_t_after_speed_fail(
+    monkeypatch,
+) -> None:
+    harness = _Harness(
+        monkeypatch,
+        graph=(QualificationDecision.PASS,),
+        speed=(QualificationDecision.PASS,),
+        quality=(QualificationDecision.PASS,),
+    )
+    harness.value.speed_stage_disposition = (
+        runner.SpeedStageDisposition.CALIBRATION_OBSERVATION
+    )
+    baseline, _stage_reference, exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.FAIL,
+        escalated=False,
+    )
+
+    reference = _run_resident_harness(harness, baseline)
+
+    assert reference == harness.attempt_reference
+    assert exits == []
+    assert harness.reference_calls == 1
+    assert "audit" in harness.calls
+    assert "reference" in harness.calls
+    assert "attempt.publish" in harness.calls
+    assert "attempt.reopen" in harness.calls
+    assert harness.published_attempt is not None
+    report = harness.published_attempt.reports[0]
+    assert report.speed_decision is QualificationDecision.FAIL
+    assert report.decision is QualificationDecision.FAIL
 
 
 def test_resident_audit_fail_exits_before_t(monkeypatch) -> None:
@@ -2479,6 +2514,30 @@ def test_resident_audit_plan_is_distinct_and_bound_by_authority(
                 audit_policy=value.audit_policies[0],
             ),
         )
+
+
+def test_calibration_speed_continuation_is_exact_and_authority_bound(
+    tmp_path: Path,
+) -> None:
+    value = _typed_resident_qualification_input(tmp_path)
+    assert value.speed_stage_disposition is runner.SpeedStageDisposition.TERMINAL
+
+    calibration = replace(
+        value,
+        speed_stage_disposition=(
+            runner.SpeedStageDisposition.CALIBRATION_OBSERVATION
+        ),
+    )
+    assert runner.qualification_authority_digest(calibration) != (
+        runner.qualification_authority_digest(value)
+    )
+
+    for malformed in ("calibration_observation", True):
+        with pytest.raises(
+            runner.QualificationRunnerError,
+            match="causal qualification input is not exactly typed",
+        ):
+            replace(value, speed_stage_disposition=malformed)
 
 
 def test_resident_slot_audit_executes_the_sealed_audit_only_plan(

@@ -155,6 +155,22 @@ class SpeedEvidencePolicy:
 # opt-in authority, never an unbound runner toggle.
 DEFAULT_SPEED_EVIDENCE_POLICY = SpeedEvidencePolicy.legacy
 
+
+class SpeedStageDisposition(str, Enum):
+    """Pre-B authority for handling a non-passing resident speed control.
+
+    Economic qualification is always terminal at a speed FAIL/NO_DECISION.  The
+    calibration-observation disposition exists only for the validator's
+    registered singleton bootstrap: its C arm is deliberately excluded from
+    threshold derivation, so the already-authenticated B/C/B-prime lifecycle may
+    continue to collect the stock quality observations.  The final report still
+    retains the real non-passing speed grade and therefore cannot crown.
+    """
+
+    TERMINAL = "terminal"
+    CALIBRATION_OBSERVATION = "calibration_observation"
+
+
 def _strict(value: object, fields: set[str], label: str) -> dict[str, object]:
     return require_exact_fields(
         value, fields=frozenset(fields), label=label, error=QualificationRunnerError,
@@ -356,6 +372,7 @@ class CausalQualificationInput:
     )
     resident_speed_plan: ResidentCrossoverPlan | None = None
     resident_audit_plan: SessionExecutionPlan | None = None
+    speed_stage_disposition: SpeedStageDisposition = SpeedStageDisposition.TERMINAL
 
     def __post_init__(self) -> None:
         if (
@@ -374,6 +391,7 @@ class CausalQualificationInput:
             or type(self.reference_engine_config) is not EngineSessionConfig
             or type(self.reference_preflight) is not RuntimePreflightFacts
             or type(self.speed_evidence_policy) is not SpeedEvidencePolicy
+            or type(self.speed_stage_disposition) is not SpeedStageDisposition
         ):
             raise QualificationRunnerError("causal qualification input is not exactly typed")
         root = Path(self.evidence_root)
@@ -546,6 +564,14 @@ class CausalQualificationInput:
                 raise QualificationRunnerError(
                     "resident audit plan differs from qualification authority"
                 )
+        if (
+            self.speed_stage_disposition
+            is SpeedStageDisposition.CALIBRATION_OBSERVATION
+            and (discovery or len(candidates) != 1 or resident is None)
+        ):
+            raise QualificationRunnerError(
+                "calibration speed continuation requires a registered resident singleton"
+            )
         for authority in candidates:
             profile = authority.profile
             support_union = min(
@@ -2689,6 +2715,18 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
             payload["resident_audit_plan"] = _audit_session_plan_digest(
                 value.resident_audit_plan
             )
+            if (
+                value.speed_stage_disposition
+                is SpeedStageDisposition.CALIBRATION_OBSERVATION
+            ):
+                payload["speed_stage_disposition"] = (
+                    value.speed_stage_disposition.value
+                )
+                return canonical_digest(
+                    "optima.qualification.causal-authority.v3.audit-v1."
+                    "calibration-observation-v1",
+                    payload,
+                )
         return canonical_digest(
             (
                 "optima.qualification.causal-authority.v3.audit-v1"
@@ -2889,7 +2927,11 @@ def reopen_qualification_stage_exit(
             expected_policy=expected.speed_evidence_policy,
         )
         if result.stage == "speed":
-            if speed_grade is not result.decision:
+            if (
+                expected.speed_stage_disposition
+                is SpeedStageDisposition.CALIBRATION_OBSERVATION
+                or speed_grade is not result.decision
+            ):
                 raise QualificationRunnerError(
                     "speed stage exit does not independently regrade"
                 )
@@ -2897,7 +2939,11 @@ def reopen_qualification_stage_exit(
             audit = result.audit_witness
             policy = expected.audit_policies[0]
             if (
-                speed_grade is not QualificationDecision.PASS
+                (
+                    speed_grade is not QualificationDecision.PASS
+                    and expected.speed_stage_disposition
+                    is not SpeedStageDisposition.CALIBRATION_OBSERVATION
+                )
                 or type(audit) is not AuditWitness
                 or audit.policy != policy
                 or audit.selected_delta_digest != result.selected_delta_digest
@@ -3478,7 +3524,10 @@ def run_causal_qualification(
             value.calibration_context,
             expected_policy=value.speed_evidence_policy,
         )
-        if speed_grade is not QualificationDecision.PASS:
+        if (
+            speed_grade is not QualificationDecision.PASS
+            and value.speed_stage_disposition is SpeedStageDisposition.TERMINAL
+        ):
             terminal = QualificationStageExit(
                 qualification_authority_digest(value),
                 value.prepared.source.digest,
@@ -3921,6 +3970,7 @@ __all__ = [
     "QualificationRunnerError", "QualificationStageExit",
     "QualificationTimingWitness",
     "ReferenceExecutionWitness", "RepeatQualityWitness", "SpeedEvidencePolicy",
+    "SpeedStageDisposition",
     "ResidentSpeedWitness", "SpeedWitness", "hidden_judge_output_digest",
     "publish_causal_qualification", "qualification_authority_digest",
     "publish_qualification_stage_exit", "reopen_causal_qualification",

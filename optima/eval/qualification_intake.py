@@ -44,6 +44,7 @@ from optima.eval.qualification_runner import (
     QualificationStageExit,
     QualificationRunnerError,
     STAGE_EXIT_SCHEMA,
+    SpeedStageDisposition,
     qualification_authority_digest,
     reopen_causal_qualification,
     reopen_qualification_stage_exit,
@@ -765,6 +766,10 @@ def run_qualification_intake(
     manifest = factory.manifest
     try:
         value = factory.build()
+        if value.speed_stage_disposition is not SpeedStageDisposition.TERMINAL:
+            raise QualificationIntakeError(
+                "economic qualification cannot use calibration speed continuation"
+            )
     except (QualificationIntakeError, QualificationRunnerError, OSError) as exc:
         return _no_decision_batch(manifest, exc, reason="qualification_plan")
     try:
