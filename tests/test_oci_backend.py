@@ -866,7 +866,7 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
             seccomp_path=lease.stage_paths[0],
             runtime=case.runtime,
         )
-    with pytest.raises(OCIBackendError, match="reference runtime"):
+    with pytest.raises(OCIBackendError, match="cannot activate discovery"):
         build_runtime_argv(
             lease=lease,
             resolved=case.resolved,

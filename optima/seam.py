@@ -283,6 +283,13 @@ def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
             raise RuntimeError(
                 "direct device-artifact bundles are not swappable in the screen tier"
             )
+        if getattr(manifest, "dep_patches", None):
+            # A dep-patched tree changes the pinned flashinfer csrc through a
+            # prebuild overlay; a live engine cannot adopt that, so such
+            # bundles must run through a dedicated launch instead.
+            raise RuntimeError(
+                "dep-patched bundles are not swappable in the screen tier"
+            )
         os.environ["OPTIMA_BUNDLE_PATH"] = bundle
         os.environ["OPTIMA_ACTIVE"] = "1"
         _load_bundle_into_registry(bundle)
