@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from dataclasses import replace
@@ -27,6 +29,7 @@ from optima.eval.qualification_runner import (
     _resident_speed_projection_digest,
 )
 from optima.eval.qualification import QualificationDecision
+from optima.eval.scoring import score_speedup
 from optima.settlement import ResidentLaneOrientation
 from tests.test_oci_backend import _case, _manager
 
@@ -655,3 +658,70 @@ def test_resident_policy_binds_total_qualification_budget() -> None:
     assert ResidentSpeedPolicy.from_dict(policy.to_dict()) == policy
     with pytest.raises(CrossoverRuntimeError, match="unsupported"):
         replace(policy, max_qualification_seconds=599)
+
+
+def test_speed_verdict_v2_regrades_the_sealed_b300_stage_exit_both_ways() -> None:
+    """The 2026-07-24 B300 joined-primary stage-exit — the first production v3
+    speed verdict ever issued — pinned both ways. Version-1 charged-basis
+    arithmetic must reproduce the shipped FAIL exactly; version-2 timed-basis
+    arithmetic must grade the same sealed reads as a clear PASS. The warm/cold
+    conditioning split between B (fresh session, cold first read) and B_prime
+    (warm continuation of B's session) is accounting structure, not noise, and
+    only the charged basis scores it: it inflated baseline noise to 6.3% and
+    the required bar to 1.126 against a candidate faster on every timed
+    window."""
+
+    fixture = Path(__file__).parent / "fixtures" / "speed_stage_exit_45cbcc04.json"
+    raw = fixture.read_bytes()
+    assert (
+        hashlib.sha256(raw).hexdigest()
+        == "45cbcc04455d3e9d3f73be8ce436f030f35dee9805c185312cd5421c0fd6890e"
+    )
+    exit_ = QualificationStageExit.from_dict(json.loads(raw))
+    assert exit_.stage == "speed"
+    assert exit_.decision is QualificationDecision.FAIL
+    assert exit_.reason == "speed_regression"
+
+    witness = exit_.speed_witness
+    policy_v1 = witness.resident_policy
+    assert policy_v1.version == 1
+    baselines = [row for row in witness.rates if row.role.startswith("B")]
+    candidates = [row for row in witness.rates if row.role.startswith("C")]
+    assert [row.role for row in witness.rates] == ["B", "C", "B_prime"]
+
+    shipped = score_speedup(
+        [policy_v1.scored_tokens_per_second(row) for row in baselines[:2]],
+        [policy_v1.scored_tokens_per_second(row) for row in candidates[:1]],
+        min_margin=policy_v1.min_margin,
+        k=policy_v1.noise_multiplier,
+        max_noise=policy_v1.max_noise,
+    )
+    assert shipped.confident and not shipped.passed_speedup
+    assert shipped.speedup == pytest.approx(0.992288407418, rel=1e-9)
+    assert shipped.noise == pytest.approx(0.063093295300, rel=1e-9)
+    assert shipped.required == pytest.approx(1.126186590600, rel=1e-9)
+    # Clear FAIL (outside the min_margin band around required), so the shipped
+    # 3-read shape with no C_prime/B_double_prime extension regrades.
+    assert shipped.speedup <= shipped.required - policy_v1.min_margin
+
+    policy_v2 = ResidentSpeedPolicy.from_dict(
+        {**policy_v1.to_dict(), "version": 2, "max_noise": "0.02"}
+    )
+    regraded = score_speedup(
+        [policy_v2.scored_tokens_per_second(row) for row in baselines[:2]],
+        [policy_v2.scored_tokens_per_second(row) for row in candidates[:1]],
+        min_margin=policy_v2.min_margin,
+        k=policy_v2.noise_multiplier,
+        max_noise=policy_v2.max_noise,
+    )
+    assert regraded.confident and regraded.passed_speedup
+    assert regraded.speedup == pytest.approx(1.031639399357, rel=1e-9)
+    assert regraded.noise == pytest.approx(0.006904721491, rel=1e-9)
+    assert regraded.required == pytest.approx(1.013809442981, rel=1e-9)
+    # Also clear: the verdict would not have needed the repeat-read extension.
+    assert regraded.speedup >= regraded.required + policy_v2.min_margin
+
+    # Flipping the version on the sealed policy without tightening the noise
+    # ceiling is refused outright — a v2 policy cannot carry the v1 ceiling.
+    with pytest.raises(CrossoverRuntimeError, match="max_noise <= 0.02"):
+        ResidentSpeedPolicy.from_dict({**policy_v1.to_dict(), "version": 2})

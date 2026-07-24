@@ -22,12 +22,12 @@ lanes:
 Clear results stop after resident B/C/B′. A policy-defined borderline result
 adds C′ and B″ without reloading either engine. During execution, the controller
 fixes prompt batches and token budgets, serializes the two lanes, validates
-bounded batch frames and token numerators, and constructs charged rates that
-include registered conditioning and timed intervals. The durable resident
-witness retains the actual three-or-five-read schedule, physical-lane authority,
-operational timing, and budget. After the speed lifetimes are quiescent,
-qualification runs registered eager audit A when the plan requires it, destroys
-candidate lifetimes, and then runs pristine T.
+bounded batch frames and token numerators, and records for every read both the
+charged intervals (registered conditioning plus timed) and the timed window
+alone. The durable resident witness retains the actual three-or-five-read
+schedule, physical-lane authority, operational timing, and budget. After the
+speed lifetimes are quiescent, qualification runs registered eager audit A when
+the plan requires it, destroys candidate lifetimes, and then runs pristine T.
 Reopen recomputes tokens/second and the frozen decision from typed counts and intervals,
 not from raw session frames. Candidate-reported aggregate throughput and resident-screen
 rates are never accepted as authority.
@@ -35,14 +35,29 @@ rates are never accepted as authority.
 The speed estimate is conceptually:
 
 ```text
-speedup = candidate_rate / mean(baseline_before_rate, baseline_after_rate)
-noise   = relative spread of the two baseline rates
-bar     = 1 + max(min_margin, noise_multiplier * noise)
+scored_rate = timed_tokens / timed_seconds
+speedup     = candidate_scored_rate / mean(baseline_before, baseline_after)
+noise       = relative spread of the baseline scored rates
+bar         = 1 + max(min_margin, noise_multiplier * noise)
 ```
+
+The resident policy grades the steady-state timed windows (policy version 2).
+The first read of a resident session pays residual cold-start inside its
+conditioning window while a continuation read does not; a scored rate that
+charges conditioning turns that positional split into apparent baseline noise
+and biases both the measured speedup and the bar. Conditioning therefore stays
+outside the scored rate and remains bounded by the sealed operational timing
+budget, so a candidate cannot hide work in warmup. Version-1 witnesses, which
+graded the charged rate, regrade only under their own sealed arithmetic; the
+policy version is part of the witness digest and cross-version splicing is
+refused.
 
 The exact thresholds come from a frozen `CalibrationManifest` bound to the reference,
 arena, runtime, model, hardware, workload, verifier, and controller distribution. If
-baseline disagreement exceeds the calibrated maximum, the result is `NO_DECISION`.
+baseline disagreement exceeds the calibrated maximum, the result is `NO_DECISION`,
+never a candidate `FAIL`; a version-2 policy requires that calibrated maximum to be
+at most 2%, so the referee refuses to convict or crown from a measurement noisier
+than the hardened stack honestly produces.
 
 ## Complete qualification decision
 

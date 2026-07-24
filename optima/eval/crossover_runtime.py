@@ -60,7 +60,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version != 1
+            or self.version not in (1, 2)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -82,11 +82,29 @@ class ResidentSpeedPolicy:
             or not 0 <= self.max_noise < 1
         ):
             raise CrossoverRuntimeError("resident speed policy is unsupported")
+        if self.version >= 2 and self.max_noise > 0.02:
+            # Version 2 scores timed windows, where the hardened stack has
+            # demonstrated <=0.8% honest spread; a looser ceiling would let a
+            # broken measurement convict or crown instead of NO_DECISION.
+            raise CrossoverRuntimeError(
+                "resident speed policy v2 requires max_noise <= 0.02"
+            )
         for field in ("calibration_digest", "calibration_context_digest"):
             try:
                 require_sha256_hex(getattr(self, field), field=field)
             except ValueError as exc:
                 raise CrossoverRuntimeError(str(exc)) from None
+
+    def scored_tokens_per_second(self, row: object) -> float:
+        """Verdict basis for one read. Version 1 grades the charged rate
+        (conditioning + timed), which double-counts session cold-start against
+        whichever arm read first; version 2 grades the steady-state timed
+        window only, with conditioning still bounded by the operational
+        budget."""
+
+        if self.version >= 2:
+            return row.timed_tokens / row.timed_seconds  # type: ignore[attr-defined]
+        return row.tokens_per_second  # type: ignore[attr-defined]
 
     @property
     def digest(self) -> str:
@@ -151,6 +169,7 @@ class ResidentSpeedPolicy:
         max_qualification_seconds: int = 7_200,
         calibration: object,
         context: object,
+        version: int = 1,
     ) -> "ResidentSpeedPolicy":
         from optima.eval.calibration import (
             CalibrationContext,
@@ -175,6 +194,7 @@ class ResidentSpeedPolicy:
             max_noise=float(decimal_value(calibration.speed.max_noise)),
             calibration_digest=calibration.digest,
             calibration_context_digest=context.digest,
+            version=version,
             max_qualification_seconds=max_qualification_seconds,
         )
 
@@ -883,8 +903,11 @@ class ResidentCrossoverEvidence:
             ) or any(_recomputed_rate(row, execution, arm) != row for row in rows):
                 raise CrossoverRuntimeError("resident rate spans do not independently regrade")
         initial = score_speedup(
-            [baseline_rates[0].tokens_per_second, baseline_rates[1].tokens_per_second],
-            [candidate_rates[0].tokens_per_second],
+            [
+                plan.policy.scored_tokens_per_second(baseline_rates[0]),
+                plan.policy.scored_tokens_per_second(baseline_rates[1]),
+            ],
+            [plan.policy.scored_tokens_per_second(candidate_rates[0])],
             min_margin=plan.policy.min_margin,
             k=plan.policy.noise_multiplier,
             max_noise=plan.policy.max_noise,
@@ -894,8 +917,8 @@ class ResidentCrossoverEvidence:
             if not self.escalated:
                 raise CrossoverRuntimeError("borderline resident evidence omitted repeat reads")
             final = score_speedup(
-                [row.tokens_per_second for row in baseline_rates],
-                [row.tokens_per_second for row in candidate_rates],
+                [plan.policy.scored_tokens_per_second(row) for row in baseline_rates],
+                [plan.policy.scored_tokens_per_second(row) for row in candidate_rates],
                 min_margin=plan.policy.min_margin,
                 k=plan.policy.noise_multiplier,
                 max_noise=plan.policy.max_noise,
@@ -1115,8 +1138,11 @@ def run_resident_crossover_speed(
             )
             schedule.put("B_prime", after)
             initial = score(
-                [before.tokens_per_second, after.tokens_per_second],
-                [candidate.tokens_per_second],  # type: ignore[union-attr]
+                [
+                    plan.policy.scored_tokens_per_second(before),
+                    plan.policy.scored_tokens_per_second(after),
+                ],
+                [plan.policy.scored_tokens_per_second(candidate)],
             )
             disposition = _disposition(initial, plan.policy.min_margin)
             schedule.put("initial", initial)
@@ -1131,13 +1157,13 @@ def run_resident_crossover_speed(
                 )
                 final = score(
                     [
-                        before.tokens_per_second,
-                        after.tokens_per_second,
-                        third.tokens_per_second,
+                        plan.policy.scored_tokens_per_second(before),
+                        plan.policy.scored_tokens_per_second(after),
+                        plan.policy.scored_tokens_per_second(third),
                     ],
                     [
-                        candidate.tokens_per_second,  # type: ignore[union-attr]
-                        repeat.tokens_per_second,  # type: ignore[union-attr]
+                        plan.policy.scored_tokens_per_second(candidate),
+                        plan.policy.scored_tokens_per_second(repeat),
                     ],
                 )
                 disposition = _final(final)

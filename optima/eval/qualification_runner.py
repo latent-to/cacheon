@@ -483,6 +483,7 @@ class CausalQualificationInput:
                     ),
                     calibration=self.calibration_manifest,
                     context=self.calibration_context,
+                    version=resident.policy.version,
                 )
             except CrossoverRuntimeError as exc:
                 raise QualificationRunnerError(str(exc)) from None
@@ -959,6 +960,9 @@ class ResidentSpeedWitness:
         if expected_policy is not None and expected_policy != self.policy:
             raise QualificationRunnerError("resident speed witness policy differs")
         try:
+            # Reconstruct the expected policy at the witness's own version so
+            # sealed evidence regrades under the arithmetic that produced it;
+            # the equality check below then refuses any cross-version splice.
             expected_resident = ResidentSpeedPolicy.from_calibration(
                 max_stage_seconds=self.resident_policy.max_stage_seconds,
                 max_qualification_seconds=(
@@ -966,6 +970,7 @@ class ResidentSpeedWitness:
                 ),
                 calibration=calibration,
                 context=context,
+                version=self.resident_policy.version,
             )
         except CrossoverRuntimeError as exc:
             raise QualificationRunnerError(str(exc)) from None
@@ -977,10 +982,14 @@ class ResidentSpeedWitness:
         ):
             raise QualificationRunnerError("resident speed calibration authority differs")
         baselines = [
-            row.tokens_per_second for row in self.rates if row.role.startswith("B")
+            self.resident_policy.scored_tokens_per_second(row)
+            for row in self.rates
+            if row.role.startswith("B")
         ]
         candidates = [
-            row.tokens_per_second for row in self.rates if row.role.startswith("C")
+            self.resident_policy.scored_tokens_per_second(row)
+            for row in self.rates
+            if row.role.startswith("C")
         ]
         initial = score_speedup(
             baselines[:2],
@@ -1445,7 +1454,10 @@ class QualificationTimingWitness:
 
     @classmethod
     def from_dict(cls, value: object) -> "QualificationTimingWitness":
-        raw = _strict(value, set(cls.__dataclass_fields__), "qualification timing")
+        # dict(...) copy: _strict returns the caller's mapping, and the float
+        # decode below must never mutate a reopened payload in place — the
+        # publish/reopen self-check compares to_dict() against that payload.
+        raw = dict(_strict(value, set(cls.__dataclass_fields__), "qualification timing"))
         for name in cls.__dataclass_fields__:
             if name.endswith("_monotonic_s"):
                 encoded = raw[name]

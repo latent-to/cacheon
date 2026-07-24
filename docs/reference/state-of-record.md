@@ -121,6 +121,16 @@ Screen measurements do not enter this authority. Candidate-attributable
 failure can produce `FAIL`; infrastructure, drift, missing evidence, or broken
 authority produces `NO_DECISION`.
 
+As of 2026-07-25 the resident speed policy is version 2: the scored rate is the
+steady-state timed window (`timed_tokens / timed_seconds`), conditioning stays
+bounded by the sealed operational timing budget rather than entering the scored
+rate, and the calibrated maximum baseline disagreement must be at most 2%.
+Version-1 witnesses graded the charged rate and regrade only under their own
+sealed arithmetic; the policy version is digest-bound and cross-version
+splicing is refused. The motivating evidence is the 2026-07-24 stage-exit
+described under empirical evidence, retained verbatim as the repository test
+fixture `tests/fixtures/speed_stage_exit_45cbcc04.json`.
+
 The audit gate is Torch-free, checks exact slot × TP-rank/process coverage, and
 canonicalizes floating-point facts before durable receipt identity. Audit is
 authoritative only when the frozen plan registers the matching requirement.
@@ -246,6 +256,24 @@ performance authority. The subsequent resident screen and two-lane adaptive
 qualification implementation are test-covered and informed by GPU calibration,
 but no retained end-to-end current-revision version-3 primary/reproduction
 canary is claimed here.
+
+### First production version-3 speed verdict (2026-07-24)
+
+A 4×B300 joined primary on 2026-07-24 executed the resident version-3 path end
+to end for the first time: prepare, intake hygiene, graph, and the slot audit
+all passed, and the speed stage produced the first production version-3 speed
+verdict. That verdict was `FAIL speed_regression` under version-1 charged-basis
+arithmetic: the second baseline read ran as a warm continuation of the first
+baseline session while the candidate read ran cold, so the conditioning-
+inclusive scored rate turned a positional split into 6.3% apparent baseline
+noise and a 1.126 required bar, while the candidate was faster than both
+baseline reads on every timed window. The sealed stage-exit is retained
+verbatim as `tests/fixtures/speed_stage_exit_45cbcc04.json`, and a regression
+test pins both readings: version-1 arithmetic reproduces the shipped verdict
+exactly, and version-2 timed-basis arithmetic grades the same sealed reads as a
+clear pass. The reservation's terminal disposition stands; no verdict was
+altered after the fact, and any future attempt requires a fresh submission
+under the version-2 policy.
 
 ### Incentive evidence
 
