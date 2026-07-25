@@ -1536,6 +1536,37 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         reference_request_sha256=reference_request_sha256,
     ) == raw_artifact
 
+    # Continue down the exact runner path (qualification_runner :3819-3831):
+    # publish the canonical raw bytes, reopen (which derives the NLL-only
+    # summaries), and score against the NLL-only calibration.  Every layer
+    # must accept sealed absence without touching distribution machinery.
+    from optima.eval.reference_quality import (
+        RAW_QUALITY_DOMAIN,
+        RAW_QUALITY_SCHEMA,
+        reopen_reference_quality_evidence,
+        score_reference_quality,
+    )
+
+    evidence_root = tmp_path / "quality-evidence"
+    raw_ref = publish_evidence(
+        evidence_root,
+        canonical_json_bytes(raw_artifact.to_dict()),
+        domain=RAW_QUALITY_DOMAIN,
+        media_type="application/json",
+        schema=RAW_QUALITY_SCHEMA,
+    )
+    derived = reopen_reference_quality_evidence(
+        evidence_root, raw_ref, expected_binding=raw_artifact.binding
+    )
+    for prompt in derived.prompts:
+        for rollout in (prompt.baseline, prompt.candidate, prompt.stock_control):
+            assert rollout.rollout_kl is None
+    verdict = score_reference_quality(
+        derived, calibration=calibration, expected_context=calibration.context
+    )
+    assert verdict.decision in {"PASS", "FAIL", "NO_DECISION"}
+    assert verdict.calibration_digest == calibration.digest
+
 
 def test_teacher_nll_only_profile_admits_width_zero_and_refuses_kl_metrics():
     # Option B (2026-07-25): topk_width 0 selects teacher-NLL-only quality.
