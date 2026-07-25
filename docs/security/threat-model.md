@@ -49,6 +49,8 @@ proves registered measurement, not safe production source.
 | Trusted controller and arena provider | Validator authority; must be reviewed and operated securely |
 | Pristine T worker | Candidate-free quality authority, still dependent on reviewed runtime/model/reference |
 | SQLite and evidence store | Trusted durable state, protected from unprivileged mutation; host administrator remains in scope |
+| Shared-weight object store | Mutable availability layer; authenticated offer provenance is required in push-enabled mode, while push-disabled raw mode is explicitly operator-trusted |
+| Weights gateway | Trusted permit/authentication boundary with no chain-signing authority; it must retain push verification secrets and protect its response hotkey |
 | Weight signer and release signer | High-value control plane, kept outside evaluator containers |
 | Reviewed release container | Trusted product artifact after verification; not treated as a hostile candidate sandbox |
 
@@ -69,6 +71,7 @@ proves registered measurement, not safe production source.
 | Copy/front-run attack | Native timelock, finalized event priority, submitted-delta exact/normalized/containment fingerprints | Obfuscated or independently convergent implementations may evade or collide; structural similarity is advisory |
 | State replay or partial settlement | Chain-scoped single-writer SQLite, durable cursor/statuses, content-addressed evidence, lease generations, atomic settlement | Disk loss, privileged database edits, and faulty backup/restore are operator risks |
 | Weight publication ambiguity | Separate signer; live metagraph refresh; intent-before-submit journal; exact recipient-set plus fixed-tolerance normalized-value readback and `last_update`; held state | Hotkey theft, malicious operator, chain faults, and policy disagreement remain external risks |
+| Shared-weight forgery, rollback, or replay | Eval push is timestamped HMAC-authenticated; push-enabled storage retains an HMAC envelope over credential id and offer digest which the gateway verifies before response signing; current-offer writes reject block rollback/same-block conflict; followers pin gateway authority, require live permit, bound initial staleness, verify stable UIDs, and retain a monotonic signer journal | Object-store writers can deny service and replay a previously valid envelope; a fresh follower may accept that replay within the configured freshness window; push-secret, gateway-hotkey, wallet, or host-root compromise remains authoritative. Push-disabled raw storage deliberately trusts its operator |
 | Crown automatically reaches production | Integrated-only release manifest, model seal, deterministic artifacts, SBOM/provenance, Ed25519 signature, expected key, registry reproducibility attestation | Integration review, key custody, base image/toolchain security, registry, and rollout policy remain human/operational authorities |
 
 ## Candidate isolation boundary
@@ -126,6 +129,16 @@ Legacy `set-weights` and active-composition `set-debt-weights` run separately ag
 durable state and live chain readback. Wallet-free `chain-activate-incentives` binds a
 reviewed V2 authority but cannot publish a vector.
 
+The preferred shared-weight split keeps eval off the chain-signing path:
+`push-weight-offer` authenticates one exact offer to `serve-weights`; the
+gateway verifies its authenticated storage envelope and serves only callers
+with a live validator permit; `follow-weights` rebinds and submits from a
+separate signer host. The gateway's response signature authenticates the
+verified stored offer, not its economic correctness. Followers still apply
+freshness, UID, journal, and chain-readback gates. Running the gateway without
+push credentials changes the boundary: its configured storage becomes trusted
+operator input.
+
 Release signing is separate again. A release build context contains a public verification
 key, never private signing material. The serving release uses reviewed source and may use
 host networking; it is not the hostile candidate container.
@@ -179,5 +192,8 @@ Security status should be stated as “implemented under these assumptions,” n
 - [OCI runtime controller](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_backend.py)
 - [Causal qualification](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)
 - [Weight publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/weights.py)
+- [Shared-weight gateway](https://github.com/latent-to/cacheon/blob/main/optima/chain/weight_share.py)
+- [Shared-weight push authentication](https://github.com/latent-to/cacheon/blob/main/optima/chain/weight_push_auth.py)
+- [Object-store adapters](https://github.com/latent-to/cacheon/blob/main/optima/object_store.py)
 - [V2 debt publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py)
 - [Release host](https://github.com/latent-to/cacheon/blob/main/optima/release_host.py)

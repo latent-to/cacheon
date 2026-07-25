@@ -316,11 +316,13 @@ Roles are split so the **eval host never publishes weights on-chain**:
    `weights_ppm`) when incentive composition is active — and **PUTs** it to
    `serve-weights` with rotatable HMAC credentials (`push-weight-offer`).
 2. **Cheap `serve-weights`** persists the offer (object store or local file),
-   accepts authenticated push, and serves permit-gated `GET /v1/current-weights`.
+   accepts authenticated push, verifies the persisted push envelope, and serves
+   permit-gated `GET /v1/current-weights`.
 3. **Follower validators** fetch the offer, rebind the signer hotkey, and
    publish via the same commit-reveal reconciler (`follow-weights`). Debt-lane
    offers carry the binding followers need so on-chain `weights_ppm` match the
-   debt/composition projection.
+   debt/composition projection; the signer-only journal does not require a
+   replica of evaluator economic state.
 
 ```bash
 # one-time: mint credentials shared by eval + serve (mode 0600)
@@ -371,14 +373,39 @@ secret without a file via `OPTIMA_WEIGHT_PUSH_KEY` (optional id:
 JSON with `OPTIMA_WEIGHT_PUSH_CREDENTIALS`. Precedence: `--push-credentials` →
 file env → inline key. Swap object-store providers without code
 changes: `--object-store-provider s3|minio|local` (and endpoint/region/credentials),
-or `OPTIMA_OBJECT_STORE_*`. Install the optional client with
+or `OPTIMA_OBJECT_STORE_*`. `OPTIMA_OBJECT_STORE_PROVIDER` activates an
+environment-only configuration; explicit command flags take precedence.
+Install the optional client with
 `pip install -e ".[object-store]"` (boto3, Apache-2.0).
 
 `GET /v1/current-weights` requires a request signed by the caller's hotkey over a
 fresh timestamp; the server checks live `validator_permit` and returns an
 authority-signed body. `PUT /v1/current-weights` accepts only active push
-credentials. A combined `set-weights` / object-store upload path remains available
-for legacy single-host signers; it is not the eval push path.
+credentials. The accepted offer is stored inside an HMAC envelope binding the
+credential id and exact offer digest. A push-enabled server verifies that
+envelope before it signs a GET response, and the push client requires an exact
+acknowledgement of the credential, offer, and projection digests. A storage
+writer without a retained push secret can cause unavailability or replay an old
+valid envelope, but cannot manufacture a new gateway-authenticated vector.
+Valid-envelope replay is additionally bounded by follower freshness and the
+follower's monotonic publication journal.
+
+`follow-weights` permits initial catch-up only when the offer is no more than
+`--refresh-blocks` behind the live finalized metagraph and the signer and every
+weighted recipient retain their UIDs. Its dedicated
+`followed_weight_publications` journal accepts both V1 and V2 offers, refuses
+block rollback, same-block equivocation, signer changes, and V2-to-V1 lane
+regression, and should be one database per signer. Retryable object-store or
+gateway failures remain retryable through HTTP `503`.
+
+When `serve-weights` is deliberately run without push credentials, raw local
+or object-store bytes are an operator-trusted source; the gateway cannot prove
+eval provenance for that mode. A combined `set-weights` / object-store upload
+path remains available for legacy single-host signers. It publishes only after
+a live reconciliation returns `pending` or `confirmed`, never after dry-run,
+reconcile-only, or a hold, and completes the remote current-pointer write while
+the exclusive publication journal is still locked. It is not the eval push
+path.
 
 ## Finite-debt V2
 
