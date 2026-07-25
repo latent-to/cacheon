@@ -663,8 +663,10 @@ class BatchRequest:
             self.max_new_tokens, field_name="max_new_tokens", minimum=1,
             maximum=MAX_NEW_TOKENS,
         ))
+        # Width zero is the pure-generation read: no logprob collection rides
+        # the clock and the evidence carries exact empty top-k positions.
         object.__setattr__(self, "top_logprobs_num", _bounded_int(
-            self.top_logprobs_num, field_name="top_logprobs_num", minimum=1,
+            self.top_logprobs_num, field_name="top_logprobs_num", minimum=0,
             maximum=MAX_TOP_LOGPROBS,
         ))
         object.__setattr__(self, "temperature", _bounded_float(

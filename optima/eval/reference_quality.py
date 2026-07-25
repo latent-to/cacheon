@@ -201,19 +201,27 @@ class HiddenTaskEvidence(_Record):
 @dataclass(frozen=True)
 class RolloutQualityEvidence(_Record):
     teacher_nll: TeacherNLLEvidence
-    rollout_kl: RolloutKLEvidence
+    rollout_kl: RolloutKLEvidence | None
     hidden_task: HiddenTaskEvidence
     def __post_init__(self) -> None:
+        # rollout_kl is None only in the teacher-NLL-only mode (topk_width 0,
+        # digest-bound in the profile and raw binding): no candidate
+        # distributions exist, so no distribution evidence may pretend to.
         if not all(type(row) is expected for row, expected in (
             (self.teacher_nll, TeacherNLLEvidence),
-            (self.rollout_kl, RolloutKLEvidence),
             (self.hidden_task, HiddenTaskEvidence),
-        )) or self.teacher_nll.token_count != self.rollout_kl.position_count:
+        )):
+            raise ReferenceQualityError("rollout quality types or coverage differ")
+        if self.rollout_kl is not None and (
+            type(self.rollout_kl) is not RolloutKLEvidence
+            or self.teacher_nll.token_count != self.rollout_kl.position_count
+        ):
             raise ReferenceQualityError("rollout quality types or coverage differ")
     @classmethod
     def from_dict(cls, value: object) -> "RolloutQualityEvidence":
         return _load(cls, value, "rollout quality", teacher_nll=TeacherNLLEvidence.from_dict,
-                     rollout_kl=RolloutKLEvidence.from_dict, hidden_task=HiddenTaskEvidence.from_dict)
+                     rollout_kl=lambda row: None if row is None else RolloutKLEvidence.from_dict(row),
+                     hidden_task=HiddenTaskEvidence.from_dict)
 @dataclass(frozen=True)
 class PromptQualityEvidence(_Record):
     prompt_digest: str
@@ -227,6 +235,8 @@ class PromptQualityEvidence(_Record):
         rows = (self.baseline, self.candidate, self.stock_control)
         if not all(type(row) is RolloutQualityEvidence for row in rows) or len({row.teacher_nll.token_count for row in rows}) != 1:
             raise ReferenceQualityError("prompt rollout types or coverage differ")
+        if len({row.rollout_kl is None for row in rows}) != 1:
+            raise ReferenceQualityError("prompt rollout KL presence must be uniform")
         total = next(iter({row.teacher_nll.token_count for row in rows}))
         object.__setattr__(self, "exact_token_total", _integer(self.exact_token_total, "exact total", 1, total))
         object.__setattr__(self, "exact_token_matches", _integer(self.exact_token_matches, "exact matches", 0, total))
@@ -257,6 +267,8 @@ class ReferenceQualityEvidence(_Record):
         if not all(type(row) is PromptQualityEvidence for row in prompts):
             raise ReferenceQualityError("prompt evidence is not typed")
         _ordered(prompts, tuple(row.prompt_digest for row in prompts), "prompts", _MAX_PROMPTS)
+        if len({prompt.baseline.rollout_kl is None for prompt in prompts}) > 1:
+            raise ReferenceQualityError("rollout KL presence must be uniform across prompts")
         for prompt in prompts:
             totals = tuple(row.hidden_task.total for row in (prompt.baseline, prompt.candidate, prompt.stock_control))
             if (self.hidden_tasks_present and not all(totals)) or (not self.hidden_tasks_present and any(totals)):
@@ -294,7 +306,9 @@ class ReferenceQualityRawBinding(_Record):
         object.__setattr__(self, "selected_prompt_digests", prompts)
         object.__setattr__(self, "nll_tail_threshold", _decimal(self.nll_tail_threshold, "NLL tail threshold", _MAX_NLL))
         object.__setattr__(self, "tokens_per_prompt", _integer(self.tokens_per_prompt, "tokens per prompt", 1, _MAX_TOKENS))
-        object.__setattr__(self, "topk_width", _integer(self.topk_width, "top-k width", 1, _MAX_TOPK))
+        # Width zero is the teacher-NLL-only quality mode: the artifact must
+        # then carry no distributions at all (enforced by the raw artifact).
+        object.__setattr__(self, "topk_width", _integer(self.topk_width, "top-k width", 0, _MAX_TOPK))
         object.__setattr__(self, "hidden_tasks_per_prompt", _integer(self.hidden_tasks_per_prompt, "hidden tasks per prompt", 0, _MAX_TASKS))
     @classmethod
     def from_dict(cls, value: object) -> "ReferenceQualityRawBinding":
@@ -398,20 +412,26 @@ class RawTokenEvidence(_Record):
     position: int
     token_id: int
     target_nll: str
-    teacher_topk: NormalizedTopKDistribution
-    rollout_topk: NormalizedTopKDistribution
+    teacher_topk: NormalizedTopKDistribution | None
+    rollout_topk: NormalizedTopKDistribution | None
     def __post_init__(self) -> None:
         object.__setattr__(self, "position", _integer(self.position, "position", 0, _MAX_TOKENS - 1))
         object.__setattr__(self, "token_id", _integer(self.token_id, "token_id"))
         object.__setattr__(self, "target_nll", _decimal(self.target_nll, "target NLL", _MAX_NLL))
-        if type(self.teacher_topk) is not NormalizedTopKDistribution or type(self.rollout_topk) is not NormalizedTopKDistribution:
-            raise ReferenceQualityError("raw token distributions are not typed")
-        if self.teacher_topk.support != self.rollout_topk.support:
-            raise ReferenceQualityError("teacher and rollout top-k support differs")
+        # Both distributions are absent together only in the teacher-NLL-only
+        # mode (topk_width 0): no retained candidate top-k exists, so neither
+        # a rollout nor a comparison teacher distribution may be fabricated.
+        if (self.teacher_topk is None) != (self.rollout_topk is None):
+            raise ReferenceQualityError("raw token distributions must be present together")
+        if self.teacher_topk is not None:
+            if type(self.teacher_topk) is not NormalizedTopKDistribution or type(self.rollout_topk) is not NormalizedTopKDistribution:
+                raise ReferenceQualityError("raw token distributions are not typed")
+            if self.teacher_topk.support != self.rollout_topk.support:
+                raise ReferenceQualityError("teacher and rollout top-k support differs")
     @classmethod
     def from_dict(cls, value: object) -> "RawTokenEvidence":
-        return _load(cls, value, "raw token", teacher_topk=NormalizedTopKDistribution.from_dict,
-                     rollout_topk=NormalizedTopKDistribution.from_dict)
+        optional = lambda row: None if row is None else NormalizedTopKDistribution.from_dict(row)
+        return _load(cls, value, "raw token", teacher_topk=optional, rollout_topk=optional)
 @dataclass(frozen=True)
 class RawHiddenTaskResult(_Record):
     task_digest: str
@@ -433,6 +453,8 @@ class RawRolloutEvidence(_Record):
             raise ReferenceQualityError("raw rollout tokens are not typed")
         if not 1 <= len(tokens) <= _MAX_TOKENS or tuple(row.position for row in tokens) != tuple(range(len(tokens))):
             raise ReferenceQualityError("raw rollout token positions are incomplete or reordered")
+        if len({row.teacher_topk is None for row in tokens}) > 1:
+            raise ReferenceQualityError("raw rollout distribution presence must be uniform")
         if not all(type(row) is RawHiddenTaskResult for row in tasks):
             raise ReferenceQualityError("raw hidden tasks are not typed")
         if tasks:
@@ -472,7 +494,10 @@ def raw_trajectory_projection_digest(prompts: tuple[RawPromptQualityEvidence, ..
     def rollout(row: RawRolloutEvidence) -> dict[str, object]:
         return {
             "output_ids": [token.token_id for token in row.tokens],
-            "rollout_topk": [token.rollout_topk.to_dict() for token in row.tokens],
+            "rollout_topk": [
+                None if token.rollout_topk is None else token.rollout_topk.to_dict()
+                for token in row.tokens
+            ],
         }
     return canonical_digest(
         "optima.qualification.selected-trajectory-projection",
@@ -520,10 +545,20 @@ class ReferenceQualityRawArtifact(_Record):
                 if (
                     len(rollout.tokens) != self.binding.tokens_per_prompt
                     or len(rollout.hidden_tasks) != self.binding.hidden_tasks_per_prompt
-                    or any(
-                        len(token.teacher_topk.entries) != self.binding.topk_width
-                        or len(token.rollout_topk.entries) != self.binding.topk_width
-                        for token in rollout.tokens
+                    or (
+                        self.binding.topk_width == 0
+                        and any(
+                            token.teacher_topk is not None for token in rollout.tokens
+                        )
+                    )
+                    or (
+                        self.binding.topk_width > 0
+                        and any(
+                            token.teacher_topk is None
+                            or len(token.teacher_topk.entries) != self.binding.topk_width
+                            or len(token.rollout_topk.entries) != self.binding.topk_width
+                            for token in rollout.tokens
+                        )
                     )
                 ):
                     raise ReferenceQualityError("raw quality coverage differs from its binding")
@@ -552,18 +587,25 @@ def _distribution_metrics(token: RawTokenEvidence) -> tuple[Decimal, Decimal, bo
     return kl, coverage, token.teacher_topk.true_argmax_token_id != token.rollout_topk.true_argmax_token_id
 def _rollout(raw: RawRolloutEvidence, tail_threshold: Decimal) -> RolloutQualityEvidence:
     nlls = [decimal_value(token.target_nll) for token in raw.tokens]
-    metrics = [_distribution_metrics(token) for token in raw.tokens]
-    kls, coverages = [row[0] for row in metrics], [row[1] for row in metrics]
-    ordered_kl = sorted(kls)
     count = len(raw.tokens)
+    if raw.tokens[0].teacher_topk is None:
+        # Teacher-NLL-only mode: no distributions were retained, so no
+        # distribution summary exists — absence, not zeros.
+        rollout_kl = None
+    else:
+        metrics = [_distribution_metrics(token) for token in raw.tokens]
+        kls, coverages = [row[0] for row in metrics], [row[1] for row in metrics]
+        ordered_kl = sorted(kls)
+        rollout_kl = RolloutKLEvidence(
+            count, _text(_ratio(_sumd(kls), count), "mean KL"),
+            _text(max(kls), "max KL"),
+            _text(ordered_kl[min(count - 1, int(Decimal("0.99") * count))], "p99 KL"),
+            sum(row[2] for row in metrics),
+            _text(_ratio(_sumd(coverages), count), "coverage deviation", Decimal(1)))
     return RolloutQualityEvidence(
         TeacherNLLEvidence(count, _text(_sumd(nlls), "NLL sum"),
                            _text(max(nlls), "NLL max", _MAX_NLL), sum(value > tail_threshold for value in nlls)),
-        RolloutKLEvidence(count, _text(_ratio(_sumd(kls), count), "mean KL"),
-                          _text(max(kls), "max KL"),
-                          _text(ordered_kl[min(count - 1, int(Decimal("0.99") * count))], "p99 KL"),
-                          sum(row[2] for row in metrics),
-                          _text(_ratio(_sumd(coverages), count), "coverage deviation", Decimal(1))),
+        rollout_kl,
         HiddenTaskEvidence(str(sum(task.passed for task in raw.hidden_tasks)), len(raw.hidden_tasks)),
     )
 def _derive(raw: ReferenceQualityRawArtifact, raw_digest: str) -> ReferenceQualityEvidence:
@@ -659,10 +701,20 @@ def _metric(prompt: PromptQualityEvidence, policy: MetricCalibration) -> tuple[f
             "mean_nll": row.teacher_nll.mean,
             "worst_nll": row.teacher_nll.worst,
             "tail_rate": row.teacher_nll.tail_rate,
-            "topk_kl": float(decimal_value(row.rollout_kl.mean_kl)),
-            "argmax_rate": row.rollout_kl.argmax_rate,
-            "coverage_dev": float(decimal_value(row.rollout_kl.mean_coverage_deviation)),
         }
+        if row.rollout_kl is not None:
+            values.update({
+                "topk_kl": float(decimal_value(row.rollout_kl.mean_kl)),
+                "argmax_rate": row.rollout_kl.argmax_rate,
+                "coverage_dev": float(decimal_value(row.rollout_kl.mean_coverage_deviation)),
+            })
+        elif policy.name in {"topk_kl", "argmax_rate", "coverage_dev"}:
+            # A threshold policy naming a distribution metric against
+            # teacher-NLL-only evidence is a policy/evidence mismatch and
+            # refuses outright — it must never silently pass.
+            raise ReferenceQualityError(
+                f"metric {policy.name!r} requires retained distribution evidence"
+            )
         if policy.name == "task_score":
             if row.hidden_task.rate is None:
                 raise ReferenceQualityError("task_score requires hidden-task evidence")

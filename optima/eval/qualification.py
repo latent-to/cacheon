@@ -1143,7 +1143,10 @@ class QualificationProfile(_Canonical):
         if not 0 < threshold <= 1_000_000:
             raise QualificationError("nll_tail_threshold is outside its supported bound")
         object.__setattr__(self, "tokens_per_prompt", _integer(self.tokens_per_prompt, "tokens", 1))
-        object.__setattr__(self, "topk_width", _integer(self.topk_width, "top-k width", 1))
+        # Width zero is the teacher-NLL-only quality mode: no candidate
+        # distributions are retained and no distribution metrics may be
+        # calibrated; the width is digest-bound so the mode cannot drift.
+        object.__setattr__(self, "topk_width", _integer(self.topk_width, "top-k width", 0))
         object.__setattr__(
             self,
             "hidden_tasks_per_prompt",
@@ -1154,6 +1157,14 @@ class QualificationProfile(_Canonical):
         )
         if self.hidden_tasks_required != (self.hidden_tasks_per_prompt > 0):
             raise QualificationError("hidden-task requirement and count disagree")
+        if self.topk_width == 0 and set(self.required_quality_metrics) & {
+            "topk_kl",
+            "argmax_rate",
+            "coverage_dev",
+        }:
+            raise QualificationError(
+                "teacher-NLL-only profiles cannot require distribution metrics"
+            )
         object.__setattr__(
             self, "minimum_prompt_count", _integer(self.minimum_prompt_count, "prompts", 2)
         )
@@ -1494,9 +1505,16 @@ def _trajectory_rows(lifecycle: object):
                     or any(len(position) != plan.top_logprobs_num for position in evidence.top_logprobs)
                 ):
                     raise QualificationError("trajectory token/top-k coverage differs from workload")
-                topk = []
-                for position in evidence.top_logprobs:
-                    topk.append(_validated_topk_position(position))
+                # A width-0 plan retains one empty support row per token; the
+                # coverage check above already pins every row to length zero,
+                # and the digest must seal that absence rather than reject it.
+                if plan.top_logprobs_num:
+                    topk = [
+                        _validated_topk_position(position)
+                        for position in evidence.top_logprobs
+                    ]
+                else:
+                    topk = [[] for _ in evidence.top_logprobs]
                 frames.append({"output_ids": list(evidence.output_ids), "top_logprobs": topk})
             rows.append((occurrence, frames))
     return workload, tuple(rows)
@@ -1774,6 +1792,12 @@ def selected_trajectory_projection_digest(
     def project(frame):
         distributions = []
         for position in frame["top_logprobs"]:
+            if not position:
+                # Width-0 evidence: the raw-artifact side records one None per
+                # token (raw_trajectory_projection_digest); the shapes must
+                # byte-match or the raw-quality re-verification fails.
+                distributions.append(None)
+                continue
             by_token = sorted(position, key=lambda row: row[1])
             distributions.append(
                 distribution_from_f32_logprobs(
@@ -1905,11 +1929,21 @@ def _validate_teacher_source(
                 role_evidence.tokens,
                 strict=True,
             ):
-                expected = distribution_from_f32_logprobs(
-                    support,
-                    teacher.support_logprobs,
-                    true_argmax_token_id=teacher.true_argmax_token_id,
-                )
+                if support:
+                    expected = distribution_from_f32_logprobs(
+                        support,
+                        teacher.support_logprobs,
+                        true_argmax_token_id=teacher.true_argmax_token_id,
+                    )
+                else:
+                    # Width-0: no retained support anywhere in the exchange.
+                    # The artifact must record teacher absence, and T must not
+                    # smuggle support logprobs past an empty request.
+                    expected = None
+                    if teacher.support_logprobs:
+                        raise QualificationError(
+                            "raw teacher evidence differs from pristine T"
+                        )
                 if (
                     token.token_id != output_id
                     or token.target_nll != target_nll_from_f32(teacher.target_logprob)

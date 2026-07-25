@@ -483,6 +483,12 @@ class CausalQualificationInput:
                     ),
                     calibration=self.calibration_manifest,
                     context=self.calibration_context,
+                    version=resident.policy.version,
+                    min_windows=resident.policy.min_windows,
+                    max_window_scatter=resident.policy.max_window_scatter,
+                    max_conditioning_slowdown=(
+                        resident.policy.max_conditioning_slowdown
+                    ),
                 )
             except CrossoverRuntimeError as exc:
                 raise QualificationRunnerError(str(exc)) from None
@@ -871,6 +877,13 @@ class ResidentSpeedWitness:
         }
         if tuple(row.role for row in rates) != expected_roles.get(len(rates)):
             raise QualificationRunnerError("resident speed witness read order differs")
+        if any(
+            bool(row.windows) != (self.resident_policy.version >= 3)
+            for row in rates
+        ):
+            raise QualificationRunnerError(
+                "resident read window retention differs from the policy version"
+            )
         object.__setattr__(self, "rates", rates)
         expected = _resident_speed_projection_digest(
             selected_delta_digest=self.selected_delta_digest,
@@ -959,6 +972,9 @@ class ResidentSpeedWitness:
         if expected_policy is not None and expected_policy != self.policy:
             raise QualificationRunnerError("resident speed witness policy differs")
         try:
+            # Reconstruct the expected policy at the witness's own version so
+            # sealed evidence regrades under the arithmetic that produced it;
+            # the equality check below then refuses any cross-version splice.
             expected_resident = ResidentSpeedPolicy.from_calibration(
                 max_stage_seconds=self.resident_policy.max_stage_seconds,
                 max_qualification_seconds=(
@@ -966,6 +982,12 @@ class ResidentSpeedWitness:
                 ),
                 calibration=calibration,
                 context=context,
+                version=self.resident_policy.version,
+                min_windows=self.resident_policy.min_windows,
+                max_window_scatter=self.resident_policy.max_window_scatter,
+                max_conditioning_slowdown=(
+                    self.resident_policy.max_conditioning_slowdown
+                ),
             )
         except CrossoverRuntimeError as exc:
             raise QualificationRunnerError(str(exc)) from None
@@ -976,12 +998,19 @@ class ResidentSpeedWitness:
             or self.workload_digest != context.workload_digest
         ):
             raise QualificationRunnerError("resident speed calibration authority differs")
-        baselines = [
-            row.tokens_per_second for row in self.rates if row.role.startswith("B")
-        ]
-        candidates = [
-            row.tokens_per_second for row in self.rates if row.role.startswith("C")
-        ]
+        try:
+            baselines = [
+                self.resident_policy.scored_tokens_per_second(row)
+                for row in self.rates
+                if row.role.startswith("B")
+            ]
+            candidates = [
+                self.resident_policy.scored_tokens_per_second(row)
+                for row in self.rates
+                if row.role.startswith("C")
+            ]
+        except CrossoverRuntimeError as exc:
+            raise QualificationRunnerError(str(exc)) from None
         initial = score_speedup(
             baselines[:2],
             candidates[:1],
@@ -989,7 +1018,16 @@ class ResidentSpeedWitness:
             k=self.resident_policy.noise_multiplier,
             max_noise=self.resident_policy.max_noise,
         )
-        clear = (
+        # Conditioning pairs by warmth position (C vs B cold, C' vs B' warm);
+        # a bound violation is a clear candidate FAIL under the sealed policy
+        # and must regrade identically to the live decision.
+        try:
+            conditioning_initial = self.resident_policy.conditioning_regression(
+                self.rates[0], self.rates[1]
+            )
+        except CrossoverRuntimeError as exc:
+            raise QualificationRunnerError(str(exc)) from None
+        clear = conditioning_initial or (
             initial.confident
             and (
                 initial.speedup <= initial.required - self.resident_policy.min_margin
@@ -998,19 +1036,27 @@ class ResidentSpeedWitness:
         )
         if (len(self.rates) == 3) != clear:
             raise QualificationRunnerError("resident adaptive read shape does not regrade")
-        verdict = (
-            initial
-            if clear
-            else score_speedup(
+        if clear:
+            verdict = initial
+            conditioning_failed = conditioning_initial
+        else:
+            verdict = score_speedup(
                 baselines,
                 candidates,
                 min_margin=self.resident_policy.min_margin,
                 k=self.resident_policy.noise_multiplier,
                 max_noise=self.resident_policy.max_noise,
             )
-        )
+            try:
+                conditioning_failed = self.resident_policy.conditioning_regression(
+                    self.rates[2], self.rates[3]
+                )
+            except CrossoverRuntimeError as exc:
+                raise QualificationRunnerError(str(exc)) from None
         grade = (
-            QualificationDecision.NO_DECISION
+            QualificationDecision.FAIL
+            if conditioning_failed
+            else QualificationDecision.NO_DECISION
             if not verdict.confident
             else QualificationDecision.PASS
             if verdict.passed_speedup
@@ -1445,7 +1491,10 @@ class QualificationTimingWitness:
 
     @classmethod
     def from_dict(cls, value: object) -> "QualificationTimingWitness":
-        raw = _strict(value, set(cls.__dataclass_fields__), "qualification timing")
+        # dict(...) copy: _strict returns the caller's mapping, and the float
+        # decode below must never mutate a reopened payload in place — the
+        # publish/reopen self-check compares to_dict() against that payload.
+        raw = dict(_strict(value, set(cls.__dataclass_fields__), "qualification timing"))
         for name in cls.__dataclass_fields__:
             if name.endswith("_monotonic_s"):
                 encoded = raw[name]
@@ -2390,16 +2439,21 @@ def _rollout(
         by_token = {row[1]: float(row[0]) for row in raw_position}
         if tuple(sorted(by_token)) != support:
             raise QualificationRunnerError("rollout support differs from its T request")
-        rollout = distribution_from_f32_logprobs(
-            support,
-            tuple(by_token[token] for token in support),
-            true_argmax_token_id=raw_position[0][1],
-        )
-        teacher_distribution = distribution_from_f32_logprobs(
-            support,
-            teacher.support_logprobs,
-            true_argmax_token_id=teacher.true_argmax_token_id,
-        )
+        if support:
+            rollout = distribution_from_f32_logprobs(
+                support,
+                tuple(by_token[token] for token in support),
+                true_argmax_token_id=raw_position[0][1],
+            )
+            teacher_distribution = distribution_from_f32_logprobs(
+                support,
+                teacher.support_logprobs,
+                true_argmax_token_id=teacher.true_argmax_token_id,
+            )
+        else:
+            # Teacher-NLL-only mode (topk_width 0): the retained frames carry
+            # no top-k and no distribution evidence exists to project.
+            rollout = teacher_distribution = None
         tokens.append(RawTokenEvidence(
             position,
             output_id,

@@ -10,15 +10,15 @@ different events. Evidence for one does not authorize another.
 
 ## Source snapshot
 
-Snapshot date: **2026-07-24**
+Snapshot date: **2026-07-26**
 
 | Item | Value |
 |---|---|
 | Repository | [`latent-to/cacheon`](https://github.com/latent-to/cacheon) |
-| Implementation baseline | [`4c80a286823d6b23f5cfc6a338c6a6e5c75c7364`](https://github.com/latent-to/cacheon/commit/4c80a286823d6b23f5cfc6a338c6a6e5c75c7364) |
-| Production Python | 122 files and 98,334 lines under `optima/` |
-| Tests | 111 Python files and 58,749 lines under `tests/` |
-| Complete local suite | 2,284 passed, 19 skipped, 0 failed in 78.03 seconds |
+| Implementation baseline | [`745930474e3b721b30f9e02c2944aa94449d9253`](https://github.com/latent-to/cacheon/commit/745930474e3b721b30f9e02c2944aa94449d9253) |
+| Production Python | 123 files and 99,279 lines under `optima/` |
+| Tests | 112 Python files and 59,820 lines under `tests/` |
+| Complete local suite | 2,310 passed, 19 skipped, 0 failed |
 | Test command | `PYENV_VERSION=sn120 python -m pytest -q tests` in an unrestricted local environment |
 | SGLang pin | `0.5.13.post1` in `optima/compat.py` |
 | Bittensor raw-reveal storage ABI | `10.3.2` in `optima/chain_canary.py` |
@@ -120,6 +120,45 @@ Version 1 and version 2 evidence remain readable for historical compatibility.
 Screen measurements do not enter this authority. Candidate-attributable
 failure can produce `FAIL`; infrastructure, drift, missing evidence, or broken
 authority produces `NO_DECISION`.
+
+From 2026-07-25 the resident speed policy of record was version 2: the scored
+rate is the
+steady-state timed window (`timed_tokens / timed_seconds`), conditioning stays
+bounded by the sealed operational timing budget rather than entering the scored
+rate, and the calibrated maximum baseline disagreement must be at most 2%.
+Version-1 witnesses graded the charged rate and regrade only under their own
+sealed arithmetic; the policy version is digest-bound and cross-version
+splicing is refused. The motivating evidence is the 2026-07-24 stage-exit
+described under empirical evidence, retained verbatim as the repository test
+fixture `tests/fixtures/speed_stage_exit_45cbcc04.json`.
+
+Policy version 3 is implemented, tested, and as of 2026-07-25 has produced its
+first settled production program (described under empirical evidence): the
+scored rate becomes the
+median over per-batch timed windows retained in the witness rows, each read
+carries a sealed window-scatter bound that refuses grading of an unfit
+measurement everywhere (live and on reopen), version-3 timed reads
+request no log-probability collection so evaluation work never shares the
+clock with a speed measurement (`top_logprobs_num` 0 is now expressible
+through the session protocol, worker, and binary evidence codec), and a
+sealed conditioning slowdown bound fails a candidate whose unscored
+conditioning span (the host-visible prefill surface) regresses past the
+baseline's at equal warmth position — graded from spans already sealed in
+every read, adding no measurement time. The companion quality mode
+(decided 2026-07-25) is teacher-NLL-only: a zero top-k width in the
+qualification profile and raw quality binding selects it end to end —
+empty support rows through the reference protocol and worker, explicit
+null distribution/KL evidence with uniformity enforced at every layer,
+and typed refusal of any threshold policy that names a distribution
+metric against it. Distribution-level numerics coverage remains with the
+in-engine slot audit stage. The
+supporting instrument authority, `optima/eval/box_certificate.py`, seals
+per-session stock-vs-stock null floors, a resolved known-magnitude effect,
+double-bounded expiry, and typed instrument-invalidation records. Overnight
+2026-07-24/25 measurement context: two version-2 joined primaries passed
+clearly while the timed noise floor of the box deteriorated 0.72% to 3.09%
+across the night and the final calibration honestly refused; version 3 is
+the structural response.
 
 The audit gate is Torch-free, checks exact slot × TP-rank/process coverage, and
 canonicalizes floating-point facts before durable receipt identity. Audit is
@@ -246,6 +285,51 @@ performance authority. The subsequent resident screen and two-lane adaptive
 qualification implementation are test-covered and informed by GPU calibration,
 but no retained end-to-end current-revision version-3 primary/reproduction
 canary is claimed here.
+
+### First production version-3 speed verdict (2026-07-24)
+
+A 4×B300 joined primary on 2026-07-24 executed the resident version-3 path end
+to end for the first time: prepare, intake hygiene, graph, and the slot audit
+all passed, and the speed stage produced the first production version-3 speed
+verdict. That verdict was `FAIL speed_regression` under version-1 charged-basis
+arithmetic: the second baseline read ran as a warm continuation of the first
+baseline session while the candidate read ran cold, so the conditioning-
+inclusive scored rate turned a positional split into 6.3% apparent baseline
+noise and a 1.126 required bar, while the candidate was faster than both
+baseline reads on every timed window. The sealed stage-exit is retained
+verbatim as `tests/fixtures/speed_stage_exit_45cbcc04.json`, and a regression
+test pins both readings: version-1 arithmetic reproduces the shipped verdict
+exactly, and version-2 timed-basis arithmetic grades the same sealed reads as a
+clear pass. The reservation's terminal disposition stands; no verdict was
+altered after the fact, and any future attempt requires a fresh submission
+under the version-2 policy.
+
+### First settled crown under speed policy version 3 (2026-07-25)
+
+A 4×B300 program on 2026-07-25 ran the resident version-3 policy through every
+production phase for the first time and settled the first crown: intake, graph
+verification, controller snapshot, two per-lane calibrations, a joined
+primary, a joined lane-swapped reproduction, a restart proof, and a signer-free
+weight projection all passed in one continuous program against testnet
+finalized intake (reservation
+`c7713892…`, target `collective.ar_residual_rmsnorm`, candidate content
+`747405b4…`, source revision `07c032ed`). The calibrations sealed per-lane
+timed noise floors of 0.30% (primary lane) and 0.125% (reproduction lane)
+against the 2% ceiling, with negative, positive, and stock controls sealed
+before any timed arm was observed. The joined primary graded a timed speedup
+of 1.0212 and the reproduction, with candidate and baseline physically
+swapped across lanes, graded 1.0278; baseline bracket disagreement inside the
+timed phases was 0.21% and 0.03% respectively. Settlement bound the pair and
+accepted the lower speedup, 1.0212. This was also the first production
+execution of the teacher-NLL-only quality mode (zero top-k width) and of the
+joined reproduction, restart, and weights orchestration. The evidence was
+relocated to validator-owned storage with every retained artifact re-verified
+against its bound content digest, and a signer-free weight projection built
+from the settled state (crown count 1, full pool to the crowned hotkey).
+This establishes measurement and settlement under the version-3 policy. It
+does not establish on-chain weight publication (the signed submission is a
+separate, operator-reviewed act), incentive activation, integration review, or
+serving readiness.
 
 ### Incentive evidence
 
