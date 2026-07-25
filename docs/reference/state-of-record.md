@@ -15,20 +15,20 @@ Snapshot date: **2026-07-26**
 | Item | Value |
 |---|---|
 | Repository | [`latent-to/cacheon`](https://github.com/latent-to/cacheon) |
-| Implementation baseline | [`dc4095134f64360c8c88e4e7bdf1f7afa34c25c3`](https://github.com/latent-to/cacheon/commit/dc4095134f64360c8c88e4e7bdf1f7afa34c25c3) |
-| Production Python | 126 files and 102,778 lines under `optima/` |
-| Tests | 115 Python files and 61,212 lines under `tests/` |
-| Complete local suite | 2,340 passed, 21 skipped, 0 failed |
+| Implementation baseline | [`848042e12592ac1a3c99927bc0be62626ae33b25`](https://github.com/latent-to/cacheon/commit/848042e12592ac1a3c99927bc0be62626ae33b25) |
+| Production Python | 126 files and 102,869 lines under `optima/` |
+| Tests | 115 Python files and 61,306 lines under `tests/` |
+| Complete local suite | 2,342 passed, 21 skipped, 0 failed |
 | Test command | `PYENV_VERSION=sn120 python -m pytest -q tests` in an unrestricted local environment |
 | SGLang pin | `0.5.13.post1` in `optima/compat.py` |
 | Bittensor raw-reveal storage ABI | `10.3.2` in `optima/chain_canary.py` |
 | Public CLI | 23 commands |
 
-The documentation-only migration branch does not change runtime source,
-examples, kernels, or operational behavior. File and line counts describe the
-implementation baseline; they are not quality metrics. The suite is
-CPU/non-empirical validation and does not establish GPU performance,
-container-runtime isolation, chain finality, or serving readiness.
+The shared-weight transport changes do not alter kernels, timed evaluation, or
+crown/settlement arithmetic. File and line counts describe the implementation
+baseline; they are not quality metrics. The suite is CPU/non-empirical
+validation and does not establish GPU performance, container-runtime
+isolation, chain finality, or serving readiness.
 
 ## Authority order
 

@@ -383,12 +383,14 @@ fresh timestamp; the server checks live `validator_permit` and returns an
 authority-signed body. `PUT /v1/current-weights` accepts only active push
 credentials. The accepted offer is stored inside an HMAC envelope binding the
 credential id and exact offer digest. A push-enabled server verifies that
-envelope before it signs a GET response, and the push client requires an exact
-acknowledgement of the credential, offer, and projection digests. A storage
-writer without a retained push secret can cause unavailability or replay an old
-valid envelope, but cannot manufacture a new gateway-authenticated vector.
-Valid-envelope replay is additionally bounded by follower freshness and the
-follower's monotonic publication journal.
+envelope before it signs a GET response, and the push client requires a fresh
+HMAC-authenticated acknowledgement of the request timestamp, credential,
+offer, and projection digests. A network intermediary or storage writer
+without a retained push secret can cause unavailability, and a storage writer
+can replay an old valid envelope, but neither can manufacture a successful
+push acknowledgement or a new gateway-authenticated vector. Valid-envelope
+replay is additionally bounded by follower freshness and the follower's
+monotonic publication journal.
 
 `follow-weights` permits initial catch-up only when the offer is no more than
 `--refresh-blocks` behind the live finalized metagraph and the signer and every

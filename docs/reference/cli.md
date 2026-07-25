@@ -257,8 +257,10 @@ opens a weight-signing wallet or calls `set_weights`. Credentials resolve from
 and optional `PUT /v1/current-weights` (same credential resolution). A
 credentialed PUT stores an HMAC-authenticated envelope, and a push-enabled
 server verifies that envelope before signing any GET response. The push client
-accepts only an exact acknowledgement of its credential, offer, and projection
-digests; server-side storage/transport failures remain retryable.
+accepts only a fresh HMAC-authenticated acknowledgement binding its request
+timestamp, credential, offer, and projection digests; an HTTP intermediary
+cannot manufacture success without the push secret. Server-side
+storage/transport failures remain retryable.
 
 `follow-weights` rebinds the offer to the follower hotkey and publishes through
 `reconcile_weight_publication` / commit-reveal. A fresh follower accepts an
