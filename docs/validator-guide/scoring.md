@@ -59,6 +59,22 @@ never a candidate `FAIL`; a version-2 policy requires that calibrated maximum to
 at most 2%, so the referee refuses to convict or crown from a measurement noisier
 than the hardened stack honestly produces.
 
+Policy version 3 replaces each read's single timed aggregate with the median
+over per-batch timed windows. The window is the timed batch because host
+wall-clock spans at batch boundaries are the only timing the trust model
+accepts; every window recomputes exactly from sealed batch evidence and is
+retained in the witness rows. A version-3 read also carries a sealed
+per-read window-scatter bound (median absolute deviation about the median,
+relative): a read whose own scatter exceeds the bound refuses to produce a
+scored rate at all, in live grading and in every reopen, so an unfit
+measurement cannot be graded anywhere. Version-3 timed reads request no
+log-probability collection (`top_logprobs_num` 0): quality evidence comes
+from separate untimed reads and from teacher-forced scoring of the retained
+generated tokens under the pristine engine, so evaluation work never shares
+the clock with a speed measurement. Version-1 and version-2 witnesses keep
+their exact historical bytes and regrade only under their own sealed
+arithmetic.
+
 ## Complete qualification decision
 
 A candidate can pass only when all required products agree:

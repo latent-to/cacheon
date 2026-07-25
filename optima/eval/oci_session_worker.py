@@ -655,6 +655,14 @@ def _engine_outputs(outputs: object, *, request: BatchRequest) -> BatchEvidence:
             raise SessionProtocolError("engine output metadata is missing")
         raw_ids = row.get("output_ids") or metadata.get("output_ids")
         raw_topk = metadata.get("output_top_logprobs")
+        if (
+            raw_topk is None
+            and request.top_logprobs_num == 0
+            and isinstance(raw_ids, (list, tuple))
+        ):
+            # A pure-generation read runs the engine with the logprob path
+            # disabled; the evidence still carries exact empty positions.
+            raw_topk = [()] * len(raw_ids)
         if not isinstance(raw_ids, (list, tuple)) or not isinstance(
             raw_topk, (list, tuple)
         ):
@@ -697,7 +705,9 @@ def _generate(engine: object, request: BatchRequest) -> BatchEvidence:
             "max_new_tokens": request.max_new_tokens,
             "ignore_eos": True,
         },
-        return_logprob=True,
+        # Width zero disables the engine's logprob gather entirely so no
+        # eval-side CPU work shares the clock with a timed read.
+        return_logprob=request.top_logprobs_num > 0,
         logprob_start_len=-1,
         top_logprobs_num=request.top_logprobs_num,
     )

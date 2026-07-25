@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import math
+import statistics
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -56,17 +57,20 @@ class ResidentSpeedPolicy:
     calibration_context_digest: str
     version: int = 1
     max_qualification_seconds: int = 7_200
+    min_windows: int = 0
+    max_window_scatter: float = 0.0
 
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (1, 2)
+            or self.version not in (1, 2, 3)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
             or not self.max_stage_seconds
             <= self.max_qualification_seconds
             <= 14_400
+            or type(self.min_windows) is not int
             or any(
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
@@ -75,6 +79,7 @@ class ResidentSpeedPolicy:
                     self.min_margin,
                     self.noise_multiplier,
                     self.max_noise,
+                    self.max_window_scatter,
                 )
             )
             or not 0 < self.min_margin < 1
@@ -89,19 +94,67 @@ class ResidentSpeedPolicy:
             raise CrossoverRuntimeError(
                 "resident speed policy v2 requires max_noise <= 0.02"
             )
+        if self.version >= 3:
+            # Version 3 grades the median over per-batch timed windows and
+            # refuses any read whose own window scatter exceeds the sealed
+            # bound: the noise floor becomes measured-per-read evidence
+            # instead of an assumption about the box.
+            if not 3 <= self.min_windows <= 512:
+                raise CrossoverRuntimeError(
+                    "resident speed policy v3 requires 3..512 timed windows"
+                )
+            if not 0 < self.max_window_scatter <= 0.05:
+                raise CrossoverRuntimeError(
+                    "resident speed policy v3 requires a window scatter bound"
+                    " in (0, 0.05]"
+                )
+        elif self.min_windows != 0 or self.max_window_scatter != 0.0:
+            raise CrossoverRuntimeError(
+                "window thresholds require resident speed policy v3"
+            )
         for field in ("calibration_digest", "calibration_context_digest"):
             try:
                 require_sha256_hex(getattr(self, field), field=field)
             except ValueError as exc:
                 raise CrossoverRuntimeError(str(exc)) from None
 
+    def read_window_scatter(self, row: object) -> float:
+        """Relative MAD-about-the-median of one read's per-window rates.
+
+        Robust by construction: the same tail events (completion churn,
+        admission hiccups) that motivate the median statistic must not be
+        allowed to inflate its own fitness gate."""
+
+        windows = getattr(row, "windows", ())
+        if len(windows) < max(self.min_windows, 3):
+            raise CrossoverRuntimeError(
+                "resident read lacks its required timed windows"
+            )
+        rates = [window.tokens / window.seconds for window in windows]
+        median = statistics.median(rates)
+        if not math.isfinite(median) or median <= 0:
+            raise CrossoverRuntimeError("resident read window rates are invalid")
+        return statistics.median([abs(rate - median) for rate in rates]) / median
+
     def scored_tokens_per_second(self, row: object) -> float:
         """Verdict basis for one read. Version 1 grades the charged rate
         (conditioning + timed), which double-counts session cold-start against
         whichever arm read first; version 2 grades the steady-state timed
         window only, with conditioning still bounded by the operational
-        budget."""
+        budget; version 3 grades the median over per-batch timed windows and
+        refuses to produce a number at all when the read's own window scatter
+        exceeds the sealed bound, so no consumer anywhere can grade an unfit
+        measurement."""
 
+        if self.version >= 3:
+            if self.read_window_scatter(row) > self.max_window_scatter:
+                raise CrossoverRuntimeError(
+                    "resident read window scatter exceeds the sealed bound"
+                )
+            return statistics.median(
+                window.tokens / window.seconds
+                for window in row.windows  # type: ignore[attr-defined]
+            )
         if self.version >= 2:
             return row.timed_tokens / row.timed_seconds  # type: ignore[attr-defined]
         return row.tokens_per_second  # type: ignore[attr-defined]
@@ -119,7 +172,7 @@ class ResidentSpeedPolicy:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        row: dict[str, object] = {
             "calibration_context_digest": self.calibration_context_digest,
             "calibration_digest": self.calibration_digest,
             "max_noise": format(self.max_noise, ".17g"),
@@ -129,6 +182,12 @@ class ResidentSpeedPolicy:
             "noise_multiplier": format(self.noise_multiplier, ".17g"),
             "version": self.version,
         }
+        if self.version >= 3:
+            # Window thresholds exist only under version 3; earlier sealed
+            # policies keep their exact historical bytes and digests.
+            row["max_window_scatter"] = format(self.max_window_scatter, ".17g")
+            row["min_windows"] = self.min_windows
+        return row
 
     @classmethod
     def from_dict(cls, value: object) -> "ResidentSpeedPolicy":
@@ -142,9 +201,22 @@ class ResidentSpeedPolicy:
             "noise_multiplier",
             "version",
         }
-        if type(value) is not dict or set(value) != fields:
+        if (
+            type(value) is not dict
+            or type(value.get("version")) is not int
+        ):
+            raise CrossoverRuntimeError("resident speed policy fields differ")
+        window_kwargs: dict[str, object] = {}
+        if value["version"] >= 3:
+            fields |= {"max_window_scatter", "min_windows"}
+        if set(value) != fields:
             raise CrossoverRuntimeError("resident speed policy fields differ")
         try:
+            if value["version"] >= 3:
+                window_kwargs = {
+                    "min_windows": value["min_windows"],
+                    "max_window_scatter": float(value["max_window_scatter"]),
+                }
             result = cls(
                 max_stage_seconds=value["max_stage_seconds"],  # type: ignore[arg-type]
                 min_margin=float(value["min_margin"]),
@@ -154,6 +226,7 @@ class ResidentSpeedPolicy:
                 calibration_context_digest=value["calibration_context_digest"],  # type: ignore[arg-type]
                 version=value["version"],  # type: ignore[arg-type]
                 max_qualification_seconds=value["max_qualification_seconds"],  # type: ignore[arg-type]
+                **window_kwargs,  # type: ignore[arg-type]
             )
             if result.to_dict() != value:
                 raise CrossoverRuntimeError("resident speed policy is noncanonical")
@@ -170,6 +243,8 @@ class ResidentSpeedPolicy:
         calibration: object,
         context: object,
         version: int = 1,
+        min_windows: int = 0,
+        max_window_scatter: float = 0.0,
     ) -> "ResidentSpeedPolicy":
         from optima.eval.calibration import (
             CalibrationContext,
@@ -196,6 +271,8 @@ class ResidentSpeedPolicy:
             calibration_context_digest=context.digest,
             version=version,
             max_qualification_seconds=max_qualification_seconds,
+            min_windows=min_windows,
+            max_window_scatter=max_window_scatter,
         )
 
 
@@ -381,6 +458,61 @@ def _lane_digest(executor: OCIEngineExecutor, arm: ResidentArmPlan) -> str:
 
 
 @dataclass(frozen=True)
+class TimedWindow:
+    """One host-clocked timed batch inside a read: the v3 scoring quantum.
+
+    The trust model only accepts wall-clock spans stamped by the controller at
+    batch boundaries (worker-reported timestamps are hostile input), so the
+    window IS the timed batch: every field recomputes exactly from the sealed
+    batch evidence and nothing here depends on a worker clock. Window seconds
+    exclude inter-batch host gaps, so their sum is bounded by — not equal
+    to — the read's timed makespan."""
+
+    batch_index: int
+    tokens: int
+    seconds: float
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.batch_index) is not int
+            or self.batch_index < 0
+            or type(self.tokens) is not int
+            or self.tokens <= 0
+            or type(self.seconds) is not float
+            or not math.isfinite(self.seconds)
+            or self.seconds <= 0
+        ):
+            raise CrossoverRuntimeError("timed window is malformed")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "batch_index": self.batch_index,
+            "seconds": format(self.seconds, ".17g"),
+            "tokens": self.tokens,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "TimedWindow":
+        if type(value) is not dict or set(value) != {
+            "batch_index",
+            "seconds",
+            "tokens",
+        }:
+            raise CrossoverRuntimeError("timed window fields differ")
+        try:
+            result = cls(
+                value["batch_index"],  # type: ignore[arg-type]
+                value["tokens"],  # type: ignore[arg-type]
+                float(value["seconds"]),  # type: ignore[arg-type]
+            )
+            if result.to_dict() != value:
+                raise CrossoverRuntimeError("timed window is noncanonical")
+            return result
+        except (TypeError, ValueError) as exc:
+            raise CrossoverRuntimeError("timed window is malformed") from exc
+
+
+@dataclass(frozen=True)
 class ResidentReadRate:
     role: str
     lane_digest: str
@@ -397,6 +529,7 @@ class ResidentReadRate:
     timed_seconds: float
     charged_seconds: float
     tokens_per_second: float
+    windows: tuple[TimedWindow, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -444,6 +577,22 @@ class ResidentReadRate:
             != self.charged_tokens / self.charged_seconds
         ):
             raise CrossoverRuntimeError("resident read rate is malformed")
+        windows = tuple(self.windows)
+        object.__setattr__(self, "windows", windows)
+        if windows and (
+            any(type(window) is not TimedWindow for window in windows)
+            or tuple(window.batch_index for window in windows)
+            != tuple(
+                range(
+                    self.first_timed_batch_index,
+                    self.last_timed_batch_index + 1,
+                )
+            )
+            or sum(window.tokens for window in windows) != self.timed_tokens
+        ):
+            raise CrossoverRuntimeError(
+                "resident read windows do not tile the timed span"
+            )
         for field in ("lane_digest", "launch_digest"):
             try:
                 require_sha256_hex(getattr(self, field), field=field)
@@ -451,7 +600,7 @@ class ResidentReadRate:
                 raise CrossoverRuntimeError(str(exc)) from None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        row: dict[str, object] = {
             "batches": [self.first_batch_index, self.last_batch_index],
             "charged_seconds": format(self.charged_seconds, ".17g"),
             "charged_tokens": self.charged_tokens,
@@ -468,6 +617,11 @@ class ResidentReadRate:
             "timed_seconds": format(self.timed_seconds, ".17g"),
             "timed_tokens": self.timed_tokens,
         }
+        if self.windows:
+            # Per-window retention exists only for v3 reads; earlier sealed
+            # rate rows keep their exact historical bytes and digests.
+            row["windows"] = [window.to_dict() for window in self.windows]
+        return row
 
     @classmethod
     def from_dict(cls, value: object) -> "ResidentReadRate":
@@ -485,9 +639,12 @@ class ResidentReadRate:
             "timed_seconds",
             "timed_tokens",
         }
+        if type(value) is not dict:
+            raise CrossoverRuntimeError("resident rate fields differ")
+        raw_windows = value.get("windows", [])
         if (
-            type(value) is not dict
-            or set(value) != fields
+            set(value) - {"windows"} != fields
+            or ("windows" in value and type(raw_windows) is not list)
             or type(value["batches"]) is not list
             or len(value["batches"]) != 2
             or type(value["timed_batches"]) is not list
@@ -517,6 +674,7 @@ class ResidentReadRate:
                 timed_seconds,
                 charged_seconds,
                 charged_tokens / charged_seconds,  # type: ignore[operator]
+                tuple(TimedWindow.from_dict(row) for row in raw_windows),
             )
             if result.to_dict() != value:
                 raise CrossoverRuntimeError("resident rate is noncanonical")
@@ -525,11 +683,27 @@ class ResidentReadRate:
             raise CrossoverRuntimeError("resident rate is malformed") from exc
 
 
+def _timed_windows(timed: tuple) -> tuple[TimedWindow, ...]:
+    """Per-batch windows from the same sealed host-clock spans the aggregate
+    rate uses; live measurement and regrade share this single derivation."""
+
+    return tuple(
+        TimedWindow(
+            row.batch_index,
+            row.token_numerator,
+            float(row.response_completed_at - row.request_started_at),
+        )
+        for row in timed
+    )
+
+
 def _rate(
     role: str,
     lane_digest: str,
     controller: OpenedOuterSession,
     template: SessionExecutionPlan,
+    *,
+    with_windows: bool = False,
 ) -> ResidentReadRate:
     first = controller.next_batch_index
     rows = tuple(
@@ -577,6 +751,7 @@ def _rate(
         float(timed_seconds),
         float(charged_seconds),
         float(charged_tokens / charged_seconds),
+        _timed_windows(timed) if with_windows else (),
     )
 
 
@@ -780,6 +955,9 @@ def _recomputed_rate(
         float(timed_seconds),
         float(charged_seconds),
         float(charged_tokens / charged_seconds),
+        # Recompute exactly what the sealed row claims: a windowed row must
+        # rebuild from the same raw spans, a legacy row must stay window-free.
+        _timed_windows(timed) if rate.windows else (),
     )
 
 
@@ -848,6 +1026,12 @@ class ResidentCrossoverEvidence:
             > self.policy.max_stage_seconds
         ):
             raise CrossoverRuntimeError("resident crossover evidence is malformed")
+        if any(
+            bool(row.windows) != (self.policy.version >= 3) for row in self.rates
+        ):
+            raise CrossoverRuntimeError(
+                "resident read window retention differs from the policy version"
+            )
 
     def regrade(self, plan: ResidentCrossoverPlan) -> SpeedupVerdict:
         """Recompute the adaptive grade only from the sealed plan and raw spans."""
@@ -1124,17 +1308,27 @@ def run_resident_crossover_speed(
             max_noise=plan.policy.max_noise,
         )
 
+    windowed = plan.policy.version >= 3
+
     def baseline_driver(controller: OpenedOuterSession) -> SessionExecutionEvidence:
         try:
             schedule.put("baseline_ready")
             schedule.get("candidate_ready", deadline=stage_deadline, clock=clock)
             before = _rate(
-                "B", baseline_lane, controller, plan.baseline.session_plan
+                "B",
+                baseline_lane,
+                controller,
+                plan.baseline.session_plan,
+                with_windows=windowed,
             )
             schedule.put("B", before)
             candidate = schedule.get("C", deadline=stage_deadline, clock=clock)
             after = _rate(
-                "B_prime", baseline_lane, controller, plan.baseline.session_plan
+                "B_prime",
+                baseline_lane,
+                controller,
+                plan.baseline.session_plan,
+                with_windows=windowed,
             )
             schedule.put("B_prime", after)
             initial = score(
@@ -1154,6 +1348,7 @@ def run_resident_crossover_speed(
                     baseline_lane,
                     controller,
                     plan.baseline.session_plan,
+                    with_windows=windowed,
                 )
                 final = score(
                     [
@@ -1184,7 +1379,13 @@ def run_resident_crossover_speed(
             schedule.get("B", deadline=stage_deadline, clock=clock)
             schedule.put(
                 "C",
-                _rate("C", candidate_lane, controller, plan.candidate.session_plan),
+                _rate(
+                    "C",
+                    candidate_lane,
+                    controller,
+                    plan.candidate.session_plan,
+                    with_windows=windowed,
+                ),
             )
             escalated = schedule.get("escalate", deadline=stage_deadline, clock=clock)
             if escalated is True:
@@ -1195,6 +1396,7 @@ def run_resident_crossover_speed(
                         candidate_lane,
                         controller,
                         plan.candidate.session_plan,
+                        with_windows=windowed,
                     ),
                 )
                 # Keep the candidate resident and idle until B-double-prime is

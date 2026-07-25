@@ -16,6 +16,7 @@ from optima.eval.crossover_runtime import (
     ResidentCrossoverPlan,
     ResidentSpeedPolicy,
     SpeedStageDecision,
+    TimedWindow,
     run_resident_crossover_speed,
 )
 from optima.eval.device_state import DeviceStatePolicy
@@ -80,6 +81,7 @@ class _Controller:
         trace_lock: threading.Lock,
         active_count: list[int],
         overlap: list[bool],
+        batches_per_read: int = 2,
     ) -> None:
         self.plan = plan
         self.lane = lane
@@ -88,6 +90,7 @@ class _Controller:
         self.trace_lock = trace_lock
         self.active_count = active_count
         self.overlap = overlap
+        self.batches_per_read = batches_per_read
         self.session_id = ("a" if lane == "left" else "b") * 32
         self.rows: list[BatchExecutionEvidence] = []
         self.clock = 10.0
@@ -108,9 +111,14 @@ class _Controller:
             self.trace.append(f"{self.lane}:{index}")
         try:
             time.sleep(0.001)
-            role_index, local_index = divmod(index, 2)
+            role_index, local_index = divmod(index, self.batches_per_read)
+            # Timed batches get a tiny deterministic per-window wobble so a
+            # multi-window read exercises a real (non-degenerate) median.
             duration = (
-                0.1 if local_index == 0 else self.timed_durations[role_index]
+                0.1
+                if local_index == 0
+                else self.timed_durations[role_index]
+                * (1.0, 1.001, 0.999)[(local_index - 1) % 3]
             )
             prompts = self.plan.prompt_batches[index]
             tokens = len(prompts) * self.plan.max_new_tokens
@@ -169,6 +177,7 @@ def _install_fake_execution(
     trace_lock: threading.Lock,
     active_count: list[int],
     overlap: list[bool],
+    batches_per_read: int = 2,
 ) -> None:
     def execute_opened(launch, binding, mount, plan, *, deadline, driver):
         del binding, mount, deadline
@@ -180,6 +189,7 @@ def _install_fake_execution(
             trace_lock=trace_lock,
             active_count=active_count,
             overlap=overlap,
+            batches_per_read=batches_per_read,
         )
         session = driver(controller)
         physical_ids = executor.device_policy.physical_gpu_ids
@@ -216,6 +226,8 @@ def _rig(
     candidate_durations: tuple[float, ...],
     *,
     distinct_runtime_policies: bool = False,
+    policy: ResidentSpeedPolicy | None = None,
+    timed_batches: int = 1,
 ):
     left_case = _case(tmp_path / "left")
     right_case = _case(tmp_path / "right")
@@ -224,6 +236,12 @@ def _rig(
     right_config = right_case.config
     left_launch = left_case.launch
     left_plan = left_case.plan
+    if timed_batches != 1:
+        batches = (("warmup",),) + tuple(
+            (f"timed{index}",) for index in range(timed_batches)
+        )
+        left_plan = replace(left_plan, prompt_batches=batches)
+        right_plan = replace(right_plan, prompt_batches=batches)
     if distinct_runtime_policies:
         left_runtime = replace(
             left_config.runtime,
@@ -323,6 +341,7 @@ def _rig(
         trace_lock=trace_lock,
         active_count=active_count,
         overlap=overlap,
+        batches_per_read=1 + timed_batches,
     )
     _install_fake_execution(
         candidate_executor,
@@ -332,12 +351,15 @@ def _rig(
         trace_lock=trace_lock,
         active_count=active_count,
         overlap=overlap,
+        batches_per_read=1 + timed_batches,
     )
     plan = ResidentCrossoverPlan(
         "7" * 64,
         baseline,
         candidate,
-        ResidentSpeedPolicy(60, 0.005, 2.0, 0.1, "8" * 64, "9" * 64),
+        policy
+        if policy is not None
+        else ResidentSpeedPolicy(60, 0.005, 2.0, 0.1, "8" * 64, "9" * 64),
     )
     return (
         plan,
@@ -725,3 +747,156 @@ def test_speed_verdict_v2_regrades_the_sealed_b300_stage_exit_both_ways() -> Non
     # ceiling is refused outright — a v2 policy cannot carry the v1 ceiling.
     with pytest.raises(CrossoverRuntimeError, match="max_noise <= 0.02"):
         ResidentSpeedPolicy.from_dict({**policy_v1.to_dict(), "version": 2})
+
+
+def _policy_v3(**overrides) -> ResidentSpeedPolicy:
+    kwargs = {
+        "max_stage_seconds": 60,
+        "min_margin": 0.005,
+        "noise_multiplier": 2.0,
+        "max_noise": 0.02,
+        "calibration_digest": "8" * 64,
+        "calibration_context_digest": "9" * 64,
+        "version": 3,
+        "min_windows": 3,
+        "max_window_scatter": 0.01,
+    }
+    kwargs.update(overrides)
+    return ResidentSpeedPolicy(**kwargs)
+
+
+def test_policy_v3_serialization_is_version_dependent() -> None:
+    policy = _policy_v3()
+    row = policy.to_dict()
+    assert row["min_windows"] == 3 and "max_window_scatter" in row
+    assert ResidentSpeedPolicy.from_dict(row) == policy
+    legacy = ResidentSpeedPolicy(60, 0.005, 2.0, 0.1, "8" * 64, "9" * 64)
+    assert "min_windows" not in legacy.to_dict()
+    # Window thresholds cannot ride a pre-v3 policy, and a v3 policy cannot
+    # omit them: the field set is version-exact both ways.
+    with pytest.raises(CrossoverRuntimeError, match="require resident speed policy v3"):
+        replace(legacy, min_windows=3, max_window_scatter=0.01)
+    with pytest.raises(CrossoverRuntimeError, match="3..512 timed windows"):
+        replace(legacy, version=3, max_noise=0.02)
+    with pytest.raises(CrossoverRuntimeError, match="fields differ"):
+        ResidentSpeedPolicy.from_dict(
+            {key: value for key, value in row.items() if key != "min_windows"}
+        )
+    with pytest.raises(CrossoverRuntimeError, match="fields differ"):
+        ResidentSpeedPolicy.from_dict(
+            {**legacy.to_dict(), "min_windows": 3, "max_window_scatter": "0.01"}
+        )
+
+
+def test_v3_crossover_scores_window_medians_and_retains_windows(
+    tmp_path: Path,
+) -> None:
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+
+    assert result.decision is SpeedStageDecision.PASS
+    assert not result.escalated
+    for row in result.rates:
+        assert [window.batch_index for window in row.windows] == [
+            row.first_timed_batch_index,
+            row.first_timed_batch_index + 1,
+            row.first_timed_batch_index + 2,
+        ]
+        assert sum(window.tokens for window in row.windows) == row.timed_tokens
+    # The scored value is the median over per-window rates: the wobbled
+    # windows (d, 1.001d, 0.999d) make that exactly 1/d per read.
+    scored_b = plan.policy.scored_tokens_per_second(result.rates[0])
+    scored_c = plan.policy.scored_tokens_per_second(result.rates[1])
+    assert scored_b == pytest.approx(1.0, rel=1e-12)
+    assert scored_c == pytest.approx(1.0 / 0.90, rel=1e-12)
+    assert result.final_verdict.speedup == pytest.approx(
+        scored_c / scored_b, rel=1e-12
+    )
+    # Sealed windows regrade from raw spans, and the witness round-trips.
+    assert result.regrade(plan) == result.final_verdict
+    witness = ResidentSpeedWitness.from_evidence(result, plan)
+    assert ResidentSpeedWitness.from_dict(witness.to_dict()) == witness
+
+
+def test_v3_tampered_window_fails_independent_regrade(tmp_path: Path) -> None:
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+    first = result.rates[0]
+    slowed = replace(first.windows[1], seconds=first.windows[1].seconds * 2)
+    tampered = replace(
+        result,
+        rates=(
+            replace(first, windows=(first.windows[0], slowed, first.windows[2])),
+            *result.rates[1:],
+        ),
+    )
+    with pytest.raises(CrossoverRuntimeError, match="independently regrade"):
+        tampered.regrade(plan)
+
+
+def test_v3_scatter_blowout_refuses_the_stage_not_the_candidate(
+    tmp_path: Path,
+) -> None:
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path, (0.90, 0.90), policy=_policy_v3(max_window_scatter=0.0005),
+        timed_batches=3,
+    )
+    # The rig's +-0.1% window wobble exceeds a 0.05% sealed scatter bound:
+    # the read refuses to produce a scored number, so the stage dies as
+    # typed infrastructure before any verdict exists.
+    with pytest.raises(CrossoverRuntimeError, match="window scatter exceeds"):
+        run_resident_crossover_speed(
+            plan,
+            baseline_executor=baseline,
+            candidate_executor=candidate,
+            model_mount=mount,
+            deadline=time.monotonic() + 60,
+        )
+
+
+def test_v3_witness_refuses_window_retention_mismatch(tmp_path: Path) -> None:
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path, (0.90, 0.90), policy=_policy_v3(), timed_batches=3
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+    witness = ResidentSpeedWitness.from_evidence(result, plan)
+    stripped = witness.to_dict()
+    stripped["rates"] = [
+        {key: value for key, value in row.items() if key != "windows"}
+        for row in stripped["rates"]
+    ]
+    with pytest.raises(QualificationRunnerError):
+        ResidentSpeedWitness.from_dict(stripped)
+
+
+def test_timed_window_rows_are_exact_and_tiled() -> None:
+    with pytest.raises(CrossoverRuntimeError, match="malformed"):
+        TimedWindow(1, 0, 1.0)
+    with pytest.raises(CrossoverRuntimeError, match="malformed"):
+        TimedWindow(1, 10, 0.0)
+    window = TimedWindow(4, 10, 0.25)
+    assert TimedWindow.from_dict(window.to_dict()) == window
+    with pytest.raises(CrossoverRuntimeError, match="noncanonical"):
+        TimedWindow.from_dict({**window.to_dict(), "seconds": "0.250"})

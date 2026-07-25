@@ -484,6 +484,8 @@ class CausalQualificationInput:
                     calibration=self.calibration_manifest,
                     context=self.calibration_context,
                     version=resident.policy.version,
+                    min_windows=resident.policy.min_windows,
+                    max_window_scatter=resident.policy.max_window_scatter,
                 )
             except CrossoverRuntimeError as exc:
                 raise QualificationRunnerError(str(exc)) from None
@@ -872,6 +874,13 @@ class ResidentSpeedWitness:
         }
         if tuple(row.role for row in rates) != expected_roles.get(len(rates)):
             raise QualificationRunnerError("resident speed witness read order differs")
+        if any(
+            bool(row.windows) != (self.resident_policy.version >= 3)
+            for row in rates
+        ):
+            raise QualificationRunnerError(
+                "resident read window retention differs from the policy version"
+            )
         object.__setattr__(self, "rates", rates)
         expected = _resident_speed_projection_digest(
             selected_delta_digest=self.selected_delta_digest,
@@ -971,6 +980,8 @@ class ResidentSpeedWitness:
                 calibration=calibration,
                 context=context,
                 version=self.resident_policy.version,
+                min_windows=self.resident_policy.min_windows,
+                max_window_scatter=self.resident_policy.max_window_scatter,
             )
         except CrossoverRuntimeError as exc:
             raise QualificationRunnerError(str(exc)) from None

@@ -306,3 +306,43 @@ def test_run_session_places_typed_activation_only_in_ready_frame(
         os.close(input_read)
         os.close(output_write)
         os.close(output_read)
+
+
+def test_pure_generation_request_disables_engine_logprob_work() -> None:
+    from optima.eval.oci_session_protocol import BatchRequest, SessionProtocolError
+    from optima.eval.oci_session_worker import _engine_outputs, _generate
+
+    request = BatchRequest(
+        "a" * 32, "b" * 64, "c" * 32, "d" * 32, 0, ("alpha", "beta"), 2, 0, 0.0
+    )
+    calls: list[dict] = []
+
+    class _Engine:
+        def generate(self, **kwargs):
+            calls.append(kwargs)
+            # A logprob-free engine response: token IDs only, no top-k
+            # structure anywhere in meta_info.
+            return [
+                {"meta_info": {"output_ids": [10, 20]}},
+                {"meta_info": {"output_ids": [30, 40]}},
+            ]
+
+    evidence = _generate(_Engine(), request)
+    assert calls[0]["return_logprob"] is False
+    assert calls[0]["top_logprobs_num"] == 0
+    assert tuple(prompt.output_ids for prompt in evidence.prompts) == (
+        (10, 20),
+        (30, 40),
+    )
+    assert all(
+        position == ()
+        for prompt in evidence.prompts
+        for position in prompt.top_logprobs
+    )
+
+    # Width zero never excuses a missing top-k on an eval-carrying request.
+    topk_request = BatchRequest(
+        "a" * 32, "b" * 64, "c" * 32, "d" * 32, 0, ("alpha",), 2, 2, 0.0
+    )
+    with pytest.raises(SessionProtocolError, match="token/top-k"):
+        _engine_outputs([{"meta_info": {"output_ids": [10, 20]}}], request=topk_request)

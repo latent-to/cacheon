@@ -131,6 +131,22 @@ splicing is refused. The motivating evidence is the 2026-07-24 stage-exit
 described under empirical evidence, retained verbatim as the repository test
 fixture `tests/fixtures/speed_stage_exit_45cbcc04.json`.
 
+Policy version 3 is implemented and tested but not yet activated in a
+production program (pending design review): the scored rate becomes the
+median over per-batch timed windows retained in the witness rows, each read
+carries a sealed window-scatter bound that refuses grading of an unfit
+measurement everywhere (live and on reopen), and version-3 timed reads
+request no log-probability collection so evaluation work never shares the
+clock with a speed measurement (`top_logprobs_num` 0 is now expressible
+through the session protocol, worker, and binary evidence codec). The
+supporting instrument authority, `optima/eval/box_certificate.py`, seals
+per-session stock-vs-stock null floors, a resolved known-magnitude effect,
+double-bounded expiry, and typed instrument-invalidation records. Overnight
+2026-07-24/25 measurement context: two version-2 joined primaries passed
+clearly while the timed noise floor of the box deteriorated 0.72% to 3.09%
+across the night and the final calibration honestly refused; version 3 is
+the structural response.
+
 The audit gate is Torch-free, checks exact slot × TP-rank/process coverage, and
 canonicalizes floating-point facts before durable receipt identity. Audit is
 authoritative only when the frozen plan registers the matching requirement.
