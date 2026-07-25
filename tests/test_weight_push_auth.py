@@ -13,7 +13,9 @@ from optima.chain.weight_push_auth import (
     WeightPushAuthError,
     load_push_credentials,
     mint_push_credential,
+    sign_push_acknowledgement,
     sign_push_request,
+    verify_push_acknowledgement,
     verify_push_request,
     write_push_credentials,
 )
@@ -69,6 +71,51 @@ def test_sign_verify_and_reject_retired_or_tampered() -> None:
             headers=bad,
             body=body,
             now=1_700_000_010,
+        )
+
+
+def test_push_acknowledgement_authenticates_exact_request_and_offer() -> None:
+    credential = mint_push_credential(credential_id="alpha")
+    offer_digest = hashlib.sha256(b"offer").hexdigest()
+    projection_digest = hashlib.sha256(b"projection").hexdigest()
+    acknowledgement = sign_push_acknowledgement(
+        credential,
+        offer_digest=offer_digest,
+        projection_digest=projection_digest,
+        request_timestamp=1_700_000_000,
+    )
+    verify_push_acknowledgement(
+        credential,
+        acknowledgement,
+        offer_digest=offer_digest,
+        projection_digest=projection_digest,
+        request_timestamp=1_700_000_000,
+    )
+
+    tampered = dict(acknowledgement)
+    tampered["projection_digest"] = hashlib.sha256(b"other").hexdigest()
+    with pytest.raises(
+        WeightPushAuthError,
+        match="authentication failed",
+    ):
+        verify_push_acknowledgement(
+            credential,
+            tampered,
+            offer_digest=offer_digest,
+            projection_digest=projection_digest,
+            request_timestamp=1_700_000_000,
+        )
+
+    with pytest.raises(
+        WeightPushAuthError,
+        match="authentication failed",
+    ):
+        verify_push_acknowledgement(
+            credential,
+            acknowledgement,
+            offer_digest=offer_digest,
+            projection_digest=projection_digest,
+            request_timestamp=1_700_000_001,
         )
 
 

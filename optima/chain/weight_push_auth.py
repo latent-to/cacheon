@@ -26,6 +26,8 @@ from optima.stack_identity import (
 
 CREDENTIALS_SCHEMA = "optima.weight-push-credentials.v1"
 PUSH_AUTH_DOMAIN = "optima.weight-share.push.v1"
+PUSH_ACK_SCHEMA = "optima.weight-share.push-ack.v1"
+PUSH_ACK_AUTH_DOMAIN = "optima.weight-share.push-ack-auth.v1"
 DEFAULT_MAX_SKEW_SECONDS = 60
 # File path to a PushCredentialSet JSON (serve + eval).
 ENV_PUSH_CREDENTIALS = "OPTIMA_WEIGHT_PUSH_CREDENTIALS"
@@ -341,12 +343,96 @@ def verify_push_request(
     return credential.credential_id
 
 
+def sign_push_acknowledgement(
+    credential: PushCredential,
+    *,
+    offer_digest: str,
+    projection_digest: str,
+    request_timestamp: int,
+) -> dict[str, object]:
+    """Authenticate the exact server acknowledgement to the eval client."""
+
+    if type(credential) is not PushCredential or credential.status != "active":
+        raise WeightPushAuthError(
+            "push acknowledgement signing requires an active credential"
+        )
+    if type(request_timestamp) is not int or request_timestamp <= 0:
+        raise WeightPushAuthError(
+            "push acknowledgement request timestamp is malformed"
+        )
+    unsigned: dict[str, object] = {
+        "credential_id": credential.credential_id,
+        "offer_digest": require_sha256_hex(
+            offer_digest,
+            field="offer_digest",
+        ),
+        "projection_digest": require_sha256_hex(
+            projection_digest,
+            field="projection_digest",
+        ),
+        "request_timestamp": request_timestamp,
+        "schema": PUSH_ACK_SCHEMA,
+        "status": "accepted",
+    }
+    digest = canonical_digest(PUSH_ACK_AUTH_DOMAIN, unsigned)
+    mac = hmac.new(
+        credential.secret.encode("utf-8"),
+        digest.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    return {**unsigned, "mac": mac}
+
+
+def verify_push_acknowledgement(
+    credential: PushCredential,
+    acknowledgement: object,
+    *,
+    offer_digest: str,
+    projection_digest: str,
+    request_timestamp: int,
+) -> None:
+    """Require a fresh, HMAC-authenticated acknowledgement of one push."""
+
+    if type(credential) is not PushCredential or credential.status != "active":
+        raise WeightPushAuthError(
+            "push acknowledgement verification requires an active credential"
+        )
+    expected = sign_push_acknowledgement(
+        credential,
+        offer_digest=offer_digest,
+        projection_digest=projection_digest,
+        request_timestamp=request_timestamp,
+    )
+    if type(acknowledgement) is not dict or set(acknowledgement) != set(expected):
+        raise WeightPushAuthError("push acknowledgement fields do not match")
+    mac = acknowledgement.get("mac")
+    if (
+        not isinstance(mac, str)
+        or len(mac) != 64
+        or any(char not in "0123456789abcdef" for char in mac)
+    ):
+        raise WeightPushAuthError(
+            "push acknowledgement authentication is malformed"
+        )
+    unsigned_matches = all(
+        acknowledgement.get(field) == value
+        for field, value in expected.items()
+        if field != "mac"
+    )
+    if not unsigned_matches or not hmac.compare_digest(mac, str(expected["mac"])):
+        raise WeightPushAuthError(
+            "push acknowledgement authentication failed"
+        )
+
+
 __all__ = [
     "CREDENTIALS_SCHEMA",
     "DEFAULT_ENV_CREDENTIAL_ID",
     "ENV_PUSH_CREDENTIAL_ID",
     "ENV_PUSH_CREDENTIALS",
     "ENV_PUSH_KEY",
+    "PUSH_ACK_AUTH_DOMAIN",
+    "PUSH_ACK_SCHEMA",
     "PushCredential",
     "PushCredentialSet",
     "WeightPushAuthError",
@@ -355,7 +441,9 @@ __all__ = [
     "push_auth_digest",
     "push_credentials_from_env_key",
     "resolve_push_credentials",
+    "sign_push_acknowledgement",
     "sign_push_request",
+    "verify_push_acknowledgement",
     "verify_push_request",
     "write_push_credentials",
 ]

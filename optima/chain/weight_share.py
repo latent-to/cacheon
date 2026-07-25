@@ -42,7 +42,9 @@ from optima.chain.weight_push_auth import (
     PushCredential,
     PushCredentialSet,
     WeightPushAuthError,
+    sign_push_acknowledgement,
     sign_push_request,
+    verify_push_acknowledgement,
     verify_push_request,
 )
 from optima.chain.weights import (
@@ -1239,9 +1241,13 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
             if len(body) != length:
                 raise WeightShareError("push body length mismatch")
             now = int(server.clock())
+            push_headers = {
+                str(key).lower(): str(value)
+                for key, value in self.headers.items()
+            }
             credential_id = verify_push_request(
                 server.push_credentials,
-                headers=dict(self.headers.items()),
+                headers=push_headers,
                 body=body,
                 now=now,
                 max_skew_seconds=server.max_skew_seconds,
@@ -1254,6 +1260,9 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                 raise WeightPushAuthError(
                     "verified push credential is no longer retained"
                 )
+            request_timestamp = int(
+                push_headers["x-optima-push-timestamp"]
+            )
             stored = authenticate_weight_offer(offer, credential)
             with server._offer_lock:
                 server.save_offer(stored)
@@ -1264,12 +1273,12 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                 credential_id,
             )
             response = canonical_json_bytes(
-                {
-                    "credential_id": credential_id,
-                    "offer_digest": offer.digest,
-                    "projection_digest": offer.projection.digest,
-                    "status": "accepted",
-                }
+                sign_push_acknowledgement(
+                    credential,
+                    offer_digest=offer.digest,
+                    projection_digest=offer.projection.digest,
+                    request_timestamp=request_timestamp,
+                )
             ) + b"\n"
         except WeightShareRetryableError as exc:
             self._error(503, str(exc))
@@ -1405,22 +1414,16 @@ def push_current_weights(
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WeightShareError(f"weight-share push response is not JSON: {exc}") from None
-    if type(payload) is not dict or set(payload) != {
-        "credential_id",
-        "offer_digest",
-        "projection_digest",
-        "status",
-    }:
-        raise WeightShareError("weight-share push response is malformed")
-    if (
-        payload["status"] != "accepted"
-        or payload["credential_id"] != credential.credential_id
-        or payload["offer_digest"] != offer.digest
-        or payload["projection_digest"] != offer.projection.digest
-    ):
-        raise WeightShareError(
-            "weight-share push acknowledgement differs from the submitted offer"
+    try:
+        verify_push_acknowledgement(
+            credential,
+            payload,
+            offer_digest=offer.digest,
+            projection_digest=offer.projection.digest,
+            request_timestamp=now,
         )
+    except WeightPushAuthError as exc:
+        raise WeightShareError(str(exc)) from None
     return payload
 
 

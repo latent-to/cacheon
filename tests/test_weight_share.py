@@ -44,7 +44,7 @@ from optima.chain.weight_share import (
 )
 from optima.chain.weights import WeightProjection, WeightPublicationRecord
 from optima.object_store import MemoryObjectStore
-from optima.stack_identity import canonical_digest, sha256_hex
+from optima.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
 
 
 def _d(label: str) -> str:
@@ -612,6 +612,11 @@ def test_push_endpoint_accepts_rotatable_credentials(
         )
         assert accepted["status"] == "accepted"
         assert accepted["offer_digest"] == debt_offer.digest
+        assert accepted["projection_digest"] == debt_offer.projection.digest
+        assert accepted["credential_id"] == credential.credential_id
+        assert accepted["request_timestamp"] == 1_700_000_100
+        assert accepted["schema"] == "optima.weight-share.push-ack.v1"
+        assert isinstance(accepted["mac"], str)
         stored = read_offer_storage(offer_path)
         assert isinstance(stored, AuthenticatedWeightOffer)
         assert (
@@ -735,7 +740,49 @@ def test_push_client_rejects_an_incomplete_acknowledgement() -> None:
         def __exit__(self, *_args):
             return False
 
-    with pytest.raises(WeightShareError, match="malformed"):
+    with pytest.raises(WeightShareError, match="fields do not match"):
+        push_current_weights(
+            "http://weights.example",
+            offer,
+            credential=credential,
+            clock=lambda: 1_700_000_100,
+            opener=lambda *_a, **_k: _Response(),
+        )
+
+
+def test_push_client_rejects_an_exact_acknowledgement_with_wrong_mac() -> None:
+    from optima.chain.weight_push_auth import (
+        PushCredential,
+        mint_push_credential,
+        sign_push_acknowledgement,
+    )
+
+    credential = mint_push_credential(credential_id="eval")
+    offer = CurrentWeightOffer.from_legacy_projection(_projection())
+    impostor = PushCredential(
+        credential.credential_id,
+        "impostor-secret-that-is-long-enough-" * 2,
+    )
+    forged = sign_push_acknowledgement(
+        impostor,
+        offer_digest=offer.digest,
+        projection_digest=offer.projection.digest,
+        request_timestamp=1_700_000_100,
+    )
+
+    class _Response:
+        status = 200
+
+        def read(self):
+            return canonical_json_bytes(forged) + b"\n"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    with pytest.raises(WeightShareError, match="authentication failed"):
         push_current_weights(
             "http://weights.example",
             offer,
