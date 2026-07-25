@@ -16,6 +16,8 @@ party sources were copied. Object-store I/O goes through :mod:`optima.object_sto
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -49,7 +51,11 @@ from optima.chain.weights import (
     WeightPublicationJournal,
     reconcile_weight_publication,
 )
-from optima.object_store import ObjectStore, ObjectStoreError
+from optima.object_store import (
+    ObjectStore,
+    ObjectStoreError,
+    ObjectStoreNotFoundError,
+)
 from optima.stack_identity import (
     canonical_digest,
     canonical_json_bytes,
@@ -62,12 +68,14 @@ logger = logging.getLogger("optima.chain.weight_share")
 
 OFFER_SCHEMA_V1 = "optima.current-weight-offer.v1"
 OFFER_SCHEMA = "optima.current-weight-offer.v2"
+STORED_OFFER_SCHEMA = "optima.authenticated-weight-offer.v1"
 LANE_LEGACY_V1 = "legacy_v1"
 LANE_COMPOSED = "incentive_composition"
 LANE_CORE = "finite_debt"
 OFFER_LANES = frozenset({LANE_LEGACY_V1, LANE_COMPOSED, LANE_CORE})
 REQUEST_DOMAIN = "optima.weight-share.request.v1"
 RESPONSE_DOMAIN = "optima.weight-share.response.v1"
+STORAGE_AUTH_DOMAIN = "optima.weight-share.storage.v1"
 CURRENT_WEIGHTS_PATH = "/v1/current-weights"
 DEFAULT_MAX_SKEW_SECONDS = 60
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30
@@ -76,8 +84,11 @@ OFFER_CONTENT_TYPE = "application/json; charset=utf-8"
 
 SignFn = Callable[[bytes], bytes]
 VerifyFn = Callable[[str, bytes, bytes], bool]
-OfferLoader = Callable[[], "CurrentWeightOffer"]
-OfferSink = Callable[["CurrentWeightOffer"], None]
+OfferLoader = Callable[[], "CurrentWeightOffer | AuthenticatedWeightOffer"]
+OfferSink = Callable[["CurrentWeightOffer | AuthenticatedWeightOffer"], None]
+
+_REMOTE_OFFER_LOCKS_GUARD = threading.Lock()
+_REMOTE_OFFER_LOCKS: dict[tuple[int, str], threading.Lock] = {}
 
 
 class WeightShareError(RuntimeError):
@@ -269,6 +280,215 @@ class CurrentWeightOffer:
         return cls.from_dict(value)
 
 
+def storage_auth_digest(*, credential_id: str, offer_digest: str) -> str:
+    if (
+        not isinstance(credential_id, str)
+        or not credential_id
+        or credential_id.strip() != credential_id
+    ):
+        raise WeightShareError("stored offer credential id is malformed")
+    return canonical_digest(
+        STORAGE_AUTH_DOMAIN,
+        {
+            "credential_id": credential_id,
+            "offer_digest": require_sha256_hex(
+                offer_digest, field="offer_digest"
+            ),
+        },
+    )
+
+
+def _storage_mac(credential: PushCredential, digest: str) -> str:
+    if type(credential) is not PushCredential:
+        raise WeightShareError("stored offer requires an exact push credential")
+    return hmac.new(
+        credential.secret.encode("utf-8"),
+        bytes.fromhex(require_sha256_hex(digest, field="storage_auth_digest")),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+@dataclass(frozen=True)
+class AuthenticatedWeightOffer:
+    """Offer bytes authenticated before entering mutable object storage."""
+
+    credential_id: str
+    offer: CurrentWeightOffer
+    mac: str
+
+    def __post_init__(self) -> None:
+        if type(self.offer) is not CurrentWeightOffer:
+            raise WeightShareError("authenticated weight offer is untyped")
+        storage_auth_digest(
+            credential_id=self.credential_id,
+            offer_digest=self.offer.digest,
+        )
+        require_sha256_hex(self.mac, field="storage_mac")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "credential_id": self.credential_id,
+            "mac": self.mac,
+            "offer": self.offer.to_dict(),
+            "offer_digest": self.offer.digest,
+            "schema": STORED_OFFER_SCHEMA,
+        }
+
+    def to_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict()) + b"\n"
+
+    @classmethod
+    def from_dict(cls, value: object) -> "AuthenticatedWeightOffer":
+        if type(value) is not dict or set(value) != {
+            "credential_id",
+            "mac",
+            "offer",
+            "offer_digest",
+            "schema",
+        }:
+            raise WeightShareError(
+                "authenticated weight offer fields do not match"
+            )
+        if value["schema"] != STORED_OFFER_SCHEMA:
+            raise WeightShareError(
+                "authenticated weight offer schema is unsupported"
+            )
+        offer = CurrentWeightOffer.from_dict(value["offer"])
+        offer_digest = require_sha256_hex(
+            value["offer_digest"], field="offer_digest"
+        )
+        if offer.digest != offer_digest:
+            raise WeightShareError(
+                "authenticated weight offer digest does not match"
+            )
+        return cls(
+            str(value["credential_id"]),
+            offer,
+            require_sha256_hex(value["mac"], field="storage_mac"),
+        )
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "AuthenticatedWeightOffer":
+        if not isinstance(raw, (bytes, bytearray)):
+            raise WeightShareError(
+                "authenticated weight offer bytes are malformed"
+            )
+        try:
+            value = json.loads(bytes(raw).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WeightShareError(
+                f"authenticated weight offer is not canonical JSON: {exc}"
+            ) from None
+        return cls.from_dict(value)
+
+
+def authenticate_weight_offer(
+    offer: CurrentWeightOffer,
+    credential: PushCredential,
+) -> AuthenticatedWeightOffer:
+    if type(offer) is not CurrentWeightOffer:
+        raise WeightShareError("weight offer authentication requires an exact offer")
+    digest = storage_auth_digest(
+        credential_id=credential.credential_id,
+        offer_digest=offer.digest,
+    )
+    return AuthenticatedWeightOffer(
+        credential.credential_id,
+        offer,
+        _storage_mac(credential, digest),
+    )
+
+
+def verify_authenticated_weight_offer(
+    stored: AuthenticatedWeightOffer,
+    credentials: PushCredentialSet,
+) -> CurrentWeightOffer:
+    if type(stored) is not AuthenticatedWeightOffer:
+        raise WeightShareError("stored weight offer is not authenticated")
+    if type(credentials) is not PushCredentialSet:
+        raise WeightShareError(
+            "authenticated weight offer requires push credentials"
+        )
+    credential = credentials.get(stored.credential_id)
+    if credential is None:
+        raise WeightShareError(
+            "stored weight offer names an unknown push credential"
+        )
+    digest = storage_auth_digest(
+        credential_id=stored.credential_id,
+        offer_digest=stored.offer.digest,
+    )
+    if not hmac.compare_digest(stored.mac, _storage_mac(credential, digest)):
+        raise WeightShareError("stored weight offer authentication failed")
+    return stored.offer
+
+
+def _parse_offer_storage(
+    raw: bytes,
+) -> CurrentWeightOffer | AuthenticatedWeightOffer:
+    if not isinstance(raw, (bytes, bytearray)):
+        raise WeightShareError("stored weight offer bytes are malformed")
+    try:
+        value = json.loads(bytes(raw).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WeightShareError(
+            f"stored weight offer is not canonical JSON: {exc}"
+        ) from None
+    if type(value) is not dict:
+        raise WeightShareError("stored weight offer fields do not match")
+    if value.get("schema") == STORED_OFFER_SCHEMA:
+        return AuthenticatedWeightOffer.from_dict(value)
+    return CurrentWeightOffer.from_dict(value)
+
+
+def _offer_from_storage(
+    stored: CurrentWeightOffer | AuthenticatedWeightOffer,
+) -> CurrentWeightOffer:
+    if type(stored) is CurrentWeightOffer:
+        return stored
+    if type(stored) is AuthenticatedWeightOffer:
+        return stored.offer
+    raise WeightShareError("stored weight offer is not exactly typed")
+
+
+def assert_monotonic_offer_update(
+    current: CurrentWeightOffer,
+    proposed: CurrentWeightOffer,
+) -> None:
+    """Reject rollback, same-block equivocation, and V2-to-V1 regression."""
+
+    if (
+        type(current) is not CurrentWeightOffer
+        or type(proposed) is not CurrentWeightOffer
+    ):
+        raise WeightShareError("weight offer update is not exactly typed")
+    if (
+        proposed.projection.chain_scope_digest
+        != current.projection.chain_scope_digest
+        or proposed.projection.netuid != current.projection.netuid
+    ):
+        raise WeightShareError("weight offer update changed chain scope")
+    if proposed.projection.effective_block < current.projection.effective_block:
+        raise WeightShareError("weight offer effective block regressed")
+    if (
+        proposed.projection.effective_block == current.projection.effective_block
+        and proposed.digest != current.digest
+    ):
+        raise WeightShareError("weight offer conflicts at the current effective block")
+    if current.lane != LANE_LEGACY_V1 and proposed.lane == LANE_LEGACY_V1:
+        raise WeightShareError("weight offer lane regressed to legacy V1")
+
+
+def _remote_offer_lock(store: ObjectStore, key: str) -> threading.Lock:
+    identity = (id(store), key)
+    with _REMOTE_OFFER_LOCKS_GUARD:
+        lock = _REMOTE_OFFER_LOCKS.get(identity)
+        if lock is None:
+            lock = threading.Lock()
+            _REMOTE_OFFER_LOCKS[identity] = lock
+        return lock
+
+
 def default_offer_path(intake_db: str | Path) -> Path:
     """Sibling file next to the intake DB (local durability on the eval host)."""
 
@@ -285,10 +505,32 @@ def write_current_weight_offer(
         offer = CurrentWeightOffer.from_legacy_projection(offer)
     if type(offer) is not CurrentWeightOffer:
         raise WeightShareError("weight offer requires an exact CurrentWeightOffer")
+    return _write_offer_storage(path, offer)
+
+
+def _write_offer_storage(
+    path: str | Path,
+    stored: CurrentWeightOffer | AuthenticatedWeightOffer,
+) -> Path:
+    if type(stored) not in {CurrentWeightOffer, AuthenticatedWeightOffer}:
+        raise WeightShareError("stored weight offer is not exactly typed")
     target = Path(path)
     if target.exists() and not target.is_file():
         raise WeightShareError("weight offer path is not a regular file")
-    payload = offer.to_bytes()
+    if target.exists():
+        current = _parse_offer_storage(target.read_bytes())
+        if (
+            type(current) is AuthenticatedWeightOffer
+            and type(stored) is CurrentWeightOffer
+        ):
+            raise WeightShareError(
+                "authenticated current offer cannot be overwritten unsigned"
+            )
+        assert_monotonic_offer_update(
+            _offer_from_storage(current),
+            _offer_from_storage(stored),
+        )
+    payload = stored.to_bytes()
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         prefix=target.name + ".",
@@ -313,6 +555,19 @@ def write_current_weight_offer(
     return target
 
 
+def write_authenticated_weight_offer(
+    path: str | Path,
+    stored: AuthenticatedWeightOffer,
+) -> Path:
+    """Atomically persist a gateway-authenticated offer envelope."""
+
+    if type(stored) is not AuthenticatedWeightOffer:
+        raise WeightShareError(
+            "authenticated weight offer requires an exact envelope"
+        )
+    return _write_offer_storage(path, stored)
+
+
 def read_current_weight_offer(path: str | Path) -> CurrentWeightOffer:
     """Reopen one persisted local current-weight offer."""
 
@@ -323,7 +578,27 @@ def read_current_weight_offer(path: str | Path) -> CurrentWeightOffer:
         raise WeightShareError("current weight offer is missing") from exc
     except OSError as exc:
         raise WeightShareError(f"current weight offer cannot be read: {exc}") from None
-    return CurrentWeightOffer.from_bytes(raw)
+    stored = _parse_offer_storage(raw)
+    if type(stored) is not CurrentWeightOffer:
+        raise WeightShareError(
+            "current weight offer is authenticated storage, not a raw offer"
+        )
+    return stored
+
+
+def read_offer_storage(
+    path: str | Path,
+) -> CurrentWeightOffer | AuthenticatedWeightOffer:
+    target = Path(path)
+    try:
+        raw = target.read_bytes()
+    except FileNotFoundError as exc:
+        raise WeightShareError("current weight offer is missing") from exc
+    except OSError as exc:
+        raise WeightShareError(
+            f"current weight offer cannot be read: {exc}"
+        ) from None
+    return _parse_offer_storage(raw)
 
 
 def put_current_weight_offer(
@@ -338,13 +613,64 @@ def put_current_weight_offer(
         offer = CurrentWeightOffer.from_legacy_projection(offer)
     if type(offer) is not CurrentWeightOffer:
         raise WeightShareError("weight offer requires an exact CurrentWeightOffer")
-    try:
-        store.put_bytes(key, offer.to_bytes(), content_type=OFFER_CONTENT_TYPE)
-    except ObjectStoreError as exc:
-        if getattr(exc, "retryable", False):
-            raise WeightShareRetryableError(str(exc)) from None
-        raise WeightShareError(str(exc)) from None
+    return _put_offer_storage(store, offer, key=key)
+
+
+def _put_offer_storage(
+    store: ObjectStore,
+    stored: CurrentWeightOffer | AuthenticatedWeightOffer,
+    *,
+    key: str,
+) -> str:
+    if type(stored) not in {CurrentWeightOffer, AuthenticatedWeightOffer}:
+        raise WeightShareError("stored weight offer is not exactly typed")
+    with _remote_offer_lock(store, key):
+        try:
+            raw = store.get_bytes(key)
+        except ObjectStoreNotFoundError:
+            current = None
+        except ObjectStoreError as exc:
+            if getattr(exc, "retryable", False):
+                raise WeightShareRetryableError(str(exc)) from None
+            raise WeightShareError(str(exc)) from None
+        else:
+            current = _parse_offer_storage(raw)
+        if current is not None:
+            if (
+                type(current) is AuthenticatedWeightOffer
+                and type(stored) is CurrentWeightOffer
+            ):
+                raise WeightShareError(
+                    "authenticated current offer cannot be overwritten unsigned"
+                )
+            assert_monotonic_offer_update(
+                _offer_from_storage(current),
+                _offer_from_storage(stored),
+            )
+        try:
+            store.put_bytes(
+                key,
+                stored.to_bytes(),
+                content_type=OFFER_CONTENT_TYPE,
+            )
+        except ObjectStoreError as exc:
+            if getattr(exc, "retryable", False):
+                raise WeightShareRetryableError(str(exc)) from None
+            raise WeightShareError(str(exc)) from None
     return key
+
+
+def put_authenticated_weight_offer(
+    store: ObjectStore,
+    stored: AuthenticatedWeightOffer,
+    *,
+    key: str = DEFAULT_REMOTE_OFFER_KEY,
+) -> str:
+    if type(stored) is not AuthenticatedWeightOffer:
+        raise WeightShareError(
+            "authenticated weight offer requires an exact envelope"
+        )
+    return _put_offer_storage(store, stored, key=key)
 
 
 def load_current_weight_offer_from_store(
@@ -360,7 +686,26 @@ def load_current_weight_offer_from_store(
         if getattr(exc, "retryable", False):
             raise WeightShareRetryableError(str(exc)) from None
         raise WeightShareError(str(exc)) from None
-    return CurrentWeightOffer.from_bytes(raw)
+    stored = _parse_offer_storage(raw)
+    if type(stored) is not CurrentWeightOffer:
+        raise WeightShareError(
+            "current weight offer is authenticated storage, not a raw offer"
+        )
+    return stored
+
+
+def load_offer_storage_from_store(
+    store: ObjectStore,
+    *,
+    key: str = DEFAULT_REMOTE_OFFER_KEY,
+) -> CurrentWeightOffer | AuthenticatedWeightOffer:
+    try:
+        raw = store.get_bytes(key)
+    except ObjectStoreError as exc:
+        if getattr(exc, "retryable", False):
+            raise WeightShareRetryableError(str(exc)) from None
+        raise WeightShareError(str(exc)) from None
+    return _parse_offer_storage(raw)
 
 
 def publish_current_weight_offer(
@@ -409,8 +754,8 @@ def publish_current_weight_offer(
 def local_offer_loader(path: str | Path) -> OfferLoader:
     target = Path(path)
 
-    def load() -> CurrentWeightOffer:
-        return read_current_weight_offer(target)
+    def load() -> CurrentWeightOffer | AuthenticatedWeightOffer:
+        return read_offer_storage(target)
 
     return load
 
@@ -420,8 +765,8 @@ def object_store_offer_loader(
     *,
     key: str = DEFAULT_REMOTE_OFFER_KEY,
 ) -> OfferLoader:
-    def load() -> CurrentWeightOffer:
-        return load_current_weight_offer_from_store(store, key=key)
+    def load() -> CurrentWeightOffer | AuthenticatedWeightOffer:
+        return load_offer_storage_from_store(store, key=key)
 
     return load
 
@@ -431,8 +776,13 @@ def object_store_offer_sink(
     *,
     key: str = DEFAULT_REMOTE_OFFER_KEY,
 ) -> OfferSink:
-    def save(offer: CurrentWeightOffer) -> None:
-        put_current_weight_offer(store, offer, key=key)
+    def save(
+        offer: CurrentWeightOffer | AuthenticatedWeightOffer,
+    ) -> None:
+        if type(offer) is AuthenticatedWeightOffer:
+            put_authenticated_weight_offer(store, offer, key=key)
+        else:
+            put_current_weight_offer(store, offer, key=key)
 
     return save
 
@@ -832,7 +1182,23 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
             metagraph = chain.fetch_metagraph(server.subtensor, server.netuid)
             assert_validator_permit(metagraph, hotkey)
             with server._offer_lock:
-                offer = server.load_offer()
+                stored = server.load_offer()
+            if server.push_credentials is not None:
+                if type(stored) is not AuthenticatedWeightOffer:
+                    raise WeightShareError(
+                        "push-enabled weight service requires authenticated storage"
+                    )
+                offer = verify_authenticated_weight_offer(
+                    stored,
+                    server.push_credentials,
+                )
+            else:
+                if type(stored) is not CurrentWeightOffer:
+                    raise WeightShareError(
+                        "authenticated storage cannot be verified without "
+                        "push credentials"
+                    )
+                offer = stored
             if offer.projection.netuid != server.netuid:
                 raise WeightShareError("stored offer netuid differs from server netuid")
             body, headers = build_signed_offer_response(
@@ -841,6 +1207,9 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                 netuid=server.netuid,
                 timestamp=now,
             )
+        except WeightShareRetryableError as exc:
+            self._error(503, str(exc))
+            return
         except WeightShareError as exc:
             self._error(403, str(exc))
             return
@@ -880,8 +1249,14 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
             offer = CurrentWeightOffer.from_bytes(body)
             if offer.projection.netuid != server.netuid:
                 raise WeightShareError("pushed offer netuid differs from server netuid")
+            credential = server.push_credentials.get(credential_id)
+            if credential is None:
+                raise WeightPushAuthError(
+                    "verified push credential is no longer retained"
+                )
+            stored = authenticate_weight_offer(offer, credential)
             with server._offer_lock:
-                server.save_offer(offer)
+                server.save_offer(stored)
             logger.info(
                 "accepted weight offer %s lane=%s via push credential %s",
                 offer.digest,
@@ -896,6 +1271,9 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                     "status": "accepted",
                 }
             ) + b"\n"
+        except WeightShareRetryableError as exc:
+            self._error(503, str(exc))
+            return
         except (WeightShareError, WeightPushAuthError) as exc:
             self._error(403, str(exc))
             return
@@ -945,8 +1323,13 @@ def serve_current_weights(
         if save_offer is None:
             path = Path(offer_path)
 
-            def _save(offer: CurrentWeightOffer) -> None:
-                write_current_weight_offer(path, offer)
+            def _save(
+                offer: CurrentWeightOffer | AuthenticatedWeightOffer,
+            ) -> None:
+                if type(offer) is AuthenticatedWeightOffer:
+                    write_authenticated_weight_offer(path, offer)
+                else:
+                    write_current_weight_offer(path, offer)
 
             save_offer = _save
     if push_credentials is not None and save_offer is None:
@@ -1022,8 +1405,22 @@ def push_current_weights(
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise WeightShareError(f"weight-share push response is not JSON: {exc}") from None
-    if type(payload) is not dict:
+    if type(payload) is not dict or set(payload) != {
+        "credential_id",
+        "offer_digest",
+        "projection_digest",
+        "status",
+    }:
         raise WeightShareError("weight-share push response is malformed")
+    if (
+        payload["status"] != "accepted"
+        or payload["credential_id"] != credential.credential_id
+        or payload["offer_digest"] != offer.digest
+        or payload["projection_digest"] != offer.projection.digest
+    ):
+        raise WeightShareError(
+            "weight-share push acknowledgement differs from the submitted offer"
+        )
     return payload
 
 
@@ -1055,6 +1452,8 @@ def publish_followed_weights(
         journal,
         refresh_blocks=refresh_blocks,
         dry_run=dry_run,
+        allow_stale_initial=True,
+        max_stale_initial_blocks=refresh_blocks,
         require_current_crown=require_crown,
     )
 
@@ -1141,6 +1540,7 @@ def fetch_current_weights(
 
 __all__ = [
     "CURRENT_WEIGHTS_PATH",
+    "AuthenticatedWeightOffer",
     "CurrentWeightOffer",
     "DEFAULT_MAX_SKEW_SECONDS",
     "DEFAULT_REMOTE_OFFER_KEY",
@@ -1149,13 +1549,16 @@ __all__ = [
     "LANE_LEGACY_V1",
     "WeightShareError",
     "WeightShareRetryableError",
+    "assert_monotonic_offer_update",
     "assert_fresh_timestamp",
     "assert_validator_permit",
+    "authenticate_weight_offer",
     "build_signed_offer_response",
     "default_offer_path",
     "default_verify_fn",
     "fetch_current_weights",
     "load_current_weight_offer_from_store",
+    "load_offer_storage_from_store",
     "local_offer_loader",
     "object_store_offer_loader",
     "object_store_offer_sink",
@@ -1163,7 +1566,9 @@ __all__ = [
     "publish_current_weight_offer",
     "publish_followed_weights",
     "push_current_weights",
+    "put_authenticated_weight_offer",
     "put_current_weight_offer",
+    "read_offer_storage",
     "read_current_weight_offer",
     "rebind_offer_signer",
     "rebind_projection_signer",
@@ -1172,5 +1577,7 @@ __all__ = [
     "serve_current_weights",
     "sign_auth_digest",
     "verify_auth_digest",
+    "verify_authenticated_weight_offer",
+    "write_authenticated_weight_offer",
     "write_current_weight_offer",
 ]

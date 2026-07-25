@@ -6,6 +6,7 @@ import pytest
 
 from optima import chain as chain_module
 from optima.chain.weights import (
+    StaleWeightProjectionError,
     WeightProjection,
     WeightPublicationError,
     WeightPublicationRecord,
@@ -368,6 +369,7 @@ def test_explicit_stale_initial_catch_up_requires_stable_recipient_uids():
         journal,
         refresh_blocks=20,
         allow_stale_initial=True,
+        max_stale_initial_blocks=20,
     )
 
     assert result.status == "confirmed"
@@ -385,8 +387,32 @@ def test_explicit_stale_initial_catch_up_requires_stable_recipient_uids():
             journal,
             refresh_blocks=20,
             allow_stale_initial=True,
+            max_stale_initial_blocks=20,
         )
     assert journal.history == [] and reassigned.submit_calls == 0
+
+
+def test_stale_initial_catch_up_is_bounded_and_retryable():
+    projection = _projection(block=100)
+    stale = Chain(block=121)
+    journal = Journal()
+
+    with pytest.raises(
+        StaleWeightProjectionError, match="freshness window"
+    ) as raised:
+        reconcile_weight_publication(
+            stale,
+            _wallet(),
+            projection,
+            journal,
+            refresh_blocks=20,
+            allow_stale_initial=True,
+            max_stale_initial_blocks=20,
+        )
+
+    assert raised.value.retryable is True
+    assert journal.history == []
+    assert stale.submit_calls == 0
 
 
 def test_explicit_v2_mode_can_publish_reserve_only_projection():

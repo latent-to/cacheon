@@ -12,29 +12,38 @@ import pytest
 
 from optima import chain
 from optima.chain.weight_share import (
+    AuthenticatedWeightOffer,
     CURRENT_WEIGHTS_PATH,
     LANE_CORE,
     LANE_LEGACY_V1,
     OFFER_SCHEMA,
     CurrentWeightOffer,
     WeightShareError,
+    WeightShareRetryableError,
+    authenticate_weight_offer,
     assert_fresh_timestamp,
     assert_validator_permit,
     build_signed_offer_response,
     default_offer_path,
     fetch_current_weights,
+    load_offer_storage_from_store,
+    object_store_offer_loader,
+    object_store_offer_sink,
     parse_signed_offer_response,
     publish_followed_weights,
     push_current_weights,
+    read_offer_storage,
     read_current_weight_offer,
     rebind_offer_signer,
     rebind_projection_signer,
     request_auth_digest,
     serve_current_weights,
     sign_auth_digest,
+    verify_authenticated_weight_offer,
     write_current_weight_offer,
 )
-from optima.chain.weights import WeightProjection
+from optima.chain.weights import WeightProjection, WeightPublicationRecord
+from optima.object_store import MemoryObjectStore
 from optima.stack_identity import canonical_digest, sha256_hex
 
 
@@ -42,7 +51,12 @@ def _d(label: str) -> str:
     return sha256_hex(label.encode())
 
 
-def _projection(*, hotkey: str = "authority", block: int = 10) -> WeightProjection:
+def _projection(
+    *,
+    hotkey: str = "authority",
+    block: int = 10,
+    recipient: str = "miner",
+) -> WeightProjection:
     scope = _d("scope")
     metagraph_digest = canonical_digest(
         "optima.economics.metagraph-membership",
@@ -53,7 +67,7 @@ def _projection(*, hotkey: str = "authority", block: int = 10) -> WeightProjecti
             "members": [
                 {"hotkey": "authority", "uid": 0},
                 {"hotkey": "follower", "uid": 1},
-                {"hotkey": "miner", "uid": 2},
+                {"hotkey": recipient, "uid": 2},
             ],
         },
     )
@@ -70,7 +84,7 @@ def _projection(*, hotkey: str = "authority", block: int = 10) -> WeightProjecti
         block,
         1,
         (_d("evidence"),),
-        (("miner", 1_000_000),),
+        ((recipient, 1_000_000),),
     )
 
 
@@ -121,7 +135,11 @@ def test_offer_roundtrip_and_default_path(tmp_path: Path) -> None:
     assert raw["lane"] == LANE_LEGACY_V1
 
 
-def _debt_binding(*, hotkey: str = "authority"):
+def _debt_binding(
+    *,
+    hotkey: str = "authority",
+    scope_digest: str | None = None,
+):
     from types import SimpleNamespace
 
     from optima.chain.debt_publication import (
@@ -153,7 +171,7 @@ def _debt_binding(*, hotkey: str = "authority"):
         economic,
         publication_kind=PUBLICATION_KIND_CORE,
         activation_digest=_d("activation"),
-        chain_scope_digest=_d("scope"),
+        chain_scope_digest=scope_digest or _d("scope"),
         netuid=307,
         validator_hotkey=hotkey,
         boundary_metagraph=metagraph,
@@ -178,6 +196,61 @@ def test_debt_offer_roundtrip_and_rebind(tmp_path: Path) -> None:
     assert rebound.debt_binding.economic_projection == binding.economic_projection
     assert rebound.projection.weights_ppm == offer.projection.weights_ppm
     assert rebound.digest != offer.digest
+
+
+def test_fresh_signer_only_journal_accepts_a_debt_offer(
+    tmp_path: Path,
+) -> None:
+    from optima.chain.intake import (
+        FinalizedIntakeStore,
+        IntakeScope,
+        SQLiteFollowerWeightPublicationJournal,
+    )
+
+    scope = IntakeScope("0x" + "0" * 64, 307)
+    rebound = rebind_offer_signer(
+        CurrentWeightOffer.from_debt_binding(
+            _debt_binding(scope_digest=scope.digest)
+        ),
+        "follower",
+    )
+    path = tmp_path / "private" / "follower.sqlite3"
+    intent = WeightPublicationRecord(
+        rebound.projection.digest,
+        "intent",
+        submit_block=111,
+        retry_after_block=121,
+        reason="before_sdk_submission",
+    )
+    with FinalizedIntakeStore(path, scope=scope) as store:
+        journal = SQLiteFollowerWeightPublicationJournal(store, rebound)
+        assert journal.load() is None
+        journal.compare_and_swap(None, intent)
+        assert journal.load() == intent
+        assert (
+            journal.retained_projection(rebound.projection.digest)
+            == rebound.projection
+        )
+
+    pending = WeightPublicationRecord(
+        rebound.projection.digest,
+        "pending",
+        prior_record_digest=intent.digest,
+        submit_block=111,
+        retry_after_block=121,
+        reason="sdk_result_unconfirmed",
+    )
+    with FinalizedIntakeStore(path, scope=scope) as store:
+        journal = SQLiteFollowerWeightPublicationJournal(store, rebound)
+        assert journal.load() == intent
+        journal.compare_and_swap(intent.digest, pending)
+        assert journal.load() == pending
+        assert (
+            store._db.execute(
+                "SELECT COUNT(*) AS n FROM followed_weight_publications"
+            ).fetchone()["n"]
+            == 2
+        )
 
 
 def test_rebind_keeps_weights_changes_signer() -> None:
@@ -289,6 +362,49 @@ def test_http_endpoint_requires_permit_and_fresh_signature(
         thread.join(timeout=5)
 
 
+def test_http_endpoint_preserves_retryable_store_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = {"authority": b"auth", "follower": b"follow"}
+    verify = _verify_factory(secrets)
+    authority = _FakeHotkey("authority", secrets["authority"])
+    follower = _FakeHotkey("follower", secrets["follower"])
+
+    def load():
+        raise WeightShareRetryableError("temporary object-store outage")
+
+    monkeypatch.setattr(chain, "fetch_metagraph", lambda *_a, **_k: _view())
+    server = serve_current_weights(
+        host="127.0.0.1",
+        port=0,
+        load_offer=load,
+        authority=authority,
+        subtensor=object(),
+        netuid=307,
+        verify=verify,
+        clock=lambda: 1_700_000_100,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(
+            WeightShareRetryableError, match="503"
+        ) as raised:
+            fetch_current_weights(
+                f"http://127.0.0.1:{server.server_address[1]}",
+                signer=follower,
+                netuid=307,
+                verify=verify,
+                clock=lambda: 1_700_000_100,
+                metagraph=_view(),
+            )
+        assert raised.value.retryable is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_fetch_binds_request_signature_over_timestamp() -> None:
     secrets = {"follower": b"follow"}
     follower = _FakeHotkey("follower", secrets["follower"])
@@ -375,12 +491,15 @@ def test_publish_followed_weights_uses_reconciler(
         dry_run=False,
         reconcile_only=False,
         allow_stale_initial=False,
+        max_stale_initial_blocks=None,
         require_current_crown=True,
     ):
         seen["projection"] = projection
         seen["wallet"] = signer_wallet
         seen["refresh_blocks"] = refresh_blocks
         seen["dry_run"] = dry_run
+        seen["allow_stale_initial"] = allow_stale_initial
+        seen["max_stale_initial_blocks"] = max_stale_initial_blocks
         seen["require_current_crown"] = require_current_crown
         assert journal_arg is journal
         return SimpleNamespace(
@@ -408,6 +527,8 @@ def test_publish_followed_weights_uses_reconciler(
     assert seen["projection"].weights_ppm == offer.projection.weights_ppm
     assert seen["wallet"] is None
     assert seen["dry_run"] is True
+    assert seen["allow_stale_initial"] is True
+    assert seen["max_stale_initial_blocks"] == 100
     assert seen["require_current_crown"] is True
 
 
@@ -491,6 +612,16 @@ def test_push_endpoint_accepts_rotatable_credentials(
         )
         assert accepted["status"] == "accepted"
         assert accepted["offer_digest"] == debt_offer.digest
+        stored = read_offer_storage(offer_path)
+        assert isinstance(stored, AuthenticatedWeightOffer)
+        assert (
+            verify_authenticated_weight_offer(
+                stored, PushCredentialSet((credential,))
+            )
+            == debt_offer
+        )
+        with pytest.raises(WeightShareError, match="authenticated storage"):
+            read_current_weight_offer(offer_path)
         fetched = fetch_current_weights(
             base,
             signer=follower,
@@ -511,7 +642,107 @@ def test_push_endpoint_accepts_rotatable_credentials(
             )
     finally:
         server.shutdown()
+        server.server_close()
         thread.join(timeout=5)
+
+
+def test_push_enabled_gateway_refuses_forged_object_store_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from optima.chain.weight_push_auth import (
+        PushCredential,
+        PushCredentialSet,
+        mint_push_credential,
+    )
+
+    secrets = {"authority": b"auth", "follower": b"follow"}
+    verify = _verify_factory(secrets)
+    authority = _FakeHotkey("authority", secrets["authority"])
+    follower = _FakeHotkey("follower", secrets["follower"])
+    credential = mint_push_credential(credential_id="eval")
+    credentials = PushCredentialSet((credential,))
+    store = MemoryObjectStore()
+
+    monkeypatch.setattr(chain, "fetch_metagraph", lambda *_a, **_k: _view())
+    server = serve_current_weights(
+        host="127.0.0.1",
+        port=0,
+        load_offer=object_store_offer_loader(store),
+        save_offer=object_store_offer_sink(store),
+        push_credentials=credentials,
+        authority=authority,
+        subtensor=object(),
+        netuid=307,
+        verify=verify,
+        clock=lambda: 1_700_000_100,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        legitimate = CurrentWeightOffer.from_legacy_projection(_projection())
+        push_current_weights(
+            base,
+            legitimate,
+            credential=credential,
+            clock=lambda: 1_700_000_100,
+        )
+        stored = load_offer_storage_from_store(store)
+        assert isinstance(stored, AuthenticatedWeightOffer)
+        assert verify_authenticated_weight_offer(stored, credentials) == legitimate
+
+        forged = CurrentWeightOffer.from_legacy_projection(
+            _projection(recipient="attacker")
+        )
+        wrong_secret = PushCredential(
+            credential.credential_id,
+            "attacker-secret-" * 4,
+        )
+        store.put_bytes(
+            "current_weights.json",
+            authenticate_weight_offer(forged, wrong_secret).to_bytes(),
+        )
+        with pytest.raises(WeightShareError, match="rejected"):
+            fetch_current_weights(
+                base,
+                signer=follower,
+                netuid=307,
+                verify=verify,
+                clock=lambda: 1_700_000_100,
+                metagraph=_view(),
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_push_client_rejects_an_incomplete_acknowledgement() -> None:
+    from optima.chain.weight_push_auth import mint_push_credential
+
+    credential = mint_push_credential(credential_id="eval")
+    offer = CurrentWeightOffer.from_legacy_projection(_projection())
+
+    class _Response:
+        status = 200
+
+        def read(self):
+            return b'{"credential_id":"eval","status":"accepted"}\n'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    with pytest.raises(WeightShareError, match="malformed"):
+        push_current_weights(
+            "http://weights.example",
+            offer,
+            credential=credential,
+            clock=lambda: 1_700_000_100,
+            opener=lambda *_a, **_k: _Response(),
+        )
 
 
 def test_push_weight_offer_cli_never_calls_set_weights(
@@ -610,7 +841,22 @@ def test_push_weight_offer_cli_never_calls_set_weights(
     assert pushed["credential"] == "eval"
 
 
-def test_set_weights_persists_offer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("dry_run", "status", "return_code", "published"),
+    [
+        (True, "dry_run", 0, False),
+        (False, "held", 2, False),
+        (False, "confirmed", 0, True),
+    ],
+)
+def test_set_weights_publishes_only_after_accepted_reconcile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+    status: str,
+    return_code: int,
+    published: bool,
+) -> None:
     import optima.cli as cli
     from optima.chain.intake import FinalizedIntakeStore, IntakeScope
 
@@ -650,7 +896,7 @@ def test_set_weights_persists_offer(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     def fake_reconcile(*_a, **_k):
         return SimpleNamespace(
-            status="dry_run",
+            status=status,
             chain_matches=False,
             submitted=False,
             refresh_due=False,
@@ -681,7 +927,7 @@ def test_set_weights_persists_offer(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     args = SimpleNamespace(
         reconcile_only=False,
-        dry_run=True,
+        dry_run=dry_run,
         release_hold="",
         burn_hotkey="miner",
         validator_hotkey="",
@@ -697,6 +943,8 @@ def test_set_weights_persists_offer(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         weight_offer_path=str(offer_path),
         watch=False,
     )
-    assert cli.cmd_set_weights(args) == 0
-    stored = read_current_weight_offer(offer_path)
-    assert stored.projection.digest == projection.digest
+    assert cli.cmd_set_weights(args) == return_code
+    assert offer_path.exists() is published
+    if published:
+        stored = read_current_weight_offer(offer_path)
+        assert stored.projection.digest == projection.digest

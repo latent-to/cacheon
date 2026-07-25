@@ -131,7 +131,6 @@ def _args(path, **updates) -> argparse.Namespace:
         "object_store_secret_key": "",
         "object_store_addressing": "",
         "object_store_root": "",
-        "object_store_sync": False,
     }
     values.update(updates)
     return argparse.Namespace(**values)

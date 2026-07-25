@@ -327,27 +327,6 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         if not args.dry_run and not args.reconcile_only:
             projection = resume_weight_projection(projection, journal)
             journal = SQLiteWeightPublicationJournal(store, projection)
-        from optima.chain.weight_share import (
-            default_offer_path,
-            publish_current_weight_offer,
-        )
-
-        offer_path = (
-            args.weight_offer_path
-            if getattr(args, "weight_offer_path", "")
-            else default_offer_path(args.intake_db)
-        )
-        remote_store, remote_key = _object_store_from_args(args)
-        from optima.chain.weight_share import CurrentWeightOffer
-
-        offer = CurrentWeightOffer.from_legacy_projection(projection)
-        publish_current_weight_offer(
-            offer,
-            local_path=offer_path,
-            remote_store=remote_store,
-            remote_key=remote_key or "current_weights.json",
-            async_remote=not bool(getattr(args, "object_store_sync", False)),
-        )
         result = reconcile_weight_publication(
             subtensor,
             None if args.dry_run else wallet,
@@ -363,6 +342,34 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
             # that exists for the pre-crown world.
             require_current_crown=not bool(args.burn_hotkey),
         )
+        if (
+            not args.dry_run
+            and not args.reconcile_only
+            and result.status in {"pending", "confirmed"}
+        ):
+            from optima.chain.weight_share import (
+                CurrentWeightOffer,
+                default_offer_path,
+                publish_current_weight_offer,
+            )
+
+            offer_path = (
+                args.weight_offer_path
+                if getattr(args, "weight_offer_path", "")
+                else default_offer_path(args.intake_db)
+            )
+            remote_store, remote_key = _object_store_from_args(args)
+            publish_current_weight_offer(
+                CurrentWeightOffer.from_legacy_projection(projection),
+                local_path=offer_path,
+                remote_store=remote_store,
+                remote_key=remote_key or "current_weights.json",
+                # Keep the remote current pointer inside this store's exclusive
+                # controller lifetime.  An async writer could outlive the
+                # SQLite lock and overwrite a newer publication from the next
+                # controller process.
+                async_remote=False,
+            )
     print(
         f"weight projection={projection.digest} status={result.status} "
         f"chain_matches={result.chain_matches} submitted={result.submitted} "
@@ -380,7 +387,10 @@ def _object_store_from_args(args: argparse.Namespace):
 
     from optima.object_store import ObjectStoreConfig, open_configured_object_store
 
-    provider = (getattr(args, "object_store_provider", "") or "").strip().lower()
+    provider = (
+        getattr(args, "object_store_provider", "")
+        or os.environ.get("OPTIMA_OBJECT_STORE_PROVIDER", "")
+    ).strip().lower()
     if not provider or provider == "none":
         return None, ""
     bucket = (
@@ -405,26 +415,26 @@ def _object_store_from_args(args: argparse.Namespace):
         value = getattr(args, name, "") or os.environ.get(env_name, "")
         return value or None
 
-    cfg = ObjectStoreConfig.from_env(
-        defaults=ObjectStoreConfig(
-            provider=provider,
-            bucket=bucket,
-            key_prefix=getattr(args, "object_store_prefix", "")
-            or os.environ.get("OPTIMA_OBJECT_STORE_KEY_PREFIX", "")
-            or "",
-            endpoint_url=_opt("object_store_endpoint", "OPTIMA_OBJECT_STORE_ENDPOINT_URL"),
-            region_name=_opt("object_store_region", "OPTIMA_OBJECT_STORE_REGION"),
-            access_key_id=_opt(
-                "object_store_access_key", "OPTIMA_OBJECT_STORE_ACCESS_KEY_ID"
-            ),
-            secret_access_key=_opt(
-                "object_store_secret_key", "OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY"
-            ),
-            addressing_style=_opt(
-                "object_store_addressing", "OPTIMA_OBJECT_STORE_ADDRESSING_STYLE"
-            ),
-            root_dir=root or None,
-        )
+    cfg = ObjectStoreConfig(
+        provider=provider,
+        bucket=bucket,
+        key_prefix=getattr(args, "object_store_prefix", "")
+        or os.environ.get("OPTIMA_OBJECT_STORE_KEY_PREFIX", "")
+        or "",
+        endpoint_url=_opt(
+            "object_store_endpoint", "OPTIMA_OBJECT_STORE_ENDPOINT_URL"
+        ),
+        region_name=_opt("object_store_region", "OPTIMA_OBJECT_STORE_REGION"),
+        access_key_id=_opt(
+            "object_store_access_key", "OPTIMA_OBJECT_STORE_ACCESS_KEY_ID"
+        ),
+        secret_access_key=_opt(
+            "object_store_secret_key", "OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY"
+        ),
+        addressing_style=_opt(
+            "object_store_addressing", "OPTIMA_OBJECT_STORE_ADDRESSING_STYLE"
+        ),
+        root_dir=root or None,
     )
     key = (
         getattr(args, "object_store_key", "")
@@ -434,7 +444,7 @@ def _object_store_from_args(args: argparse.Namespace):
     return open_configured_object_store(cfg), key
 
 
-def _add_object_store_args(parser: argparse.ArgumentParser, *, for_publish: bool) -> None:
+def _add_object_store_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--object-store-provider",
         default="",
@@ -481,17 +491,6 @@ def _add_object_store_args(parser: argparse.ArgumentParser, *, for_publish: bool
         default="",
         help="filesystem root for provider=local",
     )
-    if for_publish:
-        parser.add_argument(
-            "--object-store-sync",
-            action="store_true",
-            help=(
-                "wait for the object-store upload inline (default: async publish so "
-                "eval/signer never blocks on remote latency)"
-            ),
-        )
-
-
 def cmd_serve_weights(args: argparse.Namespace) -> int:
     """Serve the current weight offer from object storage to permitted validators.
 
@@ -512,6 +511,8 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
         object_store_offer_loader,
         object_store_offer_sink,
         serve_current_weights,
+        AuthenticatedWeightOffer,
+        write_authenticated_weight_offer,
         write_current_weight_offer,
     )
 
@@ -537,7 +538,10 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
         load_offer = local_offer_loader(offer_path)
 
         def save_offer(offer):
-            write_current_weight_offer(offer_path, offer)
+            if type(offer) is AuthenticatedWeightOffer:
+                write_authenticated_weight_offer(offer_path, offer)
+            else:
+                write_current_weight_offer(offer_path, offer)
 
         source = str(offer_path)
     wallet = bt.Wallet(name=args.wallet, hotkey=args.hotkey)
@@ -580,11 +584,10 @@ def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
     from optima.chain.intake import (
         FinalizedIntakeStore,
         IntakeScope,
-        SQLiteWeightPublicationJournal,
+        SQLiteFollowerWeightPublicationJournal,
     )
     from optima.chain.weight_share import (
         DEFAULT_MAX_SKEW_SECONDS,
-        LANE_LEGACY_V1,
         WeightShareError,
         fetch_current_weights,
         publish_followed_weights,
@@ -614,12 +617,7 @@ def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
         raise WeightShareError("fetched projection netuid mismatch")
     rebound = rebind_offer_signer(offer, wallet.hotkey.ss58_address)
     with FinalizedIntakeStore(args.journal_db, scope=scope) as store:
-        if rebound.lane == LANE_LEGACY_V1:
-            journal = SQLiteWeightPublicationJournal(store, rebound.projection)
-        else:
-            if rebound.debt_binding is None:
-                raise WeightShareError("debt-lane offer is missing its binding")
-            journal = store.debt_weight_publication_journal(rebound.debt_binding)
+        journal = SQLiteFollowerWeightPublicationJournal(store, rebound)
         result = publish_followed_weights(
             subtensor=subtensor,
             signer_wallet=wallet,
@@ -632,7 +630,6 @@ def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
         if (
             not args.dry_run
             and result.status == "confirmed"
-            and rebound.lane != LANE_LEGACY_V1
             and rebound.debt_binding is not None
             and result.record is not None
         ):
@@ -1862,7 +1859,7 @@ def build_parser() -> argparse.ArgumentParser:
             "configured object store for the separate serve-weights process"
         ),
     )
-    _add_object_store_args(sp, for_publish=True)
+    _add_object_store_args(sp)
     sp.add_argument("--dry-run", action="store_true",
                     help="build + print the (uids, weights) payload, do NOT submit")
     sp.set_defaults(func=cmd_set_weights)
@@ -1885,7 +1882,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="local-file fallback when --object-store-provider is unset",
     )
-    _add_object_store_args(sp, for_publish=False)
+    _add_object_store_args(sp)
     sp.add_argument("--netuid", type=int, required=True)
     sp.add_argument(
         "--network",

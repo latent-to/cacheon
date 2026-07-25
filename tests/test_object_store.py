@@ -5,10 +5,13 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import optima.cli as cli
 from optima.chain.weight_share import (
+    CurrentWeightOffer,
     load_current_weight_offer_from_store,
     object_store_offer_loader,
     publish_current_weight_offer,
@@ -20,6 +23,7 @@ from optima.object_store import (
     MemoryObjectStore,
     ObjectStoreConfig,
     ObjectStoreError,
+    ObjectStoreNotFoundError,
     open_configured_object_store,
     open_object_store,
     prefixed_store,
@@ -31,13 +35,17 @@ def _d(label: str) -> str:
     return sha256_hex(label.encode())
 
 
-def _projection(*, hotkey: str = "authority") -> WeightProjection:
+def _projection(
+    *,
+    hotkey: str = "authority",
+    block: int = 10,
+) -> WeightProjection:
     scope = _d("scope")
     metagraph_digest = canonical_digest(
         "optima.economics.metagraph-membership",
         {
-            "block": 10,
-            "block_hash": "0x" + f"{10:064x}",
+            "block": block,
+            "block_hash": "0x" + f"{block:064x}",
             "chain_scope_digest": scope,
             "members": [
                 {"hotkey": "authority", "uid": 0},
@@ -55,7 +63,7 @@ def _projection(*, hotkey: str = "authority") -> WeightProjection:
         metagraph_digest,
         (_d("arena"),),
         1,
-        10,
+        block,
         1,
         (_d("evidence"),),
         (("miner", 1_000_000),),
@@ -125,7 +133,7 @@ def test_publish_async_remote_does_not_block_local(tmp_path: Path) -> None:
             MemoryObjectStore().put_bytes(key, data, content_type=content_type)
 
         def get_bytes(self, key):
-            raise AssertionError("unused")
+            raise ObjectStoreNotFoundError(f"missing: {key}")
 
     publish_current_weight_offer(
         projection,
@@ -138,6 +146,67 @@ def test_publish_async_remote_does_not_block_local(tmp_path: Path) -> None:
     assert started.wait(timeout=2)
     released.set()
     time.sleep(0.05)
+
+
+def test_async_remote_publish_cannot_regress_current_offer(
+    tmp_path: Path,
+) -> None:
+    first_started = threading.Event()
+    release_first = threading.Event()
+    first_done = threading.Event()
+    second_done = threading.Event()
+
+    class _Store:
+        value = b""
+
+        def get_bytes(self, key):
+            if not self.value:
+                raise ObjectStoreNotFoundError(f"missing: {key}")
+            return self.value
+
+        def put_bytes(
+            self,
+            _key,
+            data,
+            *,
+            content_type="application/octet-stream",
+        ):
+            del content_type
+            block = CurrentWeightOffer.from_bytes(
+                data
+            ).projection.effective_block
+            if block == 10:
+                first_started.set()
+                assert release_first.wait(timeout=3)
+            self.value = bytes(data)
+            (first_done if block == 10 else second_done).set()
+
+    store = _Store()
+    publish_current_weight_offer(
+        CurrentWeightOffer.from_legacy_projection(_projection()),
+        local_path=tmp_path / "offer-10.json",
+        remote_store=store,
+        async_remote=True,
+    )
+    assert first_started.wait(timeout=3)
+    publish_current_weight_offer(
+        CurrentWeightOffer.from_legacy_projection(
+            _projection(block=11)
+        ),
+        local_path=tmp_path / "offer-11.json",
+        remote_store=store,
+        async_remote=True,
+    )
+    assert not second_done.wait(timeout=0.1)
+    release_first.set()
+    assert first_done.wait(timeout=3)
+    assert second_done.wait(timeout=3)
+    assert (
+        CurrentWeightOffer.from_bytes(
+            store.value
+        ).projection.effective_block
+        == 11
+    )
 
 
 def test_object_store_offer_loader(tmp_path: Path) -> None:
@@ -175,6 +244,31 @@ def test_hippius_to_s3_swap_is_config_only() -> None:
         provider="hippius", bucket="optima-weights", key_prefix="prod/sn307"
     )
     assert prefixed.resolve_key("current_weights.json") == "prod/sn307/current_weights.json"
+
+
+def test_environment_only_object_store_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_root = tmp_path / "env-store"
+    monkeypatch.setenv("OPTIMA_OBJECT_STORE_PROVIDER", "local")
+    monkeypatch.setenv("OPTIMA_OBJECT_STORE_ROOT_DIR", str(env_root))
+    store, key = cli._object_store_from_args(
+        SimpleNamespace(object_store_provider="")
+    )
+    assert isinstance(store, LocalDirectoryObjectStore)
+    assert store.root_dir == env_root
+    assert key == "current_weights.json"
+
+    explicit_root = tmp_path / "explicit-store"
+    store, _key = cli._object_store_from_args(
+        SimpleNamespace(
+            object_store_provider="local",
+            object_store_root=str(explicit_root),
+        )
+    )
+    assert isinstance(store, LocalDirectoryObjectStore)
+    assert store.root_dir == explicit_root
 
 
 def test_open_s3_requires_boto3_message() -> None:

@@ -31,6 +31,10 @@ class ObjectStoreRetryableError(ObjectStoreError):
     retryable = True
 
 
+class ObjectStoreNotFoundError(ObjectStoreError):
+    """The requested object does not exist."""
+
+
 class ObjectStore(Protocol):
     """Minimal byte-object API shared by every provider backend."""
 
@@ -206,7 +210,7 @@ class MemoryObjectStore:
         with self._lock:
             row = self._objects.get(key)
         if row is None:
-            raise ObjectStoreError(f"object-store key is missing: {key}")
+            raise ObjectStoreNotFoundError(f"object-store key is missing: {key}")
         return row[0]
 
 
@@ -251,7 +255,9 @@ class LocalDirectoryObjectStore:
         try:
             return path.read_bytes()
         except FileNotFoundError as exc:
-            raise ObjectStoreError(f"object-store key is missing: {key}") from exc
+            raise ObjectStoreNotFoundError(
+                f"object-store key is missing: {key}"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -295,7 +301,9 @@ class S3CompatibleObjectStore:
             name = type(exc).__name__
             code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
             if code in {"NoSuchKey", "404", "NotFound"} or name == "NoSuchKey":
-                raise ObjectStoreError(f"object-store key is missing: {key}") from None
+                raise ObjectStoreNotFoundError(
+                    f"object-store key is missing: {key}"
+                ) from None
             if name in {"EndpointConnectionError", "ConnectTimeoutError", "ReadTimeoutError"}:
                 raise ObjectStoreRetryableError(
                     f"s3-compatible get failed transiently: {exc}"
@@ -412,6 +420,7 @@ __all__ = [
     "ObjectStore",
     "ObjectStoreConfig",
     "ObjectStoreError",
+    "ObjectStoreNotFoundError",
     "ObjectStoreRetryableError",
     "S3CompatibleObjectStore",
     "open_configured_object_store",
