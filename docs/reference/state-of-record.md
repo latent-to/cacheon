@@ -135,10 +135,14 @@ Policy version 3 is implemented and tested but not yet activated in a
 production program (pending design review): the scored rate becomes the
 median over per-batch timed windows retained in the witness rows, each read
 carries a sealed window-scatter bound that refuses grading of an unfit
-measurement everywhere (live and on reopen), and version-3 timed reads
+measurement everywhere (live and on reopen), version-3 timed reads
 request no log-probability collection so evaluation work never shares the
 clock with a speed measurement (`top_logprobs_num` 0 is now expressible
-through the session protocol, worker, and binary evidence codec). The
+through the session protocol, worker, and binary evidence codec), and a
+sealed conditioning slowdown bound fails a candidate whose unscored
+conditioning span (the host-visible prefill surface) regresses past the
+baseline's at equal warmth position — graded from spans already sealed in
+every read, adding no measurement time. The
 supporting instrument authority, `optima/eval/box_certificate.py`, seals
 per-session stock-vs-stock null floors, a resolved known-magnitude effect,
 double-bounded expiry, and typed instrument-invalidation records. Overnight

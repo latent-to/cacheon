@@ -71,9 +71,17 @@ measurement cannot be graded anywhere. Version-3 timed reads request no
 log-probability collection (`top_logprobs_num` 0): quality evidence comes
 from separate untimed reads and from teacher-forced scoring of the retained
 generated tokens under the pristine engine, so evaluation work never shares
-the clock with a speed measurement. Version-1 and version-2 witnesses keep
-their exact historical bytes and regrade only under their own sealed
-arithmetic.
+the clock with a speed measurement. A version-3 policy also seals a
+conditioning slowdown bound: the conditioning span is the only place a
+candidate's prefill cost is host-visible, so the candidate's conditioning
+seconds must stay within the bound of the baseline's, compared at equal
+warmth position (C against B as cold first reads, C-prime against B-prime
+as warm continuations — conditioning spans carry warm/cold session
+structure and positions must never be mixed). A violation is a clear
+candidate `FAIL`: a decode win cannot hide a prefill regression. The check
+grades numbers already sealed in every read and adds no measurement time.
+Version-1 and version-2 witnesses keep their exact historical bytes and
+regrade only under their own sealed arithmetic.
 
 ## Complete qualification decision
 

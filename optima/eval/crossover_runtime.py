@@ -59,6 +59,7 @@ class ResidentSpeedPolicy:
     max_qualification_seconds: int = 7_200
     min_windows: int = 0
     max_window_scatter: float = 0.0
+    max_conditioning_slowdown: float = 0.0
 
     def __post_init__(self) -> None:
         if (
@@ -80,6 +81,7 @@ class ResidentSpeedPolicy:
                     self.noise_multiplier,
                     self.max_noise,
                     self.max_window_scatter,
+                    self.max_conditioning_slowdown,
                 )
             )
             or not 0 < self.min_margin < 1
@@ -108,7 +110,21 @@ class ResidentSpeedPolicy:
                     "resident speed policy v3 requires a window scatter bound"
                     " in (0, 0.05]"
                 )
-        elif self.min_windows != 0 or self.max_window_scatter != 0.0:
+            # The conditioning span is the only place a candidate's prefill
+            # cost is visible to the host clock; a v3 verdict must bound it
+            # against the baseline so a decode win cannot hide a prefill
+            # regression. The bound is loose because conditioning is not the
+            # scored surface — it only has to catch gross regressions.
+            if not 1.0 < self.max_conditioning_slowdown <= 2.0:
+                raise CrossoverRuntimeError(
+                    "resident speed policy v3 requires a conditioning slowdown"
+                    " bound in (1, 2]"
+                )
+        elif (
+            self.min_windows != 0
+            or self.max_window_scatter != 0.0
+            or self.max_conditioning_slowdown != 0.0
+        ):
             raise CrossoverRuntimeError(
                 "window thresholds require resident speed policy v3"
             )
@@ -117,6 +133,30 @@ class ResidentSpeedPolicy:
                 require_sha256_hex(getattr(self, field), field=field)
             except ValueError as exc:
                 raise CrossoverRuntimeError(str(exc)) from None
+
+    def conditioning_regression(
+        self, baseline_row: object, candidate_row: object
+    ) -> bool:
+        """Whether the candidate's conditioning span regressed past the bound.
+
+        Conditioning spans carry warm/cold session structure (measured 50%
+        cold-vs-warm on 2026-07-25), so callers must pair reads of the same
+        warmth position: C against B (both first reads, cold) and C-prime
+        against B-prime (both continuations, warm). Never mix positions."""
+
+        if self.version < 3:
+            return False
+        baseline_tokens = baseline_row.conditioning_tokens  # type: ignore[attr-defined]
+        candidate_tokens = candidate_row.conditioning_tokens  # type: ignore[attr-defined]
+        if baseline_tokens != candidate_tokens:
+            raise CrossoverRuntimeError(
+                "conditioning spans are not workload-comparable"
+            )
+        return (
+            candidate_row.conditioning_seconds  # type: ignore[attr-defined]
+            > self.max_conditioning_slowdown
+            * baseline_row.conditioning_seconds  # type: ignore[attr-defined]
+        )
 
     def read_window_scatter(self, row: object) -> float:
         """Relative MAD-about-the-median of one read's per-window rates.
@@ -185,6 +225,9 @@ class ResidentSpeedPolicy:
         if self.version >= 3:
             # Window thresholds exist only under version 3; earlier sealed
             # policies keep their exact historical bytes and digests.
+            row["max_conditioning_slowdown"] = format(
+                self.max_conditioning_slowdown, ".17g"
+            )
             row["max_window_scatter"] = format(self.max_window_scatter, ".17g")
             row["min_windows"] = self.min_windows
         return row
@@ -208,7 +251,11 @@ class ResidentSpeedPolicy:
             raise CrossoverRuntimeError("resident speed policy fields differ")
         window_kwargs: dict[str, object] = {}
         if value["version"] >= 3:
-            fields |= {"max_window_scatter", "min_windows"}
+            fields |= {
+                "max_conditioning_slowdown",
+                "max_window_scatter",
+                "min_windows",
+            }
         if set(value) != fields:
             raise CrossoverRuntimeError("resident speed policy fields differ")
         try:
@@ -216,6 +263,9 @@ class ResidentSpeedPolicy:
                 window_kwargs = {
                     "min_windows": value["min_windows"],
                     "max_window_scatter": float(value["max_window_scatter"]),
+                    "max_conditioning_slowdown": float(
+                        value["max_conditioning_slowdown"]
+                    ),
                 }
             result = cls(
                 max_stage_seconds=value["max_stage_seconds"],  # type: ignore[arg-type]
@@ -245,6 +295,7 @@ class ResidentSpeedPolicy:
         version: int = 1,
         min_windows: int = 0,
         max_window_scatter: float = 0.0,
+        max_conditioning_slowdown: float = 0.0,
     ) -> "ResidentSpeedPolicy":
         from optima.eval.calibration import (
             CalibrationContext,
@@ -273,6 +324,7 @@ class ResidentSpeedPolicy:
             max_qualification_seconds=max_qualification_seconds,
             min_windows=min_windows,
             max_window_scatter=max_window_scatter,
+            max_conditioning_slowdown=max_conditioning_slowdown,
         )
 
 
@@ -1096,7 +1148,12 @@ class ResidentCrossoverEvidence:
             k=plan.policy.noise_multiplier,
             max_noise=plan.policy.max_noise,
         )
-        disposition = _disposition(initial, plan.policy.min_margin)
+        if plan.policy.conditioning_regression(
+            baseline_rates[0], candidate_rates[0]
+        ):
+            disposition = SpeedStageDecision.FAIL
+        else:
+            disposition = _disposition(initial, plan.policy.min_margin)
         if disposition is None:
             if not self.escalated:
                 raise CrossoverRuntimeError("borderline resident evidence omitted repeat reads")
@@ -1107,7 +1164,12 @@ class ResidentCrossoverEvidence:
                 k=plan.policy.noise_multiplier,
                 max_noise=plan.policy.max_noise,
             )
-            decision = _final(final)
+            if plan.policy.conditioning_regression(
+                baseline_rates[1], candidate_rates[1]
+            ):
+                decision = SpeedStageDecision.FAIL
+            else:
+                decision = _final(final)
         else:
             if self.escalated:
                 raise CrossoverRuntimeError("clear resident evidence added unsealed reads")
@@ -1338,7 +1400,13 @@ def run_resident_crossover_speed(
                 ],
                 [plan.policy.scored_tokens_per_second(candidate)],
             )
-            disposition = _disposition(initial, plan.policy.min_margin)
+            # Conditioning pairs by warmth position: C against B (cold first
+            # reads). A regression is a clear FAIL — escalating cannot cure
+            # a candidate whose unscored work already blew its bound.
+            if plan.policy.conditioning_regression(before, candidate):
+                disposition = SpeedStageDecision.FAIL
+            else:
+                disposition = _disposition(initial, plan.policy.min_margin)
             schedule.put("initial", initial)
             schedule.put("escalate", disposition is None)
             if disposition is None:
@@ -1361,7 +1429,10 @@ def run_resident_crossover_speed(
                         plan.policy.scored_tokens_per_second(repeat),
                     ],
                 )
-                disposition = _final(final)
+                if plan.policy.conditioning_regression(after, repeat):
+                    disposition = SpeedStageDecision.FAIL
+                else:
+                    disposition = _final(final)
                 schedule.put("B_double_prime", third)
             else:
                 final = initial

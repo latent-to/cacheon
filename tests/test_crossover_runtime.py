@@ -82,6 +82,7 @@ class _Controller:
         active_count: list[int],
         overlap: list[bool],
         batches_per_read: int = 2,
+        conditioning_duration: float = 0.1,
     ) -> None:
         self.plan = plan
         self.lane = lane
@@ -91,6 +92,7 @@ class _Controller:
         self.active_count = active_count
         self.overlap = overlap
         self.batches_per_read = batches_per_read
+        self.conditioning_duration = conditioning_duration
         self.session_id = ("a" if lane == "left" else "b") * 32
         self.rows: list[BatchExecutionEvidence] = []
         self.clock = 10.0
@@ -115,7 +117,7 @@ class _Controller:
             # Timed batches get a tiny deterministic per-window wobble so a
             # multi-window read exercises a real (non-degenerate) median.
             duration = (
-                0.1
+                self.conditioning_duration
                 if local_index == 0
                 else self.timed_durations[role_index]
                 * (1.0, 1.001, 0.999)[(local_index - 1) % 3]
@@ -178,6 +180,7 @@ def _install_fake_execution(
     active_count: list[int],
     overlap: list[bool],
     batches_per_read: int = 2,
+    conditioning_duration: float = 0.1,
 ) -> None:
     def execute_opened(launch, binding, mount, plan, *, deadline, driver):
         del binding, mount, deadline
@@ -190,6 +193,7 @@ def _install_fake_execution(
             active_count=active_count,
             overlap=overlap,
             batches_per_read=batches_per_read,
+            conditioning_duration=conditioning_duration,
         )
         session = driver(controller)
         physical_ids = executor.device_policy.physical_gpu_ids
@@ -228,6 +232,7 @@ def _rig(
     distinct_runtime_policies: bool = False,
     policy: ResidentSpeedPolicy | None = None,
     timed_batches: int = 1,
+    candidate_conditioning: float = 0.1,
 ):
     left_case = _case(tmp_path / "left")
     right_case = _case(tmp_path / "right")
@@ -352,6 +357,7 @@ def _rig(
         active_count=active_count,
         overlap=overlap,
         batches_per_read=1 + timed_batches,
+        conditioning_duration=candidate_conditioning,
     )
     plan = ResidentCrossoverPlan(
         "7" * 64,
@@ -760,6 +766,7 @@ def _policy_v3(**overrides) -> ResidentSpeedPolicy:
         "version": 3,
         "min_windows": 3,
         "max_window_scatter": 0.01,
+        "max_conditioning_slowdown": 1.25,
     }
     kwargs.update(overrides)
     return ResidentSpeedPolicy(**kwargs)
@@ -786,6 +793,14 @@ def test_policy_v3_serialization_is_version_dependent() -> None:
         ResidentSpeedPolicy.from_dict(
             {**legacy.to_dict(), "min_windows": 3, "max_window_scatter": "0.01"}
         )
+    # The conditioning slowdown bound is required and range-checked under v3
+    # and forbidden before it.
+    with pytest.raises(CrossoverRuntimeError, match="conditioning slowdown"):
+        _policy_v3(max_conditioning_slowdown=1.0)
+    with pytest.raises(CrossoverRuntimeError, match="conditioning slowdown"):
+        _policy_v3(max_conditioning_slowdown=2.5)
+    with pytest.raises(CrossoverRuntimeError, match="require resident speed policy v3"):
+        replace(legacy, max_conditioning_slowdown=1.25)
 
 
 def test_v3_crossover_scores_window_medians_and_retains_windows(
@@ -900,3 +915,53 @@ def test_timed_window_rows_are_exact_and_tiled() -> None:
     assert TimedWindow.from_dict(window.to_dict()) == window
     with pytest.raises(CrossoverRuntimeError, match="noncanonical"):
         TimedWindow.from_dict({**window.to_dict(), "seconds": "0.250"})
+
+
+def test_v3_conditioning_regression_fails_a_fast_but_prefill_slow_candidate(
+    tmp_path: Path,
+) -> None:
+    # Candidate decodes 10% faster but its conditioning (the only span where
+    # prefill cost is host-visible) runs 2x the baseline's: a real kernel
+    # regression a decode-only gate would crown. Costs zero extra wall-clock:
+    # the graded numbers are already sealed in every read.
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path,
+        (0.90, 0.90),
+        policy=_policy_v3(),
+        timed_batches=3,
+        candidate_conditioning=0.2,
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+    assert result.decision is SpeedStageDecision.FAIL
+    assert not result.escalated
+    assert result.final_verdict.passed_speedup  # the speed number alone passed
+    assert result.regrade(plan) == result.final_verdict
+    witness = ResidentSpeedWitness.from_evidence(result, plan)
+    assert ResidentSpeedWitness.from_dict(witness.to_dict()) == witness
+
+
+def test_v3_conditioning_within_bound_does_not_disturb_the_verdict(
+    tmp_path: Path,
+) -> None:
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path,
+        (0.90, 0.90),
+        policy=_policy_v3(),
+        timed_batches=3,
+        candidate_conditioning=0.12,  # 1.2x, inside the sealed 1.25 bound
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+    assert result.decision is SpeedStageDecision.PASS
+    assert result.regrade(plan) == result.final_verdict

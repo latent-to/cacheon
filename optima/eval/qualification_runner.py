@@ -486,6 +486,9 @@ class CausalQualificationInput:
                     version=resident.policy.version,
                     min_windows=resident.policy.min_windows,
                     max_window_scatter=resident.policy.max_window_scatter,
+                    max_conditioning_slowdown=(
+                        resident.policy.max_conditioning_slowdown
+                    ),
                 )
             except CrossoverRuntimeError as exc:
                 raise QualificationRunnerError(str(exc)) from None
@@ -982,6 +985,9 @@ class ResidentSpeedWitness:
                 version=self.resident_policy.version,
                 min_windows=self.resident_policy.min_windows,
                 max_window_scatter=self.resident_policy.max_window_scatter,
+                max_conditioning_slowdown=(
+                    self.resident_policy.max_conditioning_slowdown
+                ),
             )
         except CrossoverRuntimeError as exc:
             raise QualificationRunnerError(str(exc)) from None
@@ -992,16 +998,19 @@ class ResidentSpeedWitness:
             or self.workload_digest != context.workload_digest
         ):
             raise QualificationRunnerError("resident speed calibration authority differs")
-        baselines = [
-            self.resident_policy.scored_tokens_per_second(row)
-            for row in self.rates
-            if row.role.startswith("B")
-        ]
-        candidates = [
-            self.resident_policy.scored_tokens_per_second(row)
-            for row in self.rates
-            if row.role.startswith("C")
-        ]
+        try:
+            baselines = [
+                self.resident_policy.scored_tokens_per_second(row)
+                for row in self.rates
+                if row.role.startswith("B")
+            ]
+            candidates = [
+                self.resident_policy.scored_tokens_per_second(row)
+                for row in self.rates
+                if row.role.startswith("C")
+            ]
+        except CrossoverRuntimeError as exc:
+            raise QualificationRunnerError(str(exc)) from None
         initial = score_speedup(
             baselines[:2],
             candidates[:1],
@@ -1009,7 +1018,16 @@ class ResidentSpeedWitness:
             k=self.resident_policy.noise_multiplier,
             max_noise=self.resident_policy.max_noise,
         )
-        clear = (
+        # Conditioning pairs by warmth position (C vs B cold, C' vs B' warm);
+        # a bound violation is a clear candidate FAIL under the sealed policy
+        # and must regrade identically to the live decision.
+        try:
+            conditioning_initial = self.resident_policy.conditioning_regression(
+                self.rates[0], self.rates[1]
+            )
+        except CrossoverRuntimeError as exc:
+            raise QualificationRunnerError(str(exc)) from None
+        clear = conditioning_initial or (
             initial.confident
             and (
                 initial.speedup <= initial.required - self.resident_policy.min_margin
@@ -1018,19 +1036,27 @@ class ResidentSpeedWitness:
         )
         if (len(self.rates) == 3) != clear:
             raise QualificationRunnerError("resident adaptive read shape does not regrade")
-        verdict = (
-            initial
-            if clear
-            else score_speedup(
+        if clear:
+            verdict = initial
+            conditioning_failed = conditioning_initial
+        else:
+            verdict = score_speedup(
                 baselines,
                 candidates,
                 min_margin=self.resident_policy.min_margin,
                 k=self.resident_policy.noise_multiplier,
                 max_noise=self.resident_policy.max_noise,
             )
-        )
+            try:
+                conditioning_failed = self.resident_policy.conditioning_regression(
+                    self.rates[2], self.rates[3]
+                )
+            except CrossoverRuntimeError as exc:
+                raise QualificationRunnerError(str(exc)) from None
         grade = (
-            QualificationDecision.NO_DECISION
+            QualificationDecision.FAIL
+            if conditioning_failed
+            else QualificationDecision.NO_DECISION
             if not verdict.confident
             else QualificationDecision.PASS
             if verdict.passed_speedup
