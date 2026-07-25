@@ -985,6 +985,57 @@ def test_trajectory_projection_rejects_subset_relabel_and_short_topk(tmp_path: P
         cohort_trajectory_digest(broken)
 
 
+def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path: Path):
+    # Option B: a width-0 lifecycle retains one empty support row per token.
+    # The cohort digest must seal that absence (2026-07-25 calibration
+    # failure: _validated_topk_position rejected the empty rows the coverage
+    # check had just required), and the projection digest must byte-match the
+    # raw-artifact side's one-None-per-token rollout_topk shape
+    # (raw_trajectory_projection_digest) or live raw-quality re-verification
+    # fails after the measurement has already run.
+    from tests.test_scoring import _lifecycle
+    from optima.eval.reference_quality import retained_support_policy_digest
+
+    lifecycle, delta, _case, _calibration, _runtime_policy = _lifecycle(
+        tmp_path, top_logprobs_num=0
+    )
+    cohort = cohort_trajectory_digest(lifecycle)
+
+    row = lifecycle.candidates[0]
+    session = row.execution.session
+    batches = list(session.batches)
+    evidence = batches[1].evidence
+    prompt = evidence.prompts[0]
+    corrupted = replace(prompt, output_ids=(999,) + prompt.output_ids[1:])
+    batches[1] = replace(
+        batches[1], evidence=replace(evidence, prompts=(corrupted,))
+    )
+    changed = replace(
+        lifecycle,
+        candidates=(replace(row, execution=replace(
+            row.execution, session=replace(session, batches=tuple(batches))
+        )),),
+    )
+    assert cohort_trajectory_digest(changed) != cohort
+
+    prompts = lifecycle_prompt_digests(lifecycle)
+    selected = tuple(sorted(prompts[:2]))
+    projection = selected_trajectory_projection_digest(
+        lifecycle, selected_delta_digest=delta, selected_prompt_digests=selected
+    )
+    rollout = {"output_ids": list(range(10)), "rollout_topk": [None] * 10}
+    assert projection == canonical_digest(
+        "optima.qualification.selected-trajectory-projection",
+        {
+            "support_policy_digest": retained_support_policy_digest(),
+            "prompts": [
+                {"prompt": digest, "rollouts": [rollout, rollout, rollout]}
+                for digest in selected
+            ],
+        },
+    )
+
+
 def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
     from optima.eval.qualification import _selected_prompt_texts, _trajectory_rows
     from optima.eval.calibration import CalibrationContext
@@ -1260,3 +1311,290 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
             reference_execution=reference_execution,
             reference_request_sha256=reference_request_sha256,
         )
+
+
+def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path):
+    # Option B, full composition at width 0: real lifecycle, real pristine-T
+    # exchange, real raw artifact, real validate_quality_binding — the path
+    # the 2026-07-25 r3 calibration died on (_validate_teacher_source derived
+    # a distribution from empty support).  Everything the live validator
+    # recomputes must accept sealed absence end to end.
+    from optima.eval.qualification import _selected_prompt_texts, _trajectory_rows
+    from optima.eval.calibration import CalibrationContext
+    from optima.eval.oci_reference_session import (
+        ReferenceExchangeEvidence,
+        ReferenceSessionEvidence,
+    )
+    from optima.eval.oci_backend import PristineReferenceExecutionEvidence
+    from optima.eval.reference_protocol import (
+        ReferenceEvidence,
+        ReferencePromptEvidence,
+        ReferencePromptInput,
+        ReferenceRequest,
+        ReferenceRoleEvidence,
+        ReferenceRoleInput,
+        ReferenceTokenEvidence,
+        encode_reference_evidence,
+        request_sha256,
+    )
+    from optima.eval.reference_quality import (
+        RawHiddenTaskResult,
+        RawPromptQualityEvidence,
+        RawRolloutEvidence,
+        RawTokenEvidence,
+        ReferenceQualityRawArtifact,
+        ReferenceQualityRawBinding,
+        retained_support_policy_digest,
+        target_nll_from_f32,
+    )
+    from optima.stack_identity import sha256_hex
+    from tests.test_oci_reference_session import (
+        _config as reference_config,
+        _facts as reference_facts,
+    )
+    from tests.test_scoring import _lifecycle
+
+    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(
+        tmp_path, top_logprobs_num=0
+    )
+    reference = ReferenceManifest(
+        *(_d(f"pristine:{index}") for index in range(3)),
+        case.launch.runtime_digest, case.launch.base_engine_digest, case.launch.arena_digest,
+        lifecycle.candidates[0].arm.candidate.catalog_digest,
+        case.launch.controller_distribution_digest, case.launch.worker_distribution_digest,
+        case.launch.model_revision_digest, case.launch.model_manifest_digest,
+        case.launch.model_content_digest, case.launch.hardware.digest,
+        calibration.context.workload_digest, _d("tokenizer"), _d("hidden-corpus"),
+        _d("hidden-judge"), _d("entropy-source"),
+    )
+    arm = lifecycle.candidates[0].arm
+    candidate = lifecycle.candidates[0].candidate
+    requirement = _requirement()
+    requirement = replace(
+        requirement,
+        binding=replace(
+            requirement.binding,
+            marginal_arm_digest=arm.digest,
+            candidate_launch_digest=candidate.launch.digest,
+            contribution_ref_digest=arm.transition.replacement.digest,
+            selected_delta_digest=delta,
+            target_id=arm.transition.target_id,
+            target_spec_digest=arm.transition.target_spec_digest,
+            catalog_digest=arm.candidate.catalog_digest,
+        ),
+    )
+    calibration = replace(
+        calibration,
+        context=CalibrationContext(
+            reference.digest, reference.arena_digest, reference.runtime_digest,
+            reference.base_engine_digest, reference.model_revision_digest,
+            reference.model_manifest_digest, reference.model_content_digest,
+            reference.logical_hardware_digest, reference.workload_digest,
+            requirement.binding.verification_policy_digest,
+            reference.controller_distribution_digest,
+        ),
+        quality_metrics=tuple(
+            row for row in calibration.quality_metrics
+            if row.name in {"mean_nll", "worst_nll", "task_score"}
+        ),
+    )
+    profile = QualificationProfile(
+        reference, calibration.context.digest, calibration.digest, requirement.digest,
+        tuple(row.name for row in calibration.quality_metrics), "2", 10, 0, 2,
+        retained_support_policy_digest(), _d("hidden-task-policy"), runtime_policy, True, 2,
+    )
+    prompts = lifecycle_prompt_digests(lifecycle)
+    commitment = SelectionCommitment.seal(
+        source_plan_digest=lifecycle.source.digest, reference_manifest=reference,
+        entropy_source_digest=reference.selection_policy_digest,
+        prompt_digests=prompts, select_count=2, secret=b"s" * 32,
+    )
+    entropy = SelectionEntropyReceipt(
+        commitment.entropy_source_digest, commitment.digest,
+        _d("entropy-value"), _d("entropy-authority"),
+    )
+    selection = SelectionReceipt.reveal(
+        commitment, secret=b"s" * 32, entropy=entropy,
+        sealed_cohort_trajectory_digest=cohort_trajectory_digest(lifecycle),
+    )
+    _, trajectory_rows = _trajectory_rows(lifecycle)
+    trajectories = dict(trajectory_rows)
+    prompt_texts = _selected_prompt_texts(lifecycle)
+    request_prompts = []
+    evidence_prompts = []
+    raw_prompts = []
+    for prompt_digest in selection.selected_prompt_digests:
+        frames = [trajectories[prompt_digest][index] for index in (0, 1, -1)]
+        role_inputs, role_evidence, raw_rollouts = [], [], []
+        tasks = tuple(sorted(
+            (RawHiddenTaskResult(
+                canonical_digest("optima.qualification.hidden-task", {
+                    "corpus": reference.hidden_corpus_commitment,
+                    "judge": reference.hidden_judge_digest,
+                    "policy": profile.hidden_task_policy_digest,
+                    "prompt": prompt_digest,
+                    "index": index,
+                }),
+                True,
+            ) for index in range(profile.hidden_tasks_per_prompt)),
+            key=lambda row: row.task_digest,
+        ))
+        for frame in frames:
+            inputs, teacher, tokens = [], [], []
+            for position, (output_id, topk) in enumerate(zip(
+                frame["output_ids"], frame["top_logprobs"], strict=True
+            )):
+                assert topk == []
+                inputs.append(())
+                teacher.append(ReferenceTokenEvidence(-0.25, output_id, ()))
+                tokens.append(RawTokenEvidence(
+                    position, output_id, target_nll_from_f32(-0.25), None, None,
+                ))
+            role_inputs.append(ReferenceRoleInput(tuple(frame["output_ids"]), tuple(inputs)))
+            role_evidence.append(ReferenceRoleEvidence(tuple(teacher)))
+            raw_rollouts.append(RawRolloutEvidence(tuple(tokens), tasks))
+        request_prompts.append(ReferencePromptInput(
+            prompt_digest, prompt_texts[prompt_digest], tuple(role_inputs)
+        ))
+        evidence_prompts.append(ReferencePromptEvidence(
+            prompt_digest, 3, _d("prompt-tokens:" + prompt_digest), tuple(role_evidence)
+        ))
+        raw_prompts.append(RawPromptQualityEvidence(
+            prompt_digest, *raw_rollouts
+        ))
+    config = reference_config()
+    request_plan = _d("reference-request-plan")
+    request = ReferenceRequest(
+        "1" * 32, reference.pristine_launch_digest, request_plan,
+        "2" * 32, "3" * 32, 0, 10, 0, tuple(request_prompts),
+    )
+    teacher_evidence = ReferenceEvidence(
+        request.session_id, request.launch_digest, request.plan_digest,
+        request_sha256(request), request.request_id, request.nonce, 0, 32_000,
+        tuple(evidence_prompts),
+    )
+    reference_request_sha256 = request_sha256(request)
+    exchange = ReferenceExchangeEvidence(
+        0, request, reference_request_sha256,
+        sha256_hex(encode_reference_evidence(teacher_evidence, request)),
+        1.0, 2.0, teacher_evidence,
+    )
+    t_session = ReferenceSessionEvidence(
+        "optima.pristine-reference-session.v1", request.session_id,
+        reference.pristine_launch_digest, reference.digest,
+        _d("reference-session-plan"), request_plan,
+        reference_facts(reference, config), 0.5, (exchange,), 3.0,
+    )
+    baseline = lifecycle.baseline_before
+    reference_execution = PristineReferenceExecutionEvidence(
+        "optima.oci-pristine-reference-execution.v1",
+        reference.pristine_launch_digest,
+        baseline.runtime_identity,
+        baseline.runtime_preflight_receipt_sha256,
+        baseline.arena_model_receipt_digest,
+        baseline.resource_policy_digest,
+        baseline.prebuild,
+        baseline.native_publication_digest,
+        baseline.runtime_argv_sha256,
+        (),
+        (baseline.device_receipts[0], baseline.device_receipts[-1]),
+        t_session,
+    )
+    lifecycle_digest = candidate_lifecycle_digest(
+        lifecycle, selected_delta_digest=delta
+    )
+    identity_digest = qualification_identity_digest(
+        profile,
+        graph_requirement=requirement,
+        selection=selection,
+        calibration=calibration,
+        candidate_lifecycle=lifecycle_digest,
+        t_session=t_session,
+        t_request_sha256=reference_request_sha256,
+        selected_delta_digest=delta,
+    )
+    binding = ReferenceQualityRawBinding(
+        identity_digest, reference.digest, calibration.digest, selection.digest,
+        lifecycle_digest, selected_trajectory_digest(
+            lifecycle, selected_delta_digest=delta,
+            selected_prompt_digests=selection.selected_prompt_digests,
+        ),
+        selected_trajectory_projection_digest(
+            lifecycle, selected_delta_digest=delta,
+            selected_prompt_digests=selection.selected_prompt_digests,
+        ), selection.selected_prompt_digests,
+        t_session.digest, reference_request_sha256, profile.support_policy_digest,
+        derived_hidden_task_plan_digest(profile, selection.selected_prompt_digests),
+        profile.nll_tail_threshold, 10, 0, 2,
+    )
+    raw_artifact = ReferenceQualityRawArtifact(binding, tuple(raw_prompts))
+    assert validate_quality_binding(
+        profile, raw_artifact, lifecycle, selected_delta_digest=delta,
+        commitment=commitment, entropy=entropy, selection=selection,
+        calibration=calibration, graph_requirement=requirement,
+        reference_execution=reference_execution,
+        reference_request_sha256=reference_request_sha256,
+    ) == raw_artifact
+
+    # Continue down the exact runner path (qualification_runner :3819-3831):
+    # publish the canonical raw bytes, reopen (which derives the NLL-only
+    # summaries), and score against the NLL-only calibration.  Every layer
+    # must accept sealed absence without touching distribution machinery.
+    from optima.eval.reference_quality import (
+        RAW_QUALITY_DOMAIN,
+        RAW_QUALITY_SCHEMA,
+        reopen_reference_quality_evidence,
+        score_reference_quality,
+    )
+
+    evidence_root = tmp_path / "quality-evidence"
+    raw_ref = publish_evidence(
+        evidence_root,
+        canonical_json_bytes(raw_artifact.to_dict()),
+        domain=RAW_QUALITY_DOMAIN,
+        media_type="application/json",
+        schema=RAW_QUALITY_SCHEMA,
+    )
+    derived = reopen_reference_quality_evidence(
+        evidence_root, raw_ref, expected_binding=raw_artifact.binding
+    )
+    for prompt in derived.prompts:
+        for rollout in (prompt.baseline, prompt.candidate, prompt.stock_control):
+            assert rollout.rollout_kl is None
+    verdict = score_reference_quality(
+        derived, calibration=calibration, expected_context=calibration.context
+    )
+    assert verdict.decision in {"PASS", "FAIL", "NO_DECISION"}
+    assert verdict.calibration_digest == calibration.digest
+
+
+def test_teacher_nll_only_profile_admits_width_zero_and_refuses_kl_metrics():
+    # Option B (2026-07-25): topk_width 0 selects teacher-NLL-only quality.
+    # The mode is digest-bound, and a profile cannot simultaneously declare
+    # a distribution metric it retains no evidence for.
+    reference = _reference()
+    requirement = _requirement(atomic=False)
+
+    def profile(width: int, metrics: tuple[str, ...]) -> QualificationProfile:
+        return QualificationProfile(
+            reference,
+            _d("calibration-context"),
+            _d("calibration"),
+            requirement.digest,
+            metrics,
+            "2",
+            10,
+            width,
+            2,
+            _d("support-policy"),
+            _d("hidden-task-policy"),
+            _d("runtime-resource-policy"),
+            True,
+            2,
+        )
+
+    nll_only = profile(0, ("mean_nll", "task_score"))
+    assert QualificationProfile.from_dict(nll_only.to_dict()) == nll_only
+    assert nll_only.topk_width == 0
+    with pytest.raises(QualificationError, match="cannot require distribution metrics"):
+        profile(0, ("mean_nll", "task_score", "topk_kl"))

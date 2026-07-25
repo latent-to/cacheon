@@ -527,3 +527,118 @@ def test_nonfinite_computed_familywise_bounds_reject(monkeypatch):
         score_reference_quality(
             _evidence(calibration), calibration=calibration, expected_context=_context()
         )
+
+
+def _nll_only_calibration() -> CalibrationManifest:
+    return CalibrationManifest(
+        context=_context(),
+        algorithm_id="teacher-familywise-v1",
+        status="frozen",
+        speed=SpeedCalibration("0.005", "2", "0.1"),
+        quality_metrics=(
+            MetricCalibration("mean_nll", "lower", "0.1", "0.1"),
+            MetricCalibration("task_score", "higher", "0.05", "0.05", "0.8"),
+        ),
+        familywise_z="0.000001",
+        raw_evidence_digest=_digest("c"),
+        seed_digests=(_digest("d"),),
+        controls=(
+            CalibrationControl("negative", _digest("e"), _digest("f"), "FAIL"),
+            CalibrationControl("positive", _digest("1"), _digest("2"), "PASS"),
+            CalibrationControl("stock", _digest("3"), _digest("4"), "PASS"),
+        ),
+    )
+
+
+def _nll_only_rollout(*, nll: str = "1", task: str = "9", tokens: int = 10) -> RolloutQualityEvidence:
+    return RolloutQualityEvidence(
+        teacher_nll=TeacherNLLEvidence(tokens, str(float(nll) * tokens).rstrip("0").rstrip("."), "2", 0),
+        rollout_kl=None,
+        hidden_task=HiddenTaskEvidence(task, 10),
+    )
+
+
+def _nll_only_raw_rollout(*, nlls=("1", "2"), token_ids=(1, 2), task_passes=(True, False)) -> RawRolloutEvidence:
+    tokens = tuple(
+        RawTokenEvidence(index, token_ids[index], nlls[index], None, None)
+        for index in range(2)
+    )
+    tasks = tuple(
+        RawHiddenTaskResult(_digest(str(index + 1)), passed)
+        for index, passed in enumerate(task_passes)
+    )
+    return RawRolloutEvidence(tokens, tasks)
+
+
+def _nll_only_raw_artifact(calibration: CalibrationManifest) -> ReferenceQualityRawArtifact:
+    baseline = _nll_only_raw_rollout()
+    candidate = _nll_only_raw_rollout(
+        nlls=("1.5", "3"), token_ids=(1, 3), task_passes=(True, True)
+    )
+    prompts = (RawPromptQualityEvidence(_digest("6"), baseline, candidate, baseline),)
+    binding = _raw_binding(calibration, prompts)
+    binding = ReferenceQualityRawBinding.from_dict({**binding.to_dict(), "topk_width": 0})
+    return ReferenceQualityRawArtifact(binding, prompts)
+
+
+def test_teacher_nll_only_artifact_derives_scores_and_round_trips(tmp_path):
+    # Option B (2026-07-25): topk_width 0 retains no distributions — the
+    # teacher-forced NLL of the retained tokens plus hidden tasks are the
+    # entire quality gate, and absence is explicit (null), never zeros.
+    calibration = _nll_only_calibration()
+    artifact = _nll_only_raw_artifact(calibration)
+    assert ReferenceQualityRawArtifact.from_dict(artifact.to_dict()) == artifact
+    reference = _publish(tmp_path / "evidence", artifact)
+    derived = reopen_reference_quality_evidence(
+        tmp_path / "evidence", reference, expected_binding=artifact.binding
+    )
+    prompt = derived.prompts[0]
+    assert prompt.candidate.rollout_kl is None
+    assert prompt.candidate.teacher_nll == TeacherNLLEvidence(2, "4.5", "3", 1)
+    assert ReferenceQualityEvidence.from_dict(derived.to_dict()) == derived
+    verdict = score_reference_quality(
+        derived, calibration=calibration, expected_context=_context()
+    )
+    assert verdict.decision in {"PASS", "FAIL", "NO_DECISION"}
+
+
+def test_teacher_nll_only_refuses_distribution_metrics() -> None:
+    # A threshold policy naming topk_kl against NLL-only evidence is a
+    # policy/evidence mismatch: typed refusal, never a silent pass.
+    calibration = _calibration()  # declares topk_kl
+    evidence = ReferenceQualityEvidence(
+        reference_manifest_digest=_context().reference_manifest_digest,
+        calibration_digest=calibration.digest,
+        raw_evidence_digest=_digest("5"),
+        prompts=(
+            PromptQualityEvidence(_digest("6"), _nll_only_rollout(), _nll_only_rollout(), _nll_only_rollout(), 10, 10),
+        ),
+        hidden_tasks_present=True,
+    )
+    with pytest.raises(ReferenceQualityError, match="requires retained distribution"):
+        score_reference_quality(
+            evidence, calibration=calibration, expected_context=_context()
+        )
+
+
+def test_distribution_presence_must_be_uniform() -> None:
+    # Mixed presence anywhere is malformed evidence, all the way down.
+    with pytest.raises(ReferenceQualityError, match="present together"):
+        RawTokenEvidence(0, 1, "1", _dist("0.7", "0.2"), None)
+    mixed = (
+        RawTokenEvidence(0, 1, "1", None, None),
+        RawTokenEvidence(1, 2, "1", _dist("0.7", "0.2"), _dist("0.7", "0.2")),
+    )
+    with pytest.raises(ReferenceQualityError, match="must be uniform"):
+        RawRolloutEvidence(mixed, ())
+    with pytest.raises(ReferenceQualityError, match="presence must be uniform"):
+        PromptQualityEvidence(_digest("6"), _nll_only_rollout(), _rollout(), _nll_only_rollout(), 10, 10)
+    # And the raw binding's width polices the artifact: a width-0 binding
+    # refuses tokens that smuggle distributions.
+    calibration = _nll_only_calibration()
+    artifact = _nll_only_raw_artifact(calibration)
+    smuggled_prompts = (
+        RawPromptQualityEvidence(_digest("6"), _raw_rollout(), _raw_rollout(), _raw_rollout()),
+    )
+    with pytest.raises(ReferenceQualityError, match="coverage differs from its binding"):
+        ReferenceQualityRawArtifact(artifact.binding, smuggled_prompts)

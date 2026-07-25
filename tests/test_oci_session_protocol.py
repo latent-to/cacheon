@@ -565,7 +565,7 @@ def test_batch_request_discloses_only_one_exact_bounded_batch() -> None:
         ({"prompts": ()}, "prompts count"),
         ({"prompts": (3,)}, "invalid"),
         ({"max_new_tokens": 0}, "max_new_tokens"),
-        ({"top_logprobs_num": 0}, "top_logprobs_num"),
+        ({"top_logprobs_num": -1}, "top_logprobs_num"),
         ({"temperature": float("inf")}, "finite"),
     ],
 )
@@ -574,6 +574,43 @@ def test_batch_request_binding_and_shape_fail_closed(
 ) -> None:
     with pytest.raises(SessionProtocolError, match=match):
         _request(**changes)
+
+
+def test_pure_generation_batch_round_trips_with_empty_topk() -> None:
+    # Width zero is the pure-generation read (eval off the clock): the wire
+    # shape stays exact — token IDs only, zero-width top-k positions — and
+    # any nonempty top-k entry is a protocol violation, not surplus.
+    request = _request(top_logprobs_num=0)
+    evidence = BatchEvidence(
+        (
+            PromptEvidence((10, 20), ((), ())),
+            PromptEvidence((30, 40), ((), ())),
+        )
+    )
+    frame = evidence_frame(evidence, request=request)
+    assert len(frame) == FRAME_HEADER_BYTES + expected_evidence_payload_bytes(
+        request
+    )
+    per_position = 4  # token ID only: no top-k bytes exist at width zero
+    assert expected_evidence_payload_bytes(request) == (
+        protocol._EVIDENCE_BINDING.size
+        + len(request.prompts) * request.max_new_tokens * per_position
+    )
+    decoded = parse_evidence_frame_bytes(frame, request=request)
+    assert decoded.observed_tokens == 4
+    assert all(
+        position == ()
+        for prompt in decoded.prompts
+        for position in prompt.top_logprobs
+    )
+    smuggled = BatchEvidence(
+        (
+            PromptEvidence((10, 20), (((-0.4, 7),), ())),
+            PromptEvidence((30, 40), ((), ())),
+        )
+    )
+    with pytest.raises(SessionProtocolError, match="top-k width"):
+        evidence_frame(smuggled, request=request)
 
 
 def test_binary_evidence_is_fixed_size_token_topk_only() -> None:

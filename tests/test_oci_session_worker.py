@@ -306,3 +306,83 @@ def test_run_session_places_typed_activation_only_in_ready_frame(
         os.close(input_read)
         os.close(output_write)
         os.close(output_read)
+
+
+def test_pure_generation_request_disables_engine_logprob_work() -> None:
+    from optima.eval.oci_session_protocol import BatchRequest, SessionProtocolError
+    from optima.eval.oci_session_worker import _engine_outputs, _generate
+
+    request = BatchRequest(
+        "a" * 32, "b" * 64, "c" * 32, "d" * 32, 0, ("alpha", "beta"), 2, 0, 0.0
+    )
+    calls: list[dict] = []
+
+    class _Engine:
+        def generate(self, **kwargs):
+            calls.append(kwargs)
+            # A logprob-free engine response: token IDs only, no top-k
+            # structure anywhere in meta_info.
+            return [
+                {"meta_info": {"output_ids": [10, 20]}},
+                {"meta_info": {"output_ids": [30, 40]}},
+            ]
+
+    evidence = _generate(_Engine(), request)
+    assert calls[0]["return_logprob"] is False
+    assert calls[0]["top_logprobs_num"] == 0
+    assert tuple(prompt.output_ids for prompt in evidence.prompts) == (
+        (10, 20),
+        (30, 40),
+    )
+    assert all(
+        position == ()
+        for prompt in evidence.prompts
+        for position in prompt.top_logprobs
+    )
+
+    # Width zero never excuses a missing top-k on an eval-carrying request.
+    topk_request = BatchRequest(
+        "a" * 32, "b" * 64, "c" * 32, "d" * 32, 0, ("alpha",), 2, 2, 0.0
+    )
+    with pytest.raises(SessionProtocolError, match="token/top-k"):
+        _engine_outputs([{"meta_info": {"output_ids": [10, 20]}}], request=topk_request)
+
+
+def test_width_zero_reference_scoring_skips_the_support_gather() -> None:
+    # Teacher-NLL-only mode: no token_ids_logprob is asked of the teacher
+    # engine and the evidence carries exact empty support rows, while the
+    # target NLL and teacher argmax remain fully validated.
+    from types import SimpleNamespace
+
+    from optima.eval.oci_session_worker import _reference_role_evidence
+
+    calls: list[dict] = []
+
+    class _Teacher:
+        def generate(self, **kwargs):
+            calls.append(kwargs)
+            # Prefix length 3, response length 2: teacher scores positions
+            # from logprob_start_len; the worker slices the last 2 entries.
+            return [
+                {
+                    "meta_info": {
+                        "input_token_logprobs": [
+                            (-0.5, 9), (-0.25, 11), (-0.75, 12),
+                        ],
+                        "input_top_logprobs": [
+                            [(-0.4, 3)], [(-0.2, 11)], [(-0.6, 4)],
+                        ],
+                    }
+                }
+            ]
+
+    role = SimpleNamespace(output_ids=(11, 12), supports=((), ()))
+    rows = _reference_role_evidence(
+        _Teacher(), [[1, 2, 3]], [role], vocab_size=128
+    )
+    assert "token_ids_logprob" not in calls[0]
+    assert calls[0]["return_logprob"] is True and calls[0]["top_logprobs_num"] == 1
+    tokens = rows[0].tokens
+    assert [token.target_logprob for token in tokens] == [-0.25, -0.75]
+    assert [token.true_argmax_token_id for token in tokens] == [11, 4]
+    assert all(token.support_logprobs == () for token in tokens)

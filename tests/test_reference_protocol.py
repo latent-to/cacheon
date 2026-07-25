@@ -254,3 +254,39 @@ def test_wire_records_contain_no_verdict_timing_or_hidden_authority_fields():
         "decision", "score", "passed", "elapsed", "hidden_tasks", "judge",
         "calibration", "miner", "t_session_digest",
     }
+
+
+def test_width_zero_request_and_evidence_round_trip():
+    # Teacher-NLL-only mode (topk_width 0): roles carry empty support rows,
+    # the binary frame stays exact, and token evidence carries empty support
+    # logprobs — no distribution data exists anywhere to smuggle.
+    def role(offset=0):
+        return ReferenceRoleInput((7 + offset, 8 + offset), ((), ()))
+
+    prompts = (
+        ReferencePromptInput("6" * 64, "first prompt", (role(), role(10), role(20))),
+    )
+    request = ReferenceRequest(SESSION, LAUNCH, PLAN, REQUEST, NONCE, 7, 2, 0, prompts)
+    frame = encode_reference_request(request)
+    assert decode_reference_request(frame) == request
+    assert encode_reference_request(decode_reference_request(frame)) == frame
+
+    token = ReferenceTokenEvidence(-0.1, 7, ())
+    roles = tuple(
+        ReferenceRoleEvidence((token, token)) for _ in range(3)
+    )
+    evidence = ReferenceEvidence(
+        request.session_id, request.launch_digest, request.plan_digest,
+        request_sha256(request), request.request_id, request.nonce,
+        request.request_index, 128,
+        (ReferencePromptEvidence(prompts[0].prompt_digest, 3, "8" * 64, roles),),
+    )
+    payload = encode_reference_evidence(evidence, request=request)
+    assert decode_reference_evidence(payload, request=request) == evidence
+
+    # A width-0 request must not accept nonempty support rows.
+    with pytest.raises(ReferenceProtocolError, match="geometry"):
+        ReferenceRequest(
+            SESSION, LAUNCH, PLAN, REQUEST, NONCE, 7, 2, 0,
+            (ReferencePromptInput("6" * 64, "first prompt", (_role(), role(10), role(20))),),
+        )

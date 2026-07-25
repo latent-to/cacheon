@@ -68,7 +68,10 @@ def _session(plan: SessionExecutionPlan, *, label: str, scale: float) -> Session
         prompts = tuple(
             PromptEvidence(
                 tuple(range(plan.max_new_tokens)),
-                tuple(((0.0, 0),) for _ in range(plan.max_new_tokens)),
+                tuple(
+                    tuple((0.0 - rank, rank) for rank in range(plan.top_logprobs_num))
+                    for _ in range(plan.max_new_tokens)
+                ),
             )
             for _ in plan.prompt_batches[index]
         )
@@ -155,13 +158,13 @@ class _TypedExecutor:
         )
 
 
-def _lifecycle(tmp_path: Path, *, after_scale: float = 1.002):
+def _lifecycle(tmp_path: Path, *, after_scale: float = 1.002, top_logprobs_num: int = 1):
     case = runtime_case(tmp_path)
     case.session = replace(
         case.session,
         prompt_batches=(("warmup",), ("timed-1",), ("timed-2",)),
         max_new_tokens=10,
-        top_logprobs_num=1,
+        top_logprobs_num=top_logprobs_num,
     )
     prepared = prepared_runtime(case)
     runtime_policy = _digest("runtime-resource-policy")

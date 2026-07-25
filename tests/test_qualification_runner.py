@@ -1053,6 +1053,17 @@ def test_resident_operational_timing_round_trip_and_total_budget() -> None:
     assert runner.QualificationTimingWitness.from_dict(timing.to_dict()) == timing
     assert timing.digest
 
+    # from_dict must never mutate the caller's payload: the publish/reopen
+    # self-check compares attempt.to_dict() against the reopened payload, and an
+    # in-place float decode of the .17g strings falsely fails a canonical
+    # artifact ("qualification artifact is not semantically canonical",
+    # 2026-07-24 B300 v9 calibration — the first v3 attempt publication with
+    # operational_timing populated).
+    payload = timing.to_dict()
+    snapshot = {name: value for name, value in payload.items()}
+    runner.QualificationTimingWitness.from_dict(payload)
+    assert payload == snapshot
+
     with pytest.raises(runner.QualificationRunnerError, match="total wall time"):
         replace(
             timing,
