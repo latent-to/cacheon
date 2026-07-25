@@ -633,6 +633,16 @@ class FinalizedIntakeStore:
                 status TEXT NOT NULL,
                 updated_block INTEGER NOT NULL
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS followed_weight_publications (
+                record_digest TEXT PRIMARY KEY,
+                sequence INTEGER NOT NULL UNIQUE,
+                projection_digest TEXT NOT NULL,
+                offer_digest TEXT NOT NULL,
+                offer_json TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                updated_block INTEGER NOT NULL
+            ) STRICT;
             """
         )
         reservation_columns = {
@@ -3901,9 +3911,300 @@ class SQLiteWeightPublicationJournal:
         return projection
 
 
+class SQLiteFollowerWeightPublicationJournal:
+    """Signer-only journal for authenticated shared weight offers.
+
+    This journal is deliberately separate from both the legacy V1 publication
+    journal and the V2 economic-debt journal. A follower owns chain signing and
+    readback, but it does not need a replica of the evaluator's settlement or
+    incentive-composition state merely to retain publication intent.
+    """
+
+    _HEAD_KEY = "followed_weight_publication_head"
+
+    def __init__(self, store: FinalizedIntakeStore, offer) -> None:
+        from optima.chain.weight_share import CurrentWeightOffer
+
+        if (
+            type(store) is not FinalizedIntakeStore
+            or type(offer) is not CurrentWeightOffer
+        ):
+            raise IntakeError("followed weight journal authority is not exactly typed")
+        if (
+            offer.projection.chain_scope_digest != store.scope.digest
+            or offer.projection.netuid != store.scope.netuid
+        ):
+            raise IntakeError("followed weight offer differs from the journal scope")
+        self.store = store
+        self.offer = offer
+        self.projection = offer.projection
+
+    @staticmethod
+    def _offer_from_json(encoded: str):
+        from optima.chain.weight_share import CurrentWeightOffer, WeightShareError
+
+        try:
+            offer = CurrentWeightOffer.from_dict(json.loads(encoded))
+        except (TypeError, ValueError, json.JSONDecodeError, WeightShareError) as exc:
+            raise IntakeError(f"followed weight offer is corrupt: {exc}") from None
+        return offer
+
+    @classmethod
+    def _read_head(
+        cls,
+        store: FinalizedIntakeStore,
+    ) -> tuple[str, str] | None:
+        row = store._db.execute(
+            "SELECT value FROM metadata WHERE key=?",
+            (cls._HEAD_KEY,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["value"])
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise IntakeError(
+                f"followed weight publication head is corrupt: {exc}"
+            ) from None
+        if type(value) is not dict or set(value) != {
+            "projection_digest",
+            "record_digest",
+        }:
+            raise IntakeError("followed weight publication head is malformed")
+        require_sha256_hex(value["projection_digest"], field="projection_digest")
+        require_sha256_hex(value["record_digest"], field="record_digest")
+        return value["projection_digest"], value["record_digest"]
+
+    def _head(self) -> tuple[str, str] | None:
+        return self._read_head(self.store)
+
+    def load(self) -> WeightPublicationRecord | None:
+        from optima.chain.weights import WeightPublicationRecord
+
+        head = self._head()
+        if head is None:
+            return None
+        row = self.store._db.execute(
+            "SELECT projection_digest,offer_digest,offer_json,record_json "
+            "FROM followed_weight_publications WHERE record_digest=?",
+            (head[1],),
+        ).fetchone()
+        if row is None:
+            raise IntakeError(
+                "followed weight publication head has no retained record"
+            )
+        try:
+            record = WeightPublicationRecord.from_dict(json.loads(row["record_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise IntakeError(
+                f"followed weight publication record is corrupt: {exc}"
+            ) from None
+        offer = self._offer_from_json(row["offer_json"])
+        if (
+            record.digest != head[1]
+            or record.projection_digest != head[0]
+            or row["projection_digest"] != head[0]
+            or offer.projection.digest != head[0]
+            or offer.digest != row["offer_digest"]
+        ):
+            raise IntakeError(
+                "followed weight publication head differs from retained authority"
+            )
+        seen: set[str] = set()
+        current = record
+        while True:
+            if current.digest in seen:
+                raise IntakeError("followed weight publication journal contains a cycle")
+            seen.add(current.digest)
+            prior = current.prior_record_digest
+            if prior is None:
+                break
+            predecessor = self.store._db.execute(
+                "SELECT record_json FROM followed_weight_publications "
+                "WHERE record_digest=?",
+                (prior,),
+            ).fetchone()
+            if predecessor is None:
+                raise IntakeError(
+                    "followed weight publication predecessor is missing"
+                )
+            try:
+                current = WeightPublicationRecord.from_dict(
+                    json.loads(predecessor["record_json"])
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise IntakeError(
+                    f"followed weight publication predecessor is corrupt: {exc}"
+                ) from None
+            if current.digest != prior:
+                raise IntakeError(
+                    "followed weight publication predecessor digest differs"
+                )
+        return record
+
+    @staticmethod
+    def _require_monotonic_offer(current, proposed) -> None:
+        from optima.chain.weight_share import LANE_LEGACY_V1
+
+        if (
+            proposed.projection.chain_scope_digest
+            != current.projection.chain_scope_digest
+            or proposed.projection.netuid != current.projection.netuid
+        ):
+            raise IntakeError("followed weight offer changed chain scope")
+        if (
+            proposed.projection.validator_hotkey
+            != current.projection.validator_hotkey
+        ):
+            raise IntakeError("followed weight offer changed signer authority")
+        if proposed.projection.effective_block < current.projection.effective_block:
+            raise IntakeError("followed weight offer effective block regressed")
+        if (
+            proposed.projection.effective_block
+            == current.projection.effective_block
+            and proposed.digest != current.digest
+        ):
+            raise IntakeError(
+                "followed weight offer conflicts at the retained effective block"
+            )
+        if current.lane != LANE_LEGACY_V1 and proposed.lane == LANE_LEGACY_V1:
+            raise IntakeError("followed weight offer lane regressed to legacy V1")
+
+    def compare_and_swap(
+        self,
+        expected_record_digest: str | None,
+        replacement: WeightPublicationRecord,
+    ) -> None:
+        from optima.chain.weights import WeightPublicationRecord
+
+        if type(replacement) is not WeightPublicationRecord:
+            raise IntakeError(
+                "followed weight publication replacement is not exactly typed"
+            )
+        if expected_record_digest is not None:
+            require_sha256_hex(expected_record_digest, field="expected_record_digest")
+        if replacement.prior_record_digest != expected_record_digest:
+            raise IntakeError(
+                "followed weight publication replacement does not bind the CAS head"
+            )
+        with self.store._transaction():
+            head = self._head()
+            observed = None if head is None else head[1]
+            if observed != expected_record_digest:
+                raise IntakeError(
+                    "followed weight publication journal compare-and-swap failed"
+                )
+            previous = self.store._db.execute(
+                "SELECT offer_digest,offer_json FROM followed_weight_publications "
+                "WHERE projection_digest=? ORDER BY sequence DESC LIMIT 1",
+                (replacement.projection_digest,),
+            ).fetchone()
+            if replacement.projection_digest == self.offer.projection.digest:
+                offer = self.offer
+                if previous is not None:
+                    retained = self._offer_from_json(previous["offer_json"])
+                    if (
+                        retained.digest != previous["offer_digest"]
+                        or retained.to_dict() != offer.to_dict()
+                    ):
+                        raise IntakeError(
+                            "one followed projection has conflicting retained offers"
+                        )
+            elif previous is not None:
+                offer = self._offer_from_json(previous["offer_json"])
+                if offer.digest != previous["offer_digest"]:
+                    raise IntakeError("retained followed weight offer digest differs")
+            else:
+                raise IntakeError(
+                    "followed publication record has no retained offer"
+                )
+            if head is not None and offer.projection.digest != head[0]:
+                current_row = self.store._db.execute(
+                    "SELECT offer_digest,offer_json FROM followed_weight_publications "
+                    "WHERE record_digest=?",
+                    (head[1],),
+                ).fetchone()
+                if current_row is None:
+                    raise IntakeError(
+                        "followed weight publication head has no retained offer"
+                    )
+                current_offer = self._offer_from_json(current_row["offer_json"])
+                if current_offer.digest != current_row["offer_digest"]:
+                    raise IntakeError(
+                        "retained followed weight offer digest differs"
+                    )
+                self._require_monotonic_offer(current_offer, offer)
+            sequence = self.store._db.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 AS value "
+                "FROM followed_weight_publications"
+            ).fetchone()["value"]
+            record_json = json.dumps(
+                replacement.to_dict(), separators=(",", ":"), sort_keys=True
+            )
+            offer_json = json.dumps(
+                offer.to_dict(), separators=(",", ":"), sort_keys=True
+            )
+            updated_block = max(
+                replacement.submit_block,
+                replacement.confirmed_block,
+                replacement.confirmed_last_update,
+            )
+            self.store._db.execute(
+                "INSERT INTO followed_weight_publications("
+                "record_digest,sequence,projection_digest,offer_digest,offer_json,"
+                "record_json,status,updated_block) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    replacement.digest,
+                    sequence,
+                    replacement.projection_digest,
+                    offer.digest,
+                    offer_json,
+                    record_json,
+                    replacement.status,
+                    updated_block,
+                ),
+            )
+            encoded = json.dumps(
+                {
+                    "projection_digest": replacement.projection_digest,
+                    "record_digest": replacement.digest,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            self.store._db.execute(
+                "INSERT INTO metadata(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self._HEAD_KEY, encoded),
+            )
+
+    def retained_projection(self, projection_digest: str) -> WeightProjection:
+        from optima.chain.weights import WeightProjection
+
+        require_sha256_hex(projection_digest, field="projection_digest")
+        row = self.store._db.execute(
+            "SELECT offer_digest,offer_json FROM followed_weight_publications "
+            "WHERE projection_digest=? ORDER BY sequence DESC LIMIT 1",
+            (projection_digest,),
+        ).fetchone()
+        if row is None:
+            raise IntakeError("followed weight projection is not retained")
+        offer = self._offer_from_json(row["offer_json"])
+        if (
+            offer.digest != row["offer_digest"]
+            or offer.projection.digest != projection_digest
+        ):
+            raise IntakeError("retained followed weight projection digest differs")
+        projection = offer.projection
+        if type(projection) is not WeightProjection:
+            raise IntakeError("retained followed weight projection is untyped")
+        return projection
+
+
 __all__ = [
     "CrownedSettlement", "EvaluationStackState", "FinalizedArrival",
     "FinalizedIntakeStore", "IntakeError",
-    "IntakePolicy", "IntakeReservation", "IntakeScope", "SQLiteWeightPublicationJournal",
+    "IntakePolicy", "IntakeReservation", "IntakeScope",
+    "SQLiteFollowerWeightPublicationJournal", "SQLiteWeightPublicationJournal",
     "SettlementLease",
 ]

@@ -307,6 +307,108 @@ transport/chain failures and stops on nonretryable publication faults. Watch mod
 `--dry-run`, `--reconcile-only`, and `--release-hold`; signer-free inspection remains a
 deliberate one-shot operation.
 
+### Shared current-weights endpoint
+
+Roles are split so the **eval host never publishes weights on-chain**:
+
+1. **Eval** builds a `CurrentWeightOffer` — legacy V1 `WeightProjection`, or a
+   full V2 `DebtWeightPublicationBinding` (economic vector + signer-facing
+   `weights_ppm`) when incentive composition is active — and **PUTs** it to
+   `serve-weights` with rotatable HMAC credentials (`push-weight-offer`).
+2. **Cheap `serve-weights`** persists the offer (object store or local file),
+   accepts authenticated push, verifies the persisted push envelope, and serves
+   permit-gated `GET /v1/current-weights`.
+3. **Follower validators** fetch the offer, rebind the signer hotkey, and
+   publish via the same commit-reveal reconciler (`follow-weights`). Debt-lane
+   offers carry the binding followers need so on-chain `weights_ppm` match the
+   debt/composition projection; the signer-only journal does not require a
+   replica of evaluator economic state.
+
+```bash
+# one-time: mint credentials shared by eval + serve (mode 0600)
+optima mint-push-credentials --path /secret/push-credentials.json
+
+# cheap host (object store + push enabled)
+optima serve-weights \
+  --object-store-provider hippius \
+  --object-store-bucket optima-weights \
+  --object-store-prefix sn307 \
+  --push-credentials /secret/push-credentials.json \
+  --netuid <NETUID> \
+  --network <NETWORK_OR_WSS_URL> \
+  --wallet default \
+  --hotkey weights-gateway \
+  --host 0.0.0.0 \
+  --port 8080
+
+# eval host: build offer + HTTP push only (no chain wallet / set_weights)
+optima push-weight-offer \
+  --intake-db chain_intake/intake.sqlite3 \
+  --netuid <NETUID> \
+  --network <NETWORK_OR_WSS_URL> \
+  --url http://weights-gateway:8080 \
+  --push-credentials /secret/push-credentials.json \
+  --attribution-hotkey <PLACEHOLDER_SS58> \
+  --half-life-blocks <BLOCKS> \
+  --discovery-lifetime-blocks <BLOCKS> \
+  --discovery-pool-ppm <PPM>
+
+# signer validators: GET + on-chain publish
+optima follow-weights \
+  --url http://weights-gateway:8080 \
+  --journal-db chain_intake/follow_weights.sqlite3 \
+  --netuid <NETUID> \
+  --network <NETWORK_OR_WSS_URL> \
+  --wallet default \
+  --hotkey follower \
+  --refresh-blocks <BLOCKS> \
+  --expected-authority <WEIGHTS_GATEWAY_HOTKEY> \
+  --watch
+```
+
+Rotate credentials with `mint-push-credentials --retire-active` (add a new active
+secret, retire the old id, reload serve). Eval can also inject a single active
+secret without a file via `OPTIMA_WEIGHT_PUSH_KEY` (optional id:
+`OPTIMA_WEIGHT_PUSH_CREDENTIAL_ID`, default `env`), or point at a credentials
+JSON with `OPTIMA_WEIGHT_PUSH_CREDENTIALS`. Precedence: `--push-credentials` →
+file env → inline key. Swap object-store providers without code
+changes: `--object-store-provider s3|minio|local` (and endpoint/region/credentials),
+or `OPTIMA_OBJECT_STORE_*`. `OPTIMA_OBJECT_STORE_PROVIDER` activates an
+environment-only configuration; explicit command flags take precedence.
+Install the optional client with
+`pip install -e ".[object-store]"` (boto3, Apache-2.0).
+
+`GET /v1/current-weights` requires a request signed by the caller's hotkey over a
+fresh timestamp; the server checks live `validator_permit` and returns an
+authority-signed body. `PUT /v1/current-weights` accepts only active push
+credentials. The accepted offer is stored inside an HMAC envelope binding the
+credential id and exact offer digest. A push-enabled server verifies that
+envelope before it signs a GET response, and the push client requires a fresh
+HMAC-authenticated acknowledgement of the request timestamp, credential,
+offer, and projection digests. A network intermediary or storage writer
+without a retained push secret can cause unavailability, and a storage writer
+can replay an old valid envelope, but neither can manufacture a successful
+push acknowledgement or a new gateway-authenticated vector. Valid-envelope
+replay is additionally bounded by follower freshness and the follower's
+monotonic publication journal.
+
+`follow-weights` permits initial catch-up only when the offer is no more than
+`--refresh-blocks` behind the live finalized metagraph and the signer and every
+weighted recipient retain their UIDs. Its dedicated
+`followed_weight_publications` journal accepts both V1 and V2 offers, refuses
+block rollback, same-block equivocation, signer changes, and V2-to-V1 lane
+regression, and should be one database per signer. Retryable object-store or
+gateway failures remain retryable through HTTP `503`.
+
+When `serve-weights` is deliberately run without push credentials, raw local
+or object-store bytes are an operator-trusted source; the gateway cannot prove
+eval provenance for that mode. A combined `set-weights` / object-store upload
+path remains available for legacy single-host signers. It publishes only after
+a live reconciliation returns `pending` or `confirmed`, never after dry-run,
+reconcile-only, or a hold, and completes the remote current-pointer write while
+the exclusive publication journal is still locked. It is not the eval push
+path.
+
 ## Finite-debt V2
 
 V2 is an explicit one-way activation, not a reinterpretation of legacy claims. Before

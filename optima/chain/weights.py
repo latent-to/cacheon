@@ -28,6 +28,12 @@ class WeightPublicationError(RuntimeError):
     retryable = False
 
 
+class StaleWeightProjectionError(WeightPublicationError):
+    """A shared projection is valid but too old to begin following safely."""
+
+    retryable = True
+
+
 @dataclass(frozen=True)
 class WeightProjection:
     """Exact settlement output accepted by the single control-plane signer."""
@@ -467,6 +473,7 @@ def reconcile_weight_publication(
     dry_run: bool = False,
     reconcile_only: bool = False,
     allow_stale_initial: bool = False,
+    max_stale_initial_blocks: int | None = None,
     require_current_crown: bool = True,
 ) -> WeightPublicationResult:
     """Reconcile and optionally publish one exact projection.
@@ -487,6 +494,18 @@ def reconcile_weight_publication(
         raise WeightPublicationError("reconcile-only mode is malformed")
     if type(allow_stale_initial) is not bool:
         raise WeightPublicationError("stale-initial authority is malformed")
+    if (
+        max_stale_initial_blocks is not None
+        and (
+            type(max_stale_initial_blocks) is not int
+            or max_stale_initial_blocks <= 0
+        )
+    ):
+        raise WeightPublicationError("stale-initial block limit is malformed")
+    if max_stale_initial_blocks is not None and not allow_stale_initial:
+        raise WeightPublicationError(
+            "stale-initial block limit requires stale-initial authority"
+        )
     if type(require_current_crown) is not bool:
         raise WeightPublicationError("current-crown requirement is malformed")
     if reconcile_only and dry_run:
@@ -531,6 +550,14 @@ def reconcile_weight_publication(
         if not allow_stale_initial:
             raise WeightPublicationError(
                 "weight projection is stale for the immediately refreshed metagraph"
+            )
+        stale_blocks = live_metagraph.block - projection.effective_block
+        if (
+            max_stale_initial_blocks is not None
+            and stale_blocks > max_stale_initial_blocks
+        ):
+            raise StaleWeightProjectionError(
+                "shared weight projection exceeds the initial freshness window"
             )
         if not _authority_uids_unchanged(
             projection, bound_metagraph, live_metagraph
@@ -1026,6 +1053,7 @@ __all__ = [
     "WeightPublicationError",
     "WeightPublicationJournal",
     "ReopenableWeightPublicationJournal",
+    "StaleWeightProjectionError",
     "WeightPublicationRecord",
     "WeightPublicationResult",
     "release_weight_publication_hold",

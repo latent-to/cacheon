@@ -30,7 +30,11 @@ installed `optima` console script resolves to the same parser.
 | `chain-incentive-shadow` | policy operator | signer-free evidence | Project explicit synthetic registered-CROWN debt against finalized membership |
 | `chain-incentive-composition-shadow` | policy operator | signer-free evidence | Project explicit synthetic CROWN and discovery debt against finalized membership |
 | `chain-activate-incentives` | policy operator | wallet-free durable transition | Atomically activate one independently approved campaign/composition |
-| `set-weights` | validator | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation |
+| `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation |
+| `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
+| `push-weight-offer` | eval | peer weight distribution | Build V1/V2 offer and HTTP-push; never chain-publishes |
+| `serve-weights` | weights gateway | peer weight distribution | Serve/store the offer; optional authenticated PUT from eval |
+| `follow-weights` | signer | peer weight publication | Fetch the shared offer and publish through the commit-reveal reconciler |
 | `set-debt-weights` | validator | active-V2 production control plane | Publish, confirm, and debit the next gapless finite-debt boundary |
 | `model-provision` | release operator | production artifact | Seal model bytes into a content-addressed publication and receipt |
 | `release-verify` | release consumer | production verification | Reopen a signed Engine release under an externally trusted key |
@@ -201,6 +205,78 @@ to that registered bootstrap identity and fails closed as soon as normal reward 
 exists. `--watch --interval <seconds>` runs repeated reconciliations with bounded retry
 rules; it cannot be combined with dry-run, reconcile-only, or hold release. Remove the
 burn hotkey before restarting after the first CROWN.
+
+Only a live signer pass whose reconciliation returns `pending` or `confirmed`
+writes the exact publishable projection to `<intake-db>.current_weights.json`
+(or `--weight-offer-path`) and, when configured, to a swappable object store
+(`--object-store-provider hippius|s3|minio|local`). Dry-run, reconcile-only,
+and held passes do not advance either shared offer. The object-store write is
+synchronous while the intake database's exclusive controller lock is held, so
+a later controller process cannot be overtaken by an older background upload.
+Prefer the eval/serve/follow split below when eval must not hold a chain-signing
+weight path: `push-weight-offer` → `serve-weights` → `follow-weights`.
+
+### `mint-push-credentials` / `push-weight-offer` / `serve-weights` / `follow-weights`
+
+```bash
+python -m optima.cli mint-push-credentials --path /secret/push-credentials.json
+
+python -m optima.cli serve-weights \
+  --object-store-provider hippius \
+  --object-store-bucket optima-weights \
+  --push-credentials /secret/push-credentials.json \
+  --network <network> --netuid <netuid> \
+  --wallet default --hotkey weights-gateway \
+  --host 0.0.0.0 --port 8080
+
+python -m optima.cli push-weight-offer \
+  --intake-db chain_intake/intake.sqlite3 \
+  --network <network> --netuid <netuid> \
+  --url http://weights-gateway:8080 \
+  --push-credentials /secret/push-credentials.json \
+  --attribution-hotkey <placeholder-ss58> \
+  --half-life-blocks <blocks> \
+  --discovery-lifetime-blocks <blocks> \
+  --discovery-pool-ppm <ppm>
+
+python -m optima.cli follow-weights \
+  --url http://weights-gateway:8080 \
+  --network <network> --netuid <netuid> \
+  --wallet default --hotkey follower \
+  --refresh-blocks <blocks> \
+  --expected-authority <weights-gateway-hotkey> \
+  --watch
+```
+
+`push-weight-offer` is the eval path: it builds a V2 debt/composition offer when
+incentive composition is active (else legacy V1), and HTTP-PUTs it. It never
+opens a weight-signing wallet or calls `set_weights`. Credentials resolve from
+`--push-credentials`, else `OPTIMA_WEIGHT_PUSH_CREDENTIALS` (JSON path), else
+`OPTIMA_WEIGHT_PUSH_KEY` (+ optional `OPTIMA_WEIGHT_PUSH_CREDENTIAL_ID`).
+`serve-weights` exposes `GET /v1/current-weights` (permit + hotkey signature)
+and optional `PUT /v1/current-weights` (same credential resolution). A
+credentialed PUT stores an HMAC-authenticated envelope, and a push-enabled
+server verifies that envelope before signing any GET response. The push client
+accepts only a fresh HMAC-authenticated acknowledgement binding its request
+timestamp, credential, offer, and projection digests; an HTTP intermediary
+cannot manufacture success without the push secret. Server-side
+storage/transport failures remain retryable.
+
+`follow-weights` rebinds the offer to the follower hotkey and publishes through
+`reconcile_weight_publication` / commit-reveal. A fresh follower accepts an
+older projection only while its age is at most `--refresh-blocks` and every
+authority-relevant UID is unchanged. It retains publication chronology in a
+signer-only journal, so a V2 follower does not need the evaluator's settlement
+or composition database. Use one `--journal-db` per signer. Debt-lane offers
+carry the full `DebtWeightPublicationBinding` so follower `weights_ppm` match
+the economic projection.
+
+Provider swap is config-only via `--object-store-provider` /
+`OPTIMA_OBJECT_STORE_*`; an environment-only
+`OPTIMA_OBJECT_STORE_PROVIDER` is sufficient, while explicit flags take
+precedence over environment values. The optional S3-compatible dependency is
+`pip install -e ".[object-store]"` (boto3, Apache-2.0). See
+[Settlement and weights](../validator-guide/settlement-and-weights.md#shared-current-weights-endpoint).
 
 ### Incentive shadows
 
