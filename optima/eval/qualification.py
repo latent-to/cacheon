@@ -1929,11 +1929,21 @@ def _validate_teacher_source(
                 role_evidence.tokens,
                 strict=True,
             ):
-                expected = distribution_from_f32_logprobs(
-                    support,
-                    teacher.support_logprobs,
-                    true_argmax_token_id=teacher.true_argmax_token_id,
-                )
+                if support:
+                    expected = distribution_from_f32_logprobs(
+                        support,
+                        teacher.support_logprobs,
+                        true_argmax_token_id=teacher.true_argmax_token_id,
+                    )
+                else:
+                    # Width-0: no retained support anywhere in the exchange.
+                    # The artifact must record teacher absence, and T must not
+                    # smuggle support logprobs past an empty request.
+                    expected = None
+                    if teacher.support_logprobs:
+                        raise QualificationError(
+                            "raw teacher evidence differs from pristine T"
+                        )
                 if (
                     token.token_id != output_id
                     or token.target_nll != target_nll_from_f32(teacher.target_logprob)
