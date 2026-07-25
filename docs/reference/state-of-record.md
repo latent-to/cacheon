@@ -142,7 +142,14 @@ through the session protocol, worker, and binary evidence codec), and a
 sealed conditioning slowdown bound fails a candidate whose unscored
 conditioning span (the host-visible prefill surface) regresses past the
 baseline's at equal warmth position — graded from spans already sealed in
-every read, adding no measurement time. The
+every read, adding no measurement time. The companion quality mode
+(decided 2026-07-25) is teacher-NLL-only: a zero top-k width in the
+qualification profile and raw quality binding selects it end to end —
+empty support rows through the reference protocol and worker, explicit
+null distribution/KL evidence with uniformity enforced at every layer,
+and typed refusal of any threshold policy that names a distribution
+metric against it. Distribution-level numerics coverage remains with the
+in-engine slot audit stage. The
 supporting instrument authority, `optima/eval/box_certificate.py`, seals
 per-session stock-vs-stock null floors, a resolved known-magnitude effect,
 double-bounded expiry, and typed instrument-invalidation records. Overnight

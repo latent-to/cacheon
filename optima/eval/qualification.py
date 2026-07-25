@@ -1143,7 +1143,10 @@ class QualificationProfile(_Canonical):
         if not 0 < threshold <= 1_000_000:
             raise QualificationError("nll_tail_threshold is outside its supported bound")
         object.__setattr__(self, "tokens_per_prompt", _integer(self.tokens_per_prompt, "tokens", 1))
-        object.__setattr__(self, "topk_width", _integer(self.topk_width, "top-k width", 1))
+        # Width zero is the teacher-NLL-only quality mode: no candidate
+        # distributions are retained and no distribution metrics may be
+        # calibrated; the width is digest-bound so the mode cannot drift.
+        object.__setattr__(self, "topk_width", _integer(self.topk_width, "top-k width", 0))
         object.__setattr__(
             self,
             "hidden_tasks_per_prompt",
@@ -1154,6 +1157,14 @@ class QualificationProfile(_Canonical):
         )
         if self.hidden_tasks_required != (self.hidden_tasks_per_prompt > 0):
             raise QualificationError("hidden-task requirement and count disagree")
+        if self.topk_width == 0 and set(self.required_quality_metrics) & {
+            "topk_kl",
+            "argmax_rate",
+            "coverage_dev",
+        }:
+            raise QualificationError(
+                "teacher-NLL-only profiles cannot require distribution metrics"
+            )
         object.__setattr__(
             self, "minimum_prompt_count", _integer(self.minimum_prompt_count, "prompts", 2)
         )

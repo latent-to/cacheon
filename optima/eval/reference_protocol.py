@@ -109,8 +109,8 @@ class ReferenceRoleInput:
         )
         if not outputs or len(supports) != len(outputs):
             raise ReferenceProtocolError("role output/support token coverage differs")
-        if any(not row or row != tuple(sorted(set(row))) for row in supports):
-            raise ReferenceProtocolError("support rows must be nonempty, unique, and token-sorted")
+        if any(row != tuple(sorted(set(row))) for row in supports):
+            raise ReferenceProtocolError("support rows must be unique and token-sorted")
         object.__setattr__(self, "output_ids", outputs)
         object.__setattr__(self, "supports", supports)
 
@@ -156,7 +156,7 @@ class ReferenceRequest:
             raise ReferenceProtocolError("session, request, and nonce bindings must be distinct")
         object.__setattr__(self, "request_index", _integer(self.request_index, "request index", 0, MAX_INDEX))
         object.__setattr__(self, "tokens_per_prompt", _integer(self.tokens_per_prompt, "token count", 1, MAX_TOKENS))
-        object.__setattr__(self, "support_width", _integer(self.support_width, "support width", 1, MAX_SUPPORT_WIDTH))
+        object.__setattr__(self, "support_width", _integer(self.support_width, "support width", 0, MAX_SUPPORT_WIDTH))
         prompts = _tuple(self.prompts, "reference prompts")
         if not 1 <= len(prompts) <= MAX_PROMPTS or any(type(row) is not ReferencePromptInput for row in prompts):
             raise ReferenceProtocolError("reference prompt coverage is invalid")
@@ -195,8 +195,6 @@ class ReferenceTokenEvidence:
         object.__setattr__(self, "target_logprob", _f32(self.target_logprob, "target logprob"))
         object.__setattr__(self, "true_argmax_token_id", _integer(self.true_argmax_token_id, "true argmax token", 0, MAX_TOKEN_ID))
         support = tuple(_f32(value, "support logprob") for value in _tuple(self.support_logprobs, "support logprobs"))
-        if not support:
-            raise ReferenceProtocolError("support logprobs must be nonempty")
         object.__setattr__(self, "support_logprobs", support)
 
 
@@ -313,7 +311,7 @@ def decode_reference_request(frame: bytes) -> ReferenceRequest:
         raise ReferenceProtocolError("reference request prompt count is invalid")
     _integer(request_index, "request index", 0, MAX_INDEX)
     _integer(token_count, "token count", 1, MAX_TOKENS)
-    _integer(support_width, "support width", 1, MAX_SUPPORT_WIDTH)
+    _integer(support_width, "support width", 0, MAX_SUPPORT_WIDTH)
     offset = _REQUEST_HEADER.size
 
     def take(size: int) -> bytes:

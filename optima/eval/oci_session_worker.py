@@ -970,6 +970,12 @@ def _reference_role_evidence(
     outputs = getattr(engine, "generate", None)
     if not callable(outputs):
         raise SessionProtocolError("pristine reference does not expose generate()")
+    # Width-zero (teacher-NLL-only) requests carry no support tokens: the
+    # teacher still scores every retained target and its own argmax, but no
+    # targeted support gather is asked of the engine at all.
+    targeted_kwargs = (
+        {"token_ids_logprob": support_ids} if any(support_ids) else {}
+    )
     rows = outputs(
         input_ids=[
             prefix + response
@@ -979,7 +985,7 @@ def _reference_role_evidence(
         return_logprob=True,
         logprob_start_len=[max(0, len(prefix) - 1) for prefix in prompt_ids],
         top_logprobs_num=1,
-        token_ids_logprob=support_ids,
+        **targeted_kwargs,
     )
     if isinstance(rows, dict):
         rows = [rows]
@@ -995,6 +1001,10 @@ def _reference_role_evidence(
         targets = metadata.get("input_token_logprobs")
         top_one = metadata.get("input_top_logprobs")
         targeted = metadata.get("input_token_ids_logprobs")
+        if targeted is None and not requested:
+            # No support gather was requested (teacher-NLL-only): the
+            # evidence carries exact empty support rows.
+            targeted = [[] for _ in range(len(targets or []))]
         if not all(isinstance(value, list) for value in (targets, top_one, targeted)):
             raise SessionProtocolError("pristine reference omitted teacher logprobs")
         targets = targets[-len(response):]

@@ -2439,16 +2439,21 @@ def _rollout(
         by_token = {row[1]: float(row[0]) for row in raw_position}
         if tuple(sorted(by_token)) != support:
             raise QualificationRunnerError("rollout support differs from its T request")
-        rollout = distribution_from_f32_logprobs(
-            support,
-            tuple(by_token[token] for token in support),
-            true_argmax_token_id=raw_position[0][1],
-        )
-        teacher_distribution = distribution_from_f32_logprobs(
-            support,
-            teacher.support_logprobs,
-            true_argmax_token_id=teacher.true_argmax_token_id,
-        )
+        if support:
+            rollout = distribution_from_f32_logprobs(
+                support,
+                tuple(by_token[token] for token in support),
+                true_argmax_token_id=raw_position[0][1],
+            )
+            teacher_distribution = distribution_from_f32_logprobs(
+                support,
+                teacher.support_logprobs,
+                true_argmax_token_id=teacher.true_argmax_token_id,
+            )
+        else:
+            # Teacher-NLL-only mode (topk_width 0): the retained frames carry
+            # no top-k and no distribution evidence exists to project.
+            rollout = teacher_distribution = None
         tokens.append(RawTokenEvidence(
             position,
             output_id,

@@ -68,10 +68,19 @@ per-read window-scatter bound (median absolute deviation about the median,
 relative): a read whose own scatter exceeds the bound refuses to produce a
 scored rate at all, in live grading and in every reopen, so an unfit
 measurement cannot be graded anywhere. Version-3 timed reads request no
-log-probability collection (`top_logprobs_num` 0): quality evidence comes
-from separate untimed reads and from teacher-forced scoring of the retained
-generated tokens under the pristine engine, so evaluation work never shares
-the clock with a speed measurement. A version-3 policy also seals a
+log-probability collection (`top_logprobs_num` 0): quality becomes the
+teacher-NLL-only mode, digest-bound by a zero top-k width in the
+qualification profile and the raw quality binding. The pristine engine
+teacher-force-scores the exact retained token stream (target NLL and the
+teacher's own argmax per position) and hidden tasks grade the same retained
+outputs — the text the candidate was fast at is the text it is judged on,
+and no candidate code executes during scoring. No candidate distributions
+are retained, so no distribution evidence exists: absence is explicit
+(null, uniformly enforced at every layer), never zeros, and a threshold
+policy naming a distribution metric (`topk_kl`, `argmax_rate`,
+`coverage_dev`) against teacher-NLL-only evidence refuses outright.
+Distribution-level numerics coverage remains with the in-engine slot audit
+stage. Evaluation work never shares the clock with a speed measurement. A version-3 policy also seals a
 conditioning slowdown bound: the conditioning span is the only place a
 candidate's prefill cost is host-visible, so the candidate's conditioning
 seconds must stay within the bound of the baseline's, compared at equal

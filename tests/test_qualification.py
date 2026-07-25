@@ -1260,3 +1260,35 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
             reference_execution=reference_execution,
             reference_request_sha256=reference_request_sha256,
         )
+
+
+def test_teacher_nll_only_profile_admits_width_zero_and_refuses_kl_metrics():
+    # Option B (2026-07-25): topk_width 0 selects teacher-NLL-only quality.
+    # The mode is digest-bound, and a profile cannot simultaneously declare
+    # a distribution metric it retains no evidence for.
+    reference = _reference()
+    requirement = _requirement(atomic=False)
+
+    def profile(width: int, metrics: tuple[str, ...]) -> QualificationProfile:
+        return QualificationProfile(
+            reference,
+            _d("calibration-context"),
+            _d("calibration"),
+            requirement.digest,
+            metrics,
+            "2",
+            10,
+            width,
+            2,
+            _d("support-policy"),
+            _d("hidden-task-policy"),
+            _d("runtime-resource-policy"),
+            True,
+            2,
+        )
+
+    nll_only = profile(0, ("mean_nll", "task_score"))
+    assert QualificationProfile.from_dict(nll_only.to_dict()) == nll_only
+    assert nll_only.topk_width == 0
+    with pytest.raises(QualificationError, match="cannot require distribution metrics"):
+        profile(0, ("mean_nll", "task_score", "topk_kl"))
