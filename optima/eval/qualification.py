@@ -1505,9 +1505,16 @@ def _trajectory_rows(lifecycle: object):
                     or any(len(position) != plan.top_logprobs_num for position in evidence.top_logprobs)
                 ):
                     raise QualificationError("trajectory token/top-k coverage differs from workload")
-                topk = []
-                for position in evidence.top_logprobs:
-                    topk.append(_validated_topk_position(position))
+                # A width-0 plan retains one empty support row per token; the
+                # coverage check above already pins every row to length zero,
+                # and the digest must seal that absence rather than reject it.
+                if plan.top_logprobs_num:
+                    topk = [
+                        _validated_topk_position(position)
+                        for position in evidence.top_logprobs
+                    ]
+                else:
+                    topk = [[] for _ in evidence.top_logprobs]
                 frames.append({"output_ids": list(evidence.output_ids), "top_logprobs": topk})
             rows.append((occurrence, frames))
     return workload, tuple(rows)
@@ -1785,6 +1792,12 @@ def selected_trajectory_projection_digest(
     def project(frame):
         distributions = []
         for position in frame["top_logprobs"]:
+            if not position:
+                # Width-0 evidence: the raw-artifact side records one None per
+                # token (raw_trajectory_projection_digest); the shapes must
+                # byte-match or the raw-quality re-verification fails.
+                distributions.append(None)
+                continue
             by_token = sorted(position, key=lambda row: row[1])
             distributions.append(
                 distribution_from_f32_logprobs(

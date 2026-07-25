@@ -985,6 +985,57 @@ def test_trajectory_projection_rejects_subset_relabel_and_short_topk(tmp_path: P
         cohort_trajectory_digest(broken)
 
 
+def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path: Path):
+    # Option B: a width-0 lifecycle retains one empty support row per token.
+    # The cohort digest must seal that absence (2026-07-25 calibration
+    # failure: _validated_topk_position rejected the empty rows the coverage
+    # check had just required), and the projection digest must byte-match the
+    # raw-artifact side's one-None-per-token rollout_topk shape
+    # (raw_trajectory_projection_digest) or live raw-quality re-verification
+    # fails after the measurement has already run.
+    from tests.test_scoring import _lifecycle
+    from optima.eval.reference_quality import retained_support_policy_digest
+
+    lifecycle, delta, _case, _calibration, _runtime_policy = _lifecycle(
+        tmp_path, top_logprobs_num=0
+    )
+    cohort = cohort_trajectory_digest(lifecycle)
+
+    row = lifecycle.candidates[0]
+    session = row.execution.session
+    batches = list(session.batches)
+    evidence = batches[1].evidence
+    prompt = evidence.prompts[0]
+    corrupted = replace(prompt, output_ids=(999,) + prompt.output_ids[1:])
+    batches[1] = replace(
+        batches[1], evidence=replace(evidence, prompts=(corrupted,))
+    )
+    changed = replace(
+        lifecycle,
+        candidates=(replace(row, execution=replace(
+            row.execution, session=replace(session, batches=tuple(batches))
+        )),),
+    )
+    assert cohort_trajectory_digest(changed) != cohort
+
+    prompts = lifecycle_prompt_digests(lifecycle)
+    selected = tuple(sorted(prompts[:2]))
+    projection = selected_trajectory_projection_digest(
+        lifecycle, selected_delta_digest=delta, selected_prompt_digests=selected
+    )
+    rollout = {"output_ids": list(range(10)), "rollout_topk": [None] * 10}
+    assert projection == canonical_digest(
+        "optima.qualification.selected-trajectory-projection",
+        {
+            "support_policy_digest": retained_support_policy_digest(),
+            "prompts": [
+                {"prompt": digest, "rollouts": [rollout, rollout, rollout]}
+                for digest in selected
+            ],
+        },
+    )
+
+
 def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
     from optima.eval.qualification import _selected_prompt_texts, _trajectory_rows
     from optima.eval.calibration import CalibrationContext
