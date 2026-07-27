@@ -132,4 +132,10 @@ python -m mkdocs serve
 ```
 
 The same checks run in GitHub Actions. Pull requests build the site without
-deploying it; a successful push to `main` publishes the GitHub Pages artifact.
+deploying it. After those checks pass on `main`, changes under `docs/` or to
+`mkdocs.yml` request a rebuild of the Cacheon frontend through the
+`CACHEON_FRONTEND_DEPLOY_HOOK_URL` repository secret. Publishing fails closed
+when that secret is missing or Cloudflare does not return an accepted build
+identifier. The workflow then waits for `cacheon.ai` to report an imported
+Cacheon revision that contains the triggering commit, so an accepted build that
+fails to reach production cannot silently leave documentation stale.

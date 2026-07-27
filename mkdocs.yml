@@ -2,7 +2,7 @@ site_name: Optima
 site_description: >-
   Engineering documentation for Optima's contribution, evaluation, settlement,
   and release systems.
-site_url: https://latent-to.github.io/cacheon/
+site_url: https://cacheon.ai/docs/
 docs_dir: docs
 site_dir: site
 # Developer-private operational notes can exist in a local checkout but are
