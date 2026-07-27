@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pages-${{ github.workflow }}-${{ github.ref }}
+  group: docs-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -40,28 +40,111 @@ jobs:
       - name: Build documentation
         run: python -m mkdocs build --strict
 
-      - name: Configure GitHub Pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-
-      - name: Upload GitHub Pages artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
-        with:
-          path: site
-
-  deploy:
-    name: Deploy from main
+  publish:
+    name: Request frontend rebuild
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 15
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Check out repository history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect published documentation changes
+        id: docs
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          NULL_SHA="0000000000000000000000000000000000000000"
+          if [ "$BEFORE_SHA" = "$NULL_SHA" ] || ! git cat-file -e "$BEFORE_SHA^{commit}"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "The previous revision is unavailable; requesting a safe rebuild."
+          elif git diff --quiet "$BEFORE_SHA" "$AFTER_SHA" -- docs mkdocs.yml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No published documentation inputs changed."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Cacheon frontend deployment
+        if: steps.docs.outputs.changed == 'true'
+        env:
+          CACHEON_FRONTEND_DEPLOY_HOOK_URL: ${{ secrets.CACHEON_FRONTEND_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$CACHEON_FRONTEND_DEPLOY_HOOK_URL" ]; then
+            echo "::error::CACHEON_FRONTEND_DEPLOY_HOOK_URL is not configured; refusing to leave canonical docs unpublished."
+            exit 1
+          fi
+
+          response="$(curl \
+            --fail \
+            --max-time 30 \
+            --proto '=https' \
+            --request POST \
+            --retry 3 \
+            --retry-all-errors \
+            --show-error \
+            --silent \
+            "$CACHEON_FRONTEND_DEPLOY_HOOK_URL")"
+
+          build_uuid="$(
+            jq --exit-status --raw-output \
+              'select(.success == true) | .result.build_uuid | select(type == "string" and length > 0)' \
+              <<<"$response"
+          )" || {
+            echo "::error::Cloudflare did not accept the frontend build request."
+            jq --compact-output '{ errors, messages }' <<<"$response" || true
+            exit 1
+          }
+          echo "Cloudflare accepted frontend build $build_uuid."
+
+      - name: Verify published documentation revision
+        if: steps.docs.outputs.changed == 'true'
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          for attempt in {1..60}; do
+            html="$(
+              curl \
+                --fail \
+                --header 'Cache-Control: no-cache' \
+                --location \
+                --max-time 15 \
+                --proto '=https' \
+                --proto-redir '=https' \
+                --show-error \
+                --silent \
+                "https://cacheon.ai/docs/?revision=$EXPECTED_SHA&attempt=$attempt" \
+                || true
+            )"
+            published_sha="$(
+              sed -n \
+                's/.*name="cacheon-docs-revision" content="\([0-9a-f]\{40\}\)".*/\1/p' \
+                <<<"$html" \
+                | head -n 1
+            )"
+
+            if [ "$published_sha" = "$EXPECTED_SHA" ]; then
+              echo "Published documentation matches $EXPECTED_SHA."
+              exit 0
+            fi
+
+            if [ -n "$published_sha" ]; then
+              if git fetch --quiet --no-tags origin main \
+                && git merge-base --is-ancestor "$EXPECTED_SHA" "$published_sha"; then
+                echo "Published documentation at $published_sha includes $EXPECTED_SHA."
+                exit 0
+              fi
+              echo "Waiting for $EXPECTED_SHA; cacheon.ai currently reports $published_sha."
+            else
+              echo "Waiting for cacheon.ai to expose documentation revision metadata."
+            fi
+            sleep 10
+          done
+
+          echo "::error::cacheon.ai did not publish documentation containing $EXPECTED_SHA within ten minutes."
+          exit 1

@@ -28,8 +28,8 @@ release tooling.
 | Review trust boundaries | [Security model](docs/security/threat-model.md) |
 | Contribute to the repository | [Contributing](CONTRIBUTING.md) |
 
-The rendered documentation is published from this repository at
-[latent-to.github.io/cacheon](https://latent-to.github.io/cacheon/).
+The canonical documentation source lives under [`docs/`](docs/) in this
+repository and is rendered at [cacheon.ai/docs](https://cacheon.ai/docs/).
 
 ## Local correctness loop
 
