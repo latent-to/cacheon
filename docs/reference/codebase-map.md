@@ -66,9 +66,12 @@ reopens evidence but accepts only reviewed integrated source.
 | Area | Primary source |
 |---|---|
 | Chain-facing commands | [`cli.py`](https://github.com/latent-to/cacheon/blob/main/optima/cli.py) |
+| Miner S3-compatible publication | [`chain/publish.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/publish.py) |
 | Finalized intake and SQLite state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py) |
 | Hardened archive fetch | [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py) |
 | Validator loop | [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py) |
+| Redacted chain journal | [`chain/audit_log.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/audit_log.py) |
+| Private validator snapshot/restore | [`chain/archive.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py) |
 | Injected arena boundary | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py) |
 | Qualification schema and regrading | [`eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py) |
 | Resident routing screen | [`eval/oci_resident_session.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_resident_session.py), [`eval/resident_queue.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_queue.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_screen_lane.py) |
@@ -169,6 +172,7 @@ materialization owns deterministic module namespaces and packaging. Finally,
 | Qualification evidence | External evidence root plus deployment-owned expected plan/provider context | Typed attempt and referenced artifacts; full regrade additionally requires reconstructed `CausalQualificationInput`, while settlement restart performs narrower byte/PASS authentication |
 | Evaluation stack | Referee state | Canonical manifest that may reference hostile proposals |
 | Settlement and weight state | Chain-scoped SQLite controller | Transactional single-writer state plus projection-linked intent/status journal; live readback vectors are not serialized |
+| Validator recovery snapshot | Private S3-compatible object store | Consistent SQLite image plus database-referenced publications/evidence, redacted journal, and explicit sealed inputs under a closed digest-bound manifest; staged restore never replaces live state |
 | Integrated source | Reviewed source control | Full reviewed commit plus selected-payload and attribution digests |
 | Engine release | Release publication root | Descriptor-addressed signed tree reopened under an expected public key |
 
@@ -191,7 +195,9 @@ fixture:
 - qualification, OCI, audit, and reference-protocol tests cover resident
   B/C/B′, conditional C′/B″, registered eager audit A, then pristine T;
 - chain-intake, settlement, economics, and weight-publication tests cover
-  durable economic transitions; and
+  durable economic transitions;
+- `test_chain_publish.py` and `test_chain_archive.py` cover public proposal
+  transport and private digest-bound recovery respectively; and
 - release, runtime, registry, and host tests cover the signed serving boundary.
 
 When learning a type, search for both its successful construction and its

@@ -12,6 +12,7 @@ vendor third-party sources; it only calls the public S3 API shape.
 from __future__ import annotations
 
 import os
+import stat
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,36 +47,41 @@ class ObjectStore(Protocol):
         content_type: str = "application/octet-stream",
     ) -> None: ...
 
-    def get_bytes(self, key: str) -> bytes: ...
+    def get_bytes(self, key: str, *, max_bytes: int | None = None) -> bytes: ...
 
 
 # Known S3-compatible presets. Operators swap providers by changing ``provider``
 # (and credentials/endpoint when needed); call sites keep the same ObjectStore API.
 _PROVIDER_DEFAULTS: dict[str, dict[str, str | None]] = {
     "hippius": {
+        "backend": "s3",
         "endpoint_url": "https://s3.hippius.com",
         "region_name": "decentralized",
         "addressing_style": "path",
     },
     # Generic AWS S3 (or any path that accepts the AWS SDK defaults).
     "s3": {
+        "backend": "s3",
         "endpoint_url": None,
         "region_name": "us-east-1",
         "addressing_style": "auto",
     },
     "minio": {
+        "backend": "s3",
         "endpoint_url": "http://127.0.0.1:9000",
         "region_name": "us-east-1",
         "addressing_style": "path",
     },
     # Local filesystem rooted at ``root_dir`` (tests / air-gapped dry runs).
     "local": {
+        "backend": "local",
         "endpoint_url": None,
         "region_name": None,
         "addressing_style": None,
     },
     # In-process map (unit tests only).
     "memory": {
+        "backend": "memory",
         "endpoint_url": None,
         "region_name": None,
         "addressing_style": None,
@@ -107,7 +113,7 @@ class ObjectStoreConfig:
                 + ", ".join(sorted(KNOWN_OBJECT_STORE_PROVIDERS))
             )
         object.__setattr__(self, "provider", provider)
-        if provider in {"hippius", "s3", "minio"}:
+        if self.backend_kind() == "s3":
             if not isinstance(self.bucket, str) or not self.bucket.strip():
                 raise ObjectStoreError(f"{provider} object store requires a bucket")
             if self.bucket.strip() != self.bucket or "/" in self.bucket or ".." in self.bucket:
@@ -126,6 +132,34 @@ class ObjectStoreConfig:
         prefix = self.key_prefix.strip("/")
         return f"{prefix}/{key}" if prefix else key
 
+    def backend_kind(self) -> str:
+        """Return the storage protocol implemented by the selected preset."""
+
+        backend = _PROVIDER_DEFAULTS[self.provider]["backend"]
+        assert backend is not None
+        return backend
+
+    def resolved_endpoint_url(self) -> str | None:
+        """Return the configured endpoint after applying the provider preset."""
+
+        if self.endpoint_url is not None:
+            return self.endpoint_url
+        return _PROVIDER_DEFAULTS[self.provider]["endpoint_url"]
+
+    def resolved_region_name(self) -> str | None:
+        """Return the configured region after applying the provider preset."""
+
+        if self.region_name is not None:
+            return self.region_name
+        return _PROVIDER_DEFAULTS[self.provider]["region_name"]
+
+    def resolved_addressing_style(self) -> str | None:
+        """Return the configured addressing style after applying the preset."""
+
+        if self.addressing_style is not None:
+            return self.addressing_style
+        return _PROVIDER_DEFAULTS[self.provider]["addressing_style"]
+
     @classmethod
     def from_env(
         cls,
@@ -135,32 +169,47 @@ class ObjectStoreConfig:
     ) -> "ObjectStoreConfig":
         """Build config from environment, overlaying optional CLI defaults."""
 
-        base = defaults or cls(provider="hippius", bucket="")
         def _env(name: str) -> str | None:
             value = os.environ.get(prefix + name)
             if value is None or value == "":
                 return None
             return value
 
-        provider = (_env("PROVIDER") or base.provider).lower()
+        provider = (
+            _env("PROVIDER")
+            or (defaults.provider if defaults is not None else "s3")
+        ).lower()
         return cls(
             provider=provider,
-            bucket=_env("BUCKET") or base.bucket,
-            key_prefix=_env("KEY_PREFIX") if _env("KEY_PREFIX") is not None else base.key_prefix,
+            bucket=_env("BUCKET")
+            or (defaults.bucket if defaults is not None else ""),
+            key_prefix=(
+                _env("KEY_PREFIX")
+                if _env("KEY_PREFIX") is not None
+                else (defaults.key_prefix if defaults is not None else "")
+            ),
             endpoint_url=_env("ENDPOINT_URL")
             if _env("ENDPOINT_URL") is not None
-            else base.endpoint_url,
-            region_name=_env("REGION") if _env("REGION") is not None else base.region_name,
+            else (defaults.endpoint_url if defaults is not None else None),
+            region_name=(
+                _env("REGION")
+                if _env("REGION") is not None
+                else (defaults.region_name if defaults is not None else None)
+            ),
             access_key_id=_env("ACCESS_KEY_ID")
             if _env("ACCESS_KEY_ID") is not None
-            else base.access_key_id,
+            else (defaults.access_key_id if defaults is not None else None),
             secret_access_key=_env("SECRET_ACCESS_KEY")
             if _env("SECRET_ACCESS_KEY") is not None
-            else base.secret_access_key,
+            else (defaults.secret_access_key if defaults is not None else None),
             addressing_style=_env("ADDRESSING_STYLE")
             if _env("ADDRESSING_STYLE") is not None
-            else base.addressing_style,
-            root_dir=_env("ROOT_DIR") if _env("ROOT_DIR") is not None else base.root_dir,
+            else (defaults.addressing_style if defaults is not None else None),
+            root_dir=(
+                _env("ROOT_DIR")
+                if _env("ROOT_DIR") is not None
+                else (defaults.root_dir if defaults is not None else None)
+            ),
         )
 
 
@@ -175,6 +224,14 @@ def _require_object_key(key: str) -> str:
     ):
         raise ObjectStoreError("object-store key is malformed")
     return key
+
+
+def _require_max_bytes(max_bytes: int | None) -> int | None:
+    if max_bytes is not None and (
+        type(max_bytes) is not int or max_bytes < 0
+    ):
+        raise ObjectStoreError("object-store max_bytes is malformed")
+    return max_bytes
 
 
 @dataclass
@@ -204,13 +261,16 @@ class MemoryObjectStore:
         with self._lock:
             self._objects[key] = (bytes(data), content_type)
 
-    def get_bytes(self, key: str) -> bytes:
+    def get_bytes(self, key: str, *, max_bytes: int | None = None) -> bytes:
         key = _require_object_key(key)
+        max_bytes = _require_max_bytes(max_bytes)
         assert self._lock is not None and self._objects is not None
         with self._lock:
             row = self._objects.get(key)
         if row is None:
             raise ObjectStoreNotFoundError(f"object-store key is missing: {key}")
+        if max_bytes is not None and len(row[0]) > max_bytes:
+            raise ObjectStoreError("object-store object exceeds max_bytes")
         return row[0]
 
 
@@ -250,14 +310,45 @@ class LocalDirectoryObjectStore:
         tmp.write_bytes(bytes(data))
         os.replace(tmp, path)
 
-    def get_bytes(self, key: str) -> bytes:
+    def get_bytes(self, key: str, *, max_bytes: int | None = None) -> bytes:
         path = self._path_for(key)
+        max_bytes = _require_max_bytes(max_bytes)
+        fd = -1
         try:
-            return path.read_bytes()
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(path, flags)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ObjectStoreError("local object-store value is not a regular file")
+            if max_bytes is not None and info.st_size > max_bytes:
+                raise ObjectStoreError("object-store object exceeds max_bytes")
+            chunks: list[bytes] = []
+            remaining = info.st_size
+            while remaining:
+                chunk = os.read(fd, min(4 << 20, remaining))
+                if not chunk:
+                    raise ObjectStoreError(
+                        "local object-store value was truncated during read"
+                    )
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(fd, 1):
+                raise ObjectStoreError(
+                    "local object-store value changed during read"
+                )
+            return b"".join(chunks)
         except FileNotFoundError as exc:
             raise ObjectStoreNotFoundError(
                 f"object-store key is missing: {key}"
             ) from exc
+        except ObjectStoreError:
+            raise
+        except OSError as exc:
+            raise ObjectStoreError(f"local object-store get failed: {exc}") from None
+        finally:
+            if fd >= 0:
+                os.close(fd)
 
 
 @dataclass(frozen=True)
@@ -292,11 +383,33 @@ class S3CompatibleObjectStore:
                 ) from None
             raise ObjectStoreError(f"s3-compatible put failed: {exc}") from None
 
-    def get_bytes(self, key: str) -> bytes:
+    def get_bytes(self, key: str, *, max_bytes: int | None = None) -> bytes:
         key = _require_object_key(key)
+        max_bytes = _require_max_bytes(max_bytes)
+        body_object = None
         try:
             response = self.client.get_object(Bucket=self.bucket, Key=key)  # type: ignore[attr-defined]
-            body = response["Body"].read()
+            body_object = response["Body"]
+            content_length = response.get("ContentLength")
+            if content_length is not None and (
+                type(content_length) is not int or content_length < 0
+            ):
+                raise ObjectStoreError(
+                    "s3-compatible get returned malformed ContentLength"
+                )
+            if (
+                max_bytes is not None
+                and content_length is not None
+                and content_length > max_bytes
+            ):
+                raise ObjectStoreError("object-store object exceeds max_bytes")
+            body = (
+                body_object.read()
+                if max_bytes is None
+                else body_object.read(max_bytes + 1)
+            )
+        except ObjectStoreError:
+            raise
         except Exception as exc:
             name = type(exc).__name__
             code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
@@ -309,8 +422,14 @@ class S3CompatibleObjectStore:
                     f"s3-compatible get failed transiently: {exc}"
                 ) from None
             raise ObjectStoreError(f"s3-compatible get failed: {exc}") from None
+        finally:
+            close = getattr(body_object, "close", None)
+            if callable(close):
+                close()
         if not isinstance(body, (bytes, bytearray)):
             raise ObjectStoreError("s3-compatible get returned non-bytes body")
+        if max_bytes is not None and len(body) > max_bytes:
+            raise ObjectStoreError("object-store object exceeds max_bytes")
         return bytes(body)
 
 
@@ -323,22 +442,9 @@ def _boto3_client(config: ObjectStoreConfig):
             "s3-compatible object stores require boto3; "
             'install with pip install -e ".[object-store]"'
         ) from exc
-    defaults = _PROVIDER_DEFAULTS[config.provider]
-    endpoint = (
-        config.endpoint_url
-        if config.endpoint_url is not None
-        else defaults["endpoint_url"]
-    )
-    region = (
-        config.region_name
-        if config.region_name is not None
-        else defaults["region_name"]
-    )
-    addressing = (
-        config.addressing_style
-        if config.addressing_style is not None
-        else defaults["addressing_style"]
-    )
+    endpoint = config.resolved_endpoint_url()
+    region = config.resolved_region_name()
+    addressing = config.resolved_addressing_style()
     access_key = config.access_key_id or os.environ.get("AWS_ACCESS_KEY_ID")
     secret_key = config.secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY")
     if not access_key or not secret_key:
@@ -368,14 +474,15 @@ def open_object_store(config: ObjectStoreConfig) -> ObjectStore:
 
     if type(config) is not ObjectStoreConfig:
         raise ObjectStoreError("object-store config is untyped")
-    if config.provider == "memory":
+    backend = config.backend_kind()
+    if backend == "memory":
         return MemoryObjectStore()
-    if config.provider == "local":
+    if backend == "local":
         assert config.root_dir is not None
         return LocalDirectoryObjectStore(Path(config.root_dir))
-    if config.provider in {"hippius", "s3", "minio"}:
+    if backend == "s3":
         return S3CompatibleObjectStore(_boto3_client(config), config.bucket)
-    raise ObjectStoreError(f"unsupported object-store provider: {config.provider}")
+    raise ObjectStoreError(f"unsupported object-store backend: {backend}")
 
 
 def prefixed_store(store: ObjectStore, prefix: str) -> ObjectStore:
@@ -401,8 +508,16 @@ def prefixed_store(store: ObjectStore, prefix: str) -> ObjectStore:
                 content_type=content_type,
             )
 
-        def get_bytes(self, key: str) -> bytes:
-            return store.get_bytes(f"{prefix}/{_require_object_key(key)}")
+        def get_bytes(
+            self,
+            key: str,
+            *,
+            max_bytes: int | None = None,
+        ) -> bytes:
+            return store.get_bytes(
+                f"{prefix}/{_require_object_key(key)}",
+                max_bytes=max_bytes,
+            )
 
     return _Prefixed()
 

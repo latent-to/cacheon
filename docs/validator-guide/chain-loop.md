@@ -91,6 +91,7 @@ optima chain-validate \
   --intake-db chain_intake/intake.sqlite3 \
   --private-root chain_intake/private \
   --publication-root chain_intake/worker \
+  --audit-log chain_intake/chain-audit.jsonl \
   --intake-only \
   --once
 ```
@@ -113,6 +114,7 @@ run_validator(
     intake_db="chain_intake/intake.sqlite3",
     private_root="chain_intake/private",
     publication_root="chain_intake/worker",
+    audit_log="chain_intake/chain-audit.jsonl",
     arena_registry=registry,   # constructed by reviewed deployment code
     arena_id="production-arena-id",
     intake_only=False,
@@ -166,6 +168,50 @@ Publication creates a separate carrier:
 - reopening independently rederives the publication and content hash.
 
 Treat both roots as operational data, not as interchangeable caches.
+
+## Redacted journal and private recovery snapshots
+
+When `--audit-log` is configured (the CLI default), each completed pass appends and
+fsyncs one canonical JSONL record. The record contains finalized position,
+content-derived reservation and receipt digests, counts, and bounded disposition
+classes. It deliberately omits URLs, hotkeys, candidate bytes, exception messages,
+wallets, credentials, and ambient environment. A fault record retains only the
+exception type and consecutive-failure count.
+
+SQLite remains the state machine. The journal is supplementary operational chronology:
+an audit append failure is reported but cannot cause the loop to replay a pass whose
+SQLite transitions already committed.
+
+The private recovery mirror is also outside the live transaction path:
+
+```bash
+optima chain-snapshot \
+  --intake-db chain_intake/intake.sqlite3 \
+  --audit-log chain_intake/chain-audit.jsonl \
+  --object-store-bucket <PRIVATE_BUCKET> \
+  --object-store-endpoint <S3_COMPATIBLE_ENDPOINT> \
+  --sealed-input qualification-inputs=/srv/optima/sealed-inputs
+
+optima chain-snapshot-verify \
+  --manifest-key <PRINTED_MANIFEST_KEY> \
+  --object-store-bucket <PRIVATE_BUCKET> \
+  --object-store-endpoint <S3_COMPATIBLE_ENDPOINT>
+```
+
+`chain-snapshot` takes a consistent online SQLite backup, checks integrity and foreign
+keys, discovers database-referenced immutable worker publications and retained
+settlement qualification artifacts, and adds only explicitly named sealed inputs.
+Every object is digest-addressed, bounded during download, and reopened before the
+manifest is accepted. Models, OCI images, wallets, credentials, caches, unredacted
+logs, and unrelated evidence roots are not auto-discovered.
+
+`chain-snapshot-verify` restores into a fresh private staging root (temporary by
+default), rechecks SQLite, publication receipts and hashes, evidence references, and
+the redacted journal, and emits a restore map when a retained `--restore-root` is
+requested. It never overlays live state. Schedule snapshots separately from validator
+passes so remote object-store failure cannot enter the SQLite controller's commit
+path. Protect the archive with a private bucket or policy-isolated private prefix and
+exercise restore regularly.
 
 ## Durable reservation states
 
@@ -299,8 +345,12 @@ the evidence. Generic expiry and hold release are not substitutes.
 ## Operations checklist
 
 - Put the database, private root, and publication root on durable local storage.
-- Back up the database using a SQLite-aware procedure; copying only the main file while
-  WAL writes are active is not a valid backup.
+- Schedule `chain-snapshot` against a private object-store namespace and run
+  `chain-snapshot-verify` after every backup; copying only the main file while WAL
+  writes are active is not a valid backup.
+- Test a retained fresh-root restore before relying on the archive, and keep bucket
+  access policy, encryption, versioning/object lock, lifecycle, and capacity alerts
+  under operator review.
 - Alert on growing `held`, `no_decision`, transport retry, and queue-age counts.
 - Monitor disk and inode use in both private and immutable publication roots.
 - Run `optima chain-compat` after changing the Bittensor SDK.
@@ -321,4 +371,7 @@ Continue with [Arena service](arena-service.md) and
 - [Finalized intake store](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
 - [Immutable publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/publication.py)
 - [Validator loop](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py)
+- [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/optima/chain/audit_log.py)
+- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
 - [Archive-bound tests](https://github.com/latent-to/cacheon/blob/main/tests/test_chain_fetch.py)
+- [Snapshot and restore tests](https://github.com/latent-to/cacheon/blob/main/tests/test_chain_archive.py)

@@ -31,11 +31,45 @@ def test_chain_validate_intake_path_has_no_wallet_or_weight_arguments():
     }
     assert "--intake-only" in options
     assert "--arena-id" in options
+    assert "--audit-log" in options
     assert not {
         "--eval-cmd", "--eval-device", "--eval-timeout", "--margin",
         "--wallet", "--hotkey", "--dry-run-weights",
     } & options
     assert "chain-validate" in source
+
+
+def test_chain_snapshot_surfaces_are_wallet_free_and_explicit() -> None:
+    parser = cli.build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    snapshot = subparsers.choices["chain-snapshot"]
+    verify = subparsers.choices["chain-snapshot-verify"]
+    snapshot_options = {
+        option for action in snapshot._actions for option in action.option_strings
+    }
+    verify_options = {
+        option for action in verify._actions for option in action.option_strings
+    }
+    assert {
+        "--intake-db",
+        "--audit-log",
+        "--sealed-input",
+        "--object-store-endpoint",
+        "--object-store-bucket",
+    } <= snapshot_options
+    assert {
+        "--manifest-key",
+        "--restore-root",
+        "--object-store-endpoint",
+        "--object-store-bucket",
+    } <= verify_options
+    assert not {"--wallet", "--hotkey", "--model", "--image"} & (
+        snapshot_options | verify_options
+    )
 
 
 def test_chain_activation_cli_is_wallet_free_and_forwards_exact_authority(

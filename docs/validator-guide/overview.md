@@ -35,6 +35,9 @@ flowchart LR
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
     Evidence --> Store["Single-writer SQLite authority"]
+    Store --> Recovery["Private recovery object store<br/>not live authority"]
+    Publication -. "snapshot" .-> Recovery
+    Evidence -. "referenced artifacts" .-> Recovery
     Store --> Signer["Weight reconciler<br/>hotkey only"]
     Signer --> Chain
     Store -. "reviewed crown input" .-> Integration["Integration and release authority"]
@@ -54,6 +57,9 @@ The boxes imply operational boundaries:
 - **Signer:** opens the same durable authority only for a coordinated reconciliation
   window, refreshes live metagraph state, and uses the validator hotkey. The store's
   nonblocking process lock prevents concurrent controllers from silently sharing it.
+- **Recovery mirror:** receives consistent, digest-bound snapshots from a separate job.
+  It is private off-pod storage, not a live database, evidence filesystem, or wallet
+  store, and restore always stages into a fresh root for review.
 - **Release and serving plane:** starts only from reviewed integrated source. It does not
   mount proposal publications, evidence roots, the intake database, or chain credentials.
 
@@ -127,10 +133,12 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 | Task | Supported surface |
 |---|---|
 | Inspect slot and SDK compatibility | `optima slots`, `optima compat`, `optima chain-compat` |
-| Package and submit a proposal | `optima chain-package`, `optima chain-submit` |
+| Publish and submit a proposal | `optima chain-publish`, `optima chain-submit` |
 | Inspect chain state | `optima chain-status` |
 | Run bounded finalized public intake | `optima chain-validate --intake-only` |
 | Run full referee service | Deployment code calling `run_validator(...)` with an injected registry/provider |
+| Publish a private recovery snapshot | `optima chain-snapshot` |
+| Verify or stage a recovery snapshot | `optima chain-snapshot-verify` |
 | Reconcile legacy V1 rewards | `optima set-weights`, optionally `--watch`, in a separate control-plane process |
 | Project an all-uncrowned V1 bootstrap | `optima set-weights --burn-hotkey <REGISTERED_HOTKEY>` |
 | Inspect V2 activation authority | `optima chain-incentive-shadow`, `optima chain-incentive-composition-shadow` |
@@ -165,6 +173,14 @@ Immutable publications and evidence roots are durable dependencies of standing s
 Deleting them after a crown can make later settlement reopening, reward projection, or
 integration review fail closed. Treat retention, backup, and restore as part of consensus
 operations, not log rotation.
+
+`chain-snapshot` supplies the implemented off-pod recovery format: a SQLite online
+backup, the redacted chain journal, database-referenced worker publications and retained
+qualification artifacts, and only explicitly named sealed inputs. Blobs and the closed
+manifest are digest-bound and reopened after upload. `chain-snapshot-verify` stages and
+semantically reopens them without replacing live state. Models and OCI images are not
+included; object-store privacy, encryption, versioning/object lock, lifecycle, and
+restore-cutover policy remain operator responsibilities.
 
 ## Failure ownership
 
@@ -205,6 +221,7 @@ Security assumptions and residual risks are detailed in
 - [Product model](../architecture/product-model.md)
 - [Finalized validator loop](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py)
 - [SQLite intake authority](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
+- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
 - [Arena service contract](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py)
 - [Settlement planner](https://github.com/latent-to/cacheon/blob/main/optima/settlement.py)
 - [Release implementation](https://github.com/latent-to/cacheon/blob/main/optima/release.py)

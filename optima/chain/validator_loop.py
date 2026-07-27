@@ -595,6 +595,7 @@ def run_validator(
     interval_s: float = DEFAULT_INTERVAL_S,
     once: bool = False,
     max_consecutive_failures: int = 10,
+    audit_log: str | Path | None = None,
 ) -> Optional[PassResult]:
     """Run finalized intake forever, containing validator-side pass failures."""
 
@@ -615,6 +616,20 @@ def run_validator(
                 retained_only=retained_only,
             )
             failures = 0
+            if audit_log is not None:
+                try:
+                    from optima.chain.audit_log import (
+                        ChainAuditLogError,
+                        append_chain_audit,
+                        pass_audit_record,
+                    )
+
+                    append_chain_audit(audit_log, pass_audit_record(last))
+                except ChainAuditLogError:
+                    # SQLite is the transition authority; the redacted journal is
+                    # supplementary observability. Surface loss loudly without
+                    # replaying an already-committed pass.
+                    logger.exception("validator chain audit append failed")
             logger.info(
                 "intake @finalized %d: seen=%d reserved=%d published=%d copies=%d "
                 "rejected=%d decisions=%d settlements=%d held=%d",
@@ -628,8 +643,25 @@ def run_validator(
                 len(last.settlements),
                 len(last.held),
             )
-        except Exception:  # validator-side fault; a supervisor may restart cleanly
+        except Exception as exc:  # validator-side fault; supervisor may restart
             failures += 1
+            if audit_log is not None:
+                try:
+                    from optima.chain.audit_log import (
+                        ChainAuditLogError,
+                        append_chain_audit,
+                        fault_audit_record,
+                    )
+
+                    append_chain_audit(
+                        audit_log,
+                        fault_audit_record(
+                            exc,
+                            consecutive_failures=failures,
+                        ),
+                    )
+                except ChainAuditLogError:
+                    logger.exception("validator fault audit append failed")
             logger.exception("validator intake pass failed (%d consecutive)", failures)
             if once or failures >= max_consecutive_failures:
                 raise

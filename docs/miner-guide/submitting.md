@@ -69,7 +69,81 @@ Inspect the tree for credentials, caches, generated binaries, model data,
 machine paths, unsupported licenses, and stale result metadata. `scan` and
 `verify` are diagnostics; they do not pre-approve intake.
 
-## 2. Package exactly the identity-bearing files
+## 2. Publish from the miner's object store
+
+Each miner owns and pays for their own bucket. The validator does not provision
+the bucket, receive the miner's credentials, or use authenticated object-store
+reads. Install the optional S3 client support:
+
+```bash
+python -m pip install -e ".[object-store]"
+```
+
+Create S3 credentials and a bucket in the miner's account. Export the
+credentials from a private environment file:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+The recognized variables are:
+
+```dotenv
+OPTIMA_OBJECT_STORE_ACCESS_KEY_ID=...
+OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY=...
+OPTIMA_OBJECT_STORE_BUCKET=...
+```
+
+`chain-publish` uses the generic S3 backend by default. AWS S3 needs no provider
+flag. For another S3-compatible service, its endpoint URL identifies the
+service; a custom endpoint defaults to path-style addressing:
+
+```dotenv
+OPTIMA_OBJECT_STORE_ENDPOINT_URL=https://objects.example
+OPTIMA_OBJECT_STORE_REGION=us-east-1
+```
+
+Use `OPTIMA_OBJECT_STORE_ADDRESSING_STYLE=virtual` only when the service expects
+virtual-hosted bucket URLs. Known provider names are optional convenience
+presets. For example, `OPTIMA_OBJECT_STORE_PROVIDER=hippius` supplies Hippius's
+endpoint, `decentralized` region, and path-style addressing; the equivalent
+fully explicit configuration is:
+
+```dotenv
+OPTIMA_OBJECT_STORE_ENDPOINT_URL=https://s3.hippius.com
+OPTIMA_OBJECT_STORE_REGION=decentralized
+OPTIMA_OBJECT_STORE_ADDRESSING_STYLE=path
+```
+
+The command packages the bundle, uploads it under a content-addressed key,
+grants anonymous read access, reopens the stored archive, and finally runs the
+validator's production HTTPS fetch and hash check without credentials:
+
+```bash
+python -m optima.cli chain-publish my_bundle \
+  --out dist/my_bundle.tar.gz
+```
+
+Pass `--create-bucket` only when the named bucket does not exist. The default
+key is
+`optima/miner-bundles/sha256/<content_hash>.tar.gz`. A repeated publication
+reuses an existing object only after hardened extraction proves that it has the
+committed tree hash; it never replaces a conflicting key. Use
+`--object-store-provider hippius|minio` for a known preset, or
+`--object-store-endpoint` for any S3-compatible service.
+`--public-base-url` handles a separate HTTPS CDN or gateway origin.
+
+The validator sees only the resulting HTTPS URL and content hash; it has no
+object-store provider setting or miner credential. Hippius connection details
+are maintained in its
+[official S3 documentation](https://docs.hippius.com/llms.txt). Do not copy a
+miner's credentials onto a validator.
+
+### Manual hosting alternative
+
+For a non-S3 public HTTPS origin, package exactly the identity-bearing files:
 
 ```bash
 python -m optima.cli chain-package my_bundle \
@@ -89,9 +163,7 @@ For extra confidence, extract the hosted object into a clean temporary location 
 directory and gzip encoding are not the identity; the sorted relative paths and file bytes
 are. Never “refresh” a stable URL with revised content after committing the old hash.
 
-## 3. Host over stable public HTTPS
-
-Upload the archive to a URL such as:
+Upload that archive to a stable URL such as:
 
 ```text
 https://downloads.example.org/optima/my_bundle.tar.gz
@@ -114,7 +186,7 @@ inspectable files, bounded extension metadata, at most five redirects, and one
 the safely extracted identity-bearing tree. See
 [fetch.py](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py).
 
-## 4. Dry-run the chain payload
+## 3. Dry-run the chain payload
 
 ```bash
 python -m optima.cli chain-submit my_bundle \
@@ -135,7 +207,7 @@ canonical JSON with exactly three fields:
 The production payload cap is 1,024 bytes. A refused dry run has not signed or
 sent anything.
 
-## 5. Submit the timelock commitment
+## 4. Submit the timelock commitment
 
 Run the same command without `--dry-run`:
 
