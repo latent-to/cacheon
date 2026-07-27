@@ -204,6 +204,92 @@ def cmd_chain_activate_incentives(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
+    """Operator bypass: set 100% weight to the subnet-owner coldkey neuron."""
+
+    from optima import chain
+
+    if getattr(args, "burn_hotkey", ""):
+        raise SystemExit(
+            "--burn-to-subnet-owner cannot be combined with --burn-hotkey"
+        )
+    if args.reconcile_only or args.release_hold:
+        raise SystemExit(
+            "--burn-to-subnet-owner cannot be combined with "
+            "--reconcile-only or --release-hold"
+        )
+    if getattr(args, "weight_offer_path", ""):
+        raise SystemExit(
+            "--burn-to-subnet-owner cannot be combined with --weight-offer-path"
+        )
+    provider = (getattr(args, "object_store_provider", "") or "").strip().lower()
+    if provider and provider != "none":
+        raise SystemExit(
+            "--burn-to-subnet-owner cannot be combined with an object-store provider"
+        )
+
+    try:
+        subtensor = chain.connect(args.network)
+        target = chain.resolve_subnet_owner_burn_target(subtensor, args.netuid)
+    except chain.ChainWeightStateError:
+        raise
+    except Exception as exc:
+        raise chain.ChainWeightStateRetryableError(
+            f"subnet-owner burn chain connect failed: {exc}"
+        ) from None
+
+    print(
+        "subnet-owner burn: "
+        f"owner_coldkey={target.owner_coldkey} "
+        f"owner_hotkey={target.owner_hotkey or '(unset)'} "
+        f"candidates={list(target.candidate_uids)} "
+        f"-> uid {target.uid} hotkey {target.hotkey} "
+        f"(block={target.block})"
+    )
+
+    wallet = None
+    if not args.dry_run:
+        import bittensor as bt
+
+        wallet = bt.Wallet(name=args.wallet, hotkey=args.hotkey)
+
+    try:
+        result = chain.set_weights(
+            subtensor,
+            wallet,
+            args.netuid,
+            {target.hotkey: 1.0},
+            dry_run=args.dry_run,
+            metagraph_view=target.metagraph,
+        )
+    except chain.ChainWeightStateError:
+        raise
+    except Exception as exc:
+        raise chain.ChainWeightStateRetryableError(
+            f"subnet-owner burn set_weights failed: {exc}"
+        ) from None
+
+    if args.dry_run:
+        print(
+            f"DRY RUN set_weights uids={result.get('uids')} "
+            f"weights={result.get('weights')} "
+            f"authority_block={result.get('authority_block')}"
+        )
+        return 0
+    if not result.get("submitted"):
+        message = result.get("message") or result.get("reason") or "submission failed"
+        # Rate limits / transient extrinsic failures should not kill --watch.
+        raise chain.ChainWeightStateRetryableError(
+            f"subnet-owner burn submission failed: {message}"
+        )
+    print(
+        f"subnet-owner burn submitted uids={result.get('uids')} "
+        f"weights={result.get('weights')} "
+        f"authority_block={result.get('authority_block')}"
+    )
+    return 0
+
+
 def _cmd_set_weights_once(args: argparse.Namespace) -> int:
     from optima import chain
     from optima.chain.intake import (
@@ -223,6 +309,9 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         MetagraphMember,
     )
 
+    if bool(getattr(args, "burn_to_subnet_owner", False)):
+        return _cmd_burn_to_subnet_owner_once(args)
+
     if args.reconcile_only and args.dry_run:
         raise SystemExit("--reconcile-only cannot be combined with --dry-run")
     if args.reconcile_only and args.release_hold:
@@ -233,6 +322,14 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         raise SystemExit(
             "--burn-hotkey cannot be combined with --reconcile-only or --release-hold"
         )
+    for name, label in (
+        ("half_life_blocks", "--half-life-blocks"),
+        ("discovery_lifetime_blocks", "--discovery-lifetime-blocks"),
+        ("discovery_pool_ppm", "--discovery-pool-ppm"),
+        ("refresh_blocks", "--refresh-blocks"),
+    ):
+        if getattr(args, name, None) is None:
+            raise SystemExit(f"{label} is required unless --burn-to-subnet-owner")
     head_only = args.reconcile_only or bool(args.release_hold)
     if head_only and args.validator_hotkey:
         validator_hotkey = args.validator_hotkey
@@ -1800,10 +1897,30 @@ def build_parser() -> argparse.ArgumentParser:
                     help="named network or an explicit wss:// endpoint URL")
     sp.add_argument("--wallet", default="default")
     sp.add_argument("--hotkey", default="default")
-    sp.add_argument("--half-life-blocks", type=int, required=True)
-    sp.add_argument("--discovery-lifetime-blocks", type=int, required=True)
-    sp.add_argument("--discovery-pool-ppm", type=int, required=True)
-    sp.add_argument("--refresh-blocks", type=int, required=True)
+    sp.add_argument(
+        "--half-life-blocks",
+        type=int,
+        default=None,
+        help="required unless --burn-to-subnet-owner",
+    )
+    sp.add_argument(
+        "--discovery-lifetime-blocks",
+        type=int,
+        default=None,
+        help="required unless --burn-to-subnet-owner",
+    )
+    sp.add_argument(
+        "--discovery-pool-ppm",
+        type=int,
+        default=None,
+        help="required unless --burn-to-subnet-owner",
+    )
+    sp.add_argument(
+        "--refresh-blocks",
+        type=int,
+        default=None,
+        help="required unless --burn-to-subnet-owner",
+    )
     sp.add_argument(
         "--reconcile-only",
         action="store_true",
@@ -1837,11 +1954,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
+        "--burn-to-subnet-owner",
+        action="store_true",
+        help=(
+            "operator bypass: ignore intake/settlement and set 100%% weight to one "
+            "metagraph UID owned by the subnet owner coldkey (prefer SubnetOwnerHotkey, "
+            "else lowest UID); usable with --watch"
+        ),
+    )
+    sp.add_argument(
         "--watch",
         action="store_true",
         help=(
             "keep the signer process reconciling and refreshing this policy; "
-            "restart with --burn-hotkey removed after the first CROWN"
+            "with --burn-to-subnet-owner, keep resolving and submitting the burn "
+            "vector; otherwise restart with --burn-hotkey removed after the first CROWN"
         ),
     )
     sp.add_argument(

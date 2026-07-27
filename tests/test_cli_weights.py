@@ -116,6 +116,7 @@ def _args(path, **updates) -> argparse.Namespace:
         "refresh_blocks": 20,
         "release_hold": "",
         "burn_hotkey": "",
+        "burn_to_subnet_owner": False,
         "dry_run": False,
         "reconcile_only": True,
         "watch": False,
@@ -492,5 +493,205 @@ def test_watch_does_not_retry_nonretryable_publication_fault(tmp_path, monkeypat
                 tmp_path / "unused.sqlite3",
                 reconcile_only=False,
                 watch=True,
+            )
+        )
+
+
+def test_burn_to_subnet_owner_cli_dry_run_bypasses_intake(
+    tmp_path, monkeypatch, capsys
+):
+    from optima.chain.intake import FinalizedIntakeStore
+
+    path = tmp_path / "private" / "intake.sqlite3"
+    opened = {"intake": False}
+    real_init = FinalizedIntakeStore.__init__
+
+    def tracking_init(self, *args, **kwargs):
+        opened["intake"] = True
+        return real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(FinalizedIntakeStore, "__init__", tracking_init)
+
+    view = chain.MetagraphView(
+        netuid=307,
+        block=42,
+        block_hash="0x" + "ab" * 32,
+        uids=[7],
+        hotkeys=["owner-hk"],
+        validator_permit=[False],
+        last_update=[1],
+    )
+    target = chain.SubnetOwnerBurnTarget(
+        uid=7,
+        hotkey="owner-hk",
+        owner_coldkey="owner-ck",
+        owner_hotkey="owner-hk",
+        candidate_uids=(3, 7),
+        block=42,
+        block_hash="0x" + "ab" * 32,
+        metagraph=view,
+    )
+    submissions = []
+
+    monkeypatch.setattr(chain, "connect", lambda _network: object())
+    monkeypatch.setattr(
+        chain,
+        "resolve_subnet_owner_burn_target",
+        lambda *_args, **_kwargs: target,
+    )
+
+    def _set_weights(subtensor, wallet, netuid, weights, **kwargs):
+        submissions.append(
+            (
+                wallet,
+                netuid,
+                dict(weights),
+                kwargs.get("dry_run"),
+                kwargs.get("metagraph_view"),
+            )
+        )
+        return {
+            "submitted": False,
+            "dry_run": True,
+            "uids": [7],
+            "weights": [1.0],
+            "authority_block": 42,
+        }
+
+    monkeypatch.setattr(chain, "set_weights", _set_weights)
+
+    assert (
+        cli.cmd_set_weights(
+            _args(
+                path,
+                reconcile_only=False,
+                dry_run=True,
+                validator_hotkey="",
+                burn_to_subnet_owner=True,
+                half_life_blocks=None,
+                discovery_lifetime_blocks=None,
+                discovery_pool_ppm=None,
+                refresh_blocks=None,
+            )
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "subnet-owner burn:" in out
+    assert "uid 7 hotkey owner-hk" in out
+    assert "DRY RUN set_weights" in out
+    assert opened["intake"] is False
+    assert submissions == [(None, 307, {"owner-hk": 1.0}, True, view)]
+
+
+def test_burn_to_subnet_owner_submission_failure_is_retryable(tmp_path, monkeypatch):
+    view = chain.MetagraphView(
+        netuid=307,
+        block=42,
+        block_hash="0x" + "ab" * 32,
+        uids=[7],
+        hotkeys=["owner-hk"],
+        validator_permit=[False],
+        last_update=[1],
+    )
+    target = chain.SubnetOwnerBurnTarget(
+        uid=7,
+        hotkey="owner-hk",
+        owner_coldkey="owner-ck",
+        owner_hotkey="owner-hk",
+        candidate_uids=(7,),
+        block=42,
+        block_hash="0x" + "ab" * 32,
+        metagraph=view,
+    )
+    monkeypatch.setattr(chain, "connect", lambda _network: object())
+    monkeypatch.setattr(
+        chain,
+        "resolve_subnet_owner_burn_target",
+        lambda *_args, **_kwargs: target,
+    )
+    monkeypatch.setattr(
+        chain,
+        "set_weights",
+        lambda *_a, **_k: {"submitted": False, "message": "rate limited"},
+    )
+
+    import sys
+    import types
+
+    class _Hotkey:
+        ss58_address = "validator"
+
+    class _Wallet:
+        def __init__(self, name, hotkey):
+            self.hotkey = _Hotkey()
+
+    monkeypatch.setitem(
+        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_Wallet)
+    )
+
+    with pytest.raises(chain.ChainWeightStateRetryableError, match="rate limited"):
+        cli.cmd_set_weights(
+            _args(
+                tmp_path / "unused.sqlite3",
+                reconcile_only=False,
+                dry_run=False,
+                validator_hotkey="",
+                burn_to_subnet_owner=True,
+                half_life_blocks=None,
+                discovery_lifetime_blocks=None,
+                discovery_pool_ppm=None,
+                refresh_blocks=None,
+            )
+        )
+
+
+def test_burn_to_subnet_owner_refuses_conflicting_flags(tmp_path):
+    path = tmp_path / "unused.sqlite3"
+    with pytest.raises(SystemExit, match="burn-hotkey"):
+        cli.cmd_set_weights(
+            _args(path, burn_to_subnet_owner=True, burn_hotkey="miner")
+        )
+    with pytest.raises(SystemExit, match="reconcile-only"):
+        cli.cmd_set_weights(
+            _args(path, burn_to_subnet_owner=True, reconcile_only=True)
+        )
+    with pytest.raises(SystemExit, match="release-hold"):
+        cli.cmd_set_weights(
+            _args(
+                path,
+                burn_to_subnet_owner=True,
+                reconcile_only=False,
+                release_hold="nope",
+            )
+        )
+    with pytest.raises(SystemExit, match="weight-offer-path"):
+        cli.cmd_set_weights(
+            _args(
+                path,
+                burn_to_subnet_owner=True,
+                reconcile_only=False,
+                weight_offer_path="/tmp/offer.json",
+            )
+        )
+    with pytest.raises(SystemExit, match="object-store"):
+        cli.cmd_set_weights(
+            _args(
+                path,
+                burn_to_subnet_owner=True,
+                reconcile_only=False,
+                object_store_provider="hippius",
+            )
+        )
+
+
+def test_normal_set_weights_still_requires_policy_flags(tmp_path):
+    with pytest.raises(SystemExit, match="--half-life-blocks"):
+        cli.cmd_set_weights(
+            _args(
+                tmp_path / "unused.sqlite3",
+                half_life_blocks=None,
+                reconcile_only=False,
+                dry_run=True,
             )
         )

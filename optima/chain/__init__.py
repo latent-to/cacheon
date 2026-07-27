@@ -58,6 +58,12 @@ class ChainWeightStateError(RuntimeError):
     retryable = False
 
 
+class ChainWeightStateRetryableError(ChainWeightStateError):
+    """Transient chain read/submit fault; safe for operator watch loops to retry."""
+
+    retryable = True
+
+
 @dataclass
 class Commitment:
     """A hotkey's current on-chain commitment — for Optima, the salted commit hash."""
@@ -130,6 +136,24 @@ class MetagraphView:
 
 
 @dataclass(frozen=True)
+class SubnetOwnerBurnTarget:
+    """One metagraph neuron selected as the subnet-owner burn sink.
+
+    ``metagraph`` is the exact finalized membership snapshot used for selection
+    and must be the authority passed into :func:`set_weights`.
+    """
+
+    uid: int
+    hotkey: str
+    owner_coldkey: str
+    owner_hotkey: str
+    candidate_uids: tuple[int, ...]
+    block: int
+    block_hash: str
+    metagraph: MetagraphView
+
+
+@dataclass(frozen=True)
 class ValidatorWeightSnapshot:
     """One validator's authoritative sparse vector and last-update block."""
 
@@ -190,6 +214,72 @@ def weights_to_uid_vector(weights_by_hotkey: dict[str, float],
         )
     weights = [norm[hk] for hk in norm]
     return uids, weights
+
+
+def _require_account_id(value: object, field: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ChainWeightStateError(f"{field} is malformed")
+    if value.strip() != value:
+        raise ChainWeightStateError(f"{field} is malformed")
+    if not value:
+        if allow_empty:
+            return ""
+        raise ChainWeightStateError(f"{field} is missing or malformed")
+    return value
+
+
+def select_subnet_owner_burn_uid(
+    uids: list[int],
+    hotkeys: list[str],
+    coldkeys: list[str],
+    owner_coldkey: str,
+    owner_hotkey: str,
+) -> tuple[int, str, tuple[int, ...]]:
+    """Pick the burn sink among neurons whose coldkey equals the subnet owner.
+
+    Prefer ``owner_hotkey`` when it is among those matches; otherwise the lowest
+    matching UID. Pure helper — no chain I/O.
+    """
+
+    owner_coldkey = _require_account_id(owner_coldkey, "subnet owner coldkey")
+    owner_hotkey = _require_account_id(
+        owner_hotkey, "subnet owner hotkey", allow_empty=True
+    )
+    if not (
+        len(uids) == len(hotkeys) == len(coldkeys)
+        and len(uids) > 0
+    ):
+        raise ChainWeightStateError(
+            "metagraph UID/hotkey/coldkey columns are empty or misaligned"
+        )
+    if (
+        len(set(uids)) != len(uids)
+        or len(set(hotkeys)) != len(hotkeys)
+        or any(type(uid) is not int or uid < 0 for uid in uids)
+        or any(not isinstance(hotkey, str) or not hotkey for hotkey in hotkeys)
+        or any(
+            not isinstance(coldkey, str) or not coldkey for coldkey in coldkeys
+        )
+    ):
+        raise ChainWeightStateError(
+            "metagraph membership for subnet-owner burn is invalid or duplicated"
+        )
+
+    matches = [
+        (uid, hotkey)
+        for uid, hotkey, coldkey in zip(uids, hotkeys, coldkeys, strict=True)
+        if coldkey == owner_coldkey
+    ]
+    if not matches:
+        raise ChainWeightStateError(
+            "no metagraph neuron is owned by the subnet owner coldkey"
+        )
+    candidate_uids = tuple(sorted(uid for uid, _hotkey in matches))
+    by_hotkey = {hotkey: uid for uid, hotkey in matches}
+    if owner_hotkey and owner_hotkey in by_hotkey:
+        return by_hotkey[owner_hotkey], owner_hotkey, candidate_uids
+    uid, hotkey = min(matches, key=lambda row: row[0])
+    return uid, hotkey, candidate_uids
 
 
 def _weight_uint(raw: object, field: str, *, maximum: int | None = None) -> int:
@@ -423,6 +513,134 @@ def fetch_metagraph(
     except Exception as exc:
         raise ChainWeightStateError(
             f"cannot fetch finalized metagraph: {exc}"
+        ) from None
+
+
+def _metagraph_coldkeys(mg: object, width: int) -> list[str]:
+    """Read index-aligned coldkeys from a RuntimeAPI-backed SDK metagraph."""
+
+    raw: object
+    if hasattr(mg, "coldkeys"):
+        raw = getattr(mg, "coldkeys")
+        if callable(raw):
+            raw = raw()
+    elif hasattr(mg, "axons"):
+        raw = [getattr(axon, "coldkey", None) for axon in list(getattr(mg, "axons"))]
+    else:
+        raise ChainWeightStateError(
+            "metagraph does not expose coldkeys for subnet-owner burn resolution"
+        )
+    try:
+        coldkeys = list(raw)
+    except TypeError as exc:
+        raise ChainWeightStateError(
+            "metagraph coldkeys are not iterable"
+        ) from exc
+    if len(coldkeys) != width:
+        raise ChainWeightStateError(
+            "metagraph coldkey width differs from UID/hotkey membership"
+        )
+    if any(not isinstance(value, str) or not value for value in coldkeys):
+        raise ChainWeightStateError(
+            "metagraph contains an invalid or empty coldkey"
+        )
+    return list(coldkeys)
+
+
+def resolve_subnet_owner_burn_target(
+    subtensor,
+    netuid: int,
+    *,
+    block: int | None = None,
+) -> SubnetOwnerBurnTarget:
+    """Resolve the burn sink from one finalized metagraph RuntimeAPI snapshot.
+
+    Neurons whose coldkey equals ``owner_coldkey`` are candidates. Prefer the
+    registered ``owner_hotkey`` when present among them; otherwise the lowest UID.
+    Owner fields and membership must come from that same block-bound metagraph —
+    unpinned subnet()/storage fallbacks are refused so selection cannot splice
+    authorities across heights.
+    """
+
+    if type(netuid) is not int or netuid < 0:
+        raise ChainWeightStateError("netuid must be a non-negative integer")
+    try:
+        resolved_block, block_hash = _weight_finalized_point(subtensor, block)
+    except ChainWeightStateError as exc:
+        # Head probes fail for the same transient RPC reasons as metagraph reads.
+        raise ChainWeightStateRetryableError(
+            f"cannot resolve finalized burn authority: {exc}"
+        ) from None
+    try:
+        mg = subtensor.metagraph(netuid=netuid, block=resolved_block)
+        reported_block = _weight_uint(
+            getattr(mg, "block", None), "returned metagraph block"
+        )
+        if reported_block != resolved_block:
+            raise ChainWeightStateError(
+                "metagraph response does not match the requested finalized block"
+            )
+        uids = [_weight_uint(value, "metagraph UID") for value in list(mg.uids)]
+        hotkeys = list(mg.hotkeys)
+        permits = [bool(value) for value in list(mg.validator_permit)]
+        last_update = [
+            _weight_uint(value, "metagraph last-update block")
+            for value in list(mg.last_update)
+        ]
+        coldkeys = _metagraph_coldkeys(mg, len(uids))
+        if not (
+            len(uids) == len(hotkeys) == len(permits) == len(last_update)
+        ):
+            raise ChainWeightStateError(
+                "metagraph UID/hotkey/permit/last-update widths differ"
+            )
+        owner_coldkey = _require_account_id(
+            getattr(mg, "owner_coldkey", None), "subnet owner coldkey"
+        )
+        owner_hotkey = _require_account_id(
+            getattr(mg, "owner_hotkey", None) or "",
+            "subnet owner hotkey",
+            allow_empty=True,
+        )
+        uid, hotkey, candidates = select_subnet_owner_burn_uid(
+            uids,
+            hotkeys,
+            coldkeys,
+            owner_coldkey,
+            owner_hotkey,
+        )
+        if _block_hash(subtensor, resolved_block) != block_hash:
+            raise ChainWeightStateError(
+                "finalized metagraph height/hash changed while burn target was read"
+            )
+        view = MetagraphView(
+            netuid=netuid,
+            block=resolved_block,
+            block_hash=block_hash,
+            uids=uids,
+            hotkeys=hotkeys,
+            validator_permit=permits,
+            last_update=last_update,
+        )
+        return SubnetOwnerBurnTarget(
+            uid=uid,
+            hotkey=hotkey,
+            owner_coldkey=owner_coldkey,
+            owner_hotkey=owner_hotkey,
+            candidate_uids=candidates,
+            block=resolved_block,
+            block_hash=block_hash,
+            metagraph=view,
+        )
+    except ChainWeightStateError:
+        raise
+    except ChainRevealHistoryError as exc:
+        raise ChainWeightStateRetryableError(
+            f"cannot verify finalized subnet-owner burn authority: {exc}"
+        ) from None
+    except Exception as exc:
+        raise ChainWeightStateRetryableError(
+            f"cannot resolve subnet-owner burn target: {exc}"
         ) from None
 
 

@@ -215,6 +215,25 @@ This projection is valid only with no active standing/discovery claims, no crown
 and no activated V2 composition. The burn hotkey must belong to the exact finalized
 metagraph. Any real economic authority disables the path.
 
+### Subnet-owner burn bypass
+
+`--burn-to-subnet-owner` bypasses intake and settlement entirely. It resolves the
+subnet owner coldkey from the finalized metagraph RuntimeAPI, selects one owned
+UID (prefer `SubnetOwnerHotkey`, else lowest UID), and submits 100% weight to that
+hotkey. Use it with `--watch` when the signer should keep burning emissions to the
+owner neuron without projecting settlement authority. It is incompatible with
+`--burn-hotkey`, reconcile/hold modes, and weight-offer / object-store publish.
+
+```bash
+optima set-weights \
+  --burn-to-subnet-owner \
+  --netuid <NETUID> \
+  --network <NETWORK_OR_WSS_URL> \
+  --wallet default \
+  --hotkey validator \
+  --watch
+```
+
 ## Publication journal
 
 Real publication is fail-closed and journaled:

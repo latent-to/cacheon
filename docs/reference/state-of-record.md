@@ -183,13 +183,17 @@ readback, pending, held, released, and confirmed states. It supports:
 
 - signer-free dry-run and reconciliation;
 - an all-uncrowned bootstrap projection to a registered `--burn-hotkey`;
+- an operator `--burn-to-subnet-owner` bypass that sets 100% weight to one
+  metagraph UID owned by the subnet owner coldkey (prefer `SubnetOwnerHotkey`,
+  else lowest UID), skipping intake/settlement;
 - stable-UID finality catch-up when authority and weighted-recipient mappings
   remain unchanged; and
 - continuous `--watch` operation with bounded retry behavior.
 
-Burn becomes invalid when a claim, crown, or active V2 composition exists.
-Submission success is never inferred from absence of an SDK exception; exact
-recipient/value readback and `last_update` govern confirmation.
+Burn bootstrap becomes invalid when a claim, crown, or active V2 composition
+exists. The subnet-owner bypass is independent of that gate. Submission success
+is never inferred from absence of an SDK exception; exact recipient/value
+readback and `last_update` govern confirmation on the settlement path.
 
 ### Shared current-weight distribution
 

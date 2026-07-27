@@ -30,7 +30,7 @@ installed `optima` console script resolves to the same parser.
 | `chain-incentive-shadow` | policy operator | signer-free evidence | Project explicit synthetic registered-CROWN debt against finalized membership |
 | `chain-incentive-composition-shadow` | policy operator | signer-free evidence | Project explicit synthetic CROWN and discovery debt against finalized membership |
 | `chain-activate-incentives` | policy operator | wallet-free durable transition | Atomically activate one independently approved campaign/composition |
-| `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation |
+| `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
 | `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
 | `push-weight-offer` | eval | peer weight distribution | Build V1/V2 offer and HTTP-push; never chain-publishes |
 | `serve-weights` | weights gateway | peer weight distribution | Serve/store the offer; optional authenticated PUT from eval |
@@ -205,6 +205,24 @@ to that registered bootstrap identity and fails closed as soon as normal reward 
 exists. `--watch --interval <seconds>` runs repeated reconciliations with bounded retry
 rules; it cannot be combined with dry-run, reconcile-only, or hold release. Remove the
 burn hotkey before restarting after the first CROWN.
+
+`--burn-to-subnet-owner` is a separate **operator bypass**. It ignores intake,
+settlement, emissions policy, and weight-offer publish paths. Each pass reads the
+finalized metagraph RuntimeAPI snapshot, collects UIDs whose coldkey equals the
+subnet owner coldkey, prefers `SubnetOwnerHotkey` when that hotkey is among the
+matches (otherwise the lowest matching UID), and submits `{hotkey: 1.0}` through
+`set_weights`. Policy flags and `--intake-db` are not required. Combine with
+`--watch` for a continuous burn watcher. It cannot be combined with
+`--burn-hotkey`, `--reconcile-only`, `--release-hold`, `--weight-offer-path`, or
+an object-store provider.
+
+```bash
+python -m optima.cli set-weights \
+  --burn-to-subnet-owner \
+  --network <network> --netuid <netuid> \
+  --wallet default --hotkey validator \
+  --watch --interval 60
+```
 
 Only a live signer pass whose reconciliation returns `pending` or `confirmed`
 writes the exact publishable projection to `<intake-db>.current_weights.json`
