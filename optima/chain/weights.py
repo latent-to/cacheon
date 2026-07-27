@@ -16,6 +16,7 @@ from optima.stack_identity import canonical_digest, require_sha256_hex
 
 
 WEIGHT_PARTS = 1_000_000
+SUBNET_OWNER_BURN_AUTHORITY = "optima.chain.subnet-owner-burn-weight-authority"
 PUBLICATION_STATUSES = frozenset(
     {"intent", "pending", "held", "confirmed", "released"}
 )

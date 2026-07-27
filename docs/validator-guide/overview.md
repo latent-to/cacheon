@@ -133,7 +133,7 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 | Run full referee service | Deployment code calling `run_validator(...)` with an injected registry/provider |
 | Reconcile legacy V1 rewards | `optima set-weights`, optionally `--watch`, in a separate control-plane process |
 | Project an all-uncrowned V1 bootstrap | `optima set-weights --burn-hotkey <REGISTERED_HOTKEY>` |
-| Burn continuously to the subnet owner | `optima set-weights --burn-to-subnet-owner --watch` |
+| Burn continuously to the subnet owner | `optima set-weights --burn-to-subnet-owner --watch` (journaled; still needs policy + intake-db) |
 | Inspect V2 activation authority | `optima chain-incentive-shadow`, `optima chain-incentive-composition-shadow` |
 | Activate V2 locally | `optima chain-activate-incentives` after independent approval |
 | Publish confirmed V2 debt | `optima set-debt-weights` after activation |

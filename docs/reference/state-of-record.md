@@ -183,9 +183,10 @@ readback, pending, held, released, and confirmed states. It supports:
 
 - signer-free dry-run and reconciliation;
 - an all-uncrowned bootstrap projection to a registered `--burn-hotkey`;
-- an operator `--burn-to-subnet-owner` bypass that sets 100% weight to one
-  metagraph UID owned by the subnet owner coldkey (prefer `SubnetOwnerHotkey`,
-  else lowest UID), skipping intake/settlement;
+- an operator `--burn-to-subnet-owner` bypass that resolves one metagraph UID
+  owned by the subnet owner coldkey (prefer `SubnetOwnerHotkey`, else lowest
+  UID) and publishes through the durable weight journal without requiring a
+  crown, while still skipping shared weight-offer publish;
 - stable-UID finality catch-up when authority and weighted-recipient mappings
   remain unchanged; and
 - continuous `--watch` operation with bounded retry behavior.

@@ -139,8 +139,9 @@ class MetagraphView:
 class SubnetOwnerBurnTarget:
     """One metagraph neuron selected as the subnet-owner burn sink.
 
-    ``metagraph`` is the exact finalized membership snapshot used for selection
-    and must be the authority passed into :func:`set_weights`.
+    ``metagraph`` is the finalized membership snapshot used to build the burn
+    projection context. Publication reconcile reopens that height independently
+    and fails closed on digest/UID drift.
     """
 
     uid: int
@@ -593,6 +594,14 @@ def resolve_subnet_owner_burn_target(
         ):
             raise ChainWeightStateError(
                 "metagraph UID/hotkey/permit/last-update widths differ"
+            )
+        if (
+            len(set(uids)) != len(uids)
+            or len(set(hotkeys)) != len(hotkeys)
+            or any(not isinstance(hotkey, str) or not hotkey for hotkey in hotkeys)
+        ):
+            raise ChainWeightStateError(
+                "metagraph contains invalid or duplicate UID/hotkey membership"
             )
         owner_coldkey = _require_account_id(
             getattr(mg, "owner_coldkey", None), "subnet owner coldkey"

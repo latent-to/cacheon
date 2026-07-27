@@ -217,20 +217,28 @@ metagraph. Any real economic authority disables the path.
 
 ### Subnet-owner burn bypass
 
-`--burn-to-subnet-owner` bypasses intake and settlement entirely. It resolves the
+`--burn-to-subnet-owner` bypasses settlement projection and resolves the
 subnet owner coldkey from the finalized metagraph RuntimeAPI, selects one owned
-UID (prefer `SubnetOwnerHotkey`, else lowest UID), and submits 100% weight to that
-hotkey. Use it with `--watch` when the signer should keep burning emissions to the
-owner neuron without projecting settlement authority. It is incompatible with
-`--burn-hotkey`, reconcile/hold modes, and weight-offer / object-store publish.
+UID (prefer `SubnetOwnerHotkey`, else lowest UID), and publishes `{hotkey: 1.0}`
+through the durable intent → pending → confirmed/held journal with
+`require_current_crown=False`. Use it with `--watch` when the signer should keep
+burning emissions to the owner neuron without projecting settlement authority.
+It still requires emissions policy flags and an intake DB. It refuses a foreign
+in-flight journal head. It is incompatible with `--burn-hotkey`,
+`--reconcile-only`, `--release-hold`, and weight-offer / object-store publish.
 
 ```bash
 optima set-weights \
   --burn-to-subnet-owner \
+  --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
   --wallet default \
   --hotkey validator \
+  --half-life-blocks <BLOCKS> \
+  --discovery-lifetime-blocks <BLOCKS> \
+  --discovery-pool-ppm <PPM> \
+  --refresh-blocks <BLOCKS> \
   --watch
 ```
 

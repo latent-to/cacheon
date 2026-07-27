@@ -78,17 +78,22 @@ The same command fails closed as soon as real economic authority exists.
 
 ### Subnet-owner burn bypass
 
-`--burn-to-subnet-owner` is not the settlement burn bootstrap. It is an operator
-bypass that skips intake, policy, crown gates, and shared offers, then sets the
-full vector to one neuron owned by the subnet owner coldkey:
+`--burn-to-subnet-owner` is not the all-uncrowned bootstrap. It bypasses
+settlement *projection* (crowns/claims do not choose the vector) but still
+publishes through the durable weight journal and exact chain readback:
 
 ```bash
 optima set-weights \
   --burn-to-subnet-owner \
+  --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
   --wallet default \
   --hotkey validator \
+  --half-life-blocks <BLOCKS> \
+  --discovery-lifetime-blocks <BLOCKS> \
+  --discovery-pool-ppm <PPM> \
+  --refresh-blocks <BLOCKS> \
   --watch \
   --interval <SECONDS>
 ```
@@ -98,8 +103,9 @@ Resolution uses the finalized metagraph RuntimeAPI fields `owner_coldkey`,
 unpinned `subnet()` / storage fallback). Candidates are UIDs whose coldkey
 equals the subnet owner. Prefer `owner_hotkey` when it is among those
 candidates; otherwise choose the lowest matching UID. Fail closed when the
-owner coldkey is missing or no owned neuron is registered. Transient RPC /
-submission faults are retryable under `--watch`.
+owner coldkey is missing or no owned neuron is registered. A foreign in-flight
+journal head is refused. Publication confirmation follows the normal journal
+states under `require_current_crown=False`.
 
 ### V1 publication loop
 

@@ -206,21 +206,27 @@ exists. `--watch --interval <seconds>` runs repeated reconciliations with bounde
 rules; it cannot be combined with dry-run, reconcile-only, or hold release. Remove the
 burn hotkey before restarting after the first CROWN.
 
-`--burn-to-subnet-owner` is a separate **operator bypass**. It ignores intake,
-settlement, emissions policy, and weight-offer publish paths. Each pass reads the
-finalized metagraph RuntimeAPI snapshot, collects UIDs whose coldkey equals the
-subnet owner coldkey, prefers `SubnetOwnerHotkey` when that hotkey is among the
-matches (otherwise the lowest matching UID), and submits `{hotkey: 1.0}` through
-`set_weights`. Policy flags and `--intake-db` are not required. Combine with
-`--watch` for a continuous burn watcher. It cannot be combined with
-`--burn-hotkey`, `--reconcile-only`, `--release-hold`, `--weight-offer-path`, or
-an object-store provider.
+`--burn-to-subnet-owner` is a separate **operator bypass of settlement
+projection**. It still requires emissions policy flags and an intake DB, and it
+publishes through the durable intent → pending → confirmed/held journal with
+`require_current_crown=False` (exact finalized recipient/value/`last_update`
+readback). Each pass resolves the burn sink from the finalized metagraph
+RuntimeAPI (owner coldkey matches; prefer `SubnetOwnerHotkey`, else lowest
+UID), builds a crownless `{hotkey: 1.0}` projection, and reconciles it. It
+refuses a foreign in-flight journal head. It does not publish shared weight
+offers. It cannot be combined with `--burn-hotkey`, `--reconcile-only`,
+`--release-hold`, `--weight-offer-path`, or an object-store provider.
 
 ```bash
 python -m optima.cli set-weights \
   --burn-to-subnet-owner \
+  --intake-db chain_intake/intake.sqlite3 \
   --network <network> --netuid <netuid> \
   --wallet default --hotkey validator \
+  --half-life-blocks <blocks> \
+  --discovery-lifetime-blocks <blocks> \
+  --discovery-pool-ppm <ppm> \
+  --refresh-blocks <blocks> \
   --watch --interval 60
 ```
 
