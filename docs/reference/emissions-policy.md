@@ -79,21 +79,28 @@ The same command fails closed as soon as real economic authority exists.
 ### Subnet-owner burn bypass
 
 `--burn-to-subnet-owner` is not the all-uncrowned bootstrap. It bypasses
-settlement *projection* (crowns/claims do not choose the vector) but still
-publishes through the durable weight journal and exact chain readback:
+settlement projection and the publication journal entirely: no intake DB is
+opened and no intent/pending/confirmed record is written. Each pass resolves
+the burn sink and calls `set_weights` with `{hotkey: 1.0}` (or stops before
+signing with `--dry-run`):
 
 ```bash
 optima set-weights \
   --burn-to-subnet-owner \
-  --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
   --wallet default \
   --hotkey validator \
-  --half-life-blocks <BLOCKS> \
-  --discovery-lifetime-blocks <BLOCKS> \
-  --discovery-pool-ppm <PPM> \
-  --refresh-blocks <BLOCKS> \
+  --dry-run
+```
+
+```bash
+optima set-weights \
+  --burn-to-subnet-owner \
+  --netuid <NETUID> \
+  --network <NETWORK_OR_WSS_URL> \
+  --wallet default \
+  --hotkey validator \
   --watch \
   --interval <SECONDS>
 ```
@@ -103,9 +110,10 @@ Resolution uses the finalized metagraph RuntimeAPI fields `owner_coldkey`,
 unpinned `subnet()` / storage fallback). Candidates are UIDs whose coldkey
 equals the subnet owner. Prefer `owner_hotkey` when it is among those
 candidates; otherwise choose the lowest matching UID. Fail closed when the
-owner coldkey is missing or no owned neuron is registered. A foreign in-flight
-journal head is refused. Publication confirmation follows the normal journal
-states under `require_current_crown=False`.
+owner coldkey is missing or no owned neuron is registered. Emissions policy
+flags and `--intake-db` are unused on this path. Unlike the settlement signer,
+this bypass does not journal confirmation; operators must observe chain
+readback separately if they need durable confirmation.
 
 ### V1 publication loop
 

@@ -3372,20 +3372,14 @@ class FinalizedIntakeStore:
         owner_hotkey: str,
         candidate_uids: tuple[int, ...],
     ) -> WeightProjection:
-        """Project the full pool to the resolved subnet-owner burn sink.
+        """Deprecated store wrapper around the DB-free burn projection helper.
 
-        Unlike :meth:`build_burn_weight_projection`, this is an operator bypass of
-        settlement projection: crowns/claims do not refuse it. Publication still
-        goes through the durable intent → pending → confirmed/held journal with
-        ``require_current_crown=False``. Legacy V1 remains disabled after V2
-        composition activation.
+        The stock ``--burn-to-subnet-owner`` CLI no longer opens an intake DB.
+        This method remains for callers that already hold a store and want the
+        V2 composition gate; it does not bind or journal emissions policy.
         """
 
-        from optima.chain.weights import (
-            SUBNET_OWNER_BURN_AUTHORITY,
-            WEIGHT_PARTS,
-            WeightProjection,
-        )
+        from optima.chain.weights import build_subnet_owner_burn_weight_projection
         from optima.economics import (
             EmissionsPolicyManifest,
             GlobalRewardProjectionContext,
@@ -3394,65 +3388,30 @@ class FinalizedIntakeStore:
         if (
             type(policy) is not EmissionsPolicyManifest
             or type(context) is not GlobalRewardProjectionContext
-            or type(netuid) is not int
-            or netuid < 0
-            or not isinstance(burn_hotkey, str)
-            or not burn_hotkey
-            or burn_hotkey.strip() != burn_hotkey
-            or len(burn_hotkey) > 256
-            or not isinstance(owner_coldkey, str)
-            or not owner_coldkey
-            or owner_coldkey.strip() != owner_coldkey
-            or len(owner_coldkey) > 256
-            or not isinstance(owner_hotkey, str)
-            or owner_hotkey.strip() != owner_hotkey
-            or len(owner_hotkey) > 256
-            or type(candidate_uids) is not tuple
-            or not candidate_uids
-            or any(type(uid) is not int or uid < 0 for uid in candidate_uids)
-            or candidate_uids != tuple(sorted(set(candidate_uids)))
         ):
             raise IntakeError("subnet-owner burn weight projection authority is malformed")
         if self._finite_debt.composition_activated():
             raise IntakeError(
                 "legacy V1 weight projection is disabled after incentive composition activation"
             )
-        if burn_hotkey not in context.eligible_hotkeys:
-            raise IntakeError(
-                "subnet-owner burn hotkey is not registered in the projection metagraph"
+        # policy is accepted for call-site compatibility but ignored: burn mode
+        # uses a fixed policy digest and does not write settlement metadata.
+        del policy
+        try:
+            return build_subnet_owner_burn_weight_projection(
+                chain_scope_digest=context.chain_scope_digest,
+                validator_hotkey=context.validator_hotkey,
+                metagraph_digest=context.metagraph_digest,
+                effective_block=context.current_block,
+                eligible_hotkeys=context.eligible_hotkeys,
+                netuid=netuid,
+                burn_hotkey=burn_hotkey,
+                owner_coldkey=owner_coldkey,
+                owner_hotkey=owner_hotkey,
+                candidate_uids=candidate_uids,
             )
-        settlement_digest = self.settlement_state_digest()
-        authority_digest = canonical_digest(
-            SUBNET_OWNER_BURN_AUTHORITY,
-            {
-                "burn_hotkey": burn_hotkey,
-                "candidate_uids": list(candidate_uids),
-                "chain_scope_digest": context.chain_scope_digest,
-                "metagraph_digest": context.metagraph_digest,
-                "netuid": netuid,
-                "owner_coldkey": owner_coldkey,
-                "owner_hotkey": owner_hotkey,
-                "policy_digest": policy.digest,
-                "settlement_state_digest": settlement_digest,
-                "validator_hotkey": context.validator_hotkey,
-            },
-        )
-        self._bind_emissions_policy(policy.digest)
-        return WeightProjection(
-            context.chain_scope_digest,
-            netuid,
-            context.validator_hotkey,
-            policy.digest,
-            settlement_digest,
-            authority_digest,
-            context.metagraph_digest,
-            (authority_digest,),
-            0,
-            context.current_block,
-            0,
-            (),
-            ((burn_hotkey, WEIGHT_PARTS),),
-        )
+        except Exception as exc:
+            raise IntakeError(str(exc)) from exc
 
     def settlement_state_digest(self) -> str:
         sequence, event = self._event_head()

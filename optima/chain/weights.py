@@ -17,9 +17,119 @@ from optima.stack_identity import canonical_digest, require_sha256_hex
 
 WEIGHT_PARTS = 1_000_000
 SUBNET_OWNER_BURN_AUTHORITY = "optima.chain.subnet-owner-burn-weight-authority"
+SUBNET_OWNER_BURN_POLICY = "optima.chain.subnet-owner-burn-policy"
 PUBLICATION_STATUSES = frozenset(
     {"intent", "pending", "held", "confirmed", "released"}
 )
+
+
+def empty_settlement_state_digest() -> str:
+    """Digest of an empty settlement authority (no stacks, claims, or events)."""
+
+    return canonical_digest(
+        "optima.chain.settlement-state",
+        {
+            "candidates": (),
+            "event_head": "",
+            "event_sequence": 0,
+            "stacks": (),
+        },
+    )
+
+
+def subnet_owner_burn_policy_digest() -> str:
+    """Fixed policy digest for the DB-free subnet-owner burn bypass."""
+
+    return canonical_digest(SUBNET_OWNER_BURN_POLICY, {"v": 1})
+
+
+def build_subnet_owner_burn_weight_projection(
+    *,
+    chain_scope_digest: str,
+    validator_hotkey: str,
+    metagraph_digest: str,
+    effective_block: int,
+    eligible_hotkeys: set[str] | frozenset[str],
+    netuid: int,
+    burn_hotkey: str,
+    owner_coldkey: str,
+    owner_hotkey: str,
+    candidate_uids: tuple[int, ...],
+) -> WeightProjection:
+    """Build a crownless full-pool burn projection without settlement or a DB.
+
+    This is an operator bypass: crowns/claims are not consulted. The resulting
+    vector is ``{burn_hotkey: 1.0}`` bound to the exact metagraph and owner
+    resolution inputs. Callers that need durable confirmation must supply their
+    own journal; the stock burn CLI submits (or dry-runs) without recording.
+    """
+
+    require_sha256_hex(chain_scope_digest, field="chain_scope_digest")
+    require_sha256_hex(metagraph_digest, field="metagraph_digest")
+    if (
+        type(netuid) is not int
+        or netuid < 0
+        or not isinstance(validator_hotkey, str)
+        or not validator_hotkey
+        or validator_hotkey.strip() != validator_hotkey
+        or len(validator_hotkey) > 256
+        or type(effective_block) is not int
+        or effective_block < 0
+        or not isinstance(burn_hotkey, str)
+        or not burn_hotkey
+        or burn_hotkey.strip() != burn_hotkey
+        or len(burn_hotkey) > 256
+        or not isinstance(owner_coldkey, str)
+        or not owner_coldkey
+        or owner_coldkey.strip() != owner_coldkey
+        or len(owner_coldkey) > 256
+        or not isinstance(owner_hotkey, str)
+        or owner_hotkey.strip() != owner_hotkey
+        or len(owner_hotkey) > 256
+        or type(candidate_uids) is not tuple
+        or not candidate_uids
+        or any(type(uid) is not int or uid < 0 for uid in candidate_uids)
+        or candidate_uids != tuple(sorted(set(candidate_uids)))
+    ):
+        raise WeightPublicationError(
+            "subnet-owner burn weight projection authority is malformed"
+        )
+    if burn_hotkey not in eligible_hotkeys:
+        raise WeightPublicationError(
+            "subnet-owner burn hotkey is not registered in the projection metagraph"
+        )
+    policy_digest = subnet_owner_burn_policy_digest()
+    settlement_digest = empty_settlement_state_digest()
+    authority_digest = canonical_digest(
+        SUBNET_OWNER_BURN_AUTHORITY,
+        {
+            "burn_hotkey": burn_hotkey,
+            "candidate_uids": list(candidate_uids),
+            "chain_scope_digest": chain_scope_digest,
+            "metagraph_digest": metagraph_digest,
+            "netuid": netuid,
+            "owner_coldkey": owner_coldkey,
+            "owner_hotkey": owner_hotkey,
+            "policy_digest": policy_digest,
+            "settlement_state_digest": settlement_digest,
+            "validator_hotkey": validator_hotkey,
+        },
+    )
+    return WeightProjection(
+        chain_scope_digest,
+        netuid,
+        validator_hotkey,
+        policy_digest,
+        settlement_digest,
+        authority_digest,
+        metagraph_digest,
+        (authority_digest,),
+        0,
+        effective_block,
+        0,
+        (),
+        ((burn_hotkey, WEIGHT_PARTS),),
+    )
 
 
 class WeightPublicationError(RuntimeError):
@@ -1049,6 +1159,8 @@ def reconcile_weight_publication(
 
 __all__ = [
     "PUBLICATION_STATUSES",
+    "SUBNET_OWNER_BURN_AUTHORITY",
+    "SUBNET_OWNER_BURN_POLICY",
     "WEIGHT_PARTS",
     "WeightProjection",
     "WeightPublicationError",
@@ -1057,7 +1169,10 @@ __all__ = [
     "StaleWeightProjectionError",
     "WeightPublicationRecord",
     "WeightPublicationResult",
+    "build_subnet_owner_burn_weight_projection",
+    "empty_settlement_state_digest",
     "release_weight_publication_hold",
     "reconcile_weight_publication",
     "resume_weight_projection",
+    "subnet_owner_burn_policy_digest",
 ]

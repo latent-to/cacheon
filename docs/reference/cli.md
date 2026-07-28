@@ -32,6 +32,7 @@ installed `optima` console script resolves to the same parser.
 | `chain-activate-incentives` | policy operator | wallet-free durable transition | Atomically activate one independently approved campaign/composition |
 | `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
 | `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
+| `mint-weight-gateway` | operator | weight-share deploy | Create a dedicated HTTP authority wallet (and optional push credentials) for serve-weights |
 | `push-weight-offer` | eval | peer weight distribution | Build V1/V2 offer and HTTP-push; never chain-publishes |
 | `serve-weights` | weights gateway | peer weight distribution | Serve/store the offer; optional authenticated PUT from eval |
 | `follow-weights` | signer | peer weight publication | Fetch the shared offer and publish through the commit-reveal reconciler |
@@ -207,26 +208,35 @@ rules; it cannot be combined with dry-run, reconcile-only, or hold release. Remo
 burn hotkey before restarting after the first CROWN.
 
 `--burn-to-subnet-owner` is a separate **operator bypass of settlement
-projection**. It still requires emissions policy flags and an intake DB, and it
-publishes through the durable intent → pending → confirmed/held journal with
-`require_current_crown=False` (exact finalized recipient/value/`last_update`
-readback). Each pass resolves the burn sink from the finalized metagraph
-RuntimeAPI (owner coldkey matches; prefer `SubnetOwnerHotkey`, else lowest
-UID), builds a crownless `{hotkey: 1.0}` projection, and reconciles it. It
-refuses a foreign in-flight journal head. It does not publish shared weight
-offers. It cannot be combined with `--burn-hotkey`, `--reconcile-only`,
-`--release-hold`, `--weight-offer-path`, or an object-store provider.
+projection**. Stop it before the first CROWN or V2 composition: a forgotten
+`--watch` will keep overwriting settlement / debt weights with `{owner: 1.0}`.
+It does **not** open an intake DB or publication journal. Each pass resolves
+the burn sink from the finalized metagraph RuntimeAPI (owner coldkey matches;
+prefer `SubnetOwnerHotkey`, else lowest UID), builds a crownless
+`{hotkey: 1.0}` projection, and calls `set_weights` directly (or prints the
+payload with `--dry-run`). Live/watch short-circuits when the signer row
+already matches (`status=already_set`) and only treats submit as done after
+chain readback (`status=confirmed`); soft submit / unmatched readback stay
+retryable so `--watch` does not exit on rate limits. It does not publish
+shared weight offers. It cannot be combined with `--burn-hotkey`,
+`--reconcile-only`, `--release-hold`, `--weight-offer-path`, or an object-store
+provider. Emissions policy flags and `--intake-db` are ignored for this path.
 
 ```bash
 python -m optima.cli set-weights \
   --burn-to-subnet-owner \
-  --intake-db chain_intake/intake.sqlite3 \
   --network <network> --netuid <netuid> \
   --wallet default --hotkey validator \
-  --half-life-blocks <blocks> \
-  --discovery-lifetime-blocks <blocks> \
-  --discovery-pool-ppm <ppm> \
-  --refresh-blocks <blocks> \
+  [--wallet-path <wallets-root>] \
+  --dry-run
+```
+
+```bash
+python -m optima.cli set-weights \
+  --burn-to-subnet-owner \
+  --network <network> --netuid <netuid> \
+  --wallet default --hotkey validator \
+  [--wallet-path <wallets-root>] \
   --watch --interval 60
 ```
 
@@ -240,7 +250,24 @@ a later controller process cannot be overtaken by an older background upload.
 Prefer the eval/serve/follow split below when eval must not hold a chain-signing
 weight path: `push-weight-offer` → `serve-weights` → `follow-weights`.
 
-### `mint-push-credentials` / `push-weight-offer` / `serve-weights` / `follow-weights`
+### `mint-push-credentials` / `mint-weight-gateway` / `push-weight-offer` / `serve-weights` / `follow-weights`
+
+Provision a **dedicated** gateway hotkey for HTTP response signatures. Do not
+reuse a follower / `set_weights` hotkey:
+
+```bash
+python -m optima.cli mint-weight-gateway \
+  --wallet-path /var/lib/optima/wallets \
+  --wallet gateway \
+  --hotkey authority \
+  --push-credentials /secret/push-credentials.json
+```
+
+That writes mode-0600 secrets (hotkey mnemonic only) + `AUTHORITY.json`, prints
+`authority_ss58`, and does not print mnemonics. Existing push-credential files
+are refused unless `--force` (which retires active secrets and appends).
+Followers pin that ss58 with `--expected-authority` (or omit the flag to
+auto-pin the on-chain subnet-owner hotkey).
 
 ```bash
 python -m optima.cli mint-push-credentials --path /secret/push-credentials.json
@@ -250,7 +277,8 @@ python -m optima.cli serve-weights \
   --object-store-bucket optima-weights \
   --push-credentials /secret/push-credentials.json \
   --network <network> --netuid <netuid> \
-  --wallet default --hotkey weights-gateway \
+  --wallet gateway --hotkey authority \
+  --wallet-path /var/lib/optima/wallets \
   --host 0.0.0.0 --port 8080
 
 python -m optima.cli push-weight-offer \

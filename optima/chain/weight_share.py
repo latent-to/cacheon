@@ -1090,8 +1090,9 @@ def parse_signed_offer_response(
     verify_auth_digest(authority_hotkey, digest, signature, verify=verify)
     if expected_authority is not None and authority_hotkey != expected_authority:
         raise WeightShareError("weight-share authority hotkey is not the pinned authority")
-    if metagraph is not None:
-        assert_validator_permit(metagraph, authority_hotkey)
+    # The response authority is an HTTP signing identity, not a chain publisher.
+    # Callers pin it with expected_authority. Live validator_permit is required of
+    # the GET requester (enforced by serve_current_weights), not of this hotkey.
     offer = CurrentWeightOffer.from_dict(payload["offer"])
     if offer.projection.netuid != netuid:
         raise WeightShareError("offer projection netuid mismatch")
