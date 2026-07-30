@@ -1805,6 +1805,95 @@ def test_burn_weight_projection_refuses_any_real_economic_authority(tmp_path):
         ).fetchone() is None
 
 
+def test_subnet_owner_burn_projection_binds_settlement_and_policy(tmp_path):
+    policy = EmissionsPolicyManifest(100, 20, 100_000)
+    context = GlobalRewardProjectionContext(
+        SCOPE.digest,
+        "validator",
+        12,
+        "0x" + f"{12:064x}",
+        (MetagraphMember(0, "owner-burn"), MetagraphMember(1, "validator")),
+    )
+    with _store(tmp_path) as store:
+        projection = store.build_subnet_owner_burn_weight_projection(
+            policy=policy,
+            context=context,
+            netuid=SCOPE.netuid,
+            burn_hotkey="owner-burn",
+            owner_coldkey="owner-ck",
+            owner_hotkey="owner-burn",
+            candidate_uids=(0,),
+        )
+        assert projection.weights_ppm == (("owner-burn", 1_000_000),)
+        assert projection.crown_count == 0
+        assert projection.stack_generation == 0
+        assert projection.evidence_digests == ()
+        assert projection.settlement_state_digest == store.settlement_state_digest()
+        assert projection.policy_digest == policy.digest
+        again = store.build_subnet_owner_burn_weight_projection(
+            policy=policy,
+            context=context,
+            netuid=SCOPE.netuid,
+            burn_hotkey="owner-burn",
+            owner_coldkey="owner-ck",
+            owner_hotkey="owner-burn",
+            candidate_uids=(0,),
+        )
+        assert again.digest == projection.digest
+        bound = store._db.execute(
+            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
+        ).fetchone()
+        assert bound is not None and bound[0] == policy.digest
+
+
+def test_subnet_owner_burn_projection_refuses_any_real_economic_authority(
+    tmp_path,
+):
+    policy = EmissionsPolicyManifest(100, 20, 100_000)
+    with _store(tmp_path) as store:
+        lease_candidate = _qualified_settlement_candidate(store)
+        lease = store.lease_settlement_cohort(current_block=11)
+        assert lease is not None
+        plan = plan_settlement(
+            lease.candidates,
+            current_manifest=lease.stack.manifest,
+            current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence,
+            previous_event_digest=lease.previous_event_digest,
+        )
+        evidence = tuple(
+            store.reopen_settlement_evidence(row) for row in lease.candidates
+        )
+        store.commit_settlement(lease, plan, evidence, current_block=11)
+        assert lease_candidate.arena_digest in {
+            row.arena_digest for row in store.evaluation_stacks()
+        }
+        context = GlobalRewardProjectionContext(
+            SCOPE.digest,
+            "validator",
+            12,
+            "0x" + f"{12:064x}",
+            (
+                MetagraphMember(0, "owner-burn"),
+                MetagraphMember(1, "validator"),
+                MetagraphMember(2, "miner"),
+            ),
+        )
+        with pytest.raises(IntakeError, match="subnet-owner burn weights refused"):
+            store.build_subnet_owner_burn_weight_projection(
+                policy=policy,
+                context=context,
+                netuid=SCOPE.netuid,
+                burn_hotkey="owner-burn",
+                owner_coldkey="owner-ck",
+                owner_hotkey="owner-burn",
+                candidate_uids=(0,),
+            )
+        assert store._db.execute(
+            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
+        ).fetchone() is None
+
+
 def test_expired_settlement_lease_cannot_commit(tmp_path):
     with _store(tmp_path) as store:
         _qualified_settlement_candidate(store)

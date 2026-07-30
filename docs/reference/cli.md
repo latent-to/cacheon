@@ -306,25 +306,28 @@ exists. `--watch --interval <seconds>` runs repeated reconciliations with bounde
 rules; it cannot be combined with dry-run, reconcile-only, or hold release. Remove the
 burn hotkey before restarting after the first CROWN.
 
-`--burn-to-subnet-owner` is a separate **operator bypass of settlement
-projection**. Stop it before the first CROWN or V2 composition: a forgotten
-`--watch` will keep overwriting settlement / debt weights with `{owner: 1.0}`.
-It does **not** open an intake DB or publication journal. Each pass resolves
-the burn sink from the finalized metagraph RuntimeAPI (owner coldkey matches;
-prefer `SubnetOwnerHotkey`, else lowest UID), builds a crownless
-`{hotkey: 1.0}` projection, and calls `set_weights` directly (or prints the
-payload with `--dry-run`). Live/watch short-circuits when the signer row
-already matches (`status=already_set`) and only treats submit as done after
-chain readback (`status=confirmed`); soft submit / unmatched readback stay
-retryable so `--watch` does not exit on rate limits. It does not publish
-shared weight offers. It cannot be combined with `--burn-hotkey`,
-`--reconcile-only`, `--release-hold`, `--weight-offer-path`, or an object-store
-provider. Emissions policy flags and `--intake-db` are ignored for this path.
+`--burn-to-subnet-owner` is the **chain-resolved all-uncrowned bootstrap**.
+Each pass resolves the burn sink from the finalized metagraph RuntimeAPI
+(owner coldkey matches; prefer `SubnetOwnerHotkey`, else lowest UID), builds
+the crownless `{hotkey: 1.0}` projection against the intake database's empty
+settlement state, and publishes it through the durable
+intent/pending/confirmed journal with `require_current_crown=False` (or stops
+before signing with `--dry-run`). It refuses the moment any active reward
+claim, crowned evaluation arena, or activated V2 composition exists, and it
+refuses a foreign in-flight journal head; those refusals are nonretryable, so
+a `--watch` loop stops with a typed error at the first CROWN — restart
+without the flag to publish settlement weights. It does not publish shared
+weight offers. It cannot be combined with `--burn-hotkey`,
+`--reconcile-only`, `--release-hold`, `--weight-offer-path`, or an
+object-store provider. Emissions policy flags and `--intake-db` are required.
 
 ```bash
 python -m optima.cli set-weights \
   --burn-to-subnet-owner \
   --network <network> --netuid <netuid> \
+  --intake-db chain_intake/intake.sqlite3 \
+  --half-life-blocks <blocks> --discovery-lifetime-blocks <blocks> \
+  --discovery-pool-ppm <ppm> --refresh-blocks <blocks> \
   --wallet default --hotkey validator \
   [--wallet-path <wallets-root>] \
   --dry-run
@@ -334,6 +337,9 @@ python -m optima.cli set-weights \
 python -m optima.cli set-weights \
   --burn-to-subnet-owner \
   --network <network> --netuid <netuid> \
+  --intake-db chain_intake/intake.sqlite3 \
+  --half-life-blocks <blocks> --discovery-lifetime-blocks <blocks> \
+  --discovery-pool-ppm <ppm> --refresh-blocks <blocks> \
   --wallet default --hotkey validator \
   [--wallet-path <wallets-root>] \
   --watch --interval 60

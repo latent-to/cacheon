@@ -215,22 +215,33 @@ This projection is valid only with no active standing/discovery claims, no crown
 and no activated V2 composition. The burn hotkey must belong to the exact finalized
 metagraph. Any real economic authority disables the path.
 
-### Subnet-owner burn bypass
+### Subnet-owner burn bootstrap
 
-`--burn-to-subnet-owner` bypasses settlement projection and resolves the
-subnet owner coldkey from the finalized metagraph RuntimeAPI, selects one owned
-UID (prefer `SubnetOwnerHotkey`, else lowest UID), and calls `set_weights` with
-`{hotkey: 1.0}` without opening an intake DB or publication journal. Use
-`--dry-run` to resolve and print the payload without signing, or `--watch` when
-the signer should keep burning emissions to the owner neuron. Emissions policy
-flags and `--intake-db` are unused. It is incompatible with `--burn-hotkey`,
-`--reconcile-only`, `--release-hold`, and weight-offer / object-store publish.
+`--burn-to-subnet-owner` is the chain-resolved variant of the all-uncrowned
+bootstrap. It resolves the subnet owner coldkey from the finalized metagraph
+RuntimeAPI, selects one owned UID (prefer `SubnetOwnerHotkey`, else lowest
+UID), and publishes `{hotkey: 1.0}` through the same durable
+intent → pending → confirmed/held journal as every other publication, with
+`require_current_crown=False`. Like `--burn-hotkey`, it refuses the moment any
+active standing/discovery claim, crowned arena, or activated V2 composition
+exists in the intake database, and it refuses a foreign in-flight journal
+head. Those refusals are non-retryable, so a `--watch` loop stops with a typed
+error at the first CROWN — restart without the flag to publish settlement
+weights. Emissions policy flags and `--intake-db` are required. It is
+incompatible with `--burn-hotkey`, `--reconcile-only`, `--release-hold`, and
+weight-offer / object-store publish, and it never publishes shared weight
+offers.
 
 ```bash
 optima set-weights \
   --burn-to-subnet-owner \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
+  --intake-db <PRIVATE_DB_PATH> \
+  --half-life-blocks <BLOCKS> \
+  --discovery-lifetime-blocks <BLOCKS> \
+  --discovery-pool-ppm <PPM> \
+  --refresh-blocks <BLOCKS> \
   --wallet default \
   --hotkey validator \
   --dry-run

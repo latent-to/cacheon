@@ -206,24 +206,24 @@ readback, pending, held, released, and confirmed states. It supports:
 
 - signer-free dry-run and reconciliation;
 - an all-uncrowned bootstrap projection to a registered `--burn-hotkey`;
-- an operator `--burn-to-subnet-owner` bypass that resolves one metagraph UID
-  owned by the subnet owner coldkey (prefer `SubnetOwnerHotkey`, else lowest
-  UID) and calls `set_weights` with `{owner: 1.0}` without an intake DB or
-  publication journal (use `--dry-run` to stop before signing; live/watch
-  short-circuits when the signer row already matches, and treats soft submit
-  or unmatched readback as retryable so `--watch` does not exit on rate
-  limits);
+- a chain-resolved `--burn-to-subnet-owner` bootstrap that resolves one
+  metagraph UID owned by the subnet owner coldkey (prefer `SubnetOwnerHotkey`,
+  else lowest UID) and publishes `{owner: 1.0}` through the durable
+  intent/pending/confirmed journal with `require_current_crown=False`,
+  refusing a foreign in-flight journal head (2026-07-30: restored journal
+  routing and settlement-state refusal after review of the interim
+  journal-free shape);
 - stable-UID finality catch-up when authority and weighted-recipient mappings
   remain unchanged; and
 - continuous `--watch` operation with bounded retry for retryable transport /
-  submit / readback faults (including the subnet-owner burn bypass).
+  submit / readback faults.
 
-Burn bootstrap becomes invalid when a claim, crown, or active V2 composition
-exists. The subnet-owner bypass is independent of that gate and will overwrite
-settlement or V2 vectors until the process is stopped—operators must not leave
-it running after crowning. Settlement confirmation still requires exact
-recipient/value/`last_update` readback; the burn path confirms the same way
-after submit (SDK success alone is not enough).
+Both burn bootstraps become invalid when a claim, crown, or active V2
+composition exists: the projection builders refuse, the refusal is a
+nonretryable publication fault, and a `--watch` loop stops with a typed error
+rather than overwriting settlement vectors. Settlement confirmation still
+requires exact recipient/value/`last_update` readback (SDK success alone is
+not enough).
 
 ### Shared current-weight distribution
 

@@ -76,19 +76,26 @@ The burn path is valid only when all of these are true:
 
 The same command fails closed as soon as real economic authority exists.
 
-### Subnet-owner burn bypass
+### Subnet-owner burn bootstrap
 
-`--burn-to-subnet-owner` is not the all-uncrowned bootstrap. It bypasses
-settlement projection and the publication journal entirely: no intake DB is
-opened and no intent/pending/confirmed record is written. Each pass resolves
-the burn sink and calls `set_weights` with `{hotkey: 1.0}` (or stops before
-signing with `--dry-run`):
+`--burn-to-subnet-owner` is the chain-resolved variant of the same
+all-uncrowned bootstrap: instead of naming a burn hotkey it resolves the
+subnet owner's registration from the finalized metagraph and publishes the
+identical crownless full-pool projection through the durable
+intent/pending/confirmed journal, with the same refusals the moment any
+active claim, crowned arena, or activated composition exists. Each pass
+resolves the burn sink fresh (or stops before signing with `--dry-run`):
 
 ```bash
 optima set-weights \
   --burn-to-subnet-owner \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
+  --intake-db chain_intake/intake.sqlite3 \
+  --half-life-blocks <BLOCKS> \
+  --discovery-lifetime-blocks <BLOCKS> \
+  --discovery-pool-ppm <PPM> \
+  --refresh-blocks <BLOCKS> \
   --wallet default \
   --hotkey validator \
   --dry-run
@@ -99,6 +106,11 @@ optima set-weights \
   --burn-to-subnet-owner \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
+  --intake-db chain_intake/intake.sqlite3 \
+  --half-life-blocks <BLOCKS> \
+  --discovery-lifetime-blocks <BLOCKS> \
+  --discovery-pool-ppm <PPM> \
+  --refresh-blocks <BLOCKS> \
   --wallet default \
   --hotkey validator \
   --watch \
@@ -110,10 +122,12 @@ Resolution uses the finalized metagraph RuntimeAPI fields `owner_coldkey`,
 unpinned `subnet()` / storage fallback). Candidates are UIDs whose coldkey
 equals the subnet owner. Prefer `owner_hotkey` when it is among those
 candidates; otherwise choose the lowest matching UID. Fail closed when the
-owner coldkey is missing or no owned neuron is registered. Emissions policy
-flags and `--intake-db` are unused on this path. Unlike the settlement signer,
-this bypass does not journal confirmation; operators must observe chain
-readback separately if they need durable confirmation.
+owner coldkey is missing or no owned neuron is registered. Publication runs
+through the standard journaled reconciler with `require_current_crown=False`,
+so intent, pending, confirmed, and held states are durable in the intake
+database, a foreign in-flight journal head is refused, and settlement-state
+refusals surface as nonretryable publication faults that stop a `--watch`
+loop.
 
 ### V1 publication loop
 

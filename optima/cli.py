@@ -217,18 +217,26 @@ def cmd_chain_activate_incentives(args: argparse.Namespace) -> int:
 
 
 def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
-    """Operator bypass: resolve owner burn sink and set_weights without a DB."""
+    """Operator bootstrap: journaled full-pool publication to the owner burn sink."""
 
-    import math
     import sys
 
     from optima import chain
-    from optima.chain.intake import IntakeScope
+    from optima.chain.intake import (
+        FinalizedIntakeStore,
+        IntakeError,
+        IntakeScope,
+        SQLiteWeightPublicationJournal,
+    )
     from optima.chain.weights import (
         WeightPublicationError,
-        build_subnet_owner_burn_weight_projection,
+        reconcile_weight_publication,
     )
-    from optima.stack_identity import canonical_digest
+    from optima.economics import (
+        EmissionsPolicyManifest,
+        GlobalRewardProjectionContext,
+        MetagraphMember,
+    )
 
     if getattr(args, "burn_hotkey", ""):
         raise SystemExit(
@@ -248,6 +256,14 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
         raise SystemExit(
             "--burn-to-subnet-owner cannot be combined with an object-store provider"
         )
+    for name, label in (
+        ("half_life_blocks", "--half-life-blocks"),
+        ("discovery_lifetime_blocks", "--discovery-lifetime-blocks"),
+        ("discovery_pool_ppm", "--discovery-pool-ppm"),
+        ("refresh_blocks", "--refresh-blocks"),
+    ):
+        if getattr(args, name, None) is None:
+            raise SystemExit(f"{label} is required with --burn-to-subnet-owner")
 
     public_wallet = _wallet_from_args(args)
     validator_hotkey = public_wallet.hotkey.ss58_address
@@ -264,8 +280,10 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
         ) from None
 
     print(
-        "WARNING: --burn-to-subnet-owner bypasses crowns/claims/V2 and will "
-        "overwrite settlement weight vectors until this process is stopped",
+        "NOTICE: --burn-to-subnet-owner publishes the full pool to the "
+        "subnet-owner burn sink while nothing is crowned; it refuses the "
+        "moment any crown, active claim, or activated composition exists "
+        "in the intake database",
         file=sys.stderr,
     )
     print(
@@ -283,126 +301,75 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
         raise WeightPublicationError(
             "signer hotkey is not registered on the burn projection metagraph"
         )
-    members = [
-        {"hotkey": hotkey, "uid": uid}
-        for uid, hotkey in sorted(
-            zip(metagraph.uids, metagraph.hotkeys, strict=True),
-            key=lambda row: (row[0], row[1]),
-        )
-    ]
-    metagraph_digest = canonical_digest(
-        "optima.economics.metagraph-membership",
-        {
-            "block": metagraph.block,
-            "block_hash": metagraph.block_hash.lower(),
-            "chain_scope_digest": scope.digest,
-            "members": members,
-        },
+    policy = EmissionsPolicyManifest(
+        args.half_life_blocks,
+        args.discovery_lifetime_blocks,
+        args.discovery_pool_ppm,
     )
-    projection = build_subnet_owner_burn_weight_projection(
-        chain_scope_digest=scope.digest,
-        validator_hotkey=validator_hotkey,
-        metagraph_digest=metagraph_digest,
-        effective_block=metagraph.block,
-        eligible_hotkeys=set(metagraph.hotkeys),
-        netuid=args.netuid,
-        burn_hotkey=target.hotkey,
-        owner_coldkey=target.owner_coldkey,
-        owner_hotkey=target.owner_hotkey,
-        candidate_uids=target.candidate_uids,
+    context = GlobalRewardProjectionContext(
+        scope.digest,
+        validator_hotkey,
+        metagraph.block,
+        metagraph.block_hash.lower(),
+        tuple(
+            MetagraphMember(uid, hotkey)
+            for uid, hotkey in zip(metagraph.uids, metagraph.hotkeys, strict=True)
+        ),
     )
-    if projection.crown_count != 0 or projection.evidence_digests:
-        raise WeightPublicationError(
-            "subnet-owner burn projection must be crownless"
-        )
-
-    def _row_matches(snapshot: chain.ValidatorWeightSnapshot) -> bool:
-        expected = projection.weights
-        return set(snapshot.weights) == set(expected) and all(
-            math.isclose(
-                float(snapshot.weights[hotkey]),
-                expected[hotkey],
-                rel_tol=2e-5,
-                abs_tol=2e-5,
-            )
-            for hotkey in expected
-        )
-
-    # Short-circuit when the signer row already carries the burn vector so
-    # --watch does not hammer weights_rate_limit.
-    if not args.dry_run:
+    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
         try:
-            live = chain.fetch_metagraph(subtensor, args.netuid)
-            pre = chain.read_validator_weight_snapshot(
-                subtensor,
-                args.netuid,
-                validator_hotkey,
-                metagraph_view=live,
+            projection = store.build_subnet_owner_burn_weight_projection(
+                policy=policy,
+                context=context,
+                netuid=args.netuid,
+                burn_hotkey=target.hotkey,
+                owner_coldkey=target.owner_coldkey,
+                owner_hotkey=target.owner_hotkey,
+                candidate_uids=target.candidate_uids,
             )
-        except chain.ChainWeightStateError as exc:
-            if getattr(exc, "retryable", False):
-                raise
-            raise chain.ChainWeightStateRetryableError(
-                f"subnet-owner burn pre-read failed: {exc}"
-            ) from None
-        if _row_matches(pre):
-            print(
-                f"weight projection={projection.digest} status=already_set "
-                f"submitted=False chain_matches=True "
-                f"last_update={pre.last_update_block}"
+        except IntakeError as exc:
+            # Settlement-state refusals must stop a --watch loop, not spin
+            # behind it: surface them as the non-retryable publication fault.
+            raise WeightPublicationError(str(exc)) from exc
+        if projection.crown_count != 0 or projection.evidence_digests:
+            raise WeightPublicationError(
+                "subnet-owner burn projection must be crownless"
             )
-            return 0
-
-    result = chain.set_weights(
-        subtensor,
-        wallet,
-        args.netuid,
-        projection.weights,
-        dry_run=args.dry_run,
-        metagraph_view=metagraph,
-    )
-    if args.dry_run:
-        print(
-            f"weight projection={projection.digest} status=dry_run "
-            f"submitted=False "
-            f"uids={result.get('uids')} weights={result.get('weights')}"
-        )
-        return 0
-
-    submitted = bool(result.get("submitted"))
-    if not submitted:
-        message = result.get("message") or result.get("result") or "unknown"
-        raise chain.ChainWeightStateRetryableError(
-            f"subnet-owner burn submit failed: {message}"
-        )
-
-    try:
-        live = chain.fetch_metagraph(subtensor, args.netuid)
-        post = chain.read_validator_weight_snapshot(
+        journal = SQLiteWeightPublicationJournal(store, projection)
+        # The reconcile machinery resumes in-flight heads. With
+        # require_current_crown=False that must not silently continue a
+        # foreign settlement/bootstrap vector under the burn banner.
+        if not args.dry_run:
+            current = journal.load()
+            if (
+                current is not None
+                and current.status in {"intent", "pending"}
+                and current.projection_digest != projection.digest
+            ):
+                raise WeightPublicationError(
+                    "in-flight weight publication differs from the resolved "
+                    "subnet-owner burn projection; finish or release it before "
+                    "--burn-to-subnet-owner"
+                )
+        result = reconcile_weight_publication(
             subtensor,
-            args.netuid,
-            validator_hotkey,
-            metagraph_view=live,
+            wallet,
+            projection,
+            journal,
+            refresh_blocks=args.refresh_blocks,
+            dry_run=args.dry_run,
+            reconcile_only=False,
+            allow_stale_initial=True,
+            require_current_crown=False,
         )
-    except chain.ChainWeightStateError as exc:
-        raise chain.ChainWeightStateRetryableError(
-            f"subnet-owner burn submitted but readback failed: {exc}"
-        ) from None
-
-    if _row_matches(post):
-        print(
-            f"weight projection={projection.digest} status=confirmed "
-            f"submitted=True chain_matches=True "
-            f"last_update={post.last_update_block} "
-            f"uids={result.get('uids')} weights={result.get('weights')}"
-        )
-        return 0
-
-    # Commit-reveal / rate-limit windows: keep --watch retrying until match.
-    raise chain.ChainWeightStateRetryableError(
-        "subnet-owner burn submitted but chain readback does not yet match; "
-        f"last_update={post.last_update_block} observed={dict(post.weights)}"
+    print(
+        f"weight projection={projection.digest} status={result.status} "
+        f"chain_matches={result.chain_matches} submitted={result.submitted} "
+        f"refresh_due={result.refresh_due}"
     )
+    if result.refresh_due:
+        return 3
+    return 0 if result.status in {"dry_run", "confirmed", "pending"} else 2
 
 
 def _cmd_set_weights_once(args: argparse.Namespace) -> int:
@@ -2521,10 +2488,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--burn-to-subnet-owner",
         action="store_true",
         help=(
-            "operator bypass of settlement projection: resolve the subnet-owner "
-            "burn sink from chain and call set_weights with {owner: 1.0}; does "
-            "not open an intake DB or publication journal; does not publish "
-            "shared weight offers; usable with --dry-run or --watch"
+            "all-uncrowned bootstrap: resolve the subnet-owner burn sink from "
+            "chain and publish the full pool to it through the durable "
+            "intent/pending/confirmed journal with require_current_crown=False; "
+            "refuses the moment any crown, active claim, or activated "
+            "composition exists in the intake DB, and refuses a foreign "
+            "in-flight journal head; does not publish shared weight offers; "
+            "usable with --dry-run or --watch"
         ),
     )
     sp.add_argument(
@@ -2532,8 +2502,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "keep the signer process reconciling and refreshing this policy; "
-            "with --burn-to-subnet-owner, keep resolving and reconciling the burn "
-            "vector; otherwise restart with --burn-hotkey removed after the first CROWN"
+            "with --burn-to-subnet-owner or --burn-hotkey the loop stops with a "
+            "typed refusal once settlement authority exists — restart without "
+            "the burn flag after the first CROWN"
         ),
     )
     sp.add_argument(
