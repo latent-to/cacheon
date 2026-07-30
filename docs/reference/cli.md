@@ -22,10 +22,13 @@ installed `optima` console script resolves to the same parser.
 | `scan` | contributor | local gate | Parse a bundle and apply recursive static policy |
 | `verify` | contributor | local gate | Check declared slot behavior against validator-owned references |
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
+| `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-register` | operator | chain mutation | Burn-register a hotkey and run the SDK preflight |
 | `chain-validate` | validator | production intake | Consume finalized reveals; a deployment may inject qualification services |
+| `chain-snapshot` | validator | private object-store mutation | Publish and reopen a consistent validator recovery snapshot |
+| `chain-snapshot-verify` | validator | recovery verification | Download and semantically reopen one snapshot, optionally into fresh staging |
 | `chain-archive-schema3-hold` | validator | durable state transition | Terminally archive one exact legacy schema-3 reproduction hold |
 | `chain-incentive-shadow` | policy operator | signer-free evidence | Project explicit synthetic registered-CROWN debt against finalized membership |
 | `chain-incentive-composition-shadow` | policy operator | signer-free evidence | Project explicit synthetic CROWN and discovery debt against finalized membership |
@@ -106,6 +109,42 @@ The command writes one canonical wrapper archive and prints the deterministic co
 hash of the extracted bundle tree. Host the exact archive at a stable HTTPS URL. The URL
 is transport; the hash is proposal identity.
 
+### Publish
+
+```bash
+set -a
+source .env
+set +a
+
+python -m pip install -e ".[object-store]"
+python -m optima.cli chain-publish path/to/bundle \
+  --out bundle.tar.gz
+```
+
+The command reads `OPTIMA_OBJECT_STORE_ACCESS_KEY_ID`,
+`OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY`, and
+`OPTIMA_OBJECT_STORE_BUCKET`. It uses generic S3 by default. Set
+`OPTIMA_OBJECT_STORE_ENDPOINT_URL` for any S3-compatible service; that endpoint
+selects the service without a provider name and defaults to path-style
+addressing. `OPTIMA_OBJECT_STORE_REGION` and
+`OPTIMA_OBJECT_STORE_ADDRESSING_STYLE` override its signing region and URL
+style. `OPTIMA_OBJECT_STORE_PROVIDER=hippius` and `minio` are optional presets,
+not validator protocol identities. The miner's credentials authorize the
+upload only; they are not written into the archive, URL, on-chain payload, or
+validator configuration.
+
+The object key defaults to
+`optima/miner-bundles/sha256/<content_hash>.tar.gz`. Publication refuses an
+existing object that does not extract to the same committed hash, makes the
+object anonymously readable, and verifies the resulting URL with the same
+production HTTPS fetcher used by validator intake. `--dry-run` packages and
+prints the planned key and URL without a remote change. `--create-bucket` is an
+explicit bucket mutation; otherwise the miner must create the bucket first.
+Custom S3-compatible services use `--object-store-endpoint` and optionally
+`--object-store-region` / `--object-store-addressing`; a known
+`--object-store-provider` preset merely fills those defaults. Public validator
+URLs must still resolve to canonical HTTPS.
+
 ### Submit
 
 ```bash
@@ -157,13 +196,73 @@ python -m optima.cli chain-validate \
 
 Intake mode persists finalized order, hardened fetch and re-hash results, private
 retention, immutable worker publication, and copy disposition. Storage and loop controls
-are `--intake-db`, `--private-root`, `--publication-root`, `--interval`, and `--once`.
+are `--intake-db`, `--private-root`, `--publication-root`, `--audit-log`,
+`--interval`, and `--once`. The audit file is a redacted, fsynced JSONL chronology;
+it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
+not replace SQLite as transition authority.
 
 Qualification requires a deployment-owned `ArenaServiceRegistry` plus a registered
 `--arena-id`. The repository does not construct a production provider from shell text.
 A reviewed deployment wrapper calls `cmd_chain_validate(args,
 arena_registry=registry)` or `run_validator(...)` after creating the registry. Invoking
 the stock module without `--intake-only` refuses to run because no registry was injected.
+
+### `chain-snapshot` and `chain-snapshot-verify`
+
+Install the optional S3 client on the validator host, then publish a private snapshot:
+
+```bash
+python -m pip install -e ".[object-store]"
+
+optima chain-snapshot \
+  --intake-db chain_intake/intake.sqlite3 \
+  --audit-log chain_intake/chain-audit.jsonl \
+  --object-store-bucket <PRIVATE_BUCKET> \
+  --object-store-endpoint <S3_COMPATIBLE_HTTPS_ENDPOINT> \
+  --object-store-region <SIGNING_REGION> \
+  --sealed-input qualification-inputs=/srv/optima/sealed-inputs
+```
+
+Credentials come from `OPTIMA_OBJECT_STORE_ACCESS_KEY_ID` and
+`OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY` (or the equivalent flags). Generic S3 is
+the default. `--object-store-provider hippius` or `minio` is only a convenience
+preset for endpoint, region, and addressing defaults; a custom endpoint needs no
+provider name. Archive keys default below the private
+`optima/validator-archive/v1` prefix, overridable with
+`OPTIMA_VALIDATOR_ARCHIVE_PREFIX` or `--object-store-prefix`.
+
+The command uses SQLite's online backup API and uploads digest-addressed blobs plus
+a closed snapshot manifest. It automatically includes:
+
+- the consistent SQLite image and redacted audit journal;
+- every immutable worker publication referenced by the database;
+- each retained qualification artifact referenced by
+  `settlement_qualifications`; and
+- only sealed-input roots explicitly named with repeatable
+  `--sealed-input NAME=PATH`.
+
+It does not discover or upload models, OCI images, wallets, credentials, caches,
+unredacted logs, or unrelated evidence directories. Use a private bucket—or an
+explicitly policy-isolated private prefix—not the anonymous miner-publication
+namespace. Bucket encryption, versioning/object lock, lifecycle, and access policy
+remain deployment responsibilities.
+
+Verify every scheduled backup with a temporary semantic reopen:
+
+```bash
+optima chain-snapshot-verify \
+  --manifest-key <KEY_PRINTED_BY_CHAIN_SNAPSHOT> \
+  --object-store-bucket <PRIVATE_BUCKET> \
+  --object-store-endpoint <S3_COMPATIBLE_HTTPS_ENDPOINT> \
+  --object-store-region <SIGNING_REGION>
+```
+
+Add `--restore-root /fresh/private/staging/path` for a retained restore drill.
+The destination must not exist. Restore verifies the SQLite image, audit journal,
+worker publication receipts/content hashes, and evidence references, then writes a
+private `restore-map.json`. It never replaces the live database or original
+absolute evidence/publication paths. The staged database and restored files become
+authoritative only through a separately reviewed recovery cutover.
 
 ### `chain-archive-schema3-hold`
 

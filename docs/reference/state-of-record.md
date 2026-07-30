@@ -10,25 +10,25 @@ different events. Evidence for one does not authorize another.
 
 ## Source snapshot
 
-Snapshot date: **2026-07-26**
+Snapshot date: **2026-07-27**
 
 | Item | Value |
 |---|---|
 | Repository | [`latent-to/cacheon`](https://github.com/latent-to/cacheon) |
-| Implementation baseline | [`848042e12592ac1a3c99927bc0be62626ae33b25`](https://github.com/latent-to/cacheon/commit/848042e12592ac1a3c99927bc0be62626ae33b25) |
-| Production Python | 126 files and 102,869 lines under `optima/` |
-| Tests | 115 Python files and 61,306 lines under `tests/` |
-| Complete local suite | 2,342 passed, 21 skipped, 0 failed |
+| Implementation parent | [`ebf9302887e66cf91818b4b3052a7ca9ce5fdf00`](https://github.com/latent-to/cacheon/commit/ebf9302887e66cf91818b4b3052a7ca9ce5fdf00); this page accompanies the object-store transport/archive change set |
+| Production Python | 129 files and 105,575 lines under `optima/` |
+| Tests | 117 Python files and 62,047 lines under `tests/` |
+| Complete local suite | 2,364 passed, 19 skipped, 0 failed |
 | Test command | `PYENV_VERSION=sn120 python -m pytest -q tests` in an unrestricted local environment |
 | SGLang pin | `0.5.13.post1` in `optima/compat.py` |
 | Bittensor raw-reveal storage ABI | `10.3.2` in `optima/chain_canary.py` |
-| Public CLI | 23 commands |
+| Public CLI | 26 commands |
 
-The shared-weight transport changes do not alter kernels, timed evaluation, or
-crown/settlement arithmetic. File and line counts describe the implementation
-baseline; they are not quality metrics. The suite is CPU/non-empirical
-validation and does not establish GPU performance, container-runtime
-isolation, chain finality, or serving readiness.
+The miner transport and private-recovery changes do not alter kernels, timed
+evaluation, or crown/settlement arithmetic. File and line counts describe the
+accompanying change set; they are not quality metrics. The suite is
+CPU/non-empirical validation and does not establish GPU performance,
+container-runtime isolation, chain finality, or serving readiness.
 
 ## Authority order
 
@@ -67,9 +67,32 @@ The evidence classes are intentionally non-substitutable:
   content. Extension headers are bounded separately.
 - Deterministic re-hash, cumulative copy disposition, immutable worker
   publication, and reopen-before-use remain required.
+- `chain-publish` packages a miner bundle into a content-addressed key on any
+  S3-compatible endpoint and proves anonymous HTTPS reopen through the production
+  validator fetcher. Hippius and MinIO are optional configuration presets, not
+  protocol identities.
 - Replayed discovery proposals are terminally disposed or deduplicated before
   screening. Legacy schema-3 single-PASS migration holds are non-crownable and
   have an evidence-preserving archive command.
+
+### Validator recovery archive
+
+- `chain-validate` appends a redacted, fsynced JSONL operational chronology by
+  default. It records finalized positions, content-derived identifiers, bounded
+  disposition classes, and fault types without URLs, hotkeys, candidate bytes,
+  exception messages, wallets, credentials, or ambient environment. SQLite
+  remains transition authority.
+- `chain-snapshot` uses SQLite's online backup API and publishes a closed,
+  digest-bound private recovery manifest. It includes the consistent database,
+  redacted journal when present, database-referenced worker publications and
+  retained settlement qualification artifacts, plus only explicitly named sealed
+  inputs. Models, OCI images, wallets, credentials, caches, unredacted logs, and
+  unrelated evidence are not auto-discovered.
+- Every archive read is byte-bounded; uploaded objects are reopened; and
+  `chain-snapshot-verify` semantically restores into a fresh private staging root,
+  checking SQLite, worker receipts/content hashes, evidence references, and audit
+  structure. The object store is neither the live database nor the live evidence
+  filesystem, and restore never overwrites live state.
 
 ### Slots, targets, and direct artifacts
 
@@ -370,6 +393,75 @@ does not establish on-chain weight publication (the signed submission is a
 separate, operator-reviewed act), incentive activation, integration review, or
 serving readiness.
 
+### Public object-storage intake canary (2026-07-27)
+
+The exact fused-epilogue proposal from the version-3 program (content hash
+`747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709`)
+was packaged and uploaded to a miner-side Hippius S3-compatible bucket under
+the content-addressed key
+`optima/miner-bundles/sha256/747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709.tar.gz`.
+An anonymous download from the resulting public HTTPS URL was byte-identical
+to the 24,012-byte stored archive (archive SHA-256
+`d86162982a72b66bed39751686cfdced15a2e25518a39ead61f8eb57f8533d7f`).
+The production hardened fetcher then downloaded it without credentials,
+enforced the archive policy, extracted it into a private mode-0700 cache, and
+re-derived the exact committed tree hash.
+
+A subsequent synthetic-finalized intake pass used the same public URL through
+the unmodified validator loop. It durably reserved one arrival in a fresh
+`FinalizedIntakeStore` SQLite database, advanced it to `published`, and created
+a mode-0555 worker publication with digest
+`765778bef17a1d6a6c5b3f93bcb46b1db48c2530306e60c4ff76980398131673`.
+
+This establishes the external miner-origin → anonymous validator-fetch
+transport and URL → SQLite → worker-publication intake plumbing for those exact
+bytes. The finalized snapshot in the intake canary was synthetic; this is not a
+new chain submission, crown, qualification, object immutability guarantee, or
+validator database service. S3 objects remain mutable at the hosting layer; the
+finalized content hash, not the URL or object metadata, authenticates proposal
+identity.
+
+### Private validator recovery canaries (2026-07-27)
+
+A provider-neutral `chain-snapshot` invocation used generic S3 configuration
+with the Hippius endpoint, never a provider-specific archive implementation.
+The input was a fresh synthetic-finalized intake of the public fused-epilogue
+bundle above plus one retained qualification artifact, one redacted chain-audit
+record, and one harmless explicitly sealed policy file. The first canary stored
+11 new blobs representing 591,709 source bytes below
+`optima/validator-archive/v1/canary/20260727-provider-neutral`. Its manifest
+digest was
+`4148e6a3815f557345fd01004b1a88313c840512182c8d495a131c78983d62fa`
+and its online SQLite backup digest was
+`f59e65f1647144d8ba1a3050d414fd8c482e50650f9caedfb4c38230833f1424`.
+Every object reopened after upload. A fresh retained restore then passed SQLite
+integrity/foreign-key checks, reopened the worker publication and qualification
+artifact, validated the journal, and emitted the closed restore map. Anonymous
+HTTPS access to the manifest returned 403.
+
+The current worktree was then deployed through the validator's rsync setup path
+to an idle eight-B200 pod. The host deployment tree and container `/optima` both
+matched local runtime-source aggregate SHA-256
+`dd11ab2d8f40f586a7f9661871c68ce6480cec6b63e7ea0190eca6a7ac1c59f8`;
+the sync excluded `.env` and the private worklog, and the spawned-interpreter
+bootstrap resolved Optima from `/optima`. Without starting a GPU process, the
+pod independently repeated anonymous HTTPS intake, uploaded another 11-blob
+snapshot under `optima/validator-archive/v1/canary/pod-b200-20260727`, and
+semantically restored it from both the isolated source copy and the final
+`/optima` deployment. That manifest and database digests were respectively
+`0e856820f37c1031407afda701591a443c1f0866ae4c0663c461118d2e0bba74`
+and
+`2beaafbd28fdc337f9e1cd28a3bffa183fb017e0f4a0f9790dcfaaa1aa91589e`;
+its anonymous manifest request also returned 403. The temporary pod credential
+file was removed after verification.
+
+These canaries establish consistent snapshot, private object transport,
+bounded authenticated download, and fresh-root semantic restore for those
+exact synthetic records. They do not establish bucket encryption,
+versioning/object lock, long-term retention, production evidence completeness,
+chain finality for the synthetic reveal, a production restore cutover, GPU
+qualification, or a new B/C/B′ verdict.
+
 ### Incentive evidence
 
 The tracked one-campaign load report contains 64 matrix rows and four burst
@@ -390,7 +482,8 @@ The live command inventory is:
 
 ```text
 slots  compat  chain-compat  scan  verify
-chain-package  chain-submit  chain-status  chain-register  chain-validate
+chain-package  chain-publish  chain-submit  chain-status  chain-register
+chain-validate  chain-snapshot  chain-snapshot-verify
 chain-archive-schema3-hold
 model-provision  release-verify  release-context
 chain-incentive-shadow  chain-incentive-composition-shadow
@@ -417,6 +510,8 @@ claim that a live mainnet deployment or receipt exists.
 - [Slot catalog](https://github.com/latent-to/cacheon/blob/main/optima/slots.py)
 - [Target catalog](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py)
 - [Hardened fetch](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py)
+- [Miner object-store publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/publish.py)
+- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
 - [Resident screening](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_screen_lane.py)
 - [Adaptive resident runtime](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py)
 - [Qualification](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)

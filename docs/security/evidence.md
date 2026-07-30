@@ -194,11 +194,20 @@ had authenticated those absent products.
 
 ## Retention and recovery
 
-The code authenticates evidence that exists; the operator owns retention policy and
-disaster recovery. A production plan should define:
+`chain-snapshot` implements one private, off-pod recovery format. It uses SQLite's
+online backup API, validates the closed database image, and uploads digest-addressed
+blobs plus a digest-bound manifest. The manifest automatically names immutable worker
+publications referenced by reservations and retained qualification artifacts referenced
+by `settlement_qualifications`. It can also include explicitly named
+`--sealed-input NAME=PATH` roots and the redacted chain journal.
+
+The object store is not the live SQLite or evidence authority. Snapshot and restore do
+not auto-discover models, OCI images, caches, unrelated evidence directories, wallets,
+credentials, or unredacted logs. The operator still owns:
 
 - evidence lifetime for active crowns, retired claims, disputes, and releases;
-- SQLite-consistent backups plus evidence-store snapshots;
+- snapshot scheduling, private-bucket access, encryption, versioning/object lock,
+  lifecycle, and capacity;
 - restore tests that preserve file modes, ownership, single-link shape, and absolute root;
 - capacity alerts and a policy for non-authoritative screen/debug logs;
 - encryption and access control for private prompts, hidden tasks, model identity, and
@@ -207,7 +216,9 @@ disaster recovery. A production plan should define:
   authority.
 
 Deleting evidence for an active crown is not harmless garbage collection: economics will
-hold the projection when the claim can no longer reopen.
+hold the projection when the claim can no longer reopen. Likewise, a successful archive
+upload is not sufficient; every scheduled snapshot should pass
+`chain-snapshot-verify`.
 
 Retention clocks are type-specific. Settlement lease expiry can recycle a lease, and a
 discovery claim may have a policy lifetime. Eligible unresolved intake rows expire
@@ -222,15 +233,28 @@ retained.
 
 ### Restore drill
 
-A useful restore test uses a copy of the SQLite database and evidence root on a clean
-owner-controlled path. Test two paths separately: settlement's attempt-byte/PASS reopen,
-and full causal regrade using a separately restored exact `CausalQualificationInput`.
-Weight projection reopening is a third state path. Verify not only digests, but also the
-filesystem assumptions enforced by the evidence store: absolute root, owner-only
-directories, regular single-linked files, read-only modes, and stable size/digest during
-access. A byte-perfect backup restored with unsafe ownership or hard links should fail;
-an SQLite/evidence restore without the private expected input must not be reported as a
-successful full regrade.
+Run a temporary semantic reopen after each snapshot:
+
+```bash
+optima chain-snapshot-verify \
+  --manifest-key <MANIFEST_KEY> \
+  --object-store-bucket <PRIVATE_BUCKET> \
+  --object-store-endpoint <S3_COMPATIBLE_ENDPOINT>
+```
+
+Periodically add a new `--restore-root` on a clean owner-controlled path. The restore
+verifies SQLite integrity and foreign keys, audit JSONL structure, worker publication
+receipts/content hashes, and retained evidence references. It preserves the source-to-
+staging relationship in a private restore map but never overwrites the original absolute
+paths or declares a cutover.
+
+Test two evidence authorities separately after staging: settlement's
+attempt-byte/PASS reopen, and full causal regrade using an explicitly archived exact
+`CausalQualificationInput`. Weight projection reopening is a third state path. Verify
+not only digests, but also owner-only directories, regular single-linked files,
+read-only modes, and stable size/digest during access. A byte-perfect backup restored
+with unsafe ownership or hard links should fail; an SQLite/evidence restore without
+the private expected input must not be reported as a successful full regrade.
 
 ## Privacy and observability
 
@@ -238,6 +262,13 @@ Retain the minimum data required by the registered policy. Do not place wallet s
 release private keys, cloud credentials, private worklogs, or unrelated user prompts in
 evidence artifacts. Logs are useful for operations but should refer to content digests
 instead of dumping candidate source, hidden work, or model data.
+
+The implemented chain journal follows that rule: it records finalized chronology,
+content-derived identifiers, bounded disposition classes, and fault types, while
+omitting URLs, hotkeys, exception messages, candidate bytes, and ambient environment.
+The archive does not provide client-side encryption; private bucket policy and
+deployment-approved encryption remain mandatory for sealed inputs or operational
+metadata.
 
 ## Nonclaims
 
@@ -263,3 +294,5 @@ instead of dumping candidate source, hidden work, or model data.
 - [Qualification runner and regrade](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)
 - [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py)
 - [SQLite authority](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
+- [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/optima/chain/audit_log.py)
+- [Private snapshot and restore](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)

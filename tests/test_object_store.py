@@ -24,6 +24,7 @@ from optima.object_store import (
     ObjectStoreConfig,
     ObjectStoreError,
     ObjectStoreNotFoundError,
+    S3CompatibleObjectStore,
     open_configured_object_store,
     open_object_store,
     prefixed_store,
@@ -74,8 +75,10 @@ def test_provider_presets_are_swappable_by_name() -> None:
     for provider in ("hippius", "s3", "minio"):
         cfg = ObjectStoreConfig(provider=provider, bucket="weights")
         assert cfg.provider == provider
+        assert cfg.backend_kind() == "s3"
     local = ObjectStoreConfig(provider="local", root_dir="/tmp/optima-store")
     assert local.provider == "local"
+    assert local.backend_kind() == "local"
     with pytest.raises(ObjectStoreError, match="provider"):
         ObjectStoreConfig(provider="gpl-forbidden", bucket="x")
 
@@ -90,6 +93,38 @@ def test_memory_and_local_backends_roundtrip(tmp_path: Path) -> None:
     assert local.get_bytes("dir/b.json") == b"hello"
     with pytest.raises(ObjectStoreError, match="missing"):
         local.get_bytes("missing.json")
+    for store in (mem, local):
+        with pytest.raises(ObjectStoreError, match="max_bytes"):
+            store.get_bytes(
+                "a.json" if store is mem else "dir/b.json",
+                max_bytes=2,
+            )
+
+
+def test_s3_bounded_get_stops_at_the_limit_and_closes_body() -> None:
+    class _Body:
+        closed = False
+        requested = None
+
+        def read(self, amount=None):
+            self.requested = amount
+            return b"toolarge"
+
+        def close(self):
+            self.closed = True
+
+    body = _Body()
+
+    class _Client:
+        def get_object(self, **kwargs):
+            assert kwargs == {"Bucket": "private", "Key": "object"}
+            return {"Body": body}
+
+    store = S3CompatibleObjectStore(_Client(), "private")
+    with pytest.raises(ObjectStoreError, match="max_bytes"):
+        store.get_bytes("object", max_bytes=3)
+    assert body.requested == 4
+    assert body.closed is True
 
 
 def test_prefixed_store_and_open_configured(tmp_path: Path) -> None:
@@ -269,6 +304,17 @@ def test_environment_only_object_store_configuration(
     )
     assert isinstance(store, LocalDirectoryObjectStore)
     assert store.root_dir == explicit_root
+
+
+def test_object_store_config_from_env_defaults_to_generic_s3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUSTOM_BUCKET", "portable")
+    monkeypatch.setenv("CUSTOM_ENDPOINT_URL", "https://objects.example")
+    config = ObjectStoreConfig.from_env(prefix="CUSTOM_")
+    assert config.provider == "s3"
+    assert config.bucket == "portable"
+    assert config.resolved_endpoint_url() == "https://objects.example"
 
 
 def test_open_s3_requires_boto3_message() -> None:

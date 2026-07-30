@@ -101,6 +101,7 @@ the SQLite database. A local development layout is:
 
 ```text
 chain_intake/
+├── chain-audit.jsonl
 ├── intake.sqlite3
 ├── private/
 └── worker/
@@ -133,6 +134,7 @@ optima chain-validate \
   --intake-db chain_intake/intake.sqlite3 \
   --private-root chain_intake/private \
   --publication-root chain_intake/worker \
+  --audit-log chain_intake/chain-audit.jsonl \
   --intake-only \
   --once
 ```
@@ -156,6 +158,47 @@ Interpret the one-pass summary by stage:
 Run the identical command a second time. With no newly finalized reveals, it should not
 refetch or republish the same arrival. That checks the finalized cursor and idempotent
 publication join; it does not yet exercise interruption during a live fetch.
+
+### Exercise the private recovery path
+
+Configure private S3-compatible credentials, install the optional client, and publish
+one recovery snapshot:
+
+```bash
+python -m pip install -e ".[object-store]"
+
+optima chain-snapshot \
+  --intake-db chain_intake/intake.sqlite3 \
+  --audit-log chain_intake/chain-audit.jsonl \
+  --object-store-bucket <PRIVATE_BUCKET> \
+  --object-store-endpoint <S3_COMPATIBLE_ENDPOINT> \
+  --object-store-region <SIGNING_REGION>
+```
+
+Capture the printed manifest key, verify it through a full temporary semantic restore,
+then repeat into a retained fresh staging root:
+
+```bash
+optima chain-snapshot-verify \
+  --manifest-key <MANIFEST_KEY> \
+  --object-store-bucket <PRIVATE_BUCKET> \
+  --object-store-endpoint <S3_COMPATIBLE_ENDPOINT> \
+  --object-store-region <SIGNING_REGION>
+
+optima chain-snapshot-verify \
+  --manifest-key <MANIFEST_KEY> \
+  --restore-root /srv/optima/restore-drill-001 \
+  --object-store-bucket <PRIVATE_BUCKET> \
+  --object-store-endpoint <S3_COMPATIBLE_ENDPOINT> \
+  --object-store-region <SIGNING_REGION>
+```
+
+The archive is a private recovery mirror, not the live database or evidence root.
+Confirm anonymous reads are denied and that the restore root contains only the
+consistent database, redacted audit journal, database-referenced worker/evidence
+artifacts, and explicitly requested sealed inputs. Do not upload wallets, credentials,
+models, OCI images, caches, unredacted logs, or unrelated data. A successful staged
+restore still requires a reviewed cutover procedure before it may replace live state.
 
 ## 6. Optional GPU diagnostics
 
@@ -285,6 +328,7 @@ Before enabling full validation, an operator still needs to supply and review:
 - a representative workload and frozen calibration;
 - an `ArenaServiceProvider` and closed `ArenaServiceRegistry`;
 - an evidence-retention root and restore procedure;
+- a private object-store archive policy plus scheduled semantic restore drills;
 - queue, timeout, retry, and disk-capacity monitoring;
 - a separate hotkey-only weight signer and publication journal procedure; and
 - release-key, registry, integration-review, and serving-fleet processes if operating
@@ -303,5 +347,6 @@ fleet for you.
 
 - [Package metadata](https://github.com/latent-to/cacheon/blob/main/pyproject.toml)
 - [CLI parser](https://github.com/latent-to/cacheon/blob/main/optima/cli.py)
+- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
 - [Compatibility canary](https://github.com/latent-to/cacheon/blob/main/optima/compat.py)
 - [Chain SDK canary](https://github.com/latent-to/cacheon/blob/main/optima/chain_canary.py)

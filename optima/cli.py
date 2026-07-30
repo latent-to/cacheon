@@ -654,6 +654,99 @@ def _object_store_from_args(args: argparse.Namespace):
     return open_configured_object_store(cfg), key
 
 
+def _s3_store_config_from_args(
+    args: argparse.Namespace,
+    *,
+    default_prefix: str,
+    prefix_env: str,
+):
+    """Build one generic S3-compatible config from flags plus environment."""
+
+    import os
+
+    from optima.object_store import ObjectStoreConfig
+
+    provider = (
+        getattr(args, "object_store_provider", "")
+        or os.environ.get("OPTIMA_OBJECT_STORE_PROVIDER", "")
+        or "s3"
+    ).strip().lower()
+    bucket = (
+        getattr(args, "object_store_bucket", "")
+        or os.environ.get("OPTIMA_OBJECT_STORE_BUCKET", "")
+    )
+    if not bucket:
+        raise SystemExit(
+            "--object-store-bucket or OPTIMA_OBJECT_STORE_BUCKET is required"
+        )
+
+    def _opt(name: str, env_name: str) -> str | None:
+        value = getattr(args, name, "") or os.environ.get(env_name, "")
+        return value or None
+
+    endpoint_url = _opt(
+        "object_store_endpoint", "OPTIMA_OBJECT_STORE_ENDPOINT_URL"
+    )
+    addressing_style = _opt(
+        "object_store_addressing", "OPTIMA_OBJECT_STORE_ADDRESSING_STYLE"
+    )
+    # A custom endpoint selects the S3-compatible service without requiring a
+    # provider label. Path style is the interoperable default for that generic
+    # case; operators can explicitly select virtual-hosted addressing.
+    if provider == "s3" and endpoint_url is not None and addressing_style is None:
+        addressing_style = "path"
+
+    config = ObjectStoreConfig(
+        provider=provider,
+        bucket=bucket,
+        key_prefix=(
+            getattr(args, "object_store_prefix", "")
+            or os.environ.get(prefix_env, "")
+            or default_prefix
+        ),
+        endpoint_url=endpoint_url,
+        region_name=_opt("object_store_region", "OPTIMA_OBJECT_STORE_REGION"),
+        access_key_id=_opt(
+            "object_store_access_key", "OPTIMA_OBJECT_STORE_ACCESS_KEY_ID"
+        ),
+        secret_access_key=_opt(
+            "object_store_secret_key", "OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY"
+        ),
+        addressing_style=addressing_style,
+    )
+    if config.backend_kind() != "s3":
+        raise SystemExit(
+            "this command requires an S3-compatible object-store backend"
+        )
+    return config
+
+
+def _bundle_store_config_from_args(args: argparse.Namespace):
+    """Build miner-owned public bundle storage config from flags + environment."""
+
+    from optima.chain.publish import DEFAULT_BUNDLE_KEY_PREFIX
+
+    return _s3_store_config_from_args(
+        args,
+        default_prefix=DEFAULT_BUNDLE_KEY_PREFIX,
+        prefix_env="OPTIMA_OBJECT_STORE_KEY_PREFIX",
+    )
+
+
+def _validator_archive_store_from_args(args: argparse.Namespace):
+    """Open the private validator archive store from flags plus environment."""
+
+    from optima.chain.archive import DEFAULT_VALIDATOR_ARCHIVE_PREFIX
+    from optima.object_store import open_configured_object_store
+
+    config = _s3_store_config_from_args(
+        args,
+        default_prefix=DEFAULT_VALIDATOR_ARCHIVE_PREFIX,
+        prefix_env="OPTIMA_VALIDATOR_ARCHIVE_PREFIX",
+    )
+    return open_configured_object_store(config)
+
+
 def _add_object_store_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--object-store-provider",
@@ -1669,6 +1762,64 @@ def cmd_chain_package(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_publish(args: argparse.Namespace) -> int:
+    """Package and publish a miner bundle to anonymous public object storage."""
+
+    from optima.chain.fetch import package_bundle
+    from optima.chain.publish import (
+        BundlePublishError,
+        bundle_object_name,
+        open_public_bundle_publisher,
+        public_object_url,
+    )
+    from optima.object_store import ObjectStoreError
+
+    out, content_hash = package_bundle(args.bundle, args.out)
+    try:
+        config = _bundle_store_config_from_args(args)
+        object_key = config.resolve_key(bundle_object_name(content_hash))
+        public_base_url = getattr(args, "public_base_url", "") or None
+        url = public_object_url(
+            config,
+            object_key,
+            public_base_url=public_base_url,
+        )
+        if args.dry_run:
+            print(f"archive:      {out}")
+            print(f"content_hash: {content_hash}")
+            print(f"object_key:   {object_key}")
+            print(f"url:          {url}")
+            print("DRY RUN — archive built locally; no bucket or object was changed.")
+            return 0
+        publisher = open_public_bundle_publisher(
+            config,
+            public_base_url=public_base_url,
+        )
+        publication = publisher.publish_archive(
+            out,
+            content_hash,
+            create_bucket=bool(args.create_bucket),
+            verify_timeout_s=float(args.verify_timeout),
+        )
+    except (BundlePublishError, ObjectStoreError) as exc:
+        print(f"PUBLICATION REFUSED: {exc}")
+        return 2
+
+    print(f"archive:      {publication.archive_path}")
+    print(f"content_hash: {publication.content_hash}")
+    print(f"stored_hash:  {publication.stored_archive_sha256}")
+    print(f"stored_bytes: {publication.stored_archive_bytes}")
+    print(f"object_key:   {publication.object_key}")
+    print(f"url:          {publication.url}")
+    print(f"reused:       {str(publication.reused).lower()}")
+    print("anonymous validator fetch: verified")
+    print(
+        "commit this exact reference: optima chain-submit "
+        f"{args.bundle} --url {publication.url} --netuid <N> --network <WSS>"
+    )
+    return 0
+
+
 def cmd_chain_submit(args: argparse.Namespace) -> int:
     from optima.chain.payload import PayloadError
     from optima.chain.submit import submit_bundle
@@ -1780,6 +1931,7 @@ def cmd_chain_validate(
         intake_only=args.intake_only,
         interval_s=args.interval,
         once=args.once,
+        audit_log=args.audit_log,
     )
     if args.once and res is not None:
         print(
@@ -1793,6 +1945,88 @@ def cmd_chain_validate(
             print(f"  rejected {reservation[:16]}… {why}")
         if args.intake_only:
             print("qualification/settlement: disabled by --intake-only")
+    return 0
+
+
+def cmd_chain_snapshot(args: argparse.Namespace) -> int:
+    """Publish one private, digest-verified validator recovery snapshot."""
+
+    from optima.chain.archive import (
+        ValidatorArchiveError,
+        create_validator_archive,
+        parse_named_roots,
+    )
+    from optima.object_store import ObjectStoreError
+
+    try:
+        store = _validator_archive_store_from_args(args)
+        publication = create_validator_archive(
+            args.intake_db,
+            store,
+            audit_log=args.audit_log or None,
+            sealed_inputs=parse_named_roots(args.sealed_input),
+        )
+    except (ObjectStoreError, ValidatorArchiveError) as exc:
+        print(f"SNAPSHOT REFUSED: {exc}")
+        return 2
+    manifest = publication.manifest
+    print(f"manifest_key:   {publication.manifest_key}")
+    print(f"manifest_hash:  {manifest.digest}")
+    print(f"scope_hash:     {manifest.scope.digest}")
+    print(
+        "finalized:      "
+        + (
+            "none"
+            if manifest.finalized_cursor is None
+            else f"{manifest.finalized_cursor[0]} {manifest.finalized_cursor[1]}"
+        )
+    )
+    print(f"database_hash:  {manifest.database.sha256}")
+    print(f"bundles:        {len(manifest.admitted_bundles)}")
+    print(f"evidence:       {len(manifest.qualification_evidence)}")
+    print(f"sealed_inputs:  {len(manifest.sealed_inputs)}")
+    print(f"uploaded_blobs: {publication.uploaded_blobs}")
+    print(f"reused_blobs:   {publication.reused_blobs}")
+    print(f"source_bytes:   {publication.stored_bytes}")
+    print("private archive reopen: verified")
+    return 0
+
+
+def cmd_chain_snapshot_verify(args: argparse.Namespace) -> int:
+    """Verify or stage one private validator recovery snapshot."""
+
+    from optima.chain.archive import (
+        ValidatorArchiveError,
+        restore_validator_archive,
+        verify_validator_archive,
+    )
+    from optima.object_store import ObjectStoreError
+
+    try:
+        store = _validator_archive_store_from_args(args)
+        if args.restore_root:
+            restored = restore_validator_archive(
+                store,
+                args.manifest_key,
+                args.restore_root,
+            )
+            manifest = restored.manifest
+        else:
+            restored = None
+            manifest = verify_validator_archive(store, args.manifest_key)
+    except (ObjectStoreError, ValidatorArchiveError) as exc:
+        print(f"SNAPSHOT VERIFY REFUSED: {exc}")
+        return 2
+    print(f"manifest_hash: {manifest.digest}")
+    print(f"scope_hash:    {manifest.scope.digest}")
+    print(f"database_hash: {manifest.database.sha256}")
+    print(f"bundles:       {len(manifest.admitted_bundles)}")
+    print(f"evidence:      {len(manifest.qualification_evidence)}")
+    print(f"sealed_inputs: {len(manifest.sealed_inputs)}")
+    if restored is not None:
+        print(f"restore_root:  {restored.restore_root}")
+        print(f"restore_map:   {restored.restore_map_path}")
+    print("private archive semantic reopen: verified")
     return 0
 
 
@@ -2065,6 +2299,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from optima.chain.archive import DEFAULT_VALIDATOR_ARCHIVE_PREFIX
+    from optima.chain.publish import DEFAULT_BUNDLE_KEY_PREFIX
+
     p = argparse.ArgumentParser(
         prog="optima",
         description=(
@@ -2073,9 +2310,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Commands by workflow:\n"
             "  develop a kernel (miner) ... slots, scan, verify\n"
             "  submit on-chain (miner) .... chain-register, chain-package,\n"
-            "                               chain-submit, chain-status\n"
+            "                               chain-publish, chain-submit, chain-status\n"
             "  referee + settlement ....... chain-validate, "
-            "chain-activate-incentives, set-debt-weights\n"
+            "chain-snapshot, chain-activate-incentives, set-debt-weights\n"
             "  environment checks ......... compat, chain-compat\n"
             "\n"
             "New to Optima? Start with docs/MINER_GUIDE.md."
@@ -2627,6 +2864,88 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", default=None, help="archive path (default <bundle>.tar.gz)")
     sp.set_defaults(func=cmd_chain_package)
 
+    sp = sub.add_parser(
+        "chain-publish",
+        help=(
+            "miner: package a bundle, publish it from the miner's S3-compatible "
+            "bucket, and verify anonymous validator fetch"
+        ),
+    )
+    sp.add_argument("bundle")
+    sp.add_argument("--out", default=None, help="archive path (default <bundle>.tar.gz)")
+    sp.add_argument(
+        "--object-store-provider",
+        default="",
+        help=(
+            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
+            "hippius/minio map provider defaults)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-bucket",
+        default="",
+        help="miner-owned bucket (or OPTIMA_OBJECT_STORE_BUCKET)",
+    )
+    sp.add_argument(
+        "--object-store-prefix",
+        default="",
+        help=(
+            "content-addressed key prefix (default "
+            f"{DEFAULT_BUNDLE_KEY_PREFIX})"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-endpoint",
+        default="",
+        help=(
+            "S3-compatible API endpoint; selects a custom service without a "
+            "provider preset"
+        ),
+    )
+    sp.add_argument("--object-store-region", default="", help="override region")
+    sp.add_argument(
+        "--object-store-access-key",
+        default="",
+        help="access key (or OPTIMA_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
+    )
+    sp.add_argument(
+        "--object-store-secret-key",
+        default="",
+        help=(
+            "secret key (or OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY / "
+            "AWS_SECRET_ACCESS_KEY)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-addressing",
+        default="",
+        help="S3 addressing style: path | virtual | auto",
+    )
+    sp.add_argument(
+        "--public-base-url",
+        default="",
+        help=(
+            "optional HTTPS bucket/CDN base; the content-addressed key is appended"
+        ),
+    )
+    sp.add_argument(
+        "--create-bucket",
+        action="store_true",
+        help="create the named miner bucket if it does not exist",
+    )
+    sp.add_argument(
+        "--verify-timeout",
+        type=float,
+        default=60.0,
+        help="absolute anonymous validator-fetch verification timeout (default: 60)",
+    )
+    sp.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="package and print the planned object/URL without remote changes",
+    )
+    sp.set_defaults(func=cmd_chain_publish)
+
     sp = sub.add_parser("chain-submit",
                         help="miner: commit a bundle (hash + fetch URL) on-chain via "
                              "timelock commit-reveal")
@@ -2664,9 +2983,149 @@ def build_parser() -> argparse.ArgumentParser:
                     help="validator-private 0700/0600 fetch storage")
     sp.add_argument("--publication-root", default="chain_intake/worker",
                     help="immutable 0555/0444 worker-readable publication storage")
+    sp.add_argument(
+        "--audit-log",
+        default="chain_intake/chain-audit.jsonl",
+        help=(
+            "redacted append-only pass journal "
+            "(default chain_intake/chain-audit.jsonl)"
+        ),
+    )
     sp.add_argument("--interval", type=float, default=60.0, help="seconds between passes")
     sp.add_argument("--once", action="store_true", help="single pass, then exit")
     sp.set_defaults(func=cmd_chain_validate)
+
+    sp = sub.add_parser(
+        "chain-snapshot",
+        help=(
+            "validator: publish a private online SQLite/evidence/bundle recovery "
+            "snapshot to S3-compatible storage"
+        ),
+    )
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.add_argument(
+        "--audit-log",
+        default="chain_intake/chain-audit.jsonl",
+        help="redacted chain audit journal to include when present",
+    )
+    sp.add_argument(
+        "--sealed-input",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help=(
+            "explicit validator-owned sealed-input root to include; repeatable "
+            "(models/images are never discovered automatically)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-provider",
+        default="",
+        help=(
+            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
+            "hippius/minio map provider defaults)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-bucket",
+        default="",
+        help="private validator bucket (or OPTIMA_OBJECT_STORE_BUCKET)",
+    )
+    sp.add_argument(
+        "--object-store-prefix",
+        default="",
+        help=(
+            "private archive key prefix (default "
+            f"{DEFAULT_VALIDATOR_ARCHIVE_PREFIX}; env "
+            "OPTIMA_VALIDATOR_ARCHIVE_PREFIX)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-endpoint",
+        default="",
+        help="S3-compatible API endpoint; no provider preset is required",
+    )
+    sp.add_argument("--object-store-region", default="", help="override signing region")
+    sp.add_argument(
+        "--object-store-access-key",
+        default="",
+        help="access key (or OPTIMA_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
+    )
+    sp.add_argument(
+        "--object-store-secret-key",
+        default="",
+        help=(
+            "secret key (or OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY / "
+            "AWS_SECRET_ACCESS_KEY)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-addressing",
+        default="",
+        help="S3 addressing style: path | virtual | auto",
+    )
+    sp.set_defaults(func=cmd_chain_snapshot)
+
+    sp = sub.add_parser(
+        "chain-snapshot-verify",
+        help=(
+            "validator: download and semantically reopen one private recovery "
+            "snapshot"
+        ),
+    )
+    sp.add_argument("--manifest-key", required=True)
+    sp.add_argument(
+        "--restore-root",
+        default="",
+        help="optional fresh private staging path; omitted means temporary verification",
+    )
+    sp.add_argument(
+        "--object-store-provider",
+        default="",
+        help=(
+            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
+            "hippius/minio map provider defaults)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-bucket",
+        default="",
+        help="private validator bucket (or OPTIMA_OBJECT_STORE_BUCKET)",
+    )
+    sp.add_argument(
+        "--object-store-prefix",
+        default="",
+        help=(
+            "private archive key prefix (default "
+            f"{DEFAULT_VALIDATOR_ARCHIVE_PREFIX}; env "
+            "OPTIMA_VALIDATOR_ARCHIVE_PREFIX)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-endpoint",
+        default="",
+        help="S3-compatible API endpoint; no provider preset is required",
+    )
+    sp.add_argument("--object-store-region", default="", help="override signing region")
+    sp.add_argument(
+        "--object-store-access-key",
+        default="",
+        help="access key (or OPTIMA_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
+    )
+    sp.add_argument(
+        "--object-store-secret-key",
+        default="",
+        help=(
+            "secret key (or OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY / "
+            "AWS_SECRET_ACCESS_KEY)"
+        ),
+    )
+    sp.add_argument(
+        "--object-store-addressing",
+        default="",
+        help="S3 addressing style: path | virtual | auto",
+    )
+    sp.set_defaults(func=cmd_chain_snapshot_verify)
 
     sp = sub.add_parser(
         "chain-archive-schema3-hold",
