@@ -233,6 +233,20 @@ def append_chain_audit(path: str | Path, record: dict[str, object]) -> None:
         parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         parent_info = parent.lstat()
         if (
+            not stat.S_ISLNK(parent_info.st_mode)
+            and stat.S_ISDIR(parent_info.st_mode)
+            and parent_info.st_uid == os.geteuid()
+            and stat.S_IMODE(parent_info.st_mode) != 0o700
+            and parent.resolve(strict=True) == parent
+        ):
+            # A sibling component (private root, publication root) may have
+            # created this directory first under the ambient umask.  mkdir with
+            # exist_ok never corrects an existing mode, so heal our own
+            # canonical directory to the owner-only contract instead of
+            # refusing every append for the life of the process.
+            os.chmod(parent, 0o700)
+            parent_info = parent.lstat()
+        if (
             stat.S_ISLNK(parent_info.st_mode)
             or not stat.S_ISDIR(parent_info.st_mode)
             or parent_info.st_uid != os.geteuid()
