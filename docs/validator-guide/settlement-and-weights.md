@@ -225,9 +225,13 @@ intent → pending → confirmed/held journal as every other publication, with
 `require_current_crown=False`. Like `--burn-hotkey`, it refuses the moment any
 active standing/discovery claim, crowned arena, or activated V2 composition
 exists in the intake database, and it refuses a foreign in-flight journal
-head. Those refusals are non-retryable, so a `--watch` loop stops with a typed
-error at the first CROWN — restart without the flag to publish settlement
-weights. Emissions policy flags and `--intake-db` are required. It is
+head. Its own in-flight head — same chain scope, signer, policy, and burn
+vector under an earlier block-bound digest — is resumed through the journal
+instead: confirmed by authoritative readback once the publication lands, or
+carried as `pending` inside its retry bounds, so a refresh submission that
+outlives one tick does not stop the watch. The refusals are non-retryable, so
+a `--watch` loop stops with a typed error at the first CROWN — restart
+without the flag to publish settlement weights. Emissions policy flags and `--intake-db` are required. It is
 incompatible with `--burn-hotkey`, `--reconcile-only`, `--release-hold`, and
 weight-offer / object-store publish, and it never publishes shared weight
 offers.

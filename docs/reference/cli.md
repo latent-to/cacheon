@@ -314,9 +314,11 @@ settlement state, and publishes it through the durable
 intent/pending/confirmed journal with `require_current_crown=False` (or stops
 before signing with `--dry-run`). It refuses the moment any active reward
 claim, crowned evaluation arena, or activated V2 composition exists, and it
-refuses a foreign in-flight journal head; those refusals are nonretryable, so
-a `--watch` loop stops with a typed error at the first CROWN — restart
-without the flag to publish settlement weights. It does not publish shared
+refuses a foreign in-flight journal head (its own in-flight head — same
+scope, signer, policy, and vector — is resumed and reconciled instead);
+those refusals are nonretryable, so a `--watch` loop stops with a typed
+error at the first CROWN — restart without the flag to publish settlement
+weights. It does not publish shared
 weight offers. It cannot be combined with `--burn-hotkey`,
 `--reconcile-only`, `--release-hold`, `--weight-offer-path`, or an
 object-store provider. Emissions policy flags and `--intake-db` are required.

@@ -774,6 +774,156 @@ def test_burn_to_subnet_owner_refuses_foreign_in_flight_projection(
         )
 
 
+@pytest.mark.parametrize(
+    ("last_update", "expected_status"),
+    [(5, "pending"), (11, "confirmed")],
+)
+def test_burn_to_subnet_owner_resumes_own_in_flight_refresh(
+    tmp_path, monkeypatch, capsys, last_update, expected_status
+):
+    """A submitted-but-unconfirmed burn head re-resolves under a fresh
+    block-bound digest one tick later; the watch must adopt its own retained
+    head (confirm by readback, or keep waiting inside its retry bounds)
+    instead of refusing it as a foreign in-flight publication."""
+
+    import sys
+    import types
+
+    path = tmp_path / "private" / "intake.sqlite3"
+    view = chain.MetagraphView(
+        netuid=307,
+        block=11,
+        block_hash="0x" + f"{11:064x}",
+        uids=[0, 7],
+        hotkeys=["validator", "owner-hk"],
+        validator_permit=[True, False],
+        last_update=[5, 0],
+    )
+
+    def _fetch(_subtensor, _netuid, *, block=None):
+        if block is None or block == view.block:
+            return view
+        return chain.MetagraphView(
+            view.netuid,
+            block,
+            "0x" + f"{block:064x}",
+            list(view.uids),
+            list(view.hotkeys),
+            list(view.validator_permit),
+            list(view.last_update),
+        )
+
+    bound = _fetch(None, 307, block=10)
+    retained = WeightProjection(
+        SCOPE.digest,
+        307,
+        "validator",
+        POLICY.digest,
+        _h("prior-settlement"),
+        _h("prior-evaluation"),
+        canonical_digest(
+            "optima.economics.metagraph-membership",
+            {
+                "block": bound.block,
+                "block_hash": bound.block_hash,
+                "chain_scope_digest": SCOPE.digest,
+                "members": [
+                    {"hotkey": hotkey, "uid": uid}
+                    for uid, hotkey in zip(bound.uids, bound.hotkeys, strict=True)
+                ],
+            },
+        ),
+        (_h("arena-state"),),
+        1,
+        10,
+        0,
+        (),
+        (("owner-hk", 1_000_000),),
+    )
+    pending = WeightPublicationRecord(
+        retained.digest,
+        "pending",
+        submit_block=10,
+        retry_after_block=30,
+        reason="sdk_result_unconfirmed",
+    )
+    with FinalizedIntakeStore(path, scope=SCOPE) as store:
+        SQLiteWeightPublicationJournal(store, retained).compare_and_swap(
+            None, pending
+        )
+
+    target = chain.SubnetOwnerBurnTarget(
+        uid=7,
+        hotkey="owner-hk",
+        owner_coldkey="owner-ck",
+        owner_hotkey="owner-hk",
+        candidate_uids=(7,),
+        block=11,
+        block_hash=view.block_hash,
+        metagraph=view,
+    )
+
+    class _Subtensor:
+        def get_block_hash(self, block: int) -> str:
+            assert block == 0
+            return SCOPE.genesis_hash
+
+    monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
+    monkeypatch.setattr(
+        chain,
+        "resolve_subnet_owner_burn_target",
+        lambda *_a, **_k: target,
+    )
+    monkeypatch.setattr(chain, "fetch_metagraph", _fetch)
+    monkeypatch.setattr(
+        chain,
+        "read_validator_weight_snapshot",
+        lambda *_a, **_k: chain.ValidatorWeightSnapshot(
+            {"owner-hk": 1.0}, last_update
+        ),
+    )
+    submissions = []
+
+    def _set_weights(*a, **k):
+        submissions.append((a, k))
+        return {"submitted": True}
+
+    monkeypatch.setattr(chain, "set_weights", _set_weights)
+
+    class _Hotkey:
+        ss58_address = "validator"
+
+    class _Wallet:
+        def __init__(self, name, hotkey):
+            self.hotkey = _Hotkey()
+
+    monkeypatch.setitem(
+        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_Wallet)
+    )
+
+    assert (
+        cli.cmd_set_weights(
+            _args(
+                path,
+                reconcile_only=False,
+                validator_hotkey="",
+                burn_to_subnet_owner=True,
+            )
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert f"status={expected_status}" in out
+    assert f"weight projection={retained.digest}" in out
+    assert not submissions
+    with FinalizedIntakeStore(path, scope=SCOPE) as store:
+        head = SQLiteWeightPublicationJournal.reopen_from_head(store)
+        record = head.load()
+        assert record is not None
+        assert record.status == expected_status
+        assert record.projection_digest == retained.digest
+
+
 def test_burn_to_subnet_owner_settlement_refusal_is_nonretryable(
     tmp_path, monkeypatch
 ):

@@ -231,6 +231,7 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
     from optima.chain.weights import (
         WeightPublicationError,
         reconcile_weight_publication,
+        resume_weight_projection,
     )
     from optima.economics import (
         EmissionsPolicyManifest,
@@ -338,19 +339,27 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
         journal = SQLiteWeightPublicationJournal(store, projection)
         # The reconcile machinery resumes in-flight heads. With
         # require_current_crown=False that must not silently continue a
-        # foreign settlement/bootstrap vector under the burn banner.
+        # foreign settlement/bootstrap vector under the burn banner. The burn
+        # projection digest is block-bound, so the watch's own in-flight head
+        # from an earlier tick always re-resolves under a fresh digest; adopt
+        # it through the same resume machinery as the real path and refuse
+        # only when the retained publication identity actually differs.
         if not args.dry_run:
-            current = journal.load()
-            if (
-                current is not None
-                and current.status in {"intent", "pending"}
-                and current.projection_digest != projection.digest
-            ):
-                raise WeightPublicationError(
-                    "in-flight weight publication differs from the resolved "
-                    "subnet-owner burn projection; finish or release it before "
-                    "--burn-to-subnet-owner"
-                )
+            resumed = resume_weight_projection(projection, journal)
+            if resumed is not projection:
+                if (
+                    resumed.crown_count != 0
+                    or resumed.evidence_digests
+                    or resumed.policy_digest != projection.policy_digest
+                    or resumed.weights_ppm != projection.weights_ppm
+                ):
+                    raise WeightPublicationError(
+                        "in-flight weight publication differs from the resolved "
+                        "subnet-owner burn projection; finish or release it before "
+                        "--burn-to-subnet-owner"
+                    )
+                projection = resumed
+                journal = SQLiteWeightPublicationJournal(store, projection)
         result = reconcile_weight_publication(
             subtensor,
             wallet,
