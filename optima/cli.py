@@ -27,6 +27,18 @@ from optima.manifest import (all_declared_cuda_sources, all_declared_dep_patches
 from optima.sandbox import scan_path
 
 
+def _wallet_from_args(args: argparse.Namespace):
+    """Construct a Bittensor wallet, honoring an optional ``--wallet-path``."""
+
+    import bittensor as bt
+
+    kwargs = {"name": args.wallet, "hotkey": args.hotkey}
+    path = getattr(args, "wallet_path", "") or ""
+    if path:
+        kwargs["path"] = path
+    return bt.Wallet(**kwargs)
+
+
 def cmd_slots(_: argparse.Namespace) -> int:
     from optima.slots import SLOTS, list_slots
 
@@ -204,6 +216,195 @@ def cmd_chain_activate_incentives(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
+    """Operator bypass: resolve owner burn sink and set_weights without a DB."""
+
+    import math
+    import sys
+
+    from optima import chain
+    from optima.chain.intake import IntakeScope
+    from optima.chain.weights import (
+        WeightPublicationError,
+        build_subnet_owner_burn_weight_projection,
+    )
+    from optima.stack_identity import canonical_digest
+
+    if getattr(args, "burn_hotkey", ""):
+        raise SystemExit(
+            "--burn-to-subnet-owner cannot be combined with --burn-hotkey"
+        )
+    if args.reconcile_only or args.release_hold:
+        raise SystemExit(
+            "--burn-to-subnet-owner cannot be combined with "
+            "--reconcile-only or --release-hold"
+        )
+    if getattr(args, "weight_offer_path", ""):
+        raise SystemExit(
+            "--burn-to-subnet-owner cannot be combined with --weight-offer-path"
+        )
+    provider = (getattr(args, "object_store_provider", "") or "").strip().lower()
+    if provider and provider != "none":
+        raise SystemExit(
+            "--burn-to-subnet-owner cannot be combined with an object-store provider"
+        )
+
+    public_wallet = _wallet_from_args(args)
+    validator_hotkey = public_wallet.hotkey.ss58_address
+    wallet = None if args.dry_run else public_wallet
+
+    try:
+        subtensor = chain.connect(args.network)
+        target = chain.resolve_subnet_owner_burn_target(subtensor, args.netuid)
+    except chain.ChainWeightStateError:
+        raise
+    except Exception as exc:
+        raise chain.ChainWeightStateRetryableError(
+            f"subnet-owner burn chain connect failed: {exc}"
+        ) from None
+
+    print(
+        "WARNING: --burn-to-subnet-owner bypasses crowns/claims/V2 and will "
+        "overwrite settlement weight vectors until this process is stopped",
+        file=sys.stderr,
+    )
+    print(
+        "subnet-owner burn: "
+        f"owner_coldkey={target.owner_coldkey} "
+        f"owner_hotkey={target.owner_hotkey or '(unset)'} "
+        f"candidates={list(target.candidate_uids)} "
+        f"-> uid {target.uid} hotkey {target.hotkey} "
+        f"(block={target.block})"
+    )
+
+    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
+    metagraph = target.metagraph
+    if validator_hotkey not in set(metagraph.hotkeys):
+        raise WeightPublicationError(
+            "signer hotkey is not registered on the burn projection metagraph"
+        )
+    members = [
+        {"hotkey": hotkey, "uid": uid}
+        for uid, hotkey in sorted(
+            zip(metagraph.uids, metagraph.hotkeys, strict=True),
+            key=lambda row: (row[0], row[1]),
+        )
+    ]
+    metagraph_digest = canonical_digest(
+        "optima.economics.metagraph-membership",
+        {
+            "block": metagraph.block,
+            "block_hash": metagraph.block_hash.lower(),
+            "chain_scope_digest": scope.digest,
+            "members": members,
+        },
+    )
+    projection = build_subnet_owner_burn_weight_projection(
+        chain_scope_digest=scope.digest,
+        validator_hotkey=validator_hotkey,
+        metagraph_digest=metagraph_digest,
+        effective_block=metagraph.block,
+        eligible_hotkeys=set(metagraph.hotkeys),
+        netuid=args.netuid,
+        burn_hotkey=target.hotkey,
+        owner_coldkey=target.owner_coldkey,
+        owner_hotkey=target.owner_hotkey,
+        candidate_uids=target.candidate_uids,
+    )
+    if projection.crown_count != 0 or projection.evidence_digests:
+        raise WeightPublicationError(
+            "subnet-owner burn projection must be crownless"
+        )
+
+    def _row_matches(snapshot: chain.ValidatorWeightSnapshot) -> bool:
+        expected = projection.weights
+        return set(snapshot.weights) == set(expected) and all(
+            math.isclose(
+                float(snapshot.weights[hotkey]),
+                expected[hotkey],
+                rel_tol=2e-5,
+                abs_tol=2e-5,
+            )
+            for hotkey in expected
+        )
+
+    # Short-circuit when the signer row already carries the burn vector so
+    # --watch does not hammer weights_rate_limit.
+    if not args.dry_run:
+        try:
+            live = chain.fetch_metagraph(subtensor, args.netuid)
+            pre = chain.read_validator_weight_snapshot(
+                subtensor,
+                args.netuid,
+                validator_hotkey,
+                metagraph_view=live,
+            )
+        except chain.ChainWeightStateError as exc:
+            if getattr(exc, "retryable", False):
+                raise
+            raise chain.ChainWeightStateRetryableError(
+                f"subnet-owner burn pre-read failed: {exc}"
+            ) from None
+        if _row_matches(pre):
+            print(
+                f"weight projection={projection.digest} status=already_set "
+                f"submitted=False chain_matches=True "
+                f"last_update={pre.last_update_block}"
+            )
+            return 0
+
+    result = chain.set_weights(
+        subtensor,
+        wallet,
+        args.netuid,
+        projection.weights,
+        dry_run=args.dry_run,
+        metagraph_view=metagraph,
+    )
+    if args.dry_run:
+        print(
+            f"weight projection={projection.digest} status=dry_run "
+            f"submitted=False "
+            f"uids={result.get('uids')} weights={result.get('weights')}"
+        )
+        return 0
+
+    submitted = bool(result.get("submitted"))
+    if not submitted:
+        message = result.get("message") or result.get("result") or "unknown"
+        raise chain.ChainWeightStateRetryableError(
+            f"subnet-owner burn submit failed: {message}"
+        )
+
+    try:
+        live = chain.fetch_metagraph(subtensor, args.netuid)
+        post = chain.read_validator_weight_snapshot(
+            subtensor,
+            args.netuid,
+            validator_hotkey,
+            metagraph_view=live,
+        )
+    except chain.ChainWeightStateError as exc:
+        raise chain.ChainWeightStateRetryableError(
+            f"subnet-owner burn submitted but readback failed: {exc}"
+        ) from None
+
+    if _row_matches(post):
+        print(
+            f"weight projection={projection.digest} status=confirmed "
+            f"submitted=True chain_matches=True "
+            f"last_update={post.last_update_block} "
+            f"uids={result.get('uids')} weights={result.get('weights')}"
+        )
+        return 0
+
+    # Commit-reveal / rate-limit windows: keep --watch retrying until match.
+    raise chain.ChainWeightStateRetryableError(
+        "subnet-owner burn submitted but chain readback does not yet match; "
+        f"last_update={post.last_update_block} observed={dict(post.weights)}"
+    )
+
+
 def _cmd_set_weights_once(args: argparse.Namespace) -> int:
     from optima import chain
     from optima.chain.intake import (
@@ -223,6 +424,9 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         MetagraphMember,
     )
 
+    if bool(getattr(args, "burn_to_subnet_owner", False)):
+        return _cmd_burn_to_subnet_owner_once(args)
+
     if args.reconcile_only and args.dry_run:
         raise SystemExit("--reconcile-only cannot be combined with --dry-run")
     if args.reconcile_only and args.release_hold:
@@ -233,6 +437,14 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         raise SystemExit(
             "--burn-hotkey cannot be combined with --reconcile-only or --release-hold"
         )
+    for name, label in (
+        ("half_life_blocks", "--half-life-blocks"),
+        ("discovery_lifetime_blocks", "--discovery-lifetime-blocks"),
+        ("discovery_pool_ppm", "--discovery-pool-ppm"),
+        ("refresh_blocks", "--refresh-blocks"),
+    ):
+        if getattr(args, name, None) is None:
+            raise SystemExit(f"{label} is required")
     head_only = args.reconcile_only or bool(args.release_hold)
     if head_only and args.validator_hotkey:
         validator_hotkey = args.validator_hotkey
@@ -240,9 +452,7 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
     elif args.reconcile_only:
         raise SystemExit("--reconcile-only requires --validator-hotkey")
     else:
-        import bittensor as bt
-
-        public_wallet = bt.Wallet(name=args.wallet, hotkey=args.hotkey)
+        public_wallet = _wallet_from_args(args)
         validator_hotkey = public_wallet.hotkey.ss58_address
         # A hold release needs only the local journal plus public authority
         # identity.  Do not retain a signer-capable object on that path.
@@ -500,8 +710,6 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
     hotkey+permit signatures.
     """
 
-    import bittensor as bt
-
     from optima import chain
     from optima.chain.weight_push_auth import resolve_push_credentials
     from optima.chain.weight_share import (
@@ -544,7 +752,7 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
                 write_current_weight_offer(offer_path, offer)
 
         source = str(offer_path)
-    wallet = bt.Wallet(name=args.wallet, hotkey=args.hotkey)
+    wallet = _wallet_from_args(args)
     subtensor = chain.connect(args.network)
     server = serve_current_weights(
         host=args.host,
@@ -577,8 +785,6 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
 
 
 def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
-    import bittensor as bt
-
     from optima import chain
     from optima.chain.debt_publication import build_confirmed_debt_weight_publication
     from optima.chain.intake import (
@@ -597,16 +803,23 @@ def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
     skew = int(getattr(args, "max_skew_seconds", DEFAULT_MAX_SKEW_SECONDS))
     if not 1 <= skew <= 600:
         raise SystemExit("--max-skew-seconds must be between 1 and 600")
-    wallet = bt.Wallet(name=args.wallet, hotkey=args.hotkey)
+    wallet = _wallet_from_args(args)
     subtensor = chain.connect(args.network)
-    metagraph = chain.fetch_metagraph(subtensor, args.netuid)
+    expected_authority = (args.expected_authority or "").strip()
+    if not expected_authority:
+        owner = chain.resolve_subnet_owner_burn_target(subtensor, args.netuid)
+        expected_authority = owner.hotkey
+        print(
+            "follow-weights: --expected-authority unset; "
+            f"pinning subnet-owner hotkey {expected_authority} "
+            f"(uid {owner.uid}, block={owner.block})"
+        )
     offer = fetch_current_weights(
         args.url,
         signer=wallet.hotkey,
         netuid=args.netuid,
         max_skew_seconds=skew,
-        expected_authority=args.expected_authority or None,
-        metagraph=metagraph,
+        expected_authority=expected_authority,
     )
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
     if offer.projection.chain_scope_digest != scope.digest:
@@ -761,6 +974,209 @@ def cmd_mint_push_credentials(args: argparse.Namespace) -> int:
         f"wrote push credentials to {path} "
         f"(active_id={minted.credential_id}; keep this file secret)"
     )
+    return 0
+
+
+def _atomic_json_write(path, payload: dict) -> None:
+    """Write JSON with mode 0600 via tmp+replace (no umask-readable window)."""
+
+    import json
+    import os
+    from pathlib import Path
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    raw = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    fd = os.open(
+        tmp,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        os.write(fd, raw)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, target)
+    os.chmod(target, 0o600)
+
+
+def _resolve_wallet_stack():
+    """Return (Wallet, Keypair) from the installed Bittensor/wallet stack."""
+
+    try:
+        import bittensor as bt
+    except ImportError as exc:
+        raise SystemExit(
+            "bittensor is required for mint-weight-gateway"
+        ) from exc
+    wallet_cls = getattr(bt, "Wallet", None)
+    keypair_cls = getattr(bt, "Keypair", None)
+    if keypair_cls is None:
+        wallet_mod = getattr(bt, "wallet", None)
+        keypair_cls = getattr(wallet_mod, "Keypair", None) if wallet_mod else None
+    if wallet_cls is None or keypair_cls is None:
+        try:
+            from bittensor_wallet import Keypair as keypair_cls  # type: ignore
+            from bittensor_wallet import Wallet as wallet_cls  # type: ignore
+        except ImportError as exc:
+            raise SystemExit(
+                "no Wallet/Keypair implementation is available for mint-weight-gateway"
+            ) from exc
+    return wallet_cls, keypair_cls
+
+
+def cmd_mint_weight_gateway(args: argparse.Namespace) -> int:
+    """Provision a dedicated serve-weights HTTP authority (not a chain signer).
+
+    Creates a wallet used only to sign GET responses. Followers pin that ss58
+    with ``--expected-authority`` (or omit it to pin the on-chain subnet owner).
+    Optionally mints push credentials for eval. Hotkey mnemonic is written to a
+    mode-0600 secrets file and is not printed.
+    """
+
+    import os
+    import stat as stat_mod
+    import time
+    from pathlib import Path
+
+    from optima.chain.weight_push_auth import (
+        PushCredentialSet,
+        load_push_credentials,
+        mint_push_credential,
+        write_push_credentials,
+    )
+
+    wallet_cls, keypair_cls = _resolve_wallet_stack()
+    wallet_path = Path(args.wallet_path).expanduser().resolve()
+    wallet_name = args.wallet
+    hotkey_name = args.hotkey
+    wallet_dir = wallet_path / wallet_name
+    secrets_path = Path(args.secrets_out).expanduser().resolve() if args.secrets_out else (
+        wallet_dir / f"{hotkey_name}.mnemonics.json"
+    )
+    manifest_path = Path(args.manifest_out).expanduser().resolve() if args.manifest_out else (
+        wallet_dir / "AUTHORITY.json"
+    )
+
+    hotkey_file = wallet_dir / "hotkeys" / hotkey_name
+    if hotkey_file.exists() and not args.force:
+        raise SystemExit(
+            f"gateway hotkey already exists at {hotkey_file}; pass --force to recreate"
+        )
+
+    wallet_path.mkdir(parents=True, exist_ok=True)
+    wallet_dir.mkdir(parents=True, exist_ok=True)
+    # Only tighten the gateway wallet directory — never chmod a shared wallets root.
+    os.chmod(wallet_dir, stat_mod.S_IRWXU)
+
+    cold_mnemonic = keypair_cls.generate_mnemonic(n_words=12)
+    hot_mnemonic = keypair_cls.generate_mnemonic(n_words=12)
+    wallet = wallet_cls(name=wallet_name, hotkey=hotkey_name, path=str(wallet_path))
+    wallet.set_coldkey(
+        keypair_cls.create_from_mnemonic(cold_mnemonic),
+        encrypt=False,
+        overwrite=True,
+    )
+    wallet.set_hotkey(
+        keypair_cls.create_from_mnemonic(hot_mnemonic),
+        encrypt=False,
+        overwrite=True,
+    )
+    authority_ss58 = wallet.hotkey.ss58_address
+
+    secrets_payload = {
+        "schema": "optima.weight-gateway-secrets.v1",
+        "wallet_path": str(wallet_path),
+        "wallet": wallet_name,
+        "hotkey": hotkey_name,
+        "authority_ss58": authority_ss58,
+        "hotkey_mnemonic": hot_mnemonic,
+        "created_unix": int(time.time()),
+        "note": (
+            "HTTP response authority for serve-weights only. "
+            "Do not use this hotkey for follow-weights / set_weights. "
+            "Coldkey is disposable scaffolding and is not retained here."
+        ),
+    }
+    _atomic_json_write(secrets_path, secrets_payload)
+
+    push_path = ""
+    push_id = ""
+    if args.push_credentials:
+        push_file = Path(args.push_credentials).expanduser().resolve()
+        push_path = str(push_file)
+        push_id = args.credential_id or f"push-{int(time.time())}"
+        minted = mint_push_credential(credential_id=push_id)
+        if push_file.exists():
+            existing = load_push_credentials(push_file)
+            if any(row.credential_id == minted.credential_id for row in existing.credentials):
+                raise SystemExit(
+                    f"push credential id already exists: {minted.credential_id}"
+                )
+            if not args.force:
+                raise SystemExit(
+                    f"push credentials already exist at {push_file}; "
+                    "pass --force to append a new active secret, or use "
+                    "mint-push-credentials"
+                )
+            import dataclasses
+
+            rows = list(existing.credentials)
+            rows = [
+                (
+                    dataclasses.replace(row, status="retired")
+                    if row.status == "active"
+                    else row
+                )
+                for row in rows
+            ]
+            rows.append(minted)
+            write_push_credentials(push_file, PushCredentialSet(tuple(rows)))
+        else:
+            write_push_credentials(push_file, PushCredentialSet((minted,)))
+        push_id = minted.credential_id
+
+    manifest = {
+        "schema": "optima.weight-gateway-authority.v1",
+        "role": "serve-weights-http-authority",
+        "wallet_path": str(wallet_path),
+        "wallet": wallet_name,
+        "hotkey": hotkey_name,
+        "authority_ss58": authority_ss58,
+        "secrets_path": str(secrets_path),
+        "push_credentials": push_path or None,
+        "push_credential_id": push_id or None,
+        "serve_example": (
+            f"optima serve-weights --wallet {wallet_name} --hotkey {hotkey_name} "
+            f"--wallet-path {wallet_path} --netuid <NETUID> --network <NETWORK> "
+            f"--host 0.0.0.0 --port 8080"
+            + (f" --push-credentials {push_path}" if push_path else "")
+        ),
+        "follow_pin_example": (
+            f"optima follow-weights --url http://<gateway-host>:8080 "
+            f"--expected-authority {authority_ss58} "
+            f"--wallet <follower> --hotkey <follower-hotkey> "
+            f"--netuid <NETUID> --network <NETWORK> --refresh-blocks <BLOCKS> --watch"
+        ),
+    }
+    _atomic_json_write(manifest_path, manifest)
+
+    print(f"authority_ss58={authority_ss58}")
+    print(f"wallet_path={wallet_path}")
+    print(f"wallet={wallet_name}")
+    print(f"hotkey={hotkey_name}")
+    print(f"secrets={secrets_path} (mode 0600; keep offline)")
+    print(f"manifest={manifest_path}")
+    if push_path:
+        print(f"push_credentials={push_path} (active_id={push_id})")
+    print()
+    print("# serve (HTTP authority only; does not submit chain weights)")
+    print(manifest["serve_example"])
+    print()
+    print("# followers pin this ss58 (use a different wallet for chain publish)")
+    print(manifest["follow_pin_example"])
     return 0
 
 
@@ -1800,10 +2216,38 @@ def build_parser() -> argparse.ArgumentParser:
                     help="named network or an explicit wss:// endpoint URL")
     sp.add_argument("--wallet", default="default")
     sp.add_argument("--hotkey", default="default")
-    sp.add_argument("--half-life-blocks", type=int, required=True)
-    sp.add_argument("--discovery-lifetime-blocks", type=int, required=True)
-    sp.add_argument("--discovery-pool-ppm", type=int, required=True)
-    sp.add_argument("--refresh-blocks", type=int, required=True)
+    sp.add_argument(
+        "--wallet-path",
+        default="",
+        help=(
+            "optional Bittensor wallets root (passed to bt.Wallet path=); "
+            "omit to use the SDK default wallet directory"
+        ),
+    )
+    sp.add_argument(
+        "--half-life-blocks",
+        type=int,
+        default=None,
+        help="emissions half-life in blocks (required)",
+    )
+    sp.add_argument(
+        "--discovery-lifetime-blocks",
+        type=int,
+        default=None,
+        help="discovery lifetime in blocks (required)",
+    )
+    sp.add_argument(
+        "--discovery-pool-ppm",
+        type=int,
+        default=None,
+        help="discovery pool share in ppm (required)",
+    )
+    sp.add_argument(
+        "--refresh-blocks",
+        type=int,
+        default=None,
+        help="publication refresh cadence in blocks (required)",
+    )
     sp.add_argument(
         "--reconcile-only",
         action="store_true",
@@ -1837,11 +2281,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
+        "--burn-to-subnet-owner",
+        action="store_true",
+        help=(
+            "operator bypass of settlement projection: resolve the subnet-owner "
+            "burn sink from chain and call set_weights with {owner: 1.0}; does "
+            "not open an intake DB or publication journal; does not publish "
+            "shared weight offers; usable with --dry-run or --watch"
+        ),
+    )
+    sp.add_argument(
         "--watch",
         action="store_true",
         help=(
             "keep the signer process reconciling and refreshing this policy; "
-            "restart with --burn-hotkey removed after the first CROWN"
+            "with --burn-to-subnet-owner, keep resolving and reconciling the burn "
+            "vector; otherwise restart with --burn-hotkey removed after the first CROWN"
         ),
     )
     sp.add_argument(
@@ -1891,6 +2346,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--wallet", default="default")
     sp.add_argument("--hotkey", default="default")
+    sp.add_argument(
+        "--wallet-path",
+        default="",
+        help=(
+            "optional Bittensor wallets root for the HTTP authority hotkey "
+            "(omit for the SDK default directory)"
+        ),
+    )
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8080)
     sp.add_argument(
@@ -1930,6 +2393,60 @@ def build_parser() -> argparse.ArgumentParser:
         help="when rotating into an existing file, retire every currently active secret",
     )
     sp.set_defaults(func=cmd_mint_push_credentials)
+
+    sp = sub.add_parser(
+        "mint-weight-gateway",
+        help=(
+            "create a dedicated serve-weights HTTP authority wallet (separate "
+            "from follower/chain signers) and optionally mint push credentials"
+        ),
+    )
+    sp.add_argument(
+        "--wallet-path",
+        required=True,
+        help="Bittensor wallets root to create (e.g. /var/lib/optima/wallets)",
+    )
+    sp.add_argument("--wallet", default="gateway", help="wallet name (default: gateway)")
+    sp.add_argument(
+        "--hotkey",
+        default="authority",
+        help="hotkey name used only to sign HTTP responses (default: authority)",
+    )
+    sp.add_argument(
+        "--secrets-out",
+        default="",
+        help=(
+            "mode-0600 JSON path for cold/hot mnemonics "
+            "(default: <wallet-path>/<wallet>/<hotkey>.mnemonics.json)"
+        ),
+    )
+    sp.add_argument(
+        "--manifest-out",
+        default="",
+        help=(
+            "mode-0600 JSON path for the public authority ss58 + deploy hints "
+            "(default: <wallet-path>/<wallet>/AUTHORITY.json)"
+        ),
+    )
+    sp.add_argument(
+        "--push-credentials",
+        default="",
+        help="optional path to also mint eval→serve HMAC push credentials",
+    )
+    sp.add_argument(
+        "--credential-id",
+        default="",
+        help="optional push credential id (default: push-<unix-ts>)",
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "overwrite an existing gateway hotkey; when --push-credentials "
+            "points at an existing file, retire active secrets and append a new one"
+        ),
+    )
+    sp.set_defaults(func=cmd_mint_weight_gateway)
 
     sp = sub.add_parser(
         "push-weight-offer",
@@ -2016,11 +2533,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--wallet", default="default")
     sp.add_argument("--hotkey", default="default")
+    sp.add_argument(
+        "--wallet-path",
+        default="",
+        help=(
+            "optional Bittensor wallets root for the follower signer "
+            "(omit for the SDK default directory)"
+        ),
+    )
     sp.add_argument("--refresh-blocks", type=int, required=True)
     sp.add_argument(
         "--expected-authority",
         default="",
-        help="optional pin of the authority hotkey that must sign offers",
+        help=(
+            "hotkey that must sign serve-weights responses; when empty, resolve "
+            "and pin the current subnet-owner burn hotkey from chain"
+        ),
     )
     sp.add_argument(
         "--max-skew-seconds",

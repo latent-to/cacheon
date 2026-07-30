@@ -3361,6 +3361,58 @@ class FinalizedIntakeStore:
             ((burn_hotkey, WEIGHT_PARTS),),
         )
 
+    def build_subnet_owner_burn_weight_projection(
+        self,
+        *,
+        policy,
+        context,
+        netuid: int,
+        burn_hotkey: str,
+        owner_coldkey: str,
+        owner_hotkey: str,
+        candidate_uids: tuple[int, ...],
+    ) -> WeightProjection:
+        """Deprecated store wrapper around the DB-free burn projection helper.
+
+        The stock ``--burn-to-subnet-owner`` CLI no longer opens an intake DB.
+        This method remains for callers that already hold a store and want the
+        V2 composition gate; it does not bind or journal emissions policy.
+        """
+
+        from optima.chain.weights import build_subnet_owner_burn_weight_projection
+        from optima.economics import (
+            EmissionsPolicyManifest,
+            GlobalRewardProjectionContext,
+        )
+
+        if (
+            type(policy) is not EmissionsPolicyManifest
+            or type(context) is not GlobalRewardProjectionContext
+        ):
+            raise IntakeError("subnet-owner burn weight projection authority is malformed")
+        if self._finite_debt.composition_activated():
+            raise IntakeError(
+                "legacy V1 weight projection is disabled after incentive composition activation"
+            )
+        # policy is accepted for call-site compatibility but ignored: burn mode
+        # uses a fixed policy digest and does not write settlement metadata.
+        del policy
+        try:
+            return build_subnet_owner_burn_weight_projection(
+                chain_scope_digest=context.chain_scope_digest,
+                validator_hotkey=context.validator_hotkey,
+                metagraph_digest=context.metagraph_digest,
+                effective_block=context.current_block,
+                eligible_hotkeys=context.eligible_hotkeys,
+                netuid=netuid,
+                burn_hotkey=burn_hotkey,
+                owner_coldkey=owner_coldkey,
+                owner_hotkey=owner_hotkey,
+                candidate_uids=candidate_uids,
+            )
+        except Exception as exc:
+            raise IntakeError(str(exc)) from exc
+
     def settlement_state_digest(self) -> str:
         sequence, event = self._event_head()
         stacks = tuple(

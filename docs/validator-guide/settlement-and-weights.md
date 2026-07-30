@@ -215,6 +215,27 @@ This projection is valid only with no active standing/discovery claims, no crown
 and no activated V2 composition. The burn hotkey must belong to the exact finalized
 metagraph. Any real economic authority disables the path.
 
+### Subnet-owner burn bypass
+
+`--burn-to-subnet-owner` bypasses settlement projection and resolves the
+subnet owner coldkey from the finalized metagraph RuntimeAPI, selects one owned
+UID (prefer `SubnetOwnerHotkey`, else lowest UID), and calls `set_weights` with
+`{hotkey: 1.0}` without opening an intake DB or publication journal. Use
+`--dry-run` to resolve and print the payload without signing, or `--watch` when
+the signer should keep burning emissions to the owner neuron. Emissions policy
+flags and `--intake-db` are unused. It is incompatible with `--burn-hotkey`,
+`--reconcile-only`, `--release-hold`, and weight-offer / object-store publish.
+
+```bash
+optima set-weights \
+  --burn-to-subnet-owner \
+  --netuid <NETUID> \
+  --network <NETWORK_OR_WSS_URL> \
+  --wallet default \
+  --hotkey validator \
+  --dry-run
+```
+
 ## Publication journal
 
 Real publication is fail-closed and journaled:
@@ -325,8 +346,12 @@ Roles are split so the **eval host never publishes weights on-chain**:
    replica of evaluator economic state.
 
 ```bash
-# one-time: mint credentials shared by eval + serve (mode 0600)
-optima mint-push-credentials --path /secret/push-credentials.json
+# one-time on the gateway host: dedicated HTTP authority (not a chain signer)
+optima mint-weight-gateway \
+  --wallet-path /var/lib/optima/wallets \
+  --wallet gateway \
+  --hotkey authority \
+  --push-credentials /secret/push-credentials.json
 
 # cheap host (object store + push enabled)
 optima serve-weights \
@@ -336,8 +361,9 @@ optima serve-weights \
   --push-credentials /secret/push-credentials.json \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
-  --wallet default \
-  --hotkey weights-gateway \
+  --wallet gateway \
+  --hotkey authority \
+  --wallet-path /var/lib/optima/wallets \
   --host 0.0.0.0 \
   --port 8080
 
@@ -392,6 +418,10 @@ push acknowledgement or a new gateway-authenticated vector. Valid-envelope
 replay is additionally bounded by follower freshness and the follower's
 monotonic publication journal.
 
+`follow-weights` pins the response authority. When `--expected-authority` is
+omitted it resolves and pins the current subnet-owner burn hotkey from the
+finalized metagraph (same selection as `--burn-to-subnet-owner`). Pass an
+explicit ss58 when the gateway signs with a dedicated non-owner key.
 `follow-weights` permits initial catch-up only when the offer is no more than
 `--refresh-blocks` behind the live finalized metagraph and the signer and every
 weighted recipient retain their UIDs. Its dedicated

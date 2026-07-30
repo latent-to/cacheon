@@ -977,6 +977,7 @@ def test_set_weights_publishes_only_after_accepted_reconcile(
         dry_run=dry_run,
         release_hold="",
         burn_hotkey="miner",
+        burn_to_subnet_owner=False,
         validator_hotkey="",
         wallet="default",
         hotkey="default",
