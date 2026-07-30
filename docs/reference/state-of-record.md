@@ -10,21 +10,21 @@ different events. Evidence for one does not authorize another.
 
 ## Source snapshot
 
-Snapshot date: **2026-07-27**
+Snapshot date: **2026-07-31**
 
 | Item | Value |
 |---|---|
 | Repository | [`latent-to/cacheon`](https://github.com/latent-to/cacheon) |
-| Implementation parent | [`ebf9302887e66cf91818b4b3052a7ca9ce5fdf00`](https://github.com/latent-to/cacheon/commit/ebf9302887e66cf91818b4b3052a7ca9ce5fdf00); this page accompanies the object-store transport/archive change set |
-| Production Python | 129 files and 105,575 lines under `optima/` |
-| Tests | 117 Python files and 62,047 lines under `tests/` |
-| Complete local suite | 2,364 passed, 19 skipped, 0 failed |
+| Implementation parent | [`0d172449`](https://github.com/latent-to/cacheon/commit/0d172449); this page accompanies the weight-journal hardening change set |
+| Production Python | 129 files and 106,433 lines under `optima/` |
+| Tests | 120 Python files and 63,174 lines under `tests/` |
+| Complete local suite | 2,389 passed, 21 skipped, 0 failed |
 | Test command | `PYENV_VERSION=sn120 python -m pytest -q tests` in an unrestricted local environment |
 | SGLang pin | `0.5.13.post1` in `optima/compat.py` |
 | Bittensor raw-reveal storage ABI | `10.3.2` in `optima/chain_canary.py` |
-| Public CLI | 26 commands |
+| Public CLI | 27 commands |
 
-The miner transport and private-recovery changes do not alter kernels, timed
+The weight-journal hardening changes do not alter kernels, timed
 evaluation, or crown/settlement arithmetic. File and line counts describe the
 accompanying change set; they are not quality metrics. The suite is
 CPU/non-empirical validation and does not establish GPU performance,
@@ -464,6 +464,50 @@ exact synthetic records. They do not establish bucket encryption,
 versioning/object lock, long-term retention, production evidence completeness,
 chain finality for the synthetic reveal, a production restore cutover, GPU
 qualification, or a new B/C/B′ verdict.
+
+### Transported crown and first signed crown publication (2026-07-30/31)
+
+A 4×B300 program on 2026-07-30/31 ran the complete production loop for the
+first time with the proposal delivered through the public object-storage
+transport under a real finalized chain commitment: miner-side `chain-publish`
+of the fused-epilogue proposal (content `747405b4…`), a fresh on-chain
+commit-reveal carrying the public HTTPS URL, anonymous hardened fetch,
+finalized intake into a from-genesis database (reservation `1089ffc0…`),
+graph verification, controller snapshot, two per-lane calibrations, a joined
+primary (timed speedup 1.0327), a joined lane-swapped reproduction (1.0237),
+restart and signer-free weights phases, and settlement at the lower accepted
+speedup 1.0237 for `collective.ar_residual_rmsnorm` (crown reason
+`qualified_win`). Measured post-intake wall time was approximately 2 h 47 min:
+graph verification 9.5 min, calibrations ≈38 min per lane, joined primary
+39.2 min, joined reproduction 39.5 min, prepare/restart/weights under one
+minute each.
+
+While the program ran, the journaled `--burn-to-subnet-owner` watch operated
+against the crownless mirror with real signed publications. The initial
+publication and two refresh-boundary re-publications all landed on chain; both
+refreshes were left `pending` by SDK result timeouts and were finished through
+signer-free `--reconcile-only` authoritative readback. Each pending head also
+stopped the watch loop at the next tick because the block-bound projection
+digest no longer matched; this change set fixes that defect (the watch now
+resumes its own in-flight head and still refuses a foreign one). After the
+crowned database replaced the mirror, the watch refused with the typed
+settlement-state error and exited — the designed crown yield.
+
+The real crown weight publication was then signed and submitted for the first
+time: commit-reveal submission at block 7675230, commit inclusion advancing
+the validator's last-update row at 7675234, timelocked reveal applying the
+crown vector, and exact authoritative readback confirming at block 7675528
+(projection `7e869ecd…`, full pool to the crowned hotkey). A production
+private recovery snapshot of the crowned mission was then published and
+independently re-downloaded and semantically reopened (manifest
+`1d0d9ebb…`); anonymous access to the manifest returned 403.
+
+This establishes the end-to-end transported crown loop, the first real signed
+crown weight publication with finalized readback, refresh-cycle burn operation
+with typed recovery, and production recovery archiving of a crowned mission.
+It does not establish mainnet economics, incentive activation, integration
+review, serving readiness, object immutability at the hosting layer, or
+unattended validator operation.
 
 ### Incentive evidence
 
