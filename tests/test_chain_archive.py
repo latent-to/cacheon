@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -132,6 +133,37 @@ def test_redacted_chain_audit_is_append_only_and_excludes_messages(tmp_path):
                 "url": "https://must-not-be-retained.example",
             },
         )
+
+
+def test_chain_audit_heals_wrong_mode_on_owned_parent_directory(tmp_path):
+    parent = tmp_path / "chain_intake"
+    parent.mkdir(mode=0o755)
+    os.chmod(parent, 0o755)
+    path = parent / "chain_audit.jsonl"
+    result = loop.PassResult(BLOCK, BLOCK_HASH)
+    result.seen = 1
+
+    append_chain_audit(path, pass_audit_record(result, timestamp_ns=1))
+
+    assert parent.stat().st_mode & 0o777 == 0o700
+    assert path.stat().st_mode & 0o777 == 0o600
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert [row["event"] for row in rows] == ["pass"]
+
+
+def test_chain_audit_still_refuses_symlinked_parent(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    result = loop.PassResult(BLOCK, BLOCK_HASH)
+    result.seen = 1
+
+    with pytest.raises(ChainAuditLogError, match="canonical owner-only"):
+        append_chain_audit(
+            link / "chain_audit.jsonl", pass_audit_record(result, timestamp_ns=1)
+        )
+    assert real.stat().st_mode & 0o777 == 0o700
 
 
 def test_validator_loop_writes_success_and_redacted_fault_audits(

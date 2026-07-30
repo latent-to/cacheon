@@ -81,7 +81,10 @@ The evidence classes are intentionally non-substitutable:
   default. It records finalized positions, content-derived identifiers, bounded
   disposition classes, and fault types without URLs, hotkeys, candidate bytes,
   exception messages, wallets, credentials, or ambient environment. SQLite
-  remains transition authority.
+  remains transition authority. The audit append heals its own canonical
+  parent directory to the owner-only mode when a sibling component created it
+  first under the ambient umask (2026-07-30), instead of refusing every append
+  on a split storage layout.
 - `chain-snapshot` uses SQLite's online backup API and publishes a closed,
   digest-bound private recovery manifest. It includes the consistent database,
   redacted journal when present, database-referenced worker publications and
