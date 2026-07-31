@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from optima.finite_debt import (
+from cacheon.finite_debt import (
     IMPROVEMENT_GROSS,
     PPM,
     CampaignBudgetShare,
@@ -24,10 +24,10 @@ from optima.finite_debt import (
     RewardFamilyCampaign,
     issue_innovation_claim,
 )
-from optima.incentive_composition import (
+from cacheon.incentive_composition import (
     IncentiveCompositionPolicyManifest,
 )
-from optima.stack_identity import (
+from cacheon.stack_identity import (
     canonical_digest,
     canonical_json_bytes,
     require_sha256_hex,

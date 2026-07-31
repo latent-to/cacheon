@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.finite_debt import (
+from cacheon.finite_debt import (
     IMPROVEMENT_GROSS,
     PPM,
     CampaignBudgetShare,
@@ -16,17 +16,46 @@ from optima.finite_debt import (
     RewardFamilyCampaign,
     issue_innovation_claim,
 )
-from optima.incentive_composition import (
+from cacheon.incentive_composition import (
     IncentiveCompositionPolicyManifest,
     project_composed_epoch,
 )
-from optima.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
 from scripts import d015_launch_load as d015
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "tests" / "fixtures" / "incentives" / "d015_launch_load_config.json"
 REPORT = ROOT / "docs" / "results" / "incentive-load-validation.md"
+HISTORICAL_SOURCE = (
+    ROOT / "tests" / "fixtures" / "incentives" / "d015_launch_load_optima.py"
+)
+HISTORICAL_REPORT = (
+    ROOT
+    / "tests"
+    / "fixtures"
+    / "incentives"
+    / "d015_launch_load_report_optima.json"
+)
+CURRENT_SOURCE = ROOT / "scripts" / "d015_launch_load.py"
+HISTORICAL_SOURCE_SHA256 = (
+    "6b52295d2e5ea3827bf81cf1158cb4bafb2d910c283b972d71ba208b9fb41cae"
+)
+HISTORICAL_REPORT_SHA256 = (
+    "bde8c63d66cd6ed3b50b906d463a9198c2716d7b05816a80917983a90ea72a0a"
+)
+HISTORICAL_REPORT_DIGEST = (
+    "505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672"
+)
+CURRENT_SOURCE_SHA256 = (
+    "cde237e301e93aa4c5a2a36782d983b498951632ef445c1614000bd3e5e6f752"
+)
+CURRENT_REPORT_SHA256 = (
+    "9eb76384a1da2b37e503913545b3b02d1dcdde1131e61ca7b05067bdc12248dd"
+)
+CURRENT_REPORT_DIGEST = (
+    "42b0ea73a59bb431c0b390e40ccbf6a47706e95e762c7bfeef5068fe5f98b86f"
+)
 
 
 def _digest(label: str) -> str:
@@ -38,17 +67,54 @@ def replayed_report() -> dict[str, object]:
     return d015.simulate(CONFIG)
 
 
-def test_tracked_d015_launch_load_report_replays_exactly(
+def test_tracked_d015_launch_load_report_preserves_history_and_replays_semantics(
     replayed_report: dict[str, object],
 ) -> None:
     assert canonical_json_bytes(json.loads(CONFIG.read_bytes())) + b"\n" == CONFIG.read_bytes()
+
+    historical_bytes = HISTORICAL_REPORT.read_bytes()
+    historical = json.loads(historical_bytes)
+    assert canonical_json_bytes(historical) + b"\n" == historical_bytes
+    assert sha256_hex(HISTORICAL_SOURCE.read_bytes()) == HISTORICAL_SOURCE_SHA256
+    assert sha256_hex(historical_bytes) == HISTORICAL_REPORT_SHA256
+    assert historical["source_sha256"] == HISTORICAL_SOURCE_SHA256
+    assert historical["report_digest"] == HISTORICAL_REPORT_DIGEST
+    historical_unsigned = dict(historical)
+    historical_digest = historical_unsigned.pop("report_digest")
+    assert historical_digest == canonical_digest(
+        "optima.incentives.d015-load-report", historical_unsigned
+    )
+
+    assert sha256_hex(CURRENT_SOURCE.read_bytes()) == CURRENT_SOURCE_SHA256
+    assert replayed_report["source_sha256"] == CURRENT_SOURCE_SHA256
+    assert replayed_report["report_digest"] == CURRENT_REPORT_DIGEST
+    assert (
+        sha256_hex(canonical_json_bytes(replayed_report) + b"\n")
+        == CURRENT_REPORT_SHA256
+    )
+    current_unsigned = dict(replayed_report)
+    current_digest = current_unsigned.pop("report_digest")
+    assert current_digest == canonical_digest(
+        "optima.incentives.d015-load-report", current_unsigned
+    )
+
+    historical_semantics = dict(historical_unsigned)
+    current_semantics = dict(current_unsigned)
+    historical_semantics.pop("source_sha256")
+    current_semantics.pop("source_sha256")
+    assert current_semantics == historical_semantics
+
     markdown = REPORT.read_text(encoding="utf-8")
-    match = re.search(r"Semantic report digest: `([0-9a-f]{64})`", markdown)
-    assert match is not None
-    assert match.group(1) == replayed_report["report_digest"]
-    unsigned = dict(replayed_report)
-    digest = unsigned.pop("report_digest")
-    assert digest == canonical_digest("optima.incentives.d015-load-report", unsigned)
+    historical_match = re.search(
+        r"Pre-rename semantic report digest: `([0-9a-f]{64})`", markdown
+    )
+    current_match = re.search(
+        r"Cacheon replay semantic report digest: `([0-9a-f]{64})`", markdown
+    )
+    assert historical_match is not None
+    assert current_match is not None
+    assert historical_match.group(1) == HISTORICAL_REPORT_DIGEST
+    assert current_match.group(1) == CURRENT_REPORT_DIGEST
 
 
 def test_d015_matrix_models_independent_active_family_streams(

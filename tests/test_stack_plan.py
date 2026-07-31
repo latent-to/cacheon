@@ -4,13 +4,13 @@ from dataclasses import replace
 
 import pytest
 
-from optima.stack_identity import sha256_hex
-from optima.stack_manifest import (
+from cacheon.stack_identity import sha256_hex
+from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
     ProposalContributionRef,
 )
-from optima.stack_plan import (
+from cacheon.stack_plan import (
     CohortPlan,
     RollbackPlan,
     StackPlanError,
@@ -18,7 +18,7 @@ from optima.stack_plan import (
     plan_candidate_stack,
     plan_marginal_arm,
 )
-from optima.target_catalog import (
+from cacheon.target_catalog import (
     FEATURE_ENTRY,
     MOE_EPILOGUE_ATOMIC_TARGET,
     MOE_EPILOGUE_MEMBERS,

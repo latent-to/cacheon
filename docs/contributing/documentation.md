@@ -1,6 +1,6 @@
 # Documentation standards
 
-Optima's documentation is versioned with the implementation it describes.
+Cacheon's documentation is versioned with the implementation it describes.
 `docs/` contains the Markdown source, and `mkdocs.yml` defines the complete
 published navigation. Generated `site/` output is never committed.
 
@@ -63,7 +63,7 @@ Use relative links between documentation pages. Link code on the default branch
 with the canonical repository URL:
 
 ```text
-https://github.com/latent-to/cacheon/blob/main/optima/example.py
+https://github.com/latent-to/cacheon/blob/main/cacheon/example.py
 https://github.com/latent-to/cacheon/tree/main/examples/example_bundle
 ```
 
@@ -114,7 +114,7 @@ It validates:
 
 - internal file links and Markdown heading anchors;
 - complete, duplicate-free MkDocs navigation;
-- the documented command inventory against `optima/cli.py`;
+- the documented command inventory against `cacheon/cli.py`;
 - canonical Cacheon `blob/main` and `tree/main` source targets;
 - retired repository URLs; and
 - host-private and agent-private paths.

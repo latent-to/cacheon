@@ -1,10 +1,10 @@
 # SGLang seam
 
-The seam connects Optima's stable slot ABI to version-pinned SGLang internals. It is intentionally split into two layers:
+The seam connects Cacheon's stable slot ABI to version-pinned SGLang internals. It is intentionally split into two layers:
 
-- [`slots.py`](https://github.com/latent-to/cacheon/blob/main/optima/slots.py) defines the stable miner-facing semantic contract;
-- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/optima/seams.py) defines the SGLang-specific adapter registry that must be reviewed whenever the runtime pin moves;
-- [`seam.py`](https://github.com/latent-to/cacheon/blob/main/optima/seam.py) and the [`scheduler_gate` adapter](https://github.com/latent-to/cacheon/blob/main/optima/integrations/sglang_scheduler_gate.py) enforce activation and scheduler-only candidate loading.
+- [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) defines the stable miner-facing semantic contract;
+- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) defines the SGLang-specific adapter registry that must be reviewed whenever the runtime pin moves;
+- [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py) and the [`scheduler_gate` adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py) enforce activation and scheduler-only candidate loading.
 
 Slots are the narrow waist. Adapters are replaceable glue.
 
@@ -12,7 +12,7 @@ Slots are the narrow waist. Adapters are replaceable glue.
 
 SGLang constructs the model in spawned scheduler processes. Patching a class in the parent process does not reliably reach those children, and importing candidate code into the parent would put the host timer inside the candidate's trust domain.
 
-Optima therefore installs a small pass-through seam in every relevant interpreter and activates candidate implementations only inside the engine worker's scheduler ranks. The host controller and timing process never import contribution modules.
+Cacheon therefore installs a small pass-through seam in every relevant interpreter and activates candidate implementations only inside the engine worker's scheduler ranks. The host controller and timing process never import contribution modules.
 
 ```mermaid
 flowchart LR
@@ -65,12 +65,12 @@ Several adapters may share one binding when they implement one semantic product.
 
 The catalog can contain a verified slot before the pinned runtime exposes a safe live
 chokepoint. `attention.msa_block_score` has a slot and verifier contract, while
-[`sglang_msa.py`](https://github.com/latent-to/cacheon/blob/main/optima/integrations/sglang_msa.py)
+[`sglang_msa.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_msa.py)
 refuses installation unless a stable decode-side MSA chokepoint is registered. The
 prefill sibling has an installed adapter and appears in the table.
 
 `resident_swap` is deliberately outside the crown path. It is inert unless the
-validator supplies `OPTIMA_RESIDENT_SWAP` to a persistent screening engine. The
+validator supplies `CACHEON_RESIDENT_SWAP` to a persistent screening engine. The
 host stages a strictly increasing swap generation, triggers an idle-gated
 recapture, and requires an acknowledgement from every scheduler rank. A failed
 swap clears and disables the registry so the screen cannot measure a
@@ -79,7 +79,7 @@ directory and never inherit screen evidence.
 
 ## Bootstrap across spawned processes
 
-The primary installation path places `import optima.bootstrap` in a Python `.pth` file. Python executes the import at interpreter startup, including in spawned scheduler children.
+The primary installation path places `import cacheon.bootstrap` in a Python `.pth` file. Python executes the import at interpreter startup, including in spawned scheduler children.
 
 The bootstrap remains import-light. It does not eagerly import Torch or SGLang.
 Instead it installs a meta-path finder over the target modules derived from
@@ -100,11 +100,11 @@ present and refuses duplicate patching. Repeated activation therefore installs
 newly available adapters without stacking wrappers, while non-scheduler
 children stay pass-through and never emit an `active` receipt.
 
-SGLang versions that expose a plugin framework also have an [`sglang_plugin.py`](https://github.com/latent-to/cacheon/blob/main/optima/integrations/sglang_plugin.py) shim. The `.pth` bootstrap remains the general spawn-safe path across the supported pin.
+SGLang versions that expose a plugin framework also have an [`sglang_plugin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_plugin.py) shim. The `.pth` bootstrap remains the general spawn-safe path across the supported pin.
 
-Principal code: [`bootstrap.py`](https://github.com/latent-to/cacheon/blob/main/optima/bootstrap.py),
-[`seam.py`](https://github.com/latent-to/cacheon/blob/main/optima/seam.py), and
-[`sglang_scheduler_gate.py`](https://github.com/latent-to/cacheon/blob/main/optima/integrations/sglang_scheduler_gate.py).
+Principal code: [`bootstrap.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bootstrap.py),
+[`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), and
+[`sglang_scheduler_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py).
 
 ## Closed activation vocabulary
 
@@ -114,11 +114,11 @@ Inside the engine, each binding maps to one fixed gate:
 
 | Binding | Fixed gate |
 |---|---|
-| `attention` | `OPTIMA_ATTENTION_SEAM` |
-| `arfusion` | `OPTIMA_ARFUSION_SEAM` |
-| `collective` | `OPTIMA_COLLECTIVE_SEAM` |
-| `moe` | `OPTIMA_MOE_SEAM` |
-| `msa_prefill` | `OPTIMA_MSA_PREFILL_SEAM` |
+| `attention` | `CACHEON_ATTENTION_SEAM` |
+| `arfusion` | `CACHEON_ARFUSION_SEAM` |
+| `collective` | `CACHEON_COLLECTIVE_SEAM` |
+| `moe` | `CACHEON_MOE_SEAM` |
+| `msa_prefill` | `CACHEON_MSA_PREFILL_SEAM` |
 
 Normalization rejects unknown, duplicated, or non-canonical identifiers. Engine launch then emits the complete fixed seam environment, preventing stale ambient values from arming additional adapters.
 
@@ -131,7 +131,7 @@ The hardened path does not add an arbitrary miner directory to `PYTHONPATH`. `en
 At startup, `seam.py` exposes those namespaces only if all worker bindings agree:
 
 - the process is explicitly marked as an engine worker;
-- the bundle path is the fixed `/optima/engine-tree` mount;
+- the bundle path is the fixed `/cacheon/engine-tree` mount;
 - engine-tree and stack digests are canonical SHA-256 values;
 - the mount is a concrete directory at its fixed path;
 - for signed serving, the verified release descriptor digest matches the required digest.
@@ -173,7 +173,7 @@ For a signed release, one successful candidate-backed call crosses the seam in t
 3. Spawned interpreters import watched SGLang modules. Original modules load first, then
    their pass-through adapters install once; this still does not import candidate code.
 4. Only a scheduler rank enters wrapped `run_scheduler_process`. At that positive role
-   boundary it calls `load_candidate_bundle()`, reopens `/optima/engine-tree`, verifies
+   boundary it calls `load_candidate_bundle()`, reopens `/cacheon/engine-tree`, verifies
    the expected tree/stack/release identities, and exposes only its sealed
    `optima_c_<sha256>` namespaces. Detokenizer/output-path children never do this.
 5. At the pinned chokepoint, the adapter constructs a canonical descriptor from live
@@ -201,7 +201,7 @@ Each adapter wraps one pinned chokepoint and delegates to a validator-owned disp
 
 Before candidate selection, ineligibility is normal stock routing. During crownable qualification, selected-path failures and fallbacks invalidate evidence; they must not silently become stock-vs-stock success. Collective selection is stricter: once ranks agree on a candidate route, a rank-local failure aborts the engine because peers may already be inside candidate communication.
 
-The dispatch implementation is [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/optima/dispatch.py); registration and eligibility live in [`registry.py`](https://github.com/latent-to/cacheon/blob/main/optima/registry.py).
+The dispatch implementation is [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py); registration and eligibility live in [`registry.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/registry.py).
 
 ## Deep MoE epilogue
 
@@ -215,7 +215,7 @@ All three adapters share the `arfusion` binding. The state machine rejects stale
 
 The deep target may require a FlashInfer dependency overlay. That overlay is not an arbitrary runtime patch: a validator-shipped patcher applies an allowed source diff to a copied source tree during the reviewed build phase, the native artifact is sealed, and the `flashinfer_overlay` adapter redirects only registered late-bound JIT inputs. The installed dependency tree is not edited in place.
 
-Principal code: [`moe_export.py`](https://github.com/latent-to/cacheon/blob/main/optima/moe_export.py), [`dep_policy.py`](https://github.com/latent-to/cacheon/blob/main/optima/dep_policy.py), and [`patchers/apply_dep_patch.py`](https://github.com/latent-to/cacheon/blob/main/optima/patchers/apply_dep_patch.py).
+Principal code: [`moe_export.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/moe_export.py), [`dep_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dep_policy.py), and [`patchers/apply_dep_patch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/patchers/apply_dep_patch.py).
 
 ## Graph behavior
 
@@ -242,7 +242,7 @@ invalidates coverage rather than being rounded away.
 
 They are **not standalone crown authority**. Production qualification authority comes from the host-owned OCI lifecycle, bounded authenticated session protocol, device-state evidence, sealed role schedule, host timing, pristine T evidence, and reopened evidence products. A candidate process cannot crown itself by writing a plausible receipt file.
 
-See [`receipts.py`](https://github.com/latent-to/cacheon/blob/main/optima/receipts.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_session_protocol.py), and [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py).
+See [`receipts.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/receipts.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py), and [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py).
 
 ## Compatibility and upgrades
 
@@ -282,10 +282,10 @@ separate quality and performance gates.
 
 ## Source map
 
-- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/optima/seams.py) — adapter and binding source of truth
-- [`bootstrap.py`](https://github.com/latent-to/cacheon/blob/main/optima/bootstrap.py) — startup/import hook
-- [`seam.py`](https://github.com/latent-to/cacheon/blob/main/optima/seam.py) — activation and sealed contribution loading
-- [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/optima/dispatch.py) — typed live dispatch
-- [`integrations/`](https://github.com/latent-to/cacheon/tree/main/optima/integrations) — version-pinned SGLang adapters
-- [`integrations/sglang_resident_swap.py`](https://github.com/latent-to/cacheon/blob/main/optima/integrations/sglang_resident_swap.py) — screening-only swap and graph-recapture hook
-- [`compat.py`](https://github.com/latent-to/cacheon/blob/main/optima/compat.py) — pin and chokepoint canary
+- [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) — adapter and binding source of truth
+- [`bootstrap.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bootstrap.py) — startup/import hook
+- [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py) — activation and sealed contribution loading
+- [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py) — typed live dispatch
+- [`integrations/`](https://github.com/latent-to/cacheon/tree/main/cacheon/integrations) — version-pinned SGLang adapters
+- [`integrations/sglang_resident_swap.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_resident_swap.py) — screening-only swap and graph-recapture hook
+- [`compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py) — pin and chokepoint canary

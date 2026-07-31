@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from optima.artifact_abi import (
+from cacheon.artifact_abi import (
     ArtifactABIError,
     ArtifactBinding,
     ArtifactResource,
@@ -17,7 +17,7 @@ from optima.artifact_abi import (
     parse_artifact_bindings,
     parse_artifact_resources,
 )
-from optima.manifest import ManifestError, load_manifest
+from cacheon.manifest import ManifestError, load_manifest
 
 
 def _static_resource(

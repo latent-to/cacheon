@@ -13,12 +13,12 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROVENANCE = ROOT / "optima" / "vendor_provenance.json"
+PROVENANCE = ROOT / "cacheon" / "vendor_provenance.json"
 
 EXPECTED_ASSETS = (
-    "optima/arena_assets/minimax_m3/sglang_patch/flashinfer_trtllm.py",
-    "optima/arena_assets/minimax_m3/sglang_patch/modelopt_quant.py",
-    "optima/eval/seccomp_moby_v0_2_1.json",
+    "cacheon/arena_assets/minimax_m3/sglang_patch/flashinfer_trtllm.py",
+    "cacheon/arena_assets/minimax_m3/sglang_patch/modelopt_quant.py",
+    "cacheon/eval/seccomp_moby_v0_2_1.json",
 )
 
 EXPECTED_LICENSE_HASHES = {
@@ -160,8 +160,8 @@ def test_clean_wheel_and_sdist_include_vendor_record(tmp_path: Path) -> None:
     for relative in ("LICENSE", "NOTICE", "README.md", "pyproject.toml"):
         shutil.copy2(ROOT / relative, source / relative)
     shutil.copytree(ROOT / "LICENSES", source / "LICENSES")
-    shutil.copytree(ROOT / "optima", source / "optima")
-    shutil.copytree(ROOT / "optima_kernels", source / "optima_kernels")
+    shutil.copytree(ROOT / "cacheon", source / "cacheon")
+    shutil.copytree(ROOT / "cacheon_kernels", source / "cacheon_kernels")
 
     output = source / "dist"
     output.mkdir()
@@ -188,8 +188,8 @@ def test_clean_wheel_and_sdist_include_vendor_record(tmp_path: Path) -> None:
     sdist = next(output.glob("*.tar.gz"))
     required_package_files = {
         *EXPECTED_ASSETS,
-        "optima/vendor_provenance.json",
-        "optima_kernels/collective/fused_ar_rmsnorm_sm103.cu",
+        "cacheon/vendor_provenance.json",
+        "cacheon_kernels/collective/fused_ar_rmsnorm_sm103.cu",
     }
 
     with zipfile.ZipFile(wheel) as archive:

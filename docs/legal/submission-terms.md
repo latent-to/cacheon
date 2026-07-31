@@ -15,7 +15,7 @@ repository code; it does not automatically license source submitted by miners.
 ## 1. Acceptance
 
 Submitting a bundle to the subnet by committing its content hash and fetch URL
-through the hotkey-signed `optima chain-submit` path constitutes acceptance of
+through the hotkey-signed `cacheon chain-submit` path constitutes acceptance of
 the version of these terms designated at the commitment block. The signed
 on-chain commitment is the record of acceptance.
 

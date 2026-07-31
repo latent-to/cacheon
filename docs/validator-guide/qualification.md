@@ -309,10 +309,10 @@ Next: [Settlement and weights](settlement-and-weights.md).
 
 ## Source anchors
 
-- [Qualification evidence model](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py)
-- [Causal qualification runner](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)
-- [Resident crossover runtime](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py)
-- [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py)
-- [Finalized-intake projection](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_intake.py)
-- [Pristine reference session](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_reference_session.py)
+- [Qualification evidence model](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py)
+- [Causal qualification runner](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
+- [Resident crossover runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)
+- [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
+- [Finalized-intake projection](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py)
+- [Pristine reference session](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_reference_session.py)
 - [Qualification tests](https://github.com/latent-to/cacheon/blob/main/tests/test_qualification_runner.py)

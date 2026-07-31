@@ -1,6 +1,6 @@
-# Contributing to Optima
+# Contributing to Cacheon
 
-Optima combines contribution tooling, validator-controlled evaluation, chain
+Cacheon combines contribution tooling, validator-controlled evaluation, chain
 state, settlement, and serving-release construction. A small change can cross a
 security or authority boundary, so contributions should be narrow, testable,
 and explicit about the contracts they affect.
@@ -15,7 +15,7 @@ install the Torch/SGLang build that matches their CUDA stack first.
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[cpu,dev]"
+python -m pip install -e ".[cpu,dev,release]"
 ```
 
 Run a focused test while developing, then the relevant broader suite before

@@ -10,14 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima import discovery_overlay
-from optima.discovery_overlay import (
+from cacheon import discovery_overlay
+from cacheon.discovery_overlay import (
     DiscoveryActivationReceipt,
     DiscoveryDriverOrigin,
     DiscoverySchedulerMember,
 )
-from optima.eval import engine_worker, oci_session_worker as worker
-from optima.eval.oci_session_protocol import (
+from cacheon.eval import engine_worker, oci_session_worker as worker
+from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     FRAME_HEADER_BYTES,
     MAX_CONTROL_BYTES,
@@ -36,7 +36,7 @@ def _h(label: str) -> str:
 
 def _config() -> EngineSessionConfig:
     return EngineSessionConfig(
-        model_path="/optima/input/model",
+        model_path="/cacheon/input/model",
         dtype="bfloat16",
         deterministic=False,
         attention_backend=None,
@@ -154,7 +154,7 @@ def test_engine_session_arms_before_stock_import_and_receipts_before_ready(
     tree = SimpleNamespace(root=tmp_path / "tree", runtime_manifest=None)
     tree.root.mkdir()
     _select_discovery(monkeypatch, identity)
-    monkeypatch.setenv("OPTIMA_EXPECTED_SGLANG_VERSION", "0.0.0.dev1")
+    monkeypatch.setenv("CACHEON_EXPECTED_SGLANG_VERSION", "0.0.0.dev1")
     monkeypatch.setattr(worker, "_artifact_root", lambda: publication)
     monkeypatch.setattr(worker, "_read_only_directory", lambda path: path == overlay_root)
     order: list[str] = []
@@ -223,7 +223,7 @@ def test_non_discovery_arms_never_emit_activation(
     tree = SimpleNamespace(root=tmp_path / "tree", runtime_manifest=None)
     tree.root.mkdir()
     _clear_discovery_environment(monkeypatch)
-    monkeypatch.setenv("OPTIMA_SESSION_PROTOCOL", session_protocol)
+    monkeypatch.setenv("CACHEON_SESSION_PROTOCOL", session_protocol)
     monkeypatch.setenv("PYTHONPATH", os.environ.get("PYTHONPATH", ""))
     monkeypatch.setattr(
         discovery_overlay,
@@ -253,8 +253,8 @@ def test_run_session_places_typed_activation_only_in_ready_frame(
     launch = _h("launch")
     facts = _facts(config, launch)
     receipt = _receipt(_h("overlay"))
-    monkeypatch.setenv("OPTIMA_LAUNCH_DIGEST", launch)
-    monkeypatch.setenv("OPTIMA_ENGINE_CONFIG_DIGEST", config.digest)
+    monkeypatch.setenv("CACHEON_LAUNCH_DIGEST", launch)
+    monkeypatch.setenv("CACHEON_ENGINE_CONFIG_DIGEST", config.digest)
     init = frame_message(
         make_init(
             config,
@@ -309,8 +309,8 @@ def test_run_session_places_typed_activation_only_in_ready_frame(
 
 
 def test_pure_generation_request_disables_engine_logprob_work() -> None:
-    from optima.eval.oci_session_protocol import BatchRequest, SessionProtocolError
-    from optima.eval.oci_session_worker import _engine_outputs, _generate
+    from cacheon.eval.oci_session_protocol import BatchRequest, SessionProtocolError
+    from cacheon.eval.oci_session_worker import _engine_outputs, _generate
 
     request = BatchRequest(
         "a" * 32, "b" * 64, "c" * 32, "d" * 32, 0, ("alpha", "beta"), 2, 0, 0.0
@@ -354,7 +354,7 @@ def test_width_zero_reference_scoring_skips_the_support_gather() -> None:
     # target NLL and teacher argmax remain fully validated.
     from types import SimpleNamespace
 
-    from optima.eval.oci_session_worker import _reference_role_evidence
+    from cacheon.eval.oci_session_worker import _reference_role_evidence
 
     calls: list[dict] = []
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.eval.crossover_runtime import (
+from cacheon.eval.crossover_runtime import (
     CrossoverRuntimeError,
     ResidentArmPlan,
     ResidentCrossoverPlan,
@@ -19,19 +19,19 @@ from optima.eval.crossover_runtime import (
     TimedWindow,
     run_resident_crossover_speed,
 )
-from optima.eval.device_state import DeviceStatePolicy
-from optima.eval.engine_launch import PhysicalHardwareBinding
-from optima.eval.oci_backend import EngineExecutionEvidence, OCIEngineExecutor
-from optima.eval.oci_outer_session import BatchExecutionEvidence, SessionExecutionEvidence
-from optima.eval.qualification_runner import (
+from cacheon.eval.device_state import DeviceStatePolicy
+from cacheon.eval.engine_launch import PhysicalHardwareBinding
+from cacheon.eval.oci_backend import EngineExecutionEvidence, OCIEngineExecutor
+from cacheon.eval.oci_outer_session import BatchExecutionEvidence, SessionExecutionEvidence
+from cacheon.eval.qualification_runner import (
     QualificationStageExit,
     QualificationRunnerError,
     ResidentSpeedWitness,
     _resident_speed_projection_digest,
 )
-from optima.eval.qualification import QualificationDecision
-from optima.eval.scoring import score_speedup
-from optima.settlement import ResidentLaneOrientation
+from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.scoring import score_speedup
+from cacheon.settlement import ResidentLaneOrientation
 from tests.test_oci_backend import _case, _manager
 
 

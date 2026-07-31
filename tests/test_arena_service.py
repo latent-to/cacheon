@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.arena_service import (
+from cacheon.arena_service import (
     SCREEN_STAGES,
     AdmissionDecision,
     ArenaCandidateBinding,
@@ -26,9 +26,9 @@ from optima.arena_service import (
     WorkloadMixture,
     WorkloadRegime,
 )
-from optima.bundle_hash import content_hash
-from optima.chain.publication import publish_worker_bundle
-from optima.eval.qualification_intake import (
+from cacheon.bundle_hash import content_hash
+from cacheon.chain.publication import publish_worker_bundle
+from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationPlanFactory,
     QualificationReservation,
@@ -389,7 +389,7 @@ def test_provider_cannot_change_registered_qualification_policy(tmp_path: Path) 
 
 
 def test_arena_service_has_no_dynamic_import_authority() -> None:
-    source = Path(__file__).parents[1].joinpath("optima", "arena_service.py").read_text()
+    source = Path(__file__).parents[1].joinpath("cacheon", "arena_service.py").read_text()
     assert "importlib" not in source
     assert "import_module" not in source
     assert "entry_point" not in source

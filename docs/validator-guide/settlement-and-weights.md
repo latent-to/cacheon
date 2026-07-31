@@ -4,8 +4,8 @@ Settlement changes the evaluation incumbent. Weight publication projects settled
 claims onto the live metagraph. They are separate operations with separate authority.
 
 `chain-validate` may perform settlement when a trusted arena service is injected, but it
-never opens a wallet or calls a chain weight API. Legacy V1 uses `optima set-weights`;
-activated finite-debt V2 uses `optima set-debt-weights`.
+never opens a wallet or calls a chain weight API. Legacy V1 uses `cacheon set-weights`;
+activated finite-debt V2 uses `cacheon set-debt-weights`.
 
 The separation prevents a long-running evaluator from becoming a signer and prevents a
 chain SDK return value from mutating evaluation-stack authority. Both operations use the
@@ -181,7 +181,7 @@ calibrated by the code.
 Use the same policy values intended for the deployment:
 
 ```bash
-optima set-weights \
+cacheon set-weights \
   --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -206,7 +206,7 @@ crowned. An operator can explicitly route the complete bootstrap vector to one r
 burn hotkey:
 
 ```bash
-optima set-weights <POLICY_AND_SIGNER_ARGUMENTS> \
+cacheon set-weights <POLICY_AND_SIGNER_ARGUMENTS> \
   --burn-hotkey <REGISTERED_BURN_HOTKEY> \
   --dry-run
 ```
@@ -237,7 +237,7 @@ weight-offer / object-store publish, and it never publishes shared weight
 offers.
 
 ```bash
-optima set-weights \
+cacheon set-weights \
   --burn-to-subnet-owner \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -308,7 +308,7 @@ If the journal is held, investigate and preserve the record. To append an audite
 without submitting:
 
 ```bash
-optima set-weights \
+cacheon set-weights \
   --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -333,7 +333,7 @@ authority before deciding whether a new intent is valid.
 The signer can own a continuous control-plane loop:
 
 ```bash
-optima set-weights <POLICY_AND_SIGNER_ARGUMENTS> \
+cacheon set-weights <POLICY_AND_SIGNER_ARGUMENTS> \
   --watch \
   --interval <SECONDS>
 ```
@@ -362,28 +362,28 @@ Roles are split so the **eval host never publishes weights on-chain**:
 
 ```bash
 # one-time on the gateway host: dedicated HTTP authority (not a chain signer)
-optima mint-weight-gateway \
-  --wallet-path /var/lib/optima/wallets \
+cacheon mint-weight-gateway \
+  --wallet-path /var/lib/cacheon/wallets \
   --wallet gateway \
   --hotkey authority \
   --push-credentials /secret/push-credentials.json
 
 # cheap host (object store + push enabled)
-optima serve-weights \
+cacheon serve-weights \
   --object-store-provider hippius \
-  --object-store-bucket optima-weights \
+  --object-store-bucket cacheon-weights \
   --object-store-prefix sn307 \
   --push-credentials /secret/push-credentials.json \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
   --wallet gateway \
   --hotkey authority \
-  --wallet-path /var/lib/optima/wallets \
+  --wallet-path /var/lib/cacheon/wallets \
   --host 0.0.0.0 \
   --port 8080
 
 # eval host: build offer + HTTP push only (no chain wallet / set_weights)
-optima push-weight-offer \
+cacheon push-weight-offer \
   --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -395,7 +395,7 @@ optima push-weight-offer \
   --discovery-pool-ppm <PPM>
 
 # signer validators: GET + on-chain publish
-optima follow-weights \
+cacheon follow-weights \
   --url http://weights-gateway:8080 \
   --journal-db chain_intake/follow_weights.sqlite3 \
   --netuid <NETUID> \
@@ -409,12 +409,12 @@ optima follow-weights \
 
 Rotate credentials with `mint-push-credentials --retire-active` (add a new active
 secret, retire the old id, reload serve). Eval can also inject a single active
-secret without a file via `OPTIMA_WEIGHT_PUSH_KEY` (optional id:
-`OPTIMA_WEIGHT_PUSH_CREDENTIAL_ID`, default `env`), or point at a credentials
-JSON with `OPTIMA_WEIGHT_PUSH_CREDENTIALS`. Precedence: `--push-credentials` →
+secret without a file via `CACHEON_WEIGHT_PUSH_KEY` (optional id:
+`CACHEON_WEIGHT_PUSH_CREDENTIAL_ID`, default `env`), or point at a credentials
+JSON with `CACHEON_WEIGHT_PUSH_CREDENTIALS`. Precedence: `--push-credentials` →
 file env → inline key. Swap object-store providers without code
 changes: `--object-store-provider s3|minio|local` (and endpoint/region/credentials),
-or `OPTIMA_OBJECT_STORE_*`. `OPTIMA_OBJECT_STORE_PROVIDER` activates an
+or `CACHEON_OBJECT_STORE_*`. `CACHEON_OBJECT_STORE_PROVIDER` activates an
 environment-only configuration; explicit command flags take precedence.
 Install the optional client with
 `pip install -e ".[object-store]"` (boto3, Apache-2.0).
@@ -460,8 +460,8 @@ V2 is an explicit one-way activation, not a reinterpretation of legacy claims. B
 activation, operators can run the signer-free core and composition shadows:
 
 ```bash
-optima chain-incentive-shadow <CORE_ARGUMENTS>
-optima chain-incentive-composition-shadow <COMPOSITION_ARGUMENTS>
+cacheon chain-incentive-shadow <CORE_ARGUMENTS>
+cacheon chain-incentive-composition-shadow <COMPOSITION_ARGUMENTS>
 ```
 
 `chain-activate-incentives` constructs no wallet. It atomically reopens the exact core
@@ -525,11 +525,11 @@ constructing replacement evidence from summaries.
 
 ## Source anchors
 
-- [Settlement planner](https://github.com/latent-to/cacheon/blob/main/optima/settlement.py)
-- [Transactional store application](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
-- [Emissions projection](https://github.com/latent-to/cacheon/blob/main/optima/economics.py)
-- [Weight reconciler](https://github.com/latent-to/cacheon/blob/main/optima/chain/weights.py)
+- [Settlement planner](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
+- [Transactional store application](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
+- [Emissions projection](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py)
+- [Weight reconciler](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
 - [Emissions policy contract](../reference/emissions-policy.md)
-- [Finite-debt arithmetic](https://github.com/latent-to/cacheon/blob/main/optima/finite_debt.py)
-- [Incentive activation](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_activation.py)
-- [Debt publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py)
+- [Finite-debt arithmetic](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py)
+- [Incentive activation](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py)
+- [Debt publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)

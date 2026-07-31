@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from optima.cuda_cubin import (
+from cacheon.cuda_cubin import (
     CudaCubinABI,
     CudaCubinCleanupError,
     CudaCubinContract,

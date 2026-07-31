@@ -4,7 +4,7 @@ A release consumer needs two trust inputs obtained independently of the release
 tree: the expected Ed25519 public key and, for a pinned deployment, the expected
 descriptor digest.
 
-Install Optima with its `release` extra before using these commands; it supplies
+Install Cacheon with its `release` extra before using these commands; it supplies
 the required Ed25519 cryptography implementation.
 
 The verification path is intentionally redundant:
@@ -33,7 +33,7 @@ Each step authenticates a different boundary. Skipping from a valid release dire
 ## Reopen and verify
 
 ```bash
-python -m optima.cli release-verify /srv/optima/releases/<digest> \
+python -m cacheon.cli release-verify /srv/cacheon/releases/<digest> \
   --expected-public-key <public-key-hex> \
   --descriptor-digest <descriptor-sha256>
 ```
@@ -61,7 +61,7 @@ to the signed descriptor.
 ## Materialize the OCI context
 
 ```bash
-python -m optima.cli release-context /srv/optima/releases/<digest> ./optima-context \
+python -m cacheon.cli release-context /srv/cacheon/releases/<digest> ./cacheon-context \
   --expected-public-key <public-key-hex> \
   --descriptor-digest <descriptor-sha256>
 ```
@@ -107,8 +107,8 @@ management-route, native-profile, and receipt-session gates. Values prefixed wit
 the registry object being authorized.
 
 ```python
-from optima.release import verify_serve_receipts
-from optima.release_host import (
+from cacheon.release import verify_serve_receipts
+from cacheon.release_host import (
     RegistryV2Client,
     authorize_release_container,
     create_release_container,
@@ -248,6 +248,6 @@ Retain enough information to reproduce the decision, not just the service URL:
 This record lets an incident reviewer answer both “which bytes were authorized?” and “did
 the intended accelerated paths actually run?” without consulting live chain state.
 
-Source: [`optima/release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_runtime.py),
-[`optima/release_host.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_host.py), and
-[`optima/release.py`](https://github.com/latent-to/cacheon/blob/main/optima/release.py).
+Source: [`cacheon/release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_runtime.py),
+[`cacheon/release_host.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py), and
+[`cacheon/release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py).

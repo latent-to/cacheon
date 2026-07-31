@@ -9,8 +9,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import optima.dispatch as dispatch  # noqa: E402
-from optima.registry import (  # noqa: E402
+import cacheon.dispatch as dispatch  # noqa: E402
+from cacheon.registry import (  # noqa: E402
     Eligibility,
     KernelImpl,
     KernelRegistry,
@@ -74,7 +74,7 @@ def _msa_batched_args(*, topk=16):
 
 
 def _install_fake_runtime(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MSA_PREFILL_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MSA_PREFILL_SEAM", "1")
     monkeypatch.setattr(dispatch, "_arch_tag", lambda *_args: "sm103")
     monkeypatch.setattr(dispatch, "_runtime_parallel_sizes", lambda: (4, 8))
     fake_triton = ModuleType("triton")
@@ -387,7 +387,7 @@ def test_msa_live_binding_real_cuda_routes_typed_variants(monkeypatch, tmp_path)
     ]
     observed = []
     receipt_dir = tmp_path / "receipts"
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(receipt_dir))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(receipt_dir))
     monkeypatch.setattr(dispatch._receipts, "_ONCE", set())
 
     def entry_for(q_len):

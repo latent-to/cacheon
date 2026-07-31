@@ -5,20 +5,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.chain.finite_debt_store import (
+from cacheon.chain.finite_debt_store import (
     _ATOMIC_COMPOSITION_ACTIVATION,
     FiniteDebtStoreError,
     SeededFamilyClock,
     reward_family_id,
 )
-from optima.chain.debt_publication import (
+from cacheon.chain.debt_publication import (
     PUBLICATION_KIND_CORE,
     build_confirmed_debt_weight_publication,
     build_debt_weight_publication_binding,
 )
-from optima.chain.intake import IntakeError
-from optima.chain.weights import WeightPublicationRecord
-from optima.finite_debt import (
+from cacheon.chain.intake import IntakeError
+from cacheon.chain.weights import WeightPublicationRecord
+from cacheon.finite_debt import (
     CampaignBudgetShare,
     IMPROVEMENT_GROSS,
     PPM,
@@ -29,7 +29,7 @@ from optima.finite_debt import (
     issue_innovation_claim,
     pay_claim_balance,
 )
-from optima.settlement import SettlementCandidate, plan_settlement
+from cacheon.settlement import SettlementCandidate, plan_settlement
 from tests.test_chain_intake import (
     _arrival,
     _h,
@@ -741,7 +741,7 @@ def test_runtime_family_invalidation_cancels_debt_resets_clock_and_is_idempotent
         assert marker is not None and marker.source == "invalidation"
         # The issuance path deliberately maps this marker to no prior crown, so
         # a later accepted crown receives the first-crown multiplier M=1.
-        from optima.finite_debt import issue_innovation_claim
+        from cacheon.finite_debt import issue_innovation_claim
 
         next_claim = issue_innovation_claim(
             policy,

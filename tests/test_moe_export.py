@@ -1,4 +1,4 @@
-"""Deep-seam export/consume runtime (optima/moe_export.py + the dispatcher's deep
+"""Deep-seam export/consume runtime (cacheon/moe_export.py + the dispatcher's deep
 consume branch + the defer-gate/moe-export integrations).
 
 The correctness invariant under test everywhere: skip-finalize is only armed when
@@ -14,10 +14,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from optima import moe_export
-from optima.capabilities import collective_call_descriptor
-from optima.dispatch import make_arfusion_dispatcher
-from optima.registry import Eligibility, KernelImpl, KernelRegistry
+from cacheon import moe_export
+from cacheon.capabilities import collective_call_descriptor
+from cacheon.dispatch import make_arfusion_dispatcher
+from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
 DEEP = moe_export.DEEP_SLOT
 SHALLOW = "collective.ar_residual_rmsnorm"
@@ -33,9 +33,9 @@ _DEEP_BUNDLE = (_Path(__file__).resolve().parent.parent
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     moe_export.reset()
-    monkeypatch.delenv("OPTIMA_ARFUSION_SEAM", raising=False)
-    monkeypatch.delenv("OPTIMA_SLOT_AUDIT", raising=False)
-    monkeypatch.delenv("OPTIMA_SEAM_RECEIPT_DIR", raising=False)
+    monkeypatch.delenv("CACHEON_ARFUSION_SEAM", raising=False)
+    monkeypatch.delenv("CACHEON_SLOT_AUDIT", raising=False)
+    monkeypatch.delenv("CACHEON_SEAM_RECEIPT_DIR", raising=False)
     yield
     moe_export.reset()
 
@@ -142,7 +142,7 @@ def _export_kwargs(*, t=64, h=32, k=5, num_experts=8, output=None,
 
 
 def _armed(monkeypatch, raw, *, n_layers=4, ordinal=1, group=None):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
     group = group or _FakeGroup()
     monkeypatch.setattr(moe_export, "_input_ok",
@@ -193,7 +193,7 @@ def test_export_arms_skip_and_pends_by_output_ptr(monkeypatch):
 
 
 def test_cpu_export_double_does_not_claim_host_cuda_architecture(monkeypatch):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
     out, kwargs = _export_kwargs()
     _armed(monkeypatch, _FakeRaw(export=(1, 1, 2, 3, 64, 32, 32, 5, 16)))
@@ -208,9 +208,9 @@ def test_cpu_export_double_does_not_claim_host_cuda_architecture(monkeypatch):
 
 
 def test_export_preflight_writes_no_fired_receipt(monkeypatch, tmp_path):
-    from optima import registry as registry_mod
+    from cacheon import registry as registry_mod
 
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(tmp_path))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
     monkeypatch.setattr(registry_mod, "_FIRED_SLOTS", set())
     out, kwargs = _export_kwargs()
     _armed(monkeypatch, _FakeRaw(export=(1, 1, 2, 3, 64, 32, 32, 5, 16)))
@@ -255,7 +255,7 @@ def test_min_num_tokens_gates_the_export_side(monkeypatch):
 
 @pytest.mark.parametrize("dp_size", (None, 2))
 def test_moe_data_parallel_export_never_arms(monkeypatch, dp_size):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
     raw = _FakeRaw(export=(1, 1, 2, 3, 64, 32, 32, 5, 16))
     _armed(monkeypatch, raw)
@@ -508,7 +508,7 @@ def _baseline_recorder(calls):
 
 @pytest.fixture()
 def _fake_group(monkeypatch):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
     group = _FakeGroup()
     monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: group)
@@ -518,7 +518,7 @@ def _fake_group(monkeypatch):
 
 
 def test_matching_producer_consumer_identity_executes(monkeypatch, _fake_group):
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     record, base_calls = [], []
     reg = _dual_registry(record)
     x, pend = _produce_pend(monkeypatch, reg, _fake_group)
@@ -533,7 +533,7 @@ def test_matching_producer_consumer_identity_executes(monkeypatch, _fake_group):
 
 def test_consume_head_trims_graph_padding(monkeypatch, _fake_group):
     # T_consume < T_export (CUDA-graph batch padding): full views, trimmed residual.
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     record = []
     reg = _dual_registry(record, min_num_tokens=48)
     full, pend = _produce_pend(monkeypatch, reg, _fake_group, t=64)
@@ -545,7 +545,7 @@ def test_consume_head_trims_graph_padding(monkeypatch, _fake_group):
 
 
 def test_consume_more_rows_than_export_raises(monkeypatch, _fake_group):
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     reg = _dual_registry([])
     d = make_arfusion_dispatcher(_baseline_recorder([]), registry=reg)
     x = torch.zeros(65, 32, dtype=torch.bfloat16)
@@ -559,7 +559,7 @@ def test_consume_more_rows_than_export_raises(monkeypatch, _fake_group):
 def test_orphan_pend_reconstructs_before_stock(monkeypatch, _fake_group):
     # Deep kernel ineligible at consume time -> the TRUSTED finalize must run and
     # the stock fusion call must receive the FINALIZED tensor, never the raw input.
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     producer_reg = _deep_registry()
     x, pend = _produce_pend(monkeypatch, producer_reg, _fake_group)
     views = _views_for(pend)
@@ -578,7 +578,7 @@ def test_orphan_pend_reconstructs_before_stock(monkeypatch, _fake_group):
 
 
 def test_deep_kernel_error_hard_fails_candidate_engine(monkeypatch, _fake_group):
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
 
     def boom(*a):
         raise RuntimeError("deep kernel exploded")
@@ -597,7 +597,7 @@ def test_deep_kernel_error_hard_fails_candidate_engine(monkeypatch, _fake_group)
 def test_producer_variant_identity_blocks_head_trim_variant_switch(
     monkeypatch, _fake_group
 ):
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     calls = []
     reg = KernelRegistry()
     reg.register(KernelImpl(
@@ -633,9 +633,9 @@ def test_producer_variant_identity_blocks_head_trim_variant_switch(
 def test_consume_topology_mismatch_recovers_without_candidate(
     monkeypatch, _fake_group
 ):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     record = []
     reg = _dual_registry(record)
     x, pend = _produce_pend(monkeypatch, reg, _fake_group)
@@ -651,7 +651,7 @@ def test_consume_topology_mismatch_recovers_without_candidate(
 
 def test_plain_calls_untouched_when_no_pend(monkeypatch, _fake_group):
     # A fusion call whose input is NOT a pended moe output takes the shallow path.
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     base_calls = []
     reg = KernelRegistry()
     reg.enable()
@@ -663,7 +663,7 @@ def test_plain_calls_untouched_when_no_pend(monkeypatch, _fake_group):
 
 
 def test_eligibility_min_num_tokens_from_metadata():
-    from optima.registry import eligibility_from_metadata
+    from cacheon.registry import eligibility_from_metadata
 
     e = eligibility_from_metadata({"min_num_tokens": 48}, ("bfloat16",))
     assert e.min_num_tokens == 48
@@ -696,13 +696,13 @@ def _stub_communicator(monkeypatch):
 
 
 def test_defer_gate_install_records_decisions(monkeypatch):
-    from optima.integrations import sglang_defer_gate
+    from cacheon.integrations import sglang_defer_gate
 
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     mod = _stub_communicator(monkeypatch)
     reg = _deep_registry()
     sglang_defer_gate.install(reg)
-    assert getattr(mod, "_optima_defer_gate_patched")
+    assert getattr(mod, "_cacheon_defer_gate_patched")
 
     comm, batch = mod.LayerCommunicator(), _Batch()
     moe_export._state["pends"][0xabc] = _pend()
@@ -715,21 +715,21 @@ def test_defer_gate_install_records_decisions(monkeypatch):
 
 
 def test_defer_gate_install_is_retryable_until_bundle_loads(monkeypatch):
-    from optima.integrations import sglang_defer_gate
+    from cacheon.integrations import sglang_defer_gate
 
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     mod = _stub_communicator(monkeypatch)
     empty = KernelRegistry()
     sglang_defer_gate.install(empty)  # activate() pass before the bundle loaded
-    assert not getattr(mod, "_optima_defer_gate_patched", False)
+    assert not getattr(mod, "_cacheon_defer_gate_patched", False)
     sglang_defer_gate.install(_deep_registry())  # later pass: bundle present
-    assert getattr(mod, "_optima_defer_gate_patched")
+    assert getattr(mod, "_cacheon_defer_gate_patched")
 
 
 def test_moe_export_install_rebinds_module_function(monkeypatch):
-    from optima.integrations import sglang_moe_export
+    from cacheon.integrations import sglang_moe_export
 
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     mod = types.ModuleType("sglang.srt.layers.quantization.modelopt_quant")
     orig_calls = []
 
@@ -761,7 +761,7 @@ def test_deep_bundle_manifest_shape():
     # patch declared, and the deep op carrying the measured min_num_tokens floor.
     import json
 
-    from optima.manifest import load_manifest
+    from cacheon.manifest import load_manifest
 
     bundle = _DEEP_BUNDLE
     m = load_manifest(bundle)

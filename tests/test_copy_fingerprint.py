@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.copy_fingerprint import (
+from cacheon.copy_fingerprint import (
     SubmittedDeltaFingerprint,
     bundle_slot_file_fingerprints,
     bundle_slot_fingerprints,
@@ -267,7 +267,7 @@ def test_padding_an_extra_op_cannot_even_resolve_a_target(tmp_path):
     # path this evasion is rejected STRUCTURALLY: a submission must resolve to one
     # registered target, and no target has these members — the padded bundle never
     # even reaches the copy comparator.
-    from optima.target_catalog import TargetResolutionError
+    from cacheon.target_catalog import TargetResolutionError
 
     pad = "import torch\n\ndef rmsnorm(x, w, out, eps):\n    v = (x * x).mean(-1, keepdim=True)\n    out.copy_(x * torch.rsqrt(v + eps) * w)\n"
     b = _write_bundle(tmp_path / "b",

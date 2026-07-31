@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from optima import receipts
-from optima.capabilities import (
+from cacheon import receipts
+from cacheon.capabilities import (
     CallDescriptor,
     CapabilityDomain,
     CapabilityPredicate,
 )
-from optima.manifest import DEFAULT_VARIANT, ManifestError, load_manifest
-from optima.registry import (
+from cacheon.manifest import DEFAULT_VARIANT, ManifestError, load_manifest
+from cacheon.registry import (
     Eligibility,
     KernelImpl,
     KernelRegistry,
@@ -249,7 +249,7 @@ def test_legacy_lookup_and_peek_stay_compatible_and_fail_closed_on_ambiguity():
 
 
 def test_fired_receipt_is_semantic_slot_level_across_variants(monkeypatch):
-    from optima import registry as registry_module
+    from cacheon import registry as registry_module
 
     registry_module._FIRED_SLOTS.discard(SLOT)
     writes: list[tuple[str, dict, str | None]] = []
@@ -271,8 +271,8 @@ def test_fired_receipt_is_semantic_slot_level_across_variants(monkeypatch):
 
 
 def test_seam_loader_registers_every_variant(tmp_path):
-    from optima.registry import REGISTRY
-    from optima.seam import _load_bundle_into_registry
+    from cacheon.registry import REGISTRY
+    from cacheon.seam import _load_bundle_into_registry
 
     bundle = _write_bundle(
         tmp_path / "bundle",
@@ -299,9 +299,9 @@ def test_seam_loader_registers_every_variant(tmp_path):
 
 
 def test_shared_setup_runs_once_across_variants(tmp_path, monkeypatch):
-    from optima import sandbox
-    from optima.registry import REGISTRY
-    from optima.seam import _load_bundle_into_registry
+    from cacheon import sandbox
+    from cacheon.registry import REGISTRY
+    from cacheon.seam import _load_bundle_into_registry
 
     bundle = tmp_path / "bundle"
     (bundle / "kernels").mkdir(parents=True)
@@ -351,13 +351,13 @@ def test_shared_setup_runs_once_across_variants(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox, "load_module", observed_load)
     REGISTRY.clear()
     try:
-        monkeypatch.delenv("OPTIMA_FRAMEWORK_MODE", raising=False)
-        with pytest.raises(RuntimeError, match="OPTIMA_FRAMEWORK_MODE is not armed"):
+        monkeypatch.delenv("CACHEON_FRAMEWORK_MODE", raising=False)
+        with pytest.raises(RuntimeError, match="CACHEON_FRAMEWORK_MODE is not armed"):
             _load_bundle_into_registry(str(bundle))
         assert load_calls == []
         assert calls == []
 
-        monkeypatch.setenv("OPTIMA_FRAMEWORK_MODE", "1")
+        monkeypatch.setenv("CACHEON_FRAMEWORK_MODE", "1")
         _load_bundle_into_registry(str(bundle))
         assert len(load_calls) == 1
         assert calls == ["setup_engine"]

@@ -1,12 +1,12 @@
 # Codebase map
 
-This map groups the Optima source by authority boundary. File names are links
+This map groups the Cacheon source by authority boundary. File names are links
 to the current code repository; source remains authoritative when details
 change.
 
 ## Read by authority, not import depth
 
-The easiest way to get lost in Optima is to follow imports as though every
+The easiest way to get lost in Cacheon is to follow imports as though every
 module had the same trust level. Start from the decision whose authority you
 are trying to understand:
 
@@ -36,84 +36,84 @@ reopens evidence but accepts only reviewed integrated source.
 
 | Area | Primary source |
 |---|---|
-| Bundle parsing and path rules | [`manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/manifest.py) |
-| Slot ABI and trusted references | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/optima/slots.py) |
-| Target identity and composition | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py) |
-| Typed tensor/output boundary | [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/optima/tensor_spec.py) |
-| Static policy | [`sandbox.py`](https://github.com/latent-to/cacheon/blob/main/optima/sandbox.py) |
-| Tracing-JIT admission | [`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/optima/dsl_jit_policy.py) |
-| Local and distributed verification | [`verify.py`](https://github.com/latent-to/cacheon/blob/main/optima/verify.py), [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/optima/verify_collective.py) |
-| SGLang dispatch | [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/optima/dispatch.py), [`seams.py`](https://github.com/latent-to/cacheon/blob/main/optima/seams.py) |
-| Scheduler-role candidate load | [`seam.py`](https://github.com/latent-to/cacheon/blob/main/optima/seam.py), [`sglang_scheduler_gate.py`](https://github.com/latent-to/cacheon/blob/main/optima/integrations/sglang_scheduler_gate.py) |
+| Bundle parsing and path rules | [`manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/manifest.py) |
+| Slot ABI and trusted references | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) |
+| Target identity and composition | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
+| Typed tensor/output boundary | [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) |
+| Static policy | [`sandbox.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py) |
+| Tracing-JIT admission | [`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dsl_jit_policy.py) |
+| Local and distributed verification | [`verify.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py), [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py) |
+| SGLang dispatch | [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py), [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py) |
+| Scheduler-role candidate load | [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), [`sglang_scheduler_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py) |
 
 ## Sealed direct artifacts
 
 | Area | Primary source |
 |---|---|
-| Closed provider policy | [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_provider.py) |
-| Slot call ABI, resources, and lifecycle | [`artifact_abi.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_abi.py), [`artifact_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_runtime.py) |
-| Canonical direct-execution identity | [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_identity.py), [`artifact_resource_identity.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_resource_identity.py) |
-| Declarative device launch | [`artifact_device_launch.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_device_launch.py) |
-| CUBIN ABI and Driver admission | [`cuda_cubin.py`](https://github.com/latent-to/cacheon/blob/main/optima/cuda_cubin.py), [`cuda_launch.py`](https://github.com/latent-to/cacheon/blob/main/optima/cuda_launch.py) |
-| Parameter, TMA, and FastDivmod materialization | [`cuda_materialize.py`](https://github.com/latent-to/cacheon/blob/main/optima/cuda_materialize.py) |
-| CuTe compiler boundary and sealed index | [`cute_aot.py`](https://github.com/latent-to/cacheon/blob/main/optima/cute_aot.py), [`cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/optima/cute_cubin.py) |
-| Measured compile profile | [`eval/native_compile_profile.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/native_compile_profile.py) |
-| Registered build patcher | [`patchers/build_cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/optima/patchers/build_cute_cubin.py) |
-| Rank-local post-CUDA binding | [`integrations/sglang_artifact_context.py`](https://github.com/latent-to/cacheon/blob/main/optima/integrations/sglang_artifact_context.py) |
+| Closed provider policy | [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_provider.py) |
+| Slot call ABI, resources, and lifecycle | [`artifact_abi.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_abi.py), [`artifact_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_runtime.py) |
+| Canonical direct-execution identity | [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_identity.py), [`artifact_resource_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_resource_identity.py) |
+| Declarative device launch | [`artifact_device_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_device_launch.py) |
+| CUBIN ABI and Driver admission | [`cuda_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cuda_cubin.py), [`cuda_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cuda_launch.py) |
+| Parameter, TMA, and FastDivmod materialization | [`cuda_materialize.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cuda_materialize.py) |
+| CuTe compiler boundary and sealed index | [`cute_aot.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cute_aot.py), [`cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cute_cubin.py) |
+| Measured compile profile | [`eval/native_compile_profile.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_compile_profile.py) |
+| Registered build patcher | [`patchers/build_cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/patchers/build_cute_cubin.py) |
+| Rank-local post-CUDA binding | [`integrations/sglang_artifact_context.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_artifact_context.py) |
 
 ## Intake and referee
 
 | Area | Primary source |
 |---|---|
-| Chain-facing commands | [`cli.py`](https://github.com/latent-to/cacheon/blob/main/optima/cli.py) |
-| Miner S3-compatible publication | [`chain/publish.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/publish.py) |
-| Finalized intake and SQLite state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py) |
-| Hardened archive fetch | [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py) |
-| Validator loop | [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py) |
-| Redacted chain journal | [`chain/audit_log.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/audit_log.py) |
-| Private validator snapshot/restore | [`chain/archive.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py) |
-| Injected arena boundary | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py) |
-| Qualification schema and regrading | [`eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py) |
-| Resident routing screen | [`eval/oci_resident_session.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_resident_session.py), [`eval/resident_queue.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_queue.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_screen_lane.py) |
-| Adaptive two-lane qualification | [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py) |
-| Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py) |
-| OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_session_protocol.py) |
-| Host-owned resident B/C/B′ and conditional C′/B″ session | [`eval/oci_outer_session.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_outer_session.py) |
-| Immutable native prebuild | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_prebuild.py) |
-| Device conditioning/cleanup | [`eval/device_state.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/device_state.py) |
-| Compile-profile and multi-architecture prebuild | [`eval/native_compile_profile.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/native_compile_profile.py), [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_prebuild.py) |
+| Chain-facing commands | [`cli.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py) |
+| Miner S3-compatible publication | [`chain/publish.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publish.py) |
+| Finalized intake and SQLite state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
+| Hardened archive fetch | [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py) |
+| Validator loop | [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py) |
+| Redacted chain journal | [`chain/audit_log.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py) |
+| Private validator snapshot/restore | [`chain/archive.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py) |
+| Injected arena boundary | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py) |
+| Qualification schema and regrading | [`eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py) |
+| Resident routing screen | [`eval/oci_resident_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_resident_session.py), [`eval/resident_queue.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_queue.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py) |
+| Adaptive two-lane qualification | [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
+| Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py) |
+| OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py) |
+| Host-owned resident B/C/B′ and conditional C′/B″ session | [`eval/oci_outer_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_outer_session.py) |
+| Immutable native prebuild | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
+| Device conditioning/cleanup | [`eval/device_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/device_state.py) |
+| Compile-profile and multi-architecture prebuild | [`eval/native_compile_profile.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_compile_profile.py), [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
 
 ## State, economics, and weights
 
 | Area | Primary source |
 |---|---|
-| Evaluation/release stack identities | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py) |
-| Transactional settlement state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py) |
-| Pure emissions projection | [`economics.py`](https://github.com/latent-to/cacheon/blob/main/optima/economics.py) |
-| Weight publication reconciliation | [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/weights.py) |
-| Finite-debt arithmetic | [`finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/optima/finite_debt.py), [`incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/optima/incentive_composition.py) |
-| Durable V2 activation and state | [`chain/finite_debt_store.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/finite_debt_store.py), [`chain/incentive_composition_store.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_composition_store.py), [`chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_activation.py) |
-| V2 projection, confirmation, and debit | [`chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py) |
-| Copy and attribution evidence | [`copy_fingerprint.py`](https://github.com/latent-to/cacheon/blob/main/optima/copy_fingerprint.py) |
+| Evaluation/release stack identities | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) |
+| Transactional settlement state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
+| Pure emissions projection | [`economics.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py) |
+| Weight publication reconciliation | [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py) |
+| Finite-debt arithmetic | [`finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py), [`incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py) |
+| Durable V2 activation and state | [`chain/finite_debt_store.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/finite_debt_store.py), [`chain/incentive_composition_store.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_composition_store.py), [`chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py) |
+| V2 projection, confirmation, and debit | [`chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py) |
+| Copy and attribution evidence | [`copy_fingerprint.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/copy_fingerprint.py) |
 
 ## Engine integration and release
 
 | Area | Primary source |
 |---|---|
-| Deterministic Engine tree | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/optima/engine_tree.py) |
-| Model provisioning | [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/optima/model_provision.py) |
-| Release evidence/signing/publication | [`release.py`](https://github.com/latent-to/cacheon/blob/main/optima/release.py) |
-| Release runtime verification | [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_runtime.py) |
-| Container host policy | [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_host.py) |
+| Deterministic Engine tree | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) |
+| Model provisioning | [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py) |
+| Release evidence/signing/publication | [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py) |
+| Release runtime verification | [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_runtime.py) |
+| Container host policy | [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py) |
 
 ## Compatibility and discovery
 
 | Area | Primary source |
 |---|---|
-| SGLang pin and canary | [`compat.py`](https://github.com/latent-to/cacheon/blob/main/optima/compat.py) |
-| Bittensor SDK canary | [`chain_canary.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain_canary.py) |
-| Discovery policy and arm | [`discovery.py`](https://github.com/latent-to/cacheon/blob/main/optima/discovery.py) |
-| Discovery overlay | [`discovery_overlay.py`](https://github.com/latent-to/cacheon/blob/main/optima/discovery_overlay.py) |
+| SGLang pin and canary | [`compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py) |
+| Bittensor SDK canary | [`chain_canary.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain_canary.py) |
+| Discovery policy and arm | [`discovery.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/discovery.py) |
+| Discovery overlay | [`discovery_overlay.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/discovery_overlay.py) |
 
 ## Follow a concrete task
 

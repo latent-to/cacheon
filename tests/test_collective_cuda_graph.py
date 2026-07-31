@@ -10,8 +10,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.slots import get_slot  # noqa: E402
-from optima.verify_collective import verify_collective  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.verify_collective import verify_collective  # noqa: E402
 
 
 CUDA2 = torch.cuda.is_available() and torch.cuda.device_count() >= 2
@@ -25,9 +25,9 @@ def _live_dispatch_graph_worker(rank, world_size, store_path):
     import torch.distributed as dist
     import traceback
 
-    from optima.dispatch import make_allreduce_dispatcher
-    import optima.dispatch as dispatch
-    from optima.registry import Eligibility, KernelImpl, KernelRegistry
+    from cacheon.dispatch import make_allreduce_dispatcher
+    import cacheon.dispatch as dispatch
+    from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
     torch.cuda.set_device(rank)
     dist.init_process_group(
@@ -37,10 +37,10 @@ def _live_dispatch_graph_worker(rank, world_size, store_path):
         world_size=world_size,
     )
     try:
-        os.environ["OPTIMA_COLLECTIVE_SEAM"] = "1"
+        os.environ["CACHEON_COLLECTIVE_SEAM"] = "1"
 
         # Use the pinned runtime's real coordinator and get_tp_group authority;
-        # monkeypatching Optima's role classifier would make this only an NCCL
+        # monkeypatching Cacheon's role classifier would make this only an NCCL
         # kernel test, not proof of the live Sglang adapter boundary.
         from sglang.srt.distributed import parallel_state as ps
 
@@ -55,7 +55,7 @@ def _live_dispatch_graph_worker(rank, world_size, store_path):
             use_hpu_communicator=False,
             use_xpu_communicator=False,
             use_npu_communicator=False,
-            group_name="optima_live_test_tp",
+            group_name="cacheon_live_test_tp",
         )
         ps._TP = coordinator
         group = coordinator.device_group
@@ -125,7 +125,7 @@ def _verify(source=ALLREDUCE, *, slot="collective.all_reduce", entry="all_reduce
 
 
 def test_collective_nccl_cuda_graph_faithful_replays():
-    world_size = int(os.environ.get("OPTIMA_COLLECTIVE_TEST_WORLD_SIZE", "2"))
+    world_size = int(os.environ.get("CACHEON_COLLECTIVE_TEST_WORLD_SIZE", "2"))
     if torch.cuda.device_count() < world_size:
         pytest.skip(f"requires {world_size} CUDA GPUs")
     result = _verify(world_size=world_size)
@@ -140,7 +140,7 @@ def test_collective_nccl_cuda_graph_faithful_replays():
 def test_live_allreduce_binding_captures_and_replays_actual_nccl_group():
     import torch.multiprocessing as mp
 
-    from optima.verify_collective import _terminate_processes
+    from cacheon.verify_collective import _terminate_processes
 
     pytest.importorskip("sglang.srt.distributed.parallel_state")
 

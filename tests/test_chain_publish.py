@@ -8,15 +8,15 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.cli as cli
-from optima.chain.fetch import FetchError, package_bundle
-from optima.chain.publish import (
+import cacheon.cli as cli
+from cacheon.chain.fetch import FetchError, package_bundle
+from cacheon.chain.publish import (
     BundlePublishError,
     DEFAULT_BUNDLE_KEY_PREFIX,
     S3PublicBundlePublisher,
     public_object_url,
 )
-from optima.object_store import ObjectStoreConfig
+from cacheon.object_store import ObjectStoreConfig
 
 
 class _S3Error(Exception):
@@ -245,9 +245,9 @@ def test_public_url_uses_provider_style_and_rejects_non_https():
 
 
 def test_bundle_store_cli_defaults_to_generic_s3_environment(monkeypatch):
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_BUCKET", "miner-bucket")
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_ACCESS_KEY_ID", "hip_test")
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_BUCKET", "miner-bucket")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_ACCESS_KEY_ID", "hip_test")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY", "secret")
 
     config = cli._bundle_store_config_from_args(SimpleNamespace())
 
@@ -259,9 +259,9 @@ def test_bundle_store_cli_defaults_to_generic_s3_environment(monkeypatch):
 
 
 def test_bundle_store_cli_endpoint_is_provider_agnostic(monkeypatch):
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_BUCKET", "miner-bucket")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_BUCKET", "miner-bucket")
     monkeypatch.setenv(
-        "OPTIMA_OBJECT_STORE_ENDPOINT_URL", "https://objects.example"
+        "CACHEON_OBJECT_STORE_ENDPOINT_URL", "https://objects.example"
     )
 
     config = cli._bundle_store_config_from_args(SimpleNamespace())
@@ -275,8 +275,8 @@ def test_bundle_store_cli_endpoint_is_provider_agnostic(monkeypatch):
 
 
 def test_bundle_store_cli_hippius_preset_is_optional(monkeypatch):
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_PROVIDER", "hippius")
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_BUCKET", "miner-bucket")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_PROVIDER", "hippius")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_BUCKET", "miner-bucket")
 
     config = cli._bundle_store_config_from_args(SimpleNamespace())
 

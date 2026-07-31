@@ -11,12 +11,12 @@ is a validator-owned reward unit over one or more slots.
 You can print the slot registry from the checkout you are developing against:
 
 ```bash
-python -m optima.cli slots
+python -m cacheon.cli slots
 ```
 
 The authoritative sources are
-[slots.py](https://github.com/latent-to/cacheon/blob/main/optima/slots.py) and
-[target_catalog.py](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py).
+[slots.py](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) and
+[target_catalog.py](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Current slot catalog
 

@@ -1,6 +1,6 @@
 # Evidence and replay
 
-Optima retains typed, content-addressed qualification attempts and referenced evidence. A
+Cacheon retains typed, content-addressed qualification attempts and referenced evidence. A
 summary score, log excerpt, or database flag is not sufficient authority by itself. The
 persisted attempt is also not a self-contained full-regrade package: causal regrade
 requires the caller to supply the exact reconstructed `CausalQualificationInput`, including
@@ -138,10 +138,10 @@ different evidence claims.
 
 ### Sampled slot audit is registered authority, not ambient authority
 
-[`optima/audit.py`](https://github.com/latent-to/cacheon/blob/main/optima/audit.py)
+[`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py)
 emits sampled comparison facts for supported live dispatch seams. Production
 qualification keeps those facts out of charged B/C/B′[/C′/B″] roles and obtains them from
-a separate eager, untimed candidate role. [`optima/audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py)
+a separate eager, untimed candidate role. [`cacheon/audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 grades the bounded facts without importing Torch, requires the exact registered slot ×
 TP-rank/process coverage, and rejects malformed, duplicate, or unexpected coverage.
 Floating-point facts are canonicalized to decimal strings before durable receipt
@@ -236,7 +236,7 @@ retained.
 Run a temporary semantic reopen after each snapshot:
 
 ```bash
-optima chain-snapshot-verify \
+cacheon chain-snapshot-verify \
   --manifest-key <MANIFEST_KEY> \
   --object-store-bucket <PRIVATE_BUCKET> \
   --object-store-endpoint <S3_COMPATIBLE_ENDPOINT>
@@ -288,11 +288,11 @@ metadata.
 
 ## Source anchors
 
-- [Evidence store](https://github.com/latent-to/cacheon/blob/main/optima/eval/evidence_store.py)
-- [Calibration evidence](https://github.com/latent-to/cacheon/blob/main/optima/eval/calibration.py)
-- [Qualification evidence model](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py)
-- [Qualification runner and regrade](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)
-- [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py)
-- [SQLite authority](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
-- [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/optima/chain/audit_log.py)
-- [Private snapshot and restore](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
+- [Evidence store](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/evidence_store.py)
+- [Calibration evidence](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py)
+- [Qualification evidence model](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py)
+- [Qualification runner and regrade](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
+- [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
+- [SQLite authority](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
+- [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py)
+- [Private snapshot and restore](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)

@@ -14,8 +14,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.slots import get_slot  # noqa: E402
-from optima.verify_collective import verify_collective  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.verify_collective import verify_collective  # noqa: E402
 
 BUNDLE = "examples/miner_moe_fused_experts_reduce_torch/kernels/moe_reduce.py"
 

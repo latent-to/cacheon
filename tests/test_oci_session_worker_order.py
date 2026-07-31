@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.eval import engine_worker as engine_policy
-from optima.eval import oci_session_worker as worker
-from optima.eval.oci_session_protocol import (
+from cacheon.eval import engine_worker as engine_policy
+from cacheon.eval import oci_session_worker as worker
+from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     EVIDENCE_MAGIC,
     FRAME_HEADER_BYTES,
@@ -31,7 +31,7 @@ from optima.eval.oci_session_protocol import (
     preflight_accept_message,
     validate_batch_request,
 )
-from optima.eval.reference_protocol import (
+from cacheon.eval.reference_protocol import (
     EVIDENCE_MAGIC as REFERENCE_EVIDENCE_MAGIC,
     ReferencePromptInput,
     ReferenceRequest,
@@ -39,7 +39,7 @@ from optima.eval.reference_protocol import (
     decode_reference_evidence,
     encode_reference_request,
 )
-from optima.seams import seam_binding_environment
+from cacheon.seams import seam_binding_environment
 
 
 def _digest(character: str) -> str:
@@ -48,7 +48,7 @@ def _digest(character: str) -> str:
 
 def _config() -> EngineSessionConfig:
     return EngineSessionConfig(
-        model_path="/optima/input/model",
+        model_path="/cacheon/input/model",
         dtype="bfloat16",
         deterministic=False,
         attention_backend=None,
@@ -140,8 +140,8 @@ def _session_fds(payload: bytes) -> tuple[int, int, int]:
 
 
 def _bind_init(monkeypatch, config: EngineSessionConfig, launch: str) -> None:
-    monkeypatch.setenv("OPTIMA_LAUNCH_DIGEST", launch)
-    monkeypatch.setenv("OPTIMA_ENGINE_CONFIG_DIGEST", config.digest)
+    monkeypatch.setenv("CACHEON_LAUNCH_DIGEST", launch)
+    monkeypatch.setenv("CACHEON_ENGINE_CONFIG_DIGEST", config.digest)
 
 
 def _reference_request(*, session: str, launch: str, index: int) -> ReferenceRequest:
@@ -239,7 +239,7 @@ def test_importing_worker_loads_no_torch_sglang_or_candidate(tmp_path):
         "      raise RuntimeError('forbidden import: ' + fullname)\n"
         "    return None\n"
         "sys.meta_path.insert(0, Block())\n"
-        "import optima.eval.oci_session_worker\n"
+        "import cacheon.eval.oci_session_worker\n"
         "assert not any(n.split('.')[0] in {'torch','sglang','miner_payload'} "
         "for n in sys.modules)\n"
     )
@@ -270,7 +270,7 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
         def __init__(self, **_kwargs):
             observed.append(
                 {
-                    "active": os.environ.get("OPTIMA_ACTIVE"),
+                    "active": os.environ.get("CACHEON_ACTIVE"),
                     "gates": {name: os.environ.get(name) for name in gate_names},
                     "plugins": os.environ.get("SGLANG_PLUGINS"),
                 }
@@ -280,8 +280,8 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
             return None
 
     monkeypatch.setitem(sys.modules, "sglang", SimpleNamespace(Engine=Engine))
-    monkeypatch.setenv("OPTIMA_EXTERNAL_NO_EGRESS", "1")
-    monkeypatch.setenv("OPTIMA_ENGINE_WORKER", "1")
+    monkeypatch.setenv("CACHEON_EXTERNAL_NO_EGRESS", "1")
+    monkeypatch.setenv("CACHEON_ENGINE_WORKER", "1")
     for name in gate_names:
         monkeypatch.setenv(name, "1")
     for name in (
@@ -299,8 +299,8 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
         ),
     )
 
-    from optima import manifest as manifest_module
-    from optima import receipts, seam
+    from cacheon import manifest as manifest_module
+    from cacheon import receipts, seam
 
     monkeypatch.setattr(seam, "mark_driver", lambda: None)
     monkeypatch.setattr(
@@ -325,12 +325,12 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
     candidate = SimpleNamespace(
         root=tmp_path / "candidate", runtime_manifest="manifest.toml"
     )
-    monkeypatch.delenv("OPTIMA_SESSION_PROTOCOL", raising=False)
+    monkeypatch.delenv("CACHEON_SESSION_PROTOCOL", raising=False)
     with worker._engine_session(config, baseline):
         pass
     with worker._engine_session(config, candidate):
         pass
-    monkeypatch.setenv("OPTIMA_SESSION_PROTOCOL", "reference")
+    monkeypatch.setenv("CACHEON_SESSION_PROTOCOL", "reference")
     with pytest.raises(worker.SessionWorkerError, match="reference.*seam bindings"):
         with worker._engine_session(config, baseline):
             pass
@@ -340,8 +340,8 @@ def test_session_worker_transports_closed_seam_bindings_and_clears_reference(
     selected = seam_binding_environment(("collective",))
     cleared = seam_binding_environment(())
     assert observed == [
-        {"active": "0", "gates": selected, "plugins": "optima"},
-        {"active": "1", "gates": selected, "plugins": "optima"},
+        {"active": "0", "gates": selected, "plugins": "cacheon"},
+        {"active": "1", "gates": selected, "plugins": "cacheon"},
         {"active": "0", "gates": cleared, "plugins": ""},
     ]
     assert bootstrap_gates == [selected, selected]
@@ -564,7 +564,7 @@ def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monke
         for index in range(2)
     )
     _bind_init(monkeypatch, config, launch)
-    monkeypatch.setenv("OPTIMA_SESSION_PROTOCOL", "reference")
+    monkeypatch.setenv("CACHEON_SESSION_PROTOCOL", "reference")
     payload = (
         _init_frame(config, session=session, launch=launch)
         + _accept_frame(config, session=session, launch=launch)
@@ -623,7 +623,7 @@ def test_reference_worker_rejects_any_contribution_manifest_before_engine(monkey
     config = _config()
     session, launch = "6" * 32, _digest("a")
     _bind_init(monkeypatch, config, launch)
-    monkeypatch.setenv("OPTIMA_SESSION_PROTOCOL", "reference")
+    monkeypatch.setenv("CACHEON_SESSION_PROTOCOL", "reference")
     input_fd, output_read, output_write = _session_fds(
         _init_frame(config, session=session, launch=launch)
         + _accept_frame(config, session=session, launch=launch)
@@ -669,7 +669,7 @@ def test_protocol_fd_is_cloexec_stdout_is_silenced_and_stderr_is_separate(tmp_pa
     script = tmp_path / "fd_probe.py"
     script.write_text(
         "import os\n"
-        "from optima.eval.oci_session_worker import _reserve_protocol_fd\n"
+        "from cacheon.eval.oci_session_worker import _reserve_protocol_fd\n"
         "fd = _reserve_protocol_fd()\n"
         "assert not os.get_inheritable(fd)\n"
         "print('engine-noise', flush=True)\n"
@@ -693,7 +693,7 @@ def test_protocol_fd_is_cloexec_stdout_is_silenced_and_stderr_is_separate(tmp_pa
 def test_worker_fallback_stderr_diagnostic_has_a_hard_byte_cap(tmp_path):
     script = tmp_path / "stderr_probe.py"
     script.write_text(
-        "from optima.eval.oci_session_worker import _write_stderr_diagnostic\n"
+        "from cacheon.eval.oci_session_worker import _write_stderr_diagnostic\n"
         "_write_stderr_diagnostic('batch', RuntimeError('x' * 100000))\n"
     )
     root = Path(__file__).resolve().parents[1]
@@ -707,7 +707,7 @@ def test_worker_fallback_stderr_diagnostic_has_a_hard_byte_cap(tmp_path):
     )
     assert result.returncode == 0
     assert result.stdout == b""
-    assert result.stderr.startswith(b"[optima-session-worker]")
+    assert result.stderr.startswith(b"[cacheon-session-worker]")
     assert 0 < len(result.stderr) <= worker.WORKER_STDERR_DIAGNOSTIC_MAX_BYTES
 
 

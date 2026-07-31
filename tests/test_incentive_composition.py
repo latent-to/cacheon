@@ -5,7 +5,7 @@ from typing import Callable
 
 import pytest
 
-from optima.finite_debt import (
+from cacheon.finite_debt import (
     CampaignBudgetShare,
     IMPROVEMENT_GROSS,
     POLICY_SCHEMA_VERSION,
@@ -18,7 +18,7 @@ from optima.finite_debt import (
     issue_innovation_claim,
     pay_claim_balance,
 )
-from optima.incentive_composition import (
+from cacheon.incentive_composition import (
     COMPOSITION_POLICY_SCHEMA_VERSION,
     COMPOSITION_POLICY_VERSION,
     DISCOVERY_BOUNTY_ONLY,
@@ -39,7 +39,7 @@ from optima.incentive_composition import (
     project_composed_epoch,
     review_discovery_disposition,
 )
-from optima.stack_identity import sha256_hex
+from cacheon.stack_identity import sha256_hex
 
 
 FAMILY = sha256_hex(b"composition-family")

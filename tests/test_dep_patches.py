@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.deppatch import DepPatchError, apply_file_patch, parse_patch_text
+from cacheon.deppatch import DepPatchError, apply_file_patch, parse_patch_text
 
 REPO = Path(__file__).resolve().parent.parent
 REAL_PATCH = (REPO / "experiments/minimax_m3/bundle/miner_m3_fused_epilogue_deep/"
@@ -168,7 +168,7 @@ def _mk_bundle(tmp_path: Path, patch_text: str, *, declare: bool = True) -> Path
 
 
 def test_manifest_loads_declared_patch(tmp_path):
-    from optima.manifest import all_declared_dep_patches, load_manifest
+    from cacheon.manifest import all_declared_dep_patches, load_manifest
 
     bundle = _mk_bundle(tmp_path, _diff(OLD, NEW, path="flashinfer/data/csrc/fused_moe/x.cu"))
     m = load_manifest(bundle)
@@ -177,7 +177,7 @@ def test_manifest_loads_declared_patch(tmp_path):
 
 
 def test_manifest_rejects_binary_patch(tmp_path):
-    from optima.manifest import ManifestError, load_manifest
+    from cacheon.manifest import ManifestError, load_manifest
 
     bundle = _mk_bundle(tmp_path, "Binary files a/x and b/x differ\n")
     with pytest.raises(ManifestError, match="rejected"):
@@ -185,9 +185,9 @@ def test_manifest_rejects_binary_patch(tmp_path):
 
 
 def test_scan_fails_closed_on_undeclared_patch(tmp_path):
-    from optima.manifest import (all_declared_cuda_sources, all_declared_dep_patches,
+    from cacheon.manifest import (all_declared_cuda_sources, all_declared_dep_patches,
                                  load_manifest)
-    from optima.sandbox import scan_tree
+    from cacheon.sandbox import scan_tree
 
     bundle = _mk_bundle(tmp_path, _diff(OLD, NEW), declare=False)
     m = load_manifest(bundle)
@@ -198,9 +198,9 @@ def test_scan_fails_closed_on_undeclared_patch(tmp_path):
 
 
 def test_scan_passes_with_declared_patch(tmp_path):
-    from optima.manifest import (all_declared_cuda_sources, all_declared_dep_patches,
+    from cacheon.manifest import (all_declared_cuda_sources, all_declared_dep_patches,
                                  load_manifest)
-    from optima.sandbox import scan_tree
+    from cacheon.sandbox import scan_tree
 
     bundle = _mk_bundle(tmp_path, _diff(OLD, NEW, path="flashinfer/data/csrc/fused_moe/x.cu"))
     m = load_manifest(bundle)
@@ -212,7 +212,7 @@ def test_scan_passes_with_declared_patch(tmp_path):
 # -- copy fingerprints ---------------------------------------------------------
 
 def test_fingerprint_invariant_to_context_width_sensitive_to_payload(tmp_path):
-    from optima.copy_fingerprint import dep_patch_fingerprint
+    from cacheon.copy_fingerprint import dep_patch_fingerprint
 
     u1 = _diff(OLD, NEW, n=1)
     u3 = _diff(OLD, NEW, n=3)
@@ -223,7 +223,7 @@ def test_fingerprint_invariant_to_context_width_sensitive_to_payload(tmp_path):
 
 
 def test_bundle_slot_fps_include_patch(tmp_path):
-    from optima.copy_fingerprint import bundle_slot_file_fingerprints, dep_patch_fingerprint
+    from cacheon.copy_fingerprint import bundle_slot_file_fingerprints, dep_patch_fingerprint
 
     text = _diff(OLD, NEW, path="flashinfer/data/csrc/fused_moe/x.cu")
     with_patch = bundle_slot_file_fingerprints(_mk_bundle(tmp_path, text))
@@ -237,10 +237,10 @@ def test_policy_rejects_unknown_target_and_out_of_tree_paths():
     from pathlib import Path as P
 
     spec = ilu.spec_from_file_location(
-        "apply_dep_patch_mod", P(__file__).parent.parent / "optima/patchers/apply_dep_patch.py")
+        "apply_dep_patch_mod", P(__file__).parent.parent / "cacheon/patchers/apply_dep_patch.py")
     # The patcher runs main() at import; neuter it by extracting just _check_policy via
     # a controlled namespace exec (the file is validator-owned).
-    src = (P(__file__).parent.parent / "optima/patchers/apply_dep_patch.py").read_text()
+    src = (P(__file__).parent.parent / "cacheon/patchers/apply_dep_patch.py").read_text()
     ns: dict = {}
     exec(compile(src.replace("\nmain()\n", "\n"), str(spec.origin), "exec"), ns)
     check = ns["_check_policy"]
@@ -259,9 +259,9 @@ def test_policy_rejects_unknown_target_and_out_of_tree_paths():
 
 
 def test_overlay_namespace_rejects_bundle_ids(tmp_path, monkeypatch):
-    from optima.dep_policy import overlay_base
+    from cacheon.dep_policy import overlay_base
 
-    monkeypatch.setenv("OPTIMA_DEP_OVERLAY_CACHE", str(tmp_path))
+    monkeypatch.setenv("CACHEON_DEP_OVERLAY_CACHE", str(tmp_path))
     with pytest.raises(RuntimeError, match="64-hex"):
         overlay_base("optima-materialized-v1")
     digest = "d" * 64
@@ -273,7 +273,7 @@ def test_overlay_materialization_roundtrip(tmp_path):
     applied exactly, new file created, untouched files byte-identical."""
     from pathlib import Path as P
 
-    src = (P(__file__).parent.parent / "optima/patchers/apply_dep_patch.py").read_text()
+    src = (P(__file__).parent.parent / "cacheon/patchers/apply_dep_patch.py").read_text()
     ns: dict = {}
     exec(compile(src.replace("\nmain()\n", "\n"), "apply_dep_patch", "exec"), ns)
 
@@ -282,7 +282,7 @@ def test_overlay_materialization_roundtrip(tmp_path):
     (site / "pkg" / "data" / "csrc" / "moe" / "kern.cu").write_text(OLD)
     (site / "pkg" / "data" / "csrc" / "moe" / "other.cuh").write_text("untouched\n")
 
-    from optima.dep_policy import DepPolicy
+    from cacheon.dep_policy import DepPolicy
 
     policy = DepPolicy(package="pkg", overlay_subtree="pkg/data/csrc",
                        allowed_globs=("pkg/data/csrc/moe/*",))
@@ -303,7 +303,7 @@ def test_overlay_materialization_roundtrip(tmp_path):
 
 def test_dependency_prebuild_compiles_without_loading(tmp_path, monkeypatch):
     """Each arch builds in a hermetic child; the parent exports the exact .so."""
-    script = Path(__file__).parent.parent / "optima/patchers/apply_dep_patch.py"
+    script = Path(__file__).parent.parent / "cacheon/patchers/apply_dep_patch.py"
     namespace: dict = {}
     exec(compile(script.read_text().replace("\nmain()\n", "\n"), str(script), "exec"), namespace)
 
@@ -341,11 +341,11 @@ def test_dependency_prebuild_compiles_without_loading(tmp_path, monkeypatch):
     for name in tuple(sys.modules):
         if name == "flashinfer" or name.startswith("flashinfer."):
             monkeypatch.delitem(sys.modules, name)
-    monkeypatch.setenv("OPTIMA_TARGET_GPU_ARCH", "sm103")
+    monkeypatch.setenv("CACHEON_TARGET_GPU_ARCH", "sm103")
     monkeypatch.delenv("FLASHINFER_CUDA_ARCH_LIST", raising=False)
     monkeypatch.delenv("FLASHINFER_WORKSPACE_BASE", raising=False)
 
-    from optima.dep_policy import PATCHABLE_DEPS
+    from cacheon.dep_policy import PATCHABLE_DEPS
 
     artifact = tmp_path / "artifact"
     artifact.mkdir()
@@ -376,14 +376,14 @@ def test_dependency_prebuild_compiles_without_loading(tmp_path, monkeypatch):
 
 
 def test_dependency_prebuild_rejects_off_domain_arch_before_import(tmp_path, monkeypatch):
-    script = Path(__file__).parent.parent / "optima/patchers/apply_dep_patch.py"
+    script = Path(__file__).parent.parent / "cacheon/patchers/apply_dep_patch.py"
     namespace: dict = {}
     exec(compile(script.read_text().replace("\nmain()\n", "\n"), str(script), "exec"), namespace)
     namespace["importlib"] = types.SimpleNamespace(
         import_module=lambda _name: pytest.fail("off-domain build imported flashinfer")
     )
-    monkeypatch.setenv("OPTIMA_TARGET_GPU_ARCH", "sm120")
-    from optima.dep_policy import PATCHABLE_DEPS
+    monkeypatch.setenv("CACHEON_TARGET_GPU_ARCH", "sm120")
+    from cacheon.dep_policy import PATCHABLE_DEPS
 
     with pytest.raises(RuntimeError, match="covers target architectures .*'sm120'"):
         namespace["_build_prebuilt_modules"](
@@ -396,7 +396,7 @@ def test_dependency_prebuild_rejects_off_domain_arch_before_import(tmp_path, mon
 
 def test_build_stage_and_load_reopen_use_exact_build_identity(tmp_path, monkeypatch):
     """Build writes the stage once; load validates read-only bytes without mutation."""
-    script = Path(__file__).parent.parent / "optima/patchers/apply_dep_patch.py"
+    script = Path(__file__).parent.parent / "cacheon/patchers/apply_dep_patch.py"
     namespace: dict = {}
     exec(compile(script.read_text().replace("\nmain()\n", "\n"), str(script), "exec"), namespace)
 
@@ -415,7 +415,7 @@ def test_build_stage_and_load_reopen_use_exact_build_identity(tmp_path, monkeypa
     digest = "b" * 64
 
     from dataclasses import asdict
-    import optima.dep_policy as dep_policy
+    import cacheon.dep_policy as dep_policy
 
     policy = dep_policy.PATCHABLE_DEPS["flashinfer"]
 
@@ -438,7 +438,7 @@ def test_build_stage_and_load_reopen_use_exact_build_identity(tmp_path, monkeypa
 
     namespace["_build_prebuilt_modules"] = fake_modules
     monkeypatch.setattr(dep_policy, "dependency_site_root", lambda _policy: site)
-    manifest = __import__("optima.manifest", fromlist=["load_manifest"]).load_manifest(bundle)
+    manifest = __import__("cacheon.manifest", fromlist=["load_manifest"]).load_manifest(bundle)
     parsed = parse_patch_text(patch_text)
     namespace["_materialize"](
         bundle,
@@ -461,7 +461,7 @@ def test_build_stage_and_load_reopen_use_exact_build_identity(tmp_path, monkeypa
     assert manifest.bundle_id == "dep-patch-test"  # never participates in the path
     assert "dep-patch-test" not in str(validated.root)
 
-    from optima.eval.native_artifact import publish_native_artifact
+    from cacheon.eval.native_artifact import publish_native_artifact
 
     publication = publish_native_artifact(
         artifact, tmp_path / "published", build_spec_digest=digest
@@ -471,12 +471,12 @@ def test_build_stage_and_load_reopen_use_exact_build_identity(tmp_path, monkeypa
         str(path.relative_to(artifact)): (path.stat().st_mode, path.stat().st_mtime_ns, path.stat().st_size)
         for path in artifact.rglob("*")
     }
-    monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(bundle))
-    monkeypatch.setenv("OPTIMA_REBUILD_PHASE", "load")
-    monkeypatch.setenv("OPTIMA_NATIVE_BUILD_SPEC_DIGEST", digest)
-    monkeypatch.setenv("OPTIMA_NATIVE_ARTIFACT_ROOT", str(artifact))
+    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(bundle))
+    monkeypatch.setenv("CACHEON_REBUILD_PHASE", "load")
+    monkeypatch.setenv("CACHEON_NATIVE_BUILD_SPEC_DIGEST", digest)
+    monkeypatch.setenv("CACHEON_NATIVE_ARTIFACT_ROOT", str(artifact))
     monkeypatch.setenv(
-        "OPTIMA_NATIVE_ARTIFACT_PUBLICATION_DIGEST",
+        "CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST",
         publication.publication_digest,
     )
     namespace["main"]()
@@ -486,7 +486,7 @@ def test_build_stage_and_load_reopen_use_exact_build_identity(tmp_path, monkeypa
     }
     assert after == before
 
-    monkeypatch.setenv("OPTIMA_NATIVE_BUILD_SPEC_DIGEST", "c" * 64)
+    monkeypatch.setenv("CACHEON_NATIVE_BUILD_SPEC_DIGEST", "c" * 64)
     with pytest.raises(RuntimeError, match="build_spec_digest.*mismatches"):
         namespace["main"]()
 
@@ -505,7 +505,7 @@ def test_real_fe_export_patch_parses_and_clears_policy():
     ]
     new_files = [f.path for f in fps if f.is_new_file]
     assert new_files == ["flashinfer/data/csrc/fused_moe/cutlass_backend/fe_export.h"]
-    from optima.dep_policy import PATCHABLE_DEPS
+    from cacheon.dep_policy import PATCHABLE_DEPS
     from fnmatch import fnmatch
 
     policy = PATCHABLE_DEPS["flashinfer"]

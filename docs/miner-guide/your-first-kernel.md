@@ -13,12 +13,12 @@ python -m pip install -e '.[cpu,dev]'
 ```
 
 On a GPU host, install the Torch build matched to the arena's pinned
-CUDA/SGLang environment first, then install Optima without replacing it. The
+CUDA/SGLang environment first, then install Cacheon without replacing it. The
 [GPU setup guide](../dev/gpu-setup.md) explains the current development
 boundary. The operator's frozen arena image and runtime identities are the
 source of truth for an authoritative environment.
 
-Use `python -m optima.cli` in commands below. It is explicit about the active
+Use `python -m cacheon.cli` in commands below. It is explicit about the active
 checkout and behaves correctly when engine diagnostics spawn worker processes.
 
 ## 2. Copy the CPU example
@@ -63,7 +63,7 @@ currently use the string `activation.silu_and_mul`.
 ## 3. Scan the source tree
 
 ```bash
-python -m optima.cli scan my_silu
+python -m cacheon.cli scan my_silu
 ```
 
 `scan` checks manifest/path structure and performs the development static-policy
@@ -74,7 +74,7 @@ inside validator-owned isolation.
 ## 4. Verify the callable contract
 
 ```bash
-python -m optima.cli verify my_silu --device cpu --dtype float32
+python -m cacheon.cli verify my_silu --device cpu --dtype float32
 ```
 
 This diagnostic constructs validator-owned inputs and poisoned outputs, invokes
@@ -95,7 +95,7 @@ A CPU pass proves only the local numerical ABI. It does not prove:
 For an intentional failure, run the committed wrong implementation:
 
 ```bash
-python -m optima.cli verify \
+python -m cacheon.cli verify \
   examples/miner_silu_broken_torch --device cpu --dtype float32
 ```
 
@@ -138,13 +138,13 @@ disjoint; there is no manifest-order priority.
 First rerun ABI verification on the real dtype and architecture:
 
 ```bash
-python -m optima.cli verify my_silu --device cuda --dtype bfloat16
+python -m cacheon.cli verify my_silu --device cuda --dtype bfloat16
 ```
 
 For a collective target, use the arena's topology:
 
 ```bash
-python -m optima.cli verify my_collective \
+python -m cacheon.cli verify my_collective \
   --device cuda --dtype bfloat16 --world-size 4 --tp-size 4
 ```
 

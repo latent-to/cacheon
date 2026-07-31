@@ -49,9 +49,9 @@ The validator creates a graph requirement bound to all of the following:
 It then stores raw, content-addressed observations and regrades them. Qualification
 does not trust one aggregate `graph_passed` boolean supplied by a worker.
 The schema and veto logic are in
-[qualification.py](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py),
+[qualification.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py),
 and finalized-intake projection is in
-[qualification_intake.py](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_intake.py).
+[qualification_intake.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py).
 
 ## What each observation proves
 
@@ -78,14 +78,14 @@ On CUDA, `verify` graph-tests op slots by default. For block and collective
 variants, graph testing follows the effective `graph_safe` declaration:
 
 ```bash
-python -m optima.cli verify my_bundle \
+python -m cacheon.cli verify my_bundle \
   --device cuda --dtype bfloat16
 ```
 
 For a collective:
 
 ```bash
-python -m optima.cli verify my_collective \
+python -m cacheon.cli verify my_collective \
   --device cuda --dtype bfloat16 \
   --world-size 4 --tp-size 4
 ```

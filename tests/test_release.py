@@ -12,30 +12,30 @@ from pathlib import Path
 
 import pytest
 
-from optima.eval.evidence_store import EvidenceArtifactRef
-from optima.engine_tree import (
+from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.engine_tree import (
     EngineTreeError,
     inspect_contribution,
     integrated_source_tree_digest,
     materialize_engine_tree,
 )
-from optima.eval.engine_launch import (
+from cacheon.eval.engine_launch import (
     NativeBuildSpec,
     native_compiler_policy_digest,
     native_patcher_digest,
     native_toolchain_digest,
 )
-from optima.eval.calibration import (
+from cacheon.eval.calibration import (
     CalibrationContext,
     CalibrationControl,
     CalibrationManifest,
     MetricCalibration,
     SpeedCalibration,
 )
-from optima.eval.native_artifact import publish_native_artifact
-from optima.eval.qualification import ReferenceManifest
-from optima.model_provision import provision_model
-from optima.release import (
+from cacheon.eval.native_artifact import publish_native_artifact
+from cacheon.eval.qualification import ReferenceManifest
+from cacheon.model_provision import provision_model
+from cacheon.release import (
     ContainerReproducibility,
     EngineReleaseDescriptor,
     ReleaseArtifact,
@@ -53,20 +53,20 @@ from optima.release import (
     verify_release_signature,
     verify_serve_receipts,
 )
-from optima.release_runtime import (
+from cacheon.release_runtime import (
     ReleaseRuntimeError,
     _closed_serving_environment,
     verify_serving_release,
 )
-from optima.release_host import _reopen_context
-from optima.stack_identity import canonical_json_bytes
-from optima.stack_manifest import (
+from cacheon.release_host import _reopen_context
+from cacheon.stack_identity import canonical_json_bytes
+from cacheon.stack_manifest import (
     EngineReleaseManifest,
     IntegrationReviewArtifacts,
     IntegrationReviewRecord,
     ReleaseStackContext,
 )
-from optima.target_catalog import default_target_catalog
+from cacheon.target_catalog import default_target_catalog
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,7 +156,7 @@ def _release_tree(tmp_path: Path):
             _evidence("integration.compatibility", _d("compatibility")),
             _evidence("integration.tests", _d("tests")),
         ),
-        reviewer="optima-release-review",
+        reviewer="cacheon-release-review",
         review_commit="a" * 40,
     )
     ref = record.integrated_ref()
@@ -253,7 +253,7 @@ def _prepared(tmp_path: Path):
         model_provision=model,
         native_build_spec=native_spec,
         native_publication=native_publication,
-        seccomp_payload=(ROOT / "optima/eval/seccomp_moby_v0_2_1.json").read_bytes(),
+        seccomp_payload=(ROOT / "cacheon/eval/seccomp_moby_v0_2_1.json").read_bytes(),
         reference_manifest_payload=canonical_json_bytes(reference.to_dict()) + b"\n",
         calibration_manifest_payload=canonical_json_bytes(_calibration(reference).to_dict()) + b"\n",
         upstream_repository="https://github.com/sgl-project/sglang",
@@ -285,21 +285,21 @@ def test_runtime_source_and_wheel_double_build_and_exclude_subnet_code(tmp_path:
     wheel.write_bytes(prepared.payloads[wheel.name])
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
-        assert {"optima/bootstrap.py", "optima/release_runtime.py", "optima_engine_bootstrap.pth"} <= names
-        assert "optima/_strict.py" in names
-        assert "optima/eval/native_artifact.py" in names
-        assert not any(name.startswith("optima/chain/") for name in names)
-        assert "optima/commit_reveal.py" not in names
-        assert "optima/settlement.py" not in names
-        assert "optima/cli.py" not in names
+        assert {"cacheon/bootstrap.py", "cacheon/release_runtime.py", "cacheon_engine_bootstrap.pth"} <= names
+        assert "cacheon/_strict.py" in names
+        assert "cacheon/eval/native_artifact.py" in names
+        assert not any(name.startswith("cacheon/chain/") for name in names)
+        assert "cacheon/commit_reveal.py" not in names
+        assert "cacheon/settlement.py" not in names
+        assert "cacheon/cli.py" not in names
         target = tmp_path / "clean-wheel-target"
         archive.extractall(target)
     imports = (
-        "optima._strict",
-        "optima.seam",
-        "optima.bootstrap",
-        "optima.integrations.sglang_plugin",
-        "optima.release_runtime",
+        "cacheon._strict",
+        "cacheon.seam",
+        "cacheon.bootstrap",
+        "cacheon.integrations.sglang_plugin",
+        "cacheon.release_runtime",
     )
     code = (
         "import importlib,sys;"
@@ -363,19 +363,19 @@ def test_signed_release_reopens_native_model_and_chain_free_context(tmp_path: Pa
         require_seccomp=False,
     )
     env = dict(verified.environment)
-    assert env["OPTIMA_NATIVE_BUILD_SPEC_DIGEST"] == descriptor.native.build_spec_digest
-    assert env["OPTIMA_NATIVE_ARTIFACT_PUBLICATION_DIGEST"] == descriptor.native.publication_digest
-    assert env["OPTIMA_NATIVE_ARTIFACT_ROOT"].endswith(descriptor.native.build_spec_digest)
-    assert env["OPTIMA_REBUILD_PHASE"] == "load"
-    assert env["OPTIMA_PREBUILT_ARTIFACTS"] == "1"
-    assert env["OPTIMA_TARGET_GPU_ARCH"] == "sm120"
-    assert env["OPTIMA_MSA_PREFILL_SEAM"] == "1"
-    assert env["OPTIMA_ARFUSION_SEAM"] == "0"
-    assert env["OPTIMA_ATTENTION_SEAM"] == "0"
-    assert env["OPTIMA_COLLECTIVE_SEAM"] == "0"
-    assert env["OPTIMA_MOE_SEAM"] == "0"
-    assert "OPTIMA_NATIVE_ARTIFACT_STAGE" not in env
-    assert "OPTIMA_NATIVE_COMPILE_TIMEOUT_S" not in env
+    assert env["CACHEON_NATIVE_BUILD_SPEC_DIGEST"] == descriptor.native.build_spec_digest
+    assert env["CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST"] == descriptor.native.publication_digest
+    assert env["CACHEON_NATIVE_ARTIFACT_ROOT"].endswith(descriptor.native.build_spec_digest)
+    assert env["CACHEON_REBUILD_PHASE"] == "load"
+    assert env["CACHEON_PREBUILT_ARTIFACTS"] == "1"
+    assert env["CACHEON_TARGET_GPU_ARCH"] == "sm120"
+    assert env["CACHEON_MSA_PREFILL_SEAM"] == "1"
+    assert env["CACHEON_ARFUSION_SEAM"] == "0"
+    assert env["CACHEON_ATTENTION_SEAM"] == "0"
+    assert env["CACHEON_COLLECTIVE_SEAM"] == "0"
+    assert env["CACHEON_MOE_SEAM"] == "0"
+    assert "CACHEON_NATIVE_ARTIFACT_STAGE" not in env
+    assert "CACHEON_NATIVE_COMPILE_TIMEOUT_S" not in env
     closed = _closed_serving_environment(
         verified,
         {
@@ -396,8 +396,8 @@ def test_signed_release_reopens_native_model_and_chain_free_context(tmp_path: Pa
     assert descriptor.serve.base_image in dockerfile
     assert "bittensor" not in dockerfile.lower()
     assert "wallet" not in dockerfile.lower()
-    assert "OPTIMA_ACTIVE=1" not in dockerfile
-    assert "optima.release_runtime" in dockerfile
+    assert "CACHEON_ACTIVE=1" not in dockerfile
+    assert "cacheon.release_runtime" in dockerfile
     assert "install-reviewed-overlays" in dockerfile
     assert "org.optima.runtime-overlays" in dockerfile
     assert 'ENTRYPOINT ["/usr/bin/python3"' in dockerfile
@@ -471,7 +471,7 @@ def test_serve_spec_reserves_model_tp_runtime_and_injection_environment() -> Non
         with pytest.raises(ReleaseError, match="override"):
             replace(base, engine_arguments=arguments)
     for key in (
-        "OPTIMA_ACTIVE", "PYTHONPATH", "LD_PRELOAD", "SGLANG_PLUGINS", "PATH",
+        "CACHEON_ACTIVE", "PYTHONPATH", "LD_PRELOAD", "SGLANG_PLUGINS", "PATH",
     ):
         with pytest.raises(ReleaseError, match="override"):
             replace(base, environment=((key, "x"),))
@@ -514,7 +514,7 @@ def test_container_double_build_attestation_is_signed_by_trusted_authority() -> 
 
 
 def test_release_commands_require_independent_trusted_public_key() -> None:
-    from optima.cli import build_parser
+    from cacheon.cli import build_parser
 
     parser = build_parser()
     subparsers = next(
@@ -540,15 +540,15 @@ def test_release_commands_require_independent_trusted_public_key() -> None:
 
 
 def test_signed_release_mode_rejects_arbitrary_namespace_root(monkeypatch, tmp_path: Path) -> None:
-    import optima.seam as seam
+    import cacheon.seam as seam
 
-    monkeypatch.setenv("OPTIMA_RELEASE_REQUIRED", "1")
-    monkeypatch.setenv("OPTIMA_RELEASE_DESCRIPTOR_DIGEST", _d("release"))
-    monkeypatch.setenv("OPTIMA_RELEASE_VERIFIED", _d("release"))
-    monkeypatch.setenv("OPTIMA_ENGINE_WORKER", "1")
-    monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(tmp_path / "engine-tree"))
-    monkeypatch.setenv("OPTIMA_ENGINE_TREE_DIGEST", _d("tree"))
-    monkeypatch.setenv("OPTIMA_STACK_DIGEST", _d("stack"))
+    monkeypatch.setenv("CACHEON_RELEASE_REQUIRED", "1")
+    monkeypatch.setenv("CACHEON_RELEASE_DESCRIPTOR_DIGEST", _d("release"))
+    monkeypatch.setenv("CACHEON_RELEASE_VERIFIED", _d("release"))
+    monkeypatch.setenv("CACHEON_ENGINE_WORKER", "1")
+    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(tmp_path / "engine-tree"))
+    monkeypatch.setenv("CACHEON_ENGINE_TREE_DIGEST", _d("tree"))
+    monkeypatch.setenv("CACHEON_STACK_DIGEST", _d("stack"))
     with pytest.raises(SystemExit, match="materialized namespace"):
         seam.activate()
 
@@ -561,7 +561,7 @@ def test_serve_receipts_require_active_routed_completed_per_rank_and_no_fallback
     for rank in range(8):
         identity = {"pid": 1000 + rank, "rank": rank, "world_size": 8}
         (receipt_root / f"active.{rank}.json").write_text(
-            json.dumps({**identity, "bundle": "/optima/engine-tree", "slots": [slot]})
+            json.dumps({**identity, "bundle": "/cacheon/engine-tree", "slots": [slot]})
         )
         for kind in ("fired", "completed"):
             (receipt_root / f"{kind}.{slot}.{rank}.json").write_text(

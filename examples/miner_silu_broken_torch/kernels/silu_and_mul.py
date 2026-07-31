@@ -2,7 +2,7 @@
 
 Computes ``gate * up`` instead of ``silu(gate) * up`` — the canonical "faster by
 skipping work" cheat, in pure torch so the rejection is observable on a machine
-without a GPU or Triton. ``optima verify`` must FAIL this bundle on
+without a GPU or Triton. ``cacheon verify`` must FAIL this bundle on
 op-correctness. Not a real submission.
 """
 

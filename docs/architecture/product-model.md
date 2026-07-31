@@ -1,6 +1,6 @@
 # Product model
 
-Optima Engine is a chain-independent, open inference-acceleration distribution. It pins
+Cacheon Engine is a chain-independent, open inference-acceleration distribution. It pins
 the supported SGLang runtime as part of product identity and assembles accepted data-plane
 optimizations into a canonical engine stack.
 
@@ -11,7 +11,7 @@ integration, and release boundaries.
 
 ## A useful mental model
 
-Think of Optima as a **compiler-and-release pipeline fed by a market**, not as a
+Think of Cacheon as a **compiler-and-release pipeline fed by a market**, not as a
 marketplace that hot-loads winner code. The market proposes and measures deltas. The
 product pipeline decides whether a measured delta can become maintained source. The
 release pipeline freezes a reviewed product that can be consumed without either of the
@@ -57,7 +57,7 @@ The ship decision separately requires:
 - security review;
 - license and provenance approval;
 - compatibility with active contributions and the pinned SGLang revision;
-- reviewed Optima source that preserves the crowned selected payload, plus
+- reviewed Cacheon source that preserves the crowned selected payload, plus
   maintained surrounding packaging and tests;
 - immutable contribution attribution;
 - exact release, native, model, and policy identities.
@@ -66,7 +66,7 @@ This permits emissions to follow crown policy while production deployment follow
 
 ## Marginal contribution, complete execution
 
-Optima deliberately separates economic identity from process identity.
+Cacheon deliberately separates economic identity from process identity.
 
 The **execution unit** is a complete engine. Production qualification materializes
 the exact incumbent and one-target-transition candidate engines, loads each once
@@ -109,7 +109,7 @@ that may add another 3%:
    future signed release. That product decision does not alter A's or B's historical crown
    evidence.
 
-This example is conceptual; the percentages are not claims about a recorded Optima run.
+This example is conceptual; the percentages are not claims about a recorded Cacheon run.
 Its point is the identity split: the worker executes a complete A+B engine, while the
 economic transition and integration record describe only B's registered delta.
 
@@ -137,11 +137,11 @@ The validator-owned target catalog defines what can receive ordinary attribution
 
 Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but does not resolve to its exact members and allowed features fails resolution rather than falling through to an unregistered identity.
 
-The registered catalog contains every singleton slot and the atomic `collective.moe_epilogue.v1` target. The atomic target owns both `collective.ar_residual_rmsnorm` and `collective.moe_finalize_ar_rmsnorm`, and explicitly displaces the corresponding singleton targets while active. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py).
+The registered catalog contains every singleton slot and the atomic `collective.moe_epilogue.v1` target. The atomic target owns both `collective.ar_residual_rmsnorm` and `collective.moe_finalize_ar_rmsnorm`, and explicitly displaces the corresponding singleton targets while active. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Discovery lane
 
-Cross-cutting work may initially be impossible to express as one registered target. Optima admits it through a fenced discovery lane rather than pretending the contribution has narrow attribution.
+Cross-cutting work may initially be impossible to express as one registered target. Cacheon admits it through a fenced discovery lane rather than pretending the contribution has narrow attribution.
 
 Discovery is intentionally bounded:
 
@@ -206,7 +206,7 @@ The product model is intact only if all six statements hold:
 
 ## Review questions for a proposed feature
 
-Before extending Optima, locate the feature in this model:
+Before extending Cacheon, locate the feature in this model:
 
 1. **What is the reward unit?** Name the exact registered singleton, atomic target, or
    discovery identity. “The whole engine” is not an acceptable default.
@@ -227,7 +227,7 @@ confuses the execution unit with the reward unit.
 ## Source map
 
 - This page — normative product invariants
-- [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py) — proposal, integration, evaluation-stack, and release-stack identities
-- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py) — reward-unit policy
-- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/optima/engine_tree.py) — deterministic proposal and integrated-source materialization
-- [`release.py`](https://github.com/latent-to/cacheon/blob/main/optima/release.py) — chain-independent release artifacts and signatures
+- [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — proposal, integration, evaluation-stack, and release-stack identities
+- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — reward-unit policy
+- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic proposal and integrated-source materialization
+- [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py) — chain-independent release artifacts and signatures

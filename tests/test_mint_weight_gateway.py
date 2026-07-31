@@ -7,8 +7,8 @@ import stat
 from argparse import Namespace
 from pathlib import Path
 
-import optima.cli as cli
-from optima.chain.weight_push_auth import (
+import cacheon.cli as cli
+from cacheon.chain.weight_push_auth import (
     PushCredentialSet,
     mint_push_credential,
     write_push_credentials,

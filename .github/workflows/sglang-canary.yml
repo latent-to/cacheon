@@ -21,7 +21,7 @@ jobs:
         run: pip install -e .
       - name: Best-effort install pinned sglang (CPU runner may not build sgl-kernel)
         run: |
-          PIN=$(python -c 'from optima.compat import PINNED_SGLANG; print(PINNED_SGLANG)')
+          PIN=$(python -c 'from cacheon.compat import PINNED_SGLANG; print(PINNED_SGLANG)')
           pip install "sglang==$PIN" || echo "pinned sglang not installable on CPU runner — the PyPI release check still runs"
         continue-on-error: true
       - name: Run the canary

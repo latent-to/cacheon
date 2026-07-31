@@ -49,7 +49,7 @@
   slot call, launches it, and emits execution evidence.
 
 **Engine release**
-: A signed, chain-independent, integrated-only Optima Engine artifact with
+: A signed, chain-independent, integrated-only Cacheon Engine artifact with
   reproducible runtime builds, exact model receipt, native artifacts, SBOM,
   provenance, policy manifests, and a deterministic serving context.
 
@@ -58,7 +58,7 @@
   references. It exists only inside the referee system.
 
 **Integrated contribution**
-: Reviewed Optima-owned source with immutable attribution and an integration
+: Reviewed Cacheon-owned source with immutable attribution and an integration
   record. Integration is a separate human/release-engineering decision after a
   crown.
 

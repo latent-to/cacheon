@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.eval.qualification_runner as runner
-from optima.eval.device_state import DeviceStateReceipt, DeviceStateSample
-from optima.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
-from optima.eval.oci_backend import OCIBackendError, OCIEngineExecutor
-from optima.eval.oci_outer_session import OuterSessionWorkerError
-from optima.eval.oci_process import OCIQuiescenceReceipt
-from optima.eval.qualification import (
+import cacheon.eval.qualification_runner as runner
+from cacheon.eval.device_state import DeviceStateReceipt, DeviceStateSample
+from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
+from cacheon.eval.oci_backend import OCIBackendError, OCIEngineExecutor
+from cacheon.eval.oci_outer_session import OuterSessionWorkerError
+from cacheon.eval.oci_process import OCIQuiescenceReceipt
+from cacheon.eval.qualification import (
     DiscoveryQualificationProfile,
     GraphVerificationGrade,
     QualificationDecision,
@@ -23,8 +23,8 @@ from optima.eval.qualification import (
     SelectionCommitment,
     SelectionEntropyReceipt,
 )
-from optima.eval.reference_protocol import ReferenceRoleInput, ReferenceTokenEvidence
-from optima.eval.reference_quality import ReferenceQualityVerdict
+from cacheon.eval.reference_protocol import ReferenceRoleInput, ReferenceTokenEvidence
+from cacheon.eval.reference_quality import ReferenceQualityVerdict
 from tests.test_qualification import _discovery_execution, _reference
 
 
@@ -389,7 +389,7 @@ class _Harness:
                     for slot in policy.expected_slots
                     for rank in range(policy.expected_member_count)
                 )
-                from optima.audit import gate
+                from cacheon.audit import gate
 
                 passed, detail = gate(
                     [receipt.to_gate_dict() for receipt in receipts],
@@ -1822,14 +1822,14 @@ def test_audit_witness_host_regrade_does_not_import_torch(monkeypatch) -> None:
     """The trusted controller is intentionally lean and has no worker torch."""
     import sys
 
-    import optima
+    import cacheon
 
     # Force both audit modules through a clean import boundary.  The old host
-    # path imported optima.audit here and therefore raised ModuleNotFoundError
+    # path imported cacheon.audit here and therefore raised ModuleNotFoundError
     # in the production controller venv before it could grade the receipts.
-    for name in ("optima.audit", "optima.audit_gate"):
+    for name in ("cacheon.audit", "cacheon.audit_gate"):
         monkeypatch.delitem(sys.modules, name, raising=False)
-        monkeypatch.delattr(optima, name.rsplit(".", 1)[-1], raising=False)
+        monkeypatch.delattr(cacheon, name.rsplit(".", 1)[-1], raising=False)
     monkeypatch.setitem(sys.modules, "torch", None)
 
     policy = runner.SlotAuditPolicy(
@@ -1878,7 +1878,7 @@ def test_audit_witness_host_regrade_does_not_import_torch(monkeypatch) -> None:
     )
     assert witness.decision is QualificationDecision.PASS
     assert runner.AuditWitness.from_dict(witness.to_dict()) == witness
-    assert "optima.audit" not in sys.modules
+    assert "cacheon.audit" not in sys.modules
     assert sys.modules["torch"] is None
 
 
@@ -2078,21 +2078,21 @@ def _typed_resident_qualification_input(
 ) -> runner.CausalQualificationInput:
     """Build the real registered-lane authority boundary for resident speed."""
 
-    from optima.eval.calibration import (
+    from cacheon.eval.calibration import (
         CalibrationContext,
         CalibrationThresholdPolicy,
     )
-    from optima.eval.crossover_runtime import (
+    from cacheon.eval.crossover_runtime import (
         ResidentArmPlan,
         ResidentCrossoverPlan,
         ResidentSpeedPolicy,
     )
-    from optima.eval.marginal_runtime import (
+    from cacheon.eval.marginal_runtime import (
         MaterializedArmBinding,
         prepare_marginal_runtime,
     )
-    from optima.eval.oci_backend import expected_runtime_preflight
-    from optima.eval.qualification import (
+    from cacheon.eval.oci_backend import expected_runtime_preflight
+    from cacheon.eval.qualification import (
         GRAPH_EVIDENCE_DOMAIN,
         GRAPH_EVIDENCE_MEDIA_TYPE,
         GRAPH_EVIDENCE_SCHEMA,
@@ -2403,8 +2403,8 @@ def test_typed_resident_input_derives_calibration_from_candidate_reference(
 def test_typed_resident_input_rejects_self_consistent_mismatched_context(
     tmp_path: Path,
 ) -> None:
-    from optima.eval.calibration import CalibrationThresholdPolicy
-    from optima.eval.crossover_runtime import ResidentSpeedPolicy
+    from cacheon.eval.calibration import CalibrationThresholdPolicy
+    from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
 
     value = _typed_resident_qualification_input(tmp_path)
     assert value.resident_speed_plan is not None

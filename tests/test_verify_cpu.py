@@ -13,11 +13,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.registry import eligibility_from_metadata  # noqa: E402
-from optima.sandbox import load_entry  # noqa: E402
-from optima.slots import get_slot  # noqa: E402
-from optima.tensor_spec import OutputSpec, TensorSpec  # noqa: E402
-from optima.verify import format_verify, verify_entry  # noqa: E402
+from cacheon.registry import eligibility_from_metadata  # noqa: E402
+from cacheon.sandbox import load_entry  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.tensor_spec import OutputSpec, TensorSpec  # noqa: E402
+from cacheon.verify import format_verify, verify_entry  # noqa: E402
 
 from pathlib import Path  # noqa: E402
 

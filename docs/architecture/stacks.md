@@ -1,6 +1,6 @@
 # Stacks and manifests
 
-Optima represents evaluation state, product state, and semantic reference state as separate content-addressed objects. This makes it impossible to confuse “currently winning in the referee” with “reviewed and shipped.”
+Cacheon represents evaluation state, product state, and semantic reference state as separate content-addressed objects. This makes it impossible to confuse “currently winning in the referee” with “reviewed and shipped.”
 
 ## The three manifest roles
 
@@ -50,7 +50,7 @@ This closes several ambiguity classes:
 - manifest map order cannot alter identity;
 - a candidate cannot claim a different target after measurement.
 
-Canonical digest construction lives in [`stack_identity.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_identity.py); strict manifest types live in [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py).
+Canonical digest construction lives in [`stack_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_identity.py); strict manifest types live in [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py).
 
 ### Stack digest, tree digest, and running-engine identity
 
@@ -101,7 +101,7 @@ The target catalog determines the transition:
 - required targets and displacement closures are validated before planning;
 - unregistered work is routed through the discovery planner, not disguised as a singleton.
 
-The planner records both the old and new contribution references, the selected-delta digest, the exact target specification, and the expected execution order. See [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_plan.py).
+The planner records both the old and new contribution references, the selected-delta digest, the exact target specification, and the expected execution order. See [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
 ### Concrete substitution example
 
@@ -197,10 +197,10 @@ compile or repair native code. Host-side timing and authenticated evidence bind
 the runtime result back to the prepared launch identity.
 
 Principal implementations are
-[`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py),
-[`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/engine_launch.py),
-[`eval/native_artifact.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/native_artifact.py),
-and [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_backend.py).
+[`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py),
+[`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_launch.py),
+[`eval/native_artifact.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_artifact.py),
+and [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py).
 
 ### Direct-artifact identity across the stack
 
@@ -251,7 +251,7 @@ Only after both evidence roots reopen and agree does settlement:
 3. write the transition and settlement evidence transactionally;
 4. expose the new evaluation stack as the current incumbent.
 
-If validation, persistence, or readback fails, the old stack remains authoritative. Rollback is itself a planned, content-addressed transition rather than an in-place edit. See [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/optima/settlement.py) and [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py).
+If validation, persistence, or readback fails, the old stack remains authoritative. Rollback is itself a planned, content-addressed transition rather than an in-place edit. See [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py) and [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py).
 
 ### Failure behavior
 
@@ -282,11 +282,11 @@ There is no supported arrow from a mutable miner URL, chain record, or evaluatio
 
 ## Source map
 
-- [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py) — strict manifest and contribution-reference types
-- [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_plan.py) — marginal arms, cohorts, transitions, and rollback
-- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/optima/engine_tree.py) — deterministic source materialization and integration promotion
-- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py) — singleton, atomic, overlap, and composition policy
-- [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_identity.py) — canonical direct-artifact execution identity
-- [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_provider.py) — closed provider registry included in catalog identity
-- [`eval/reference_quality.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/reference_quality.py) — pristine reference quality products
-- [`eval/calibration.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/calibration.py) — calibrated qualification/reference policy
+- [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — strict manifest and contribution-reference types
+- [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) — marginal arms, cohorts, transitions, and rollback
+- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic source materialization and integration promotion
+- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — singleton, atomic, overlap, and composition policy
+- [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_identity.py) — canonical direct-artifact execution identity
+- [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_provider.py) — closed provider registry included in catalog identity
+- [`eval/reference_quality.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_quality.py) — pristine reference quality products
+- [`eval/calibration.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py) — calibrated qualification/reference policy

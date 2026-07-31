@@ -7,19 +7,19 @@ from decimal import Decimal, localcontext
 
 import pytest
 
-import optima.eval.reference_quality as reference_quality
-from optima.eval.calibration import (
+import cacheon.eval.reference_quality as reference_quality
+from cacheon.eval.calibration import (
     CalibrationContext,
     CalibrationControl,
     CalibrationManifest,
     MetricCalibration,
     SpeedCalibration,
 )
-from optima.eval.evidence_store import (
+from cacheon.eval.evidence_store import (
     publish_canonical_json_evidence,
     publish_evidence,
 )
-from optima.eval.reference_quality import (
+from cacheon.eval.reference_quality import (
     HiddenTaskEvidence,
     NormalizedTopKDistribution,
     PromptQualityEvidence,
@@ -45,7 +45,7 @@ from optima.eval.reference_quality import (
     score_reference_quality,
     target_nll_from_f32,
 )
-from optima.stack_identity import canonical_json_bytes
+from cacheon.stack_identity import canonical_json_bytes
 
 
 def _digest(character: str) -> str:

@@ -6,30 +6,30 @@ from pathlib import Path
 
 import pytest
 
-from optima.chain.incentive_activation import (
+from cacheon.chain.incentive_activation import (
     IncentiveActivationError,
     execute_selected_incentive_activation,
     load_selected_incentive_activation_bundle,
     selected_model_campaign_id,
 )
-from optima.chain.finite_debt_store import reward_family_id
-from optima.chain.intake import EvaluationStackState, FinalizedIntakeStore, IntakeScope
-from optima.chain.incentive_composition_store import (
+from cacheon.chain.finite_debt_store import reward_family_id
+from cacheon.chain.intake import EvaluationStackState, FinalizedIntakeStore, IntakeScope
+from cacheon.chain.incentive_composition_store import (
     SELECTED_CORE_SELECTION_REPORT_DIGEST,
     SELECTED_SELECTION_REPORT_DIGEST,
     SelectedIncentiveActivationApproval,
 )
-from optima.finite_debt import (
+from cacheon.finite_debt import (
     IMPROVEMENT_GROSS,
     PPM,
     CampaignBudgetShare,
     FiniteDebtPolicyManifest,
     RewardFamilyCampaign,
 )
-from optima.incentive_composition import IncentiveCompositionPolicyManifest
-from optima.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
-from optima.stack_manifest import EvaluationStackManifest
-from optima.target_catalog import default_target_catalog
+from cacheon.incentive_composition import IncentiveCompositionPolicyManifest
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
+from cacheon.stack_manifest import EvaluationStackManifest
+from cacheon.target_catalog import default_target_catalog
 
 
 def _h(value: str) -> str:

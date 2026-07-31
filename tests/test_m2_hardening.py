@@ -1,4 +1,4 @@
-"""M2: the recursive vendored-tree scan, the blessed-base lockfile, and the optima_kernels
+"""M2: the recursive vendored-tree scan, the blessed-base lockfile, and the cacheon_kernels
 no-sglang boundary. All CPU, no torch/sglang needed.
 """
 
@@ -7,8 +7,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from optima.blessed_base import BLESSED_BASE, PinnedDep, check_blessed_base
-from optima.sandbox import scan_path, scan_tree
+from cacheon.blessed_base import BLESSED_BASE, PinnedDep, check_blessed_base
+from cacheon.sandbox import scan_path, scan_tree
 
 
 # ---- recursive scan closes the vendored-tree hole ---------------------------
@@ -66,12 +66,12 @@ def test_blessed_base_enforces_a_pinned_version():
     assert "NOT INSTALLED" in rows["definitely-not-installed-xyz"][1]
 
 
-# ---- the optima_kernels boundary: zero sglang imports (the moat is portable) ----
+# ---- the cacheon_kernels boundary: zero sglang imports (the moat is portable) ----
 
-def test_optima_kernels_has_no_sglang_import():
+def test_cacheon_kernels_has_no_sglang_import():
     pat = re.compile(r"^\s*(import\s+sglang|from\s+sglang)", re.MULTILINE)
     offenders = []
-    for p in Path("optima_kernels").rglob("*.py"):
+    for p in Path("cacheon_kernels").rglob("*.py"):
         if pat.search(p.read_text(encoding="utf-8")):
             offenders.append(str(p))
-    assert not offenders, f"optima_kernels must not import sglang: {offenders}"
+    assert not offenders, f"cacheon_kernels must not import sglang: {offenders}"

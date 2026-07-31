@@ -1,6 +1,6 @@
 # Release architecture
 
-A crown is evidence of measured contribution. A release is a reviewed, signed, chain-independent product artifact. Optima keeps those state machines separate so a hostile evaluation winner can never become serving code by reference alone.
+A crown is evidence of measured contribution. A release is a reviewed, signed, chain-independent product artifact. Cacheon keeps those state machines separate so a hostile evaluation winner can never become serving code by reference alone.
 
 ```mermaid
 flowchart LR
@@ -42,9 +42,9 @@ implementation and retained hardware products satisfy is kept separately in
 
 The result is an `IntegrationReviewRecord`. Its derived `IntegratedContributionRef` names reviewed source, target specification, selected payload, attribution, and the review record itself.
 
-This is a source promotion, not an approval to keep serving a miner's hosted archive. The release path rematerializes ordinary Optima-owned source from integrated references.
+This is a source promotion, not an approval to keep serving a miner's hosted archive. The release path rematerializes ordinary Cacheon-owned source from integrated references.
 
-Principal code: [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/optima/engine_tree.py) and [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py).
+Principal code: [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) and [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py).
 
 ## Release manifest
 
@@ -80,7 +80,7 @@ Model files are provisioned separately from release source. `provision_model()` 
 
 At serving startup, the runtime reopens the mounted model tree against the embedded receipt. A model mounted at the expected path but with changed bytes is rejected.
 
-Principal code: [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/optima/model_provision.py).
+Principal code: [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py).
 
 ## Native artifact identity
 
@@ -118,7 +118,7 @@ support alone is not serving support. See
 [Sealed direct artifacts](direct-artifacts.md) and consult the
 [State of record](../reference/state-of-record.md) for implementation status.
 
-Principal code: [`eval/native_artifact.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/native_artifact.py) and [`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/engine_launch.py).
+Principal code: [`eval/native_artifact.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_artifact.py) and [`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_launch.py).
 
 ## Prepared release
 
@@ -140,7 +140,7 @@ Runtime source and wheel artifacts are built twice from the same source root and
 
 SBOM and provenance are derived from reopened typed inputs rather than accepted as opaque caller documents. Release reopening regenerates and compares them.
 
-Principal code: [`release.py`](https://github.com/latent-to/cacheon/blob/main/optima/release.py).
+Principal code: [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py).
 
 ## External signing and immutable publication
 
@@ -170,7 +170,7 @@ The publication is self-contained with respect to chain state. It retains proven
 - a deployment-policy document;
 - a generated Dockerfile.
 
-The Dockerfile installs the deterministic serving wheel, installs only reviewed runtime overlays for the pinned upstream revision, copies the release under `/optima`, and uses `optima.release_runtime` as its entry point. The generated deployment policy requires a read-only root filesystem, a bounded writable `/tmp`, the reviewed seccomp profile, an exact model mount, and a receipt directory. Context generation does not prove that the emitted wheel's complete import graph works; release acceptance installs it in a clean environment and exercises every manifest-reachable runtime entrypoint.
+The Dockerfile installs the deterministic serving wheel, installs only reviewed runtime overlays for the pinned upstream revision, copies the release under `/cacheon`, and uses `cacheon.release_runtime` as its entry point. The generated deployment policy requires a read-only root filesystem, a bounded writable `/tmp`, the reviewed seccomp profile, an exact model mount, and a receipt directory. Context generation does not prove that the emitted wheel's complete import graph works; release acceptance installs it in a clean environment and exercises every manifest-reachable runtime entrypoint.
 
 No chain credentials or private signing key enter the context.
 
@@ -182,13 +182,13 @@ No chain credentials or private signing key enter the context.
 - network disabled during build steps;
 - source date epoch zero and timestamp rewriting;
 - distinct temporary registry tags;
-- BuildKit-generated provenance/SBOM disabled in favor of Optima's signed canonical artifacts.
+- BuildKit-generated provenance/SBOM disabled in favor of Cacheon's signed canonical artifacts.
 
-After each push, Optima reopens the Registry v2 manifest and configuration rather than trusting a mutable tag. It verifies descriptor, seccomp, and reviewed-overlay labels. The two raw manifest digests must match. On equality, the current primitive signs the common descriptor/image/platform statement with Ed25519 as `SignedContainerReproducibility`; it does not retain or authenticate the builder invocations' output records.
+After each push, Cacheon reopens the Registry v2 manifest and configuration rather than trusting a mutable tag. It verifies descriptor, seccomp, and reviewed-overlay labels. The two raw manifest digests must match. On equality, the current primitive signs the common descriptor/image/platform statement with Ed25519 as `SignedContainerReproducibility`; it does not retain or authenticate the builder invocations' output records.
 
 Canonical release authority therefore adds a separate provenance gate: each reopened registry object must be bound to the output emitted by its corresponding builder invocation before the signed reproducibility statement is accepted as authoritative. Tag readback plus digest equality alone does not provide that binding. Deployment then checks the accepted attestation against the expected public key, release descriptor, platform, repository, and digest.
 
-Principal code: [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_host.py).
+Principal code: [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py).
 
 ## Host authorization
 
@@ -229,7 +229,7 @@ Inside the container, `verify_serving_release()` reopens the signed release befo
 - native and engine-tree identities.
 
 It must then construct a closed serving environment, including every signed native-profile
-value required by sealed direct artifacts. `OPTIMA_RELEASE_REQUIRED=1` changes seam behavior
+value required by sealed direct artifacts. `CACHEON_RELEASE_REQUIRED=1` changes seam behavior
 from development fallback to fail-closed startup: missing namespace binding, seam
 installation, candidate activation, registered slots, compile-profile authority, or other
 required runtime identity terminates the process. The runtime also sets strict candidate
@@ -238,7 +238,7 @@ not replace effective-argv or management-route verification at the host/deployme
 
 Only after verification does the entry point `exec` the exact signed `sglang.launch_server` command.
 
-Principal code: [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_runtime.py) and [SGLang seam](seam.md).
+Principal code: [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_runtime.py) and [SGLang seam](seam.md).
 
 ## Serve smoke and receipts
 
@@ -288,11 +288,11 @@ No live chain query, wallet, miner endpoint, evaluation incumbent, or referee da
 
 ## Source map
 
-- [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py) — integration records and release manifest
-- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/optima/engine_tree.py) — source promotion and deterministic tree materialization
-- [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_identity.py) — reviewed direct-execution declaration identity
-- [`cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/optima/cute_cubin.py) — sealed CUBIN publication and runtime binding
-- [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/optima/model_provision.py) — model sealing
-- [`release.py`](https://github.com/latent-to/cacheon/blob/main/optima/release.py) — descriptor, artifacts, signing, publication, and context
-- [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_host.py) — registry reproducibility and host authorization
-- [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_runtime.py) — fail-closed container entry
+- [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — integration records and release manifest
+- [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — source promotion and deterministic tree materialization
+- [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_identity.py) — reviewed direct-execution declaration identity
+- [`cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cute_cubin.py) — sealed CUBIN publication and runtime binding
+- [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py) — model sealing
+- [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py) — descriptor, artifacts, signing, publication, and context
+- [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py) — registry reproducibility and host authorization
+- [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_runtime.py) — fail-closed container entry

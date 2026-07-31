@@ -1,6 +1,6 @@
 # Miner guide
 
-Optima accepts source proposals that make a validator-owned inference engine
+Cacheon accepts source proposals that make a validator-owned inference engine
 faster without changing its required behavior. A miner contributes one
 registered delta, the validator evaluates that delta inside the exact incumbent
 stack, and only independently reproduced wins can become a crown.
@@ -68,18 +68,18 @@ mode = "slot"
 ```
 
 See [Slots and targets](slots.md) and the authoritative
-[target catalog](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py).
+[target catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## What happens to a submission
 
-Optima keeps four objects distinct:
+Cacheon keeps four objects distinct:
 
 1. A **proposal** is the source archive you publish and commit on-chain. It is
    untrusted input, not an engine dependency.
 2. A **crown** is an independently reproduced marginal win for one registered
    target in one evaluation stack. It can receive standing reward under the
    active emissions policy.
-3. An **integrated contribution** is reviewed Optima-owned source whose selected
+3. An **integrated contribution** is reviewed Cacheon-owned source whose selected
    payload remains bound byte-for-byte to the crown, with maintained surrounding
    packaging, tests, and attribution. Crowning does not perform this review
    automatically.
@@ -116,9 +116,9 @@ The crown records the lower reproduced speedup. After the first passing attempt,
 the durable intake state is `reproduction_pending`; that is not yet a crown.
 
 The evaluation design and evidence objects live in
-[qualification.py](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py),
-[qualification_runner.py](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py),
-and [arena_service.py](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py).
+[qualification.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py),
+[qualification_runner.py](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py),
+and [arena_service.py](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py).
 
 ## How rewards work
 
@@ -144,8 +144,8 @@ the implemented durable discovery disposition is bounty-only. Read
 The local CLI provides static and component diagnostics:
 
 ```bash
-python -m optima.cli scan my_bundle
-python -m optima.cli verify my_bundle --device cuda --dtype bfloat16
+python -m cacheon.cli scan my_bundle
+python -m cacheon.cli verify my_bundle --device cuda --dtype bfloat16
 ```
 
 These commands find manifest, static-policy, ABI, correctness, routing, and graph

@@ -24,7 +24,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
-CLI_SOURCE = ROOT / "optima" / "cli.py"
+CLI_SOURCE = ROOT / "cacheon" / "cli.py"
 CLI_REFERENCE = DOCS / "reference" / "cli.md"
 # This gitignored local operations log can contain private infrastructure
 # context. It is deliberately outside both validation and publication.
@@ -50,6 +50,7 @@ PRIVATE_PATTERNS = (
 )
 
 RETIRED_REPOSITORY_PATTERNS = (
+    # Former product/docs repository names. The live tree is latent-to/cacheon.
     re.compile(
         r"https?://github\.com/latent-to/(?:optima-docs|optima)(?:[/.#?]|$)"
     ),

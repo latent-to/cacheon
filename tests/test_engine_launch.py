@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from optima.engine_tree import materialize_engine_tree
-from optima.eval.engine_launch import (
+from cacheon.engine_tree import materialize_engine_tree
+from cacheon.eval.engine_launch import (
     EngineLaunchError,
     EngineLaunchSpec,
     LEGACY_NATIVE_BUILD_SCHEMA_VERSION,
@@ -29,10 +29,10 @@ from optima.eval.engine_launch import (
     validate_native_build_spec,
     validate_runtime_preflight_receipt,
 )
-from optima.eval.native_compile_profile import NativeCuTeCompileProfile
-from optima.stack_identity import canonical_digest, canonical_json_bytes
-from optima.stack_manifest import EvaluationStackContext, EvaluationStackManifest
-from optima.target_catalog import default_target_catalog
+from cacheon.eval.native_compile_profile import NativeCuTeCompileProfile
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+from cacheon.stack_manifest import EvaluationStackContext, EvaluationStackManifest
+from cacheon.target_catalog import default_target_catalog
 
 
 def _digest(label: str) -> str:
@@ -680,11 +680,11 @@ sys.path.insert(0, {str(repository)!r})
 native_loads = []
 ctypes.CDLL = lambda *args, **kwargs: native_loads.append([args, kwargs])
 before = set(sys.modules)
-import optima.eval.engine_launch
-import optima.eval.runtime_preflight
-import optima.eval.native_artifact
-import optima.eval.oci_process
-import optima.eval.oci_prebuild
+import cacheon.eval.engine_launch
+import cacheon.eval.runtime_preflight
+import cacheon.eval.native_artifact
+import cacheon.eval.oci_process
+import cacheon.eval.oci_prebuild
 new = sorted(set(sys.modules) - before)
 forbidden = [
     name for name in new
@@ -696,7 +696,7 @@ print(json.dumps({{'forbidden': forbidden, 'native_loads': native_loads}}))
     environment = dict(os.environ)
     environment.update(
         {
-            "OPTIMA_BUNDLE_PATH": str(candidate),
+            "CACHEON_BUNDLE_PATH": str(candidate),
             "PYTHONNOUSERSITE": "1",
         }
     )

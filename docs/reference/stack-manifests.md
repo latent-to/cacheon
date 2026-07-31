@@ -1,6 +1,6 @@
 # Stack manifests
 
-Optima represents evaluation and serving composition with separate canonical
+Cacheon represents evaluation and serving composition with separate canonical
 manifest types. They are deliberately not interchangeable.
 
 ## The three questions they answer
@@ -194,5 +194,5 @@ old identity for audit and rollback.
 - Construct and reopen `ReferenceManifest` independently of candidate engines;
   never derive T from the current evaluation stack.
 
-Source: [`optima/stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py) and
-[`optima/eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py).
+Source: [`cacheon/stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) and
+[`cacheon/eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py).

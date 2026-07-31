@@ -1,4 +1,4 @@
-"""optima_kernels.collective.fused_ar_rmsnorm — the portable library spine, CPU-only.
+"""cacheon_kernels.collective.fused_ar_rmsnorm — the portable library spine, CPU-only.
 
 No GPU, no sglang. Pins three things:
 * the library's ``reference`` and the VALIDATOR's slot reference (slots.py
@@ -17,11 +17,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima_kernels.collective import fused_ar_rmsnorm as far  # noqa: E402
+from cacheon_kernels.collective import fused_ar_rmsnorm as far  # noqa: E402
 
 
 def test_reference_agrees_with_validator_slot_reference():
-    from optima.slots import get_slot
+    from cacheon.slots import get_slot
 
     slot = get_slot("collective.ar_residual_rmsnorm")
     inputs = slot.make_inputs(num_tokens=16, hidden=64, dtype=torch.float32,
@@ -48,7 +48,7 @@ def test_init_requires_eager_and_uninitialized_call_raises():
 
 
 def test_no_sglang_or_harness_imports():
-    assert "optima_kernels.collective.fused_ar_rmsnorm" in sys.modules
+    assert "cacheon_kernels.collective.fused_ar_rmsnorm" in sys.modules
     src = open(far.__file__).read()
     assert "import sglang" not in src and "from sglang" not in src
-    assert "from optima." not in src and "import optima." not in src.replace("optima_kernels", "")
+    assert "from cacheon." not in src and "import cacheon." not in src.replace("cacheon_kernels", "")

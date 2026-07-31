@@ -36,7 +36,7 @@ work needed by the qualification runner.
 
 `chain-validate --arena-id <id>` selects an already injected service. Unknown
 IDs fail closed. Without an injected registry, only `--intake-only` is a valid
-public operation. Optima deliberately ships no general production
+public operation. Cacheon deliberately ships no general production
 `ArenaServiceProvider` and no `--eval-cmd` shell escape hatch.
 
 ### Manifest anatomy
@@ -187,4 +187,4 @@ evaluator's summary text.
 - Operate intake-only when no reviewed provider/registry is available; never
   replace the missing provider with a shell command assembled from a proposal.
 
-Source: [`optima/arena_service.py`](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py).
+Source: [`cacheon/arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py).

@@ -7,21 +7,21 @@ import threading
 
 import pytest
 
-from optima import seam
-from optima.arena_service import ArenaCandidateBinding, ScreenGrade
-from optima.bundle_hash import content_hash
-from optima.chain.publication import publish_worker_bundle
-from optima.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
-from optima.eval.oci_session_protocol import BatchEvidence, PromptEvidence
-from optima.eval.qualification_intake import QualificationReservation
-from optima.eval.resident_queue import ScreenCandidate, ScreenPolicy
-from optima.eval.resident_screen_lane import (
+from cacheon import seam
+from cacheon.arena_service import ArenaCandidateBinding, ScreenGrade
+from cacheon.bundle_hash import content_hash
+from cacheon.chain.publication import publish_worker_bundle
+from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
+from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
+from cacheon.eval.qualification_intake import QualificationReservation
+from cacheon.eval.resident_queue import ScreenCandidate, ScreenPolicy
+from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLaneError,
     ResidentServingScreenStage,
     screen_swappability,
 )
-from optima.manifest import load_manifest
+from cacheon.manifest import load_manifest
 
 DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
@@ -272,7 +272,7 @@ def _bundle_tree(
     ]
     if cuda_sources:
         (kernels / "native.cu").write_text(
-            'extern "C" __global__ void optima_test_native() {}\n'
+            'extern "C" __global__ void cacheon_test_native() {}\n'
         )
         (source / "rebuild.json").write_text('{"steps": []}\n')
         lines.append("cuda_sources = ['kernels/native.cu']")
@@ -350,8 +350,8 @@ class TestScreenSwappability:
         self, tmp_path, monkeypatch, bundle_options, reason
     ) -> None:
         bundle = _bundle_tree(tmp_path, **bundle_options)
-        monkeypatch.delenv("OPTIMA_BUNDLE_PATH", raising=False)
-        monkeypatch.delenv("OPTIMA_ACTIVE", raising=False)
+        monkeypatch.delenv("CACHEON_BUNDLE_PATH", raising=False)
+        monkeypatch.delenv("CACHEON_ACTIVE", raising=False)
         with pytest.raises(RuntimeError, match=reason):
             seam.swap_resident_bundle(str(bundle))
 

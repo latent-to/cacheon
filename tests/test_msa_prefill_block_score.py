@@ -15,10 +15,10 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.slots import get_slot  # noqa: E402
-from optima.registry import eligibility_from_metadata  # noqa: E402
-from optima.tensor_spec import validate_output_spec  # noqa: E402
-from optima.verify import (  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.registry import eligibility_from_metadata  # noqa: E402
+from cacheon.tensor_spec import validate_output_spec  # noqa: E402
+from cacheon.verify import (  # noqa: E402
     _has_msa_prefill_probe_schema,
     format_verify,
     verify_entry,

@@ -4,10 +4,10 @@ from dataclasses import replace
 
 import pytest
 
-from optima.discovery import DiscoveryArmPlan
-from optima.eval.evidence_store import EvidenceArtifactRef
-from optima.eval.oci_session_protocol import SlotAuditPolicy
-from optima.settlement import (
+from cacheon.discovery import DiscoveryArmPlan
+from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.oci_session_protocol import SlotAuditPolicy
+from cacheon.settlement import (
     ResidentLaneOrientation,
     SettlementCandidate,
     SettlementError,
@@ -17,14 +17,14 @@ from optima.settlement import (
     SettlementQualification,
     plan_settlement,
 )
-from optima.stack_identity import canonical_digest, sha256_hex
-from optima.stack_manifest import (
+from cacheon.stack_identity import canonical_digest, sha256_hex
+from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
     ProposalContributionRef,
 )
-from optima.stack_plan import plan_marginal_arm
-from optima.target_catalog import (
+from cacheon.stack_plan import plan_marginal_arm
+from cacheon.target_catalog import (
     MOE_EPILOGUE_ATOMIC_TARGET,
     MOE_EPILOGUE_MEMBERS,
     TargetCatalog,

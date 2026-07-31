@@ -12,9 +12,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.slots import get_slot  # noqa: E402
-from optima.registry import Eligibility  # noqa: E402
-from optima.verify_collective import verify_collective  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.registry import Eligibility  # noqa: E402
+from cacheon.verify_collective import verify_collective  # noqa: E402
 
 SLOT = "collective.moe_finalize_ar_rmsnorm"
 

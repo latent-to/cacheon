@@ -6,7 +6,7 @@ each stage has different identity and evidence.
 
 ## Decision vocabulary
 
-Optima uses three qualification grades:
+Cacheon uses three qualification grades:
 
 | Decision | Meaning | Miner response |
 |---|---|---|
@@ -39,7 +39,7 @@ The production SQLite state machine currently exposes these statuses:
 | `expired` | terminal finalized-block SLA expiry; wall-clock age is not the authority |
 
 These transitions are implemented in
-[intake.py](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py).
+[intake.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py).
 The command `chain-status` shows revealed chain commitments, not this private
 state machine. Obtain lifecycle receipts through the operator's published
 surface.
@@ -49,7 +49,7 @@ surface.
 Start with:
 
 ```bash
-python -m optima.cli scan my_bundle
+python -m cacheon.cli scan my_bundle
 ```
 
 `scan` parses paths and the component manifest and checks the source tree. It
@@ -62,7 +62,7 @@ Common failures and fixes:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| unsupported ABI | `abi_version` is not `optima-op-abi-v0` | update the bundle to the active component ABI |
+| unsupported ABI | `abi_version` is not a supported identifier | author new bundles with the published `optima-op-abi-v0` component ABI |
 | unsafe/missing path | absolute path, traversal, symlink, or undeclared file | make every declaration bundle-relative and source-only |
 | competition mode mismatch | `slot`/`atomic` assertion disagrees with catalog | select the exact registered target and mode |
 | target members differ | op rows do not implement the complete registered delta | use the exact singleton member or all atomic members |
@@ -116,14 +116,14 @@ with incomplete shape-domain coverage fails the authoritative graph veto.
 Run the cheapest relevant check first:
 
 ```bash
-python -m optima.cli verify my_bundle --device cpu --dtype float32
-python -m optima.cli verify my_bundle --device cuda --dtype bfloat16
+python -m cacheon.cli verify my_bundle --device cpu --dtype float32
+python -m cacheon.cli verify my_bundle --device cuda --dtype bfloat16
 ```
 
 For collectives, reproduce the real group:
 
 ```bash
-python -m optima.cli verify my_bundle \
+python -m cacheon.cli verify my_bundle \
   --device cuda --dtype bfloat16 \
   --world-size <TP> --tp-size <TP>
 ```
@@ -211,9 +211,9 @@ Check that:
 
 Publication/storage faults after a valid fetch are validator-side
 `NO_DECISION`, not candidate failure. The transport boundary is implemented in
-[fetch.py](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py)
+[fetch.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py)
 and immutable publication in
-[publication.py](https://github.com/latent-to/cacheon/blob/main/optima/chain/publication.py).
+[publication.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publication.py).
 
 ## 6. Non-crown screens
 

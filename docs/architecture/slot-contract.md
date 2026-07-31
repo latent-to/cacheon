@@ -1,11 +1,11 @@
 # Slot contract
 
-The slot contract is Optima's narrow waist: a stable, validator-owned tensor boundary between untrusted optimization code and a pinned inference engine.
+The slot contract is Cacheon's narrow waist: a stable, validator-owned tensor boundary between untrusted optimization code and a pinned inference engine.
 
 Slots may evolve, SGLang adapters may churn, and correctness policies may be
 recalibrated. Every core slot must still satisfy the four invariants on this
 page. This page is the normative checklist; the executable catalog is
-[`optima/slots.py`](https://github.com/latent-to/cacheon/blob/main/optima/slots.py).
+[`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py).
 
 ## The four invariants
 
@@ -72,7 +72,7 @@ The current API contains **11 slots**.
 | `collective.ar_residual_rmsnorm` | `collective` | `ar_residual_rmsnorm` | Fused all-reduce, residual add, and RMSNorm |
 | `collective.moe_finalize_ar_rmsnorm` | `collective` | `moe_finalize_ar_rmsnorm` | Deep MoE finalize, all-reduce, residual, and RMSNorm boundary |
 
-Run `optima slots` against the installed code for the human-readable live list.
+Run `cacheon slots` against the installed code for the human-readable live list.
 The command prints multi-line summaries rather than a JSON/structured schema;
 automation should import the typed catalog instead of scraping this page or the
 CLI output. Documentation should not be used to bypass catalog resolution.
@@ -138,7 +138,7 @@ Collective candidates receive a process group, which is a wider capability. They
 ### Distributed verification
 
 The single-rank `verify_entry` path refuses collective slots. The public
-`optima verify` command routes them to `verify_collective`, which spawns the
+`cacheon verify` command routes them to `verify_collective`, which spawns the
 requested world size, executes the real collective on every rank, and compares
 every output with a trusted cross-rank fp32 reduction plus any registered
 post-reduce transform.
@@ -155,7 +155,7 @@ Candidate selection must agree across all ranks. Once all ranks select the candi
 
 Passing the distributed numerical check does not establish model quality or speed. Collective error can compound across layers, and topology controls performance. The candidate must still pass the registered full-engine bracket and pristine-reference quality policy.
 
-The implementation is split between [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/optima/verify_collective.py), [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/optima/dispatch.py), and the version-pinned adapters in [`integrations/`](https://github.com/latent-to/cacheon/tree/main/optima/integrations).
+The implementation is split between [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py), [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py), and the version-pinned adapters in [`integrations/`](https://github.com/latent-to/cacheon/tree/main/cacheon/integrations).
 
 ## CUDA graph contract
 
@@ -195,7 +195,7 @@ A slot is a semantic ABI; a reward target is an economic identity. Most current 
 
 The catalog explicitly records displacement of the corresponding singleton targets. It also defines first-applicable precedence for the compatible `moe.fused_experts_reduce` and `moe.fused_experts` targets. Packaging order never decides overlap or ownership.
 
-See [Product model](product-model.md) and [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py).
+See [Product model](product-model.md) and [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Slot evolution
 
@@ -260,8 +260,8 @@ Passing a unit test without these properties is not sufficient to extend the nar
 ## Source map
 
 - This page — normative invariants
-- [`slots.py`](https://github.com/latent-to/cacheon/blob/main/optima/slots.py) — executable slot catalog
-- [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/optima/tensor_spec.py) — typed outputs and workspaces
-- [`verify.py`](https://github.com/latent-to/cacheon/blob/main/optima/verify.py) — op/block verification and graph replay
-- [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/optima/verify_collective.py) — distributed verification
-- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py) — economic target projection
+- [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) — executable slot catalog
+- [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) — typed outputs and workspaces
+- [`verify.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py) — op/block verification and graph replay
+- [`verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py) — distributed verification
+- [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — economic target projection

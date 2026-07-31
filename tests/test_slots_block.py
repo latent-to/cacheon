@@ -13,9 +13,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.sandbox import load_entry  # noqa: E402
-from optima.slots import get_slot  # noqa: E402
-from optima.verify import verify_entry  # noqa: E402
+from cacheon.sandbox import load_entry  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.verify import verify_entry  # noqa: E402
 
 ATTN_BUNDLE = "examples/miner_attention_torch/kernels/attention.py"
 ATTN_DECODE_BUNDLE = "examples/miner_attention_decode_torch/kernels/attention_decode.py"

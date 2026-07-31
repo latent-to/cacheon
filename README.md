@@ -1,6 +1,6 @@
-# Optima
+# Cacheon
 
-Optima is an inference-throughput competition built around SGLang and designed
+Cacheon is an inference-throughput competition built around SGLang and designed
 to operate as a Bittensor subnet. Miners submit inspectable GPU-kernel
 contributions at registered boundaries in a validator-owned model. Validators
 admit those contributions through a typed, isolated pipeline and reward only
@@ -12,7 +12,7 @@ runtime, settlement and incentive machinery, and chain-independent engine
 release tooling.
 
 > [!IMPORTANT]
-> Optima is pre-release software. Implemented paths, retained empirical evidence,
+> Cacheon is pre-release software. Implemented paths, retained empirical evidence,
 > and production readiness are separate claims. The
 > [state of record](docs/reference/state-of-record.md) identifies what has been
 > exercised, what is covered only by tests, and what remains unproven.
@@ -24,7 +24,7 @@ release tooling.
 | Understand the system | [Concepts](docs/get-started/concepts.md) and [architecture overview](docs/architecture/overview.md) |
 | Build a miner contribution | [Miner guide](docs/miner-guide/overview.md) |
 | Operate a validator | [Validator guide](docs/validator-guide/overview.md) |
-| Integrate an approved contribution | [Optima Engine](docs/engine/overview.md) |
+| Integrate an approved contribution | [Cacheon Engine](docs/engine/overview.md) |
 | Review trust boundaries | [Security model](docs/security/threat-model.md) |
 | Contribute to the repository | [Contributing](CONTRIBUTING.md) |
 
@@ -38,11 +38,11 @@ Python 3.11 or newer is required.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[cpu,dev]"
+python -m pip install -e ".[cpu,dev,release]"
 
-python -m optima.cli slots
-python -m optima.cli scan examples/miner_silu_torch
-python -m optima.cli verify examples/miner_silu_torch \
+python -m cacheon.cli slots
+python -m cacheon.cli scan examples/miner_silu_torch
+python -m cacheon.cli verify examples/miner_silu_torch \
   --device cpu \
   --dtype float32
 ```

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from optima import chain
-from optima.chain import (
+from cacheon import chain
+from cacheon.chain import (
     ChainWeightStateError,
     ChainWeightStateRetryableError,
     select_subnet_owner_burn_uid,

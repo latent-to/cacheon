@@ -1,4 +1,4 @@
-"""Unit tests for the noise-robust speedup scorer (optima/eval/scoring.py).
+"""Unit tests for the noise-robust speedup scorer (cacheon/eval/scoring.py).
 
 The whole point of this module is to make a sub-10% real win resolvable on a box
 whose clocks can't be locked, and to refuse to crown on measurement noise. These
@@ -14,33 +14,33 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.eval.calibration import CalibrationContext, SpeedCalibration
-from optima.eval.device_state import (
+from cacheon.eval.calibration import CalibrationContext, SpeedCalibration
+from cacheon.eval.device_state import (
     DeviceStateActiveReceipt,
     DeviceStateReceipt,
     DeviceStateSample,
 )
-from optima.eval.marginal_runtime import (
+from cacheon.eval.marginal_runtime import (
     CandidateLifecycleEvidence,
     MarginalLifecycleEvidence,
     MarginalRuntimeError,
     run_marginal_lifecycle,
 )
-from optima.eval.native_artifact import publish_native_artifact
-from optima.eval.oci_backend import EngineExecutionEvidence, runtime_identity_from_preflight
-from optima.eval.oci_prebuild import OCIPrebuildResult
-from optima.eval.oci_outer_session import (
+from cacheon.eval.native_artifact import publish_native_artifact
+from cacheon.eval.oci_backend import EngineExecutionEvidence, runtime_identity_from_preflight
+from cacheon.eval.oci_prebuild import OCIPrebuildResult
+from cacheon.eval.oci_outer_session import (
     BatchExecutionEvidence,
     OuterSessionInfrastructureError,
     SessionExecutionEvidence,
     SessionExecutionPlan,
     require_decode_dominant_plan,
 )
-from optima.eval.oci_session_protocol import (
+from cacheon.eval.oci_session_protocol import (
     BatchEvidence,
     PromptEvidence,
 )
-from optima.eval.scoring import (
+from cacheon.eval.scoring import (
     RawSpeedEvidenceError,
     marginal_workload_digest,
     project_marginal_speed,
@@ -717,7 +717,7 @@ def _lifecycle_repeat(tmp_path: Path):
 
 
 def test_repeat_read_lifecycle_projects_and_regrades_five_rates(tmp_path):
-    from optima.eval.qualification_runner import SpeedWitness
+    from cacheon.eval.qualification_runner import SpeedWitness
 
     lifecycle, delta, case, calibration, runtime_policy = _lifecycle_repeat(tmp_path)
     assert len(lifecycle.candidates_repeat) == 1
@@ -792,7 +792,7 @@ def test_candidate_reads_policy_is_exact(tmp_path):
 
 
 def test_legacy_three_leg_witness_shape_is_unchanged(tmp_path):
-    from optima.eval.qualification_runner import SpeedWitness
+    from cacheon.eval.qualification_runner import SpeedWitness
 
     lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
     projection = _project(lifecycle, delta, case, calibration, runtime_policy)

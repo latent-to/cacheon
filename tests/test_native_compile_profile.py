@@ -7,13 +7,13 @@ from dataclasses import replace
 
 import pytest
 
-from optima.artifact_provider import CUTE_CUBIN_PROVIDER_ID
-from optima.eval.native_compile_profile import (
+from cacheon.artifact_provider import CUTE_CUBIN_PROVIDER_ID
+from cacheon.eval.native_compile_profile import (
     PROFILE_SCHEMA,
     NativeCompileProfileError,
     NativeCuTeCompileProfile,
 )
-from optima.stack_identity import canonical_json_bytes
+from cacheon.stack_identity import canonical_json_bytes
 
 
 _CLUSTER_1 = "max_active_clusters.cluster_size_1"

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.eval.oci_session_protocol import (
+from cacheon.eval.oci_session_protocol import (
     SessionProtocolError,
     SwapRequest,
     swap_evidence_message,
@@ -138,7 +138,7 @@ class TestWorkerSwapApplication:
             )
 
     def test_stock_swap_writes_command_and_collects_acks(self, tmp_path) -> None:
-        from optima.eval import oci_session_worker as worker
+        from cacheon.eval import oci_session_worker as worker
 
         control = self._control(tmp_path)
         request = _swap(digest=None)
@@ -156,7 +156,7 @@ class TestWorkerSwapApplication:
         assert command == {"bundle": None, "generation": 1}
 
     def test_bundle_swap_rehashes_and_rejects_mismatch(self, tmp_path, monkeypatch) -> None:
-        from optima.eval import oci_session_worker as worker
+        from cacheon.eval import oci_session_worker as worker
 
         control = self._control(tmp_path)
         staged_root = tmp_path / "intake"
@@ -180,8 +180,8 @@ class TestWorkerSwapApplication:
         assert not (Path(control) / "command.json").exists()
 
     def test_bundle_swap_accepts_exact_hash(self, tmp_path, monkeypatch) -> None:
-        from optima.bundle_hash import content_hash
-        from optima.eval import oci_session_worker as worker
+        from cacheon.bundle_hash import content_hash
+        from cacheon.eval import oci_session_worker as worker
 
         staged_root = tmp_path / "intake"
         seed = staged_root / "seed"
@@ -209,7 +209,7 @@ class TestWorkerSwapApplication:
         assert command["bundle"].endswith(digest)
 
     def test_rank_failure_fails_the_swap(self, tmp_path) -> None:
-        from optima.eval import oci_session_worker as worker
+        from cacheon.eval import oci_session_worker as worker
 
         control = self._control(tmp_path)
         request = _swap(digest=None)
@@ -234,7 +234,7 @@ class TestWorkerSwapApplication:
             )
 
     def test_rank_slot_disagreement_fails_the_swap(self, tmp_path) -> None:
-        from optima.eval import oci_session_worker as worker
+        from cacheon.eval import oci_session_worker as worker
 
         control = self._control(tmp_path)
         request = _swap(digest=None)
@@ -255,7 +255,7 @@ class TestWorkerSwapApplication:
             )
 
     def test_missing_flush_api_fails_closed(self, tmp_path) -> None:
-        from optima.eval import oci_session_worker as worker
+        from cacheon.eval import oci_session_worker as worker
 
         control = self._control(tmp_path)
         with pytest.raises(SessionProtocolError, match="flush_cache"):
@@ -264,7 +264,7 @@ class TestWorkerSwapApplication:
             )
 
     def test_stale_generation_acks_are_ignored(self, tmp_path, monkeypatch) -> None:
-        from optima.eval import oci_session_worker as worker
+        from cacheon.eval import oci_session_worker as worker
 
         control = self._control(tmp_path)
         request = _swap(index=1, generation=2, digest=None)
@@ -290,7 +290,7 @@ class TestWorkerSwapApplication:
 
 class TestServeResidentLoop:
     def _frames(self, messages) -> bytes:
-        from optima.eval.oci_session_protocol import (
+        from cacheon.eval.oci_session_protocol import (
             MAX_BATCH_REQUEST_BYTES,
             frame_message,
         )
@@ -301,8 +301,8 @@ class TestServeResidentLoop:
         )
 
     def test_swap_then_batch_stream(self, tmp_path, monkeypatch) -> None:
-        from optima.eval import oci_session_worker as worker
-        from optima.eval.oci_session_protocol import (
+        from cacheon.eval import oci_session_worker as worker
+        from cacheon.eval.oci_session_protocol import (
             batch_request,
             parse_frame_bytes,
         )
@@ -387,7 +387,7 @@ class TestServeResidentLoop:
         assert produced[8 + size : 12 + size] == b"OEE1"
 
     def test_replayed_swap_nonce_fails(self, tmp_path) -> None:
-        from optima.eval import oci_session_worker as worker
+        from cacheon.eval import oci_session_worker as worker
 
         control = tmp_path / "ctl"
         control.mkdir()
@@ -433,14 +433,14 @@ class TestServeResidentLoop:
 
 class TestResidentOuterSession:
     def _plan(self):
-        from optima.eval.oci_resident_session import ResidentSessionPlan
-        from optima.eval.oci_session_protocol import (
+        from cacheon.eval.oci_resident_session import ResidentSessionPlan
+        from cacheon.eval.oci_session_protocol import (
             EngineSessionConfig,
             RuntimePreflightFacts,
         )
 
         config = EngineSessionConfig(
-            model_path="/optima/input/model",
+            model_path="/cacheon/input/model",
             dtype="bfloat16",
             deterministic=False,
             attention_backend="fa4",
@@ -483,7 +483,7 @@ class TestResidentOuterSession:
 
     def _transport(self, plan):
         """A scripted in-memory transport implementing the worker side."""
-        from optima.eval.oci_session_protocol import (
+        from cacheon.eval.oci_session_protocol import (
             BatchEvidence,
             PromptEvidence,
             evidence_frame,
@@ -512,7 +512,7 @@ class TestResidentOuterSession:
                 return False
 
             def write_frame(self, frame: bytes, *, deadline: float) -> None:
-                from optima.eval.oci_session_protocol import parse_frame_bytes
+                from cacheon.eval.oci_session_protocol import parse_frame_bytes
 
                 message = parse_frame_bytes(frame, max_bytes=1 << 27)
                 kind = message.get("type")
@@ -581,12 +581,12 @@ class TestResidentOuterSession:
                     raise AssertionError(f"unexpected frame {kind!r}")
 
             def read_control(self, *, max_bytes: int, deadline: float) -> dict:
-                from optima.eval.oci_session_protocol import parse_frame_bytes
+                from cacheon.eval.oci_session_protocol import parse_frame_bytes
 
                 return parse_frame_bytes(self.outbox.pop(0), max_bytes=max_bytes)
 
             def read_evidence(self, request, *, deadline: float):
-                from optima.eval.oci_session_protocol import (
+                from cacheon.eval.oci_session_protocol import (
                     parse_evidence_frame_bytes,
                 )
 
@@ -603,7 +603,7 @@ class TestResidentOuterSession:
         return Transport()
 
     def _open(self):
-        from optima.eval.oci_resident_session import ResidentOuterSession
+        from cacheon.eval.oci_resident_session import ResidentOuterSession
 
         plan = self._plan()
         transport = self._transport(plan)
@@ -636,7 +636,7 @@ class TestResidentOuterSession:
         assert len(evidence.swaps) == 2
 
     def test_canary_requires_stock(self) -> None:
-        from optima.eval.oci_outer_session import OuterSessionInfrastructureError
+        from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError
 
         session = self._open()
         session.swap(DIGEST)
@@ -644,7 +644,7 @@ class TestResidentOuterSession:
             session.execute_batch(("hello",), canary=True)
 
     def test_swap_budget_is_enforced(self) -> None:
-        from optima.eval.oci_outer_session import OuterSessionInfrastructureError
+        from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError
 
         session = self._open()
         for _ in range(10):
@@ -653,7 +653,7 @@ class TestResidentOuterSession:
             session.swap(DIGEST)
 
     def test_finish_requires_a_batch(self) -> None:
-        from optima.eval.oci_outer_session import OuterSessionInfrastructureError
+        from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError
 
         session = self._open()
         with pytest.raises(OuterSessionInfrastructureError, match="no batches"):

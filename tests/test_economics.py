@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from optima.economics import (
+from cacheon.economics import (
     ArenaRewardAuthority,
     DiscoveryBountyClaim,
     EconomicsError,
@@ -17,9 +17,9 @@ from optima.economics import (
     project_global_rewards,
     project_rewards,
 )
-from optima.stack_identity import canonical_digest
-from optima.stack_manifest import EvaluationStackManifest, ProposalContributionRef
-from optima.target_catalog import (
+from cacheon.stack_identity import canonical_digest
+from cacheon.stack_manifest import EvaluationStackManifest, ProposalContributionRef
+from cacheon.target_catalog import (
     CorrectnessContractRef,
     FEATURE_ENTRY,
     TargetCatalog,

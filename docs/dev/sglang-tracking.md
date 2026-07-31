@@ -1,9 +1,9 @@
 # SGLang compatibility
 
-Optima competes against and integrates with an exact SGLang runtime. The pin is
+Cacheon competes against and integrates with an exact SGLang runtime. The pin is
 part of evaluation and release identity, not a loose minimum version. The
 source pin is `0.5.13.post1` in
-[`optima/compat.py`](https://github.com/latent-to/cacheon/blob/main/optima/compat.py).
+[`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py).
 
 A green static seam canary establishes import and chokepoint compatibility only. A
 runtime pin is eligible for evaluation or release authority only after end-to-end GPU
@@ -14,7 +14,7 @@ coverage belongs in [State of record](../reference/state-of-record.md).
 
 ## Why the pin matters
 
-SGLang internals define the lower side of Optima's narrow waist: module paths,
+SGLang internals define the lower side of Cacheon's narrow waist: module paths,
 call signatures, graph capture, attention/MoE dispatch, collectives, engine
 arguments, and native dependencies. An upstream change can alter both whether
 a contribution loads and what baseline it must beat.
@@ -34,19 +34,19 @@ and evaluation identity and coordinate a pin transition.
 
 That requirement binds authoritative measurement, not a miner's workstation. Miners may
 develop with another SGLang revision—or without SGLang when a slot reference is
-sufficient—and target Optima's typed slot ABI. Qualification always re-runs the submitted
+sufficient—and target Cacheon's typed slot ABI. Qualification always re-runs the submitted
 delta in the validator's pinned arena, and an Engine release binds its own exact pin.
 A pin bump remeasures existing contributions against a changed baseline and execution
 context; it does not automatically make a portable contribution's source invalid.
 Contributions that depended on an old runtime quirk can fail or lose their advantage
 when remeasured, which is the intended outcome.
 
-## What Optima depends on upstream
+## What Cacheon depends on upstream
 
 The canary is table-driven from the registered seam adapters and adds richer
 checks for the most consequential surfaces:
 
-| Upstream surface | Why Optima needs it | What movement can break |
+| Upstream surface | Why Cacheon needs it | What movement can break |
 |---|---|---|
 | `SiluAndMul` and `RMSNorm` | Narrow component call sites | Argument order, residual semantics, fallback routing |
 | `RadixAttention.forward` | Attention block insertion before sampling | Q/K/V and batch-state translation, graph behavior |
@@ -63,13 +63,13 @@ canary again inside the exact pinned image where those packages are required.
 ## Compatibility canary
 
 ```bash
-python -m optima.cli compat
+python -m cacheon.cli compat
 ```
 
 The canary imports the installed runtime, reports its version, and inspects every
 registered seam. It does not load a model or require a GPU. A version mismatch
 is printed as `DIFFERS from pin`, fails the version check, and makes
-`python -m optima.cli compat` exit with status 2. A green result means the exact
+`python -m cacheon.cli compat` exit with status 2. A green result means the exact
 pin and expected symbols and signatures are present; it does not mean behavior
 or performance is unchanged.
 
@@ -92,7 +92,7 @@ skipped matters.
 Run the Bittensor SDK canary separately:
 
 ```bash
-python -m optima.cli chain-compat
+python -m cacheon.cli chain-compat
 ```
 
 This separation prevents an unrelated chain SDK change from being confused
@@ -177,7 +177,7 @@ A pin is ready for authority only after progressively stronger controls:
 The broken-bundle control is especially important. A faithful candidate can
 appear green even if the adapter never fired and SGLang silently used its
 baseline. The negative control proves that the intended call path is actually
-under Optima's verifier and receipt authority.
+under Cacheon's verifier and receipt authority.
 
 ## Seam design rule
 
@@ -206,7 +206,7 @@ or a champion from another runtime identity from being quoted as the active base
 ## Release implications
 
 An `EngineReleaseDescriptor` binds the SGLang version, upstream revision,
-digest-pinned base image, reproducible Optima artifacts, native build, and
+digest-pinned base image, reproducible Cacheon artifacts, native build, and
 serving policy. Consumers verify those exact identities. Upgrading a running
 deployment means building and signing a new release; it is never an in-place
 package upgrade inside an existing release.

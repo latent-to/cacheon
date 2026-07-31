@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from optima import chain
-import optima.cli as cli
-from optima.finite_debt import (
+from cacheon import chain
+import cacheon.cli as cli
+from cacheon.finite_debt import (
     CampaignBudgetShare,
     PPM,
     DebtClaimBalance,
@@ -20,14 +20,14 @@ from optima.finite_debt import (
     RewardFamilyCampaign,
     issue_innovation_claim,
 )
-from optima.incentive_shadow import (
+from cacheon.incentive_shadow import (
     MAX_SHADOW_INPUT_BYTES,
     IncentiveShadowError,
     SyntheticClaimStateFixture,
     execute_chain_incentive_shadow,
     load_shadow_inputs,
 )
-from optima.stack_identity import canonical_json_bytes, sha256_hex
+from cacheon.stack_identity import canonical_json_bytes, sha256_hex
 
 
 FAMILY = sha256_hex(b"shadow-family")
@@ -401,7 +401,7 @@ def test_shadow_refuses_existing_or_symlink_output_before_connect(
 
 
 def test_shadow_module_has_no_signer_storage_or_publication_imports() -> None:
-    source_path = Path(__file__).parents[1] / "optima" / "incentive_shadow.py"
+    source_path = Path(__file__).parents[1] / "cacheon" / "incentive_shadow.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     imports: set[str] = set()
     for node in ast.walk(tree):
@@ -412,9 +412,9 @@ def test_shadow_module_has_no_signer_storage_or_publication_imports() -> None:
     forbidden = {
         "bittensor",
         "sqlite3",
-        "optima.chain.intake",
-        "optima.chain.weights",
-        "optima.economics",
+        "cacheon.chain.intake",
+        "cacheon.chain.weights",
+        "cacheon.economics",
     }
     assert not imports & forbidden
 

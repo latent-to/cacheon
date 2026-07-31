@@ -8,15 +8,15 @@ from dataclasses import replace
 
 import pytest
 
-from optima.eval.evidence_store import EvidenceArtifactRef
-from optima.stack_identity import (
+from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.stack_identity import (
     StackIdentityError,
     canonical_digest,
     canonical_json_bytes,
     require_sha256_hex,
     sha256_hex,
 )
-from optima.stack_manifest import (
+from cacheon.stack_manifest import (
     EngineReleaseManifest,
     EvaluationStackContext,
     EvaluationStackManifest,
@@ -501,7 +501,7 @@ def test_import_surface_is_stdlib_only_and_does_not_require_bittensor_or_torch()
     code = """
 import os, sys
 sys.path.insert(0, os.getcwd())
-import optima.stack_manifest
+import cacheon.stack_manifest
 assert 'torch' not in sys.modules
 assert 'bittensor' not in sys.modules
 """

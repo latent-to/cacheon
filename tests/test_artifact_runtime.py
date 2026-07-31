@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from optima.artifact_abi import (
+from cacheon.artifact_abi import (
     ArtifactAggregateComponent,
     ArtifactBinding,
     ArtifactPrelaunch,
@@ -19,7 +19,7 @@ from optima.artifact_abi import (
     SlotCallABI,
     SlotResource,
 )
-from optima.artifact_runtime import (
+from cacheon.artifact_runtime import (
     ArtifactAllocationBudget,
     ArtifactPreparedState,
     ArtifactRuntimeEntry,

@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from optima.eval.calibration import (
+from cacheon.eval.calibration import (
     CALIBRATION_EVIDENCE_DOMAIN,
     CALIBRATION_EVIDENCE_SCHEMA,
     CalibrationContext,
@@ -21,8 +21,8 @@ from optima.eval.calibration import (
     publish_calibration_evidence,
     reopen_calibration_evidence,
 )
-from optima.eval.evidence_store import publish_evidence
-from optima.stack_identity import canonical_json_bytes
+from cacheon.eval.evidence_store import publish_evidence
+from cacheon.stack_identity import canonical_json_bytes
 
 
 def _digest(character: str) -> str:

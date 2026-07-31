@@ -6,7 +6,7 @@ files existed; it does not assign arena or serving policy.
 
 Provisioning should be understood as taking an inventory under a microscope, not as
 downloading or blessing a model. The operator has already selected and placed a concrete
-model revision. Optima turns that tree into an immutable identity which release
+model revision. Cacheon turns that tree into an immutable identity which release
 construction and startup can later reopen.
 
 ## Provision a tree
@@ -15,11 +15,11 @@ Both arguments must already be concrete directories. Create the publication
 directory outside the model tree before running the command:
 
 ```bash
-install -d -m 0700 /srv/optima/model-publication
+install -d -m 0700 /srv/cacheon/model-publication
 
-python -m optima.cli model-provision \
+python -m cacheon.cli model-provision \
   /srv/models/model-revision \
-  /srv/optima/model-publication \
+  /srv/cacheon/model-publication \
   --expected-content-digest <sha256>
 ```
 
@@ -117,4 +117,4 @@ proposal market.
 7. At deployment, mount the tree read-only and let release startup reopen it; do not rely
    on the directory name as identity.
 
-Source: [`optima/model_provision.py`](https://github.com/latent-to/cacheon/blob/main/optima/model_provision.py).
+Source: [`cacheon/model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py).

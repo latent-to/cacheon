@@ -6,9 +6,9 @@ the policy scanner and the manifest path-safety checks, plus eligibility and KL.
 
 from __future__ import annotations
 
-import optima.manifest as M
-from optima.registry import eligibility_from_metadata
-from optima.sandbox import scan_source
+import cacheon.manifest as M
+from cacheon.registry import eligibility_from_metadata
+from cacheon.sandbox import scan_source
 
 TRITON_BUNDLE = "examples/miner_silu_triton"
 

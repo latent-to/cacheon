@@ -336,6 +336,25 @@ imports from a clean extracted wheel. The broader manifest/direct-artifact runti
 is still absent, so the release gate must expand from that core smoke to every
 manifest-reachable serving entrypoint before the branch is release-ready.
 
+## 2026-07-31 — Cacheon product and package rename
+
+The public product, Python package and module, CLI, environment-variable, and
+HTTP-header names moved from Optima to Cacheon. The rename deliberately does not
+re-issue authenticated history: persisted digest domains, schema strings,
+recovery prefixes, signed weight-share envelopes, and the miner ABI retain their
+`optima.*` / `optima-op-abi-v0` compatibility identities. Historical fixture
+bytes, object keys, deployment paths, and environment names elsewhere on this
+page therefore remain as originally recorded.
+
+Operators must cut over with fresh virtual environments and freshly rebuilt,
+re-attested evaluator/OCI images. Installing `cacheon-harness` over an editable
+`optima-harness` checkout can leave both distributions and bootstrap entry
+points installed, and an old evaluator image does not contain the renamed
+`cacheon` worker modules. Existing databases, archives, and object-store objects
+are reopened in place under their stable compatibility identities rather than
+being renamed or rehashed. `HOW_CACHEON_WORKS.md` is the current compatibility
+redirect; `HOW_OPTIMA_WORKS.md` remains as the inbound legacy redirect.
+
 ## Corrections and retractions
 
 ### MXFP4 throughput claim retracted — 2026-06-07
@@ -352,7 +371,7 @@ The July 7 and July 8 fused-epilogue results remain real, reproduced measurement
 
 ### Slot count corrected — 2026-07-13
 
-The live slot catalog contains 11 slots, not 10. `attention.msa_prefill_block_score` is the additional current slot. The executable [`slots.py`](https://github.com/latent-to/cacheon/blob/main/optima/slots.py) catalog is authoritative.
+The live slot catalog contains 11 slots, not 10. `attention.msa_prefill_block_score` is the additional current slot. The executable [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) catalog is authoritative.
 
 ## Hardening merge index
 

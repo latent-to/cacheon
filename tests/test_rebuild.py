@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.rebuild import (
+from cacheon.rebuild import (
     RebuildError,
     RebuildPlan,
     _main,
@@ -29,7 +29,7 @@ def _bundle(tmp_path: Path, plan: object) -> Path:
 
 def _fake_repo(tmp_path: Path, *, marker: Path | None = None) -> Path:
     repo = tmp_path / "repo"
-    patchers = repo / "optima" / "patchers"
+    patchers = repo / "cacheon" / "patchers"
     patchers.mkdir(parents=True)
     for name, label in (
         ("apply_dep_patch.py", "patch"),
@@ -55,7 +55,7 @@ def test_no_plan_is_a_shared_noop(tmp_path):
 def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch):
     marker = tmp_path / "ran"
     repo = _fake_repo(tmp_path, marker=marker)
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
     bundle = _bundle(
         tmp_path / "bundle",
         {
@@ -76,9 +76,9 @@ def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch)
     ]
     assert plan.to_dict() == {
         "steps": [
-            _step("optima/patchers/apply_dep_patch.py"),
-            _step("optima/patchers/build_cuda_ext.py"),
-            _step("optima/patchers/build_cute_cubin.py"),
+            _step("cacheon/patchers/apply_dep_patch.py"),
+            _step("cacheon/patchers/build_cuda_ext.py"),
+            _step("cacheon/patchers/build_cute_cubin.py"),
         ]
     }
     assert all(len(step.patcher_sha256) == 64 for step in plan.steps)
@@ -100,25 +100,25 @@ def test_rebuild_phase_is_passed_exactly_and_environment_is_restored(
 ):
     marker = tmp_path / "phase"
     repo = _fake_repo(tmp_path)
-    patcher = repo / "optima" / "patchers" / "build_cuda_ext.py"
+    patcher = repo / "cacheon" / "patchers" / "build_cuda_ext.py"
     patcher.write_text(
         "import os\n"
-        f"open({str(marker)!r}, 'w').write(os.environ['OPTIMA_REBUILD_PHASE'])\n"
+        f"open({str(marker)!r}, 'w').write(os.environ['CACHEON_REBUILD_PHASE'])\n"
     )
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
-    monkeypatch.setenv("OPTIMA_REBUILD_PHASE", "sentinel")
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
+    monkeypatch.setenv("CACHEON_REBUILD_PHASE", "sentinel")
     bundle = _bundle(
         tmp_path / "bundle", {"steps": [_step("build_cuda_ext.py")]}
     )
 
     assert apply_rebuild_plan(bundle, phase=phase) is True
     assert marker.read_text() == phase
-    assert __import__("os").environ["OPTIMA_REBUILD_PHASE"] == "sentinel"
+    assert __import__("os").environ["CACHEON_REBUILD_PHASE"] == "sentinel"
 
 
 def test_unknown_rebuild_phase_rejects_before_patcher_execution(tmp_path, monkeypatch):
     marker = tmp_path / "ran"
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(_fake_repo(tmp_path, marker=marker)))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(_fake_repo(tmp_path, marker=marker)))
     bundle = _bundle(
         tmp_path / "bundle", {"steps": [_step("build_cuda_ext.py")]}
     )
@@ -138,9 +138,9 @@ def test_unknown_rebuild_phase_rejects_before_patcher_execution(tmp_path, monkey
 def test_module_entry_requires_phase_specific_container_authority(
     tmp_path, monkeypatch, phase, message
 ):
-    monkeypatch.delenv("OPTIMA_REBUILD_CONTAINER", raising=False)
-    monkeypatch.delenv("OPTIMA_ENGINE_WORKER", raising=False)
-    monkeypatch.delenv("OPTIMA_REBUILD_DEVELOPMENT", raising=False)
+    monkeypatch.delenv("CACHEON_REBUILD_CONTAINER", raising=False)
+    monkeypatch.delenv("CACHEON_ENGINE_WORKER", raising=False)
+    monkeypatch.delenv("CACHEON_REBUILD_DEVELOPMENT", raising=False)
     with pytest.raises(RebuildError, match=message):
         _main(["--phase", phase, str(tmp_path)])
 
@@ -148,9 +148,9 @@ def test_module_entry_requires_phase_specific_container_authority(
 @pytest.mark.parametrize(
     "phase,environment",
     [
-        ("build", ("OPTIMA_REBUILD_CONTAINER", "1")),
-        ("load", ("OPTIMA_ENGINE_WORKER", "1")),
-        ("all", ("OPTIMA_REBUILD_DEVELOPMENT", "1")),
+        ("build", ("CACHEON_REBUILD_CONTAINER", "1")),
+        ("load", ("CACHEON_ENGINE_WORKER", "1")),
+        ("all", ("CACHEON_REBUILD_DEVELOPMENT", "1")),
     ],
 )
 def test_module_entry_accepts_only_explicit_internal_or_development_lane(
@@ -162,14 +162,14 @@ def test_module_entry_accepts_only_explicit_internal_or_development_lane(
 
 def test_parser_normalizes_the_only_two_accepted_path_spellings(tmp_path, monkeypatch):
     repo = _fake_repo(tmp_path)
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
     short = parse_rebuild_plan(
         _bundle(tmp_path / "short", {"steps": [_step("build_cuda_ext.py")]})
     )
     full = parse_rebuild_plan(
         _bundle(
             tmp_path / "full",
-            {"steps": [_step("optima/patchers/build_cuda_ext.py")]},
+            {"steps": [_step("cacheon/patchers/build_cuda_ext.py")]},
         )
     )
     assert short is not None and full is not None
@@ -190,7 +190,7 @@ def test_parser_normalizes_the_only_two_accepted_path_spellings(tmp_path, monkey
             "exactly.*type.*path",
         ),
         ({"steps": [_step("../build_cuda_ext.py")]}, "traversal"),
-        ({"steps": [_step("optima/cli.py")]}, "registered file"),
+        ({"steps": [_step("cacheon/cli.py")]}, "registered file"),
         ({"steps": [_step("unreviewed.py")]}, "unregistered"),
         (
             {"steps": [{"type": "bundle_python", "path": "evil.py"}]},
@@ -209,7 +209,7 @@ def test_parser_normalizes_the_only_two_accepted_path_spellings(tmp_path, monkey
 def test_strict_plan_schema_rejects_unregistered_authority(
     tmp_path, monkeypatch, plan, message
 ):
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(_fake_repo(tmp_path)))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(_fake_repo(tmp_path)))
     marker = tmp_path / "pwned"
     (tmp_path / "bundle" / "evil.py").parent.mkdir(parents=True)
     (tmp_path / "bundle" / "evil.py").write_text(
@@ -222,7 +222,7 @@ def test_strict_plan_schema_rejects_unregistered_authority(
 
 
 def test_duplicate_json_keys_fail_closed(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(_fake_repo(tmp_path)))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(_fake_repo(tmp_path)))
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     (bundle / "rebuild.json").write_text('{"steps": [], "steps": []}')
@@ -232,8 +232,8 @@ def test_duplicate_json_keys_fail_closed(tmp_path, monkeypatch):
 
 def test_registered_patcher_must_exist_and_be_regular(tmp_path, monkeypatch):
     repo = _fake_repo(tmp_path)
-    (repo / "optima" / "patchers" / "build_cuda_ext.py").unlink()
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    (repo / "cacheon" / "patchers" / "build_cuda_ext.py").unlink()
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
     bundle = _bundle(
         tmp_path / "bundle", {"steps": [_step("build_cuda_ext.py")]}
     )
@@ -243,7 +243,7 @@ def test_registered_patcher_must_exist_and_be_regular(tmp_path, monkeypatch):
 
 def test_registered_patcher_symlink_is_rejected(tmp_path, monkeypatch):
     repo = _fake_repo(tmp_path)
-    patcher = repo / "optima" / "patchers" / "build_cuda_ext.py"
+    patcher = repo / "cacheon" / "patchers" / "build_cuda_ext.py"
     outside = tmp_path / "outside.py"
     outside.write_text("raise AssertionError('must not run')\n")
     patcher.unlink()
@@ -251,7 +251,7 @@ def test_registered_patcher_symlink_is_rejected(tmp_path, monkeypatch):
         patcher.symlink_to(outside)
     except OSError:
         pytest.skip("no symlink support")
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
     bundle = _bundle(
         tmp_path / "bundle", {"steps": [_step("build_cuda_ext.py")]}
     )
@@ -273,13 +273,13 @@ def test_dangling_rebuild_plan_symlink_is_rejected(tmp_path):
 
 def test_patcher_source_bytes_are_part_of_identity(tmp_path, monkeypatch):
     repo = _fake_repo(tmp_path)
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
     bundle = _bundle(
         tmp_path / "bundle", {"steps": [_step("build_cuda_ext.py")]}
     )
     before = parse_rebuild_plan(bundle)
     assert before is not None
-    (repo / "optima" / "patchers" / "build_cuda_ext.py").write_text(
+    (repo / "cacheon" / "patchers" / "build_cuda_ext.py").write_text(
         "# reviewed revision two\n"
     )
     after = parse_rebuild_plan(bundle)

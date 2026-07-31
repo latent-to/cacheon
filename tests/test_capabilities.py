@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from optima.capabilities import (
+from cacheon.capabilities import (
     CallDescriptor,
     CapabilityMetadataError,
     capability_domain_from_metadata,
 )
-from optima.registry import (
+from cacheon.registry import (
     Eligibility,
     KernelImpl,
     KernelRegistry,

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.cuda_launch import CudaOpaqueBytes, CudaPointer
-from optima.cuda_materialize import (
+from cacheon.cuda_launch import CudaOpaqueBytes, CudaPointer
+from cacheon.cuda_materialize import (
     CudaCheckedExpression,
     CudaExpressionNode,
     CudaMaterializeError,

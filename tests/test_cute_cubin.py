@@ -9,10 +9,10 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-import optima.cute_cubin as cute_cubin
-import optima.patchers.build_cute_aot as build_cute_aot
-import optima.patchers.build_cute_cubin as build_cute_cubin
-from optima.artifact_abi import (
+import cacheon.cute_cubin as cute_cubin
+import cacheon.patchers.build_cute_aot as build_cute_aot
+import cacheon.patchers.build_cute_cubin as build_cute_cubin
+from cacheon.artifact_abi import (
     ArtifactBinding,
     ArtifactPrelaunch,
     parse_artifact_bindings,
@@ -21,29 +21,29 @@ from optima.artifact_abi import (
     parse_specialization_capability_requirements,
     slot_call_abi,
 )
-from optima.artifact_device_launch import (
+from cacheon.artifact_device_launch import (
     DeviceDim3Plan,
     DeviceLaunchInvocation,
     DeviceLaunchPlan,
 )
-from optima.artifact_identity import direct_artifact_execution_identity
-from optima.artifact_runtime import (
+from cacheon.artifact_identity import direct_artifact_execution_identity
+from cacheon.artifact_runtime import (
     ArtifactRuntimeProvider,
     resolve_direct_artifact_entry,
     shutdown_direct_artifact_runtimes,
 )
-from optima.cuda_cubin import CudaCubinLibrary, CudaKernelContract
-from optima.cuda_materialize import (
+from cacheon.cuda_cubin import CudaCubinLibrary, CudaKernelContract
+from cacheon.cuda_materialize import (
     CudaCheckedExpression,
     CudaExpressionNode,
     CudaParameterPlan,
 )
-from optima.cute_aot import (
+from cacheon.cute_aot import (
     CuteAOTError,
     artifact_resource_plan_identity,
     deterministic_export_names,
 )
-from optima.cute_cubin import (
+from cacheon.cute_cubin import (
     CUTE_CUBIN_BINDING_ABI,
     CUTE_CUBIN_INDEX_RELPATH,
     CUTE_CUBIN_PATCHER,
@@ -55,7 +55,7 @@ from optima.cute_cubin import (
     prepare_cute_cubin_runtime,
     reopen_cute_cubin_index,
 )
-from optima.manifest import (
+from cacheon.manifest import (
     ABI_VERSION,
     Manifest,
     ManifestError,
@@ -63,7 +63,7 @@ from optima.manifest import (
     _parse_aot_exports,
     static_artifact_target_authority,
 )
-from optima.stack_identity import canonical_json_bytes
+from cacheon.stack_identity import canonical_json_bytes
 
 
 SLOT = "attention.msa_prefill_block_score"
@@ -724,14 +724,14 @@ def test_device_publication_build_stage_never_calls_cuda_driver(
     monkeypatch.setattr(CudaCubinLibrary, "open", classmethod(forbidden))
     monkeypatch.setattr(CudaCubinLibrary, "open_contract", classmethod(forbidden))
     monkeypatch.setattr(CudaCubinLibrary, "_capture_driver", staticmethod(forbidden))
-    monkeypatch.setenv("OPTIMA_REBUILD_CONTAINER", "1")
-    monkeypatch.setenv("OPTIMA_CUTE_COMPILE_PROFILE", str(profile_path))
-    monkeypatch.setenv("OPTIMA_CUTE_COMPILE_PROFILE_DIGEST", profile.digest)
-    monkeypatch.setenv("OPTIMA_NATIVE_BUILD_SPEC_DIGEST", _digest("build"))
-    monkeypatch.setenv("OPTIMA_ENGINE_TREE_DIGEST", _digest("tree"))
-    monkeypatch.setenv("OPTIMA_TARGET_GPU_ARCH", "sm103")
-    monkeypatch.setenv("OPTIMA_NATIVE_COMPILE_TIMEOUT_S", "60")
-    monkeypatch.setenv("OPTIMA_BUILD_TMPDIR", str(private_tmp))
+    monkeypatch.setenv("CACHEON_REBUILD_CONTAINER", "1")
+    monkeypatch.setenv("CACHEON_CUTE_COMPILE_PROFILE", str(profile_path))
+    monkeypatch.setenv("CACHEON_CUTE_COMPILE_PROFILE_DIGEST", profile.digest)
+    monkeypatch.setenv("CACHEON_NATIVE_BUILD_SPEC_DIGEST", _digest("build"))
+    monkeypatch.setenv("CACHEON_ENGINE_TREE_DIGEST", _digest("tree"))
+    monkeypatch.setenv("CACHEON_TARGET_GPU_ARCH", "sm103")
+    monkeypatch.setenv("CACHEON_NATIVE_COMPILE_TIMEOUT_S", "60")
+    monkeypatch.setenv("CACHEON_BUILD_TMPDIR", str(private_tmp))
 
     assert build_cute_cubin.build_cute_cubin_stage(bundle, stage=stage) == profile.digest
     assert reopen_cute_cubin_index(
@@ -747,11 +747,11 @@ def test_device_publication_build_stage_never_calls_cuda_driver(
 def test_device_publication_load_resolve_invoke_and_shutdown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import optima.artifact_device_launch as device_launch
-    import optima.cuda_materialize as cuda_materialize
-    import optima.eval.native_artifact as native_artifact
-    import optima.manifest as manifest_module
-    import optima.receipts as receipts
+    import cacheon.artifact_device_launch as device_launch
+    import cacheon.cuda_materialize as cuda_materialize
+    import cacheon.eval.native_artifact as native_artifact
+    import cacheon.manifest as manifest_module
+    import cacheon.receipts as receipts
 
     row, _index_path = _publication(tmp_path)
     index = reopen_cute_cubin_index(tmp_path, verify_distributions=False)

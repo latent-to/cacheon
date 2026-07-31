@@ -1,4 +1,4 @@
-"""Seam-activation receipts — the anti-phantom-pass gate (optima/receipts.py).
+"""Seam-activation receipts — the anti-phantom-pass gate (cacheon/receipts.py).
 
 Pins the failure mode hit for real on 2026-07-07: a candidate engine that comes up
 WITHOUT the seam (missing .pth bootstrap / bundle load fallback) produced
@@ -13,20 +13,20 @@ import os
 
 import pytest
 
-from optima import receipts
-from optima.registry import Eligibility, KernelImpl, KernelRegistry
+from cacheon import receipts
+from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
 
 @pytest.fixture()
 def receipt_dir(tmp_path, monkeypatch):
     rdir = tmp_path / "receipts"
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(rdir))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(rdir))
     monkeypatch.setattr(receipts, "_ONCE", set())
     return rdir
 
 
 def test_no_env_is_a_silent_noop(tmp_path, monkeypatch):
-    monkeypatch.delenv("OPTIMA_SEAM_RECEIPT_DIR", raising=False)
+    monkeypatch.delenv("CACHEON_SEAM_RECEIPT_DIR", raising=False)
     receipts.write("active", {"bundle": "x"})  # must not raise, must not create files
     receipts.completed("norm.rmsnorm")
     assert list(tmp_path.iterdir()) == []
@@ -69,7 +69,7 @@ def test_require_diagnoses_bundle_fallback(receipt_dir):
 def test_registry_lookup_writes_fired_once(receipt_dir, monkeypatch):
     # The fired guard is process-global (one receipt per slot per process); isolate it
     # so earlier suite tests that exercised lookup() can't mask the write.
-    monkeypatch.setattr("optima.registry._FIRED_SLOTS", set())
+    monkeypatch.setattr("cacheon.registry._FIRED_SLOTS", set())
     reg = KernelRegistry()
     reg.register(KernelImpl(slot="activation.silu_and_mul", bundle_id="t",
                             entry=lambda *a: None, eligibility=Eligibility()))
@@ -82,7 +82,7 @@ def test_registry_lookup_writes_fired_once(receipt_dir, monkeypatch):
 
 
 def test_registry_miss_writes_nothing(receipt_dir, monkeypatch):
-    monkeypatch.setattr("optima.registry._FIRED_SLOTS", set())
+    monkeypatch.setattr("cacheon.registry._FIRED_SLOTS", set())
     reg = KernelRegistry()
     reg.register(KernelImpl(slot="norm.rmsnorm", bundle_id="t", entry=lambda *a: None,
                             eligibility=Eligibility(dtypes=frozenset({"float16"}))))
@@ -94,9 +94,9 @@ def test_registry_miss_writes_nothing(receipt_dir, monkeypatch):
 
 def test_no_env_does_not_consume_execution_once_guard(tmp_path, monkeypatch):
     monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.delenv("OPTIMA_SEAM_RECEIPT_DIR", raising=False)
+    monkeypatch.delenv("CACHEON_SEAM_RECEIPT_DIR", raising=False)
     receipts.completed("norm.rmsnorm")
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(tmp_path))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
     receipts.completed("norm.rmsnorm")
     assert len(receipts.collect(tmp_path, "completed")) == 1
 
@@ -105,14 +105,14 @@ def test_execution_once_guard_is_scoped_to_resolved_directory(tmp_path, monkeypa
     monkeypatch.setattr(receipts, "_ONCE", set())
     first = tmp_path / "first"
     second = tmp_path / "second"
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(first))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(first))
     receipts.completed("norm.rmsnorm")
     receipts.completed("norm.rmsnorm")
     monkeypatch.setenv(
-        "OPTIMA_SEAM_RECEIPT_DIR", f"{first}/../{first.name}"
+        "CACHEON_SEAM_RECEIPT_DIR", f"{first}/../{first.name}"
     )
     receipts.completed("norm.rmsnorm")
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(second))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(second))
     receipts.completed("norm.rmsnorm")
     assert len(receipts.collect(first, "completed")) == 1
     assert len(receipts.collect(second, "completed")) == 1
@@ -120,7 +120,7 @@ def test_execution_once_guard_is_scoped_to_resolved_directory(tmp_path, monkeypa
 
 def test_failed_execution_receipt_write_does_not_consume_guard(tmp_path, monkeypatch):
     monkeypatch.setattr(receipts, "_ONCE", set())
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(tmp_path))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
     outcomes = iter((False, True))
     calls = []
 
@@ -163,8 +163,8 @@ def test_completed_and_fallback_are_independently_once(receipt_dir):
         ({}, "all"),
         (
             {
-                "OPTIMA_ENGINE_WORKER": "1",
-                "OPTIMA_PREBUILT_ARTIFACTS": "1",
+                "CACHEON_ENGINE_WORKER": "1",
+                "CACHEON_PREBUILT_ARTIFACTS": "1",
             },
             "load",
         ),
@@ -174,9 +174,9 @@ def test_scheduler_bundle_rebuild_phase_matches_launch_authority(
     monkeypatch, environment, expected_phase
 ):
     """Production is load-only; explicit direct eval reuses its dev cache."""
-    from optima import manifest, rebuild, sandbox
-    from optima.registry import REGISTRY
-    from optima.seam import _load_bundle_into_registry
+    from cacheon import manifest, rebuild, sandbox
+    from cacheon.registry import REGISTRY
+    from cacheon.seam import _load_bundle_into_registry
 
     class EmptyManifest:
         ops = ()
@@ -199,7 +199,7 @@ def test_scheduler_bundle_rebuild_phase_matches_launch_authority(
         "apply_rebuild_plan",
         lambda bundle, *, phase: calls.append((bundle, phase)),
     )
-    for name in ("OPTIMA_ENGINE_WORKER", "OPTIMA_PREBUILT_ARTIFACTS"):
+    for name in ("CACHEON_ENGINE_WORKER", "CACHEON_PREBUILT_ARTIFACTS"):
         monkeypatch.delenv(name, raising=False)
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
@@ -216,16 +216,16 @@ def test_scheduler_bundle_rebuild_phase_matches_launch_authority(
 @pytest.mark.parametrize(
     "environment",
     (
-        {"OPTIMA_ENGINE_WORKER": "1"},
-        {"OPTIMA_PREBUILT_ARTIFACTS": "1"},
+        {"CACHEON_ENGINE_WORKER": "1"},
+        {"CACHEON_PREBUILT_ARTIFACTS": "1"},
     ),
 )
 def test_scheduler_rejects_partial_native_artifact_authority(
     monkeypatch, environment
 ):
-    from optima import manifest, sandbox
-    from optima.registry import REGISTRY
-    from optima.seam import _load_bundle_into_registry
+    from cacheon import manifest, sandbox
+    from cacheon.registry import REGISTRY
+    from cacheon.seam import _load_bundle_into_registry
 
     class EmptyManifest:
         ops = ()
@@ -238,7 +238,7 @@ def test_scheduler_rejects_partial_native_artifact_authority(
     monkeypatch.setattr(manifest, "all_declared_cuda_sources", lambda *_args: ())
     monkeypatch.setattr(manifest, "all_declared_dep_patches", lambda *_args: ())
     monkeypatch.setattr(sandbox, "scan_tree", lambda *_args, **_kwargs: CleanTree())
-    for name in ("OPTIMA_ENGINE_WORKER", "OPTIMA_PREBUILT_ARTIFACTS"):
+    for name in ("CACHEON_ENGINE_WORKER", "CACHEON_PREBUILT_ARTIFACTS"):
         monkeypatch.delenv(name, raising=False)
     for name, value in environment.items():
         monkeypatch.setenv(name, value)

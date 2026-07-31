@@ -71,10 +71,10 @@ and independently reopened typed inputs; the release API does not discover them
 from an ambient working directory:
 
 ```python
-from optima.release import prepare_release, publish_release, sign_release
+from cacheon.release import prepare_release, publish_release, sign_release
 
 prepared = prepare_release(
-    source_root=optima_source_root,
+    source_root=cacheon_source_root,
     release_manifest=release_manifest,
     engine_tree=materialized_engine_tree,
     integrations=integration_records,
@@ -229,4 +229,4 @@ An aborted release attempt leaves the previous signed publication authoritative.
 inputs should create a newly prepared and signed descriptor, not a hand-edited release
 directory.
 
-Source: [`optima/release.py`](https://github.com/latent-to/cacheon/blob/main/optima/release.py).
+Source: [`cacheon/release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py).

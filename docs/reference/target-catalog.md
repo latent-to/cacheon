@@ -132,4 +132,4 @@ digest. Each target also binds a target-spec digest and a contract digest. A
 validator does not reinterpret a historical contribution through whatever
 catalog happens to be installed later.
 
-Source: [`optima/target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py).
+Source: [`cacheon/target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).

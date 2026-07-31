@@ -4,8 +4,8 @@ import types
 
 import pytest
 
-from optima import chain as chain_module
-from optima.chain.weights import (
+from cacheon import chain as chain_module
+from cacheon.chain.weights import (
     StaleWeightProjectionError,
     WeightProjection,
     WeightPublicationError,
@@ -14,7 +14,7 @@ from optima.chain.weights import (
     reconcile_weight_publication,
     resume_weight_projection,
 )
-from optima.stack_identity import canonical_digest
+from cacheon.stack_identity import canonical_digest
 
 
 def _d(char: str) -> str:

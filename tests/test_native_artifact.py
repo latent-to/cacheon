@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from optima.eval import native_artifact as module
-from optima.eval.native_artifact import (
+from cacheon.eval import native_artifact as module
+from cacheon.eval.native_artifact import (
     NativeArtifactCollisionError,
     NativeArtifactError,
     NativeArtifactFile,
@@ -25,7 +25,7 @@ from optima.eval.native_artifact import (
     publish_native_artifact,
     reopen_native_artifact,
 )
-from optima.stack_identity import canonical_json_bytes
+from cacheon.stack_identity import canonical_json_bytes
 
 
 BUILD = "ab" * 32
@@ -437,7 +437,7 @@ def test_source_symlink_hardlink_fifo_and_socket_reject(tmp_path):
                 case, tmp_path / f"publication-{index}", build_spec_digest=BUILD
             )
 
-    socket_root = Path(tempfile.mkdtemp(prefix="optima-na-", dir="/tmp"))
+    socket_root = Path(tempfile.mkdtemp(prefix="cacheon-na-", dir="/tmp"))
     handle = socket.socket(socket.AF_UNIX)
     try:
         handle.bind(str(socket_root / "x.so"))

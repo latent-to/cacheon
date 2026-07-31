@@ -8,7 +8,7 @@ from types import ModuleType
 
 import pytest
 
-from optima.integrations import sglang_msa_prefill as seam
+from cacheon.integrations import sglang_msa_prefill as seam
 
 
 def _module(name: str) -> ModuleType:

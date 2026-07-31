@@ -1,6 +1,6 @@
 # Measurement and decision policy
 
-Production Optima does not reduce a proposal to one self-reported score. It derives a
+Production Cacheon does not reduce a proposal to one self-reported score. It derives a
 three-way qualification decision from retained execution, graph, speed, and pristine
 quality evidence, then requires independent reproduction before settlement.
 
@@ -189,9 +189,9 @@ It does not mean:
 
 ## Source anchors
 
-- [Raw speed recomputation](https://github.com/latent-to/cacheon/blob/main/optima/eval/scoring.py)
-- [Frozen calibration](https://github.com/latent-to/cacheon/blob/main/optima/eval/calibration.py)
-- [Qualification runner](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)
-- [Resident crossover](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py)
-- [Settlement](https://github.com/latent-to/cacheon/blob/main/optima/settlement.py)
-- [Economics](https://github.com/latent-to/cacheon/blob/main/optima/economics.py)
+- [Raw speed recomputation](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/scoring.py)
+- [Frozen calibration](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py)
+- [Qualification runner](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
+- [Resident crossover](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)
+- [Settlement](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
+- [Economics](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py)

@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima import chain
-from optima.chain.weight_share import (
+from cacheon import chain
+from cacheon.chain.weight_share import (
     AuthenticatedWeightOffer,
     CURRENT_WEIGHTS_PATH,
     LANE_CORE,
@@ -42,9 +42,9 @@ from optima.chain.weight_share import (
     verify_authenticated_weight_offer,
     write_current_weight_offer,
 )
-from optima.chain.weights import WeightProjection, WeightPublicationRecord
-from optima.object_store import MemoryObjectStore
-from optima.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
+from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
+from cacheon.object_store import MemoryObjectStore
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
 
 
 def _d(label: str) -> str:
@@ -142,11 +142,11 @@ def _debt_binding(
 ):
     from types import SimpleNamespace
 
-    from optima.chain.debt_publication import (
+    from cacheon.chain.debt_publication import (
         PUBLICATION_KIND_CORE,
         build_debt_weight_publication_binding,
     )
-    from optima.finite_debt import PPM, DebtEpochProjection, DebtHotkeyWeight
+    from cacheon.finite_debt import PPM, DebtEpochProjection, DebtHotkeyWeight
 
     economic = DebtEpochProjection(
         _d("core policy"),
@@ -201,7 +201,7 @@ def test_debt_offer_roundtrip_and_rebind(tmp_path: Path) -> None:
 def test_fresh_signer_only_journal_accepts_a_debt_offer(
     tmp_path: Path,
 ) -> None:
-    from optima.chain.intake import (
+    from cacheon.chain.intake import (
         FinalizedIntakeStore,
         IntakeScope,
         SQLiteFollowerWeightPublicationJournal,
@@ -413,11 +413,11 @@ def test_fetch_binds_request_signature_over_timestamp() -> None:
     class _Resp:
         status = 200
         headers = {
-            "X-Optima-Authority-Hotkey": "authority",
-            "X-Optima-Netuid": "307",
-            "X-Optima-Timestamp": "100",
-            "X-Optima-Signature": "00",
-            "X-Optima-Body-Digest": "00",
+            "X-Cacheon-Authority-Hotkey": "authority",
+            "X-Cacheon-Netuid": "307",
+            "X-Cacheon-Timestamp": "100",
+            "X-Cacheon-Signature": "00",
+            "X-Cacheon-Body-Digest": "00",
         }
 
         def read(self) -> bytes:
@@ -444,8 +444,8 @@ def test_fetch_binds_request_signature_over_timestamp() -> None:
             verify=lambda *_a: False,
         )
     headers = {str(k).lower(): v for k, v in captured["headers"].items()}  # type: ignore[union-attr]
-    assert headers["x-optima-hotkey"] == "follower"
-    assert headers["x-optima-timestamp"] == "100"
+    assert headers["x-cacheon-hotkey"] == "follower"
+    assert headers["x-cacheon-timestamp"] == "100"
     digest = request_auth_digest(
         hotkey="follower",
         method="GET",
@@ -453,7 +453,7 @@ def test_fetch_binds_request_signature_over_timestamp() -> None:
         path=CURRENT_WEIGHTS_PATH,
         timestamp=100,
     )
-    assert headers["x-optima-signature"] == sign_auth_digest(follower, digest)
+    assert headers["x-cacheon-signature"] == sign_auth_digest(follower, digest)
 
 
 class _Journal:
@@ -511,7 +511,7 @@ def test_publish_followed_weights_uses_reconciler(
         )
 
     monkeypatch.setattr(
-        "optima.chain.weight_share.reconcile_weight_publication",
+        "cacheon.chain.weight_share.reconcile_weight_publication",
         fake_reconcile,
     )
     result = publish_followed_weights(
@@ -550,7 +550,7 @@ def test_publish_followed_debt_offer_skips_crown_gate(
         )
 
     monkeypatch.setattr(
-        "optima.chain.weight_share.reconcile_weight_publication",
+        "cacheon.chain.weight_share.reconcile_weight_publication",
         fake_reconcile,
     )
     publish_followed_weights(
@@ -567,7 +567,7 @@ def test_publish_followed_debt_offer_skips_crown_gate(
 def test_push_endpoint_accepts_rotatable_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from optima.chain.weight_push_auth import (
+    from cacheon.chain.weight_push_auth import (
         PushCredentialSet,
         mint_push_credential,
         write_push_credentials,
@@ -615,7 +615,7 @@ def test_push_endpoint_accepts_rotatable_credentials(
         assert accepted["projection_digest"] == debt_offer.projection.digest
         assert accepted["credential_id"] == credential.credential_id
         assert accepted["request_timestamp"] == 1_700_000_100
-        assert accepted["schema"] == "optima.weight-share.push-ack.v1"
+        assert accepted["schema"] == "cacheon.weight-share.push-ack.v1"
         assert isinstance(accepted["mac"], str)
         stored = read_offer_storage(offer_path)
         assert isinstance(stored, AuthenticatedWeightOffer)
@@ -654,7 +654,7 @@ def test_push_endpoint_accepts_rotatable_credentials(
 def test_push_enabled_gateway_refuses_forged_object_store_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from optima.chain.weight_push_auth import (
+    from cacheon.chain.weight_push_auth import (
         PushCredential,
         PushCredentialSet,
         mint_push_credential,
@@ -723,7 +723,7 @@ def test_push_enabled_gateway_refuses_forged_object_store_bytes(
 
 
 def test_push_client_rejects_an_incomplete_acknowledgement() -> None:
-    from optima.chain.weight_push_auth import mint_push_credential
+    from cacheon.chain.weight_push_auth import mint_push_credential
 
     credential = mint_push_credential(credential_id="eval")
     offer = CurrentWeightOffer.from_legacy_projection(_projection())
@@ -751,7 +751,7 @@ def test_push_client_rejects_an_incomplete_acknowledgement() -> None:
 
 
 def test_push_client_rejects_an_exact_acknowledgement_with_wrong_mac() -> None:
-    from optima.chain.weight_push_auth import (
+    from cacheon.chain.weight_push_auth import (
         PushCredential,
         mint_push_credential,
         sign_push_acknowledgement,
@@ -795,9 +795,9 @@ def test_push_client_rejects_an_exact_acknowledgement_with_wrong_mac() -> None:
 def test_push_weight_offer_cli_never_calls_set_weights(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import optima.cli as cli
-    from optima.chain.intake import FinalizedIntakeStore, IntakeScope
-    from optima.chain.weight_push_auth import (
+    import cacheon.cli as cli
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+    from cacheon.chain.weight_push_auth import (
         PushCredentialSet,
         mint_push_credential,
         write_push_credentials,
@@ -859,9 +859,9 @@ def test_push_weight_offer_cli_never_calls_set_weights(
             "offer_digest": offer.digest,
         }
 
-    monkeypatch.setattr("optima.chain.weight_share.push_current_weights", fake_push)
+    monkeypatch.setattr("cacheon.chain.weight_share.push_current_weights", fake_push)
     monkeypatch.setattr(
-        "optima.chain.weights.reconcile_weight_publication",
+        "cacheon.chain.weights.reconcile_weight_publication",
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("eval must not publish to chain")
         ),
@@ -904,8 +904,8 @@ def test_set_weights_publishes_only_after_accepted_reconcile(
     return_code: int,
     published: bool,
 ) -> None:
-    import optima.cli as cli
-    from optima.chain.intake import FinalizedIntakeStore, IntakeScope
+    import cacheon.cli as cli
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
 
     scope = IntakeScope("0x" + "0" * 64, 307)
     path = tmp_path / "private" / "intake.sqlite3"
@@ -950,7 +950,7 @@ def test_set_weights_publishes_only_after_accepted_reconcile(
         )
 
     monkeypatch.setattr(
-        "optima.chain.weights.reconcile_weight_publication", fake_reconcile
+        "cacheon.chain.weights.reconcile_weight_publication", fake_reconcile
     )
     monkeypatch.setattr(
         cli,

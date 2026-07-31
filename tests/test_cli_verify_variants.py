@@ -10,8 +10,8 @@ import pytest
 
 pytest.importorskip("torch")
 
-from optima import cli
-from optima.verify import VerifyResult
+from cacheon import cli
+from cacheon.verify import VerifyResult
 
 
 def _write_variant_bundle(tmp_path):
@@ -70,7 +70,7 @@ def test_cmd_verify_forwards_each_variant_with_its_declared_domain(
             slot=args[0], dtype=kwargs["dtype_name"], passed=True, shape_results=[]
         )
 
-    import optima.eval._launch as launch
+    import cacheon.eval._launch as launch
 
     monkeypatch.setattr(launch, "call_in_subprocess", fake_call_in_subprocess)
     args = argparse.Namespace(
@@ -168,7 +168,7 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
     )
     results = []
 
-    import optima.eval._launch as launch
+    import cacheon.eval._launch as launch
 
     real_call_in_subprocess = launch.call_in_subprocess
 
@@ -288,7 +288,7 @@ def test_cmd_verify_rejects_overlapping_variants_before_candidate_invocation(
     monkeypatch.setattr(cli, "_recursive_scan_ok", lambda *args, **kwargs: True)
     candidate_calls = 0
 
-    import optima.eval._launch as launch
+    import cacheon.eval._launch as launch
 
     def must_not_invoke_candidate(*_args, **_kwargs):
         nonlocal candidate_calls
@@ -346,7 +346,7 @@ def test_cmd_verify_forwards_collective_graph_and_capability_policy(
         cli, "scan_path", lambda path: SimpleNamespace(ok=True, violations=[])
     )
 
-    import optima.verify_collective as collective
+    import cacheon.verify_collective as collective
 
     def fake_verify(*args, **kwargs):
         calls.append((args, kwargs))

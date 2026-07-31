@@ -7,8 +7,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima import receipts
-from optima.eval import engine_worker
+from cacheon import receipts
+from cacheon.eval import engine_worker
 
 
 def _active(pid: int, rank: int, slots=("a", "b"), world_size=2):
@@ -36,7 +36,7 @@ def _distributed_receipt_worker(rank, world_size, store_path, receipt_dir):
         world_size=world_size,
     )
     try:
-        os.environ["OPTIMA_SEAM_RECEIPT_DIR"] = receipt_dir
+        os.environ["CACHEON_SEAM_RECEIPT_DIR"] = receipt_dir
         receipts.write("active", {"slots": ["slot.a"]})
         receipts.completed("slot.a")
         dist.barrier()

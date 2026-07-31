@@ -5,8 +5,8 @@ from __future__ import annotations
 from argparse import Namespace
 from types import SimpleNamespace
 
-import optima.cli as cli
-from optima import chain
+import cacheon.cli as cli
+from cacheon import chain
 
 
 def test_follow_weights_pins_subnet_owner_when_expected_authority_empty(
@@ -52,7 +52,7 @@ def test_follow_weights_pins_subnet_owner_when_expected_authority_empty(
         raise SystemExit("stop-after-pin")
 
     monkeypatch.setattr(
-        "optima.chain.weight_share.fetch_current_weights", _fetch
+        "cacheon.chain.weight_share.fetch_current_weights", _fetch
     )
 
     class _Hotkey:

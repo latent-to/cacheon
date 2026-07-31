@@ -2,7 +2,8 @@
 
 Every contribution bundle has a `manifest.toml`. The manifest is parsed as
 data before any contribution module is loaded. Its current ABI identifier is
-`optima-op-abi-v0`.
+`optima-op-abi-v0`. Branding does not version this hash-bound protocol
+identifier, so Cacheon authors continue to emit the published spelling.
 
 ## What parsing does—and does not do
 
@@ -55,6 +56,11 @@ Paths are relative to the bundle and must resolve to regular contained files.
 | `[competition]` | recommended | Explicit requested target and `slot`/`atomic` mode |
 | `[[ops]]` | yes | One or more implementation rows |
 | `[[dep_patches]]` | no | Declared text patches for a validator-approved dependency lane |
+
+Validators retain a closed reader alias for the Cacheon spelling produced
+during rename development, but it is not an authoring identifier. New manifests
+continue to use `optima-op-abi-v0`; readers preserve either submitted spelling
+because it participates in the committed bundle identity.
 
 The canonical bundle hash, not `bundle_id`, is the proposal's content identity.
 
@@ -334,4 +340,4 @@ A bundle cannot choose:
 - Hash and package the exact verified tree; any later byte change is a new
   proposal.
 
-Source: [`optima/manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/manifest.py).
+Source: [`cacheon/manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/manifest.py).

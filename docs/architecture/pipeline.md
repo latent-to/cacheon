@@ -1,6 +1,6 @@
 # Evaluation pipeline
 
-Optima has two evaluation paths with different authority:
+Cacheon has two evaluation paths with different authority:
 
 - the **developer path** helps a miner build and debug a proposal;
 - the **production referee path** can create retained qualification, crown, settlement, and reward state.
@@ -62,7 +62,7 @@ Submissions enter through native timelock commit-reveal. The validator acts only
 
 State transitions are typed and transactional. The validator does not reconstruct production authority from console output, mutable directories, or a legacy JSON ledger.
 
-Principal code: [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py) and [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py).
+Principal code: [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) and [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py).
 
 ## 2. Hardened fetch and publication
 
@@ -78,7 +78,7 @@ The submitted URL is transport, not identity. The fetch path:
 
 Partial downloads, path tricks, changed content, duplicate/malformed archives, and publication mismatches fail closed. Candidate workers receive only immutable publications; they do not fetch miner URLs themselves.
 
-Principal code: [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py), [`chain/payload.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/payload.py), and [`bundle_hash.py`](https://github.com/latent-to/cacheon/blob/main/optima/bundle_hash.py).
+Principal code: [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py), [`chain/payload.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/payload.py), and [`bundle_hash.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bundle_hash.py).
 
 ## 3. Arena and target resolution
 
@@ -104,7 +104,7 @@ The proposal is resolved against the exact target catalog snapshot. A registered
 
 The command-line `chain-validate` loop can perform intake alone. Full production qualification requires the operator to inject a real `ArenaServiceRegistry` and select `--arena-id`; the repository does not manufacture a production arena provider from implicit defaults.
 
-Principal code: [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py), [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py), and [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_plan.py).
+Principal code: [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py), and [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
 ## 4. Non-crown screens and routing
 
@@ -134,9 +134,9 @@ provider's current capacity.
 Infrastructure errors and measurements too ambiguous for an attributable rejection remain
 retryable rather than being converted into a loss.
 
-Principal code: [`eval/oci_resident_session.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_resident_session.py),
-[`eval/resident_queue.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_queue.py),
-and [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_screen_lane.py).
+Principal code: [`eval/oci_resident_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_resident_session.py),
+[`eval/resident_queue.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_queue.py),
+and [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py).
 
 ## 5. Cohort authority
 
@@ -159,7 +159,7 @@ Authoritative qualification does not inherit those measurements. It constructs a
 candidate-specific authority and retains each speed, audit, graph, and T product against
 that exact delta.
 
-Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_intake.py) and [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_plan.py).
+Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py) and [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
 ## 6. Resident adaptive qualification
 
@@ -226,10 +226,10 @@ required_bar   = 1 + max(margin_floor, noise_multiplier × measured_noise)
 
 The exact registered policy, not this explanatory formula, is authoritative.
 
-Principal code: [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py),
-[`eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py),
-[`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py),
-and [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py).
+Principal code: [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py),
+[`eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py),
+[`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py),
+and [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py).
 
 ## 7. Verdict semantics
 
@@ -323,7 +323,7 @@ For the selected winner, the conservative settled speedup is the lower accepted 
 from the two passes. The stack transition and settlement evidence are committed
 transactionally; a partial write cannot expose a half-updated incumbent.
 
-Principal code: [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/optima/settlement.py).
+Principal code: [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py).
 
 ## 10. Incentive state and weight publication
 
@@ -350,11 +350,11 @@ Both publishers persist intent and later readback states. An SDK return value do
 prove inclusion, and neither publisher may debit or advance economic authority from an
 unconfirmed vector.
 
-Principal code: [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/weights.py),
-[`finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/optima/finite_debt.py),
-[`incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/optima/incentive_composition.py),
-[`chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_activation.py),
-and [`chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py).
+Principal code: [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py),
+[`finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py),
+[`incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py),
+[`chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py),
+and [`chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py).
 See the [emissions policy](../reference/emissions-policy.md).
 
 ## 11. Integration and release

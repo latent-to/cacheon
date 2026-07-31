@@ -10,20 +10,20 @@ import sysconfig
 
 import pytest
 
-from optima.eval import runtime_preflight as rp
-from optima.eval.oci_process import OCIProcessManager
-from optima.eval.runtime_preflight import (
+from cacheon.eval import runtime_preflight as rp
+from cacheon.eval.oci_process import OCIProcessManager
+from cacheon.eval.runtime_preflight import (
     CommandResult,
     RuntimePreflightConfig,
     RuntimePreflightError,
 )
 
 
-IMAGE = "registry.example/optima-runtime@sha256:" + "a" * 64
+IMAGE = "registry.example/cacheon-runtime@sha256:" + "a" * 64
 LOCAL_IMAGE_ID = "sha256:" + "b" * 64
 WORKER_DIGEST = "c" * 64
 DOCKER = "/usr/bin/docker"
-CONTAINER_NAME = "optima-runtime-preflight-" + "1" * 20
+CONTAINER_NAME = "cacheon-runtime-preflight-" + "1" * 20
 CONTAINER_ID = "d" * 64
 
 
@@ -113,7 +113,7 @@ def _config(**changes) -> RuntimePreflightConfig:
         "expected_machine": "x86_64",
         "expected_python_executable": "/usr/local/bin/python3",
         "expected_sglang_version": "0.5.2",
-        "expected_worker_distribution": "optima-harness",
+        "expected_worker_distribution": "cacheon-harness",
         "expected_worker_version": "0.0.1",
         "expected_worker_digest": WORKER_DIGEST,
         "uid": 65532,
@@ -149,7 +149,7 @@ def _inspect(
 def _container_payload(
     *,
     sglang="0.5.2",
-    worker_distribution="optima-harness",
+    worker_distribution="cacheon-harness",
     worker_version="0.0.1",
     worker_digest=WORKER_DIGEST,
     python_platform="linux-x86_64",
@@ -235,7 +235,7 @@ def test_success_binds_image_platform_and_installed_worker_identity():
     assert receipt.repo_digests == (IMAGE,)
     assert receipt.oci_platform == "linux/amd64"
     assert receipt.platform_digest == expected_platform_digest
-    assert receipt.worker_distribution == "optima-harness"
+    assert receipt.worker_distribution == "cacheon-harness"
     assert receipt.worker_version == "0.0.1"
     assert receipt.worker_distribution_digest == WORKER_DIGEST
     assert receipt.launch_identity() == {
@@ -422,7 +422,7 @@ def test_fixed_probe_uses_metadata_only_and_contains_no_package_imports():
             imported.update(alias.name.split(".", 1)[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".", 1)[0])
-    assert imported.isdisjoint({"optima", "torch", "sglang", "triton", "flashinfer"})
+    assert imported.isdisjoint({"cacheon", "torch", "sglang", "triton", "flashinfer"})
     assert "importlib.metadata.distributions" in rp._CONTAINER_SCRIPT
     assert "dist.locate_file" in rp._CONTAINER_SCRIPT
     assert "candidate" not in rp._CONTAINER_SCRIPT.lower()
@@ -433,19 +433,19 @@ def test_fixed_probe_hashes_installed_worker_without_importing_it(
     tmp_path, monkeypatch, capsys
 ):
     site = tmp_path / "site-packages"
-    module = site / "optima" / "__init__.py"
-    metadata_dir = site / "optima_harness-0.0.1.dist-info"
+    module = site / "cacheon" / "__init__.py"
+    metadata_dir = site / "cacheon_harness-0.0.1.dist-info"
     metadata = metadata_dir / "METADATA"
     record = metadata_dir / "RECORD"
     module.parent.mkdir(parents=True)
     metadata_dir.mkdir()
     module.write_bytes(b'raise RuntimeError("must never import worker")\n')
-    metadata.write_bytes(b"Metadata-Version: 2.1\nName: optima-harness\nVersion: 0.0.1\n")
+    metadata.write_bytes(b"Metadata-Version: 2.1\nName: cacheon-harness\nVersion: 0.0.1\n")
     record.write_text(
-        "optima/__init__.py,,\n"
-        "optima_harness-0.0.1.dist-info/METADATA,,\n"
-        "optima_harness-0.0.1.dist-info/RECORD,,\n"
-        "../../../bin/optima,,\n"
+        "cacheon/__init__.py,,\n"
+        "cacheon_harness-0.0.1.dist-info/METADATA,,\n"
+        "cacheon_harness-0.0.1.dist-info/RECORD,,\n"
+        "../../../bin/cacheon,,\n"
     )
     original_get_path = sysconfig.get_path
     monkeypatch.setattr(
@@ -467,7 +467,7 @@ def test_fixed_probe_hashes_installed_worker_without_importing_it(
         rows.append([relative, len(content), hashlib.sha256(content).hexdigest()])
     identity = {
         "schema": rp.WORKER_DIGEST_SCHEMA,
-        "distribution": "optima-harness",
+        "distribution": "cacheon-harness",
         "version": "0.0.1",
         "files": sorted(rows),
     }
@@ -475,7 +475,7 @@ def test_fixed_probe_hashes_installed_worker_without_importing_it(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     assert payload["worker"] == {
-        "distribution": "optima-harness",
+        "distribution": "cacheon-harness",
         "version": "0.0.1",
         "digest": expected,
         "file_count": 3,
@@ -496,8 +496,8 @@ def test_each_preflight_uses_a_unique_container_name(monkeypatch):
         for runner in runners
     ]
     assert names == [
-        "--name=optima-runtime-preflight-" + "1" * 20,
-        "--name=optima-runtime-preflight-" + "2" * 20,
+        "--name=cacheon-runtime-preflight-" + "1" * 20,
+        "--name=cacheon-runtime-preflight-" + "2" * 20,
     ]
 
 
@@ -509,7 +509,7 @@ def test_each_preflight_uses_a_unique_container_name(monkeypatch):
         ({"expected_oci_platform": "linux"}, "OCI platform"),
         ({"expected_python_platform": ""}, "expected_python_platform"),
         ({"expected_machine": "bad\nvalue"}, "expected_machine"),
-        ({"expected_worker_distribution": "other"}, "optima-harness"),
+        ({"expected_worker_distribution": "other"}, "cacheon-harness"),
         ({"expected_worker_version": "bad;version"}, "worker_version"),
         ({"expected_worker_digest": "A" * 64}, "lowercase sha256"),
         ({"expected_worker_digest": "c" * 63}, "lowercase sha256"),

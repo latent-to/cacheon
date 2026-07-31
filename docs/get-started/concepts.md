@@ -1,16 +1,16 @@
-# What Optima is
+# What Cacheon is
 
-Optima is an open inference-acceleration system built around a pinned SGLang runtime.
+Cacheon is an open inference-acceleration system built around a pinned SGLang runtime.
 It uses a permissionless market to discover GPU optimizations, a hostile-code referee
 to measure them, and a separate integration and release process to turn selected work
 into a product.
 
 The chain is useful for proposal ordering, attribution, and rewards. It is not a runtime
-dependency of Optima Engine.
+dependency of Cacheon Engine.
 
 ## A useful mental model
 
-Think of Optima as a compiler contest whose winning patches must pass through a product
+Think of Cacheon as a compiler contest whose winning patches must pass through a product
 release process:
 
 ```text
@@ -20,7 +20,7 @@ proposal      ->   immutable candidate -> crown     ->   reviewed integration
                          |                  |                    |
                          | measurement      | economic record    | signed release
                          v                  v                    v
-                    retained evidence   emissions policy    Optima Engine
+                    retained evidence   emissions policy    Cacheon Engine
 ```
 
 The arrows are deliberately not automatic. A validator can prove that one exact source
@@ -39,14 +39,14 @@ This separation answers three questions that otherwise get mixed together:
 
 ## Two systems, three operational surfaces
 
-At the highest level, Optima separates the chain-independent product from the
+At the highest level, Cacheon separates the chain-independent product from the
 market that improves it. Inside the market system, the subnet control plane and
 the hostile-code referee remain distinct operational surfaces.
 
-### Optima Engine
+### Cacheon Engine
 
-Optima Engine is the chain-independent release contract for serving deployments. A
-completed release must bind a pinned upstream runtime, reviewed Optima source, exact
+Cacheon Engine is the chain-independent release contract for serving deployments. A
+completed release must bind a pinned upstream runtime, reviewed Cacheon source, exact
 model identity, native artifacts, a serving specification, provenance, an SBOM, and a
 signature rooted in an external Ed25519 public key. The current revision implements
 construction and verification primitives but does not claim a completed production
@@ -76,7 +76,7 @@ serving release.
 |---|---|---|
 | **Proposal** | Hostile input | A miner asks the validator to evaluate one target-scoped delta or discovery prototype. |
 | **Crown** | Retained measurement evidence | Two independent qualifications show that the same delta improved one registered arena and target. |
-| **Integrated contribution** | Reviewed Optima source | Maintainers preserve the crowned selected-payload bytes while approving provenance, tests, fallbacks, compatibility, and surrounding packaging. |
+| **Integrated contribution** | Reviewed Cacheon source | Maintainers preserve the crowned selected-payload bytes while approving provenance, tests, fallbacks, compatibility, and surrounding packaging. |
 | **Engine release** | Signed deployment artifact | A reproducible product assembles reviewed contributions and a sealed model for serving. |
 
 No transition is implicit. In particular, a crown is not permission to run miner source
@@ -162,7 +162,7 @@ oracle and prevents chain state from leaking into deployment.
 
 ## Authority levels
 
-Optima exposes contributor diagnostics that do not create crowns:
+Cacheon exposes contributor diagnostics that do not create crowns:
 
 - `scan` checks static policy without loading a bundle;
 - `verify` compares a slot implementation with its trusted reference; and

@@ -1,6 +1,6 @@
 # Copy and priority controls
 
-Optima separates three questions:
+Cacheon separates three questions:
 
 1. Which proposal arrived first under chain consensus?
 2. Are two submitted deltas authoritatively the same for automatic disposition?
@@ -135,7 +135,7 @@ When investigating a suspected copy:
 
 ## Source anchors
 
-- [Submitted-delta fingerprints](https://github.com/latent-to/cacheon/blob/main/optima/copy_fingerprint.py)
-- [Finalized copy reconciliation](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
-- [Validator loop integration](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py)
+- [Submitted-delta fingerprints](https://github.com/latent-to/cacheon/blob/main/cacheon/copy_fingerprint.py)
+- [Finalized copy reconciliation](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
+- [Validator loop integration](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py)
 - [Copy behavior tests](https://github.com/latent-to/cacheon/blob/main/tests/test_copy_fingerprint.py)

@@ -4,21 +4,21 @@ import argparse
 
 import pytest
 
-import optima.cli as cli
-from optima import chain
-from optima.chain.intake import (
+import cacheon.cli as cli
+from cacheon import chain
+from cacheon.chain.intake import (
     FinalizedIntakeStore,
     IntakeError,
     IntakeScope,
     SQLiteWeightPublicationJournal,
 )
-from optima.chain.weights import (
+from cacheon.chain.weights import (
     WeightProjection,
     WeightPublicationError,
     WeightPublicationRecord,
 )
-from optima.economics import EmissionsPolicyManifest
-from optima.stack_identity import canonical_digest, sha256_hex
+from cacheon.economics import EmissionsPolicyManifest
+from cacheon.stack_identity import canonical_digest, sha256_hex
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 307)

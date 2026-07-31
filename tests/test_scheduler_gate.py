@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from optima import receipts, seam
-from optima.integrations import sglang_artifact_context as artifact_context
-from optima.integrations import sglang_scheduler_gate as gate
-from optima.registry import REGISTRY
+from cacheon import receipts, seam
+from cacheon.integrations import sglang_artifact_context as artifact_context
+from cacheon.integrations import sglang_scheduler_gate as gate
+from cacheon.registry import REGISTRY
 
 SILU_BUNDLE = Path(__file__).parent.parent / "examples" / "miner_silu_torch"
 
@@ -30,10 +30,10 @@ _MODEL_RUNNER_MODULE = "sglang.srt.model_executor.model_runner"
 @pytest.fixture()
 def armed_env(tmp_path, monkeypatch):
     rdir = tmp_path / "receipts"
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(rdir))
-    monkeypatch.setenv("OPTIMA_ACTIVE", "1")
-    monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(SILU_BUNDLE))
-    monkeypatch.delenv("OPTIMA_RELEASE_REQUIRED", raising=False)
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(rdir))
+    monkeypatch.setenv("CACHEON_ACTIVE", "1")
+    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(SILU_BUNDLE))
+    monkeypatch.delenv("CACHEON_RELEASE_REQUIRED", raising=False)
     monkeypatch.setattr(receipts, "_ONCE", set())
     monkeypatch.setattr(seam, "_bundle_loaded", False)
     monkeypatch.setattr(seam, "_bundle_pending", None)
@@ -100,8 +100,8 @@ def test_load_candidate_bundle_loads_and_receipts(armed_env):
 def test_direct_bundle_stages_until_post_device_hook(
     armed_env, monkeypatch
 ):
-    from optima import manifest
-    from optima.registry import KernelImpl
+    from cacheon import manifest
+    from cacheon.registry import KernelImpl
 
     observed: list[str] = []
     monkeypatch.setattr(
@@ -153,7 +153,7 @@ def test_load_candidate_bundle_is_inert_in_the_driver(armed_env, monkeypatch):
 
 
 def test_load_candidate_bundle_is_inert_when_unarmed(armed_env, monkeypatch):
-    monkeypatch.setenv("OPTIMA_ACTIVE", "0")
+    monkeypatch.setenv("CACHEON_ACTIVE", "0")
     seam.load_candidate_bundle()
     assert not seam._bundle_loaded
     assert REGISTRY.slots() == []
@@ -180,7 +180,7 @@ def test_gate_wraps_scheduler_entry_and_loads(armed_env, fake_scheduler_module):
 def test_gate_delegates_without_loading_when_unarmed(
     armed_env, fake_scheduler_module, monkeypatch
 ):
-    monkeypatch.setenv("OPTIMA_ACTIVE", "0")
+    monkeypatch.setenv("CACHEON_ACTIVE", "0")
     gate.install()
     assert fake_scheduler_module.run_scheduler_process(1) == "scheduler-ran"
     assert not seam._bundle_loaded
@@ -239,7 +239,7 @@ def test_artifact_context_hook_finalizes_after_sglang_device_setup(
     monkeypatch.setattr(
         seam,
         "finalize_pending_candidate_bundle",
-        lambda: observed.append("optima-finalize"),
+        lambda: observed.append("cacheon-finalize"),
     )
     artifact_context.install()
     assert artifact_context.is_installed()
@@ -249,7 +249,7 @@ def test_artifact_context_hook_finalizes_after_sglang_device_setup(
 
     result = fake_model_runner_module.ModelRunner().init_torch_distributed()
     assert result == "memory-snapshot"
-    assert observed == ["sglang-context", "optima-finalize"]
+    assert observed == ["sglang-context", "cacheon-finalize"]
 
     observed.clear()
     fake_model_runner_module.ModelRunner(

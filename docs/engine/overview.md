@@ -1,6 +1,6 @@
-# Optima Engine
+# Cacheon Engine
 
-Optima Engine is the chain-independent inference product contract: a
+Cacheon Engine is the chain-independent inference product contract: a
 content-addressed execution stack built around a pinned SGLang runtime and reviewed
 performance contributions. A completed release is designed to be rebuilt, verified,
 and served without chain access, miner hosting, or a validator wallet.
@@ -46,7 +46,7 @@ A conforming completed release binds all inputs needed to understand and reconst
 its runtime identity:
 
 - an integrated-only `EngineReleaseManifest` and deterministic Engine tree;
-- reproducible Optima source distribution and wheel;
+- reproducible Cacheon source distribution and wheel;
 - an exact external model-provisioning receipt;
 - an immutable native build specification and artifact publication;
 - the reviewed seccomp profile;
@@ -104,7 +104,7 @@ profile, resource plan, and launch plan.
 FlashInfer autotuning is a runtime-owned phase. While its tactic profiler is active, both
 the deep MoE producer and the fused-epilogue consumer stay on the stock path. A reviewed
 or candidate implementation cannot influence tactic selection, and autotuner calls do
-not count as proof that an Optima seam fired.
+not count as proof that an Cacheon seam fired.
 
 ## Serving boundary
 

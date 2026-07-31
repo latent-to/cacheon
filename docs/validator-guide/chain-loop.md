@@ -85,7 +85,7 @@ submission into `failed`, and bounded retry exhaustion leads to `held`.
 The supported standalone command is:
 
 ```bash
-optima chain-validate \
+cacheon chain-validate \
   --netuid 307 \
   --network "wss://test.chain.opentensor.ai:443" \
   --intake-db chain_intake/intake.sqlite3 \
@@ -106,7 +106,7 @@ Without `--intake-only`, the CLI rejects startup unless its Python caller inject
 exact `ArenaServiceRegistry` and selects a registered `--arena-id`:
 
 ```python
-from optima.chain.validator_loop import run_validator
+from cacheon.chain.validator_loop import run_validator
 
 run_validator(
     subtensor,
@@ -185,14 +185,14 @@ SQLite transitions already committed.
 The private recovery mirror is also outside the live transaction path:
 
 ```bash
-optima chain-snapshot \
+cacheon chain-snapshot \
   --intake-db chain_intake/intake.sqlite3 \
   --audit-log chain_intake/chain-audit.jsonl \
   --object-store-bucket <PRIVATE_BUCKET> \
   --object-store-endpoint <S3_COMPATIBLE_ENDPOINT> \
-  --sealed-input qualification-inputs=/srv/optima/sealed-inputs
+  --sealed-input qualification-inputs=/srv/cacheon/sealed-inputs
 
-optima chain-snapshot-verify \
+cacheon chain-snapshot-verify \
   --manifest-key <PRINTED_MANIFEST_KEY> \
   --object-store-bucket <PRIVATE_BUCKET> \
   --object-store-endpoint <S3_COMPATIBLE_ENDPOINT>
@@ -316,7 +316,7 @@ One legacy database shape can retain a single-PASS schema-3 candidate that canno
 the current two-PASS parser. It has a dedicated terminal operation:
 
 ```bash
-optima chain-archive-schema3-hold \
+cacheon chain-archive-schema3-hold \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
   --intake-db chain_intake/intake.sqlite3 \
@@ -353,7 +353,7 @@ the evidence. Generic expiry and hold release are not substitutes.
   under operator review.
 - Alert on growing `held`, `no_decision`, transport retry, and queue-age counts.
 - Monitor disk and inode use in both private and immutable publication roots.
-- Run `optima chain-compat` after changing the Bittensor SDK.
+- Run `cacheon chain-compat` after changing the Bittensor SDK.
 - Keep coldkeys off this host. Intake needs no wallet; the separate weight signer uses
   only the configured validator hotkey.
 - Coordinate signer access between passes because the SQLite authority is single-owner.
@@ -365,13 +365,13 @@ Continue with [Arena service](arena-service.md) and
 
 ## Source anchors
 
-- [Finalized reveal reader](https://github.com/latent-to/cacheon/blob/main/optima/chain/__init__.py)
-- [Payload schema](https://github.com/latent-to/cacheon/blob/main/optima/chain/payload.py)
-- [HTTPS fetcher](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py)
-- [Finalized intake store](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
-- [Immutable publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/publication.py)
-- [Validator loop](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py)
-- [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/optima/chain/audit_log.py)
-- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
+- [Finalized reveal reader](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/__init__.py)
+- [Payload schema](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/payload.py)
+- [HTTPS fetcher](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py)
+- [Finalized intake store](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
+- [Immutable publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publication.py)
+- [Validator loop](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py)
+- [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py)
+- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
 - [Archive-bound tests](https://github.com/latent-to/cacheon/blob/main/tests/test_chain_fetch.py)
 - [Snapshot and restore tests](https://github.com/latent-to/cacheon/blob/main/tests/test_chain_archive.py)

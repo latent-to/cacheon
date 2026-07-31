@@ -99,7 +99,7 @@ canonical `.patch`/`.diff` paths. The proposal tree may contain exactly
 binaries, or undeclared notes.
 
 The parser and frozen-inventory checks are in
-[discovery.py](https://github.com/latent-to/cacheon/blob/main/optima/discovery.py).
+[discovery.py](https://github.com/latent-to/cacheon/blob/main/cacheon/discovery.py).
 
 ## Requested promotion is not authority
 
@@ -139,7 +139,7 @@ regions must remain unchanged.
 
 The exact current allowlists, symbol regions, suffixes, and forbidden names are
 the `DEFAULT_DISCOVERY_POLICY` in
-[discovery.py](https://github.com/latent-to/cacheon/blob/main/optima/discovery.py).
+[discovery.py](https://github.com/latent-to/cacheon/blob/main/cacheon/discovery.py).
 Do not rely on a prose list when preparing a patch.
 
 Diff application is exact: no fuzz, offset search, deletion, rename, copy, or
@@ -204,7 +204,7 @@ can exercise the closed parser directly from a development checkout:
 
 ```bash
 python - <<'PY'
-from optima.discovery import inspect_discovery
+from cacheon.discovery import inspect_discovery
 
 proposal = inspect_discovery("my_discovery")
 print(proposal.proposal_digest)
@@ -231,11 +231,11 @@ through the same content-addressed HTTPS timelock path described in
 [Submitting](submitting.md):
 
 ```bash
-python -m optima.cli chain-package my_discovery \
+python -m cacheon.cli chain-package my_discovery \
   --out dist/my_discovery.tar.gz
 
-python -m optima.cli chain-submit my_discovery \
-  --url https://downloads.example.org/optima/my_discovery.tar.gz \
+python -m cacheon.cli chain-submit my_discovery \
+  --url https://downloads.example.org/cacheon/my_discovery.tar.gz \
   --netuid <NETUID> --network <NETWORK> \
   --wallet <WALLET> --hotkey <HOTKEY> --dry-run
 ```

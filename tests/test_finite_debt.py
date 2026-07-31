@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 
 import pytest
 
-from optima.finite_debt import (
+from cacheon.finite_debt import (
     CampaignBudgetShare,
     IMPROVEMENT_EXCESS,
     IMPROVEMENT_GROSS,
@@ -27,7 +27,7 @@ from optima.finite_debt import (
     rational_time_multiplier_ppm,
     resets_family_clock,
 )
-from optima.stack_identity import sha256_hex
+from cacheon.stack_identity import sha256_hex
 
 
 FAMILY_A = sha256_hex(b"family-a")

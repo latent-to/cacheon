@@ -5,9 +5,9 @@ target. Its `manifest.toml` is data: the validator parses it before importing
 miner code.
 
 The parser is implemented in
-[manifest.py](https://github.com/latent-to/cacheon/blob/main/optima/manifest.py).
+[manifest.py](https://github.com/latent-to/cacheon/blob/main/cacheon/manifest.py).
 Target resolution is a separate step implemented by
-[target_catalog.py](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py).
+[target_catalog.py](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 A manifest can be structurally valid and still be ineligible for a registered
 target.
 
@@ -158,7 +158,8 @@ Each `[[ops]]` row describes one implementation:
 | `artifact_resources` | miner-named but validator-allocated workspace, prepared storage, or engine state |
 
 `bundle_id` must be a simple non-empty identifier, and the component ABI is
-currently exactly `optima-op-abi-v0`.
+currently exactly `optima-op-abi-v0`. This published protocol identifier is
+unchanged by the Cacheon product rename.
 
 Unknown op keys are preserved as extra data, but that does not make them
 meaningful or allowed by target policy.
@@ -202,9 +203,9 @@ constraints. Legacy metadata keys such as `min_num_tokens`, `max_num_tokens`,
 specializations should be expressed in `capabilities` where possible.
 
 The canonical vocabulary and normalization rules are in
-[capabilities.py](https://github.com/latent-to/cacheon/blob/main/optima/capabilities.py)
+[capabilities.py](https://github.com/latent-to/cacheon/blob/main/cacheon/capabilities.py)
 and routing is in
-[registry.py](https://github.com/latent-to/cacheon/blob/main/optima/registry.py).
+[registry.py](https://github.com/latent-to/cacheon/blob/main/cacheon/registry.py).
 
 An empty manifest list contributes no constraint for that field; a non-empty list does.
 If both manifest and metadata declare a field, their canonicalized intersection is the

@@ -7,13 +7,13 @@ import struct
 
 import pytest
 
-from optima.cuda_cubin import (
+from cacheon.cuda_cubin import (
     CudaCubinABI,
     CudaCubinLibrary,
     CudaKernelABI,
     CudaKernelParameter,
 )
-from optima.cuda_launch import (
+from cacheon.cuda_launch import (
     CUDA_LAUNCH_SCHEMA,
     CudaClusterSchedulingPolicy,
     CudaDim3,

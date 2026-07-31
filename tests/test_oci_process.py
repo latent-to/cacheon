@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import optima.eval.oci_process as process_mod
-from optima.eval.oci_process import (
+import cacheon.eval.oci_process as process_mod
+from cacheon.eval.oci_process import (
     ATTACHED_STDERR_MAX_BYTES,
     CommandResult,
     GPU_RESERVATION_ENV,
@@ -163,7 +163,7 @@ def test_register_writes_exact_lease_and_run_prefix(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     lease = manager.register(
         lease_id="lease-1",
-        container_name="optima-prebuild-1",
+        container_name="cacheon-prebuild-1",
         mount_relpaths=("mounts/work",),
         stage_relpaths=("stages/output",),
     )
@@ -172,14 +172,14 @@ def test_register_writes_exact_lease_and_run_prefix(tmp_path: Path) -> None:
         "executor_id": "validator-a",
         "namespace_digest": manager.namespace_digest,
         "lease_id": "lease-1",
-        "container_name": "optima-prebuild-1",
+        "container_name": "cacheon-prebuild-1",
         "mount_relpaths": ["mounts/work"],
         "stage_relpaths": ["stages/output"],
     }
     assert lease.run_prefix(manager.docker_binary) == (
         "/usr/bin/docker",
         "run",
-        "--name=optima-prebuild-1",
+        "--name=cacheon-prebuild-1",
         f"--cidfile={lease.cid_path}",
         "--label=optima.executor_id=validator-a",
         f"--label={NAMESPACE_LABEL}={manager.namespace_digest}",

@@ -1,7 +1,7 @@
 """Chain-SDK canary — pure introspection logic against a mocked bittensor.
 
 No real bittensor needed: we inject a fake module into sys.modules so the
-introspection path is exercised on CI / a laptop. The real run (``optima
+introspection path is exercised on CI / a laptop. The real run (``cacheon
 chain-compat``) introspects the actually-installed SDK on the validator box.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 import types
 
-from optima.chain_canary import Check, format_checks, run_checks
+from cacheon.chain_canary import Check, format_checks, run_checks
 
 
 _FULL_METHODS = (

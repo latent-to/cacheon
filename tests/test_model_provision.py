@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.model_provision import (
+from cacheon.model_provision import (
     ModelProvisionError,
     provision_model,
     reopen_model_provision,

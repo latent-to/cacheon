@@ -13,10 +13,10 @@ from types import ModuleType
 
 import pytest
 
-import optima.engine_tree as engine_tree
-from optima.bundle_hash import content_hash
-from optima.chain.publication import publish_worker_bundle
-from optima.discovery import (
+import cacheon.engine_tree as engine_tree
+from cacheon.bundle_hash import content_hash
+from cacheon.chain.publication import publish_worker_bundle
+from cacheon.discovery import (
     DEFAULT_DISCOVERY_POLICY,
     DISCOVERY_ABI_VERSION,
     DiscoveryArmPlan,
@@ -25,9 +25,9 @@ from optima.discovery import (
     inspect_discovery,
     reopen_discovery_engine_binding,
 )
-from optima.eval.evidence_store import EvidenceArtifactRef, publish_evidence
-from optima.eval.oci_session_protocol import SlotAuditPolicy
-from optima.engine_tree import (
+from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+from cacheon.eval.oci_session_protocol import SlotAuditPolicy
+from cacheon.engine_tree import (
     EngineTreeError,
     inspect_contribution,
     integrated_source_tree_digest,
@@ -36,16 +36,16 @@ from optima.engine_tree import (
     promote_integrated_contribution,
     reopen_materialized_engine_tree,
 )
-from optima.manifest import load_manifest
-from optima.sandbox import load_module
-from optima.settlement import (
+from cacheon.manifest import load_manifest
+from cacheon.sandbox import load_module
+from cacheon.settlement import (
     SettlementCandidate,
     SettlementEvidence,
     SettlementEventType,
     SettlementQualification,
     plan_settlement,
 )
-from optima.stack_manifest import (
+from cacheon.stack_manifest import (
     EngineReleaseManifest,
     EvaluationStackContext,
     EvaluationStackManifest,
@@ -55,8 +55,8 @@ from optima.stack_manifest import (
     ProposalContributionRef,
     ReleaseStackContext,
 )
-from optima.stack_plan import RollbackPlan, plan_candidate_stack, plan_marginal_arm
-from optima.target_catalog import TargetCatalog, default_target_catalog
+from cacheon.stack_plan import RollbackPlan, plan_candidate_stack, plan_marginal_arm
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -374,11 +374,11 @@ def test_atomic_materialization_namespaces_native_patch_and_rebuild(
     assert json.loads((result.root / "rebuild.json").read_text()) == {
         "steps": [
             {
-                "path": "optima/patchers/apply_dep_patch.py",
+                "path": "cacheon/patchers/apply_dep_patch.py",
                 "type": "repo_python",
             },
             {
-                "path": "optima/patchers/build_cuda_ext.py",
+                "path": "cacheon/patchers/build_cuda_ext.py",
                 "type": "repo_python",
             },
         ]
@@ -668,7 +668,7 @@ def test_independent_contributions_compose_without_source_name_collisions(
         ).__module__
     finally:
         for name in set(sys.modules) - before_modules:
-            if name.startswith(("optima_c_", "optima_kernel_optima_c_")):
+            if name.startswith(("optima_c_", "cacheon_kernel_optima_c_")):
                 sys.modules.pop(name, None)
 
 
@@ -703,7 +703,7 @@ def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
         module = load_module(result.root / op.source)
         assert callable(getattr(module, op.entry + "_ref"))
         assert getattr(module, op.entry, None) is None
-        from optima_kernels.override import build_override
+        from cacheon_kernels.override import build_override
 
         entry, prepare = build_override(
             op.slot,
@@ -714,7 +714,7 @@ def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
         assert callable(entry) and callable(prepare)
     finally:
         for name in set(sys.modules) - before_modules:
-            if name.startswith(("optima_c_", "optima_kernel_optima_c_")):
+            if name.startswith(("optima_c_", "cacheon_kernel_optima_c_")):
                 sys.modules.pop(name, None)
 
 
@@ -747,7 +747,7 @@ def test_integrated_release_revalidates_reviewed_source(tmp_path: Path) -> None:
             _evidence("integration.compatibility", _digest("compatibility")),
             _evidence("integration.tests", _digest("tests")),
         ),
-        reviewer="optima-test-reviewer",
+        reviewer="cacheon-test-reviewer",
         review_commit="a" * 40,
     )
     ref = record.integrated_ref()
@@ -916,8 +916,8 @@ def test_integration_promotion_binds_crown_evidence_source_and_review_commit(
     subprocess.run(("git", "-C", str(repository), "add", "integrated"), check=True)
     subprocess.run(
         (
-            "git", "-C", str(repository), "-c", "user.name=Optima Review",
-            "-c", "user.email=review@optima.invalid", "commit", "-q", "-m", "review",
+            "git", "-C", str(repository), "-c", "user.name=Cacheon Review",
+            "-c", "user.email=review@cacheon.invalid", "commit", "-q", "-m", "review",
         ),
         check=True,
     )
@@ -1128,7 +1128,7 @@ def test_cute_dsl_compile_alias_is_admitted(tmp_path: Path, source_text: str) ->
 
 
 def test_runtime_toml_omits_only_inline_table_null_fields() -> None:
-    from optima.engine_tree import _toml_value
+    from cacheon.engine_tree import _toml_value
 
     assert _toml_value({"active": 7, "inactive": None}) == '{ "active" = 7 }'
     with pytest.raises(EngineTreeError, match="unsupported TOML value"):
@@ -1628,12 +1628,12 @@ def test_registered_patcher_source_identity_rotates_selected_delta(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "repo"
-    patchers = repo / "optima" / "patchers"
+    patchers = repo / "cacheon" / "patchers"
     patchers.mkdir(parents=True)
     real_patchers = Path(engine_tree.__file__).parent / "patchers"
     for name in ("apply_dep_patch.py", "build_cuda_ext.py"):
         shutil.copy2(real_patchers / name, patchers / name)
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
     before = inspect_contribution(FUSED, catalog=default_target_catalog())
     builder = patchers / "build_cuda_ext.py"
     builder.write_text(builder.read_text() + "\n# reviewed patcher revision\n")
@@ -1753,14 +1753,14 @@ def test_failed_preinstall_verification_leaves_no_destination(
 def test_runtime_rebuild_order_is_global_not_contribution_order() -> None:
     raw = engine_tree._runtime_rebuild(
         [
-            {"type": "repo_python", "path": "optima/patchers/build_cuda_ext.py"},
-            {"type": "repo_python", "path": "optima/patchers/apply_dep_patch.py"},
+            {"type": "repo_python", "path": "cacheon/patchers/build_cuda_ext.py"},
+            {"type": "repo_python", "path": "cacheon/patchers/apply_dep_patch.py"},
         ]
     )
     assert raw is not None
     assert [row["path"] for row in json.loads(raw)["steps"]] == [
-        "optima/patchers/apply_dep_patch.py",
-        "optima/patchers/build_cuda_ext.py",
+        "cacheon/patchers/apply_dep_patch.py",
+        "cacheon/patchers/build_cuda_ext.py",
     ]
 
 
