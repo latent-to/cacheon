@@ -22,7 +22,7 @@ plugin registration API. The registered table contains one provider:
 | Binding ABI | `cuda_driver_params.v1` |
 | Build phase | `oci_prebuild_only` |
 | Load phase | `isolated_engine_worker_only` |
-| Reviewed patcher | `cacheon.build-cute-cubin.v1` |
+| Reviewed patcher | `optima.build-cute-cubin.v1` |
 | Rebuild feature | `rebuild:build_cute_cubin` |
 | Publication directory | `cute_cubin` |
 | Qualification status | authoritative and crownable |
@@ -82,7 +82,7 @@ manifest is parsed and must reproduce exactly when sealed state is reopened.
 `factory` names Python executed only in the disposable compiler child. It is not
 an engine entry point. The compatibility `ops.entry` field remains syntactically required
 by the bundle ABI, but direct-artifact execution does not call it and canonicalizes
-the runtime entry to `_cacheon_direct_artifact`.
+the runtime entry to `_optima_direct_artifact`.
 
 Plan variants use exact-equality specialization predicates. Overlap is accepted
 only when it forms a strict fallback chain. Runtime chooses the unique
@@ -95,7 +95,7 @@ See [Bundle manifest](../reference/manifest-schema.md) for the field-level schem
 
 CuTe compilation can require hardware facts even though prebuild has no GPU. A
 trusted arena measures those facts first and writes a canonical
-`cacheon.native-cute-compile-profile.v1` document. The profile binds:
+`optima.native-cute-compile-profile.v1` document. The profile binds:
 
 - logical architecture, such as `sm103`;
 - compiler architecture, such as `sm_103a`;
@@ -169,7 +169,7 @@ publication but cannot compile a missing artifact or repair a mismatched index.
 
 ## Complete device ABI
 
-`device_plan` uses schema `cacheon.device-launch-plan.v1`. It contains two closed
+`device_plan` uses schema `optima.device-launch-plan.v1`. It contains two closed
 inventories:
 
 1. `kernels`: sorted, unique logical kernel names and the exact byte width of every
@@ -286,7 +286,7 @@ that never executes cannot qualify as the measured contribution.
 
 ## Identity and copy signals
 
-Direct execution has canonical schema `cacheon.direct-artifact-execution.v1`.
+Direct execution has canonical schema `optima.direct-artifact-execution.v1`.
 Its identity covers the resource plan and every execution-bearing export field:
 provider, factory, profile inputs, role, plan, step, ordered bindings,
 specializations, prelaunch operations, derived capability requirements, and the

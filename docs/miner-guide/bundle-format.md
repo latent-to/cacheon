@@ -279,7 +279,7 @@ direct execution the value is not called and is excluded from canonical direct-
 execution identity. The meaningful declaration is `[[ops.aot_exports]]`, which
 must include the provider, compiler-side factory, bounded compile-profile inputs,
 ordered bindings, specialization/lifecycle fields, and a complete
-`cacheon.device-launch-plan.v1` plan.
+`optima.device-launch-plan.v1` plan.
 
 The plan is intentionally explicit. It inventories every logical kernel and
 formal parameter width, then declares every launch's grid, block, optional

@@ -130,7 +130,7 @@ For a row with `aot_exports`, `source` is scanned and its declared compiler
 factory is imported only in the isolated prebuild compiler child. The scheduler
 does not import that source as a runtime launcher. `entry` remains required by
 the outer `optima-op-abi-v0` syntax, but direct execution canonicalizes it to the
-validator entry `_cacheon_direct_artifact`; changing the unused value does not
+validator entry `_optima_direct_artifact`; changing the unused value does not
 change direct-execution identity.
 
 ### Variants
@@ -177,7 +177,7 @@ resolution permits the observed provider and rebuild features.
 | `factory` | yes | Identifier called only in the no-egress compiler child |
 | `profile_inputs` | yes | Unique list drawn from the provider's compile-profile allowlist |
 | `bindings` | yes | Ordered projections of immutable slot resources and declared artifact resources |
-| `device_plan` | yes for the registered provider | Complete `cacheon.device-launch-plan.v1` declaration |
+| `device_plan` | yes for the registered provider | Complete `optima.device-launch-plan.v1` declaration |
 | `role` | no | `init`, `prepare`, `reset`, `run`, or `destroy`; default `run` |
 | `plan` | no | Specialization-plan name; default `default` |
 | `step` | no | Ordered non-negative step within the plan; default `0` |
@@ -256,7 +256,7 @@ allocation authority.
 ### Device launch plan
 
 The registered provider requires `device_plan.schema =
-"cacheon.device-launch-plan.v1"` plus exact `kernels` and `launches` inventories.
+"optima.device-launch-plan.v1"` plus exact `kernels` and `launches` inventories.
 
 | Inventory | Required contents |
 |---|---|

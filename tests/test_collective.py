@@ -8,6 +8,7 @@ gloo has no bf16, so verify_collective uses fp32 on the CPU path.
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import time
 from pathlib import Path
@@ -431,15 +432,19 @@ def test_collective_rank_verdict_rejects_rank_spoof_and_oversize(tmp_path):
 def test_collective_rank_verdict_rejects_replaced_inode_and_symlink(tmp_path):
     path = tmp_path / "rank0.json"
     identity = _precreated(path)
-    path.unlink()
-    path.write_text("{}")
-    with pytest.raises(CollectiveVerdictError, match="inode changed"):
-        _read_rank_verdict(
-            path,
-            expected_rank=0,
-            expected_world_size=2,
-            expected_identity=identity,
-        )
+    original_fd = os.open(path, os.O_RDONLY)
+    try:
+        path.unlink()
+        path.write_text("{}")
+        with pytest.raises(CollectiveVerdictError, match="inode changed"):
+            _read_rank_verdict(
+                path,
+                expected_rank=0,
+                expected_world_size=2,
+                expected_identity=identity,
+            )
+    finally:
+        os.close(original_fd)
 
     path.unlink()
     target = tmp_path / "target"
