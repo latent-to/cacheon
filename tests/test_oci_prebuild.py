@@ -228,7 +228,7 @@ def _preflight(
     sglang_version: str = "0.0.0.dev1",
 ):
     return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
+        schema="optima-runtime-preflight-v2",
         requested_image="registry.example/cacheon@sha256:" + image,
         image_digest=image,
         local_image_id=IMAGE_ID,
@@ -1229,13 +1229,13 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
     manifest = __import__("cacheon.manifest", fromlist=["load_manifest"]).load_manifest(
         tree.root
     )
-    assert manifest.bundle_id == "cacheon-materialized-v1"
+    assert manifest.bundle_id == "optima-materialized-v1"
     assert [step["path"] for step in json.loads((tree.root / "rebuild.json").read_text())["steps"]] == [
         "cacheon/patchers/apply_dep_patch.py",
         "cacheon/patchers/build_cuda_ext.py",
     ]
-    assert manifest.dep_patches[0].path.startswith("patches/cacheon_c_")
-    assert manifest.ops[0].cuda_sources[0].startswith("cuda/cacheon_c_")
+    assert manifest.dep_patches[0].path.startswith("patches/optima_c_")
+    assert manifest.ops[0].cuda_sources[0].startswith("cuda/optima_c_")
 
     # A minimal image-owned FlashInfer source tree matching the policy-valid patch.
     image_root = tmp_path / "image-root"
@@ -1334,7 +1334,7 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
 
     def fake_compile(*, bundle, source, output, depfile, module_name, context, env):
         assert Path(bundle) == tree.root.resolve()
-        assert source.startswith("cuda/cacheon_c_")
+        assert source.startswith("cuda/optima_c_")
         assert env == compiler_environment
         output.write_bytes((module_name + ":synthetic-cuda-extension").encode())
         depfile.write_text(f"{module_name}: {source}\n")
@@ -1407,8 +1407,8 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
     assert rebuild.apply_rebuild_plan(tree.root, phase="load")
     assert len(native_loads) == 1
     alias, module_name, artifact = native_loads[0]
-    assert alias.startswith("cacheon_c_")
-    assert module_name.startswith("cacheon_cuda_")
+    assert alias.startswith("optima_c_")
+    assert module_name.startswith("optima_cuda_")
     assert publication.root in artifact.parents
 
     environment = types.ModuleType("flashinfer.jit.env")

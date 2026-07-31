@@ -127,8 +127,8 @@ python -m cacheon.cli chain-publish my_bundle \
 ```
 
 Pass `--create-bucket` only when the named bucket does not exist. The default
-key is
-`cacheon/miner-bundles/sha256/<content_hash>.tar.gz`. A repeated publication
+key retains the storage-compatibility prefix
+`optima/miner-bundles/sha256/<content_hash>.tar.gz`. A repeated publication
 reuses an existing object only after hardened extraction proves that it has the
 committed tree hash; it never replaces a conflicting key. Use
 `--object-store-provider hippius|minio` for a known preset, or

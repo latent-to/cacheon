@@ -32,7 +32,7 @@ def _bundle(root: Path, body: str) -> Path:
     (root / "kernels").mkdir(parents=True)
     (root / "manifest.toml").write_text(
         'bundle_id = "test"\n'
-        'abi_version = "cacheon-op-abi-v0"\n\n'
+        'abi_version = "optima-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "activation.silu_and_mul"\n'
         'source = "kernels/k.py"\n'
@@ -143,7 +143,7 @@ def test_deterministically_unpublishable_submission_is_not_retried(
         tmp_path / "source",
         "def silu_and_mul(x, out):\n    out.copy_(x)\n",
     )
-    reserved = source / ".cacheon-native-artifact.json"
+    reserved = source / ".optima-native-artifact.json"
     reserved.write_text("{}\n")
     reserved.chmod(0o600)
     digest = content_hash(source)
@@ -280,7 +280,7 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
         )
         ref = EvidenceArtifactRef(
             "qualification.cohort-attempt", "b" * 64, 1,
-            "application/json", "cacheon.qualification.cohort-attempt.v1",
+            "application/json", "optima.qualification.cohort-attempt.v1",
         )
         return QualificationIntakeBatch(factory.manifest.digest, (outcome,), ref)
 

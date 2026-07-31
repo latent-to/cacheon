@@ -16,7 +16,12 @@ from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
 WEIGHT_PARTS = 1_000_000
-SUBNET_OWNER_BURN_AUTHORITY = "cacheon.chain.subnet-owner-burn-weight-authority"
+# These values are signed/persisted protocol identities. Keep the established
+# Optima domains across the Cacheon product/package rename.
+SUBNET_OWNER_BURN_AUTHORITY = "optima.chain.subnet-owner-burn-weight-authority"
+_WEIGHT_PROJECTION_DOMAIN = "optima.chain.weight-projection"
+_WEIGHT_PUBLICATION_DOMAIN = "optima.chain.weight-publication"
+_METAGRAPH_MEMBERSHIP_DOMAIN = "optima.economics.metagraph-membership"
 PUBLICATION_STATUSES = frozenset(
     {"intent", "pending", "held", "confirmed", "released"}
 )
@@ -158,7 +163,7 @@ class WeightProjection:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.chain.weight-projection", self.to_dict())
+        return canonical_digest(_WEIGHT_PROJECTION_DOMAIN, self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -252,7 +257,7 @@ class WeightPublicationRecord:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.chain.weight-publication", self.to_dict())
+        return canonical_digest(_WEIGHT_PUBLICATION_DOMAIN, self.to_dict())
 
 
 class WeightPublicationJournal(Protocol):
@@ -332,7 +337,7 @@ def _metagraph_digest(projection: WeightProjection, metagraph: chain.MetagraphVi
         )
     ]
     return canonical_digest(
-        "cacheon.economics.metagraph-membership",
+        _METAGRAPH_MEMBERSHIP_DOMAIN,
         {
             "block": metagraph.block,
             "block_hash": metagraph.block_hash.lower(),

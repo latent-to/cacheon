@@ -17,6 +17,7 @@ process (CACHEON_ACTIVE unset) just installs a pass-through dispatcher.
 from __future__ import annotations
 
 import importlib.abc
+import importlib.machinery
 import os
 import sys
 
@@ -25,6 +26,9 @@ import sys
 # (no torch/sglang), safe to import at interpreter startup. seam.activate() installs
 # whatever is loaded.
 from cacheon.seams import TARGET_MODULES as _TARGETS
+
+
+_LEGACY_BOOTSTRAP_MODULE = "optima.bootstrap"
 
 
 # Install the standard-library-only discovery role hook before any SGLang
@@ -64,21 +68,49 @@ class _SeamFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname not in _TARGETS:
             return None
-        # Resolve the real spec via the other finders, then wrap its loader so
-        # our callback runs right after the module body executes.
-        for finder in list(sys.meta_path):
-            if finder is self:
-                continue
-            spec = finder.find_spec(fullname, path, target)
-            if spec is None:
-                continue
-            if spec.loader is not None:
-                spec.loader = _wrap_loader(spec.loader)
-            return spec
-        return None
+        # Resolve SGLang through the standard path machinery instead of walking
+        # ``sys.meta_path`` ourselves. During an in-place Optima -> Cacheon
+        # upgrade the legacy ``optima.bootstrap`` finder can still be installed;
+        # asking it for a spec makes it delegate back to this finder forever.
+        # PathFinder still honors the normal filesystem and zip path hooks used
+        # by installed SGLang distributions without re-entering either seam
+        # finder.
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path, target)
+        if spec is not None and spec.loader is not None:
+            spec.loader = _wrap_loader(spec.loader)
+        return spec
+
+
+def _is_legacy_seam_finder(finder: object) -> bool:
+    finder_type = type(finder)
+    return (
+        finder_type.__module__ == _LEGACY_BOOTSTRAP_MODULE
+        and finder_type.__name__ == "_SeamFinder"
+    )
+
+
+def _retire_legacy_bootstrap() -> None:
+    """Make Cacheon authoritative when both rename-era bootstraps are installed.
+
+    Site processes ``.pth`` files by filename. The Cacheon release bootstrap
+    normally runs before the legacy Optima bootstrap, so reserving the old
+    module name prevents its module body from installing a second finder. If
+    the legacy module ran first, remove its finder and replace both its module
+    cache entry and the parent-package attribute.
+    """
+
+    current = sys.modules[__name__]
+    sys.meta_path[:] = [
+        finder for finder in sys.meta_path if not _is_legacy_seam_finder(finder)
+    ]
+    sys.modules[_LEGACY_BOOTSTRAP_MODULE] = current
+    legacy_package = sys.modules.get("optima")
+    if legacy_package is not None:
+        setattr(legacy_package, "bootstrap", current)
 
 
 def install() -> None:
+    _retire_legacy_bootstrap()
     if any(t in sys.modules for t in _TARGETS):
         # Something already imported (e.g. re-entry); patch what's available now.
         _run_activate()

@@ -126,7 +126,7 @@ class CalibrationContext:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.qualification.calibration-context", self.to_dict())
+        return canonical_digest("optima.qualification.calibration-context", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -389,7 +389,7 @@ class CalibrationManifest:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.qualification.calibration", self.to_dict())
+        return canonical_digest("optima.qualification.calibration", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -502,7 +502,7 @@ class CalibrationThresholdPolicy:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.qualification.calibration-threshold-policy", self.to_dict())
+        return canonical_digest("optima.qualification.calibration-threshold-policy", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -696,7 +696,7 @@ def derive_calibration_manifest(
             )
     raw_rows = [row.to_dict() for row in observations]
     raw_digest = canonical_digest(
-        "cacheon.qualification.calibration-raw-evidence",
+        "optima.qualification.calibration-raw-evidence",
         {"policy_version": CALIBRATION_EVIDENCE_POLICY_VERSION, "observations": raw_rows},
     )
     controls = tuple(
@@ -704,7 +704,7 @@ def derive_calibration_manifest(
             kind=row.control_kind,
             seed_digest=row.seed_digest,
             raw_evidence_digest=canonical_digest(
-                "cacheon.qualification.calibration-control-evidence", row.to_dict()
+                "optima.qualification.calibration-control-evidence", row.to_dict()
             ),
             expected_outcome=_CONTROL_OUTCOMES[row.control_kind],
         )

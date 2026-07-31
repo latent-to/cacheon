@@ -36,7 +36,7 @@ PUBLICATION_KINDS = frozenset(
     {PUBLICATION_KIND_CORE, PUBLICATION_KIND_COMPOSED}
 )
 CONFIRMATION_SCHEMA_VERSION = 1
-CONFIRMATION_VERSION = "cacheon.debt-weight-publication.v1"
+CONFIRMATION_VERSION = "optima.debt-weight-publication.v1"
 ACTIVE_INTAKE_SCHEMA_VERSION = "6"
 
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
@@ -187,7 +187,7 @@ class DebtWeightReadback:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.debt-weight-readback", self.to_dict())
+        return canonical_digest("optima.debt-weight-readback", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -294,7 +294,7 @@ class ConfirmedDebtWeightPublication:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.debt-weight-publication", self.to_dict())
+        return canonical_digest("optima.debt-weight-publication", self.to_dict())
 
     @property
     def confirmed_block_hash(self) -> str:
@@ -499,7 +499,7 @@ class DebtWeightPublicationBinding:
             )
         )
         expected_evaluation = canonical_digest(
-            "cacheon.debt-weight-projection.evaluation",
+            "optima.debt-weight-projection.evaluation",
             {
                 "activation_digest": self.activation_digest,
                 "input_state_digests": list(input_digests),
@@ -569,7 +569,7 @@ class DebtWeightPublicationBinding:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.debt-weight-publication.binding", self.to_dict())
+        return canonical_digest("optima.debt-weight-publication.binding", self.to_dict())
 
 
 def build_debt_weight_publication_binding(
@@ -641,7 +641,7 @@ def build_debt_weight_publication_binding(
         policy_digest,
         economic_projection.digest,
         canonical_digest(
-            "cacheon.debt-weight-projection.evaluation",
+            "optima.debt-weight-projection.evaluation",
             {
                 "activation_digest": activation,
                 "input_state_digests": list(input_digests),
@@ -649,7 +649,7 @@ def build_debt_weight_publication_binding(
             },
         ),
         canonical_digest(
-            "cacheon.economics.metagraph-membership",
+            "optima.economics.metagraph-membership",
             {
                 "block": block,
                 "block_hash": block_hash,

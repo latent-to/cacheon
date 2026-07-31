@@ -38,7 +38,7 @@ Python 3.11 or newer is required.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[cpu,dev]"
+python -m pip install -e ".[cpu,dev,release]"
 
 python -m cacheon.cli slots
 python -m cacheon.cli scan examples/miner_silu_torch

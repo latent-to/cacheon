@@ -70,9 +70,9 @@ def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch)
     plan = parse_rebuild_plan(bundle)
     assert plan is not None and not marker.exists()
     assert [step.patcher_id for step in plan.steps] == [
-        "cacheon.apply-dep-patch.v1",
-        "cacheon.build-cuda-ext.v1",
-        "cacheon.build-cute-cubin.v1",
+        "optima.apply-dep-patch.v1",
+        "optima.build-cuda-ext.v1",
+        "optima.build-cute-cubin.v1",
     ]
     assert plan.to_dict() == {
         "steps": [
@@ -83,7 +83,7 @@ def test_parse_is_pure_and_canonicalizes_registered_order(tmp_path, monkeypatch)
     }
     assert all(len(step.patcher_sha256) == 64 for step in plan.steps)
     assert plan.identity_data()["steps"][0]["patcher_id"] == (
-        "cacheon.apply-dep-patch.v1"
+        "optima.apply-dep-patch.v1"
     )
 
     assert apply_rebuild_plan(bundle) is True

@@ -305,7 +305,7 @@ class BoxCertificate:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.qualification.box-certificate", self.to_dict()
+            "optima.qualification.box-certificate", self.to_dict()
         )
 
     def require_valid(
@@ -445,7 +445,7 @@ class CertificateInvalidation:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.qualification.box-certificate-invalidation", self.to_dict()
+            "optima.qualification.box-certificate-invalidation", self.to_dict()
         )
 
     def to_dict(self) -> dict[str, object]:

@@ -73,7 +73,7 @@ still resolve through a legacy singleton convenience:
 
 ```toml
 bundle_id = "alice-silu-sm90-v1"
-abi_version = "cacheon-op-abi-v0"
+abi_version = "optima-op-abi-v0"
 
 [competition]
 target = "activation.silu_and_mul"
@@ -158,7 +158,8 @@ Each `[[ops]]` row describes one implementation:
 | `artifact_resources` | miner-named but validator-allocated workspace, prepared storage, or engine state |
 
 `bundle_id` must be a simple non-empty identifier, and the component ABI is
-currently exactly `cacheon-op-abi-v0`.
+currently exactly `optima-op-abi-v0`. This published protocol identifier is
+unchanged by the Cacheon product rename.
 
 Unknown op keys are preserved as extra data, but that does not make them
 meaningful or allowed by target policy.

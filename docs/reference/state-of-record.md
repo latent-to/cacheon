@@ -15,22 +15,28 @@ Snapshot date: **2026-07-31**
 | Item | Value |
 |---|---|
 | Repository | [`latent-to/cacheon`](https://github.com/latent-to/cacheon) |
-| Implementation parent | [`0d172449`](https://github.com/latent-to/cacheon/commit/0d172449); this page accompanies the Optima→Cacheon identifier rename |
-| Production Python | 129 files and 106,433 lines under `cacheon/` |
-| Tests | 120 Python files and 63,174 lines under `tests/` |
-| Complete local suite | rename-affected goldens updated; full suite pending CI after package rename |
-| Test command | `PYENV_VERSION=sn120 python -m pytest -q tests` in an unrestricted local environment |
+| Implementation parent | [`a04b824f`](https://github.com/latent-to/cacheon/commit/a04b824f); this page accompanies the Optima→Cacheon identifier rename |
+| Production Python | 129 files and 106,756 lines under `cacheon/` |
+| Tests | 127 Python files and 65,135 lines under `tests/` |
+| Complete local suite | 2,417 passed, 19 skipped, 0 failed after the compatibility repair; the initial rename head recorded 2,389 passed and 21 skipped |
+| Test command | `python3 -m pytest -q tests` with Python 3.10.4 in an unrestricted local environment |
 | SGLang pin | `0.5.13.post1` in `cacheon/compat.py` |
 | Bittensor raw-reveal storage ABI | `10.3.2` in `cacheon/chain_canary.py` |
 | Public CLI | 27 commands |
 
-The product, package, CLI, env, HTTP header, ABI, and digest-domain identifiers
-formerly branded Optima are now Cacheon (`cacheon` / `CACHEON` / `X-Cacheon-*`).
-Compatibility docs path is `HOW_CACHEON_WORKS.md`.
-Sealed B300 stage-exit fixture digests were recomputed under the new domains.
-The rename does not alter kernels, timed evaluation arithmetic, or crown/
-settlement formulas beyond digest-domain strings. File and line counts describe
-the accompanying change set; they are not quality metrics. The suite is
+The public product, Python package, CLI, environment-variable, and HTTP-header
+names formerly branded Optima are now Cacheon (`cacheon` / `CACHEON` /
+`X-Cacheon-*`). Persisted and signed pre-rename identifiers remain valid in the
+`optima.*` namespace, including digest domains, durable schemas, recovery keys,
+weight-share envelopes, and `optima-op-abi-v0`. The shared-weight transport reads
+strict, distinct Optima and Cacheon dialects; it does not normalize one into the
+other. These are wire/storage ABI labels, not current product branding, and must
+not be rewritten in retained evidence or an existing validator database. Both
+`HOW_CACHEON_WORKS.md` and the inbound
+compatibility path `HOW_OPTIMA_WORKS.md` redirect to the canonical architecture
+documentation. The rename does not alter kernels, timed evaluation arithmetic,
+or crown/settlement formulas. File and line counts describe the accompanying
+change set; they are not quality metrics. The suite is
 CPU/non-empirical validation and does not establish GPU performance,
 container-runtime isolation, chain finality, or serving readiness.
 
@@ -160,7 +166,7 @@ Version-1 witnesses graded the charged rate and regrade only under their own
 sealed arithmetic; the policy version is digest-bound and cross-version
 splicing is refused. The motivating evidence is the 2026-07-24 stage-exit
 described under empirical evidence, retained verbatim as the repository test
-fixture `tests/fixtures/speed_stage_exit_4fc06ebf.json`.
+fixture `tests/fixtures/speed_stage_exit_45cbcc04.json`.
 
 Policy version 3 is implemented, tested, and as of 2026-07-25 has produced its
 first settled production program (described under empirical evidence): the
@@ -366,7 +372,7 @@ baseline session while the candidate read ran cold, so the conditioning-
 inclusive scored rate turned a positional split into 6.3% apparent baseline
 noise and a 1.126 required bar, while the candidate was faster than both
 baseline reads on every timed window. The sealed stage-exit is retained
-verbatim as `tests/fixtures/speed_stage_exit_4fc06ebf.json`, and a regression
+verbatim as `tests/fixtures/speed_stage_exit_45cbcc04.json`, and a regression
 test pins both readings: version-1 arithmetic reproduces the shipped verdict
 exactly, and version-2 timed-basis arithmetic grades the same sealed reads as a
 clear pass. The reservation's terminal disposition stands; no verdict was
@@ -406,7 +412,7 @@ The exact fused-epilogue proposal from the version-3 program (content hash
 `747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709`)
 was packaged and uploaded to a miner-side Hippius S3-compatible bucket under
 the content-addressed key
-`cacheon/miner-bundles/sha256/747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709.tar.gz`.
+`optima/miner-bundles/sha256/747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709.tar.gz`.
 An anonymous download from the resulting public HTTPS URL was byte-identical
 to the 24,012-byte stored archive (archive SHA-256
 `d86162982a72b66bed39751686cfdced15a2e25518a39ead61f8eb57f8533d7f`).
@@ -436,7 +442,7 @@ The input was a fresh synthetic-finalized intake of the public fused-epilogue
 bundle above plus one retained qualification artifact, one redacted chain-audit
 record, and one harmless explicitly sealed policy file. The first canary stored
 11 new blobs representing 591,709 source bytes below
-`cacheon/validator-archive/v1/canary/20260727-provider-neutral`. Its manifest
+`optima/validator-archive/v1/canary/20260727-provider-neutral`. Its manifest
 digest was
 `4148e6a3815f557345fd01004b1a88313c840512182c8d495a131c78983d62fa`
 and its online SQLite backup digest was
@@ -447,15 +453,15 @@ artifact, validated the journal, and emitted the closed restore map. Anonymous
 HTTPS access to the manifest returned 403.
 
 The current worktree was then deployed through the validator's rsync setup path
-to an idle eight-B200 pod. The host deployment tree and container `/cacheon` both
+to an idle eight-B200 pod. The host deployment tree and container `/optima` both
 matched local runtime-source aggregate SHA-256
 `dd11ab2d8f40f586a7f9661871c68ce6480cec6b63e7ea0190eca6a7ac1c59f8`;
 the sync excluded `.env` and the private worklog, and the spawned-interpreter
-bootstrap resolved Cacheon from `/cacheon`. Without starting a GPU process, the
+bootstrap resolved Optima from `/optima`. Without starting a GPU process, the
 pod independently repeated anonymous HTTPS intake, uploaded another 11-blob
-snapshot under `cacheon/validator-archive/v1/canary/pod-b200-20260727`, and
+snapshot under `optima/validator-archive/v1/canary/pod-b200-20260727`, and
 semantically restored it from both the isolated source copy and the final
-`/cacheon` deployment. That manifest and database digests were respectively
+`/optima` deployment. That manifest and database digests were respectively
 `0e856820f37c1031407afda701591a443c1f0866ae4c0663c461118d2e0bba74`
 and
 `2beaafbd28fdc337f9e1cd28a3bffa183fb017e0f4a0f9790dcfaaa1aa91589e`;
@@ -513,11 +519,40 @@ It does not establish mainnet economics, incentive activation, integration
 review, serving readiness, object immutability at the hosting layer, or
 unattended validator operation.
 
+### Live shared-weight follower drill (2026-07-31)
+
+A scoped testnet-307 drill exercised `push-weight-offer` → `serve-weights` →
+`follow-weights` as three separate processes on one Mac, with the real private
+object store between them. The evaluator-side process built the standing crown
+offer without a wallet or bucket credentials. The gateway verified the HMAC
+push, retained the signed offer at
+`weights-service/testnet307/current_weights.json`, and served it through the
+permit-gated signed response path. The follower pinned that gateway authority,
+rebound the offer to its own signer, and advanced its dedicated journal through
+intent and pending to confirmed at block 7680827; chain `LastUpdate` read back
+the same block.
+
+An idempotent second pass confirmed without another submission, and a
+deliberately wrong expected authority produced the typed refusal. Because the
+offer matched the standing vector, commit inclusion advanced `LastUpdate` and
+the first readback already matched; the unchanged-vector case did not require a
+second timelocked reveal. The drill also exposed two operator requirements:
+select `--object-store-provider s3` explicitly for `serve-weights`, and create
+the follower journal parent with mode 0700.
+
+This establishes the live test-chain shared-weight path and its journal/readback
+controls for those exact identities. It does not establish independent hosts or
+failure domains, mainnet economics, V2 activation, or unattended operation.
+
 ### Incentive evidence
 
 The tracked one-campaign load report contains 64 matrix rows and four burst
-controls and replays to semantic digest
-`b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`.
+controls. Its sealed pre-rename receipt retains semantic digest
+`505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`;
+the separately labeled Cacheon-source replay has digest
+`42b0ea73a59bb431c0b390e40ccbf6a47706e95e762c7bfeef5068fe5f98b86f`.
+The only report-field difference is the exact source-file SHA-256 and the
+report digest derived from it; all accounting semantics match.
 It is deterministic accounting sensitivity, not chain, GPU, token-value,
 miner-equilibrium, activation, or publication evidence. See
 [Incentive load validation](../results/incentive-load-validation.md).

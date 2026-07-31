@@ -3,7 +3,7 @@
 # scan + manifest, but wrecks the model. The quality gate MUST catch it.
 
 bundle_id = "example-rmsnorm-broken"
-abi_version = "cacheon-op-abi-v0"
+abi_version = "optima-op-abi-v0"
 
 [[ops]]
 slot = "norm.rmsnorm"

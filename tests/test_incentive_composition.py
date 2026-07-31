@@ -211,7 +211,7 @@ def test_selected_policy_and_discovery_values_have_golden_strict_serialization()
         "per_award_principal_cap_epochs": 1,
         "discovery_lifetime_blocks": 648_000,
         "schema_version": 1,
-        "policy_version": "cacheon.incentive-composition.v1",
+        "policy_version": "optima.incentive-composition.v1",
     }
     assert disposition.to_dict() == {
         "policy_digest": policy.digest,
@@ -246,11 +246,11 @@ def test_selected_policy_and_discovery_values_have_golden_strict_serialization()
     assert DiscoveryClaimBalance.from_dict(balance.to_dict()) == balance
 
     # These literals make any consensus-serialization drift an explicit change.
-    assert policy.digest == "d00295d7809928b58057be7e10a85b7865b6e9e6e70b526ee79866280e42aea3"
-    assert disposition.digest == "4ade4440059095fc826034a19ee1bf1def5781cb38a2dfa61b173402ee13c18f"
-    assert claim.digest == "77fd5edaef5f21069e5f723eed28250715cc504e4e8633b018fdf48160e0b1b6"
-    assert balance.digest == "836fc8687476816c890a15d1fcfd10aba0bfa8d624d658e964739db4f7394645"
-    assert state.digest == "d36758ff6de2678d379e190df94827159be5831cade0c79939b772b44c9dc02b"
+    assert policy.digest == "47da366bcc2abf80153fda3d206bef7fc06e31bebceaa58b09630e1c6df7b013"
+    assert disposition.digest == "a7d5ebf011c0765c3212f586fd0728f76d9752fcb07446a6ec61d1c21d6da234"
+    assert claim.digest == "fa34d13594e125eaccf60d8b31a4472f005a6b004eb1a7065d676ca17d6909ae"
+    assert balance.digest == "a40049ed2b1fbd6d4ccd57361c23560b078c06ae8887bf32be4c10c5a6dd376b"
+    assert state.digest == "66ed679cb6fae27f0dc34f150a30ab2ed3fcb03ab7bca4a6e0bf0da23c4c679e"
 
 
 def test_every_public_payload_parser_rejects_missing_extra_and_non_plain_dicts() -> None:
@@ -564,7 +564,7 @@ def test_projection_is_input_order_invariant_and_roundtrips_to_one_golden_digest
     assert forward.to_dict() == reversed_inputs.to_dict()
     assert forward.digest == reversed_inputs.digest
     assert ComposedEpochProjection.from_dict(forward.to_dict()) == forward
-    assert forward.digest == "4f6a9dd80ecd61dbebd2ca1a83c0b10ce2dd2a6f4780eef5e52211bbf756e958"
+    assert forward.digest == "03931bbea5d60050ff34f6bf6be6dcc3689c5d04960b06e79aa68d1ddb07b29f"
 
 
 def test_weights_aggregate_both_classes_by_hotkey_and_conserve_reserve() -> None:

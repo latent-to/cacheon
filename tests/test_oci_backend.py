@@ -117,7 +117,7 @@ def _preflight(
     *, image: str, platform: str, worker: str, runtime: OCIRuntimeResourcePolicy
 ) -> RuntimePreflightReceipt:
     return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
+        schema="optima-runtime-preflight-v2",
         requested_image="registry.example/cacheon@sha256:" + image,
         image_digest=image,
         local_image_id=IMAGE_ID,
@@ -366,7 +366,7 @@ def _idle_receipt(
     case: SimpleNamespace, launch_id: str, phase: str, sequence: int, start: float
 ) -> DeviceStateReceipt:
     return DeviceStateReceipt(
-        "cacheon.device-state.v1",
+        "optima.device-state.v1",
         sequence,
         launch_id,
         phase,
@@ -384,7 +384,7 @@ def _active_receipt(
     case: SimpleNamespace, launch_id: str
 ) -> DeviceStateActiveReceipt:
     return DeviceStateActiveReceipt(
-        "cacheon.device-state-active.v1",
+        "optima.device-state-active.v1",
         2,
         launch_id,
         "final-warmup",
@@ -904,7 +904,7 @@ def test_launch_validation_requires_discovery_tree_plan_parity(
         case.plan,
         expected_discovery_overlay_identity_digest=_digest("discovery-overlay"),
     )
-    marker = SimpleNamespace(path="metadata/cacheon_discovery.json")
+    marker = SimpleNamespace(path="metadata/optima_discovery.json")
     discovery_resolved = replace(
         case.resolved,
         materialized_tree=SimpleNamespace(root=case.tree, files=(marker,)),
@@ -1146,7 +1146,7 @@ def test_execute_opened_keeps_normal_isolation_and_teardown(
         driver=driver,
     )
 
-    assert result.schema == "cacheon.oci-resident-engine-execution.v1"
+    assert result.schema == "optima.oci-resident-engine-execution.v1"
     assert result.session == _session_evidence(case)
     assert not tuple(manager.leases_root.glob("*.json"))
     assert not tuple(manager.resources_root.iterdir())
@@ -1323,7 +1323,7 @@ def test_execute_reference_selects_reference_transport_and_binds_plan(
             2.0 + index * 2, 3.0 + index * 2, evidence,
         ))
     session = ReferenceSessionEvidence(
-        "cacheon.pristine-reference-session.v1",
+        "optima.pristine-reference-session.v1",
         plan.requests[0].session_id,
         launch.digest,
         plan.reference.digest,

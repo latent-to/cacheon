@@ -125,9 +125,9 @@ class _TypedExecutor:
         ready_sample = DeviceStateSample(0.03, (), (), False, "ready", True, "ok")
         post_sample = DeviceStateSample(session.session_completed_at + 0.02, (), (), True, "idle")
         return (
-            DeviceStateReceipt("cacheon.device-state-receipt.v1", sequence, launch_id, "pre", ids, config, policy, -2.0, -1.0, 1, (idle,)),
-            DeviceStateActiveReceipt("cacheon.device-state-active-receipt.v2", sequence + 1, launch_id, "final-warmup", ids, config, policy, 0.01, first_timed - 0.01, 1, 1, 1, (active_sample, ready_sample)),
-            DeviceStateReceipt("cacheon.device-state-receipt.v1", sequence + 2, launch_id, "post", ids, config, policy, session.session_completed_at + 0.01, session.session_completed_at + 0.03, 1, (post_sample,)),
+            DeviceStateReceipt("optima.device-state-receipt.v1", sequence, launch_id, "pre", ids, config, policy, -2.0, -1.0, 1, (idle,)),
+            DeviceStateActiveReceipt("optima.device-state-active-receipt.v2", sequence + 1, launch_id, "final-warmup", ids, config, policy, 0.01, first_timed - 0.01, 1, 1, 1, (active_sample, ready_sample)),
+            DeviceStateReceipt("optima.device-state-receipt.v1", sequence + 2, launch_id, "post", ids, config, policy, session.session_completed_at + 0.01, session.session_completed_at + 0.03, 1, (post_sample,)),
         )
 
     def execute(self, launch, binding, mount, plan, *, deadline):
@@ -143,7 +143,7 @@ class _TypedExecutor:
         receipts = self._devices(session, "runtime-" + _binding(label), index * 3 + 1)
         receipt = binding.runtime_preflight_receipt
         return EngineExecutionEvidence(
-            "cacheon.oci-engine-execution.v1",
+            "optima.oci-engine-execution.v1",
             launch.digest,
             runtime_identity_from_preflight(receipt),
             receipt.sha256,

@@ -24,7 +24,7 @@ from cacheon.cuda_launch import (
 from cacheon._strict import require_driver_integer, require_int
 
 
-CUDA_EXPRESSION_SCHEMA = "cacheon.cuda-expression-dag.v1"
+CUDA_EXPRESSION_SCHEMA = "optima.cuda-expression-dag.v1"
 CUDA_TMA_DESCRIPTOR_CAPABILITY = "cuda.tma_descriptor.v1"
 CUTLASS_FAST_DIVMOD_CAPABILITY = "cutlass.fast_divmod.i32.v1"
 CUTE_FAST_DIVMOD_CAPABILITY = "cute.fast_divmod.i32.v1"

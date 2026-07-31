@@ -52,7 +52,7 @@ from cacheon.target_catalog import TargetCatalog
 from cacheon._strict import require_digest
 
 
-_TREE_METADATA = "metadata/cacheon_engine_tree.json"
+_TREE_METADATA = "metadata/optima_engine_tree.json"
 
 
 class MarginalRuntimeError(ValueError):
@@ -152,7 +152,7 @@ def _expected_contributions(
         rows.append(
             {
                 "contribution_ref_digest": ref.digest,
-                "namespace": f"cacheon_c_{ref.selected_delta_digest}",
+                "namespace": f"optima_c_{ref.selected_delta_digest}",
                 "selected_delta_digest": ref.selected_delta_digest,
                 "selected_payload_digest": ref.selected_payload_digest,
                 "source_digest": source_digest,
@@ -739,7 +739,7 @@ def _require_execution(
     seen_request_ids: set[str],
     seen_nonces: set[str],
     seen_runtime_policies: set[str],
-    expected_schema: str = "cacheon.oci-engine-execution.v1",
+    expected_schema: str = "optima.oci-engine-execution.v1",
 ) -> EngineExecutionEvidence:
     if type(execution) is not EngineExecutionEvidence:
         raise MarginalRuntimeError("executor returned the wrong evidence type")

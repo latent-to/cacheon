@@ -208,7 +208,7 @@ def _install_fake_execution(
             for index in (1, 2, 3)
         )
         return EngineExecutionEvidence(
-            "cacheon.oci-resident-engine-execution.v1",
+            "optima.oci-resident-engine-execution.v1",
             launch.digest,
             SimpleNamespace(),
             "1" * 64,
@@ -699,11 +699,11 @@ def test_speed_verdict_v2_regrades_the_sealed_b300_stage_exit_both_ways() -> Non
     the required bar to 1.126 against a candidate faster on every timed
     window."""
 
-    fixture = Path(__file__).parent / "fixtures" / "speed_stage_exit_4fc06ebf.json"
+    fixture = Path(__file__).parent / "fixtures" / "speed_stage_exit_45cbcc04.json"
     raw = fixture.read_bytes()
     assert (
         hashlib.sha256(raw).hexdigest()
-        == "4fc06ebf7d2f5edc13738636eb25839cadffd396914b125d8701ddb704fddac8"
+        == "45cbcc04455d3e9d3f73be8ce436f030f35dee9805c185312cd5421c0fd6890e"
     )
     exit_ = QualificationStageExit.from_dict(json.loads(raw))
     assert exit_.stage == "speed"

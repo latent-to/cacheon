@@ -128,13 +128,16 @@ The command reads `CACHEON_OBJECT_STORE_ACCESS_KEY_ID`,
 selects the service without a provider name and defaults to path-style
 addressing. `CACHEON_OBJECT_STORE_REGION` and
 `CACHEON_OBJECT_STORE_ADDRESSING_STYLE` override its signing region and URL
-style. `CACHEON_OBJECT_STORE_PROVIDER=hippius` and `minio` are optional presets,
+style. During the rename cutover, corresponding `OPTIMA_OBJECT_STORE_*` names
+remain fallback aliases; Cacheon names win when both are set.
+`CACHEON_OBJECT_STORE_PROVIDER=hippius` and `minio` are optional presets,
 not validator protocol identities. The miner's credentials authorize the
 upload only; they are not written into the archive, URL, on-chain payload, or
 validator configuration.
 
-The object key defaults to
-`cacheon/miner-bundles/sha256/<content_hash>.tar.gz`. Publication refuses an
+The object key defaults to the stable storage-compatibility prefix
+`optima/miner-bundles/sha256/<content_hash>.tar.gz`; the prefix is not rewritten
+as product branding. Publication refuses an
 existing object that does not extract to the same committed hash, makes the
 object anonymously readable, and verifies the resulting URL with the same
 production HTTPS fetcher used by validator intake. `--dry-run` packages and
@@ -227,8 +230,8 @@ Credentials come from `CACHEON_OBJECT_STORE_ACCESS_KEY_ID` and
 `CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY` (or the equivalent flags). Generic S3 is
 the default. `--object-store-provider hippius` or `minio` is only a convenience
 preset for endpoint, region, and addressing defaults; a custom endpoint needs no
-provider name. Archive keys default below the private
-`cacheon/validator-archive/v1` prefix, overridable with
+provider name. Archive keys default below the stable private
+`optima/validator-archive/v1` compatibility prefix, overridable with
 `CACHEON_VALIDATOR_ARCHIVE_PREFIX` or `--object-store-prefix`.
 
 The command uses SQLite's online backup API and uploads digest-addressed blobs plus
@@ -373,6 +376,11 @@ python -m cacheon.cli mint-weight-gateway \
 That writes mode-0600 secrets (hotkey mnemonic only) + `AUTHORITY.json`, prints
 `authority_ss58`, and does not print mnemonics. Existing push-credential files
 are refused unless `--force` (which retires active secrets and appends).
+The `cacheon.weight-gateway-secrets.v1` and
+`cacheon.weight-gateway-authority.v1` schema labels are write-only informational
+output. Pre-rename `optima.*` mnemonic and `AUTHORITY.json` files remain valid
+operator records; Cacheon does not consume either form as input, so no record
+rewrite or dual reader is required.
 Followers pin that ss58 with `--expected-authority` (or omit the flag to
 auto-pin the on-chain subnet-owner hotkey).
 
@@ -412,6 +420,8 @@ incentive composition is active (else legacy V1), and HTTP-PUTs it. It never
 opens a weight-signing wallet or calls `set_weights`. Credentials resolve from
 `--push-credentials`, else `CACHEON_WEIGHT_PUSH_CREDENTIALS` (JSON path), else
 `CACHEON_WEIGHT_PUSH_KEY` (+ optional `CACHEON_WEIGHT_PUSH_CREDENTIAL_ID`).
+The corresponding `OPTIMA_WEIGHT_PUSH_*` names remain last-precedence transition
+aliases. Cacheon variables win when both forms are present.
 `serve-weights` exposes `GET /v1/current-weights` (permit + hotkey signature)
 and optional `PUT /v1/current-weights` (same credential resolution). A
 credentialed PUT stores an HMAC-authenticated envelope, and a push-enabled
@@ -420,6 +430,12 @@ accepts only a fresh HMAC-authenticated acknowledgement binding its request
 timestamp, credential, offer, and projection digests; an HTTP intermediary
 cannot manufacture success without the push secret. Server-side
 storage/transport failures remain retryable.
+
+Cacheon verifies both the complete legacy `X-Optima-*`/`optima.*` transport
+dialect and the distinct `X-Cacheon-*`/`cacheon.*` dialect. Headers, schemas,
+HMAC domains, offer bytes, and acknowledgements must all select the same
+dialect; mixed forms fail closed. Existing authenticated objects are reopened
+without rewriting their bytes.
 
 `follow-weights` rebinds the offer to the follower hotkey and publishes through
 `reconcile_weight_publication` / commit-reveal. A fresh follower accepts an
@@ -433,7 +449,9 @@ the economic projection.
 Provider swap is config-only via `--object-store-provider` /
 `CACHEON_OBJECT_STORE_*`; an environment-only
 `CACHEON_OBJECT_STORE_PROVIDER` is sufficient, while explicit flags take
-precedence over environment values. The optional S3-compatible dependency is
+precedence over environment values. Corresponding `OPTIMA_OBJECT_STORE_*`
+variables are accepted only as last-precedence transition aliases. The optional
+S3-compatible dependency is
 `pip install -e ".[object-store]"` (boto3, Apache-2.0). See
 [Settlement and weights](../validator-guide/settlement-and-weights.md#shared-current-weights-endpoint).
 

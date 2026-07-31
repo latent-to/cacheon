@@ -180,7 +180,7 @@ def _discovery_execution(tmp_path: Path):
         "discovery-candidate",
     )
     activation = DiscoveryActivationReceipt(
-        "cacheon.discovery-driver-activation.v1",
+        "optima.discovery-driver-activation.v1",
         overlay.digest,
         100,
         DiscoveryDriverOrigin("sglang", case.preflight.sglang_version, "sglang/__init__.py"),
@@ -621,7 +621,7 @@ def test_discovery_execution_reopens_exact_native_overlay_and_activation(tmp_pat
         == lifecycle.candidates[0].execution.session.discovery_activation
     )
     assert grade.activation_receipt_digest == canonical_digest(
-        "cacheon.discovery.activation-receipt", grade.activation_receipt.to_dict()
+        "optima.discovery.activation-receipt", grade.activation_receipt.to_dict()
     )
     assert "activation_receipt" in grade.to_dict()
     assert "activation_receipt_digest" not in grade.to_dict()
@@ -823,7 +823,7 @@ def test_controller_store_graph_artifact_reopens_and_regrades(tmp_path: Path):
     (
         ("domain", "qualification.other"),
         ("media_type", "application/json"),
-        ("schema", "cacheon.qualification.other.v1"),
+        ("schema", "optima.qualification.other.v1"),
     ),
 )
 def test_graph_artifact_requires_exact_type_and_metadata(tmp_path: Path, field, value):
@@ -1027,7 +1027,7 @@ def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path
     )
     rollout = {"output_ids": list(range(10)), "rollout_topk": [None] * 10}
     assert projection == canonical_digest(
-        "cacheon.qualification.selected-trajectory-projection",
+        "optima.qualification.selected-trajectory-projection",
         {
             "support_policy_digest": retained_support_policy_digest(),
             "prompts": [
@@ -1148,7 +1148,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         role_inputs, role_evidence, raw_rollouts = [], [], []
         tasks = tuple(sorted(
             (RawHiddenTaskResult(
-                canonical_digest("cacheon.qualification.hidden-task", {
+                canonical_digest("optima.qualification.hidden-task", {
                     "corpus": reference.hidden_corpus_commitment,
                     "judge": reference.hidden_judge_digest,
                     "policy": profile.hidden_task_policy_digest,
@@ -1206,14 +1206,14 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         1.0, 2.0, teacher_evidence,
     )
     t_session = ReferenceSessionEvidence(
-        "cacheon.pristine-reference-session.v1", request.session_id,
+        "optima.pristine-reference-session.v1", request.session_id,
         reference.pristine_launch_digest, reference.digest,
         _d("reference-session-plan"), request_plan,
         reference_facts(reference, config), 0.5, (exchange,), 3.0,
     )
     baseline = lifecycle.baseline_before
     reference_execution = PristineReferenceExecutionEvidence(
-        "cacheon.oci-pristine-reference-execution.v1",
+        "optima.oci-pristine-reference-execution.v1",
         reference.pristine_launch_digest,
         baseline.runtime_identity,
         baseline.runtime_preflight_receipt_sha256,
@@ -1240,7 +1240,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         selected_delta_digest=delta,
     )
     assert identity_digest == canonical_digest(
-        "cacheon.qualification.candidate-identity",
+        "optima.qualification.candidate-identity",
         {
             "calibration_digest": calibration.digest,
             "candidate_lifecycle_digest": lifecycle_digest,
@@ -1430,7 +1430,7 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         role_inputs, role_evidence, raw_rollouts = [], [], []
         tasks = tuple(sorted(
             (RawHiddenTaskResult(
-                canonical_digest("cacheon.qualification.hidden-task", {
+                canonical_digest("optima.qualification.hidden-task", {
                     "corpus": reference.hidden_corpus_commitment,
                     "judge": reference.hidden_judge_digest,
                     "policy": profile.hidden_task_policy_digest,
@@ -1482,14 +1482,14 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         1.0, 2.0, teacher_evidence,
     )
     t_session = ReferenceSessionEvidence(
-        "cacheon.pristine-reference-session.v1", request.session_id,
+        "optima.pristine-reference-session.v1", request.session_id,
         reference.pristine_launch_digest, reference.digest,
         _d("reference-session-plan"), request_plan,
         reference_facts(reference, config), 0.5, (exchange,), 3.0,
     )
     baseline = lifecycle.baseline_before
     reference_execution = PristineReferenceExecutionEvidence(
-        "cacheon.oci-pristine-reference-execution.v1",
+        "optima.oci-pristine-reference-execution.v1",
         reference.pristine_launch_digest,
         baseline.runtime_identity,
         baseline.runtime_preflight_receipt_sha256,

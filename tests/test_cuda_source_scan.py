@@ -66,7 +66,7 @@ PY_ENTRY = "import torch\n\ndef silu_and_mul(x, out):\n    out.copy_(x)\n"
 def _write_manifest(root: Path, ops_toml: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "manifest.toml").write_text(
-        'bundle_id = "t"\nabi_version = "cacheon-op-abi-v0"\n\n' + ops_toml
+        'bundle_id = "t"\nabi_version = "optima-op-abi-v0"\n\n' + ops_toml
     )
 
 

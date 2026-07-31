@@ -15,7 +15,7 @@
 # open()-patching site-packages flashinfer (sandbox-banned). This is its clean replacement.
 
 bundle_id = "m3-swigluoai-override-v1"
-abi_version = "cacheon-op-abi-v0"
+abi_version = "optima-op-abi-v0"
 
 [[ops]]
 slot = "moe.fused_experts"

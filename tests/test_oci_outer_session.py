@@ -133,7 +133,7 @@ def _batch_evidence(request: BatchRequest) -> BatchEvidence:
 
 def _discovery_receipt() -> DiscoveryActivationReceipt:
     return DiscoveryActivationReceipt(
-        "cacheon.discovery-driver-activation.v1",
+        "optima.discovery-driver-activation.v1",
         _digest("discovery-overlay"),
         100,
         DiscoveryDriverOrigin(

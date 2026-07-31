@@ -566,26 +566,35 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
     return 0 if result.status in {"dry_run", "confirmed", "pending"} else 2
 
 
-def _object_store_from_args(args: argparse.Namespace):
-    """Build a swappable ObjectStore from CLI flags + CACHEON_OBJECT_STORE_* env."""
+def _renamed_environment(name: str) -> str:
+    """Read a Cacheon variable, then its transitional Optima alias."""
 
     import os
+
+    value = os.environ.get(name, "")
+    if value or not name.startswith("CACHEON_"):
+        return value
+    return os.environ.get("OPTIMA_" + name.removeprefix("CACHEON_"), "")
+
+
+def _object_store_from_args(args: argparse.Namespace):
+    """Build a swappable ObjectStore from CLI flags + CACHEON_OBJECT_STORE_* env."""
 
     from cacheon.object_store import ObjectStoreConfig, open_configured_object_store
 
     provider = (
         getattr(args, "object_store_provider", "")
-        or os.environ.get("CACHEON_OBJECT_STORE_PROVIDER", "")
+        or _renamed_environment("CACHEON_OBJECT_STORE_PROVIDER")
     ).strip().lower()
     if not provider or provider == "none":
         return None, ""
     bucket = (
         getattr(args, "object_store_bucket", "")
-        or os.environ.get("CACHEON_OBJECT_STORE_BUCKET", "")
+        or _renamed_environment("CACHEON_OBJECT_STORE_BUCKET")
     )
     root = (
         getattr(args, "object_store_root", "")
-        or os.environ.get("CACHEON_OBJECT_STORE_ROOT_DIR", "")
+        or _renamed_environment("CACHEON_OBJECT_STORE_ROOT_DIR")
     )
     if provider in {"hippius", "s3", "minio"} and not bucket:
         raise SystemExit(
@@ -598,14 +607,14 @@ def _object_store_from_args(args: argparse.Namespace):
             "for provider=local"
         )
     def _opt(name: str, env_name: str) -> str | None:
-        value = getattr(args, name, "") or os.environ.get(env_name, "")
+        value = getattr(args, name, "") or _renamed_environment(env_name)
         return value or None
 
     cfg = ObjectStoreConfig(
         provider=provider,
         bucket=bucket,
         key_prefix=getattr(args, "object_store_prefix", "")
-        or os.environ.get("CACHEON_OBJECT_STORE_KEY_PREFIX", "")
+        or _renamed_environment("CACHEON_OBJECT_STORE_KEY_PREFIX")
         or "",
         endpoint_url=_opt(
             "object_store_endpoint", "CACHEON_OBJECT_STORE_ENDPOINT_URL"
@@ -624,7 +633,7 @@ def _object_store_from_args(args: argparse.Namespace):
     )
     key = (
         getattr(args, "object_store_key", "")
-        or os.environ.get("CACHEON_OBJECT_STORE_KEY", "")
+        or _renamed_environment("CACHEON_OBJECT_STORE_KEY")
         or "current_weights.json"
     )
     return open_configured_object_store(cfg), key
@@ -638,18 +647,16 @@ def _s3_store_config_from_args(
 ):
     """Build one generic S3-compatible config from flags plus environment."""
 
-    import os
-
     from cacheon.object_store import ObjectStoreConfig
 
     provider = (
         getattr(args, "object_store_provider", "")
-        or os.environ.get("CACHEON_OBJECT_STORE_PROVIDER", "")
+        or _renamed_environment("CACHEON_OBJECT_STORE_PROVIDER")
         or "s3"
     ).strip().lower()
     bucket = (
         getattr(args, "object_store_bucket", "")
-        or os.environ.get("CACHEON_OBJECT_STORE_BUCKET", "")
+        or _renamed_environment("CACHEON_OBJECT_STORE_BUCKET")
     )
     if not bucket:
         raise SystemExit(
@@ -657,7 +664,7 @@ def _s3_store_config_from_args(
         )
 
     def _opt(name: str, env_name: str) -> str | None:
-        value = getattr(args, name, "") or os.environ.get(env_name, "")
+        value = getattr(args, name, "") or _renamed_environment(env_name)
         return value or None
 
     endpoint_url = _opt(
@@ -677,7 +684,7 @@ def _s3_store_config_from_args(
         bucket=bucket,
         key_prefix=(
             getattr(args, "object_store_prefix", "")
-            or os.environ.get(prefix_env, "")
+            or _renamed_environment(prefix_env)
             or default_prefix
         ),
         endpoint_url=endpoint_url,

@@ -34,9 +34,9 @@ _LAYER_TYPES = frozenset({
     "application/vnd.oci.image.layer.v1.tar+zstd", "application/vnd.docker.image.rootfs.diff.tar",
     "application/vnd.docker.image.rootfs.diff.tar.gzip",
 })
-_DESCRIPTOR_LABEL = "org.cacheon.release.descriptor"
-_SECCOMP_LABEL = "org.cacheon.seccomp.sha256"
-_OVERLAY_LABEL = "org.cacheon.runtime-overlays"
+_DESCRIPTOR_LABEL = "org.optima.release.descriptor"
+_SECCOMP_LABEL = "org.optima.seccomp.sha256"
+_OVERLAY_LABEL = "org.optima.runtime-overlays"
 _MANIFEST_LIMIT = 4 << 20
 _CONFIG_LIMIT = 16 << 20
 _TMPFS_SIZE = 16 << 30

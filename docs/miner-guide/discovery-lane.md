@@ -15,7 +15,7 @@ instead.
 | Question | Component proposal | Discovery proposal |
 |---|---|---|
 | What is being replaced? | one registered singleton or complete registered atomic target | an exact bounded patch that does not fit a current target |
-| ABI | `cacheon-op-abi-v0` registered slot rows, including sealed direct artifacts | `cacheon-discovery-abi-v1` closed patch manifest |
+| ABI | `optima-op-abi-v0` registered slot rows, including sealed direct artifacts | `cacheon-discovery-abi-v1` closed patch manifest |
 | Source shape | manifest, declared entry/metadata, and allowed advanced inputs | exactly the manifest and declared unified diffs |
 | Runtime authority | validator dispatches through a registered slot seam | validator applies a sealed overlay through fixed discovery process roles |
 | Economic result | standing target crown may participate in emissions | one bounded, non-renewable, expiring bounty claim when enabled |

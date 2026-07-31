@@ -30,8 +30,8 @@ if TYPE_CHECKING:
 GRAPH_QUALIFICATION_SCHEMA_VERSION = 1
 GRAPH_QUALIFICATION_POLICY_VERSION = "graph-verification-veto.v1"
 GRAPH_EVIDENCE_DOMAIN = "qualification.graph-verification"
-GRAPH_EVIDENCE_MEDIA_TYPE = "application/vnd.cacheon.graph-verification+json"
-GRAPH_EVIDENCE_SCHEMA = "cacheon.qualification.graph-raw-evidence.v1"
+GRAPH_EVIDENCE_MEDIA_TYPE = "application/vnd.optima.graph-verification+json"
+GRAPH_EVIDENCE_SCHEMA = "optima.qualification.graph-raw-evidence.v1"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
 _FAILURES = frozenset(
     {"none", "not_applicable", "eager", "capture", "replay", "graph_not_required"}
@@ -134,7 +134,7 @@ class _Canonical:
 
 @dataclass(frozen=True)
 class GraphVerificationMemberBinding(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-member-binding"
+    _domain: ClassVar[str] = "optima.qualification.graph-member-binding"
     slot_id: str
     target_spec_digest: str
     contract_digest: str
@@ -155,7 +155,7 @@ class GraphVerificationMemberBinding(_Canonical):
 
 @dataclass(frozen=True)
 class GraphVerificationBinding(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-binding"
+    _domain: ClassVar[str] = "optima.qualification.graph-binding"
     marginal_arm_digest: str
     candidate_launch_digest: str
     contribution_ref_digest: str
@@ -199,7 +199,7 @@ class GraphVerificationBinding(_Canonical):
 
 @dataclass(frozen=True)
 class GraphVariantRequirement(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-variant-requirement"
+    _domain: ClassVar[str] = "optima.qualification.graph-variant-requirement"
     slot_id: str
     variant_id: str
     shape_descriptor_digests: tuple[str, ...]
@@ -243,7 +243,7 @@ class GraphVariantRequirement(_Canonical):
 
 @dataclass(frozen=True)
 class GraphVerificationRequirement(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-requirement"
+    _domain: ClassVar[str] = "optima.qualification.graph-requirement"
     binding: GraphVerificationBinding
     variants: tuple[GraphVariantRequirement, ...]
     expected_graph_replays: int
@@ -284,7 +284,7 @@ class GraphVerificationRequirement(_Canonical):
 
 @dataclass(frozen=True)
 class GraphShapeEvidence(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-shape-evidence"
+    _domain: ClassVar[str] = "optima.qualification.graph-shape-evidence"
     descriptor_digest: str
     applicable: bool
     eager_passed: bool
@@ -328,7 +328,7 @@ class GraphShapeEvidence(_Canonical):
 
 @dataclass(frozen=True)
 class GraphVariantEvidence(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-variant-evidence"
+    _domain: ClassVar[str] = "optima.qualification.graph-variant-evidence"
     slot_id: str
     variant_id: str
     context_applicable: bool
@@ -364,7 +364,7 @@ class GraphVariantEvidence(_Canonical):
 
 @dataclass(frozen=True)
 class GraphMemberEvidence(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-member-evidence"
+    _domain: ClassVar[str] = "optima.qualification.graph-member-evidence"
     slot_id: str
     variants: tuple[GraphVariantEvidence, ...]
 
@@ -393,7 +393,7 @@ class GraphMemberEvidence(_Canonical):
 
 @dataclass(frozen=True)
 class GraphVerificationRawEvidence(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-raw-evidence"
+    _domain: ClassVar[str] = "optima.qualification.graph-raw-evidence"
     requirement_digest: str
     members: tuple[GraphMemberEvidence, ...]
     policy_version: str = GRAPH_QUALIFICATION_POLICY_VERSION
@@ -426,7 +426,7 @@ class GraphVerificationRawEvidence(_Canonical):
 
 @dataclass(frozen=True)
 class GraphVerificationEvidenceRef(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-evidence-ref"
+    _domain: ClassVar[str] = "optima.qualification.graph-evidence-ref"
     binding: GraphVerificationBinding
     requirement_digest: str
     raw_evidence_digest: str
@@ -452,7 +452,7 @@ class GraphVerificationEvidenceRef(_Canonical):
 
 @dataclass(frozen=True)
 class GraphVerificationGrade(_Canonical):
-    _domain: ClassVar[str] = "cacheon.qualification.graph-grade"
+    _domain: ClassVar[str] = "optima.qualification.graph-grade"
     decision: QualificationDecision
     reason: str
     requirement_digest: str
@@ -629,7 +629,7 @@ def reopen_graph_verification(
 class DiscoveryExecutionRequirement(_Canonical):
     """Exact non-catalog authority required for one discovery C arm."""
 
-    _domain: ClassVar[str] = "cacheon.qualification.discovery-execution-requirement"
+    _domain: ClassVar[str] = "optima.qualification.discovery-execution-requirement"
     arm_digest: str
     proposal_digest: str
     selected_delta_digest: str
@@ -670,7 +670,7 @@ class DiscoveryExecutionRequirement(_Canonical):
 class DiscoveryExecutionGrade(_Canonical):
     """Recomputed discovery execution veto; never a score or crown."""
 
-    _domain: ClassVar[str] = "cacheon.qualification.discovery-execution-grade"
+    _domain: ClassVar[str] = "optima.qualification.discovery-execution-grade"
     decision: QualificationDecision
     reason: str
     requirement_digest: str
@@ -712,7 +712,7 @@ class DiscoveryExecutionGrade(_Canonical):
         if self.activation_receipt is None:
             return None
         return canonical_digest(
-            "cacheon.discovery.activation-receipt", self.activation_receipt.to_dict()
+            "optima.discovery.activation-receipt", self.activation_receipt.to_dict()
         )
 
     @classmethod
@@ -843,7 +843,7 @@ def grade_discovery_execution(
         or candidate_config.tp_size != requirement.expected_tp_size
         or prepared.session_plan.expected_discovery_overlay_identity_digest
         != arm.overlay_identity_digest
-        or any(row.schema != "cacheon.oci-engine-execution.v1" for row in execution_rows)
+        or any(row.schema != "optima.oci-engine-execution.v1" for row in execution_rows)
         or execution.launch_digest != requirement.candidate_launch_digest
         or execution.runtime_identity
         != runtime_identity_from_preflight(binding.runtime_preflight_receipt)
@@ -1008,7 +1008,7 @@ def reopen_discovery_execution_binding(
 class ReferenceManifest(_Canonical):
     """Exact candidate-free engine and hidden authority used by pristine T."""
 
-    _domain: ClassVar[str] = "cacheon.qualification.reference-manifest"
+    _domain: ClassVar[str] = "optima.qualification.reference-manifest"
     pristine_stack_digest: str
     pristine_tree_digest: str
     pristine_launch_digest: str
@@ -1102,7 +1102,7 @@ class ReferenceManifest(_Canonical):
 class QualificationProfile(_Canonical):
     """Validator-owned policy; submissions cannot choose gates or calibration."""
 
-    _domain: ClassVar[str] = "cacheon.qualification.profile"
+    _domain: ClassVar[str] = "optima.qualification.profile"
     reference: ReferenceManifest
     calibration_context_digest: str
     calibration_digest: str
@@ -1190,7 +1190,7 @@ class QualificationProfile(_Canonical):
 class DiscoveryQualificationProfile(_Canonical):
     """Validator-owned quality policy for one discovery execution authority."""
 
-    _domain: ClassVar[str] = "cacheon.qualification.discovery-profile"
+    _domain: ClassVar[str] = "optima.qualification.discovery-profile"
     reference: ReferenceManifest
     calibration_context_digest: str
     calibration_digest: str
@@ -1242,7 +1242,7 @@ class DiscoveryQualificationProfile(_Canonical):
 class SelectionCommitment(_Canonical):
     """Prompt pool and secret commitment sealed before candidate results exist."""
 
-    _domain: ClassVar[str] = "cacheon.qualification.selection-commitment"
+    _domain: ClassVar[str] = "optima.qualification.selection-commitment"
     source_plan_digest: str
     reference_manifest_digest: str
     workload_digest: str
@@ -1296,7 +1296,7 @@ class SelectionCommitment(_Canonical):
             reference_manifest.digest,
             reference_manifest.workload_digest,
             entropy_source_digest,
-            hashlib.sha256(b"cacheon-selection-secret-v1\0" + secret).hexdigest(),
+            hashlib.sha256(b"optima-selection-secret-v1\0" + secret).hexdigest(),
             prompt_digests,
             select_count,
         )
@@ -1315,7 +1315,7 @@ class SelectionCommitment(_Canonical):
 class SelectionEntropyReceipt(_Canonical):
     """Retained entropy value and authority receipt for a committed source."""
 
-    _domain: ClassVar[str] = "cacheon.qualification.selection-entropy"
+    _domain: ClassVar[str] = "optima.qualification.selection-entropy"
     source_digest: str
     commitment_digest: str
     entropy_digest: str
@@ -1334,7 +1334,7 @@ class SelectionEntropyReceipt(_Canonical):
 class SelectionReceipt(_Canonical):
     """Reproducible reveal using retained post-commit entropy."""
 
-    _domain: ClassVar[str] = "cacheon.qualification.selection-receipt"
+    _domain: ClassVar[str] = "optima.qualification.selection-receipt"
     commitment_digest: str
     reveal_digest: str
     entropy_receipt_digest: str
@@ -1364,7 +1364,7 @@ class SelectionReceipt(_Canonical):
     ) -> "SelectionReceipt":
         if type(commitment) is not SelectionCommitment or not isinstance(secret, bytes):
             raise QualificationError("selection reveal is not typed")
-        reveal = hashlib.sha256(b"cacheon-selection-secret-v1\0" + secret).hexdigest()
+        reveal = hashlib.sha256(b"optima-selection-secret-v1\0" + secret).hexdigest()
         if reveal != commitment.secret_commitment:
             raise QualificationError("selection reveal does not open its commitment")
         if (
@@ -1377,7 +1377,7 @@ class SelectionReceipt(_Canonical):
         ranked = sorted(
             commitment.prompt_digests,
             key=lambda prompt: canonical_digest(
-                "cacheon.qualification.selection-key",
+                "optima.qualification.selection-key",
                 {
                     "commitment_digest": commitment.digest,
                     "post_commit_entropy_digest": entropy.entropy_digest,
@@ -1406,7 +1406,7 @@ class SelectionReceipt(_Canonical):
         ranked = sorted(
             commitment.prompt_digests,
             key=lambda prompt: canonical_digest(
-                "cacheon.qualification.selection-key",
+                "optima.qualification.selection-key",
                 {
                     "commitment_digest": commitment.digest,
                     "post_commit_entropy_digest": entropy.entropy_digest,
@@ -1486,7 +1486,7 @@ def _trajectory_rows(lifecycle: object):
     for batch_index, prompts in enumerate(plan.prompt_batches):
         for prompt_index, prompt in enumerate(prompts):
             occurrence = canonical_digest(
-                "cacheon.qualification.prompt-occurrence",
+                "optima.qualification.prompt-occurrence",
                 {
                     "batch_index": batch_index,
                     "prompt_index": prompt_index,
@@ -1579,7 +1579,7 @@ def cohort_trajectory_digest(lifecycle: object) -> str:
         ):
             raise QualificationError("repeat trajectory workload differs")
         return canonical_digest(
-            "cacheon.qualification.cohort-trajectories.v2",
+            "optima.qualification.cohort-trajectories.v2",
             {
                 "workload_digest": workload,
                 "primary": [[key, frames] for key, frames in rows],
@@ -1587,7 +1587,7 @@ def cohort_trajectory_digest(lifecycle: object) -> str:
             },
         )
     return canonical_digest(
-        "cacheon.qualification.cohort-trajectories",
+        "optima.qualification.cohort-trajectories",
         {"workload_digest": workload, "prompts": [[key, frames] for key, frames in rows]},
     )
 
@@ -1615,7 +1615,7 @@ def candidate_lifecycle_digest(
     candidate = candidates[0]
     if type(lifecycle) is ResidentMarginalLifecycleEvidence:
         return canonical_digest(
-            "cacheon.qualification.candidate-lifecycle.resident-v1",
+            "optima.qualification.candidate-lifecycle.resident-v1",
             {
                 "arm_digest": candidate.arm.digest,
                 "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
@@ -1666,7 +1666,7 @@ def candidate_lifecycle_digest(
         }
 
     return canonical_digest(
-        "cacheon.qualification.candidate-lifecycle",
+        "optima.qualification.candidate-lifecycle",
         {
             "arm_digest": candidate.arm.digest,
             "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
@@ -1721,11 +1721,11 @@ def qualification_identity_digest(
     }
     if registered:
         return canonical_digest(
-            "cacheon.qualification.candidate-identity",
+            "optima.qualification.candidate-identity",
             {**common, "graph_requirement_digest": graph_requirement.digest},
         )
     return canonical_digest(
-        "cacheon.qualification.discovery-candidate-identity",
+        "optima.qualification.discovery-candidate-identity",
         {**common, "execution_requirement_digest": graph_requirement.digest},
     )
 
@@ -1751,7 +1751,7 @@ def selected_trajectory_digest(
         raise QualificationError("selected trajectory prompts differ from the lifecycle")
     by_prompt = dict(rows)
     return canonical_digest(
-        "cacheon.qualification.selected-trajectories",
+        "optima.qualification.selected-trajectories",
         {
             "selected_delta_digest": _digest(selected_delta_digest, "selected delta"),
             "workload_digest": workload,
@@ -1812,7 +1812,7 @@ def selected_trajectory_projection_digest(
         }
 
     return canonical_digest(
-        "cacheon.qualification.selected-trajectory-projection",
+        "optima.qualification.selected-trajectory-projection",
         {
             "support_policy_digest": retained_support_policy_digest(),
             "prompts": [
@@ -1842,7 +1842,7 @@ def derived_hidden_task_plan_digest(
         raise QualificationError("hidden-task prompts are not canonical")
     rows = []
     for prompt in prompts:
-        tasks = sorted(canonical_digest("cacheon.qualification.hidden-task", {
+        tasks = sorted(canonical_digest("optima.qualification.hidden-task", {
             "corpus": profile.reference.hidden_corpus_commitment,
             "judge": profile.reference.hidden_judge_digest,
             "policy": profile.hidden_task_policy_digest,
@@ -1850,7 +1850,7 @@ def derived_hidden_task_plan_digest(
             "index": index,
         }) for index in range(profile.hidden_tasks_per_prompt))
         rows.append({"prompt": prompt, "tasks": tasks})
-    return canonical_digest("cacheon.qualification.hidden-task-plan", rows)
+    return canonical_digest("optima.qualification.hidden-task-plan", rows)
 
 
 def _selected_prompt_texts(lifecycle: object) -> dict[str, str]:
@@ -1862,7 +1862,7 @@ def _selected_prompt_texts(lifecycle: object) -> dict[str, str]:
     for batch_index, prompts in enumerate(plan.prompt_batches):
         for prompt_index, prompt in enumerate(prompts):
             occurrence = canonical_digest(
-                "cacheon.qualification.prompt-occurrence",
+                "optima.qualification.prompt-occurrence",
                 {
                     "batch_index": batch_index,
                     "prompt_index": prompt_index,
@@ -1891,7 +1891,7 @@ def _validate_teacher_source(
     if (
         type(raw) is not ReferenceQualityRawArtifact
         or type(execution) is not PristineReferenceExecutionEvidence
-        or execution.schema != "cacheon.oci-pristine-reference-execution.v1"
+        or execution.schema != "optima.oci-pristine-reference-execution.v1"
     ):
         raise QualificationError("raw quality or pristine execution is not authoritative")
     request_digest = _digest(reference_request_sha256, "T request SHA-256")

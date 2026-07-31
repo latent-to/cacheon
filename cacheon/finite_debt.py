@@ -29,7 +29,7 @@ REFERENCE_EPOCH_UNITS = PPM
 LOG_UNIT_STEP = Decimal("1.01")
 DECIMAL_PRECISION = 80
 POLICY_SCHEMA_VERSION = 2
-POLICY_VERSION = "cacheon.finite-debt.v2"
+POLICY_VERSION = "optima.finite-debt.v2"
 MAX_ACTIVE_CAMPAIGNS = 2
 IMPROVEMENT_GROSS = "gross"
 IMPROVEMENT_EXCESS = "excess_over_threshold"
@@ -322,7 +322,7 @@ class FiniteDebtPolicyManifest:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.finite-debt.policy", self.to_dict())
+        return canonical_digest("optima.finite-debt.policy", self.to_dict())
 
 
 def log_improvement_units_ppm(
@@ -568,7 +568,7 @@ class InnovationDebtClaim:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.finite-debt.claim", self.to_dict())
+        return canonical_digest("optima.finite-debt.claim", self.to_dict())
 
 
 def issue_innovation_claim(
@@ -703,7 +703,7 @@ class DebtClaimBalance:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.finite-debt.balance", self.to_dict())
+        return canonical_digest("optima.finite-debt.balance", self.to_dict())
 
 
 def pay_claim_balance(
@@ -835,7 +835,7 @@ class DebtClaimState:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.finite-debt.claim-state", self.to_dict())
+        return canonical_digest("optima.finite-debt.claim-state", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -980,7 +980,7 @@ class DebtEpochProjection:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.finite-debt.epoch-projection", self.to_dict())
+        return canonical_digest("optima.finite-debt.epoch-projection", self.to_dict())
 
 
 def project_debt_epoch(

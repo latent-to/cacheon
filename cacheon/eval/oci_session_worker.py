@@ -340,7 +340,7 @@ def _topology_digest() -> str:
     if any(row[index] != "X" for index, row in enumerate(matrix)):
         raise SessionWorkerError("live GPU topology diagonal is malformed")
     payload = json.dumps(
-        {"matrix": matrix, "schema": "cacheon-gpu-topology-v1"},
+        {"matrix": matrix, "schema": "optima-gpu-topology-v1"},
         sort_keys=True,
         separators=(",", ":"),
     ).encode("ascii")

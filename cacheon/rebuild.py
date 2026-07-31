@@ -41,9 +41,9 @@ from typing import Any, Literal
 # registered file under this directory and nowhere else.
 _PATCHER_SUBDIR = ("cacheon", "patchers")
 _REGISTERED_PATCHERS = {
-    "apply_dep_patch.py": ("cacheon.apply-dep-patch.v1", 0),
-    "build_cuda_ext.py": ("cacheon.build-cuda-ext.v1", 1),
-    "build_cute_cubin.py": ("cacheon.build-cute-cubin.v1", 2),
+    "apply_dep_patch.py": ("optima.apply-dep-patch.v1", 0),
+    "build_cuda_ext.py": ("optima.build-cuda-ext.v1", 1),
+    "build_cute_cubin.py": ("optima.build-cute-cubin.v1", 2),
 }
 
 

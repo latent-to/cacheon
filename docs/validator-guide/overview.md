@@ -155,6 +155,57 @@ profiling is useful before submission and during integration, but its output is 
 crown, a settlement record, or weight authority. See
 [Contributor profiling](running-evals.md).
 
+## Cacheon rename cutover
+
+The Cacheon rename changes executable and deployment names, but it is not a
+protocol-state migration.
+
+!!! warning
+    Do not install `cacheon-harness` over an editable `optima-harness` checkout
+    or reuse an evaluator image built with the old Python package. Both
+    distributions and bootstrap entry points can remain installed, while the old
+    image cannot import the renamed Cacheon worker modules.
+
+For each operator role:
+
+1. Stop the intake, gateway, follower, signer, and evaluation processes cleanly,
+   then create and verify a private recovery snapshot before the cutover.
+2. Build from a clean source archive into a fresh virtual environment. If a host
+   must be reused, uninstall `optima-harness` before installing
+   `cacheon-harness`, and verify that no legacy distribution, console script,
+   `.pth`, SGLang entry point, or `optima/` wheel payload remains.
+3. Rebuild and re-attest every evaluator/OCI image, then deploy the complete
+   process cohort with the `cacheon` CLI, `cacheon` Python modules, and
+   `CACHEON_*` environment names. Do not mix old and new interpreters in one
+   process or image.
+4. Keep existing SQLite databases, evidence, signed offers, recovery archives,
+   and object-store keys byte-for-byte. Their `optima.*`,
+   `optima-op-abi-v0`, and `optima/validator-archive/v1` values are stable
+   protocol/storage compatibility identifiers. Do not bulk-rewrite or rehash
+   them as branding.
+5. Reopen and reconcile the existing authority before resuming submissions.
+   Confirm the expected database scope, crown/stack state, publication journal,
+   recovery manifest, weight-offer authority, and chain readback under the new
+   process cohort.
+
+During the transition, `OPTIMA_OBJECT_STORE_*` aliases are accepted as fallback
+for the corresponding `CACHEON_OBJECT_STORE_*` variables, and
+`OPTIMA_WEIGHT_PUSH_CREDENTIALS`, `OPTIMA_WEIGHT_PUSH_KEY`, and
+`OPTIMA_WEIGHT_PUSH_CREDENTIAL_ID` remain fallback aliases for their
+`CACHEON_*` forms. Explicit CLI values win, followed by Cacheon variables, then
+Optima aliases; migrate service configuration to Cacheon names rather than
+depending on the fallback indefinitely.
+
+The shared-weight gateway also verifies complete legacy `X-Optima-*` request,
+response, acknowledgement, HMAC-domain, and stored-envelope dialects alongside
+the distinct `X-Cacheon-*` dialect. A request or stored object must be internally
+consistent with one dialect; mixed headers, schemas, or digests fail closed.
+Existing authenticated objects can therefore be reopened without normalization,
+while newly configured services should use the Cacheon dialect.
+
+The current documentation redirect is `HOW_CACHEON_WORKS.md`;
+`HOW_OPTIMA_WORKS.md` is retained so inbound links continue to resolve.
+
 ## Durable state
 
 Production referee state lives in `FinalizedIntakeStore`. The store binds its database to

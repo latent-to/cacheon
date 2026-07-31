@@ -80,10 +80,17 @@ def _load_toml(p: Path) -> dict:
     return toml.loads(p.read_text())
 
 
-ABI_VERSION = "cacheon-op-abi-v0"
+# ``abi_version`` is part of committed bundle bytes and the selected-payload
+# identity.  Branding does not version that protocol: writers keep emitting the
+# published v0 spelling so old validators and in-flight commits can straddle
+# this rename.  The Cacheon spelling is a closed reader alias only, and readers
+# preserve the submitted spelling rather than normalizing its hash-bound value.
+ABI_VERSION = "optima-op-abi-v0"
+CACHEON_ABI_VERSION_ALIAS = "cacheon-op-abi-v0"
+SUPPORTED_ABI_VERSIONS = frozenset({ABI_VERSION, CACHEON_ABI_VERSION_ALIAS})
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
 DEFAULT_VARIANT = "default"
-ARTIFACT_TARGET_AUTHORITY_SCHEMA = "cacheon.artifact-target-authority.v1"
+ARTIFACT_TARGET_AUTHORITY_SCHEMA = "optima.artifact-target-authority.v1"
 _AOT_EXPORT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _AOT_PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _AOT_PLAN_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -129,7 +136,7 @@ class ArtifactTargetAuthority:
 
     @property
     def call_abi_digest(self) -> str:
-        return canonical_digest("cacheon.artifact-call-abi", _call_abi_snapshot(self.call_abi))
+        return canonical_digest("optima.artifact-call-abi", _call_abi_snapshot(self.call_abi))
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -142,7 +149,7 @@ class ArtifactTargetAuthority:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.artifact-target-authority", self.snapshot())
+        return canonical_digest("optima.artifact-target-authority", self.snapshot())
 
 
 def static_artifact_target_authority(dispatch_slot: str) -> ArtifactTargetAuthority:
@@ -963,8 +970,9 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
 
     abi = str(data.get("abi_version", "")).strip()
     _require(
-        abi == ABI_VERSION,
-        f"unsupported abi_version {abi!r}; this validator speaks {ABI_VERSION!r}",
+        abi in SUPPORTED_ABI_VERSIONS,
+        f"unsupported abi_version {abi!r}; supported versions are "
+        f"{sorted(SUPPORTED_ABI_VERSIONS)!r}",
     )
 
     ops_raw = data.get("ops")

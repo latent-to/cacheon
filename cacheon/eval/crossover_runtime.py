@@ -202,7 +202,7 @@ class ResidentSpeedPolicy:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.qualification.resident-speed-policy",
+            "optima.qualification.resident-speed-policy",
             {
                 "borderline_band": "one_min_margin_around_required",
                 **self.to_dict(),
@@ -452,7 +452,7 @@ class ResidentCrossoverPlan:
             }
 
         return canonical_digest(
-            "cacheon.qualification.resident-crossover-plan",
+            "optima.qualification.resident-crossover-plan",
             {
                 "baseline": arm(self.baseline),
                 "candidate": arm(self.candidate),
@@ -479,7 +479,7 @@ def _expanded(plan: SessionExecutionPlan, reads: int) -> SessionExecutionPlan:
 def _expected_lane_digest(arm: ResidentArmPlan) -> str:
     physical = arm.binding.physical_hardware
     return canonical_digest(
-        "cacheon.qualification.resident-lane",
+        "optima.qualification.resident-lane",
         {
             "configuration": arm.device_configuration_digest,
             "namespace": arm.executor_namespace_digest,
@@ -864,7 +864,7 @@ def _final(verdict: SpeedupVerdict) -> SpeedStageDecision:
 
 def _execution_digest(value: EngineExecutionEvidence) -> str:
     return canonical_digest(
-        "cacheon.qualification.resident-engine-execution",
+        "optima.qualification.resident-engine-execution",
         {
             "argv": value.runtime_argv_sha256,
             "batches": [
@@ -900,7 +900,7 @@ def _validate_resident_execution(
     plan = _expanded(arm.session_plan, reads)
     session = execution.session
     if (
-        execution.schema != "cacheon.oci-resident-engine-execution.v1"
+        execution.schema != "optima.oci-resident-engine-execution.v1"
         or execution.launch_digest != arm.launch.digest
         or execution.resource_policy_digest != arm.runtime_resource_policy_digest
         or type(session) is not SessionExecutionEvidence
@@ -1191,7 +1191,7 @@ class ResidentCrossoverEvidence:
             "speedup": format(row.speedup, ".17g"),
         }
         return canonical_digest(
-            "cacheon.qualification.resident-crossover-speed",
+            "optima.qualification.resident-crossover-speed",
             {
                 "baseline_execution": _execution_digest(self.baseline_execution),
                 "baseline_lane": self.baseline_lane_digest,

@@ -1,0 +1,90 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu:
+    name: CPU suite (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[cpu,dev,release]"
+
+      - name: Run CPU suite
+        run: python -m pytest -q tests
+
+  distributions:
+    name: Build and inspect distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Build clean source and wheel distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --sdist --wheel --outdir dist
+
+      - name: Check distribution package inventory
+        run: python scripts/check_wheel_inventory.py dist/*.tar.gz dist/*.whl
+
+      - name: Install and import the wheel outside the source tree
+        run: |
+          wheel_path="$(find "$PWD/dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+          test -n "$wheel_path"
+          python -m pip install "$wheel_path"
+          cd "$RUNNER_TEMP"
+          python - <<'PY'
+          import importlib.metadata
+          import importlib.util
+
+          import cacheon
+          import cacheon_kernels
+
+          distribution = importlib.metadata.distribution("cacheon-harness")
+          assert distribution.version == cacheon.__version__
+          assert importlib.util.find_spec("optima") is None
+          assert importlib.util.find_spec("optima_kernels") is None
+          print(f"installed cacheon-harness {distribution.version}")
+          print(f"cacheon: {cacheon.__file__}")
+          print(f"cacheon_kernels: {cacheon_kernels.__file__}")
+          PY
+          cacheon --help > /dev/null

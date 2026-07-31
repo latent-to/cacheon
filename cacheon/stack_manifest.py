@@ -24,6 +24,26 @@ from cacheon.stack_identity import (
 from cacheon._strict import require_digest, require_exact_fields
 
 
+# Domain separators are immutable wire/storage identifiers. The Python package
+# is Cacheon, but manifests written before the rename must retain the same
+# identities when they are reopened or reproduced.
+_TARGET_CATALOG_DOMAIN = "optima.target-catalog"
+_TARGET_SPEC_DOMAIN = "optima.target-spec"
+_SELECTED_DELTA_DOMAIN = "optima.contribution.selected_delta"
+_PROPOSAL_DOMAIN = "optima.contribution.proposal"
+_QUALIFICATION_COHORT_ATTEMPT_SCHEMA = "optima.qualification.cohort-attempt.v1"
+_INTEGRATION_LICENSE_SCHEMA = "optima.integration.license.v1"
+_INTEGRATION_PROVENANCE_SCHEMA = "optima.integration.provenance.v1"
+_INTEGRATION_SECURITY_REVIEW_SCHEMA = "optima.integration.security-review.v1"
+_INTEGRATION_COMPATIBILITY_SCHEMA = "optima.integration.compatibility.v1"
+_INTEGRATION_TESTS_SCHEMA = "optima.integration.tests.v1"
+_INTEGRATION_ARTIFACTS_DOMAIN = "optima.integration-review.artifacts"
+_INTEGRATION_REVIEW_DOMAIN = "optima.contribution.integration-review"
+_INTEGRATED_CONTRIBUTION_DOMAIN = "optima.contribution.integrated"
+_EVALUATION_STACK_DOMAIN = "optima.stack.evaluation"
+_RELEASE_STACK_DOMAIN = "optima.stack.release"
+
+
 CONTRIBUTION_REF_SCHEMA_VERSION = 1
 INTEGRATION_REVIEW_SCHEMA_VERSION = 1
 STACK_MANIFEST_SCHEMA_VERSION = 1
@@ -79,7 +99,7 @@ def _catalog_binding(snapshot: object, digest: str) -> tuple[bytes, str]:
     canonical = _catalog_json(snapshot)
     supplied = _digest(digest, field="catalog_digest")
     decoded = json.loads(canonical)
-    computed = canonical_digest("cacheon.target-catalog", decoded)
+    computed = canonical_digest(_TARGET_CATALOG_DOMAIN, decoded)
     if supplied != computed:
         raise StackManifestError(
             "catalog_digest does not match the embedded catalog_snapshot"
@@ -111,7 +131,7 @@ def _catalog_spec_rows(catalog_json: bytes) -> tuple[tuple[str, str], ...]:
         if not isinstance(row, Mapping):
             raise StackManifestError(f"catalog target {index} must be an object")
         target = _target_id(row.get("target_id"), field=f"catalog target {index} ID")
-        rows.append((target, canonical_digest("cacheon.target-spec", row)))
+        rows.append((target, canonical_digest(_TARGET_SPEC_DOMAIN, row)))
     if len({target for target, _ in rows}) != len(rows):
         raise StackManifestError("catalog_snapshot contains duplicate target IDs")
     return tuple(sorted(rows))
@@ -128,7 +148,7 @@ def _context_spec_rows(catalog_json: bytes, supplied: object) -> tuple[tuple[str
 
 def _selected_delta(target_id: str, target_spec: str, payload: str) -> str:
     return canonical_digest(
-        "cacheon.contribution.selected_delta",
+        _SELECTED_DELTA_DOMAIN,
         {
             "selected_payload_digest": payload,
             "target_id": target_id,
@@ -171,7 +191,7 @@ class ProposalContributionRef:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.contribution.proposal", self.to_dict())
+        return canonical_digest(_PROPOSAL_DOMAIN, self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -238,31 +258,31 @@ class IntegrationReviewArtifacts:
         expected = {
             "primary_attempt_ref": (
                 "qualification.cohort-attempt",
-                "cacheon.qualification.cohort-attempt.v1",
+                _QUALIFICATION_COHORT_ATTEMPT_SCHEMA,
             ),
             "reproduction_attempt_ref": (
                 "qualification.cohort-attempt",
-                "cacheon.qualification.cohort-attempt.v1",
+                _QUALIFICATION_COHORT_ATTEMPT_SCHEMA,
             ),
             "license_evidence_ref": (
                 "integration.license",
-                "cacheon.integration.license.v1",
+                _INTEGRATION_LICENSE_SCHEMA,
             ),
             "provenance_evidence_ref": (
                 "integration.provenance",
-                "cacheon.integration.provenance.v1",
+                _INTEGRATION_PROVENANCE_SCHEMA,
             ),
             "security_review_ref": (
                 "integration.security-review",
-                "cacheon.integration.security-review.v1",
+                _INTEGRATION_SECURITY_REVIEW_SCHEMA,
             ),
             "compatibility_evidence_ref": (
                 "integration.compatibility",
-                "cacheon.integration.compatibility.v1",
+                _INTEGRATION_COMPATIBILITY_SCHEMA,
             ),
             "test_evidence_ref": (
                 "integration.tests",
-                "cacheon.integration.tests.v1",
+                _INTEGRATION_TESTS_SCHEMA,
             ),
         }
         for field, (domain, schema) in expected.items():
@@ -303,7 +323,7 @@ class IntegrationReviewArtifacts:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.integration-review.artifacts", self.to_dict())
+        return canonical_digest(_INTEGRATION_ARTIFACTS_DOMAIN, self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -402,7 +422,7 @@ class IntegrationReviewRecord:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.contribution.integration-review", self.to_dict())
+        return canonical_digest(_INTEGRATION_REVIEW_DOMAIN, self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -476,7 +496,7 @@ class IntegratedContributionRef:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.contribution.integrated", self.to_dict())
+        return canonical_digest(_INTEGRATED_CONTRIBUTION_DOMAIN, self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -757,7 +777,7 @@ class EvaluationStackManifest:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.stack.evaluation", self.to_dict())
+        return canonical_digest(_EVALUATION_STACK_DOMAIN, self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -920,7 +940,7 @@ class EngineReleaseManifest:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.stack.release", self.to_dict())
+        return canonical_digest(_RELEASE_STACK_DOMAIN, self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {

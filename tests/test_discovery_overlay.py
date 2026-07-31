@@ -46,7 +46,7 @@ def test_activation_policy_identity_is_fixed_and_content_addressed(monkeypatch) 
     monkeypatch.setattr(
         overlay_module,
         "_SCHEDULER_ARGUMENT_SCHEMA",
-        "cacheon.discovery-scheduler-arguments.v2",
+        "optima.discovery-scheduler-arguments.v2",
     )
     assert activation_policy_digest() != digest
 

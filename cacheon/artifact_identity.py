@@ -19,8 +19,8 @@ if TYPE_CHECKING:
     from cacheon.manifest import Manifest, OpEntry
 
 
-DIRECT_ARTIFACT_ENTRY = "_cacheon_direct_artifact"
-DIRECT_ARTIFACT_IDENTITY_SCHEMA = "cacheon.direct-artifact-execution.v1"
+DIRECT_ARTIFACT_ENTRY = "_optima_direct_artifact"
+DIRECT_ARTIFACT_IDENTITY_SCHEMA = "optima.direct-artifact-execution.v1"
 
 
 class ArtifactIdentityError(ValueError):

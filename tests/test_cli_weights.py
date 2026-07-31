@@ -44,7 +44,7 @@ def _view(block: int) -> chain.MetagraphView:
 def _projection() -> WeightProjection:
     bound = _view(10)
     metagraph_digest = canonical_digest(
-        "cacheon.economics.metagraph-membership",
+        "optima.economics.metagraph-membership",
         {
             "block": bound.block,
             "block_hash": bound.block_hash,
@@ -822,7 +822,7 @@ def test_burn_to_subnet_owner_resumes_own_in_flight_refresh(
         _h("prior-settlement"),
         _h("prior-evaluation"),
         canonical_digest(
-            "cacheon.economics.metagraph-membership",
+            "optima.economics.metagraph-membership",
             {
                 "block": bound.block,
                 "block_hash": bound.block_hash,

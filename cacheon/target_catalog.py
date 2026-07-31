@@ -31,6 +31,15 @@ from cacheon.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
 from cacheon.stack_identity import canonical_digest
 
 
+# Catalog identities are consensus-bearing and survive the product/package
+# rename. Existing crowns and evaluation stacks bind these exact domains.
+_TARGET_CONTRACT_DOMAIN = "optima.target-contract"
+_TARGET_CATALOG_DOMAIN = "optima.target-catalog"
+_ATOMIC_TARGET_CONTRACT_DOMAIN = "optima.atomic-target-contract"
+_TARGET_SPEC_DOMAIN = "optima.target-spec"
+_BINDING_CONTRACT_DOMAIN = "optima.binding-contract"
+
+
 class TargetKind(str, Enum):
     SLOT = "slot"
     ATOMIC = "atomic"
@@ -264,7 +273,7 @@ class TargetContractRef:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.target-contract", self.snapshot())
+        return canonical_digest(_TARGET_CONTRACT_DOMAIN, self.snapshot())
 
 
 @dataclass(frozen=True)
@@ -847,7 +856,7 @@ class TargetCatalog:
                 for rule_id in self._composition_by_id
             ],
         }
-        self._digest = canonical_digest("cacheon.target-catalog", self._snapshot)
+        self._digest = canonical_digest(_TARGET_CATALOG_DOMAIN, self._snapshot)
 
     @staticmethod
     def _validate_relation_dag(
@@ -901,7 +910,7 @@ class TargetCatalog:
             common["atomic_semantics_id"] = spec.atomic_semantics_id
             common["member_contract_digests"] = member_digests
             common["contract_digest"] = canonical_digest(
-                "cacheon.atomic-target-contract", contract_payload
+                _ATOMIC_TARGET_CONTRACT_DOMAIN, contract_payload
             )
         return common
 
@@ -926,7 +935,7 @@ class TargetCatalog:
     def target_spec_digest(self, target_id: str) -> str:
         self.require(target_id)
         return canonical_digest(
-            "cacheon.target-spec", self._target_snapshots[target_id]
+            _TARGET_SPEC_DOMAIN, self._target_snapshots[target_id]
         )
 
     def contract_digest(self, target_id: str) -> str:
@@ -1392,7 +1401,7 @@ def default_target_catalog() -> TargetCatalog:
         mode="first_applicable",
         binding_family_id="sglang.moe.fused-experts.dispatch.v1",
         binding_contract_digest=canonical_digest(
-            "cacheon.binding-contract",
+            _BINDING_CONTRACT_DOMAIN,
             {
                 "schema_version": 1,
                 "binding_family_id": "sglang.moe.fused-experts.dispatch.v1",

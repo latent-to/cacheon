@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from cacheon.manifest import ArtifactTargetAuthority
 
 
-ARTIFACT_RESOURCE_PLAN_SCHEMA = "cacheon.artifact-resource-plan.v1"
+ARTIFACT_RESOURCE_PLAN_SCHEMA = "optima.artifact-resource-plan.v1"
 
 
 class ArtifactResourceIdentityError(RuntimeError):

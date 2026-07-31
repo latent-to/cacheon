@@ -250,7 +250,7 @@ def _bundle_tree(
     (kernels / "k.py").write_text("def k(x, out):\n    return None\n")
     lines = [
         "bundle_id = 'screen-test-bundle'",
-        "abi_version = 'cacheon-op-abi-v0'",
+        "abi_version = 'optima-op-abi-v0'",
     ]
     if dep_patch:
         patches = source / "patches"

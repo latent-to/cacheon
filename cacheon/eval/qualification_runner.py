@@ -84,14 +84,14 @@ class QualificationRunnerError(RuntimeError):
     retryable = True
 
 ATTEMPT_DOMAIN = "qualification.cohort-attempt"
-ATTEMPT_SCHEMA = "cacheon.qualification.cohort-attempt.v1"
-ATTEMPT_SCHEMA_V2 = "cacheon.qualification.cohort-attempt.v2"
-ATTEMPT_SCHEMA_V3 = "cacheon.qualification.cohort-attempt.v3"
+ATTEMPT_SCHEMA = "optima.qualification.cohort-attempt.v1"
+ATTEMPT_SCHEMA_V2 = "optima.qualification.cohort-attempt.v2"
+ATTEMPT_SCHEMA_V3 = "optima.qualification.cohort-attempt.v3"
 DISCOVERY_ATTEMPT_DOMAIN = "qualification.discovery-attempt"
-DISCOVERY_ATTEMPT_SCHEMA = "cacheon.qualification.discovery-attempt.v1"
-DISCOVERY_ATTEMPT_SCHEMA_V2 = "cacheon.qualification.discovery-attempt.v2"
+DISCOVERY_ATTEMPT_SCHEMA = "optima.qualification.discovery-attempt.v1"
+DISCOVERY_ATTEMPT_SCHEMA_V2 = "optima.qualification.discovery-attempt.v2"
 STAGE_EXIT_DOMAIN = "qualification.stage-exit"
-STAGE_EXIT_SCHEMA = "cacheon.qualification.stage-exit.v1"
+STAGE_EXIT_SCHEMA = "optima.qualification.stage-exit.v1"
 
 LEGACY_SPEED_ESTIMATOR = "bcbp-baseline-range.v1"
 REPEAT_SPEED_ESTIMATOR = "bcbpcbpp-max-arm-range.v1"
@@ -140,7 +140,7 @@ class SpeedEvidencePolicy:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.qualification.speed-evidence-policy", self.to_dict())
+        return canonical_digest("optima.qualification.speed-evidence-policy", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -250,7 +250,7 @@ class HiddenJudgeBinding:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.qualification.hidden-judge-binding", {
+        return canonical_digest("optima.qualification.hidden-judge-binding", {
             "hidden_corpus_commitment": self.hidden_corpus_commitment,
             "hidden_judge_digest": self.hidden_judge_digest,
             "hidden_task_policy_digest": self.hidden_task_policy_digest,
@@ -286,7 +286,7 @@ def hidden_judge_output_digest(prompt_digest: str, output_ids: tuple[int, ...]) 
     if any(type(token) is not int or token < 0 for token in ids):
         raise QualificationRunnerError("hidden judge output IDs are malformed")
     return canonical_digest(
-        "cacheon.qualification.hidden-judge-output",
+        "optima.qualification.hidden-judge-output",
         {"output_ids": list(ids), "prompt_digest": prompt},
     )
 
@@ -790,7 +790,7 @@ def _resident_speed_projection_digest(
     completed_monotonic_s: float,
 ) -> str:
     return canonical_digest(
-        "cacheon.qualification.resident-speed-witness.v1",
+        "optima.qualification.resident-speed-witness.v1",
         {
             "baseline_lane": baseline_lane_digest,
             "baseline_quiescence": baseline_quiescence_digest,
@@ -1181,7 +1181,7 @@ class AuditWitness:
                 "audit session lacks policy-bound raw receipt evidence"
             )
         execution_identity = canonical_digest(
-            "cacheon.qualification.slot-audit-execution.v1",
+            "optima.qualification.slot-audit-execution.v1",
             {
                 "arena_model_receipt": execution.arena_model_receipt_digest,
                 "launch": execution.launch_digest,
@@ -1266,7 +1266,7 @@ class AuditWitness:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.qualification.slot-audit-witness.v1", self.to_dict())
+        return canonical_digest("optima.qualification.slot-audit-witness.v1", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -1414,7 +1414,7 @@ class QualificationStageExit:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.qualification.stage-exit.v1", self.to_dict()
+            "optima.qualification.stage-exit.v1", self.to_dict()
         )
 
 
@@ -1514,7 +1514,7 @@ class QualificationTimingWitness:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.qualification.operational-timing.v1", self.to_dict()
+            "optima.qualification.operational-timing.v1", self.to_dict()
         )
 
 
@@ -1599,7 +1599,7 @@ def _report_fields(value: object, *, include_repeat: bool) -> dict[str, object]:
 
 @dataclass(frozen=True)
 class CandidateQualificationReport:
-    _domain: ClassVar[str] = "cacheon.qualification.candidate-report.v2"
+    _domain: ClassVar[str] = "optima.qualification.candidate-report.v2"
     selected_delta_digest: str
     marginal_arm_digest: str
     candidate_launch_digest: str
@@ -1720,7 +1720,7 @@ class CandidateQualificationReport:
 
 @dataclass(frozen=True)
 class DiscoveryCandidateQualificationReport:
-    _domain: ClassVar[str] = "cacheon.qualification.discovery-candidate-report.v2"
+    _domain: ClassVar[str] = "optima.qualification.discovery-candidate-report.v2"
     selected_delta_digest: str
     discovery_arm_digest: str
     proposal_digest: str
@@ -1876,7 +1876,7 @@ def _device_witness(receipt: DeviceStateReceipt) -> tuple[object, ...]:
 
 def _validate_device_witness(row: object, phase: str) -> tuple[object, ...]:
     value = tuple(row) if isinstance(row, (list, tuple)) else ()
-    if len(value) != 11 or value[0] != "cacheon.device-state-receipt.v1" or value[3] != phase:
+    if len(value) != 11 or value[0] != "optima.device-state-receipt.v1" or value[3] != phase:
         raise QualificationRunnerError("T device witness shape differs")
     if (type(value[1]) is not int or value[1] < 1 or not isinstance(value[2], str)
             or not isinstance(value[4], (list, tuple)) or not value[4]
@@ -1934,7 +1934,7 @@ class ReferenceExecutionWitness:
     def from_execution(cls, value: PristineReferenceExecutionEvidence, plan_digest: str) -> "ReferenceExecutionWitness":
         identity = value.runtime_identity
         return cls(
-            value.launch_digest, canonical_digest("cacheon.qualification.reference-runtime", {
+            value.launch_digest, canonical_digest("optima.qualification.reference-runtime", {
                 "base": identity.base_engine_digest, "runtime": identity.runtime_digest,
                 "validator_overlay": identity.validator_overlay_digest,
             }), value.runtime_preflight_receipt_sha256, value.arena_model_receipt_digest,
@@ -1975,7 +1975,7 @@ def _quiescence_from_dict(value: object) -> OCIQuiescenceReceipt:
 
 @dataclass(frozen=True)
 class CohortQualificationAttempt:
-    _domain: ClassVar[str] = "cacheon.qualification.cohort-attempt.v1"
+    _domain: ClassVar[str] = "optima.qualification.cohort-attempt.v1"
     authority_digest: str
     source_digest: str
     cohort_trajectory_digest: str
@@ -2106,7 +2106,7 @@ class CohortQualificationAttempt:
 
 @dataclass(frozen=True)
 class DiscoveryQualificationAttempt:
-    _domain: ClassVar[str] = "cacheon.qualification.discovery-attempt.v1"
+    _domain: ClassVar[str] = "optima.qualification.discovery-attempt.v1"
     authority_digest: str
     source_digest: str
     cohort_trajectory_digest: str
@@ -2216,7 +2216,7 @@ def _planned_prompt_digests(prepared: PreparedMarginalRuntime) -> tuple[str, ...
     for batch_index, prompts in enumerate(plan.prompt_batches):
         for prompt_index, prompt in enumerate(prompts):
             rows.append(canonical_digest(
-                "cacheon.qualification.prompt-occurrence",
+                "optima.qualification.prompt-occurrence",
                 {
                     "batch_index": batch_index,
                     "prompt_index": prompt_index,
@@ -2234,7 +2234,7 @@ def _validate_pre_execution(
     reference = value.candidates[0].profile.reference
     workload = marginal_workload_digest(value.prepared.baseline_session_plan)
     secret_commitment = hashlib.sha256(
-        b"cacheon-selection-secret-v1\0" + value.selection_secret
+        b"optima-selection-secret-v1\0" + value.selection_secret
     ).hexdigest()
     if (
         value.commitment.source_plan_digest != value.prepared.source.digest
@@ -2399,7 +2399,7 @@ def _task_digests(
     prompt_digest: str,
 ) -> tuple[str, ...]:
     return tuple(sorted(canonical_digest(
-        "cacheon.qualification.hidden-task",
+        "optima.qualification.hidden-task",
         {
             "corpus": profile.reference.hidden_corpus_commitment,
             "judge": profile.reference.hidden_judge_digest,
@@ -2709,7 +2709,7 @@ def _audit_session_plan_digest(plan: SessionExecutionPlan) -> str:
     if type(plan) is not SessionExecutionPlan or plan.audit_policy is None:
         raise QualificationRunnerError("resident audit plan is not exact and armed")
     return canonical_digest(
-        "cacheon.qualification.audit-session-plan.v1",
+        "optima.qualification.audit-session-plan.v1",
         {
             "audit_policy": plan.audit_policy.digest,
             "conditioning_count": plan.conditioning_count,
@@ -2759,7 +2759,7 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
         }
         if value.speed_evidence_policy.version == 1:
             return canonical_digest(
-                "cacheon.qualification.causal-authority.audit-v1", payload
+                "optima.qualification.causal-authority.audit-v1", payload
             )
         payload["speed_evidence_policy"] = value.speed_evidence_policy.to_dict()
         if value.speed_evidence_policy.version == 3:
@@ -2777,15 +2777,15 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
                     value.speed_stage_disposition.value
                 )
                 return canonical_digest(
-                    "cacheon.qualification.causal-authority.v3.audit-v1."
+                    "optima.qualification.causal-authority.v3.audit-v1."
                     "calibration-observation-v1",
                     payload,
                 )
         return canonical_digest(
             (
-                "cacheon.qualification.causal-authority.v3.audit-v1"
+                "optima.qualification.causal-authority.v3.audit-v1"
                 if value.speed_evidence_policy.version == 3
-                else "cacheon.qualification.causal-authority.v2.audit-v1"
+                else "optima.qualification.causal-authority.v2.audit-v1"
             ),
             payload,
         )
@@ -2830,11 +2830,11 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
     }
     if value.speed_evidence_policy.version == 1:
         return canonical_digest(
-            "cacheon.qualification.discovery-causal-authority.audit-v1", payload
+            "optima.qualification.discovery-causal-authority.audit-v1", payload
         )
     payload["speed_evidence_policy"] = value.speed_evidence_policy.to_dict()
     return canonical_digest(
-        "cacheon.qualification.discovery-causal-authority.v2.audit-v1", payload
+        "optima.qualification.discovery-causal-authority.v2.audit-v1", payload
     )
 
 def _validate_reference_execution(
@@ -2842,7 +2842,7 @@ def _validate_reference_execution(
 ) -> None:
     witness = attempt.reference_execution
     identity = runtime_identity_from_preflight(expected.pristine_binding.runtime_preflight_receipt)
-    runtime_digest = canonical_digest("cacheon.qualification.reference-runtime", {
+    runtime_digest = canonical_digest("optima.qualification.reference-runtime", {
         "base": identity.base_engine_digest, "runtime": identity.runtime_digest,
         "validator_overlay": identity.validator_overlay_digest,
     })
@@ -2859,7 +2859,7 @@ def _validate_reference_execution(
             )
         )
     )
-    plan_digest = canonical_digest("cacheon.eval.reference-session-plan", {
+    plan_digest = canonical_digest("optima.eval.reference-session-plan", {
         "engine_config_digest": expected.reference_engine_config.digest,
         "expected_preflight_digest": expected.reference_preflight.digest,
         "pristine_stack_digest": expected.pristine_stack.digest,
@@ -2867,7 +2867,7 @@ def _validate_reference_execution(
         "request_plan_digest": witness.request_plan_digest,
         "request_sha256": list(witness.request_sha256),
     })
-    session_digest = canonical_digest("cacheon.eval.pristine-reference-session", {
+    session_digest = canonical_digest("optima.eval.pristine-reference-session", {
         "exchanges": [{"request_index": index, "request_sha256": request,
                        "evidence_frame_sha256": evidence}
                       for index, (request, evidence) in enumerate(zip(
@@ -2876,7 +2876,7 @@ def _validate_reference_execution(
         "preflight_digest": expected.reference_preflight.digest,
         "reference_manifest_digest": reference.digest,
         "request_plan_digest": witness.request_plan_digest,
-        "schema": "cacheon.pristine-reference-session.v1", "session_id": witness.session_id,
+        "schema": "optima.pristine-reference-session.v1", "session_id": witness.session_id,
         "session_plan_digest": witness.plan_digest,
     })
     pre, post = witness.device_receipts
@@ -3281,7 +3281,7 @@ def reopen_causal_qualification(
                     authority.graph_evidence_ref,
                 )
                 identity = canonical_digest(
-                    "cacheon.qualification.candidate-identity",
+                    "optima.qualification.candidate-identity",
                     {
                         **identity_common,
                         "graph_requirement_digest": authority.graph_requirement.digest,
@@ -3330,7 +3330,7 @@ def reopen_causal_qualification(
                     session_id=rates[1].session_id,
                 )
                 identity = canonical_digest(
-                    "cacheon.qualification.discovery-candidate-identity",
+                    "optima.qualification.discovery-candidate-identity",
                     {
                         **identity_common,
                         "execution_requirement_digest": (
@@ -3401,7 +3401,7 @@ def reopen_causal_qualification(
                 }
                 if type(authority) is CandidateQualificationAuthority:
                     repeat_identity = canonical_digest(
-                        "cacheon.qualification.candidate-identity",
+                        "optima.qualification.candidate-identity",
                         {
                             **repeat_common,
                             "graph_requirement_digest": authority.graph_requirement.digest,
@@ -3413,7 +3413,7 @@ def reopen_causal_qualification(
                             "repeat quality authority type differs"
                         )
                     repeat_identity = canonical_digest(
-                        "cacheon.qualification.discovery-candidate-identity",
+                        "optima.qualification.discovery-candidate-identity",
                         {
                             **repeat_common,
                             "execution_requirement_digest": (
@@ -3702,7 +3702,7 @@ def run_causal_qualification(
                 resident_speed_witness.evidence_digest
             )
         request_plan_digest = canonical_digest(
-            "cacheon.qualification.reference-request-plan",
+            "optima.qualification.reference-request-plan",
             request_plan_payload,
         )
         session_id = make_id()

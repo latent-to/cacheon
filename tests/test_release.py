@@ -123,7 +123,7 @@ def _calibration(reference: ReferenceManifest) -> CalibrationManifest:
 
 def _evidence(domain: str, digest: str) -> EvidenceArtifactRef:
     return EvidenceArtifactRef(
-        domain, digest, 1, "application/json", f"cacheon.{domain}.v1"
+        domain, digest, 1, "application/json", f"optima.{domain}.v1"
     )
 
 
@@ -399,7 +399,7 @@ def test_signed_release_reopens_native_model_and_chain_free_context(tmp_path: Pa
     assert "CACHEON_ACTIVE=1" not in dockerfile
     assert "cacheon.release_runtime" in dockerfile
     assert "install-reviewed-overlays" in dockerfile
-    assert "org.cacheon.runtime-overlays" in dockerfile
+    assert "org.optima.runtime-overlays" in dockerfile
     assert 'ENTRYPOINT ["/usr/bin/python3"' in dockerfile
     assert '"--model-path"' in dockerfile and '"--tp-size"' in dockerfile
     deployment = json.loads((context / "deployment.json").read_bytes())
@@ -483,7 +483,7 @@ def test_release_artifact_roles_and_runtime_command_are_exact(tmp_path: Path, mo
         replace(
             prepared.descriptor,
             seccomp=ReleaseArtifact.from_bytes(
-                "renamed.json", "application/vnd.cacheon.seccomp+json", b"{}"
+                "renamed.json", "application/vnd.optima.seccomp+json", b"{}"
             ),
         )
     monkeypatch.setenv("CUDA_DEVICE_MAX_CONNECTIONS", "1")

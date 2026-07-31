@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from cacheon.discovery_overlay import DiscoveryActivationReceipt
 
 
-SESSION_SCHEMA = "cacheon-isolated-engine-session-v1"
+SESSION_SCHEMA = "optima-isolated-engine-session-v1"
 CONTROL_MAGIC = b"OES1"
 EVIDENCE_MAGIC = b"OEE1"
 FRAME_HEADER_BYTES = 8
@@ -174,7 +174,7 @@ class SlotAuditControl:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.eval.slot-audit-control.v1", self.to_dict())
+        return canonical_digest("optima.eval.slot-audit-control.v1", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -237,7 +237,7 @@ class SlotAuditPolicy:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.eval.slot-audit-policy.v1", self.to_dict())
+        return canonical_digest("optima.eval.slot-audit-policy.v1", self.to_dict())
 
 
 _AUDIT_RECEIPT_FIELDS = frozenset(
@@ -527,7 +527,7 @@ class EngineSessionConfig:
         # binary64 value through its shortest round-trippable decimal spelling.
         identity = self.to_dict()
         identity["mem_fraction_static"] = format(self.mem_fraction_static, ".17g")
-        return canonical_digest("cacheon.eval.engine-session-config", identity)
+        return canonical_digest("optima.eval.engine-session-config", identity)
 
     @classmethod
     def from_dict(cls, value: object) -> "EngineSessionConfig":
@@ -602,7 +602,7 @@ class RuntimePreflightFacts:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.eval.runtime-preflight-facts", self.to_dict())
+        return canonical_digest("optima.eval.runtime-preflight-facts", self.to_dict())
 
     @classmethod
     def from_dict(cls, value: object) -> "RuntimePreflightFacts":

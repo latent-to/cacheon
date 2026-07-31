@@ -368,7 +368,7 @@ def bundle_slot_fingerprints(bundle_root: str | Path) -> dict[str, str]:
     return {
         slot: _aggregate_variant_fingerprints(
             fingerprints,
-            domain="cacheon.slot.normalized-variants.v1",
+            domain="optima.slot.normalized-variants.v1",
         )
         for slot, fingerprints in components.items()
     }
@@ -610,7 +610,7 @@ def bundle_slot_structural_fingerprints(bundle_root: str | Path) -> dict[str, st
     return {
         slot: _aggregate_variant_fingerprints(
             fingerprints,
-            domain="cacheon.slot.structural-variants.v1",
+            domain="optima.slot.structural-variants.v1",
         )
         for slot, fingerprints in components.items()
     }
@@ -679,7 +679,7 @@ class SubmittedDeltaFingerprint:
     def digest(self) -> str:
         from cacheon.stack_identity import canonical_digest
 
-        return canonical_digest("cacheon.copy.submitted-delta", self.to_dict())
+        return canonical_digest("optima.copy.submitted-delta", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -764,7 +764,7 @@ def fingerprint_submitted_delta(
             exact_payload_digest=inspected.proposal_digest,
             selected_delta_digest=inspected.proposal_digest,
             normalized_delta_digest=_digest_rows(
-                "cacheon.discovery.normalized-delta.v1", normalized
+                "optima.discovery.normalized-delta.v1", normalized
             ),
             containment_fingerprints=normalized,
             advisory_fingerprints=(),
@@ -810,7 +810,7 @@ def fingerprint_submitted_delta(
         exact_payload_digest=inspected.selected_payload_digest,
         selected_delta_digest=inspected.selected_delta_digest,
         normalized_delta_digest=_digest_rows(
-            "cacheon.component.normalized-delta.v1", normalized_rows
+            "optima.component.normalized-delta.v1", normalized_rows
         ),
         containment_fingerprints=containment,
         advisory_fingerprints=advisory,

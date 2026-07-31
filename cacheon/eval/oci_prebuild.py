@@ -61,8 +61,8 @@ CONTAINER_TREE = "/cacheon/engine-tree"
 CONTAINER_STAGE = "/cacheon/native-stage"
 CONTAINER_CUTE_COMPILE_PROFILE = "/cacheon/cute-compile-profile.json"
 PREBUILD_RECEIPT = "prebuild.json"
-PREBUILD_SCHEMA = "cacheon.oci-native-prebuild.v1"
-_PUBLICATION_MANIFEST = ".cacheon-native-artifact.json"
+PREBUILD_SCHEMA = "optima.oci-native-prebuild.v1"
+_PUBLICATION_MANIFEST = ".optima-native-artifact.json"
 _SAFE_ID = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}\Z")
 _ARCH = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -79,7 +79,7 @@ _ALLOWED_STAGE_TOP_LEVEL = frozenset(
         PREBUILD_RECEIPT,
     }
 ) | _ARTIFACT_PUBLICATION_DIRECTORIES
-_DISCOVERY_ENGINE_METADATA = "metadata/cacheon_discovery.json"
+_DISCOVERY_ENGINE_METADATA = "metadata/optima_discovery.json"
 _DISCOVERY_RECEIPT_FIELD = "discovery_overlay_identity_digest"
 _CUTE_AOT_RECEIPT_FIELD = "cute_aot_compile_profile_digest"
 
@@ -312,12 +312,12 @@ class OCIPrebuildPolicy:
 
     @property
     def resource_policy_digest(self) -> str:
-        return canonical_digest("cacheon.eval.executor-resource-policy", self.resource_payload())
+        return canonical_digest("optima.eval.executor-resource-policy", self.resource_payload())
 
     @property
     def dependency_policy_digest(self) -> str:
         return canonical_digest(
-            "cacheon.eval.native-dependency-policy",
+            "optima.eval.native-dependency-policy",
             {
                 "build_path": list(self.build_path),
                 "build_tmpdir": self.build_tmpdir,

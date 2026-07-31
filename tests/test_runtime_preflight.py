@@ -92,9 +92,9 @@ class ControlRunner:
                         "Id": CONTAINER_ID,
                         "Name": f"/{CONTAINER_NAME}",
                         "Labels": {
-                            "cacheon.executor_id": executor,
-                            "cacheon.namespace_digest": namespace,
-                            "cacheon.lease_id": lease,
+                            "optima.executor_id": executor,
+                            "optima.namespace_digest": namespace,
+                            "optima.lease_id": lease,
                         },
                     }
                 ).encode(),
@@ -362,9 +362,9 @@ def test_production_preflight_is_lease_owned_and_released(tmp_path, monkeypatch)
         "run",
         f"--name={CONTAINER_NAME}",
         f"--cidfile={manager.resources_root / lease_id / 'container.cid'}",
-        "--label=cacheon.executor_id=preflight",
-        f"--label=cacheon.namespace_digest={manager.namespace_digest}",
-        f"--label=cacheon.lease_id={lease_id}",
+        "--label=optima.executor_id=preflight",
+        f"--label=optima.namespace_digest={manager.namespace_digest}",
+        f"--label=optima.lease_id={lease_id}",
         "--rm",
     )
     assert receipt.security_argv_sha256 == rp.hashlib.sha256(

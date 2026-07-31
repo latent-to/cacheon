@@ -33,7 +33,7 @@ from cacheon.stack_identity import (
 
 MAX_SHADOW_INPUT_BYTES = 1 << 20
 SHADOW_SCHEMA_VERSION = 1
-SHADOW_RECEIPT_VERSION = "cacheon.chain-incentive-shadow.v1"
+SHADOW_RECEIPT_VERSION = "optima.chain-incentive-shadow.v1"
 SYNTHETIC_FIXTURE_KIND = "synthetic"
 _BLOCK_HASH = re.compile(r"0x[0-9a-fA-F]{64}\Z")
 _FILE_STABILITY_FIELDS = (
@@ -220,7 +220,7 @@ class SyntheticClaimStateFixture:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain-incentive-shadow.synthetic-claim-state-fixture",
+            "optima.chain-incentive-shadow.synthetic-claim-state-fixture",
             self.to_dict(),
         )
 
@@ -276,7 +276,7 @@ class ShadowChainAuthority:
     @property
     def chain_scope_digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain-incentive-shadow.scope",
+            "optima.chain-incentive-shadow.scope",
             {"genesis_hash": self.genesis_hash, "netuid": self.netuid},
         )
 
@@ -395,7 +395,7 @@ class ChainIncentiveShadowReceipt:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain-incentive-shadow.receipt", self.to_dict()
+            "optima.chain-incentive-shadow.receipt", self.to_dict()
         )
 
     def envelope(self) -> dict[str, object]:
@@ -609,7 +609,7 @@ def _build_receipt(
         netuid,
         finalized_block,
         finalized_block_hash,
-        canonical_digest("cacheon.chain-incentive-shadow.metagraph", metagraph),
+        canonical_digest("optima.chain-incentive-shadow.metagraph", metagraph),
         len(hotkeys),
     )
     return ChainIncentiveShadowReceipt(

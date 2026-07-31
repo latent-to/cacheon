@@ -28,7 +28,7 @@ from cacheon.cuda_cubin import (
 from cacheon._strict import require_driver_integer
 
 
-CUDA_LAUNCH_SCHEMA = "cacheon.cuda-launch.v1"
+CUDA_LAUNCH_SCHEMA = "optima.cuda-launch.v1"
 
 _KERNEL_NAME_RE = re.compile(r"[A-Za-z_.$][A-Za-z0-9_.$@]{0,4095}\Z")
 _UINT32_MAX = (1 << 32) - 1

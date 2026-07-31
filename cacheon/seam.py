@@ -23,7 +23,7 @@ from cacheon._strict import truthy_flag
 logger = logging.getLogger("cacheon.seam")
 _ENGINE_TREE = "/cacheon/engine-tree"
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-_NAMESPACE = re.compile(r"cacheon_c_[0-9a-f]{64}\Z")
+_NAMESPACE = re.compile(r"optima_c_[0-9a-f]{64}\Z")
 
 
 class _MaterializedNamespaceFinder(abc.MetaPathFinder):

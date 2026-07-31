@@ -2,7 +2,8 @@
 
 Every contribution bundle has a `manifest.toml`. The manifest is parsed as
 data before any contribution module is loaded. Its current ABI identifier is
-`cacheon-op-abi-v0`.
+`optima-op-abi-v0`. Branding does not version this hash-bound protocol
+identifier, so Cacheon authors continue to emit the published spelling.
 
 ## What parsing does—and does not do
 
@@ -29,7 +30,7 @@ cannot grant itself authority.
 
 ```toml
 bundle_id = "example-silu-v1"
-abi_version = "cacheon-op-abi-v0"
+abi_version = "optima-op-abi-v0"
 
 [competition]
 target = "activation.silu_and_mul"
@@ -51,10 +52,15 @@ Paths are relative to the bundle and must resolve to regular contained files.
 | Field | Required | Meaning |
 |---|---:|---|
 | `bundle_id` | yes | Human-readable bundle identifier; not the content identity |
-| `abi_version` | yes | Must equal `cacheon-op-abi-v0` |
+| `abi_version` | yes | Must equal `optima-op-abi-v0` |
 | `[competition]` | recommended | Explicit requested target and `slot`/`atomic` mode |
 | `[[ops]]` | yes | One or more implementation rows |
 | `[[dep_patches]]` | no | Declared text patches for a validator-approved dependency lane |
+
+Validators retain a closed reader alias for the Cacheon spelling produced
+during rename development, but it is not an authoring identifier. New manifests
+continue to use `optima-op-abi-v0`; readers preserve either submitted spelling
+because it participates in the committed bundle identity.
 
 The canonical bundle hash, not `bundle_id`, is the proposal's content identity.
 
@@ -123,7 +129,7 @@ competitive manifests should not use it.
 For a row with `aot_exports`, `source` is scanned and its declared compiler
 factory is imported only in the isolated prebuild compiler child. The scheduler
 does not import that source as a runtime launcher. `entry` remains required by
-the outer `cacheon-op-abi-v0` syntax, but direct execution canonicalizes it to the
+the outer `optima-op-abi-v0` syntax, but direct execution canonicalizes it to the
 validator entry `_cacheon_direct_artifact`; changing the unused value does not
 change direct-execution identity.
 

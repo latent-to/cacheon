@@ -5,7 +5,7 @@
 # symmetric-memory) or compute-overlapped reduce. Verified with cacheon.verify_collective.
 
 bundle_id = "example-allreduce-torch"
-abi_version = "cacheon-op-abi-v0"
+abi_version = "optima-op-abi-v0"
 
 [[ops]]
 slot = "collective.all_reduce"

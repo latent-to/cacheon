@@ -47,7 +47,7 @@ def _bundle(root: Path) -> Path:
     (root / "kernels").mkdir(parents=True)
     (root / "manifest.toml").write_text(
         'bundle_id = "archive-test"\n'
-        'abi_version = "cacheon-op-abi-v0"\n\n'
+        'abi_version = "optima-op-abi-v0"\n\n'
         "[[ops]]\n"
         'slot = "activation.silu_and_mul"\n'
         'source = "kernels/k.py"\n'
@@ -129,7 +129,7 @@ def test_redacted_chain_audit_is_append_only_and_excludes_messages(tmp_path):
             path,
             {
                 "event": "pass",
-                "schema": "cacheon.chain-audit.v1",
+                "schema": "optima.chain-audit.v1",
                 "url": "https://must-not-be-retained.example",
             },
         )
@@ -349,7 +349,7 @@ def test_manifest_parser_closes_nested_type_failures() -> None:
                 "database_schema": 1,
                 "finalized_cursor": None,
                 "qualification_evidence": [],
-                "schema": "cacheon.validator-archive.v1",
+                "schema": "optima.validator-archive.v1",
                 "scope": {"genesis_hash": [], "netuid": 307},
                 "scope_digest": "a" * 64,
                 "sealed_inputs": [],

@@ -229,7 +229,7 @@ def runtime_identity_from_preflight(
     ):
         raise OCIBackendError("runtime preflight receipt identity fields are malformed")
     runtime = canonical_digest(
-        "cacheon.eval.preflighted-runtime",
+        "optima.eval.preflighted-runtime",
         {
             "image_digest": receipt.image_digest,
             "oci_platform": receipt.oci_platform,
@@ -238,11 +238,11 @@ def runtime_identity_from_preflight(
         },
     )
     base = canonical_digest(
-        "cacheon.eval.preflighted-base-engine",
+        "optima.eval.preflighted-base-engine",
         {"runtime_digest": runtime, "sglang_version": receipt.sglang_version},
     )
     overlay = canonical_digest(
-        "cacheon.eval.installed-worker-overlay",
+        "optima.eval.installed-worker-overlay",
         {
             "distribution": receipt.worker_distribution,
             "version": receipt.worker_version,
@@ -308,7 +308,7 @@ class TrustedArenaModelMountReceipt:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.eval.arena-model-mount",
+            "optima.eval.arena-model-mount",
             {
                 "arena_digest": self.arena_digest,
                 "model_content_digest": self.model_content_digest,
@@ -446,7 +446,7 @@ class OCIRuntimeResourcePolicy:
         if self.cpuset_cpus is not None:
             payload["cpuset_cpus"] = self.cpuset_cpus
             payload["cpuset_mems"] = self.cpuset_mems
-        return canonical_digest("cacheon.eval.oci-runtime-resource-policy", payload)
+        return canonical_digest("optima.eval.oci-runtime-resource-policy", payload)
 
 
 @dataclass(frozen=True)
@@ -1062,7 +1062,7 @@ class OCIEngineExecutor:
         if plan.launch_digest != launch.digest:
             raise OCIBackendError("outer session plan names another launch")
         has_discovery_tree = any(
-            row.path == "metadata/cacheon_discovery.json"
+            row.path == "metadata/optima_discovery.json"
             for row in validated[0].materialized_tree.files
         )
         if has_discovery_tree != (
@@ -1403,9 +1403,9 @@ class OCIEngineExecutor:
             _validate_device_receipts(receipts, launch_id=raw.launch_id)
             return EngineExecutionEvidence(
                 (
-                    "cacheon.oci-engine-execution.v1"
+                    "optima.oci-engine-execution.v1"
                     if opened_driver is None
-                    else "cacheon.oci-resident-engine-execution.v1"
+                    else "optima.oci-resident-engine-execution.v1"
                 ),
                 launch.digest,
                 identity,
@@ -1526,7 +1526,7 @@ class OCIEngineExecutor:
             receipts = (raw.pre_receipt, raw.post_receipt)
             _validate_reference_device_receipts(receipts, launch_id=raw.launch_id)
             return PristineReferenceExecutionEvidence(
-                "cacheon.oci-pristine-reference-execution.v1",
+                "optima.oci-pristine-reference-execution.v1",
                 launch.digest,
                 identity,
                 preflight.sha256,
@@ -1648,7 +1648,7 @@ class OCIEngineExecutor:
             receipts = (raw.pre_receipt, raw.post_receipt)
             _validate_reference_device_receipts(receipts, launch_id=raw.launch_id)
             return ResidentEngineExecutionEvidence(
-                "cacheon.oci-resident-queue-execution.v1",
+                "optima.oci-resident-queue-execution.v1",
                 launch.digest,
                 identity,
                 preflight.sha256,

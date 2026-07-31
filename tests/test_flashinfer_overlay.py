@@ -76,8 +76,8 @@ def _bundle(tmp_path: Path) -> Path:
     (bundle / "manifest.toml").write_text(
         textwrap.dedent(
             """\
-            bundle_id = "cacheon-materialized-v1"
-            abi_version = "cacheon-op-abi-v0"
+            bundle_id = "optima-materialized-v1"
+            abi_version = "optima-op-abi-v0"
 
             [[ops]]
             slot = "activation.silu_and_mul"

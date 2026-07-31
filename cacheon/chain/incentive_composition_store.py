@@ -157,7 +157,7 @@ class SelectedIncentiveActivationApproval:
             )
         object.__setattr__(self, "reward_family_ids", families)
         expected_campaign = canonical_digest(
-            "cacheon.economics.model-campaign.v1",
+            "optima.economics.model-campaign.v1",
             {
                 "arena_digest": self.arena_digest,
                 "catalog_digest": self.catalog_digest,
@@ -220,7 +220,7 @@ class SelectedIncentiveActivationApproval:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain.selected-incentive-activation-approval", self.to_dict()
+            "optima.chain.selected-incentive-activation-approval", self.to_dict()
         )
 
 
@@ -312,7 +312,7 @@ class IncentiveCompositionActivation:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain.incentive-composition-activation", self.to_dict()
+            "optima.chain.incentive-composition-activation", self.to_dict()
         )
 
 
@@ -373,7 +373,7 @@ class ReviewPendingDiscoveryWin:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain.review-pending-discovery-win", self.to_dict()
+            "optima.chain.review-pending-discovery-win", self.to_dict()
         )
 
 
@@ -464,7 +464,7 @@ class ReviewedDiscoveryDispositionRecord:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain.reviewed-discovery-disposition-record", self.to_dict()
+            "optima.chain.reviewed-discovery-disposition-record", self.to_dict()
         )
 
 
@@ -551,7 +551,7 @@ class IncentiveCompositionRewardEpoch:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain.incentive-composition-reward-epoch", self.to_dict()
+            "optima.chain.incentive-composition-reward-epoch", self.to_dict()
         )
 
 

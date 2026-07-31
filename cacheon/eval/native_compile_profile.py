@@ -27,7 +27,7 @@ from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 from cacheon._strict import require_digest
 
 
-PROFILE_SCHEMA = "cacheon.native-cute-compile-profile.v1"
+PROFILE_SCHEMA = "optima.native-cute-compile-profile.v1"
 
 _LOGICAL_ARCH = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 _COMPILER_ARCH = re.compile(r"sm_[0-9]{2,3}[a-z]?\Z")
@@ -200,7 +200,7 @@ class NativeCuTeCompileProfile:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.eval.native-cute-compile-profile", self.to_dict()
+            "optima.eval.native-cute-compile-profile", self.to_dict()
         )
 
     @property

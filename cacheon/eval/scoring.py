@@ -70,7 +70,7 @@ def marginal_workload_digest(plan: object) -> str:
     if type(plan) is not SessionExecutionPlan:
         raise RawSpeedEvidenceError("workload plan must be exact typed evidence")
     return canonical_digest(
-        "cacheon.qualification.marginal-workload.v1",
+        "optima.qualification.marginal-workload.v1",
         {
             "conditioning_count": plan.conditioning_count,
             "engine_config_digest": plan.expected_engine_config_digest,
@@ -282,9 +282,9 @@ def _validate_execution_evidence(
         or type(post) is not DeviceStateReceipt
         or (pre.schema, active.schema, post.schema)
         != (
-            "cacheon.device-state-receipt.v1",
-            "cacheon.device-state-active-receipt.v2",
-            "cacheon.device-state-receipt.v1",
+            "optima.device-state-receipt.v1",
+            "optima.device-state-active-receipt.v2",
+            "optima.device-state-receipt.v1",
         )
         or any(type(row.samples) is not tuple or not row.samples or any(type(sample) is not DeviceStateSample for sample in row.samples) for row in receipts)
         or min(pre.consecutive_idle_samples, active.consecutive_active_samples, active.post_release_ready_samples, post.consecutive_idle_samples) <= 0
@@ -373,7 +373,7 @@ def _projection_digest(selected: str, candidate: str, calibration: str, context:
             )),
         ]
     return canonical_digest(
-        "cacheon.qualification.marginal-speed-evidence.v1",
+        "optima.qualification.marginal-speed-evidence.v1",
         {
             "selected_delta_digest": selected,
             "candidate_launch_digest": candidate,

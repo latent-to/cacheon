@@ -81,6 +81,20 @@ _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
 _SCHEMA3_MIGRATION_HOLD_REASON = "schema3_reproduction_required"
 _SCHEMA3_ARCHIVE_REASON_PREFIX = "schema3_archived@"
 
+# These domain separators are durable protocol identifiers, not product-facing
+# package names. They were already committed to SQLite state before the
+# Cacheon rename, so changing them would make an existing validator authority
+# fail its own integrity checks on reopen.
+_INTAKE_SCOPE_DOMAIN = "optima.chain.intake-scope"
+_FINALIZED_PAYLOAD_DOMAIN = "optima.chain.finalized-payload"
+_FINALIZED_ARRIVAL_DOMAIN = "optima.chain.finalized-arrival"
+_EVALUATION_STACK_STATE_DOMAIN = "optima.chain.evaluation-stack-state"
+_QUALIFICATION_RETRY_GROUP_DOMAIN = "optima.chain.qualification-retry-group"
+_EVALUATION_STACK_GENESIS_DOMAIN = "optima.chain.evaluation-stack-genesis"
+_SETTLEMENT_LEASE_DOMAIN = "optima.chain.settlement-lease"
+_BURN_WEIGHT_AUTHORITY_DOMAIN = "optima.chain.burn-weight-authority"
+_SETTLEMENT_STATE_DOMAIN = "optima.chain.settlement-state"
+
 
 class IntakeError(RuntimeError):
     """Finalized arrival state is malformed, stale, or unsafe to advance."""
@@ -102,7 +116,7 @@ class IntakeScope:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.chain.intake-scope", self.to_dict())
+        return canonical_digest(_INTAKE_SCOPE_DOMAIN, self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -172,7 +186,7 @@ class FinalizedArrival:
             if type(getattr(self, field)) is not int or getattr(self, field) < 0:
                 raise IntakeError(f"arrival {field} is malformed")
         payload_digest = self.payload_digest or canonical_digest(
-            "cacheon.chain.finalized-payload",
+            _FINALIZED_PAYLOAD_DOMAIN,
             {"content_hash": self.content_hash, "url": self.url},
         )
         require_sha256_hex(payload_digest, field="payload_digest")
@@ -195,7 +209,7 @@ class FinalizedArrival:
     @property
     def reservation_id(self) -> str:
         return canonical_digest(
-            "cacheon.chain.finalized-arrival",
+            _FINALIZED_ARRIVAL_DOMAIN,
             {
                 "block": self.block,
                 "block_hash": self.block_hash,
@@ -300,7 +314,7 @@ class EvaluationStackState:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain.evaluation-stack-state",
+            _EVALUATION_STACK_STATE_DOMAIN,
             {
                 "arena_digest": self.arena_digest,
                 "generation": self.generation,
@@ -1506,7 +1520,7 @@ class FinalizedIntakeStore:
         if batch.retry_plan is not None:
             for group_index, group in enumerate(batch.retry_plan.reservation_groups):
                 group_digest = canonical_digest(
-                    "cacheon.chain.qualification-retry-group",
+                    _QUALIFICATION_RETRY_GROUP_DOMAIN,
                     {
                         "authority_manifest_digest": batch.authority_manifest_digest,
                         "group_index": group_index,
@@ -1723,7 +1737,7 @@ class FinalizedIntakeStore:
         require_sha256_hex(tree_digest, field="tree_digest")
         arena = manifest.arena_digest
         genesis = canonical_digest(
-            "cacheon.chain.evaluation-stack-genesis",
+            _EVALUATION_STACK_GENESIS_DOMAIN,
             {
                 "arena_digest": arena,
                 "stack_digest": manifest.digest,
@@ -2072,7 +2086,7 @@ class FinalizedIntakeStore:
             generation = max(row["lease_generation"] for row in chosen) + 1
             expires = current_block + lease_blocks
             lease_id = canonical_digest(
-                "cacheon.chain.settlement-lease",
+                _SETTLEMENT_LEASE_DOMAIN,
                 {
                     "authority_digest": chosen[0]["authority_digest"],
                     "candidates": [row.digest for row in candidates],
@@ -3333,7 +3347,7 @@ class FinalizedIntakeStore:
             )
         settlement_digest = self.settlement_state_digest()
         authority_digest = canonical_digest(
-            "cacheon.chain.burn-weight-authority",
+            _BURN_WEIGHT_AUTHORITY_DOMAIN,
             {
                 "burn_hotkey": burn_hotkey,
                 "chain_scope_digest": context.chain_scope_digest,
@@ -3484,7 +3498,7 @@ class FinalizedIntakeStore:
             )
         )
         return canonical_digest(
-            "cacheon.chain.settlement-state",
+            _SETTLEMENT_STATE_DOMAIN,
             {
                 "candidates": candidates,
                 "event_head": event,

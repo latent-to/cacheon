@@ -176,7 +176,7 @@ def _projection(
     *, crowns=1, weights=(("alice", 1_000_000),), marker="a", block=100
 ):
     metagraph_digest = canonical_digest(
-        "cacheon.economics.metagraph-membership",
+        "optima.economics.metagraph-membership",
         {
             "block": block,
             "block_hash": "0x" + f"{block:064x}",

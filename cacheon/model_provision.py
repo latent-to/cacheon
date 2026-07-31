@@ -104,7 +104,7 @@ class ModelFileRecord:
 
 def _content_digest(files: Iterable[ModelFileRecord]) -> str:
     return canonical_digest(
-        "cacheon.model-content",
+        "optima.model-content",
         {"files": [record.to_dict() for record in files]},
         schema_version=MODEL_PROVISION_SCHEMA_VERSION,
     )
@@ -141,7 +141,7 @@ class ModelProvisionReceipt:
             "content_digest": self.content_digest,
             "files": [record.to_dict() for record in self.files],
             "schema_version": self.schema_version,
-            "type": "cacheon.model-provision",
+            "type": "optima.model-provision",
         }
 
     @property
@@ -151,7 +151,7 @@ class ModelProvisionReceipt:
     @property
     def receipt_digest(self) -> str:
         return canonical_digest(
-            "cacheon.model-provision-receipt",
+            "optima.model-provision-receipt",
             self.to_dict(),
             schema_version=self.schema_version,
         )
@@ -163,7 +163,7 @@ class ModelProvisionReceipt:
             fields=frozenset({"content_digest", "files", "schema_version", "type"}),
             label="model provision receipt",
         )
-        if row["type"] != "cacheon.model-provision":
+        if row["type"] != "optima.model-provision":
             raise ModelProvisionError("invalid model provision receipt type")
         raw_files = row["files"]
         if not isinstance(raw_files, list):

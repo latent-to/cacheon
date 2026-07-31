@@ -204,7 +204,7 @@ class WorkloadMixture:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.arena.workload-mixture", self.to_dict())
+        return canonical_digest("optima.arena.workload-mixture", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -299,7 +299,7 @@ class ArenaServiceManifest:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.arena.service", self.to_dict())
+        return canonical_digest("optima.arena.service", self.to_dict())
 
     @property
     def service_id(self) -> str:
@@ -378,7 +378,7 @@ class ArenaCandidateBinding:
         # screen identity when a neighbor is rejected before qualification.
         reservation.pop("arrival_order")
         return canonical_digest(
-            "cacheon.arena.candidate-binding",
+            "optima.arena.candidate-binding",
             {
                 "publication_digest": self.publication.digest,
                 "reservation": reservation,
@@ -450,7 +450,7 @@ class ArenaScreenReceipt:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.arena.screen-receipt", self.to_dict())
+        return canonical_digest("optima.arena.screen-receipt", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -691,7 +691,7 @@ class ArenaServiceRegistry:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.arena.service-registry",
+            "optima.arena.service-registry",
             {
                 "services": [
                     {

@@ -96,7 +96,7 @@ def _positive_int(value: object, *, field: str) -> int:
 def native_toolchain_digest(*, image_digest: str, platform_digest: str) -> str:
     """Identity of toolchain bytes sealed by one immutable OCI platform image."""
     return canonical_digest(
-        "cacheon.eval.native-toolchain-policy",
+        "optima.eval.native-toolchain-policy",
         {
             "image_digest": _digest(image_digest, field="image_digest"),
             "platform_digest": _digest(platform_digest, field="platform_digest"),
@@ -107,7 +107,7 @@ def native_toolchain_digest(*, image_digest: str, platform_digest: str) -> str:
 def native_patcher_digest(*, worker_distribution_digest: str) -> str:
     """Identity of reviewed patcher bytes in the attested worker distribution."""
     return canonical_digest(
-        "cacheon.eval.native-patcher-policy",
+        "optima.eval.native-patcher-policy",
         {
             "worker_distribution_digest": _digest(
                 worker_distribution_digest, field="worker_distribution_digest"
@@ -142,7 +142,7 @@ def native_compiler_policy_digest(
             compile_profile_digest, field="compile_profile_digest"
         )
     return canonical_digest(
-        "cacheon.eval.native-compiler-policy",
+        "optima.eval.native-compiler-policy",
         payload,
     )
 
@@ -237,7 +237,7 @@ class NativeBuildSpec:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.eval.native-build", self.to_dict())
+        return canonical_digest("optima.eval.native-build", self.to_dict())
 
     @property
     def canonical_bytes(self) -> bytes:
@@ -358,7 +358,7 @@ class LogicalHardwareSpec:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.eval.logical-hardware", self.to_dict())
+        return canonical_digest("optima.eval.logical-hardware", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -468,7 +468,7 @@ class EngineLaunchSpec:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.eval.engine-launch", self.to_dict())
+        return canonical_digest("optima.eval.engine-launch", self.to_dict())
 
     @property
     def canonical_bytes(self) -> bytes:

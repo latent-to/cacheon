@@ -41,8 +41,16 @@ from cacheon.stack_identity import (
 )
 
 
-ARCHIVE_SCHEMA = "cacheon.validator-archive.v1"
-DEFAULT_VALIDATOR_ARCHIVE_PREFIX = "cacheon/validator-archive/v1"
+# Version-1 archive identities are persistent wire/storage contracts.  The
+# product/package rename must not strand snapshots already written below the
+# original prefix or change the digests that authenticate their manifests.
+ARCHIVE_SCHEMA = "optima.validator-archive.v1"
+DEFAULT_VALIDATOR_ARCHIVE_PREFIX = "optima/validator-archive/v1"
+_ARCHIVED_TREE_DIGEST_DOMAIN = "optima.validator.archived-tree"
+_ARCHIVE_MANIFEST_DIGEST_DOMAIN = "optima.validator.archive-manifest"
+_ARCHIVE_SCOPE_DIGEST_DOMAIN = "optima.chain.intake-scope"
+_ARCHIVED_EVIDENCE_ROOT_DIGEST_DOMAIN = "optima.validator.archived-evidence-root"
+_RESTORE_MAP_SCHEMA = "optima.validator-archive-restore-map.v1"
 MAX_MANIFEST_BYTES = 16 << 20
 MAX_ARCHIVE_FILE_BYTES = 1 << 30
 MAX_SQLITE_BYTES = 1 << 30
@@ -54,6 +62,12 @@ _TABLE = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 
 class ValidatorArchiveError(RuntimeError):
     """A validator snapshot could not be created, authenticated, or restored."""
+
+
+def _archive_scope_digest(scope: IntakeScope) -> str:
+    """Return the immutable scope identity embedded by archive schema v1."""
+
+    return canonical_digest(_ARCHIVE_SCOPE_DIGEST_DOMAIN, scope.to_dict())
 
 
 @dataclass(frozen=True)
@@ -197,7 +211,7 @@ class ArchivedTree:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.validator.archived-tree",
+            _ARCHIVED_TREE_DIGEST_DOMAIN,
             self.to_dict(include_digest=False),
         )
 
@@ -352,7 +366,7 @@ class ValidatorArchiveManifest:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.validator.archive-manifest",
+            _ARCHIVE_MANIFEST_DIGEST_DOMAIN,
             self.to_dict(),
         )
 
@@ -373,7 +387,7 @@ class ValidatorArchiveManifest:
             ],
             "schema": ARCHIVE_SCHEMA,
             "scope": self.scope.to_dict(),
-            "scope_digest": self.scope.digest,
+            "scope_digest": _archive_scope_digest(self.scope),
             "sealed_inputs": [row.to_dict() for row in self.sealed_inputs],
             "table_counts": [
                 {"count": count, "table": table}
@@ -428,13 +442,15 @@ class ValidatorArchiveManifest:
             "sealed_inputs",
             "table_counts",
         }
-        if type(value) is not dict or set(value) != fields or value["schema"] != ARCHIVE_SCHEMA:
+        if type(value) is not dict or set(value) != fields:
             raise ValidatorArchiveError("archive manifest schema is not closed")
         scope_value = value["scope"]
         if type(scope_value) is not dict or set(scope_value) != {"genesis_hash", "netuid"}:
             raise ValidatorArchiveError("archive scope is malformed")
         scope = IntakeScope(**scope_value)  # type: ignore[arg-type]
-        if value["scope_digest"] != scope.digest:
+        if value["schema"] != ARCHIVE_SCHEMA:
+            raise ValidatorArchiveError("archive manifest schema is not closed")
+        if value["scope_digest"] != _archive_scope_digest(scope):
             raise ValidatorArchiveError("archive scope digest differs")
         cursor_value = value["finalized_cursor"]
         cursor = None
@@ -1030,7 +1046,8 @@ def create_validator_archive(
         )
         manifest_payload = manifest.to_bytes()
         manifest_key = (
-            f"snapshots/{scope.digest}/{observed_ns}-{manifest.digest}.json"
+            f"snapshots/{_archive_scope_digest(scope)}/"
+            f"{observed_ns}-{manifest.digest}.json"
         )
         try:
             existing = _get_bounded(store, manifest_key, MAX_MANIFEST_BYTES)
@@ -1155,7 +1172,7 @@ def restore_validator_archive(
         raise ValidatorArchiveError(f"archive manifest fetch failed: {exc}") from None
     manifest = ValidatorArchiveManifest.from_bytes(manifest_payload)
     expected_manifest_key = (
-        f"snapshots/{manifest.scope.digest}/"
+        f"snapshots/{_archive_scope_digest(manifest.scope)}/"
         f"{manifest.created_at_ns}-{manifest.digest}.json"
     )
     if manifest_key != expected_manifest_key:
@@ -1219,7 +1236,7 @@ def restore_validator_archive(
         evidence_parent.mkdir(mode=0o700)
         for item in manifest.qualification_evidence:
             root_id = canonical_digest(
-                "cacheon.validator.archived-evidence-root",
+                _ARCHIVED_EVIDENCE_ROOT_DIGEST_DOMAIN,
                 {"source_root": item.source_root},
             )
             target_root = evidence_roots.get(item.source_root)
@@ -1264,7 +1281,7 @@ def restore_validator_archive(
                 {
                     "manifest_digest": manifest.digest,
                     "mappings": mappings,
-                    "schema": "cacheon.validator-archive-restore-map.v1",
+                    "schema": _RESTORE_MAP_SCHEMA,
                 }
             ),
             0o600,

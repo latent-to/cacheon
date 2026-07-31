@@ -321,7 +321,7 @@ def _install_success_runner(monkeypatch, manifest, decisions):
         _d("attempt-artifact"),
         1,
         "application/json",
-        "cacheon.qualification.cohort-attempt.v1",
+        "optima.qualification.cohort-attempt.v1",
     )
     reports = tuple(
         _FakeReport(delta, decision, index)
@@ -736,7 +736,7 @@ def test_outcomes_and_batches_cannot_claim_evidence_free_pass() -> None:
         _d("attempt"),
         1,
         "application/json",
-        "cacheon.qualification.cohort-attempt.v1",
+        "optima.qualification.cohort-attempt.v1",
     )
     outcome = intake.QualificationIntakeOutcome(
         _d("reservation"),
@@ -758,7 +758,7 @@ def test_single_pass_outcome_cannot_smuggle_a_settlement_candidate() -> None:
         _d("attempt"),
         1,
         "application/json",
-        "cacheon.qualification.cohort-attempt.v1",
+        "optima.qualification.cohort-attempt.v1",
     )
     with pytest.raises(
         intake.QualificationIntakeError, match="settlement qualification"

@@ -3,7 +3,7 @@
 # A test fixture, not a real submission.
 
 bundle_id = "example-silu-sparse-v1"
-abi_version = "cacheon-op-abi-v0"
+abi_version = "optima-op-abi-v0"
 
 [[ops]]
 slot = "activation.silu_and_mul"

@@ -90,7 +90,7 @@ CPU setup and baseline validation:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[cpu,dev]"
+python -m pip install -e ".[cpu,dev,release]"
 python -m pytest -q tests
 ```
 
