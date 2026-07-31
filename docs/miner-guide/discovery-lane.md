@@ -66,8 +66,8 @@ makes overlap, fallback, attribution, and standing rewards well-defined.
 
 A discovery proposal is **not** an op bundle, and
 `[competition] mode = "system"` is not a valid discovery schema. Its closed manifest uses
-`optima-discovery-abi-v1` and contains only exact text patches plus applicability
-and build-profile claims.
+`optima-discovery-abi-v1` (with transitional alias `cacheon-discovery-abi-v1`)
+and contains only exact text patches plus applicability and build-profile claims.
 
 An illustrative schema fixture is:
 

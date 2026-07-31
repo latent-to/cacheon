@@ -177,7 +177,10 @@ For each operator role:
 3. Rebuild and re-attest every evaluator/OCI image, then deploy the complete
    process cohort with the `cacheon` CLI, `cacheon` Python modules, and
    `CACHEON_*` environment names. Do not mix old and new interpreters in one
-   process or image.
+   process or image. Rebuilt images must use the Cacheon container paths
+   (`/cacheon/engine-tree`, `/cacheon/input/model`, `/cacheon/native-artifacts`,
+   `/cacheon/runtime-cache`); do not bind-mount or hardcode the former
+   `/optima/...` layout into a Cacheon worker image.
 4. Keep existing SQLite databases, evidence, signed offers, recovery archives,
    and object-store keys byte-for-byte. Their `optima.*`,
    `optima-op-abi-v0`, and `optima/validator-archive/v1` values are stable

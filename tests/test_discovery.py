@@ -172,6 +172,15 @@ def test_discovery_abi_is_separate_from_component_manifest(tmp_path):
         load_manifest(root)
 
 
+def test_discovery_accepts_cacheon_abi_alias_without_normalizing(tmp_path):
+    from cacheon.discovery import CACHEON_DISCOVERY_ABI_VERSION_ALIAS
+
+    root = _bundle(tmp_path, manifest_text=_manifest(abi=CACHEON_DISCOVERY_ABI_VERSION_ALIAS))
+    manifest = load_discovery_manifest(root)
+    assert manifest.abi_version == CACHEON_DISCOVERY_ABI_VERSION_ALIAS
+    assert manifest.abi_version != DISCOVERY_ABI_VERSION
+
+
 @pytest.mark.parametrize(
     "manifest_text,match",
     [

@@ -35,6 +35,10 @@ from cacheon.stack_plan import StackArmIdentity
 
 
 DISCOVERY_ABI_VERSION = "optima-discovery-abi-v1"
+CACHEON_DISCOVERY_ABI_VERSION_ALIAS = "cacheon-discovery-abi-v1"
+SUPPORTED_DISCOVERY_ABI_VERSIONS = frozenset(
+    {DISCOVERY_ABI_VERSION, CACHEON_DISCOVERY_ABI_VERSION_ALIAS}
+)
 DISCOVERY_OVERLAY_SCHEMA = "optima.discovery-overlay.v1"
 DISCOVERY_POLICY_ID = "sglang-inference-discovery-v1"
 DISCOVERY_PROMOTIONS = frozenset(
@@ -222,10 +226,10 @@ class DiscoveryManifest:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "bundle_id", _identifier(self.bundle_id, field="bundle_id"))
-        if self.abi_version != DISCOVERY_ABI_VERSION:
+        if self.abi_version not in SUPPORTED_DISCOVERY_ABI_VERSIONS:
             raise DiscoveryError(
-                f"unsupported abi_version {self.abi_version!r}; expected "
-                f"{DISCOVERY_ABI_VERSION!r}"
+                f"unsupported abi_version {self.abi_version!r}; expected one of "
+                f"{sorted(SUPPORTED_DISCOVERY_ABI_VERSIONS)!r}"
             )
         object.__setattr__(
             self, "build_profile", _identifier(self.build_profile, field="build_profile")
