@@ -26,7 +26,7 @@ Snapshot date: **2026-07-31**
 
 The product, package, CLI, env, HTTP header, ABI, and digest-domain identifiers
 formerly branded Optima are now Cacheon (`cacheon` / `CACHEON` / `X-Cacheon-*`).
-Content-addressed docs compatibility path `HOW_OPTIMA_WORKS.md` is retained.
+Compatibility docs path is `HOW_CACHEON_WORKS.md`.
 Sealed B300 stage-exit fixture digests were recomputed under the new domains.
 The rename does not alter kernels, timed evaluation arithmetic, or crown/
 settlement formulas beyond digest-domain strings. File and line counts describe
