@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.eval.crossover_runtime import (
+from cacheon.eval.crossover_runtime import (
     CrossoverRuntimeError,
     ResidentArmPlan,
     ResidentCrossoverPlan,
@@ -19,19 +19,19 @@ from optima.eval.crossover_runtime import (
     TimedWindow,
     run_resident_crossover_speed,
 )
-from optima.eval.device_state import DeviceStatePolicy
-from optima.eval.engine_launch import PhysicalHardwareBinding
-from optima.eval.oci_backend import EngineExecutionEvidence, OCIEngineExecutor
-from optima.eval.oci_outer_session import BatchExecutionEvidence, SessionExecutionEvidence
-from optima.eval.qualification_runner import (
+from cacheon.eval.device_state import DeviceStatePolicy
+from cacheon.eval.engine_launch import PhysicalHardwareBinding
+from cacheon.eval.oci_backend import EngineExecutionEvidence, OCIEngineExecutor
+from cacheon.eval.oci_outer_session import BatchExecutionEvidence, SessionExecutionEvidence
+from cacheon.eval.qualification_runner import (
     QualificationStageExit,
     QualificationRunnerError,
     ResidentSpeedWitness,
     _resident_speed_projection_digest,
 )
-from optima.eval.qualification import QualificationDecision
-from optima.eval.scoring import score_speedup
-from optima.settlement import ResidentLaneOrientation
+from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.scoring import score_speedup
+from cacheon.settlement import ResidentLaneOrientation
 from tests.test_oci_backend import _case, _manager
 
 
@@ -208,7 +208,7 @@ def _install_fake_execution(
             for index in (1, 2, 3)
         )
         return EngineExecutionEvidence(
-            "optima.oci-resident-engine-execution.v1",
+            "cacheon.oci-resident-engine-execution.v1",
             launch.digest,
             SimpleNamespace(),
             "1" * 64,
@@ -699,11 +699,11 @@ def test_speed_verdict_v2_regrades_the_sealed_b300_stage_exit_both_ways() -> Non
     the required bar to 1.126 against a candidate faster on every timed
     window."""
 
-    fixture = Path(__file__).parent / "fixtures" / "speed_stage_exit_45cbcc04.json"
+    fixture = Path(__file__).parent / "fixtures" / "speed_stage_exit_4fc06ebf.json"
     raw = fixture.read_bytes()
     assert (
         hashlib.sha256(raw).hexdigest()
-        == "45cbcc04455d3e9d3f73be8ce436f030f35dee9805c185312cd5421c0fd6890e"
+        == "4fc06ebf7d2f5edc13738636eb25839cadffd396914b125d8701ddb704fddac8"
     )
     exit_ = QualificationStageExit.from_dict(json.loads(raw))
     assert exit_.stage == "speed"

@@ -11,18 +11,18 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import optima.dispatch as dispatch  # noqa: E402
-import optima.registry as registry_module  # noqa: E402
-from optima import receipts  # noqa: E402
-from optima.registry import (  # noqa: E402
+import cacheon.dispatch as dispatch  # noqa: E402
+import cacheon.registry as registry_module  # noqa: E402
+from cacheon import receipts  # noqa: E402
+from cacheon.registry import (  # noqa: E402
     Eligibility,
     KernelImpl,
     KernelRegistry,
     eligibility_from_metadata,
 )
-from optima.slots import get_slot  # noqa: E402
-from optima.tensor_spec import OutputSpec, TensorSpec  # noqa: E402
-from optima.verify_collective import _collective_descriptor  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.tensor_spec import OutputSpec, TensorSpec  # noqa: E402
+from cacheon.verify_collective import _collective_descriptor  # noqa: E402
 
 
 ALL_REDUCE = "collective.all_reduce"
@@ -140,7 +140,7 @@ def _assert_two_phase_parity(registry, slot, expected):
 def test_allreduce_live_descriptor_exactly_matches_offline(
     monkeypatch, graph_safe
 ):
-    monkeypatch.setenv("OPTIMA_COLLECTIVE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: graph_safe)
     group = _Group(2)
     registry = _register(
@@ -169,7 +169,7 @@ def test_allreduce_live_descriptor_exactly_matches_offline(
 
 
 def test_shallow_live_descriptor_exactly_matches_offline(monkeypatch):
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: _Group(2))
 
     def entry(x, residual, _weight, _eps, out_norm, out_residual, _group):
@@ -192,7 +192,7 @@ def test_shallow_live_descriptor_exactly_matches_offline(monkeypatch):
 
 
 def test_moe_reduce_live_descriptor_exactly_matches_offline(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
 
     def entry(x, _ids, _weights, prepared, out, _group):
@@ -251,7 +251,7 @@ def test_collective_model_constraint_is_consistently_unavailable_until_arena_bin
 
 
 def test_missing_stock_group_serves_stock_without_prepare(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: None)
     prepared = []
     entered = []
@@ -276,7 +276,7 @@ def test_missing_stock_group_serves_stock_without_prepare(monkeypatch):
 def test_moe_data_parallel_topology_serves_stock_without_miner_code(
     monkeypatch, dp_size
 ):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(
         dispatch, "_moe_data_parallel_world_size", lambda: dp_size
     )
@@ -338,7 +338,7 @@ def test_arfusion_group_mirrors_pinned_stock_group_selection(monkeypatch):
 
 
 def test_stock_group_not_layer_moe_tp_hint_defines_reduce_topology(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(4))
 
     def entry(x, _ids, _weights, _prepared, out, _group):
@@ -361,7 +361,7 @@ def test_stock_group_not_layer_moe_tp_hint_defines_reduce_topology(monkeypatch):
 
 
 def test_quantized_moe_reduce_is_not_run_without_quant_verifier(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     prepared = []
     entered = []
@@ -392,7 +392,7 @@ def test_quantized_moe_reduce_is_not_run_without_quant_verifier(monkeypatch):
 def test_moe_reduce_rejects_unverified_routing_dtypes(
     monkeypatch, ids_dtype, weights_dtype
 ):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     prepared = []
     entered = []
@@ -413,7 +413,7 @@ def test_moe_reduce_rejects_unverified_routing_dtypes(
 
 
 def test_collective_moe_prepare_failure_aborts_without_stock(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     stock_calls = []
 
@@ -440,7 +440,7 @@ def test_collective_moe_prepare_failure_aborts_without_stock(monkeypatch):
 
 
 def test_two_moe_variants_prepare_once_and_gap_serves_stock(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     prepared = {"small": 0, "large": 0}
     entered = []
@@ -487,7 +487,7 @@ def test_two_moe_variants_prepare_once_and_gap_serves_stock(monkeypatch):
 
 
 def test_prepare_cache_identity_includes_slot_and_implementation(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     prepared = {MOE_REDUCE: 0, MOE_PLAIN: 0}
     registry = _RecordingRegistry()
@@ -579,7 +579,7 @@ def test_live_candidate_observes_typed_strided_outputs(monkeypatch, slot):
             out.fill_(1)
 
     if slot == ALL_REDUCE:
-        monkeypatch.setenv("OPTIMA_COLLECTIVE_SEAM", "1")
+        monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
         registry = _register(slot, check)
         wrapped = dispatch.make_allreduce_dispatcher(
             lambda *_args, **_kwargs: _STOCK, registry=registry
@@ -590,7 +590,7 @@ def test_live_candidate_observes_typed_strided_outputs(monkeypatch, slot):
         )
         outputs = (result,)
     elif slot == AR_NORM:
-        monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+        monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
         monkeypatch.setattr(dispatch, "_arfusion_group", lambda _arg: _Group(2))
         registry = _register(slot, check)
         wrapped = dispatch.make_arfusion_dispatcher(
@@ -599,7 +599,7 @@ def test_live_candidate_observes_typed_strided_outputs(monkeypatch, slot):
         x = torch.randn(3, 8)
         outputs = wrapped(x, torch.randn_like(x), torch.ones(8))
     else:
-        monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+        monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
         monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
         registry = _register(
             slot,
@@ -623,7 +623,7 @@ def test_live_candidate_observes_typed_strided_outputs(monkeypatch, slot):
     ("output_shape", "output_storage", "output_stride", "input_storage"),
 )
 def test_post_entry_binding_mutation_aborts_collective(monkeypatch, mutation):
-    monkeypatch.setenv("OPTIMA_COLLECTIVE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
 
     def mutate(x, out, _group):
         if mutation == "output_shape":
@@ -675,7 +675,7 @@ def test_cuda_graph_detector_supports_current_legacy_and_direct_capture(monkeypa
 
 
 def test_post_selection_allocation_failure_aborts_without_fired_receipt(monkeypatch):
-    monkeypatch.setenv("OPTIMA_COLLECTIVE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
     monkeypatch.setattr(registry_module, "_FIRED_SLOTS", set())
     written = []
     monkeypatch.setattr(receipts, "write", lambda kind, payload, **kw: written.append(kind))

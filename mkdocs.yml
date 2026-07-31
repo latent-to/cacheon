@@ -1,6 +1,6 @@
-site_name: Optima
+site_name: Cacheon
 site_description: >-
-  Engineering documentation for Optima's contribution, evaluation, settlement,
+  Engineering documentation for Cacheon's contribution, evaluation, settlement,
   and release systems.
 site_url: https://cacheon.ai/docs/
 docs_dir: docs
@@ -40,7 +40,7 @@ edit_uri: edit/main/docs/
 theme:
   name: material
   language: en
-  logo: assets/images/optima-mark.svg
+  logo: assets/images/cacheon-mark.svg
   favicon: assets/images/favicon.svg
   icon:
     repo: fontawesome/brands/github
@@ -118,14 +118,14 @@ extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/latent-to/cacheon
-      name: Optima source code
+      name: Cacheon source code
 
-copyright: Optima contributors
+copyright: Cacheon contributors
 
 nav:
   - Home: index.md
   - Start here:
-      - What Optima is: get-started/concepts.md
+      - What Cacheon is: get-started/concepts.md
       - Local quickstart: get-started/quickstart.md
       - Current status: reference/state-of-record.md
   - Architecture:
@@ -164,7 +164,7 @@ nav:
       - Release operations: validator-guide/releases.md
       - Verification and diagnostics: validator-guide/running-evals.md
       - Testnet: validator-guide/testnet.md
-  - Optima Engine:
+  - Cacheon Engine:
       - Overview: engine/overview.md
       - Integrating a contribution: engine/integration.md
       - Model provisioning: engine/model-provision.md

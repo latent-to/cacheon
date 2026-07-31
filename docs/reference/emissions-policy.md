@@ -1,6 +1,6 @@
 # Emissions policy
 
-Optima separates economic accounting from chain publication. Settlement creates
+Cacheon separates economic accounting from chain publication. Settlement creates
 content-addressed claims. A policy projects those claims into an exact
 1,000,000-part weight vector. A separate signer journals, submits, reads back, and
 confirms that vector.
@@ -14,8 +14,8 @@ Two generations coexist so retained evidence remains reopenable:
 
 | Generation | Claim model | Publication command | Status |
 |---|---|---|---|
-| Legacy V1 | Decaying standing credit plus bounded discovery claims | `optima set-weights` | Retained and operational |
-| Finite-debt V2 | Finite registered-CROWN principal plus reviewed discovery bounty | `optima set-debt-weights` | Implemented behind an explicit one-way activation |
+| Legacy V1 | Decaying standing credit plus bounded discovery claims | `cacheon set-weights` | Retained and operational |
+| Finite-debt V2 | Finite registered-CROWN principal plus reviewed discovery bounty | `cacheon set-debt-weights` | Implemented behind an explicit one-way activation |
 
 Activation does not reinterpret a V1 claim or rewrite its policy digest. V1 and V2
 must never publish concurrently from the same economic authority.
@@ -53,7 +53,7 @@ Normal V1 projection refuses to publish without a real crown. An operator may
 explicitly direct the complete vector to a registered burn hotkey:
 
 ```bash
-optima set-weights \
+cacheon set-weights \
   --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -87,7 +87,7 @@ active claim, crowned arena, or activated composition exists. Each pass
 resolves the burn sink fresh (or stops before signing with `--dry-run`):
 
 ```bash
-optima set-weights \
+cacheon set-weights \
   --burn-to-subnet-owner \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -102,7 +102,7 @@ optima set-weights \
 ```
 
 ```bash
-optima set-weights \
+cacheon set-weights \
   --burn-to-subnet-owner \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -134,7 +134,7 @@ loop.
 `set-weights` supports one reconciliation or a continuous operator loop:
 
 ```bash
-optima set-weights <POLICY_AND_SIGNER_ARGUMENTS> \
+cacheon set-weights <POLICY_AND_SIGNER_ARGUMENTS> \
   --watch \
   --interval <SECONDS>
 ```
@@ -179,7 +179,7 @@ identities:
 These values identify the reviewed selection reports; they are not substitutes
 for the content digests of the policy manifests, activation approval, claims,
 or shadow receipts. The selected-policy checks in
-[`incentive_composition_store.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_composition_store.py)
+[`incentive_composition_store.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_composition_store.py)
 require both report identities together with the selected numeric policy. The
 tracked D-015 replay configuration records the same pair in
 [`d015_launch_load_config.json`](https://github.com/latent-to/cacheon/blob/main/tests/fixtures/incentives/d015_launch_load_config.json).
@@ -271,7 +271,7 @@ quantity of TAO, alpha, or fiat value.
 These commands inspect candidate activation authority without a wallet:
 
 ```bash
-optima chain-incentive-shadow \
+cacheon chain-incentive-shadow \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
   --policy <CORE_POLICY.json> \
@@ -280,7 +280,7 @@ optima chain-incentive-shadow \
   --expected-claims-digest <SHA256> \
   --output <NEW_RECEIPT.json>
 
-optima chain-incentive-composition-shadow \
+cacheon chain-incentive-composition-shadow \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
   --core-policy <CORE_POLICY.json> \
@@ -297,7 +297,7 @@ optima chain-incentive-composition-shadow \
 Activation is a separate one-way local transaction:
 
 ```bash
-optima chain-activate-incentives \
+cacheon chain-activate-incentives \
   --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -326,7 +326,7 @@ database as legacy authority.
 `set-debt-weights` publishes the earliest due boundary:
 
 ```bash
-optima set-debt-weights \
+cacheon set-debt-weights \
   --intake-db chain_intake/intake.sqlite3 \
   --netuid <NETUID> \
   --network <NETWORK_OR_WSS_URL> \
@@ -378,10 +378,10 @@ operator flow.
 
 ## Source anchors
 
-- [Legacy economics](https://github.com/latent-to/cacheon/blob/main/optima/economics.py)
-- [Finite-debt arithmetic](https://github.com/latent-to/cacheon/blob/main/optima/finite_debt.py)
-- [Incentive composition](https://github.com/latent-to/cacheon/blob/main/optima/incentive_composition.py)
-- [Activation authority](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_activation.py)
-- [V2 publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py)
-- [V1 publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/weights.py)
-- [CLI](https://github.com/latent-to/cacheon/blob/main/optima/cli.py)
+- [Legacy economics](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py)
+- [Finite-debt arithmetic](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py)
+- [Incentive composition](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py)
+- [Activation authority](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py)
+- [V2 publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)
+- [V1 publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
+- [CLI](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py)

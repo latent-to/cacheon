@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from optima.eval.device_state import (
+from cacheon.eval.device_state import (
     CommandResult,
     DeviceStateCancelledError,
     DeviceStateClockError,
@@ -21,7 +21,7 @@ from optima.eval.device_state import (
     provision_gpu_configurations,
     validate_device_state_policy,
 )
-from optima.eval.engine_launch import LogicalHardwareSpec, PhysicalHardwareBinding
+from cacheon.eval.engine_launch import LogicalHardwareSpec, PhysicalHardwareBinding
 
 
 def _gpu(physical_id: int) -> GPUConfiguration:

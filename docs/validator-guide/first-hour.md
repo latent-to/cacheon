@@ -19,7 +19,7 @@ evidence for this host.
 
 ## 1. Create a clean development environment
 
-Optima requires Python 3.10 or newer. The core package deliberately does not pin PyTorch,
+Cacheon requires Python 3.10 or newer. The core package deliberately does not pin PyTorch,
 because GPU installations must match the host's CUDA and SGLang environment.
 
 For a CPU-only contract check:
@@ -34,13 +34,13 @@ python -m pip install -e ".[cpu,dev,release]"
 ```
 
 For a GPU host, install the reviewed CUDA-compatible PyTorch and SGLang stack first, then
-install Optima editable without asking pip to replace those packages. Follow
+install Cacheon editable without asking pip to replace those packages. Follow
 [GPU setup](../dev/gpu-setup.md).
 
 ## 2. Inspect the contracts
 
 ```bash
-python -m optima.cli slots
+python -m cacheon.cli slots
 pytest -q
 ```
 
@@ -60,7 +60,7 @@ python -m pip freeze
 On a host where the reviewed SGLang stack is installed, run:
 
 ```bash
-python -m optima.cli compat
+python -m cacheon.cli compat
 ```
 
 `compat` checks installed SGLang integration points and exits nonzero if the
@@ -73,16 +73,16 @@ empirical gates and dated status linked from
 If the Bittensor SDK is installed, also run:
 
 ```bash
-python -m optima.cli chain-compat
+python -m cacheon.cli chain-compat
 ```
 
-This introspects the SDK methods Optima uses. It does not connect to a network.
+This introspects the SDK methods Cacheon uses. It does not connect to a network.
 
 ## 3. Verify a known bundle locally
 
 ```bash
-python -m optima.cli scan examples/miner_silu_torch
-python -m optima.cli verify examples/miner_silu_torch \
+python -m cacheon.cli scan examples/miner_silu_torch
+python -m cacheon.cli verify examples/miner_silu_torch \
   --device cpu --dtype float32
 ```
 
@@ -128,7 +128,7 @@ this validation fails, correct the filesystem deployment. Do not weaken the chec
 After configuring a real chain endpoint and netuid, run a single intake-only pass:
 
 ```bash
-optima chain-validate \
+cacheon chain-validate \
   --netuid <NETUID> \
   --network <WSS_ENDPOINT> \
   --intake-db chain_intake/intake.sqlite3 \
@@ -167,7 +167,7 @@ one recovery snapshot:
 ```bash
 python -m pip install -e ".[object-store]"
 
-optima chain-snapshot \
+cacheon chain-snapshot \
   --intake-db chain_intake/intake.sqlite3 \
   --audit-log chain_intake/chain-audit.jsonl \
   --object-store-bucket <PRIVATE_BUCKET> \
@@ -179,15 +179,15 @@ Capture the printed manifest key, verify it through a full temporary semantic re
 then repeat into a retained fresh staging root:
 
 ```bash
-optima chain-snapshot-verify \
+cacheon chain-snapshot-verify \
   --manifest-key <MANIFEST_KEY> \
   --object-store-bucket <PRIVATE_BUCKET> \
   --object-store-endpoint <S3_COMPATIBLE_ENDPOINT> \
   --object-store-region <SIGNING_REGION>
 
-optima chain-snapshot-verify \
+cacheon chain-snapshot-verify \
   --manifest-key <MANIFEST_KEY> \
-  --restore-root /srv/optima/restore-drill-001 \
+  --restore-root /srv/cacheon/restore-drill-001 \
   --object-store-bucket <PRIVATE_BUCKET> \
   --object-store-endpoint <S3_COMPATIBLE_ENDPOINT> \
   --object-store-region <SIGNING_REGION>
@@ -233,8 +233,8 @@ ID. Start with `once=True` under supervision. The following is deliberately only
 composition boundary—the `provider` object is not supplied by this repository:
 
 ```python
-from optima.arena_service import ArenaService, ArenaServiceRegistry
-from optima.chain.validator_loop import run_validator
+from cacheon.arena_service import ArenaService, ArenaServiceRegistry
+from cacheon.chain.validator_loop import run_validator
 
 service = ArenaService(reviewed_manifest, provider)
 registry = ArenaServiceRegistry((service,))
@@ -284,7 +284,7 @@ reproduction exact-swaps the physical baseline and candidate lane roles.
 ## 9. Commission the signer separately
 
 For legacy V1, only after the store contains a genuine current-schema crown and complete
-active arena state should the signer run `optima set-weights --dry-run`. The explicit
+active arena state should the signer run `cacheon set-weights --dry-run`. The explicit
 `--burn-hotkey` bootstrap is valid only in an all-uncrowned database and disables itself
 when any real economic authority exists. Use the exact emissions-policy arguments
 approved by the validator set.
@@ -346,7 +346,7 @@ fleet for you.
 ## Source anchors
 
 - [Package metadata](https://github.com/latent-to/cacheon/blob/main/pyproject.toml)
-- [CLI parser](https://github.com/latent-to/cacheon/blob/main/optima/cli.py)
-- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
-- [Compatibility canary](https://github.com/latent-to/cacheon/blob/main/optima/compat.py)
-- [Chain SDK canary](https://github.com/latent-to/cacheon/blob/main/optima/chain_canary.py)
+- [CLI parser](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py)
+- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
+- [Compatibility canary](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py)
+- [Chain SDK canary](https://github.com/latent-to/cacheon/blob/main/cacheon/chain_canary.py)

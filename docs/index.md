@@ -1,35 +1,35 @@
-<div class="optima-hero" markdown>
-<div class="optima-eyebrow">Bounded proposals · isolated evaluation · reviewed release boundary</div>
+<div class="cacheon-hero" markdown>
+<div class="cacheon-eyebrow">Bounded proposals · isolated evaluation · reviewed release boundary</div>
 
 # From untrusted GPU proposals to measured contributions.
 
-Optima measures untrusted GPU optimization proposals as attributable contributions
-and defines a separate review and release path for **Optima Engine**. SGLang owns
-the serving control plane; Optima's contribution boundary is the inference data
+Cacheon measures untrusted GPU optimization proposals as attributable contributions
+and defines a separate review and release path for **Cacheon Engine**. SGLang owns
+the serving control plane; Cacheon's contribution boundary is the inference data
 plane. The current revision does not claim a completed production Engine release.
 
-<div class="optima-actions" markdown>
+<div class="cacheon-actions" markdown>
 [Build a kernel](miner-guide/overview.md){ .md-button .md-button--primary }
 [Operate the referee](validator-guide/overview.md){ .md-button }
 [Understand the architecture](architecture/overview.md){ .md-button }
 </div>
 </div>
 
-At the highest level, Optima has two systems: the chain-independent product and
+At the highest level, Cacheon has two systems: the chain-independent product and
 the market that improves it. Operationally, the market side separates the
 subnet control plane from the hostile-code referee, giving readers three
 cooperating surfaces with different trust boundaries.
 
-<div class="optima-grid" markdown>
-<a class="optima-card" href="engine/overview/">
-<strong>Optima Engine</strong>
+<div class="cacheon-grid" markdown>
+<a class="cacheon-card" href="engine/overview/">
+<strong>Cacheon Engine</strong>
 <span>The chain-independent release contract: reviewed source, pinned runtime, sealed model identity, and signed authority.</span>
 </a>
-<a class="optima-card" href="architecture/pipeline/">
+<a class="cacheon-card" href="architecture/pipeline/">
 <strong>The referee</strong>
 <span>Isolated, evidence-producing evaluation of one marginal target delta against a validator-owned incumbent stack.</span>
 </a>
-<a class="optima-card" href="validator-guide/chain-loop/">
+<a class="cacheon-card" href="validator-guide/chain-loop/">
 <strong>The subnet</strong>
 <span>Finalized proposal ordering, attribution, economic settlement, and weight publication. It is not part of the serving product.</span>
 </a>
@@ -49,7 +49,7 @@ flowchart LR
 
 A miner submits a **proposal** for one registered target delta, or a bounded discovery
 prototype through the separate discovery ABI. The referee may establish a **crown**
-after two independent passing qualifications. Optima maintainers may then turn the
+after two independent passing qualifications. Cacheon maintainers may then turn the
 proposal into an **integrated contribution** after security, provenance,
 compatibility, and maintenance review. Only integrated contributions may enter a signed
 **Engine release**. Discovery policy defines reviewed promotion and bounded-bounty
@@ -91,7 +91,7 @@ copying them.
 | Write a Triton, CuTeDSL, or Python reference kernel | [Miner guide](miner-guide/overview.md) |
 | Validate the repository locally without a GPU | [Local quickstart](get-started/quickstart.md) |
 | Deploy intake, an arena provider, and qualification workers | [Validator guide](validator-guide/overview.md) |
-| Understand or verify the Engine release contract | [Optima Engine](engine/overview.md) |
+| Understand or verify the Engine release contract | [Cacheon Engine](engine/overview.md) |
 | Audit trust boundaries and failure behavior | [Security model](security/threat-model.md) |
 | Check what is implemented, measured, and still unproven | [State of record](reference/state-of-record.md) |
 

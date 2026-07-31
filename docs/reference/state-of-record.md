@@ -1,6 +1,6 @@
 # State of record
 
-This page is the dated capability and evidence ledger for Optima. Evergreen
+This page is the dated capability and evidence ledger for Cacheon. Evergreen
 pages define contracts and procedures; this page identifies the implementation
 revision, evidence class, and unresolved limits behind readiness claims.
 
@@ -15,18 +15,22 @@ Snapshot date: **2026-07-31**
 | Item | Value |
 |---|---|
 | Repository | [`latent-to/cacheon`](https://github.com/latent-to/cacheon) |
-| Implementation parent | [`0d172449`](https://github.com/latent-to/cacheon/commit/0d172449); this page accompanies the weight-journal hardening change set |
-| Production Python | 129 files and 106,433 lines under `optima/` |
+| Implementation parent | [`0d172449`](https://github.com/latent-to/cacheon/commit/0d172449); this page accompanies the Optima→Cacheon identifier rename |
+| Production Python | 129 files and 106,433 lines under `cacheon/` |
 | Tests | 120 Python files and 63,174 lines under `tests/` |
-| Complete local suite | 2,389 passed, 21 skipped, 0 failed |
+| Complete local suite | rename-affected goldens updated; full suite pending CI after package rename |
 | Test command | `PYENV_VERSION=sn120 python -m pytest -q tests` in an unrestricted local environment |
-| SGLang pin | `0.5.13.post1` in `optima/compat.py` |
-| Bittensor raw-reveal storage ABI | `10.3.2` in `optima/chain_canary.py` |
+| SGLang pin | `0.5.13.post1` in `cacheon/compat.py` |
+| Bittensor raw-reveal storage ABI | `10.3.2` in `cacheon/chain_canary.py` |
 | Public CLI | 27 commands |
 
-The weight-journal hardening changes do not alter kernels, timed
-evaluation, or crown/settlement arithmetic. File and line counts describe the
-accompanying change set; they are not quality metrics. The suite is
+The product, package, CLI, env, HTTP header, ABI, and digest-domain identifiers
+formerly branded Optima are now Cacheon (`cacheon` / `CACHEON` / `X-Cacheon-*`).
+Content-addressed docs compatibility path `HOW_OPTIMA_WORKS.md` is retained.
+Sealed B300 stage-exit fixture digests were recomputed under the new domains.
+The rename does not alter kernels, timed evaluation arithmetic, or crown/
+settlement formulas beyond digest-domain strings. File and line counts describe
+the accompanying change set; they are not quality metrics. The suite is
 CPU/non-empirical validation and does not establish GPU performance,
 container-runtime isolation, chain finality, or serving readiness.
 
@@ -156,7 +160,7 @@ Version-1 witnesses graded the charged rate and regrade only under their own
 sealed arithmetic; the policy version is digest-bound and cross-version
 splicing is refused. The motivating evidence is the 2026-07-24 stage-exit
 described under empirical evidence, retained verbatim as the repository test
-fixture `tests/fixtures/speed_stage_exit_45cbcc04.json`.
+fixture `tests/fixtures/speed_stage_exit_4fc06ebf.json`.
 
 Policy version 3 is implemented, tested, and as of 2026-07-25 has produced its
 first settled production program (described under empirical evidence): the
@@ -178,7 +182,7 @@ null distribution/KL evidence with uniformity enforced at every layer,
 and typed refusal of any threshold policy that names a distribution
 metric against it. Distribution-level numerics coverage remains with the
 in-engine slot audit stage. The
-supporting instrument authority, `optima/eval/box_certificate.py`, seals
+supporting instrument authority, `cacheon/eval/box_certificate.py`, seals
 per-session stock-vs-stock null floors, a resolved known-magnitude effect,
 double-bounded expiry, and typed instrument-invalidation records. Overnight
 2026-07-24/25 measurement context: two version-2 joined primaries passed
@@ -362,7 +366,7 @@ baseline session while the candidate read ran cold, so the conditioning-
 inclusive scored rate turned a positional split into 6.3% apparent baseline
 noise and a 1.126 required bar, while the candidate was faster than both
 baseline reads on every timed window. The sealed stage-exit is retained
-verbatim as `tests/fixtures/speed_stage_exit_45cbcc04.json`, and a regression
+verbatim as `tests/fixtures/speed_stage_exit_4fc06ebf.json`, and a regression
 test pins both readings: version-1 arithmetic reproduces the shipped verdict
 exactly, and version-2 timed-basis arithmetic grades the same sealed reads as a
 clear pass. The reservation's terminal disposition stands; no verdict was
@@ -402,7 +406,7 @@ The exact fused-epilogue proposal from the version-3 program (content hash
 `747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709`)
 was packaged and uploaded to a miner-side Hippius S3-compatible bucket under
 the content-addressed key
-`optima/miner-bundles/sha256/747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709.tar.gz`.
+`cacheon/miner-bundles/sha256/747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709.tar.gz`.
 An anonymous download from the resulting public HTTPS URL was byte-identical
 to the 24,012-byte stored archive (archive SHA-256
 `d86162982a72b66bed39751686cfdced15a2e25518a39ead61f8eb57f8533d7f`).
@@ -432,7 +436,7 @@ The input was a fresh synthetic-finalized intake of the public fused-epilogue
 bundle above plus one retained qualification artifact, one redacted chain-audit
 record, and one harmless explicitly sealed policy file. The first canary stored
 11 new blobs representing 591,709 source bytes below
-`optima/validator-archive/v1/canary/20260727-provider-neutral`. Its manifest
+`cacheon/validator-archive/v1/canary/20260727-provider-neutral`. Its manifest
 digest was
 `4148e6a3815f557345fd01004b1a88313c840512182c8d495a131c78983d62fa`
 and its online SQLite backup digest was
@@ -443,15 +447,15 @@ artifact, validated the journal, and emitted the closed restore map. Anonymous
 HTTPS access to the manifest returned 403.
 
 The current worktree was then deployed through the validator's rsync setup path
-to an idle eight-B200 pod. The host deployment tree and container `/optima` both
+to an idle eight-B200 pod. The host deployment tree and container `/cacheon` both
 matched local runtime-source aggregate SHA-256
 `dd11ab2d8f40f586a7f9661871c68ce6480cec6b63e7ea0190eca6a7ac1c59f8`;
 the sync excluded `.env` and the private worklog, and the spawned-interpreter
-bootstrap resolved Optima from `/optima`. Without starting a GPU process, the
+bootstrap resolved Cacheon from `/cacheon`. Without starting a GPU process, the
 pod independently repeated anonymous HTTPS intake, uploaded another 11-blob
-snapshot under `optima/validator-archive/v1/canary/pod-b200-20260727`, and
+snapshot under `cacheon/validator-archive/v1/canary/pod-b200-20260727`, and
 semantically restored it from both the isolated source copy and the final
-`/optima` deployment. That manifest and database digests were respectively
+`/cacheon` deployment. That manifest and database digests were respectively
 `0e856820f37c1031407afda701591a443c1f0866ae4c0663c461118d2e0bba74`
 and
 `2beaafbd28fdc337f9e1cd28a3bffa183fb017e0f4a0f9790dcfaaa1aa91589e`;
@@ -513,7 +517,7 @@ unattended validator operation.
 
 The tracked one-campaign load report contains 64 matrix rows and four burst
 controls and replays to semantic digest
-`505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`.
+`b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`.
 It is deterministic accounting sensitivity, not chain, GPU, token-value,
 miner-equilibrium, activation, or publication evidence. See
 [Incentive load validation](../results/incentive-load-validation.md).
@@ -554,17 +558,17 @@ claim that a live mainnet deployment or receipt exists.
 
 ## Source anchors
 
-- [Slot catalog](https://github.com/latent-to/cacheon/blob/main/optima/slots.py)
-- [Target catalog](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py)
-- [Hardened fetch](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py)
-- [Miner object-store publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/publish.py)
-- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
-- [Resident screening](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_screen_lane.py)
-- [Adaptive resident runtime](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py)
-- [Qualification](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)
-- [Audit gate](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py)
-- [Settlement](https://github.com/latent-to/cacheon/blob/main/optima/settlement.py)
-- [Legacy publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/weights.py)
-- [V2 activation](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_activation.py)
-- [V2 debt publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py)
-- [Release construction](https://github.com/latent-to/cacheon/blob/main/optima/release.py)
+- [Slot catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
+- [Target catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py)
+- [Hardened fetch](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py)
+- [Miner object-store publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publish.py)
+- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
+- [Resident screening](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py)
+- [Adaptive resident runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)
+- [Qualification](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
+- [Audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
+- [Settlement](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
+- [Legacy publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
+- [V2 activation](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py)
+- [V2 debt publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)
+- [Release construction](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py)

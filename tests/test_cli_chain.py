@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.cli as cli
+import cacheon.cli as cli
 
 
 def test_chain_validate_refuses_implicit_fake_grading(monkeypatch):
@@ -96,7 +96,7 @@ def test_chain_activation_cli_is_wallet_free_and_forwards_exact_authority(
     } <= options
     assert not {"--wallet", "--hotkey", "--password", "--dry-run"} & options
 
-    import optima.chain.incentive_activation as activation_module
+    import cacheon.chain.incentive_activation as activation_module
 
     observed = {}
     result = SimpleNamespace(

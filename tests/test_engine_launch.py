@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from optima.engine_tree import materialize_engine_tree
-from optima.eval.engine_launch import (
+from cacheon.engine_tree import materialize_engine_tree
+from cacheon.eval.engine_launch import (
     EngineLaunchError,
     EngineLaunchSpec,
     LEGACY_NATIVE_BUILD_SCHEMA_VERSION,
@@ -29,10 +29,10 @@ from optima.eval.engine_launch import (
     validate_native_build_spec,
     validate_runtime_preflight_receipt,
 )
-from optima.eval.native_compile_profile import NativeCuTeCompileProfile
-from optima.stack_identity import canonical_digest, canonical_json_bytes
-from optima.stack_manifest import EvaluationStackContext, EvaluationStackManifest
-from optima.target_catalog import default_target_catalog
+from cacheon.eval.native_compile_profile import NativeCuTeCompileProfile
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+from cacheon.stack_manifest import EvaluationStackContext, EvaluationStackManifest
+from cacheon.target_catalog import default_target_catalog
 
 
 def _digest(label: str) -> str:
@@ -237,7 +237,7 @@ def test_legacy_native_build_schema1_payload_bytes_and_digest_are_unchanged() ->
         "worker_distribution_digest": native.worker_distribution_digest,
     }
     assert native.compiler_flags_digest == canonical_digest(
-        "optima.eval.native-compiler-policy", expected_policy_payload
+        "cacheon.eval.native-compiler-policy", expected_policy_payload
     )
 
     expected_build_payload = {
@@ -258,7 +258,7 @@ def test_legacy_native_build_schema1_payload_bytes_and_digest_are_unchanged() ->
     assert native.to_dict() == expected_build_payload
     assert native.canonical_bytes == canonical_json_bytes(expected_build_payload)
     assert native.digest == canonical_digest(
-        "optima.eval.native-build", expected_build_payload
+        "cacheon.eval.native-build", expected_build_payload
     )
 
     # schema_version was historically the tenth positional argument.  Adding
@@ -295,7 +295,7 @@ def test_profiled_native_build_uses_closed_schema2_and_binds_policy() -> None:
     }
     assert profiled.schema_version == NATIVE_BUILD_SCHEMA_VERSION
     assert profiled.compiler_flags_digest == canonical_digest(
-        "optima.eval.native-compiler-policy", expected_policy_payload
+        "cacheon.eval.native-compiler-policy", expected_policy_payload
     )
     assert profiled.to_dict()["compile_profile_digest"] == profile_digest
     assert NativeBuildSpec.from_dict(profiled.to_dict()) == profiled
@@ -586,7 +586,7 @@ def test_reopen_rejects_tree_digest_and_embedded_stack_split_brains(
             replace(launch, stack_digest=_digest("wrong stack")), tree.root
         )
 
-    metadata = tree.root / "metadata" / "optima_engine_tree.json"
+    metadata = tree.root / "metadata" / "cacheon_engine_tree.json"
     metadata.chmod(0o644)
     with pytest.raises(EngineLaunchError, match="mode mismatch"):
         reopen_launch_tree(launch, tree.root)
@@ -680,11 +680,11 @@ sys.path.insert(0, {str(repository)!r})
 native_loads = []
 ctypes.CDLL = lambda *args, **kwargs: native_loads.append([args, kwargs])
 before = set(sys.modules)
-import optima.eval.engine_launch
-import optima.eval.runtime_preflight
-import optima.eval.native_artifact
-import optima.eval.oci_process
-import optima.eval.oci_prebuild
+import cacheon.eval.engine_launch
+import cacheon.eval.runtime_preflight
+import cacheon.eval.native_artifact
+import cacheon.eval.oci_process
+import cacheon.eval.oci_prebuild
 new = sorted(set(sys.modules) - before)
 forbidden = [
     name for name in new
@@ -696,7 +696,7 @@ print(json.dumps({{'forbidden': forbidden, 'native_loads': native_loads}}))
     environment = dict(os.environ)
     environment.update(
         {
-            "OPTIMA_BUNDLE_PATH": str(candidate),
+            "CACHEON_BUNDLE_PATH": str(candidate),
             "PYTHONNOUSERSITE": "1",
         }
     )

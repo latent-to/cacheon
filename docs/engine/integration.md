@@ -1,6 +1,6 @@
 # Integrating a contribution
 
-Integration promotes one reproduced crown into ordinary reviewed Optima source.
+Integration promotes one reproduced crown into ordinary reviewed Cacheon source.
 It is the bridge between adversarial measurement and release engineering, not
 an automatic consequence of settlement.
 
@@ -30,7 +30,7 @@ integration review record.
    behavior against both its crowned evaluation stack and the current
    integrated Engine stack. Resolve interactions with other active targets.
 2. **Promote reviewed source without changing the selected delta.** Place the
-   contribution in an ordinary Optima-owned source tree at a reviewed commit.
+   contribution in an ordinary Cacheon-owned source tree at a reviewed commit.
    The selected payload digest must still match the crowned proposal
    byte-for-byte. Packaging outside that selected closure may be normalized,
    but rewriting the attributable payload requires new evidence rather than
@@ -146,5 +146,5 @@ keeps unreviewed content out of the serving product.
 - Confirm that the resulting ref can be materialized without a miner URL or chain query.
 - Leave the crown intact but the release unchanged until a separate product selection.
 
-Source: [`optima/stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py) and
-[`optima/engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/optima/engine_tree.py).
+Source: [`cacheon/stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) and
+[`cacheon/engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py).

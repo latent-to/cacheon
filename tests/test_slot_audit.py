@@ -1,4 +1,4 @@
-"""In-engine slot audit (optima/audit.py) — unit + dispatcher-wiring tests.
+"""In-engine slot audit (cacheon/audit.py) — unit + dispatcher-wiring tests.
 
 The audit is the fidelity gate that replaced rollout-KL as primary on
 launch-nondeterministic arenas (2026-07-07): sampled dispatcher calls re-run the
@@ -12,9 +12,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from optima import audit, receipts
-from optima.dispatch import make_rmsnorm_dispatcher
-from optima.registry import Eligibility, KernelImpl, KernelRegistry
+from cacheon import audit, receipts
+from cacheon.dispatch import make_rmsnorm_dispatcher
+from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
 SLOT = "norm.rmsnorm"
 
@@ -23,14 +23,14 @@ SLOT = "norm.rmsnorm"
 def _fresh_audit(monkeypatch):
     monkeypatch.setattr(audit, "_state", {"rate": None, "rng": None})
     monkeypatch.setattr(audit, "_stats", {})
-    monkeypatch.delenv("OPTIMA_SLOT_AUDIT", raising=False)
-    monkeypatch.delenv("OPTIMA_SLOT_AUDIT_SEED", raising=False)
-    monkeypatch.delenv("OPTIMA_SEAM_RECEIPT_DIR", raising=False)
+    monkeypatch.delenv("CACHEON_SLOT_AUDIT", raising=False)
+    monkeypatch.delenv("CACHEON_SLOT_AUDIT_SEED", raising=False)
+    monkeypatch.delenv("CACHEON_SEAM_RECEIPT_DIR", raising=False)
 
 
 def _arm(monkeypatch, rate="1.0", seed="7"):
-    monkeypatch.setenv("OPTIMA_SLOT_AUDIT", rate)
-    monkeypatch.setenv("OPTIMA_SLOT_AUDIT_SEED", seed)
+    monkeypatch.setenv("CACHEON_SLOT_AUDIT", rate)
+    monkeypatch.setenv("CACHEON_SLOT_AUDIT_SEED", seed)
 
 
 # ---- sampling ------------------------------------------------------------------
@@ -48,7 +48,7 @@ def test_rate_one_always_samples(monkeypatch):
 
 
 def test_bad_rate_is_disabled(monkeypatch):
-    monkeypatch.setenv("OPTIMA_SLOT_AUDIT", "not-a-number")
+    monkeypatch.setenv("CACHEON_SLOT_AUDIT", "not-a-number")
     assert not audit.enabled()
 
 
@@ -131,7 +131,7 @@ def test_run_unwraps_single_tensor_and_tuple(monkeypatch):
 
 def test_rolling_receipt_overwrites(monkeypatch, tmp_path):
     _arm(monkeypatch)
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(tmp_path))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
     x = torch.randn(4, 8)
     audit.record(SLOT, (x,), (x.clone(),))
     audit.record(SLOT, (x,), (x.clone(),))

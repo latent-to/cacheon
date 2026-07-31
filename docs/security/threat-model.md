@@ -1,6 +1,6 @@
 # Threat model
 
-Optima evaluates attacker-supplied Python, patches, and native GPU code. The production
+Cacheon evaluates attacker-supplied Python, patches, and native GPU code. The production
 design assumes the candidate engine is fully hostile. Static scanning, typed manifests,
 and correctness tests reduce exposure; they are not the primary containment boundary.
 
@@ -9,7 +9,7 @@ the finalized-intake and OCI qualification path, not to direct development diagn
 
 ## Security objective
 
-Optima does not attempt to make candidate code trustworthy. It tries to ensure that a
+Cacheon does not attempt to make candidate code trustworthy. It tries to ensure that a
 hostile candidate can influence only the bounded engine computation it was admitted to,
 and that no economic or product transition occurs unless trusted, reopenable evidence
 proves the registered conditions.
@@ -155,7 +155,7 @@ contributor-controlled execution path is acceptable for crownable work.
 
 ## Explicit nonclaims
 
-Optima does not claim:
+Cacheon does not claim:
 
 - formal verification of Python, CUDA, OCI, the Linux kernel, GPU firmware, or drivers;
 - prevention of every side channel or cross-tenant attack;
@@ -190,13 +190,13 @@ Security status should be stated as “implemented under these assumptions,” n
 
 ## Source anchors
 
-- [HTTPS intake](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py)
-- [OCI native prebuild](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_prebuild.py)
-- [OCI runtime controller](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_backend.py)
-- [Causal qualification](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)
-- [Weight publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/weights.py)
-- [Shared-weight gateway](https://github.com/latent-to/cacheon/blob/main/optima/chain/weight_share.py)
-- [Shared-weight push authentication](https://github.com/latent-to/cacheon/blob/main/optima/chain/weight_push_auth.py)
-- [Object-store adapters](https://github.com/latent-to/cacheon/blob/main/optima/object_store.py)
-- [V2 debt publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py)
-- [Release host](https://github.com/latent-to/cacheon/blob/main/optima/release_host.py)
+- [HTTPS intake](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py)
+- [OCI native prebuild](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py)
+- [OCI runtime controller](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py)
+- [Causal qualification](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
+- [Weight publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
+- [Shared-weight gateway](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weight_share.py)
+- [Shared-weight push authentication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weight_push_auth.py)
+- [Object-store adapters](https://github.com/latent-to/cacheon/blob/main/cacheon/object_store.py)
+- [V2 debt publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)
+- [Release host](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py)

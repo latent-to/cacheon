@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.chain.weight_push_auth import (
+from cacheon.chain.weight_push_auth import (
     PushCredential,
     PushCredentialSet,
     WeightPushAuthError,
@@ -64,7 +64,7 @@ def test_sign_verify_and_reject_retired_or_tampered() -> None:
         )
 
     bad = dict(headers)
-    bad["X-Optima-Push-Body-Digest"] = hashlib.sha256(b"other").hexdigest()
+    bad["X-Cacheon-Push-Body-Digest"] = hashlib.sha256(b"other").hexdigest()
     with pytest.raises(WeightPushAuthError, match="digest mismatch"):
         verify_push_request(
             credentials,
@@ -122,7 +122,7 @@ def test_push_acknowledgement_authenticates_exact_request_and_offer() -> None:
 def test_resolve_push_credentials_from_env_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from optima.chain.weight_push_auth import (
+    from cacheon.chain.weight_push_auth import (
         DEFAULT_ENV_CREDENTIAL_ID,
         ENV_PUSH_CREDENTIAL_ID,
         ENV_PUSH_CREDENTIALS,

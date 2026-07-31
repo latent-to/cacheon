@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase, mock
 
-from optima.eval import engine_worker
+from cacheon.eval import engine_worker
 
 
 def _sandbox_proc_reader(*, seccomp: int = 2, filters: int = 1, caps: int = 0):
@@ -89,7 +89,7 @@ def test_prepare_and_entry_share_one_module_instance(tmp_path):
         "def entry(*args):\n"
         "    return _STATE.get('p')\n"
     )
-    from optima.sandbox import callable_from, load_module
+    from cacheon.sandbox import callable_from, load_module
 
     module = load_module(src)
     prepare = callable_from(module, "prepare")
@@ -98,7 +98,7 @@ def test_prepare_and_entry_share_one_module_instance(tmp_path):
     assert entry() == 1  # shared globals: entry sees what prepare wrote
 
     # and the documented hazard is real: a SECOND load is a fresh namespace
-    from optima.sandbox import load_entry
+    from cacheon.sandbox import load_entry
 
     entry2 = load_entry(src, "entry")
     assert entry2() is None

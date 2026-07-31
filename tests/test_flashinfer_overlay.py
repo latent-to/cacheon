@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-import optima.integrations.flashinfer_overlay as fov
-from optima import receipts
+import cacheon.integrations.flashinfer_overlay as fov
+from cacheon import receipts
 
 
 BUILD_DIGEST = "a" * 64
@@ -76,8 +76,8 @@ def _bundle(tmp_path: Path) -> Path:
     (bundle / "manifest.toml").write_text(
         textwrap.dedent(
             """\
-            bundle_id = "optima-materialized-v1"
-            abi_version = "optima-op-abi-v0"
+            bundle_id = "cacheon-materialized-v1"
+            abi_version = "cacheon-op-abi-v0"
 
             [[ops]]
             slot = "activation.silu_and_mul"
@@ -95,7 +95,7 @@ def _bundle(tmp_path: Path) -> Path:
 
 
 def _candidate(tmp_path, monkeypatch, *, materialize=True):
-    from optima.dep_policy import (
+    from cacheon.dep_policy import (
         PATCHABLE_DEPS,
         expected_overlay_stamp,
         prebuilt_module_relative_path,
@@ -151,23 +151,23 @@ def _candidate(tmp_path, monkeypatch, *, materialize=True):
         # must reject that absence rather than stock-fallback.
         (artifact / "prebuild.json").write_text("{}\n")
 
-    from optima.eval.native_artifact import publish_native_artifact
+    from cacheon.eval.native_artifact import publish_native_artifact
 
     publication = publish_native_artifact(
         artifact, tmp_path / "published", build_spec_digest=BUILD_DIGEST
     )
     artifact = publication.root
 
-    monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(bundle))
-    monkeypatch.setenv("OPTIMA_ACTIVE", "1")
-    monkeypatch.setenv("OPTIMA_REBUILD_PHASE", "load")
-    monkeypatch.setenv("OPTIMA_NATIVE_BUILD_SPEC_DIGEST", BUILD_DIGEST)
-    monkeypatch.setenv("OPTIMA_NATIVE_ARTIFACT_ROOT", str(artifact))
+    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(bundle))
+    monkeypatch.setenv("CACHEON_ACTIVE", "1")
+    monkeypatch.setenv("CACHEON_REBUILD_PHASE", "load")
+    monkeypatch.setenv("CACHEON_NATIVE_BUILD_SPEC_DIGEST", BUILD_DIGEST)
+    monkeypatch.setenv("CACHEON_NATIVE_ARTIFACT_ROOT", str(artifact))
     monkeypatch.setenv(
-        "OPTIMA_NATIVE_ARTIFACT_PUBLICATION_DIGEST",
+        "CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST",
         publication.publication_digest,
     )
-    monkeypatch.setenv("OPTIMA_TARGET_GPU_ARCH", "sm103")
+    monkeypatch.setenv("CACHEON_TARGET_GPU_ARCH", "sm103")
     return bundle, artifact
 
 
@@ -175,7 +175,7 @@ def test_installs_rebinds_load_only_generator_and_receipt(tmp_path, monkeypatch,
     environment, source, consumer, loaded = _stub_flashinfer(monkeypatch)
     _bundle_path, artifact = _candidate(tmp_path, monkeypatch)
     receipt_dir = tmp_path / "receipts"
-    monkeypatch.setenv("OPTIMA_SEAM_RECEIPT_DIR", str(receipt_dir))
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(receipt_dir))
     assert consumer.get_cutlass_fused_moe_module("103") == "stock-103"
 
     fov.install(registry=None)
@@ -207,7 +207,7 @@ def test_noop_when_not_active(tmp_path, monkeypatch, fresh):
     environment, source, _consumer, _loaded = _stub_flashinfer(monkeypatch)
     _candidate(tmp_path, monkeypatch)
     stock = source.gen_cutlass_fused_moe_sm103_module
-    monkeypatch.setenv("OPTIMA_ACTIVE", "0")
+    monkeypatch.setenv("CACHEON_ACTIVE", "0")
     fov.install(registry=None)
     assert environment.FLASHINFER_CSRC_DIR == Path("/stock/csrc")
     assert source.gen_cutlass_fused_moe_sm103_module is stock
@@ -239,7 +239,7 @@ def test_writable_publication_and_off_domain_arch_are_terminal(tmp_path, monkeyp
         fov.install(registry=None)
 
     artifact.chmod(0o555)
-    monkeypatch.setenv("OPTIMA_TARGET_GPU_ARCH", "sm120")
+    monkeypatch.setenv("CACHEON_TARGET_GPU_ARCH", "sm120")
     with pytest.raises(RuntimeError, match="no prebuilt module for device architecture 'sm120'"):
         fov.install(registry=None)
 
@@ -295,8 +295,8 @@ def test_install_defers_atomically_during_flashinfer_partial_import(
 
 
 def test_seam_table_row_and_canary_form():
-    from optima.compat import _chokepoint_present
-    from optima.seams import SEAM_ADAPTERS, TARGET_MODULES
+    from cacheon.compat import _chokepoint_present
+    from cacheon.seams import SEAM_ADAPTERS, TARGET_MODULES
 
     (row,) = [adapter for adapter in SEAM_ADAPTERS if adapter.name == "flashinfer_overlay"]
     assert row.target_module == "flashinfer.jit.core"

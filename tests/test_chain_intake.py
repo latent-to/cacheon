@@ -5,46 +5,46 @@ import json
 
 import pytest
 
-import optima.cli as cli
-from optima import chain
-from optima.arena_service import (
+import cacheon.cli as cli
+from cacheon import chain
+from cacheon.arena_service import (
     SCREEN_STAGES, ArenaScreenReceipt, PromotionDecision, ScreenGrade,
     ScreenStageResult,
 )
-from optima.chain.intake import (
+from cacheon.chain.intake import (
     FinalizedArrival, FinalizedIntakeStore, IntakeError, IntakePolicy,
     IntakeScope, SQLiteWeightPublicationJournal,
 )
-from optima.chain.weights import WeightProjection, WeightPublicationRecord
-from optima.copy_fingerprint import SubmittedDeltaFingerprint
-from optima.discovery import DiscoveryArmPlan
-from optima.eval.evidence_store import EvidenceArtifactRef, publish_evidence
-from optima.eval.oci_session_protocol import SlotAuditPolicy
-from optima.eval.qualification import QualificationDecision
-from optima.eval.qualification_intake import (
+from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
+from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
+from cacheon.discovery import DiscoveryArmPlan
+from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+from cacheon.eval.oci_session_protocol import SlotAuditPolicy
+from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_intake import (
     QualificationIntakeBatch,
     QualificationIntakeOutcome,
     QualificationRetryPlan,
 )
-from optima.economics import (
+from cacheon.economics import (
     DiscoveryBountyClaim, EconomicsError,
     EmissionsPolicyManifest,
     GlobalRewardProjectionContext,
     MetagraphMember,
     StandingRewardClaim,
 )
-from optima.settlement import (
+from cacheon.settlement import (
     SettlementCandidate, SettlementEventType, SettlementQualification,
     plan_settlement,
 )
-from optima.stack_identity import sha256_hex
-from optima.stack_manifest import (
+from cacheon.stack_identity import sha256_hex
+from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
     ProposalContributionRef,
 )
-from optima.stack_plan import plan_marginal_arm
-from optima.target_catalog import TargetCatalog, default_target_catalog
+from cacheon.stack_plan import plan_marginal_arm
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
@@ -54,7 +54,7 @@ ATTEMPT = EvidenceArtifactRef(
     "9" * 64,
     1,
     "application/json",
-    "optima.qualification.cohort-attempt.v1",
+    "cacheon.qualification.cohort-attempt.v1",
 )
 
 
@@ -172,14 +172,14 @@ def _qualified_settlement_candidate(
         b"retained primary qualification attempt",
         domain="qualification.cohort-attempt",
         media_type="application/json",
-        schema="optima.qualification.cohort-attempt.v1",
+        schema="cacheon.qualification.cohort-attempt.v1",
     )
     reproduction_attempt = publish_evidence(
         evidence_root,
         b"retained reproduction qualification attempt",
         domain="qualification.cohort-attempt",
         media_type="application/json",
-        schema="optima.qualification.cohort-attempt.v1",
+        schema="cacheon.qualification.cohort-attempt.v1",
     )
     row = store.reserve_finalized(
         (_arrival(0),),
@@ -325,7 +325,7 @@ def _qualified_discovery_candidate(
             f"retained discovery {index} {lane}".encode(),
             domain="qualification.cohort-attempt",
             media_type="application/json",
-            schema="optima.qualification.cohort-attempt.v1",
+            schema="cacheon.qualification.cohort-attempt.v1",
         )
         for lane in ("primary", "reproduction")
     )

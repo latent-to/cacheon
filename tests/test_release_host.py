@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.release_host as host
-from optima.release import (
+import cacheon.release_host as host
+from cacheon.release import (
     ContainerReproducibility,
     sign_container_reproducibility,
     verify_container_reproducibility,
@@ -61,9 +61,9 @@ def _registry_objects(*, descriptor: str | None = None, platform: str = "linux/a
                 "Entrypoint": ["python"],
                 "Env": ["A=B"],
                 "Labels": {
-                    "org.optima.release.descriptor": descriptor or _d("release"),
-                    "org.optima.seccomp.sha256": _d("seccomp"),
-                    "org.optima.runtime-overlays": _d("overlay"),
+                    "org.cacheon.release.descriptor": descriptor or _d("release"),
+                    "org.cacheon.seccomp.sha256": _d("seccomp"),
+                    "org.cacheon.runtime-overlays": _d("overlay"),
                 },
             },
             "os": os_name,
@@ -109,7 +109,7 @@ def _opener(manifest: bytes, config: bytes, *, header_digest: str | None = None)
 def _image(*, descriptor: str | None = None, image_digest: str | None = None,
            platform: str = "linux/amd64") -> host.RegistryImage:
     return host.RegistryImage(
-        "registry.example/optima/engine",
+        "registry.example/cacheon/engine",
         "build1",
         image_digest or _d("image"),
         "application/vnd.oci.image.manifest.v1+json",
@@ -123,9 +123,9 @@ def _image(*, descriptor: str | None = None, image_digest: str | None = None,
         ),
         platform,
         {
-            "org.optima.release.descriptor": descriptor or _d("release"),
-            "org.optima.seccomp.sha256": _d("seccomp"),
-            "org.optima.runtime-overlays": _d("overlay"),
+            "org.cacheon.release.descriptor": descriptor or _d("release"),
+            "org.cacheon.seccomp.sha256": _d("seccomp"),
+            "org.cacheon.runtime-overlays": _d("overlay"),
         },
         ("python",),
         ("serve",),
@@ -136,7 +136,7 @@ def _image(*, descriptor: str | None = None, image_digest: str | None = None,
 def test_registry_v2_reopens_raw_manifest_and_config() -> None:
     manifest, config = _registry_objects()
     client = host.RegistryV2Client(
-        "registry.example/optima/engine", opener=_opener(manifest, config)
+        "registry.example/cacheon/engine", opener=_opener(manifest, config)
     )
     image = client.reopen("build1", expected_platform="linux/amd64")
     assert image.manifest_digest == hashlib.sha256(manifest).hexdigest()
@@ -149,13 +149,13 @@ def test_registry_v2_reopens_raw_manifest_and_config() -> None:
 def test_registry_v2_rejects_wrong_digest_and_platform() -> None:
     manifest, config = _registry_objects()
     client = host.RegistryV2Client(
-        "registry.example/optima/engine",
+        "registry.example/cacheon/engine",
         opener=_opener(manifest, config, header_digest="sha256:" + _d("wrong")),
     )
     with pytest.raises(host.ReleaseHostError, match="digest header"):
         client.reopen("build1", expected_platform="linux/amd64")
     client = host.RegistryV2Client(
-        "registry.example/optima/engine", opener=_opener(manifest, config)
+        "registry.example/cacheon/engine", opener=_opener(manifest, config)
     )
     with pytest.raises(host.ReleaseHostError, match="platform differs"):
         client.reopen("build1", expected_platform="linux/arm64")
@@ -167,7 +167,7 @@ def test_registry_v2_rejects_unverified_descriptor_shapes() -> None:
     value["layers"][0]["urls"] = ["https://untrusted.example/layer"]
     malformed = _raw(value)
     client = host.RegistryV2Client(
-        "registry.example/optima/engine", opener=_opener(malformed, config)
+        "registry.example/cacheon/engine", opener=_opener(malformed, config)
     )
     with pytest.raises(host.ReleaseHostError, match="descriptor fields"):
         client.reopen("build1", expected_platform="linux/amd64")
@@ -211,7 +211,7 @@ def test_double_build_uses_closed_argv_and_signs_actual_common_digest(
 
     signed = host.publish_container_twice(
         tmp_path,
-        repository="registry.example/optima/engine",
+        repository="registry.example/cacheon/engine",
         expected_descriptor_digest=descriptor_digest,
         expected_public_key=trusted_key,
         signing_private_key=signing_key,
@@ -224,7 +224,7 @@ def test_double_build_uses_closed_argv_and_signs_actual_common_digest(
     assert len(commands) == 2 and len(set(reopened)) == 2
     for argv, kwargs in commands:
         assert argv[:5] == (
-            "/usr/local/bin/docker", "buildx", "build", "--builder", "optima-release-builder"
+            "/usr/local/bin/docker", "buildx", "build", "--builder", "cacheon-release-builder"
         )
         assert "--no-cache" in argv and "--output" in argv
         assert argv[argv.index("--network") + 1] == "none"
@@ -253,9 +253,9 @@ def _authorized(tmp_path: Path, monkeypatch):
     image = replace(
         _image(descriptor=release.descriptor.digest),
         labels={
-            "org.optima.release.descriptor": release.descriptor.digest,
-            "org.optima.seccomp.sha256": release.descriptor.seccomp.sha256,
-            "org.optima.runtime-overlays": _d("overlay"),
+            "org.cacheon.release.descriptor": release.descriptor.digest,
+            "org.cacheon.seccomp.sha256": release.descriptor.seccomp.sha256,
+            "org.cacheon.runtime-overlays": _d("overlay"),
         },
     )
     key = b"\x44" * 32
@@ -313,9 +313,9 @@ def test_authorization_rejects_wrong_key_digest_and_label(
     wrong_label = replace(
         image,
         labels={
-            "org.optima.release.descriptor": _d("wrong-release"),
-            "org.optima.seccomp.sha256": release.descriptor.seccomp.sha256,
-            "org.optima.runtime-overlays": _d("overlay"),
+            "org.cacheon.release.descriptor": _d("wrong-release"),
+            "org.cacheon.seccomp.sha256": release.descriptor.seccomp.sha256,
+            "org.cacheon.runtime-overlays": _d("overlay"),
         },
     )
     with pytest.raises(host.ReleaseHostError, match="registry image differs"):
@@ -419,7 +419,7 @@ def test_create_inspects_before_start_and_uses_closed_lifecycle(
     model = tmp_path / "model"
     model.mkdir()
     cid = "a" * 64
-    name = "optima-release"
+    name = "cacheon-release"
     calls = []
 
     def runner(argv, **_kwargs):
@@ -467,7 +467,7 @@ def test_create_destroys_container_when_inspect_policy_differs(
         elif argv[1:3] == ("container", "create"):
             return subprocess.CompletedProcess(argv, 0, (cid + "\n").encode(), b"")
         elif argv[1:3] == ("container", "inspect"):
-            row = _container_inspect(authorized, model, cid, "optima-release")
+            row = _container_inspect(authorized, model, cid, "cacheon-release")
             row["HostConfig"]["ReadonlyRootfs"] = False
             payload = [row]
         else:
@@ -476,6 +476,6 @@ def test_create_destroys_container_when_inspect_policy_differs(
 
     with pytest.raises(host.ReleaseHostError, match="closed host policy"):
         host.create_release_container(
-            authorized, model, name="optima-release", runner=runner
+            authorized, model, name="cacheon-release", runner=runner
         )
     assert calls[-1][1:5] == ("container", "rm", "--force", "--volumes")

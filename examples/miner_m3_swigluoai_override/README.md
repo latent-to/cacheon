@@ -16,7 +16,7 @@ import, no `open()`-patch.
 
 ## How it runs
 
-The fused NVFP4 MoE megakernel is the **validator-owned base** (`optima_kernels`
+The fused NVFP4 MoE megakernel is the **validator-owned base** (`cacheon_kernels`
 `nvfp4_moe_megakernel`, declared via `base_kernel`/`override_point` in the manifest). At load
 the validator JIT-composes `base(epilogue=this)` into a standard `fused_experts`, so it flows
 through the normal MoE dispatcher and inherits all four invariants. The activation is a
@@ -28,7 +28,7 @@ below).
 ## Verify (CPU)
 
 ```bash
-python -m optima.cli verify examples/miner_m3_swigluoai_override --device cpu --dtype float32
+python -m cacheon.cli verify examples/miner_m3_swigluoai_override --device cpu --dtype float32
 ```
 
 The model key is auto-read from `metadata/moe.json` (`MiniMax-M3-NVFP4`). On CPU the device
@@ -39,12 +39,12 @@ what makes it pass.
 
 ## GPU status
 
-The GPU fast path is **not yet built**. The `optima_kernels nvfp4_moe_megakernel` base — the
+The GPU fast path is **not yet built**. The `cacheon_kernels nvfp4_moe_megakernel` base — the
 vendored-once, epilogue-hooked flashinfer kernel (M1.2 in
 `docs/SUBMISSION_MODEL_BUILD_SPEC.md`) — is still a stub: its `run()` raises
 `NotImplementedError` with the vendoring spec, so the override composes on the CPU/dense path
 only. The composition mechanism itself (manifest `base_kernel`/`override_point` →
-`optima_kernels.override.build_override`) is implemented and CPU-tested; the unbuilt piece is
+`cacheon_kernels.override.build_override`) is implemented and CPU-tested; the unbuilt piece is
 the GPU base kernel it composes into.
 
 The 1.12×/1.15× numbers in `metadata/moe.json` are the provenance of this epilogue, not a

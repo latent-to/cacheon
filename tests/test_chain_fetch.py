@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-from optima.bundle_hash import content_hash
-from optima.chain.fetch import (
+from cacheon.bundle_hash import content_hash
+from cacheon.chain.fetch import (
     FetchError,
     fetch_bundle,
     fetch_bundle_from_local_file_for_testing,
@@ -143,7 +143,7 @@ def test_extract_rejects_hardlink_member(tmp_path):
 
 
 def test_download_size_cap(tmp_path, monkeypatch):
-    import optima.chain.fetch as fetch_mod
+    import cacheon.chain.fetch as fetch_mod
 
     bundle = _make_bundle(tmp_path)
     archive, ch = package_bundle(bundle, tmp_path / "out.tar.gz")
@@ -221,7 +221,7 @@ def test_extract_rejects_duplicate_and_file_directory_conflicts(tmp_path):
 def test_extract_rejects_pax_metadata_before_tarfile_materializes_it(
     tmp_path, monkeypatch
 ):
-    import optima.chain.fetch as fetch_mod
+    import cacheon.chain.fetch as fetch_mod
 
     path = tmp_path / "pax-bomb.tar.gz"
     _write_pax_tar(path, metadata_bytes=128 * 1024)
@@ -253,7 +253,7 @@ def test_extract_contains_corrupt_deflate_as_fetch_error(tmp_path):
 def test_extract_rejects_oversized_and_aggregate_inspectable_source(
     tmp_path, monkeypatch
 ):
-    import optima.chain.fetch as fetch_mod
+    import cacheon.chain.fetch as fetch_mod
 
     oversized = tmp_path / "oversized-source.tar.gz"
     _write_tar(oversized, [_reg("bundle/kernel.py", b"x" * 9)])
@@ -277,7 +277,7 @@ def test_extract_rejects_oversized_and_aggregate_inspectable_source(
 
 
 def test_extract_obeys_the_transfer_absolute_deadline(tmp_path):
-    import optima.chain.fetch as fetch_mod
+    import cacheon.chain.fetch as fetch_mod
 
     path = tmp_path / "deadline.tar.gz"
     _write_tar(path, [_reg("bundle/manifest.toml")])
@@ -290,7 +290,7 @@ def test_extract_obeys_the_transfer_absolute_deadline(tmp_path):
 
 
 def test_dns_rejects_any_nonpublic_answer(monkeypatch):
-    import optima.chain.fetch as fetch_mod
+    import cacheon.chain.fetch as fetch_mod
 
     monkeypatch.setattr(
         socket,
@@ -305,7 +305,7 @@ def test_dns_rejects_any_nonpublic_answer(monkeypatch):
 
 
 def test_production_tls_context_requires_tls_1_2_or_newer():
-    import optima.chain.fetch as fetch_mod
+    import cacheon.chain.fetch as fetch_mod
 
     context = fetch_mod._tls_context()
     assert context.minimum_version == ssl.TLSVersion.TLSv1_2

@@ -223,7 +223,7 @@ The CLI parser exposes `--arena-id`, but the standalone console entry point has 
 construct the registry. Calling:
 
 ```bash
-optima chain-validate --arena-id example ...
+cacheon chain-validate --arena-id example ...
 ```
 
 without a Python caller injecting `ArenaServiceRegistry` fails closed. Use
@@ -277,9 +277,9 @@ Next: [Authoritative qualification](qualification.md).
 
 ## Source anchors
 
-- [Arena service types and registry](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py)
-- [Resident screen bridge](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_screen_lane.py)
-- [Resident screen queue](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_queue.py)
-- [Resident OCI session](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_resident_session.py)
+- [Arena service types and registry](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py)
+- [Resident screen bridge](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py)
+- [Resident screen queue](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_queue.py)
+- [Resident OCI session](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_resident_session.py)
 - [Arena service tests](https://github.com/latent-to/cacheon/blob/main/tests/test_arena_service.py)
-- [Qualification intake projection](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_intake.py)
+- [Qualification intake projection](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py)

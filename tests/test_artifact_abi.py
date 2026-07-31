@@ -1,6 +1,6 @@
 import pytest
 
-from optima.artifact_abi import (
+from cacheon.artifact_abi import (
     ArtifactAggregateComponent,
     ArtifactABIError,
     ArtifactBinding,
@@ -84,7 +84,7 @@ def _blockscore_bindings():
 
 
 def test_every_slot_has_one_shared_validator_owned_call_abi():
-    from optima.slots import SLOTS
+    from cacheon.slots import SLOTS
 
     assert set(SLOT_CALL_ABIS) == set(SLOTS) == set(_EXPECTED_CALL_ARGS)
     for slot_name, call_args in _EXPECTED_CALL_ARGS.items():

@@ -25,9 +25,9 @@ python3 --version
 
 ## Install the pinned runtime
 
-Torch is intentionally not pinned by Optima's base package because its wheel
+Torch is intentionally not pinned by Cacheon's base package because its wheel
 must match the host CUDA/runtime environment. Resolve SGLang and its Torch
-family for the host first, then install Optima without replacing that stack:
+family for the host first, then install Cacheon without replacing that stack:
 
 ```bash
 git clone https://github.com/latent-to/cacheon.git
@@ -81,7 +81,7 @@ Before recording a result, capture enough identity to reproduce the execution:
 
 - host GPU model/count and logical visibility;
 - driver, CUDA runtime/toolkit, and `nvcc` versions;
-- Torch, SGLang, Triton, FlashInfer/CUTLASS, and Optima revisions;
+- Torch, SGLang, Triton, FlashInfer/CUTLASS, and Cacheon revisions;
 - container/base-image digest where applicable;
 - model revision, manifest, and content digests;
 - tensor-parallel world size and topology class;
@@ -105,7 +105,7 @@ if torch.cuda.is_available():
     print("capability", torch.cuda.get_device_capability(0))
 PY
 
-python -m optima.cli compat
+python -m cacheon.cli compat
 ```
 
 `compat` reports the installed SGLang version and checks its imports and
@@ -115,7 +115,7 @@ installation or an upgrade, but it cannot prove graph capture, model load,
 distributed topology, numerical fidelity, or performance.
 
 If this host also has the deployment-approved Bittensor SDK installed, run its
-independent import/signature canary with `python -m optima.cli chain-compat`.
+independent import/signature canary with `python -m cacheon.cli chain-compat`.
 
 Treat the preflight as three independent questions:
 
@@ -132,12 +132,12 @@ Only the first two are covered by the commands above.
 Start with a known example, then the contribution:
 
 ```bash
-python -m optima.cli scan examples/miner_silu_triton
-python -m optima.cli verify examples/miner_silu_triton \
+python -m cacheon.cli scan examples/miner_silu_triton
+python -m cacheon.cli verify examples/miner_silu_triton \
   --device cuda --dtype bfloat16
 
-python -m optima.cli scan path/to/bundle
-python -m optima.cli verify path/to/bundle \
+python -m cacheon.cli scan path/to/bundle
+python -m cacheon.cli verify path/to/bundle \
   --device cuda --dtype bfloat16 --model <registered-model-key>
 ```
 
@@ -146,7 +146,7 @@ devices:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
-python -m optima.cli verify path/to/collective-bundle \
+python -m cacheon.cli verify path/to/collective-bundle \
   --device cuda --world-size 4
 ```
 
@@ -162,7 +162,7 @@ rather than continue with mixed implementations.
 
 ## Complete-engine performance development
 
-Optima deliberately exposes no local qualification command. Contributors may profile
+Cacheon deliberately exposes no local qualification command. Contributors may profile
 and A/B the complete serving engine on a disposable host appropriate for candidate code,
 using the published arena contract as the environment specification. Keep the model,
 runtime, topology, graph mode, workload, and charged-work basis fixed; measure the
@@ -200,11 +200,11 @@ denominator. Do not treat them as qualification evidence.
 | Torch cannot see CUDA | Driver, wheel CUDA version, container device wiring |
 | `nvcc` is missing | Install/mount the matching toolkit; set `CUDA_HOME` |
 | `compat` reports a moved seam | Confirm exact SGLang pin; follow the bump process rather than patching around it |
-| Scheduler cannot import Optima | Install editable package in the same environment and use module invocation |
+| Scheduler cannot import Cacheon | Install editable package in the same environment and use module invocation |
 | Collective hangs | Rank/world-size agreement, visible devices, topology, and clean prior processes |
 | Graph path falls back | Capability metadata, `graph_safe`, static allocations, host syncs, dynamic-input contract |
 | Baselines drift | Stop scoring; inspect thermals, clocks, competing processes, device cleanup, and arena conditioning |
 
-Source: [`optima/compat.py`](https://github.com/latent-to/cacheon/blob/main/optima/compat.py),
-[`optima/verify.py`](https://github.com/latent-to/cacheon/blob/main/optima/verify.py), and
-[`optima/verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/optima/verify_collective.py).
+Source: [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py),
+[`cacheon/verify.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py), and
+[`cacheon/verify_collective.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py).

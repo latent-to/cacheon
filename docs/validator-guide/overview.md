@@ -1,18 +1,18 @@
 # Validator and operator guide
 
-Optima has two operational planes with different trust boundaries:
+Cacheon has two operational planes with different trust boundaries:
 
 - the **referee plane** accepts proposals, measures marginal improvements, retains
   evidence, settles target ownership, and projects rewards; and
 - the **release plane** defines how reviewed contributions become signed,
-  chain-independent Optima Engine artifacts.
+  chain-independent Cacheon Engine artifacts.
 
 A validator may operate both planes, but they must not be collapsed. A crowned miner
 bundle is still hostile proposal material. It is not a production release, and the
 serving fleet never needs chain access or a miner-hosted URL.
 
 !!! important
-    The public `optima chain-validate` command can run finalized **intake only**. Full
+    The public `cacheon chain-validate` command can run finalized **intake only**. Full
     screening and qualification require deployment code to inject a trusted
     `ArenaServiceRegistry` and select `--arena-id`. This repository defines the typed
     interface and enforcement logic; it does not ship a production arena provider.
@@ -132,22 +132,22 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 
 | Task | Supported surface |
 |---|---|
-| Inspect slot and SDK compatibility | `optima slots`, `optima compat`, `optima chain-compat` |
-| Publish and submit a proposal | `optima chain-publish`, `optima chain-submit` |
-| Inspect chain state | `optima chain-status` |
-| Run bounded finalized public intake | `optima chain-validate --intake-only` |
+| Inspect slot and SDK compatibility | `cacheon slots`, `cacheon compat`, `cacheon chain-compat` |
+| Publish and submit a proposal | `cacheon chain-publish`, `cacheon chain-submit` |
+| Inspect chain state | `cacheon chain-status` |
+| Run bounded finalized public intake | `cacheon chain-validate --intake-only` |
 | Run full referee service | Deployment code calling `run_validator(...)` with an injected registry/provider |
-| Publish a private recovery snapshot | `optima chain-snapshot` |
-| Verify or stage a recovery snapshot | `optima chain-snapshot-verify` |
-| Reconcile legacy V1 rewards | `optima set-weights`, optionally `--watch`, in a separate control-plane process |
-| Project an all-uncrowned V1 bootstrap | `optima set-weights --burn-hotkey <REGISTERED_HOTKEY>` |
-| Burn continuously to the subnet owner | `optima set-weights --burn-to-subnet-owner --watch` (journaled bootstrap; stops at the first CROWN; `--dry-run` to stop before signing) |
-| Inspect V2 activation authority | `optima chain-incentive-shadow`, `optima chain-incentive-composition-shadow` |
-| Activate V2 locally | `optima chain-activate-incentives` after independent approval |
-| Publish confirmed V2 debt | `optima set-debt-weights` after activation |
-| Seal model bytes | `optima model-provision` |
-| Verify a signed release | `optima release-verify` |
-| Materialize a release build context | `optima release-context` |
+| Publish a private recovery snapshot | `cacheon chain-snapshot` |
+| Verify or stage a recovery snapshot | `cacheon chain-snapshot-verify` |
+| Reconcile legacy V1 rewards | `cacheon set-weights`, optionally `--watch`, in a separate control-plane process |
+| Project an all-uncrowned V1 bootstrap | `cacheon set-weights --burn-hotkey <REGISTERED_HOTKEY>` |
+| Burn continuously to the subnet owner | `cacheon set-weights --burn-to-subnet-owner --watch` (journaled bootstrap; stops at the first CROWN; `--dry-run` to stop before signing) |
+| Inspect V2 activation authority | `cacheon chain-incentive-shadow`, `cacheon chain-incentive-composition-shadow` |
+| Activate V2 locally | `cacheon chain-activate-incentives` after independent approval |
+| Publish confirmed V2 debt | `cacheon set-debt-weights` after activation |
+| Seal model bytes | `cacheon model-provision` |
+| Verify a signed release | `cacheon release-verify` |
+| Materialize a release build context | `cacheon release-context` |
 | Construct, sign, publish, or start a release | Reviewed programmatic APIs; no public construction CLI is bundled |
 
 `scan` and `verify` are contributor diagnostics. Contributor-controlled matched A/B
@@ -220,9 +220,9 @@ Security assumptions and residual risks are detailed in
 ## Source anchors
 
 - [Product model](../architecture/product-model.md)
-- [Finalized validator loop](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py)
-- [SQLite intake authority](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
-- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/optima/chain/archive.py)
-- [Arena service contract](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py)
-- [Settlement planner](https://github.com/latent-to/cacheon/blob/main/optima/settlement.py)
-- [Release implementation](https://github.com/latent-to/cacheon/blob/main/optima/release.py)
+- [Finalized validator loop](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py)
+- [SQLite intake authority](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
+- [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
+- [Arena service contract](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py)
+- [Settlement planner](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
+- [Release implementation](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py)

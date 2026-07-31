@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.eval.qualification import (
+from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_DOMAIN,
     GRAPH_EVIDENCE_MEDIA_TYPE,
     GRAPH_EVIDENCE_SCHEMA,
@@ -48,8 +48,8 @@ from optima.eval.qualification import (
     selected_trajectory_projection_digest,
     validate_quality_binding,
 )
-from optima.eval.evidence_store import publish_evidence
-from optima.stack_identity import canonical_digest, canonical_json_bytes
+from cacheon.eval.evidence_store import publish_evidence
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
 
 def _d(label: str) -> str:
@@ -63,27 +63,27 @@ def _reference() -> ReferenceManifest:
 def _discovery_execution(tmp_path: Path):
     from types import SimpleNamespace
 
-    from optima.discovery import (
+    from cacheon.discovery import (
         DEFAULT_DISCOVERY_POLICY,
         DiscoveryArmPlan,
         DiscoveryBuildProfile,
         build_discovery_overlay_stage,
         inspect_discovery,
     )
-    from optima.discovery_overlay import (
+    from cacheon.discovery_overlay import (
         DiscoveryActivationReceipt,
         DiscoveryDriverOrigin,
         DiscoverySchedulerMember,
         activation_policy_digest,
     )
-    from optima.engine_tree import materialize_discovery_engine_tree
-    from optima.eval.marginal_runtime import (
+    from cacheon.engine_tree import materialize_discovery_engine_tree
+    from cacheon.eval.marginal_runtime import (
         CandidateLifecycleEvidence,
         MarginalLifecycleEvidence,
         prepare_discovery_runtime,
     )
-    from optima.eval.native_artifact import publish_native_artifact
-    from optima.eval.oci_prebuild import OCIPrebuildResult
+    from cacheon.eval.native_artifact import publish_native_artifact
+    from cacheon.eval.oci_prebuild import OCIPrebuildResult
     from tests.test_engine_tree import _write_discovery_fixture
     from tests.test_marginal_runtime import _case, _execution, _local_binding, _native
 
@@ -180,7 +180,7 @@ def _discovery_execution(tmp_path: Path):
         "discovery-candidate",
     )
     activation = DiscoveryActivationReceipt(
-        "optima.discovery-driver-activation.v1",
+        "cacheon.discovery-driver-activation.v1",
         overlay.digest,
         100,
         DiscoveryDriverOrigin("sglang", case.preflight.sglang_version, "sglang/__init__.py"),
@@ -363,7 +363,7 @@ def test_qualification_import_is_stdlib_only_and_does_not_import_torch():
         [
             sys.executable,
             "-c",
-            "import sys; import optima.eval.qualification; assert 'torch' not in sys.modules",
+            "import sys; import cacheon.eval.qualification; assert 'torch' not in sys.modules",
         ],
         env=env,
         text=True,
@@ -621,7 +621,7 @@ def test_discovery_execution_reopens_exact_native_overlay_and_activation(tmp_pat
         == lifecycle.candidates[0].execution.session.discovery_activation
     )
     assert grade.activation_receipt_digest == canonical_digest(
-        "optima.discovery.activation-receipt", grade.activation_receipt.to_dict()
+        "cacheon.discovery.activation-receipt", grade.activation_receipt.to_dict()
     )
     assert "activation_receipt" in grade.to_dict()
     assert "activation_receipt_digest" not in grade.to_dict()
@@ -728,7 +728,7 @@ def test_discovery_execution_fails_closed_on_missing_or_relabelled_evidence(tmp_
 
 
 def test_discovery_profile_is_distinct_and_requires_fixed_graphs_on_authority(tmp_path: Path):
-    from optima.discovery_overlay import activation_policy_digest
+    from cacheon.discovery_overlay import activation_policy_digest
 
     requirement, _lifecycle = _discovery_execution(tmp_path)
     profile = DiscoveryQualificationProfile(
@@ -823,7 +823,7 @@ def test_controller_store_graph_artifact_reopens_and_regrades(tmp_path: Path):
     (
         ("domain", "qualification.other"),
         ("media_type", "application/json"),
-        ("schema", "optima.qualification.other.v1"),
+        ("schema", "cacheon.qualification.other.v1"),
     ),
 )
 def test_graph_artifact_requires_exact_type_and_metadata(tmp_path: Path, field, value):
@@ -917,11 +917,13 @@ def test_lifecycle_derives_prompt_pool_and_exact_selected_trajectories(tmp_path:
     row = lifecycle.candidates[0]
     session = row.execution.session
     batches = list(session.batches)
-    evidence = batches[1].evidence
+    # Corrupt a selected prompt occurrence. Sorted prompts[:2] excludes the
+    # middle batch when three occurrence digests sort with the middle one third.
+    evidence = batches[0].evidence
     prompt = evidence.prompts[0]
     corrupted = replace(prompt, output_ids=(999,) + prompt.output_ids[1:])
-    batches[1] = replace(
-        batches[1], evidence=replace(evidence, prompts=(corrupted,))
+    batches[0] = replace(
+        batches[0], evidence=replace(evidence, prompts=(corrupted,))
     )
     changed = replace(
         lifecycle,
@@ -936,7 +938,7 @@ def test_lifecycle_derives_prompt_pool_and_exact_selected_trajectories(tmp_path:
 
 
 def test_trajectory_topk_accepts_ties_without_relabeling_runtime_top_one():
-    from optima.eval.qualification import _validated_topk_position
+    from cacheon.eval.qualification import _validated_topk_position
 
     left = ((-0.5, 19), (-0.5, 7), (-1.0, 3))
     right = ((-1.0, 3), (-0.5, 7), (-0.5, 19))
@@ -994,7 +996,7 @@ def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path
     # (raw_trajectory_projection_digest) or live raw-quality re-verification
     # fails after the measurement has already run.
     from tests.test_scoring import _lifecycle
-    from optima.eval.reference_quality import retained_support_policy_digest
+    from cacheon.eval.reference_quality import retained_support_policy_digest
 
     lifecycle, delta, _case, _calibration, _runtime_policy = _lifecycle(
         tmp_path, top_logprobs_num=0
@@ -1025,7 +1027,7 @@ def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path
     )
     rollout = {"output_ids": list(range(10)), "rollout_topk": [None] * 10}
     assert projection == canonical_digest(
-        "optima.qualification.selected-trajectory-projection",
+        "cacheon.qualification.selected-trajectory-projection",
         {
             "support_policy_digest": retained_support_policy_digest(),
             "prompts": [
@@ -1037,14 +1039,14 @@ def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path
 
 
 def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
-    from optima.eval.qualification import _selected_prompt_texts, _trajectory_rows
-    from optima.eval.calibration import CalibrationContext
-    from optima.eval.oci_reference_session import (
+    from cacheon.eval.qualification import _selected_prompt_texts, _trajectory_rows
+    from cacheon.eval.calibration import CalibrationContext
+    from cacheon.eval.oci_reference_session import (
         ReferenceExchangeEvidence,
         ReferenceSessionEvidence,
     )
-    from optima.eval.oci_backend import PristineReferenceExecutionEvidence
-    from optima.eval.reference_protocol import (
+    from cacheon.eval.oci_backend import PristineReferenceExecutionEvidence
+    from cacheon.eval.reference_protocol import (
         ReferenceEvidence,
         ReferencePromptEvidence,
         ReferencePromptInput,
@@ -1055,7 +1057,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         encode_reference_evidence,
         request_sha256,
     )
-    from optima.eval.reference_quality import (
+    from cacheon.eval.reference_quality import (
         RawHiddenTaskResult,
         RawPromptQualityEvidence,
         RawRolloutEvidence,
@@ -1066,7 +1068,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         retained_support_policy_digest,
         target_nll_from_f32,
     )
-    from optima.stack_identity import canonical_digest, sha256_hex
+    from cacheon.stack_identity import canonical_digest, sha256_hex
     from tests.test_oci_reference_session import (
         _config as reference_config,
         _facts as reference_facts,
@@ -1146,7 +1148,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         role_inputs, role_evidence, raw_rollouts = [], [], []
         tasks = tuple(sorted(
             (RawHiddenTaskResult(
-                canonical_digest("optima.qualification.hidden-task", {
+                canonical_digest("cacheon.qualification.hidden-task", {
                     "corpus": reference.hidden_corpus_commitment,
                     "judge": reference.hidden_judge_digest,
                     "policy": profile.hidden_task_policy_digest,
@@ -1204,14 +1206,14 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         1.0, 2.0, teacher_evidence,
     )
     t_session = ReferenceSessionEvidence(
-        "optima.pristine-reference-session.v1", request.session_id,
+        "cacheon.pristine-reference-session.v1", request.session_id,
         reference.pristine_launch_digest, reference.digest,
         _d("reference-session-plan"), request_plan,
         reference_facts(reference, config), 0.5, (exchange,), 3.0,
     )
     baseline = lifecycle.baseline_before
     reference_execution = PristineReferenceExecutionEvidence(
-        "optima.oci-pristine-reference-execution.v1",
+        "cacheon.oci-pristine-reference-execution.v1",
         reference.pristine_launch_digest,
         baseline.runtime_identity,
         baseline.runtime_preflight_receipt_sha256,
@@ -1238,7 +1240,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         selected_delta_digest=delta,
     )
     assert identity_digest == canonical_digest(
-        "optima.qualification.candidate-identity",
+        "cacheon.qualification.candidate-identity",
         {
             "calibration_digest": calibration.digest,
             "candidate_lifecycle_digest": lifecycle_digest,
@@ -1319,14 +1321,14 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
     # the 2026-07-25 r3 calibration died on (_validate_teacher_source derived
     # a distribution from empty support).  Everything the live validator
     # recomputes must accept sealed absence end to end.
-    from optima.eval.qualification import _selected_prompt_texts, _trajectory_rows
-    from optima.eval.calibration import CalibrationContext
-    from optima.eval.oci_reference_session import (
+    from cacheon.eval.qualification import _selected_prompt_texts, _trajectory_rows
+    from cacheon.eval.calibration import CalibrationContext
+    from cacheon.eval.oci_reference_session import (
         ReferenceExchangeEvidence,
         ReferenceSessionEvidence,
     )
-    from optima.eval.oci_backend import PristineReferenceExecutionEvidence
-    from optima.eval.reference_protocol import (
+    from cacheon.eval.oci_backend import PristineReferenceExecutionEvidence
+    from cacheon.eval.reference_protocol import (
         ReferenceEvidence,
         ReferencePromptEvidence,
         ReferencePromptInput,
@@ -1337,7 +1339,7 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         encode_reference_evidence,
         request_sha256,
     )
-    from optima.eval.reference_quality import (
+    from cacheon.eval.reference_quality import (
         RawHiddenTaskResult,
         RawPromptQualityEvidence,
         RawRolloutEvidence,
@@ -1347,7 +1349,7 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         retained_support_policy_digest,
         target_nll_from_f32,
     )
-    from optima.stack_identity import sha256_hex
+    from cacheon.stack_identity import sha256_hex
     from tests.test_oci_reference_session import (
         _config as reference_config,
         _facts as reference_facts,
@@ -1428,7 +1430,7 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         role_inputs, role_evidence, raw_rollouts = [], [], []
         tasks = tuple(sorted(
             (RawHiddenTaskResult(
-                canonical_digest("optima.qualification.hidden-task", {
+                canonical_digest("cacheon.qualification.hidden-task", {
                     "corpus": reference.hidden_corpus_commitment,
                     "judge": reference.hidden_judge_digest,
                     "policy": profile.hidden_task_policy_digest,
@@ -1480,14 +1482,14 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         1.0, 2.0, teacher_evidence,
     )
     t_session = ReferenceSessionEvidence(
-        "optima.pristine-reference-session.v1", request.session_id,
+        "cacheon.pristine-reference-session.v1", request.session_id,
         reference.pristine_launch_digest, reference.digest,
         _d("reference-session-plan"), request_plan,
         reference_facts(reference, config), 0.5, (exchange,), 3.0,
     )
     baseline = lifecycle.baseline_before
     reference_execution = PristineReferenceExecutionEvidence(
-        "optima.oci-pristine-reference-execution.v1",
+        "cacheon.oci-pristine-reference-execution.v1",
         reference.pristine_launch_digest,
         baseline.runtime_identity,
         baseline.runtime_preflight_receipt_sha256,
@@ -1540,7 +1542,7 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
     # publish the canonical raw bytes, reopen (which derives the NLL-only
     # summaries), and score against the NLL-only calibration.  Every layer
     # must accept sealed absence without touching distribution machinery.
-    from optima.eval.reference_quality import (
+    from cacheon.eval.reference_quality import (
         RAW_QUALITY_DOMAIN,
         RAW_QUALITY_SCHEMA,
         reopen_reference_quality_evidence,

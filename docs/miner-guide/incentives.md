@@ -1,6 +1,6 @@
 # Incentives
 
-Optima converts independently reproduced marginal improvements into weight
+Cacheon converts independently reproduced marginal improvements into weight
 projections. A local benchmark, a clean bundle, a qualification attempt, and a
 crown are different authorities. Only transactional settlement can create a
 reward claim, and only a confirmed weight publication can realize the
@@ -73,7 +73,7 @@ refuses that path as soon as any crown, active reward claim, or V2 activation
 exists. This is an operator bootstrap mechanism, not miner income.
 
 The pure projection is implemented in
-[`optima/economics.py`](https://github.com/latent-to/cacheon/blob/main/optima/economics.py).
+[`cacheon/economics.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py).
 Journaled chain publication is implemented separately from settlement.
 
 ## V2 finite-debt issuance
@@ -124,7 +124,7 @@ Each family still has an independent frontier and clock, while actual wins in
 more families create more total debt.
 
 The issuance arithmetic is implemented in
-[`optima/finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/optima/finite_debt.py).
+[`cacheon/finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py).
 
 ## V2 epoch composition
 
@@ -159,9 +159,9 @@ does not pay a claim. A delayed boundary remains first in sequence, and later
 boundaries cannot skip it.
 
 The composed arithmetic is implemented in
-[`optima/incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/optima/incentive_composition.py);
+[`cacheon/incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py);
 the restart-safe publication authority is in
-[`optima/chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py).
+[`cacheon/chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py).
 
 ## Discovery rewards
 
@@ -212,7 +212,7 @@ database. Existing V1 publisher databases are not silently rewritten or erased
 to force a cutover.
 
 The implementation boundary is in
-[`optima/chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_activation.py).
+[`cacheon/chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py).
 The [state of record](../reference/state-of-record.md) distinguishes implemented
 authority from receipts that actually exist.
 
@@ -238,7 +238,7 @@ The deterministic one-campaign load study is reported separately in
 
 ## Denomination and non-promises
 
-Optima accounts in confirmed validator weight-ppm epochs. It does not promise a
+Cacheon accounts in confirmed validator weight-ppm epochs. It does not promise a
 fixed amount of TAO, alpha, fiat value, or realized validator influence. Token
 emission depends on Bittensor consensus, subnet state, chain mechanics, and the
 validator's realized position.

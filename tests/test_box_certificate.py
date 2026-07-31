@@ -4,14 +4,14 @@ from dataclasses import replace
 
 import pytest
 
-from optima.eval.box_certificate import (
+from cacheon.eval.box_certificate import (
     BoxCertificate,
     BoxCertificateError,
     CertificateInvalidation,
     KnownEffectReceipt,
     NullFloorReceipt,
 )
-from optima.eval.scoring import relative_spread
+from cacheon.eval.scoring import relative_spread
 
 _S1 = "a" * 64  # decode-heavy scored shape
 _S2 = "b" * 64  # long-context scored shape

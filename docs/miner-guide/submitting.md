@@ -5,9 +5,9 @@ content hash and an HTTPS fetch URL. The chain carries a reference, not the
 archive bytes.
 
 The miner-side implementation is in
-[submit.py](https://github.com/latent-to/cacheon/blob/main/optima/chain/submit.py),
+[submit.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/submit.py),
 and the canonical payload is defined by
-[payload.py](https://github.com/latent-to/cacheon/blob/main/optima/chain/payload.py).
+[payload.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/payload.py).
 
 ## The identity chain
 
@@ -47,7 +47,7 @@ or can grant the required rights to every submitted source fragment.
 Register the miner hotkey first if needed:
 
 ```bash
-python -m optima.cli chain-register \
+python -m cacheon.cli chain-register \
   --netuid <NETUID> --network <NETWORK> \
   --wallet <WALLET> --hotkey <HOTKEY>
 ```
@@ -61,8 +61,8 @@ Use an explicit contribution target and source-only contents. Then run the
 development checks appropriate to the target:
 
 ```bash
-python -m optima.cli scan my_bundle
-python -m optima.cli verify my_bundle --device cuda --dtype bfloat16
+python -m cacheon.cli scan my_bundle
+python -m cacheon.cli verify my_bundle --device cuda --dtype bfloat16
 ```
 
 Inspect the tree for credentials, caches, generated binaries, model data,
@@ -91,9 +91,9 @@ set +a
 The recognized variables are:
 
 ```dotenv
-OPTIMA_OBJECT_STORE_ACCESS_KEY_ID=...
-OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY=...
-OPTIMA_OBJECT_STORE_BUCKET=...
+CACHEON_OBJECT_STORE_ACCESS_KEY_ID=...
+CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY=...
+CACHEON_OBJECT_STORE_BUCKET=...
 ```
 
 `chain-publish` uses the generic S3 backend by default. AWS S3 needs no provider
@@ -101,20 +101,20 @@ flag. For another S3-compatible service, its endpoint URL identifies the
 service; a custom endpoint defaults to path-style addressing:
 
 ```dotenv
-OPTIMA_OBJECT_STORE_ENDPOINT_URL=https://objects.example
-OPTIMA_OBJECT_STORE_REGION=us-east-1
+CACHEON_OBJECT_STORE_ENDPOINT_URL=https://objects.example
+CACHEON_OBJECT_STORE_REGION=us-east-1
 ```
 
-Use `OPTIMA_OBJECT_STORE_ADDRESSING_STYLE=virtual` only when the service expects
+Use `CACHEON_OBJECT_STORE_ADDRESSING_STYLE=virtual` only when the service expects
 virtual-hosted bucket URLs. Known provider names are optional convenience
-presets. For example, `OPTIMA_OBJECT_STORE_PROVIDER=hippius` supplies Hippius's
+presets. For example, `CACHEON_OBJECT_STORE_PROVIDER=hippius` supplies Hippius's
 endpoint, `decentralized` region, and path-style addressing; the equivalent
 fully explicit configuration is:
 
 ```dotenv
-OPTIMA_OBJECT_STORE_ENDPOINT_URL=https://s3.hippius.com
-OPTIMA_OBJECT_STORE_REGION=decentralized
-OPTIMA_OBJECT_STORE_ADDRESSING_STYLE=path
+CACHEON_OBJECT_STORE_ENDPOINT_URL=https://s3.hippius.com
+CACHEON_OBJECT_STORE_REGION=decentralized
+CACHEON_OBJECT_STORE_ADDRESSING_STYLE=path
 ```
 
 The command packages the bundle, uploads it under a content-addressed key,
@@ -122,13 +122,13 @@ grants anonymous read access, reopens the stored archive, and finally runs the
 validator's production HTTPS fetch and hash check without credentials:
 
 ```bash
-python -m optima.cli chain-publish my_bundle \
+python -m cacheon.cli chain-publish my_bundle \
   --out dist/my_bundle.tar.gz
 ```
 
 Pass `--create-bucket` only when the named bucket does not exist. The default
 key is
-`optima/miner-bundles/sha256/<content_hash>.tar.gz`. A repeated publication
+`cacheon/miner-bundles/sha256/<content_hash>.tar.gz`. A repeated publication
 reuses an existing object only after hardened extraction proves that it has the
 committed tree hash; it never replaces a conflicting key. Use
 `--object-store-provider hippius|minio` for a known preset, or
@@ -146,7 +146,7 @@ miner's credentials onto a validator.
 For a non-S3 public HTTPS origin, package exactly the identity-bearing files:
 
 ```bash
-python -m optima.cli chain-package my_bundle \
+python -m cacheon.cli chain-package my_bundle \
   --out dist/my_bundle.tar.gz
 ```
 
@@ -166,7 +166,7 @@ are. Never “refresh” a stable URL with revised content after committing the 
 Upload that archive to a stable URL such as:
 
 ```text
-https://downloads.example.org/optima/my_bundle.tar.gz
+https://downloads.example.org/cacheon/my_bundle.tar.gz
 ```
 
 Production URLs must be canonical HTTPS with a public-routable host. Credentials
@@ -184,13 +184,13 @@ regular file, 8 MiB per inspectable source/configuration file, 32 MiB across all
 inspectable files, bounded extension metadata, at most five redirects, and one
 60-second absolute DNS/TLS/transfer/extraction deadline. The validator re-hashes
 the safely extracted identity-bearing tree. See
-[fetch.py](https://github.com/latent-to/cacheon/blob/main/optima/chain/fetch.py).
+[fetch.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py).
 
 ## 3. Dry-run the chain payload
 
 ```bash
-python -m optima.cli chain-submit my_bundle \
-  --url https://downloads.example.org/optima/my_bundle.tar.gz \
+python -m cacheon.cli chain-submit my_bundle \
+  --url https://downloads.example.org/cacheon/my_bundle.tar.gz \
   --netuid <NETUID> --network <NETWORK> \
   --wallet <WALLET> --hotkey <HOTKEY> \
   --blocks-until-reveal <BLOCKS> \
@@ -212,8 +212,8 @@ sent anything.
 Run the same command without `--dry-run`:
 
 ```bash
-python -m optima.cli chain-submit my_bundle \
-  --url https://downloads.example.org/optima/my_bundle.tar.gz \
+python -m cacheon.cli chain-submit my_bundle \
+  --url https://downloads.example.org/cacheon/my_bundle.tar.gz \
   --netuid <NETUID> --network <NETWORK> \
   --wallet <WALLET> --hotkey <HOTKEY> \
   --blocks-until-reveal <BLOCKS>
@@ -226,7 +226,7 @@ provides the consensus arrival order used by intake.
 You can inspect public chain state with:
 
 ```bash
-python -m optima.cli chain-status \
+python -m cacheon.cli chain-status \
   --netuid <NETUID> --network <NETWORK> \
   --wallet <WALLET> --hotkey <HOTKEY>
 ```
@@ -305,7 +305,7 @@ reveal state, while production intake and qualification state live in validator 
 Use the operator's designated status surface rather than assuming absence from
 `chain-status` output means rejection.
 
-A crown remains separate from source integration and an Optima Engine release.
+A crown remains separate from source integration and an Cacheon Engine release.
 Submitting does not cause the validator to publish miner code as a release.
 Reward generation and confirmed publication are described in
 [Incentives](incentives.md).

@@ -8,15 +8,15 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.cli as cli
-from optima.chain.fetch import FetchError, package_bundle
-from optima.chain.publish import (
+import cacheon.cli as cli
+from cacheon.chain.fetch import FetchError, package_bundle
+from cacheon.chain.publish import (
     BundlePublishError,
     DEFAULT_BUNDLE_KEY_PREFIX,
     S3PublicBundlePublisher,
     public_object_url,
 )
-from optima.object_store import ObjectStoreConfig
+from cacheon.object_store import ObjectStoreConfig
 
 
 class _S3Error(Exception):
@@ -73,7 +73,7 @@ def _bundle(root: Path) -> Path:
     (bundle / "kernels").mkdir(parents=True)
     (bundle / "manifest.toml").write_text(
         'bundle_id = "publish-test"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "activation.silu_and_mul"\n'
         'source = "kernels/k.py"\n'
@@ -126,7 +126,7 @@ def test_publish_new_bundle_is_content_addressed_public_and_reopened(tmp_path):
     assert result.stored_archive_bytes == len(client.objects[expected_key])
     assert client.acls[expected_key] == "public-read"
     assert client.puts[0]["ContentType"] == "application/gzip"
-    assert client.puts[0]["Metadata"]["optima-content-sha256"] == content_hash
+    assert client.puts[0]["Metadata"]["cacheon-content-sha256"] == content_hash
     assert fetched == [(expected_url, content_hash, 12.0)]
 
 
@@ -245,9 +245,9 @@ def test_public_url_uses_provider_style_and_rejects_non_https():
 
 
 def test_bundle_store_cli_defaults_to_generic_s3_environment(monkeypatch):
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_BUCKET", "miner-bucket")
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_ACCESS_KEY_ID", "hip_test")
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_BUCKET", "miner-bucket")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_ACCESS_KEY_ID", "hip_test")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY", "secret")
 
     config = cli._bundle_store_config_from_args(SimpleNamespace())
 
@@ -259,9 +259,9 @@ def test_bundle_store_cli_defaults_to_generic_s3_environment(monkeypatch):
 
 
 def test_bundle_store_cli_endpoint_is_provider_agnostic(monkeypatch):
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_BUCKET", "miner-bucket")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_BUCKET", "miner-bucket")
     monkeypatch.setenv(
-        "OPTIMA_OBJECT_STORE_ENDPOINT_URL", "https://objects.example"
+        "CACHEON_OBJECT_STORE_ENDPOINT_URL", "https://objects.example"
     )
 
     config = cli._bundle_store_config_from_args(SimpleNamespace())
@@ -275,8 +275,8 @@ def test_bundle_store_cli_endpoint_is_provider_agnostic(monkeypatch):
 
 
 def test_bundle_store_cli_hippius_preset_is_optional(monkeypatch):
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_PROVIDER", "hippius")
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_BUCKET", "miner-bucket")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_PROVIDER", "hippius")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_BUCKET", "miner-bucket")
 
     config = cli._bundle_store_config_from_args(SimpleNamespace())
 

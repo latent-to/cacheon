@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from optima.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
-from optima.eval.oci_session_protocol import BatchEvidence, PromptEvidence
-from optima.eval.resident_queue import (
+from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
+from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
+from cacheon.eval.resident_queue import (
     ResidentQueueError,
     ScreenCandidate,
     ScreenPolicy,

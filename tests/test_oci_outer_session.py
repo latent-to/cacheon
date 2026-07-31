@@ -9,13 +9,13 @@ from dataclasses import replace
 
 import pytest
 
-import optima.eval.oci_outer_session as outer
-from optima.discovery_overlay import (
+import cacheon.eval.oci_outer_session as outer
+from cacheon.discovery_overlay import (
     DiscoveryActivationReceipt,
     DiscoveryDriverOrigin,
     DiscoverySchedulerMember,
 )
-from optima.eval.oci_outer_session import (
+from cacheon.eval.oci_outer_session import (
     AttachedSessionTransport,
     OpenedOuterSession,
     OuterSessionInfrastructureError,
@@ -26,12 +26,12 @@ from optima.eval.oci_outer_session import (
     SessionExecutionPlan,
     run_outer_session,
 )
-from optima.eval.oci_process import (
+from cacheon.eval.oci_process import (
     STDERR_ARTIFACT_SCHEMA,
     OCIAttachedDiagnostic,
     OCIStderrArtifactReceipt,
 )
-from optima.eval.oci_session_protocol import (
+from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     EVIDENCE_MAGIC,
     MAX_CONTROL_BYTES,
@@ -65,7 +65,7 @@ LAUNCH = _digest("launch")
 
 def _config() -> EngineSessionConfig:
     return EngineSessionConfig(
-        model_path="/optima/input/model",
+        model_path="/cacheon/input/model",
         dtype="bfloat16",
         deterministic=False,
         attention_backend="flashinfer",
@@ -133,7 +133,7 @@ def _batch_evidence(request: BatchRequest) -> BatchEvidence:
 
 def _discovery_receipt() -> DiscoveryActivationReceipt:
     return DiscoveryActivationReceipt(
-        "optima.discovery-driver-activation.v1",
+        "cacheon.discovery-driver-activation.v1",
         _digest("discovery-overlay"),
         100,
         DiscoveryDriverOrigin(

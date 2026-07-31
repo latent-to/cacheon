@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-import optima.chain.validator_loop as loop
-from optima.bundle_hash import content_hash
-from optima.chain import FinalizedRevealSnapshot, RevealedCommitment
-from optima.chain.archive import (
+import cacheon.chain.validator_loop as loop
+from cacheon.bundle_hash import content_hash
+from cacheon.chain import FinalizedRevealSnapshot, RevealedCommitment
+from cacheon.chain.archive import (
     ValidatorArchiveError,
     ValidatorArchiveManifest,
     create_validator_archive,
@@ -20,16 +20,16 @@ from optima.chain.archive import (
     restore_validator_archive,
     verify_validator_archive,
 )
-from optima.chain.audit_log import (
+from cacheon.chain.audit_log import (
     ChainAuditLogError,
     append_chain_audit,
     fault_audit_record,
     pass_audit_record,
 )
-from optima.chain.intake import FinalizedIntakeStore, IntakeScope
-from optima.chain.payload import encode_payload
-from optima.eval.evidence_store import publish_evidence, reopen_evidence
-from optima.object_store import MemoryObjectStore
+from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+from cacheon.chain.payload import encode_payload
+from cacheon.eval.evidence_store import publish_evidence, reopen_evidence
+from cacheon.object_store import MemoryObjectStore
 
 
 BLOCK = 90
@@ -47,7 +47,7 @@ def _bundle(root: Path) -> Path:
     (root / "kernels").mkdir(parents=True)
     (root / "manifest.toml").write_text(
         'bundle_id = "archive-test"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         "[[ops]]\n"
         'slot = "activation.silu_and_mul"\n'
         'source = "kernels/k.py"\n'
@@ -129,7 +129,7 @@ def test_redacted_chain_audit_is_append_only_and_excludes_messages(tmp_path):
             path,
             {
                 "event": "pass",
-                "schema": "optima.chain-audit.v1",
+                "schema": "cacheon.chain-audit.v1",
                 "url": "https://must-not-be-retained.example",
             },
         )
@@ -349,7 +349,7 @@ def test_manifest_parser_closes_nested_type_failures() -> None:
                 "database_schema": 1,
                 "finalized_cursor": None,
                 "qualification_evidence": [],
-                "schema": "optima.validator-archive.v1",
+                "schema": "cacheon.validator-archive.v1",
                 "scope": {"genesis_hash": [], "netuid": 307},
                 "scope_digest": "a" * 64,
                 "sealed_inputs": [],

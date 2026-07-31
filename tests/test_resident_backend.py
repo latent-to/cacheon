@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from optima.bundle_hash import content_hash
-from optima.eval.oci_backend import OCIBackendError, stage_swap_bundle
+from cacheon.bundle_hash import content_hash
+from cacheon.eval.oci_backend import OCIBackendError, stage_swap_bundle
 
 
 class TestStageSwapBundle:
@@ -66,7 +66,7 @@ class TestResidentArgvPolicy:
     def test_swap_intake_requires_resident_protocol(self) -> None:
         # The full argv builder needs a resolved launch; the protocol/mount
         # pairing rule is testable through its guard clause alone.
-        from optima.eval.oci_backend import build_runtime_argv
+        from cacheon.eval.oci_backend import build_runtime_argv
 
         with pytest.raises(OCIBackendError, match="not registered"):
             build_runtime_argv(
@@ -82,7 +82,7 @@ class TestResidentArgvPolicy:
             )
 
     def test_ordinary_protocol_rejects_swap_root(self, tmp_path) -> None:
-        from optima.eval.oci_backend import build_runtime_argv
+        from cacheon.eval.oci_backend import build_runtime_argv
 
         with pytest.raises(OCIBackendError, match="exactly for resident"):
             build_runtime_argv(
@@ -99,7 +99,7 @@ class TestResidentArgvPolicy:
             )
 
     def test_resident_protocol_requires_swap_root(self) -> None:
-        from optima.eval.oci_backend import build_runtime_argv
+        from cacheon.eval.oci_backend import build_runtime_argv
 
         with pytest.raises(OCIBackendError, match="exactly for resident"):
             build_runtime_argv(
@@ -117,19 +117,19 @@ class TestResidentArgvPolicy:
 
 class TestEngineKwargAdditions:
     def test_watchdog_timeout_accepted(self) -> None:
-        from optima.eval.oci_session_protocol import _validate_engine_kwargs
+        from cacheon.eval.oci_session_protocol import _validate_engine_kwargs
 
         result = _validate_engine_kwargs({"watchdog_timeout": 1800})
         assert result == {"watchdog_timeout": 1800}
 
     def test_cuda_graph_bs_accepted_sorted(self) -> None:
-        from optima.eval.oci_session_protocol import _validate_engine_kwargs
+        from cacheon.eval.oci_session_protocol import _validate_engine_kwargs
 
         result = _validate_engine_kwargs({"cuda_graph_bs": [1, 8, 256]})
         assert result == {"cuda_graph_bs": [1, 8, 256]}
 
     def test_cuda_graph_bs_rejects_unsorted_or_duplicates(self) -> None:
-        from optima.eval.oci_session_protocol import (
+        from cacheon.eval.oci_session_protocol import (
             SessionProtocolError,
             _validate_engine_kwargs,
         )

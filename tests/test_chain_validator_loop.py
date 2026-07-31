@@ -5,19 +5,19 @@ from pathlib import Path
 
 import pytest
 
-import optima.chain.validator_loop as loop
-from optima.arena_service import (
+import cacheon.chain.validator_loop as loop
+from cacheon.arena_service import (
     SCREEN_STAGES, AdmissionDecision, ArenaQualificationWork,
     ArenaScreenReceipt, ArenaService, ArenaServiceRegistry, PromotionDecision,
     ScreenGrade, ScreenStageResult,
 )
-from optima.bundle_hash import content_hash
-from optima.chain import FinalizedRevealSnapshot, RevealedCommitment
-from optima.chain.intake import FinalizedIntakeStore, IntakeScope
-from optima.chain.payload import encode_payload
-from optima.eval.evidence_store import EvidenceArtifactRef
-from optima.eval.qualification import QualificationDecision
-from optima.eval.qualification_intake import (
+from cacheon.bundle_hash import content_hash
+from cacheon.chain import FinalizedRevealSnapshot, RevealedCommitment
+from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+from cacheon.chain.payload import encode_payload
+from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest, QualificationIntakeBatch,
     QualificationIntakeOutcome, QualificationPlanFactory,
 )
@@ -32,7 +32,7 @@ def _bundle(root: Path, body: str) -> Path:
     (root / "kernels").mkdir(parents=True)
     (root / "manifest.toml").write_text(
         'bundle_id = "test"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "activation.silu_and_mul"\n'
         'source = "kernels/k.py"\n'
@@ -143,7 +143,7 @@ def test_deterministically_unpublishable_submission_is_not_retried(
         tmp_path / "source",
         "def silu_and_mul(x, out):\n    out.copy_(x)\n",
     )
-    reserved = source / ".optima-native-artifact.json"
+    reserved = source / ".cacheon-native-artifact.json"
     reserved.write_text("{}\n")
     reserved.chmod(0o600)
     digest = content_hash(source)
@@ -280,7 +280,7 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
         )
         ref = EvidenceArtifactRef(
             "qualification.cohort-attempt", "b" * 64, 1,
-            "application/json", "optima.qualification.cohort-attempt.v1",
+            "application/json", "cacheon.qualification.cohort-attempt.v1",
         )
         return QualificationIntakeBatch(factory.manifest.digest, (outcome,), ref)
 
@@ -432,7 +432,7 @@ def test_active_settlement_uses_exact_retained_cursor_block_and_hash(monkeypatch
             self.committed = kwargs
             self.pending = False
 
-    monkeypatch.setattr("optima.settlement.plan_settlement", lambda *_, **__: plan)
+    monkeypatch.setattr("cacheon.settlement.plan_settlement", lambda *_, **__: plan)
     store = Store()
     observed_hash = "0x" + "a" * 64
     assert loop._settle_pending(

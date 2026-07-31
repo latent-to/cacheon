@@ -17,13 +17,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.dispatch import (  # noqa: E402
+from cacheon.dispatch import (  # noqa: E402
     _decode_supported,
     make_moe_dispatcher,
     make_rmsnorm_dispatcher,
 )
-from optima.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
-from optima.slots import get_slot  # noqa: E402
+from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
 
 _BASELINE = object()  # sentinel: the dispatcher fell back
 
@@ -127,9 +127,9 @@ def _moe_reduce_registry(calls):
 
 
 def test_reduce_owning_kernel_skipped_when_tp_layer_defers_its_reduce(monkeypatch):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", lambda: 1)
     inputs = _moe_inputs()
     calls: list = []
@@ -141,9 +141,9 @@ def test_reduce_owning_kernel_skipped_when_tp_layer_defers_its_reduce(monkeypatc
 
 
 def test_reduce_owning_kernel_runs_when_layer_reduces(monkeypatch):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", lambda: 1)
     monkeypatch.setattr(
         dispatch, "_tp_device_group", lambda: SimpleNamespace(size=lambda: 2)

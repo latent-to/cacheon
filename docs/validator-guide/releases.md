@@ -5,7 +5,7 @@ A crown and a production release are deliberately different objects.
 - A **crown** records independently reproduced marginal improvement in the hostile
   evaluation stack.
 - An **integrated contribution** preserves the exact crowned selected payload inside
-  reviewed Optima-owned packaging and an immutable integration record.
+  reviewed Cacheon-owned packaging and an immutable integration record.
 - An **engine release** contains only integrated contributions, exact model/runtime/native
   identities, and signed chain-independent artifacts.
 
@@ -42,7 +42,7 @@ Before a crown enters `EngineReleaseManifest`, review must establish at least:
 
 - reproduction against both the crowned evaluation stack and current release stack;
 - byte-for-byte preservation of the crowned selected payload, with maintainable
-  Optima-owned packaging and tests around that closed payload;
+  Cacheon-owned packaging and tests around that closed payload;
 - correctness, security, and fallback behavior;
 - license and provenance acceptability;
 - compatibility with other active integrated contributions and the pinned SGLang
@@ -72,9 +72,9 @@ Model provisioning hashes every file in the exact model directory, publishes a
 content-addressed receipt, and reopens the tree:
 
 ```bash
-optima model-provision \
+cacheon model-provision \
   /models/example-model \
-  /srv/optima/model-publications \
+  /srv/cacheon/model-publications \
   --workers 4
 ```
 
@@ -91,7 +91,7 @@ bytes. The command prints the content digest, receipt digest, and receipt path.
 `EngineReleaseDescriptor` binds:
 
 - integrated-only release manifest and materialized engine-tree digest;
-- deterministic Optima runtime source and wheel;
+- deterministic Cacheon runtime source and wheel;
 - model provision receipt;
 - reviewed seccomp profile;
 - pristine reference and calibration manifests;
@@ -102,12 +102,12 @@ bytes. The command prints the content digest, receipt digest, and receipt path.
 - `ServeSpec` with digest-pinned base image, OCI platform, model mount, TP size, and
   restricted engine arguments/environment.
 
-The runtime distribution is `optima-engine` version `0.0.1`. Its deterministic
+The runtime distribution is `cacheon-engine` version `0.0.1`. Its deterministic
 artifacts are:
 
 ```text
-optima-engine-source-0.0.1.tar.gz
-optima_engine-0.0.1-py3-none-any.whl
+cacheon-engine-source-0.0.1.tar.gz
+cacheon_engine-0.0.1-py3-none-any.whl
 ```
 
 Release construction builds those artifacts twice and rejects disagreement.
@@ -141,7 +141,7 @@ authenticate the release authority.
 ## Verify a release
 
 ```bash
-optima release-verify /srv/optima/releases/<release> \
+cacheon release-verify /srv/cacheon/releases/<release> \
   --expected-public-key <64_HEX_PUBLIC_KEY> \
   --descriptor-digest <EXPECTED_DESCRIPTOR_SHA256>
 ```
@@ -154,9 +154,9 @@ seccomp, integration records, and file modes.
 ## Materialize a deterministic build context
 
 ```bash
-optima release-context \
-  /srv/optima/releases/<release> \
-  /srv/optima/build-contexts/<release> \
+cacheon release-context \
+  /srv/cacheon/releases/<release> \
+  /srv/cacheon/build-contexts/<release> \
   --expected-public-key <64_HEX_PUBLIC_KEY> \
   --descriptor-digest <EXPECTED_DESCRIPTOR_SHA256>
 ```
@@ -225,7 +225,7 @@ exists. Require a two-person or otherwise independently reviewed release procedu
    coverage. Retain the exact image, authorization, launch, and receipt products.
 
 Use canary/percentage rollout and ordinary service health controls in addition to these
-integrity checks. Optima's release receipts do not replace latency, capacity, availability,
+integrity checks. Cacheon's release receipts do not replace latency, capacity, availability,
 rollback, or customer-impact monitoring.
 
 ## Rollback and incident handling
@@ -275,7 +275,7 @@ not imply that `release-context` publishes or deploys anything.
 - A successful serve smoke proves required seam receipts for that run, not production
   SLOs or universal workload performance.
 - Release verification is chain-independent and does not re-adjudicate the crown.
-- Evaluation OCI support for `OPTIMA_REBUILD_PHASE=load` does not close the serving
+- Evaluation OCI support for `CACHEON_REBUILD_PHASE=load` does not close the serving
   release path. Provider-closure packaging and the CuTe compile-profile binding remain
   separate incomplete release gates.
 
@@ -291,8 +291,8 @@ not imply that `release-context` publishes or deploys anything.
 
 ## Source anchors
 
-- [Stack and integration manifests](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py)
-- [Model provisioning](https://github.com/latent-to/cacheon/blob/main/optima/model_provision.py)
-- [Release format and verification](https://github.com/latent-to/cacheon/blob/main/optima/release.py)
-- [Fail-closed release runtime](https://github.com/latent-to/cacheon/blob/main/optima/release_runtime.py)
-- [Registry and serving host](https://github.com/latent-to/cacheon/blob/main/optima/release_host.py)
+- [Stack and integration manifests](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py)
+- [Model provisioning](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py)
+- [Release format and verification](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py)
+- [Fail-closed release runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/release_runtime.py)
+- [Registry and serving host](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py)

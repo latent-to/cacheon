@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from optima.compat import PINNED_SGLANG
-from optima.discovery import (
+from cacheon.compat import PINNED_SGLANG
+from cacheon.discovery import (
     DEFAULT_DISCOVERY_POLICY,
     DISCOVERY_ABI_VERSION,
     DiscoveryArmPlan,
@@ -27,12 +27,12 @@ from optima.discovery import (
     validate_discovery_patch_path,
     validate_discovery_patch_set,
 )
-from optima.deppatch import parse_patch_text
-from optima.eval.native_artifact import publish_native_artifact
-from optima.manifest import ManifestError, load_manifest
-from optima.stack_identity import sha256_hex
-from optima.stack_manifest import EvaluationStackManifest
-from optima.target_catalog import default_target_catalog
+from cacheon.deppatch import parse_patch_text
+from cacheon.eval.native_artifact import publish_native_artifact
+from cacheon.manifest import ManifestError, load_manifest
+from cacheon.stack_identity import sha256_hex
+from cacheon.stack_manifest import EvaluationStackManifest
+from cacheon.target_catalog import default_target_catalog
 
 
 ARENA = "minimax-m3-rtx-tp8-v1"
@@ -175,7 +175,7 @@ def test_discovery_abi_is_separate_from_component_manifest(tmp_path):
 @pytest.mark.parametrize(
     "manifest_text,match",
     [
-        (_manifest(abi="optima-op-abi-v0"), "unsupported abi_version"),
+        (_manifest(abi="cacheon-op-abi-v0"), "unsupported abi_version"),
         (_manifest(extra='command = "bash evil.sh"\n'), "fields mismatch"),
         (_manifest(extra='environment = { HOME = "/tmp" }\n'), "fields mismatch"),
         (_manifest(patches=()), "patches must be a nonempty"),

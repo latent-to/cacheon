@@ -1,6 +1,6 @@
-# Contributing to Optima
+# Contributing to Cacheon
 
-Optima combines contribution tooling, validator-controlled evaluation, chain
+Cacheon combines contribution tooling, validator-controlled evaluation, chain
 state, settlement, and serving-release construction. A small change can cross a
 security or authority boundary, so contributions should be narrow, testable,
 and explicit about the contracts they affect.

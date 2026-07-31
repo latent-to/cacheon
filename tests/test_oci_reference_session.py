@@ -10,19 +10,19 @@ from pathlib import Path
 
 import pytest
 
-import optima.eval.oci_reference_session as reference_session
-from optima.eval.oci_outer_session import (
+import cacheon.eval.oci_reference_session as reference_session
+from cacheon.eval.oci_outer_session import (
     OuterSessionProtocolError,
     OuterSessionWorkerError,
 )
-from optima.eval.oci_reference_session import (
+from cacheon.eval.oci_reference_session import (
     AttachedReferenceTransport,
     ReferenceSessionError,
     ReferenceSessionEvidence,
     ReferenceSessionPlan,
     run_reference_session,
 )
-from optima.eval.oci_session_protocol import (
+from cacheon.eval.oci_session_protocol import (
     MAX_CONTROL_BYTES,
     EngineSessionConfig,
     RuntimePreflightFacts,
@@ -34,8 +34,8 @@ from optima.eval.oci_session_protocol import (
     validate_init,
     validate_preflight_accept,
 )
-from optima.eval.qualification import ReferenceManifest
-from optima.eval.reference_protocol import (
+from cacheon.eval.qualification import ReferenceManifest
+from cacheon.eval.reference_protocol import (
     EVIDENCE_MAGIC,
     ReferenceEvidence,
     ReferencePromptEvidence,
@@ -48,8 +48,8 @@ from optima.eval.reference_protocol import (
     encode_reference_evidence,
     request_sha256,
 )
-from optima.stack_identity import canonical_digest
-from optima.stack_manifest import EvaluationStackManifest, ProposalContributionRef
+from cacheon.stack_identity import canonical_digest
+from cacheon.stack_manifest import EvaluationStackManifest, ProposalContributionRef
 
 
 def _digest(label: str) -> str:
@@ -68,14 +68,14 @@ def _stack(*, entries=()) -> EvaluationStackManifest:
         base_engine_digest=_digest("base"),
         arena_digest=_digest("arena"),
         catalog_snapshot=catalog,
-        catalog_digest=canonical_digest("optima.target-catalog", catalog),
+        catalog_digest=canonical_digest("cacheon.target-catalog", catalog),
         entries=entries,
     )
 
 
 def _config() -> EngineSessionConfig:
     return EngineSessionConfig(
-        model_path="/optima/input/model",
+        model_path="/cacheon/input/model",
         dtype="bfloat16",
         deterministic=False,
         attention_backend="flashinfer",
@@ -298,7 +298,7 @@ def test_plan_closes_empty_stack_identity_and_ordered_cohort() -> None:
     proposal = ProposalContributionRef(
         "activation.silu_and_mul",
         canonical_digest(
-            "optima.target-spec",
+            "cacheon.target-spec",
             {"target_id": "activation.silu_and_mul", "marker": "base"},
         ),
         _digest("artifact"),
@@ -451,10 +451,10 @@ def test_reference_authority_import_closure_stays_data_only() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
     for forbidden in (
-        "optima.eval._launch",
-        "optima.audit",
-        "optima.eval.throughput_kl",
-        "optima.eval.capability",
+        "cacheon.eval._launch",
+        "cacheon.audit",
+        "cacheon.eval.throughput_kl",
+        "cacheon.eval.capability",
         "torch",
         "sglang",
         "bittensor",

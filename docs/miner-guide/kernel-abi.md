@@ -53,9 +53,9 @@ requests. Likewise, a supplied `group` is the exact distributed scope for the ca
 not construct a new global group or assume that ambient rank variables describe it.
 
 The authoritative ABI objects are in
-[slots.py](https://github.com/latent-to/cacheon/blob/main/optima/slots.py), with
+[slots.py](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py), with
 output shape/stride checks in
-[tensor_spec.py](https://github.com/latent-to/cacheon/blob/main/optima/tensor_spec.py).
+[tensor_spec.py](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py).
 
 ## Direct-artifact form of the ABI
 

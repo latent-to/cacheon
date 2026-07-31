@@ -22,7 +22,7 @@ python -m pip install -e ".[cpu,dev,release]"
 ## Inspect the slot catalog
 
 ```bash
-python -m optima.cli slots
+python -m cacheon.cli slots
 ```
 
 The command prints the registered slot names, kinds, tensor semantics, and callable
@@ -38,7 +38,7 @@ new reward category.
 ## Scan without executing code
 
 ```bash
-python -m optima.cli scan examples/miner_silu_torch
+python -m cacheon.cli scan examples/miner_silu_torch
 ```
 
 `scan` parses the manifest and applies the recursive static policy. A clean scan is an
@@ -47,7 +47,7 @@ admission signal, not a sandbox and not correctness evidence.
 Expected output for the clean example:
 
 ```text
-bundle: example-silu-torch-cpu  abi: optima-op-abi-v0  ops: 1
+bundle: example-silu-torch-cpu  abi: cacheon-op-abi-v0  ops: 1
   [clean] activation.silu_and_mul <- kernels/silu_and_mul.py
 ```
 
@@ -68,7 +68,7 @@ parsed or a declared path was missing or unsafe.
 ## Verify a faithful implementation
 
 ```bash
-python -m optima.cli verify examples/miner_silu_torch \
+python -m cacheon.cli verify examples/miner_silu_torch \
   --device cpu --dtype float32
 ```
 
@@ -98,7 +98,7 @@ evidence. Likewise, a CPU `PASS` is not a hidden GPU pass.
 Now run the adversarial example:
 
 ```bash
-python -m optima.cli verify examples/miner_silu_broken_torch \
+python -m cacheon.cli verify examples/miner_silu_broken_torch \
   --device cpu --dtype float32
 ```
 

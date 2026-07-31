@@ -36,7 +36,7 @@ finality rather than using display order or local arrival time as authority.
 ## Prerequisites
 
 - An explicitly configured WebSocket endpoint and netuid.
-- A compatible Bittensor SDK; run `optima chain-compat` after installation or upgrade.
+- A compatible Bittensor SDK; run `cacheon chain-compat` after installation or upgrade.
 - A wallet and hotkey for registration/submission.
 - Faucet funds or other testnet funding required by that network.
 - An HTTPS origin that serves the exact archive bytes stably.
@@ -50,8 +50,8 @@ the hotkey. Keep the coldkey off long-lived validator and evaluator hosts.
 Do not rely on a mutable SDK alias when you intend a particular endpoint:
 
 ```bash
-export OPTIMA_NET="wss://test.chain.opentensor.ai:443"
-export OPTIMA_NETUID="307"
+export CACHEON_NET="wss://test.chain.opentensor.ai:443"
+export CACHEON_NETUID="307"
 ```
 
 Confirm the endpoint and netuid for your deployment; the values above are examples, not a
@@ -60,9 +60,9 @@ promise that a public test subnet remains available.
 ## Register a hotkey
 
 ```bash
-optima chain-register \
-  --netuid "$OPTIMA_NETUID" \
-  --network "$OPTIMA_NET" \
+cacheon chain-register \
+  --netuid "$CACHEON_NETUID" \
+  --network "$CACHEON_NET" \
   --wallet default \
   --hotkey miner
 ```
@@ -73,7 +73,7 @@ results.
 ## Package and host a proposal
 
 ```bash
-optima chain-package ./my_bundle --out ./hosted/my_bundle.tar.gz
+cacheon chain-package ./my_bundle --out ./hosted/my_bundle.tar.gz
 ```
 
 Upload that archive without changing it. The production payload and fetcher accept
@@ -86,10 +86,10 @@ PAX/GNU extension payloads, before extraction.
 Inspect the exact payload without signing:
 
 ```bash
-optima chain-submit ./my_bundle \
+cacheon chain-submit ./my_bundle \
   --url https://example.invalid/my_bundle.tar.gz \
-  --netuid "$OPTIMA_NETUID" \
-  --network "$OPTIMA_NET" \
+  --netuid "$CACHEON_NETUID" \
+  --network "$CACHEON_NET" \
   --wallet default \
   --hotkey miner \
   --dry-run
@@ -98,10 +98,10 @@ optima chain-submit ./my_bundle \
 Replace the URL with the real stable HTTPS location, then remove `--dry-run`:
 
 ```bash
-optima chain-submit ./my_bundle \
+cacheon chain-submit ./my_bundle \
   --url https://bundles.example.org/my_bundle.tar.gz \
-  --netuid "$OPTIMA_NETUID" \
-  --network "$OPTIMA_NET" \
+  --netuid "$CACHEON_NETUID" \
+  --network "$CACHEON_NET" \
   --wallet default \
   --hotkey miner \
   --blocks-until-reveal 10
@@ -113,9 +113,9 @@ and extracted tree. Hosting different bytes causes a durable rejection.
 ## Inspect chain state
 
 ```bash
-optima chain-status \
-  --netuid "$OPTIMA_NETUID" \
-  --network "$OPTIMA_NET" \
+cacheon chain-status \
+  --netuid "$CACHEON_NETUID" \
+  --network "$CACHEON_NET" \
   --wallet default \
   --hotkey miner
 ```
@@ -125,9 +125,9 @@ Wait for the reveal to become finalized before expecting intake to reserve it.
 ## Run one finalized intake pass
 
 ```bash
-optima chain-validate \
-  --netuid "$OPTIMA_NETUID" \
-  --network "$OPTIMA_NET" \
+cacheon chain-validate \
+  --netuid "$CACHEON_NETUID" \
+  --network "$CACHEON_NET" \
   --intake-db chain_intake/intake.sqlite3 \
   --private-root chain_intake/private \
   --publication-root chain_intake/worker \
@@ -182,10 +182,10 @@ Only after the SQLite store contains genuine current-schema crowns and complete 
 arena state can the separate signer build a projection:
 
 ```bash
-optima set-weights \
+cacheon set-weights \
   --intake-db chain_intake/intake.sqlite3 \
-  --netuid "$OPTIMA_NETUID" \
-  --network "$OPTIMA_NET" \
+  --netuid "$CACHEON_NETUID" \
+  --network "$CACHEON_NET" \
   --wallet default \
   --hotkey validator \
   --half-life-blocks <BLOCKS> \
@@ -297,9 +297,9 @@ Never “fix” a test by editing SQLite rows, weakening HTTPS, or treating
 
 ## Source anchors
 
-- [Chain submission helper](https://github.com/latent-to/cacheon/blob/main/optima/chain/submit.py)
-- [Payload contract](https://github.com/latent-to/cacheon/blob/main/optima/chain/payload.py)
-- [Current validator loop](https://github.com/latent-to/cacheon/blob/main/optima/chain/validator_loop.py)
-- [Finalized intake store](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py)
-- [Incentive activation](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_activation.py)
-- [Debt publication](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py)
+- [Chain submission helper](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/submit.py)
+- [Payload contract](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/payload.py)
+- [Current validator loop](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py)
+- [Finalized intake store](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
+- [Incentive activation](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py)
+- [Debt publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)

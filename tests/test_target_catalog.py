@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.manifest import (
+from cacheon.manifest import (
     ABI_VERSION,
     CompetitionEntry,
     DepPatchEntry,
@@ -18,7 +18,7 @@ from optima.manifest import (
     ManifestError,
     load_manifest,
 )
-from optima.target_catalog import (
+from cacheon.target_catalog import (
     CompositionRule,
     CorrectnessContractRef,
     FEATURE_CUDA_SOURCES,
@@ -45,7 +45,7 @@ from optima.target_catalog import (
     resolve_intake_target,
     resolve_target,
 )
-from optima.stack_identity import canonical_digest
+from cacheon.stack_identity import canonical_digest
 
 
 SILU = "activation.silu_and_mul"
@@ -427,7 +427,7 @@ def test_unknown_implicit_multi_op_routes_to_discovery(tmp_path):
 
 
 def test_default_catalog_has_exactly_one_singleton_per_live_slot():
-    from optima.slots import SLOTS
+    from cacheon.slots import SLOTS
 
     catalog = default_target_catalog()
     assert set(SINGLETON_TARGET_IDS) == set(SLOTS)
@@ -444,7 +444,7 @@ def _decimal(value: object) -> str:
 
 
 def test_default_contract_refs_match_every_live_serializable_slot_field():
-    from optima.slots import SLOTS
+    from cacheon.slots import SLOTS
 
     catalog = default_target_catalog()
     for slot_id, slot in sorted(SLOTS.items()):
@@ -497,7 +497,7 @@ def test_target_catalog_import_is_stdlib_only_and_does_not_import_torch():
         [
             sys.executable,
             "-c",
-            "import sys; import optima.target_catalog; "
+            "import sys; import cacheon.target_catalog; "
             "assert 'torch' not in sys.modules",
         ],
         env=env,
@@ -1069,13 +1069,13 @@ def test_observed_features_argument_is_strict(tmp_path):
 
 def test_target_catalog_has_no_economic_or_trust_policy_imports():
     source = (
-        Path(__file__).resolve().parents[1] / "optima/target_catalog.py"
+        Path(__file__).resolve().parents[1] / "cacheon/target_catalog.py"
     ).read_text()
     forbidden = (
-        "optima.chain",
-        "optima.commit_reveal",
-        "optima.device_component",
-        "optima.system_patch",
+        "cacheon.chain",
+        "cacheon.commit_reveal",
+        "cacheon.device_component",
+        "cacheon.system_patch",
         "crownable",
         "for_settlement",
     )

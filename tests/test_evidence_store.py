@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.eval.evidence_store import (
+from cacheon.eval.evidence_store import (
     HARD_MAX_EVIDENCE_BYTES,
     EvidenceArtifactRef,
     EvidenceStoreError,
@@ -17,12 +17,12 @@ from optima.eval.evidence_store import (
     publish_evidence,
     reopen_evidence,
 )
-from optima.stack_identity import canonical_json_bytes
+from cacheon.stack_identity import canonical_json_bytes
 
 
 DOMAIN = "qualification.raw"
-SCHEMA = "optima.qualification.raw.v1"
-MEDIA = "application/vnd.optima.qualification+json"
+SCHEMA = "cacheon.qualification.raw.v1"
+MEDIA = "application/vnd.cacheon.qualification+json"
 
 
 def _target(root: Path, reference: EvidenceArtifactRef) -> Path:
@@ -241,7 +241,7 @@ def test_reopen_rejects_path_escape_through_store_symlink(tmp_path: Path) -> Non
 def test_atomic_publish_failure_leaves_no_partial_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
-    import optima.eval.evidence_store as store
+    import cacheon.eval.evidence_store as store
 
     root = tmp_path / "evidence"
 

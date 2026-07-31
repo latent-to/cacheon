@@ -17,9 +17,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.slots import get_slot  # noqa: E402
-from optima.registry import Eligibility  # noqa: E402
-from optima.verify_collective import (  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.registry import Eligibility  # noqa: E402
+from cacheon.verify_collective import (  # noqa: E402
     _MAX_VERDICT_BYTES,
     _RankVerdict,
     _direct_aot_collective_callables,
@@ -318,7 +318,7 @@ def test_collective_valid_json_cannot_hide_nonzero_worker_exit(tmp_path):
     source.write_text(
         "import os\n"
         "import torch.distributed as dist\n"
-        "import optima.verify_collective as verifier\n"
+        "import cacheon.verify_collective as verifier\n"
         "original_write = verifier._write_rank_verdict\n"
         "def exit_after_write(*args, **kwargs):\n"
         "    original_write(*args, **kwargs)\n"
@@ -476,7 +476,7 @@ def test_collective_rank_parser_never_executes_pickle_payload(tmp_path):
 
 def test_verify_entry_rejects_collective():
     # Collective slots must be verified distributed, not via the single-process verify_entry.
-    from optima.verify import verify_entry
+    from cacheon.verify import verify_entry
 
     slot = get_slot("collective.all_reduce")
     with pytest.raises(ValueError, match="collective"):

@@ -11,7 +11,7 @@ calls torch's all-reduce. A real submission is the whole point of this slot — 
 output as it is produced), which a plain moe.fused_experts slot can't express
 because the validator there replays a separate stock all-reduce after the kernel.
 
-Verified DISTRIBUTED (optima.verify_collective) vs the fp32 cross-rank sum.
+Verified DISTRIBUTED (cacheon.verify_collective) vs the fp32 cross-rank sum.
 """
 
 from __future__ import annotations

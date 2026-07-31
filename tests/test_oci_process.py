@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import optima.eval.oci_process as process_mod
-from optima.eval.oci_process import (
+import cacheon.eval.oci_process as process_mod
+from cacheon.eval.oci_process import (
     ATTACHED_STDERR_MAX_BYTES,
     CommandResult,
     GPU_RESERVATION_ENV,
@@ -56,8 +56,8 @@ class Commands:
                     continue
                 executor, lease = self.labels.get(name, ("validator-a", "lease-1"))
                 observed = {
-                    "optima.executor_id": executor,
-                    "optima.lease_id": lease,
+                    "cacheon.executor_id": executor,
+                    "cacheon.lease_id": lease,
                 }
                 namespace = self.namespace_labels.get(name, self.default_namespace)
                 if namespace is not None:
@@ -76,8 +76,8 @@ class Commands:
             name = next(iter(self.present))
             executor, lease = self.labels.get(name, ("validator-a", "lease-1"))
             labels = {
-                "optima.executor_id": executor,
-                "optima.lease_id": lease,
+                "cacheon.executor_id": executor,
+                "cacheon.lease_id": lease,
             }
             namespace = self.namespace_labels.get(name, self.default_namespace)
             if namespace is not None:
@@ -163,27 +163,27 @@ def test_register_writes_exact_lease_and_run_prefix(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     lease = manager.register(
         lease_id="lease-1",
-        container_name="optima-prebuild-1",
+        container_name="cacheon-prebuild-1",
         mount_relpaths=("mounts/work",),
         stage_relpaths=("stages/output",),
     )
     assert json.loads(lease.record_path.read_text()) == {
-        "schema": "optima.oci-process-lease.v1",
+        "schema": "cacheon.oci-process-lease.v1",
         "executor_id": "validator-a",
         "namespace_digest": manager.namespace_digest,
         "lease_id": "lease-1",
-        "container_name": "optima-prebuild-1",
+        "container_name": "cacheon-prebuild-1",
         "mount_relpaths": ["mounts/work"],
         "stage_relpaths": ["stages/output"],
     }
     assert lease.run_prefix(manager.docker_binary) == (
         "/usr/bin/docker",
         "run",
-        "--name=optima-prebuild-1",
+        "--name=cacheon-prebuild-1",
         f"--cidfile={lease.cid_path}",
-        "--label=optima.executor_id=validator-a",
+        "--label=cacheon.executor_id=validator-a",
         f"--label={NAMESPACE_LABEL}={manager.namespace_digest}",
-        "--label=optima.lease_id=lease-1",
+        "--label=cacheon.lease_id=lease-1",
     )
     assert lease.record_path.stat().st_mode & 0o777 == 0o600
 
@@ -203,9 +203,9 @@ def test_register_propagates_gpu_reservation_label(
         "run",
         "--name=container-1",
         f"--cidfile={lease.cid_path}",
-        "--label=optima.executor_id=validator-a",
+        "--label=cacheon.executor_id=validator-a",
         f"--label={NAMESPACE_LABEL}={manager.namespace_digest}",
-        "--label=optima.lease_id=lease-1",
+        "--label=cacheon.lease_id=lease-1",
         f"--label={GPU_RESERVATION_LABEL}={reservation_id}",
     )
     monkeypatch.delenv(GPU_RESERVATION_ENV)
@@ -268,7 +268,7 @@ def test_quiescence_receipt_requires_empty_executor_namespace(tmp_path: Path) ->
 
 def test_legacy_quiescence_digest_is_byte_stable() -> None:
     receipt = OCIQuiescenceReceipt(
-        schema="optima.oci-quiescence.v1",
+        schema="cacheon.oci-quiescence.v1",
         executor_id="validator-a",
         manager_instance_id="1" * 32,
         namespace_digest="2" * 64,
@@ -279,7 +279,7 @@ def test_legacy_quiescence_digest_is_byte_stable() -> None:
         container_ids=(),
     )
     assert receipt.digest == (
-        "3a1f289b3087b41503bf160267cb7c14b6ef7d626fdb20e0838db097a7770d06"
+        "b998662f336e25d8b733de608ed8bae27a85999df0a19eebce19015f40076c18"
     )
 
 

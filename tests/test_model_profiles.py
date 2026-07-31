@@ -12,8 +12,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.slots import Activation, _moe_reference, get_slot, slot_for_model  # noqa: E402
-from optima.verify import verify_entry_from_source  # noqa: E402
+from cacheon.slots import Activation, _moe_reference, get_slot, slot_for_model  # noqa: E402
+from cacheon.verify import verify_entry_from_source  # noqa: E402
 
 
 def test_slot_for_model_generic_unchanged():
@@ -111,8 +111,8 @@ def test_example_swigluoai_override_bundle_verifies():
     import json
     from pathlib import Path
 
-    from optima.manifest import load_manifest, resolve_source
-    from optima.sandbox import scan_path
+    from cacheon.manifest import load_manifest, resolve_source
+    from cacheon.sandbox import scan_path
 
     bundle = "examples/miner_m3_swigluoai_override"
     m = load_manifest(bundle)

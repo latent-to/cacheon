@@ -18,7 +18,7 @@ moe.fused_experts/gemm1_epilogue
 
 It selects the `gemm1_epilogue` hole in the validator-owned
 `nvfp4_moe_megakernel` base. The registry and composition code are in
-[override.py](https://github.com/latent-to/cacheon/blob/main/optima_kernels/override.py).
+[override.py](https://github.com/latent-to/cacheon/blob/main/cacheon_kernels/override.py).
 
 Its support boundary is explicit:
 
@@ -30,7 +30,7 @@ Its support boundary is explicit:
   for GPU qualification through this base.
 
 See the explicit status in
-[nvfp4_megakernel.py](https://github.com/latent-to/cacheon/blob/main/optima_kernels/moe/nvfp4_megakernel.py).
+[nvfp4_megakernel.py](https://github.com/latent-to/cacheon/blob/main/cacheon_kernels/moe/nvfp4_megakernel.py).
 Provenance measurements embedded in example metadata are not evidence produced by
 the override bundle.
 
@@ -40,7 +40,7 @@ A competitive version must still request its registered singleton target:
 
 ```toml
 bundle_id = "my-moe-epilogue-v1"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [competition]
 target = "moe.fused_experts"
@@ -98,8 +98,8 @@ compilation or `builtins.compile`. Triton's lazy `@triton.jit` launch path does
 not need an explicit `.compile` admission.
 
 The authoritative admission logic is
-[`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/optima/dsl_jit_policy.py)
-and [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/optima/engine_tree.py).
+[`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dsl_jit_policy.py)
+and [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py).
 
 The exact device ABI belongs to the registered point. For this point,
 `alpha_val` is the per-expert quantization/dequantization value; activation
@@ -123,8 +123,8 @@ Study the committed
 then run the source scan and focused composition tests:
 
 ```bash
-python -m optima.cli scan examples/miner_m3_swigluoai_override
-python -m pytest -q tests/test_optima_kernels.py tests/test_model_profiles.py
+python -m cacheon.cli scan examples/miner_m3_swigluoai_override
+python -m pytest -q tests/test_cacheon_kernels.py tests/test_model_profiles.py
 ```
 
 The example declares only BF16/FP16 NVFP4 eligibility. A normal CPU `verify`

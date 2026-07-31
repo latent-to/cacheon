@@ -7,7 +7,7 @@ token price, miner equilibrium, validator influence, or GPU performance.
 
 Status: deterministic replay complete.
 
-Semantic report digest: `505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`
+Semantic report digest: `b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`
 
 ## Model
 
@@ -106,9 +106,9 @@ promises. The report records an ROI row against every measured matrix cell.
 The tracked configuration is
 [`tests/fixtures/incentives/d015_launch_load_config.json`](https://github.com/latent-to/cacheon/blob/main/tests/fixtures/incentives/d015_launch_load_config.json).
 The replay uses production issuance from
-[`optima/finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/optima/finite_debt.py)
+[`cacheon/finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py)
 and composition from
-[`optima/incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/optima/incentive_composition.py).
+[`cacheon/incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py).
 
 It requires no GPU, wallet, chain access, or private experiment ledger:
 

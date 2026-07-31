@@ -6,30 +6,30 @@ from pathlib import Path
 
 import pytest
 
-from optima.chain.incentive_activation import (
+from cacheon.chain.incentive_activation import (
     IncentiveActivationError,
     execute_selected_incentive_activation,
     load_selected_incentive_activation_bundle,
     selected_model_campaign_id,
 )
-from optima.chain.finite_debt_store import reward_family_id
-from optima.chain.intake import EvaluationStackState, FinalizedIntakeStore, IntakeScope
-from optima.chain.incentive_composition_store import (
+from cacheon.chain.finite_debt_store import reward_family_id
+from cacheon.chain.intake import EvaluationStackState, FinalizedIntakeStore, IntakeScope
+from cacheon.chain.incentive_composition_store import (
     SELECTED_CORE_SELECTION_REPORT_DIGEST,
     SELECTED_SELECTION_REPORT_DIGEST,
     SelectedIncentiveActivationApproval,
 )
-from optima.finite_debt import (
+from cacheon.finite_debt import (
     IMPROVEMENT_GROSS,
     PPM,
     CampaignBudgetShare,
     FiniteDebtPolicyManifest,
     RewardFamilyCampaign,
 )
-from optima.incentive_composition import IncentiveCompositionPolicyManifest
-from optima.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
-from optima.stack_manifest import EvaluationStackManifest
-from optima.target_catalog import default_target_catalog
+from cacheon.incentive_composition import IncentiveCompositionPolicyManifest
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
+from cacheon.stack_manifest import EvaluationStackManifest
+from cacheon.target_catalog import default_target_catalog
 
 
 def _h(value: str) -> str:
@@ -248,7 +248,7 @@ def _membership_digest(
         )
     ]
     return canonical_digest(
-        "optima.economics.metagraph-membership",
+        "cacheon.economics.metagraph-membership",
         {
             "block": 100,
             "block_hash": "0x" + f"{100:064x}",
@@ -262,7 +262,7 @@ def _evaluation_state(
     manifest: EvaluationStackManifest, *, tree_digest: str
 ) -> EvaluationStackState:
     transition_event_id = canonical_digest(
-        "optima.chain.evaluation-stack-genesis",
+        "cacheon.chain.evaluation-stack-genesis",
         {
             "arena_digest": manifest.arena_digest,
             "stack_digest": manifest.digest,
@@ -345,7 +345,7 @@ def _execution_paths(tmp_path: Path, *, retained_fault: str | None = None):
             snapshot = catalog.snapshot()
             snapshot["policy_version"] = "target-catalog.v1-different"
             retained_catalog_digest = canonical_digest(
-                "optima.target-catalog", snapshot
+                "cacheon.target-catalog", snapshot
             )
             retained_manifest = EvaluationStackManifest(
                 runtime_digest=manifest.runtime_digest,

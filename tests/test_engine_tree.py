@@ -13,10 +13,10 @@ from types import ModuleType
 
 import pytest
 
-import optima.engine_tree as engine_tree
-from optima.bundle_hash import content_hash
-from optima.chain.publication import publish_worker_bundle
-from optima.discovery import (
+import cacheon.engine_tree as engine_tree
+from cacheon.bundle_hash import content_hash
+from cacheon.chain.publication import publish_worker_bundle
+from cacheon.discovery import (
     DEFAULT_DISCOVERY_POLICY,
     DISCOVERY_ABI_VERSION,
     DiscoveryArmPlan,
@@ -25,9 +25,9 @@ from optima.discovery import (
     inspect_discovery,
     reopen_discovery_engine_binding,
 )
-from optima.eval.evidence_store import EvidenceArtifactRef, publish_evidence
-from optima.eval.oci_session_protocol import SlotAuditPolicy
-from optima.engine_tree import (
+from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+from cacheon.eval.oci_session_protocol import SlotAuditPolicy
+from cacheon.engine_tree import (
     EngineTreeError,
     inspect_contribution,
     integrated_source_tree_digest,
@@ -36,16 +36,16 @@ from optima.engine_tree import (
     promote_integrated_contribution,
     reopen_materialized_engine_tree,
 )
-from optima.manifest import load_manifest
-from optima.sandbox import load_module
-from optima.settlement import (
+from cacheon.manifest import load_manifest
+from cacheon.sandbox import load_module
+from cacheon.settlement import (
     SettlementCandidate,
     SettlementEvidence,
     SettlementEventType,
     SettlementQualification,
     plan_settlement,
 )
-from optima.stack_manifest import (
+from cacheon.stack_manifest import (
     EngineReleaseManifest,
     EvaluationStackContext,
     EvaluationStackManifest,
@@ -55,8 +55,8 @@ from optima.stack_manifest import (
     ProposalContributionRef,
     ReleaseStackContext,
 )
-from optima.stack_plan import RollbackPlan, plan_candidate_stack, plan_marginal_arm
-from optima.target_catalog import TargetCatalog, default_target_catalog
+from cacheon.stack_plan import RollbackPlan, plan_candidate_stack, plan_marginal_arm
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -75,7 +75,7 @@ def _audit_policy(label: str, slots: tuple[str, ...]) -> SlotAuditPolicy:
 
 def _evidence(domain: str, digest: str) -> EvidenceArtifactRef:
     return EvidenceArtifactRef(
-        domain, digest, 1, "application/json", f"optima.{domain}.v1"
+        domain, digest, 1, "application/json", f"cacheon.{domain}.v1"
     )
 
 
@@ -159,7 +159,7 @@ def _write_moe_fixture(root: Path, target: str, entry: str) -> Path:
     )
     (root / "manifest.toml").write_text(
         f'bundle_id = "fixture-{entry}"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         "[competition]\n"
         f'target = "{target}"\n'
         'mode = "slot"\n\n'
@@ -242,7 +242,7 @@ def test_singleton_materialization_projects_metadata_and_reopens(tmp_path: Path)
         result.root, expected_tree_digest=result.tree_digest
     ) == result
     manifest = load_manifest(result.root)
-    assert manifest.bundle_id == "optima-materialized-v1"
+    assert manifest.bundle_id == "cacheon-materialized-v1"
     assert manifest.competition is None
     assert [op.slot for op in manifest.ops] == [ref.target_id]
     metadata = json.loads((result.root / manifest.ops[0].metadata).read_text())
@@ -366,19 +366,19 @@ def test_atomic_materialization_namespaces_native_patch_and_rebuild(
         "collective.moe_finalize_ar_rmsnorm",
     }
     assert len(manifest.dep_patches) == 1
-    assert all(op.source.startswith("entries/optima_c_") for op in manifest.ops)
-    assert all(op.cuda_sources[0].startswith("cuda/optima_c_") for op in manifest.ops)
+    assert all(op.source.startswith("entries/cacheon_c_") for op in manifest.ops)
+    assert all(op.cuda_sources[0].startswith("cuda/cacheon_c_") for op in manifest.ops)
     source = (result.root / manifest.ops[0].source).read_text()
-    assert "from optima_c_" in source
+    assert "from cacheon_c_" in source
     assert "import fused_epilogue_sm103" not in source
     assert json.loads((result.root / "rebuild.json").read_text()) == {
         "steps": [
             {
-                "path": "optima/patchers/apply_dep_patch.py",
+                "path": "cacheon/patchers/apply_dep_patch.py",
                 "type": "repo_python",
             },
             {
-                "path": "optima/patchers/build_cuda_ext.py",
+                "path": "cacheon/patchers/build_cuda_ext.py",
                 "type": "repo_python",
             },
         ]
@@ -406,7 +406,7 @@ def test_stock_only_stack_has_no_runtime_bundle(tmp_path: Path) -> None:
 
     assert result.runtime_manifest is None
     assert not (result.root / "manifest.toml").exists()
-    assert [row.path for row in result.files] == ["metadata/optima_engine_tree.json"]
+    assert [row.path for row in result.files] == ["metadata/cacheon_engine_tree.json"]
 
 
 def test_discovery_materialization_preserves_incumbent_and_binds_source_intent(
@@ -458,7 +458,7 @@ def test_discovery_materialization_preserves_incumbent_and_binds_source_intent(
     incumbent_rows = {
         row.path: (row.sha256, row.size, row.mode)
         for row in incumbent.files
-        if row.path != "metadata/optima_engine_tree.json"
+        if row.path != "metadata/cacheon_engine_tree.json"
     }
     candidate_rows = {
         row.path: (row.sha256, row.size, row.mode) for row in result.files
@@ -475,13 +475,13 @@ def test_discovery_materialization_preserves_incumbent_and_binds_source_intent(
         ).read_bytes()
 
     incumbent_metadata = json.loads(
-        (incumbent.root / "metadata/optima_engine_tree.json").read_text()
+        (incumbent.root / "metadata/cacheon_engine_tree.json").read_text()
     )
     candidate_metadata = json.loads(
-        (result.root / "metadata/optima_engine_tree.json").read_text()
+        (result.root / "metadata/cacheon_engine_tree.json").read_text()
     )
     discovery_metadata = json.loads(
-        (result.root / "metadata/optima_discovery.json").read_text()
+        (result.root / "metadata/cacheon_discovery.json").read_text()
     )
     assert candidate_metadata["contributions"] == incumbent_metadata["contributions"]
     assert discovery_metadata == {
@@ -493,7 +493,7 @@ def test_discovery_materialization_preserves_incumbent_and_binds_source_intent(
         "policy_digest": DEFAULT_DISCOVERY_POLICY.digest,
         "proposal_digest": proposal.proposal_digest,
         "proposal_files": [row.to_dict() for row in proposal.files],
-        "schema": "optima.discovery-engine-tree.v1",
+        "schema": "cacheon.discovery-engine-tree.v1",
     }
     assert reopen_materialized_engine_tree(incumbent.root) == incumbent
     assert _tree_snapshot(incumbent.root) == incumbent_snapshot
@@ -632,21 +632,21 @@ def test_independent_contributions_compose_without_source_name_collisions(
     ]
     assert manifest.ops[0].source != manifest.ops[1].source
     assert Path(manifest.ops[0].source).stem != Path(manifest.ops[1].source).stem
-    assert len(set(result.root.glob("optima_c_*/kernels/fused_epilogue.py"))) == 2
-    assert len(set(result.root.glob("optima_c_*/kernels/helper.py"))) == 2
+    assert len(set(result.root.glob("cacheon_c_*/kernels/fused_epilogue.py"))) == 2
+    assert len(set(result.root.glob("cacheon_c_*/kernels/helper.py"))) == 2
     assert len(
-        set(result.root.glob("cuda/optima_c_*/kernels/optima_c_*__fused_epilogue_sm103_*.cu"))
+        set(result.root.glob("cuda/cacheon_c_*/kernels/cacheon_c_*__fused_epilogue_sm103_*.cu"))
     ) == 2
     for op in manifest.ops:
         shim = (result.root / op.source).read_text()
-        assert "from optima_c_" in shim
+        assert "from cacheon_c_" in shim
         assert "from kernels.helper" not in shim
         assert "import fused_epilogue_sm103" not in shim
-    for emitted_path in result.root.glob("optima_c_*/kernels/fused_epilogue.py"):
+    for emitted_path in result.root.glob("cacheon_c_*/kernels/fused_epilogue.py"):
         emitted = emitted_path.read_text()
-        assert "from optima_c_" in emitted
+        assert "from cacheon_c_" in emitted
         assert "from kernels.helper" not in emitted
-        assert "import optima_c_" in emitted
+        assert "import cacheon_c_" in emitted
         assert "import fused_epilogue_sm103" not in emitted
 
     monkeypatch.syspath_prepend(str(result.root))
@@ -668,7 +668,7 @@ def test_independent_contributions_compose_without_source_name_collisions(
         ).__module__
     finally:
         for name in set(sys.modules) - before_modules:
-            if name.startswith(("optima_c_", "optima_kernel_optima_c_")):
+            if name.startswith(("cacheon_c_", "cacheon_kernel_cacheon_c_")):
                 sys.modules.pop(name, None)
 
 
@@ -703,7 +703,7 @@ def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
         module = load_module(result.root / op.source)
         assert callable(getattr(module, op.entry + "_ref"))
         assert getattr(module, op.entry, None) is None
-        from optima_kernels.override import build_override
+        from cacheon_kernels.override import build_override
 
         entry, prepare = build_override(
             op.slot,
@@ -714,7 +714,7 @@ def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
         assert callable(entry) and callable(prepare)
     finally:
         for name in set(sys.modules) - before_modules:
-            if name.startswith(("optima_c_", "optima_kernel_optima_c_")):
+            if name.startswith(("cacheon_c_", "cacheon_kernel_cacheon_c_")):
                 sys.modules.pop(name, None)
 
 
@@ -747,7 +747,7 @@ def test_integrated_release_revalidates_reviewed_source(tmp_path: Path) -> None:
             _evidence("integration.compatibility", _digest("compatibility")),
             _evidence("integration.tests", _digest("tests")),
         ),
-        reviewer="optima-test-reviewer",
+        reviewer="cacheon-test-reviewer",
         review_commit="a" * 40,
     )
     ref = record.integrated_ref()
@@ -886,14 +886,14 @@ def test_integration_promotion_binds_crown_evidence_source_and_review_commit(
         primary_attempt_payload,
         domain="qualification.cohort-attempt",
         media_type="application/json",
-        schema="optima.qualification.cohort-attempt.v1",
+        schema="cacheon.qualification.cohort-attempt.v1",
     )
     reproduction_ref = publish_evidence(
         evidence_root,
         reproduction_attempt_payload,
         domain="qualification.cohort-attempt",
         media_type="application/json",
-        schema="optima.qualification.cohort-attempt.v1",
+        schema="cacheon.qualification.cohort-attempt.v1",
     )
     evidence = SettlementEvidence.bind(
         candidate,
@@ -916,8 +916,8 @@ def test_integration_promotion_binds_crown_evidence_source_and_review_commit(
     subprocess.run(("git", "-C", str(repository), "add", "integrated"), check=True)
     subprocess.run(
         (
-            "git", "-C", str(repository), "-c", "user.name=Optima Review",
-            "-c", "user.email=review@optima.invalid", "commit", "-q", "-m", "review",
+            "git", "-C", str(repository), "-c", "user.name=Cacheon Review",
+            "-c", "user.email=review@cacheon.invalid", "commit", "-q", "-m", "review",
         ),
         check=True,
     )
@@ -936,7 +936,7 @@ def test_integration_promotion_binds_crown_evidence_source_and_review_commit(
             payload,
             domain=domain,
             media_type="application/json",
-            schema=f"optima.{domain}.v1",
+            schema=f"cacheon.{domain}.v1",
         )
 
     artifacts = IntegrationReviewArtifacts(
@@ -1079,7 +1079,7 @@ def test_native_from_import_is_rewritten(tmp_path: Path) -> None:
 
     manifest = load_manifest(result.root)
     emitted = (result.root / manifest.ops[0].source).read_text()
-    assert "from optima_c_" in emitted
+    assert "from cacheon_c_" in emitted
     assert "from fused_epilogue_sm103" not in emitted
 
 
@@ -1128,7 +1128,7 @@ def test_cute_dsl_compile_alias_is_admitted(tmp_path: Path, source_text: str) ->
 
 
 def test_runtime_toml_omits_only_inline_table_null_fields() -> None:
-    from optima.engine_tree import _toml_value
+    from cacheon.engine_tree import _toml_value
 
     assert _toml_value({"active": 7, "inactive": None}) == '{ "active" = 7 }'
     with pytest.raises(EngineTreeError, match="unsupported TOML value"):
@@ -1234,9 +1234,9 @@ def test_package_imports_are_closed_rewritten_and_executable(
     manifest = load_manifest(result.root)
     emitted = (result.root / manifest.ops[0].source).read_text()
     compile(emitted, manifest.ops[0].source, "exec")
-    assert "from optima_c_" in emitted
-    implementation = next(result.root.glob("optima_c_*/kernels/blockscore.py")).read_text()
-    assert "import optima_c_" in implementation
+    assert "from cacheon_c_" in emitted
+    implementation = next(result.root.glob("cacheon_c_*/kernels/blockscore.py")).read_text()
+    assert "import cacheon_c_" in implementation
     monkeypatch.syspath_prepend(str(result.root))
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
     module_name = manifest.ops[0].source.removesuffix(".py").replace("/", ".")
@@ -1563,8 +1563,8 @@ def test_packaging_order_ids_and_json_whitespace_do_not_choose_namespace(
     assert content_hash(canonical) != content_hash(reordered)
     assert left.selected_payload_digest == right.selected_payload_digest
     assert left.selected_delta_digest == right.selected_delta_digest
-    assert f"optima_c_{left.selected_delta_digest}" == (
-        f"optima_c_{right.selected_delta_digest}"
+    assert f"cacheon_c_{left.selected_delta_digest}" == (
+        f"cacheon_c_{right.selected_delta_digest}"
     )
 
 
@@ -1628,12 +1628,12 @@ def test_registered_patcher_source_identity_rotates_selected_delta(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "repo"
-    patchers = repo / "optima" / "patchers"
+    patchers = repo / "cacheon" / "patchers"
     patchers.mkdir(parents=True)
     real_patchers = Path(engine_tree.__file__).parent / "patchers"
     for name in ("apply_dep_patch.py", "build_cuda_ext.py"):
         shutil.copy2(real_patchers / name, patchers / name)
-    monkeypatch.setenv("OPTIMA_REPO_ROOT", str(repo))
+    monkeypatch.setenv("CACHEON_REPO_ROOT", str(repo))
     before = inspect_contribution(FUSED, catalog=default_target_catalog())
     builder = patchers / "build_cuda_ext.py"
     builder.write_text(builder.read_text() + "\n# reviewed patcher revision\n")
@@ -1687,9 +1687,9 @@ def test_reopen_rejects_root_mode_extra_directories_and_root_symlinks(
         resolver=_sources((ref, MSA)),
         destination=tmp_path / "engine",
     )
-    metadata = json.loads((result.root / "metadata/optima_engine_tree.json").read_text())
+    metadata = json.loads((result.root / "metadata/cacheon_engine_tree.json").read_text())
     assert metadata["contributions"][0]["namespace"] == (
-        "optima_c_" + ref.selected_delta_digest
+        "cacheon_c_" + ref.selected_delta_digest
     )
     with pytest.raises(EngineTreeError, match="tree digest mismatch"):
         reopen_materialized_engine_tree(
@@ -1714,9 +1714,9 @@ def test_reopen_rejects_root_mode_extra_directories_and_root_symlinks(
     with pytest.raises(EngineTreeError, match="must not be a symlink"):
         reopen_materialized_engine_tree(alias)
 
-    metadata_path = result.root / "metadata/optima_engine_tree.json"
+    metadata_path = result.root / "metadata/cacheon_engine_tree.json"
     os.chmod(metadata_path, 0o644)
-    metadata["contributions"][0]["namespace"] = "optima_c_" + "0" * 64
+    metadata["contributions"][0]["namespace"] = "cacheon_c_" + "0" * 64
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
     os.chmod(metadata_path, 0o444)
     with pytest.raises(EngineTreeError, match="namespace mismatch"):
@@ -1753,14 +1753,14 @@ def test_failed_preinstall_verification_leaves_no_destination(
 def test_runtime_rebuild_order_is_global_not_contribution_order() -> None:
     raw = engine_tree._runtime_rebuild(
         [
-            {"type": "repo_python", "path": "optima/patchers/build_cuda_ext.py"},
-            {"type": "repo_python", "path": "optima/patchers/apply_dep_patch.py"},
+            {"type": "repo_python", "path": "cacheon/patchers/build_cuda_ext.py"},
+            {"type": "repo_python", "path": "cacheon/patchers/apply_dep_patch.py"},
         ]
     )
     assert raw is not None
     assert [row["path"] for row in json.loads(raw)["steps"]] == [
-        "optima/patchers/apply_dep_patch.py",
-        "optima/patchers/build_cuda_ext.py",
+        "cacheon/patchers/apply_dep_patch.py",
+        "cacheon/patchers/build_cuda_ext.py",
     ]
 
 
@@ -1893,7 +1893,7 @@ def test_wrong_source_identity_and_post_write_tampering_fail_closed(tmp_path: Pa
         resolver=_sources((ref, MSA)),
         destination=tmp_path / "engine",
     )
-    kernel = next(result.root.glob("optima_c_*/kernels/*.py"))
+    kernel = next(result.root.glob("cacheon_c_*/kernels/*.py"))
     os.chmod(kernel, 0o644)
     kernel.write_text(kernel.read_text() + "\n# tampered\n")
     os.chmod(kernel, 0o444)

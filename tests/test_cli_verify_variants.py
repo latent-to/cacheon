@@ -10,8 +10,8 @@ import pytest
 
 pytest.importorskip("torch")
 
-from optima import cli
-from optima.verify import VerifyResult
+from cacheon import cli
+from cacheon.verify import VerifyResult
 
 
 def _write_variant_bundle(tmp_path):
@@ -32,7 +32,7 @@ def _write_variant_bundle(tmp_path):
     (tmp_path / "metadata" / "large.json").write_text(json.dumps(large))
     (tmp_path / "manifest.toml").write_text(
         'bundle_id = "cli-variant-qualification"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "attention.msa_prefill_block_score"\n'
         'variant = "small"\n'
@@ -70,7 +70,7 @@ def test_cmd_verify_forwards_each_variant_with_its_declared_domain(
             slot=args[0], dtype=kwargs["dtype_name"], passed=True, shape_results=[]
         )
 
-    import optima.eval._launch as launch
+    import cacheon.eval._launch as launch
 
     monkeypatch.setattr(launch, "call_in_subprocess", fake_call_in_subprocess)
     args = argparse.Namespace(
@@ -158,7 +158,7 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
         )
     (tmp_path / "manifest.toml").write_text(
         'bundle_id = "cli-real-variants"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         + "\n".join(rows)
     )
 
@@ -168,7 +168,7 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
     )
     results = []
 
-    import optima.eval._launch as launch
+    import cacheon.eval._launch as launch
 
     real_call_in_subprocess = launch.call_in_subprocess
 
@@ -268,7 +268,7 @@ def test_cmd_verify_rejects_overlapping_variants_before_candidate_invocation(
         )
     (tmp_path / "manifest.toml").write_text(
         'bundle_id = "cli-overlap-preflight"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "attention.msa_prefill_block_score"\n'
         'variant = "left"\n'
@@ -288,7 +288,7 @@ def test_cmd_verify_rejects_overlapping_variants_before_candidate_invocation(
     monkeypatch.setattr(cli, "_recursive_scan_ok", lambda *args, **kwargs: True)
     candidate_calls = 0
 
-    import optima.eval._launch as launch
+    import cacheon.eval._launch as launch
 
     def must_not_invoke_candidate(*_args, **_kwargs):
         nonlocal candidate_calls
@@ -324,7 +324,7 @@ def _write_collective_bundle(tmp_path, *, graph_safe=True):
     (tmp_path / "metadata" / "all_reduce.json").write_text(json.dumps(metadata))
     (tmp_path / "manifest.toml").write_text(
         'bundle_id = "cli-collective-domain"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "collective.all_reduce"\n'
         'source = "kernels/all_reduce.py"\n'
@@ -346,7 +346,7 @@ def test_cmd_verify_forwards_collective_graph_and_capability_policy(
         cli, "scan_path", lambda path: SimpleNamespace(ok=True, violations=[])
     )
 
-    import optima.verify_collective as collective
+    import cacheon.verify_collective as collective
 
     def fake_verify(*args, **kwargs):
         calls.append((args, kwargs))

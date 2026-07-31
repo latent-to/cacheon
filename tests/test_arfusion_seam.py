@@ -19,12 +19,12 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.compat import _chokepoint_present  # noqa: E402
-from optima.dispatch import make_arfusion_dispatcher  # noqa: E402
-from optima.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
-from optima.seams import SEAM_ADAPTERS, TARGET_MODULES  # noqa: E402
-from optima.slots import get_slot  # noqa: E402
-from optima.verify_collective import verify_collective  # noqa: E402
+from cacheon.compat import _chokepoint_present  # noqa: E402
+from cacheon.dispatch import make_arfusion_dispatcher  # noqa: E402
+from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
+from cacheon.seams import SEAM_ADAPTERS, TARGET_MODULES  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.verify_collective import verify_collective  # noqa: E402
 
 SLOT = "collective.ar_residual_rmsnorm"
 _MODULE = "sglang.srt.layers.flashinfer_comm_fusion"
@@ -110,7 +110,7 @@ def _fake_fusion_module():
 
 
 def test_install_rebinds_module_attribute(monkeypatch):
-    from optima.integrations import sglang_arfusion
+    from cacheon.integrations import sglang_arfusion
 
     mod = _fake_fusion_module()
     orig = mod.flashinfer_allreduce_residual_rmsnorm
@@ -119,7 +119,7 @@ def test_install_rebinds_module_attribute(monkeypatch):
     sglang_arfusion.install(KernelRegistry())
     assert sglang_arfusion.is_installed()
     assert mod.flashinfer_allreduce_residual_rmsnorm is not orig
-    assert mod._optima_orig_allreduce_residual_rmsnorm is orig
+    assert mod._cacheon_orig_allreduce_residual_rmsnorm is orig
     # Inactive registry -> dispatcher passes through to the stock function.
     x = torch.zeros(2, 8)
     assert mod.flashinfer_allreduce_residual_rmsnorm(x, x, x[0])[0] == "stock"
@@ -156,7 +156,7 @@ def _baseline_recorder(calls):
 
 @pytest.fixture()
 def _fake_group(monkeypatch):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
     monkeypatch.setattr(dispatch, "_arfusion_group",
                         lambda use_attn: SimpleNamespace(size=lambda: 2))
@@ -164,7 +164,7 @@ def _fake_group(monkeypatch):
 
 
 def test_dispatcher_inactive_without_env(monkeypatch, _fake_group):
-    monkeypatch.delenv("OPTIMA_ARFUSION_SEAM", raising=False)
+    monkeypatch.delenv("CACHEON_ARFUSION_SEAM", raising=False)
     calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(calls), registry=_registry())
     x = torch.zeros(4, 8)
@@ -173,7 +173,7 @@ def test_dispatcher_inactive_without_env(monkeypatch, _fake_group):
 
 
 def test_dispatcher_routes_to_kernel(monkeypatch, _fake_group):
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(calls), registry=_registry())
     x = torch.zeros(4, 8)
@@ -184,9 +184,9 @@ def test_dispatcher_routes_to_kernel(monkeypatch, _fake_group):
 
 
 def test_dispatcher_autotuner_stays_stock_before_selection(monkeypatch, _fake_group):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     monkeypatch.setattr(dispatch._moe_export, "flashinfer_tuning", lambda: True)
     reg = _registry()
     monkeypatch.setattr(
@@ -209,7 +209,7 @@ def test_dispatcher_autotuner_stays_stock_before_selection(monkeypatch, _fake_gr
 def test_dispatcher_token_cap_falls_back(monkeypatch, _fake_group):
     # A kernel with a MEASURED dispatch window (decode-sized T) must not see
     # prefill-sized calls — the seam, not the kernel, enforces the cap.
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(calls),
                                  registry=_registry(max_num_tokens=1024))
@@ -221,9 +221,9 @@ def test_dispatcher_token_cap_falls_back(monkeypatch, _fake_group):
 
 
 def test_dispatcher_graph_capture_requires_graph_safe(monkeypatch, _fake_group):
-    import optima.dispatch as dispatch
+    import cacheon.dispatch as dispatch
 
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: True)
     calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(calls), registry=_registry())
@@ -238,7 +238,7 @@ def test_dispatcher_graph_capture_requires_graph_safe(monkeypatch, _fake_group):
 
 
 def test_dispatcher_kernel_error_aborts_collective_engine(monkeypatch, _fake_group):
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
 
     def boom(*a):
         raise RuntimeError("kernel exploded")

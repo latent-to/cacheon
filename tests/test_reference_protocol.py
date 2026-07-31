@@ -4,8 +4,8 @@ import struct
 
 import pytest
 
-import optima.eval.reference_protocol as protocol
-from optima.eval.reference_protocol import (
+import cacheon.eval.reference_protocol as protocol
+from cacheon.eval.reference_protocol import (
     EVIDENCE_MAGIC,
     FRAME_HEADER_BYTES,
     REQUEST_MAGIC,

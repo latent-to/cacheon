@@ -1,10 +1,10 @@
 # Architecture overview
 
-At the highest level, Optima is two systems joined by a controlled promotion
+At the highest level, Cacheon is two systems joined by a controlled promotion
 boundary. The market system deliberately separates its subnet control plane
 from its hostile-code referee, so operators interact with three surfaces:
 
-- **Optima Engine** is a chain-independent inference-acceleration distribution built on a pinned SGLang substrate.
+- **Cacheon Engine** is a chain-independent inference-acceleration distribution built on a pinned SGLang substrate.
 - **The subnet** owns finalized proposal ordering, attribution, settlement, and weight publication.
 - **The referee** screens and measures hostile proposals against validator-owned policy and evidence authority.
 
@@ -20,7 +20,7 @@ flowchart LR
     Q["Isolated referee\nrouting screen + resident adaptive qualification"]
     C["Crown\nreproduced evidence + attribution"]
     R["Integration review\nbyte-bound source + tests"]
-    E["Signed Optima Engine release\nchain-independent artifact"]
+    E["Signed Cacheon Engine release\nchain-independent artifact"]
     S["Managed serving\npinned model and runtime"]
 
     M --> I --> Q --> C --> R --> E --> S
@@ -33,7 +33,7 @@ This split is the primary architectural constraint. It prevents economic state, 
 
 ## The core boundaries
 
-Optima uses two different units on purpose.
+Cacheon uses two different units on purpose.
 
 | Boundary | Unit | Why it exists |
 |---|---|---|
@@ -50,7 +50,7 @@ Four objects must remain distinct throughout the system:
 
 1. A **proposal** is hostile input: a target-scoped delta or a fenced discovery prototype.
 2. A **crown** is retained evidence that the proposal improved one registered arena and target.
-3. An **integrated contribution** is reviewed Optima source that preserves the crowned selected payload and is bound to an immutable contribution identity.
+3. An **integrated contribution** is reviewed Cacheon source that preserves the crowned selected payload and is bound to an immutable contribution identity.
 4. An **engine release** is a signed artifact containing the pinned runtime, reviewed stack, model identity, native artifacts, policy inputs, SBOM, and provenance.
 
 See [Product model](product-model.md) for the authority and lifecycle of each object.
@@ -59,14 +59,14 @@ See [Product model](product-model.md) for the authority and lifecycle of each ob
 
 | Area | Responsibility | Principal implementation |
 |---|---|---|
-| Submission ABI | Stable typed replacement boundaries and validator-owned correctness contracts | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/optima/slots.py), [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/optima/tensor_spec.py) |
-| Economic identity | Registered singleton and atomic targets, overlap, displacement, and composition policy | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py) |
-| Runtime integration | Version-pinned SGLang chokepoints, bootstrap, dispatch, and fallback | [`seams.py`](https://github.com/latent-to/cacheon/blob/main/optima/seams.py), [`seam.py`](https://github.com/latent-to/cacheon/blob/main/optima/seam.py), [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/optima/dispatch.py) |
-| Stack identity | Content-addressed evaluation and release manifests, exact marginal substitutions, rollback | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_manifest.py), [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_plan.py) |
-| Engine construction | Deterministic source closure, namespacing, native build identity, isolated OCI execution | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/optima/engine_tree.py), [`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/engine_launch.py), [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_backend.py) |
-| Qualification | Registered routing-only resident screen; two-lane adaptive B/C/B′[/C′/B″] speed; eager audit; pristine T; retained evidence | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/optima/arena_service.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/resident_screen_lane.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py) |
-| Chain authority | Finalized ordering, immutable publication, state transitions, settlement, V1 projection, V2 finite debt, activation, and publication journals | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/intake.py), [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/optima/settlement.py), [`chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/incentive_activation.py), [`chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/optima/chain/debt_publication.py) |
-| Product release | Integration review, model sealing, signed artifacts, reproducible container identity, fail-closed serving | [`release.py`](https://github.com/latent-to/cacheon/blob/main/optima/release.py), [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_host.py), [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/optima/release_runtime.py) |
+| Submission ABI | Stable typed replacement boundaries and validator-owned correctness contracts | [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py), [`tensor_spec.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py) |
+| Economic identity | Registered singleton and atomic targets, overlap, displacement, and composition policy | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
+| Runtime integration | Version-pinned SGLang chokepoints, bootstrap, dispatch, and fallback | [`seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py), [`seam.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seam.py), [`dispatch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dispatch.py) |
+| Stack identity | Content-addressed evaluation and release manifests, exact marginal substitutions, rollback | [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py), [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py) |
+| Engine construction | Deterministic source closure, namespacing, native build identity, isolated OCI execution | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py), [`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_launch.py), [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py) |
+| Qualification | Registered routing-only resident screen; two-lane adaptive B/C/B′[/C′/B″] speed; eager audit; pristine T; retained evidence | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
+| Chain authority | Finalized ordering, immutable publication, state transitions, settlement, V1 projection, V2 finite debt, activation, and publication journals | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py), [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py), [`chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py), [`chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py) |
+| Product release | Integration review, model sealing, signed artifacts, reproducible container identity, fail-closed serving | [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py), [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py), [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_runtime.py) |
 
 ## Trust model
 
@@ -139,7 +139,7 @@ The architecture is preserving its product boundary when all of the following re
 - every candidate is measured as one marginal substitution over the current stack;
 - candidate code stays outside the trusted controller;
 - a whole-system prototype cannot silently acquire a permanent whole-engine reward title;
-- every shipped component resolves to reviewed Optima source and immutable attribution;
+- every shipped component resolves to reviewed Cacheon source and immutable attribution;
 - changing the evaluation incumbent cannot mutate a signed release;
 - shipping a reviewed release does not depend on chain availability.
 

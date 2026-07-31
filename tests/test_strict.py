@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from optima._strict import (
+from cacheon._strict import (
     duplicate_key_pairs,
     require_digest,
     require_driver_integer,

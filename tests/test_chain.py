@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from optima import chain
+from cacheon import chain
 
 
 def _scale_reveal_frame(data: str) -> bytes:
@@ -392,13 +392,13 @@ def test_read_revealed_commitments_takes_latest_per_hotkey():
 def test_raw_reveal_decoder_accepts_live_text_and_historical_hex_forms():
     live = (
         '{"v":1,"h":"af97a4f6656078784848976ecefc6ffda96bc95e20394b6f35c122a0d0cbc58c",'
-        '"u":"https://github.com/latent-to/optima/releases/download/'
+        '"u":"https://github.com/latent-to/cacheon/releases/download/'
         "b300-testnet307-bfaa0511/miner_m3_blockscore_cute-"
         'af97a4f6656078784848976ecefc6ffda96bc95e20394b6f35c122a0d0cbc58c.tar.gz"}'
     )
     live_frame = _scale_reveal_frame(live)
-    assert len(live.encode("utf-8")) == 260
-    assert live_frame[:2] == b"\x11\x04"
+    assert len(live.encode("utf-8")) == 261
+    assert live_frame[:2] == b"\x15\x04"
     assert chain._decode_raw_reveal(live_frame.decode("utf-8")) == live
     st = _MockSubtensor(
         hotkeys=["alice"], block=12, revealed={"alice": ((9, live),)}

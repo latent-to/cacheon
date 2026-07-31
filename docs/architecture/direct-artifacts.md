@@ -1,6 +1,6 @@
 # Sealed direct artifacts
 
-Optima can execute a contribution as a sealed CUDA artifact without retaining a
+Cacheon can execute a contribution as a sealed CUDA artifact without retaining a
 miner-supplied Python launcher in the engine. The manifest describes a closed
 launch program; a validator-owned builder compiles it to CUBIN in an isolated
 prebuild; and validator-owned runtime code admits, materializes, and launches the
@@ -22,7 +22,7 @@ plugin registration API. The registered table contains one provider:
 | Binding ABI | `cuda_driver_params.v1` |
 | Build phase | `oci_prebuild_only` |
 | Load phase | `isolated_engine_worker_only` |
-| Reviewed patcher | `optima.build-cute-cubin.v1` |
+| Reviewed patcher | `cacheon.build-cute-cubin.v1` |
 | Rebuild feature | `rebuild:build_cute_cubin` |
 | Publication directory | `cute_cubin` |
 | Qualification status | authoritative and crownable |
@@ -35,7 +35,7 @@ and digest are part of the target-catalog identity.
 
 The provider ID selects data-only policy. It does not select a compiler callback,
 loader callback, host launcher, or candidate-defined ABI. Those implementations
-remain reviewed Optima code.
+remain reviewed Cacheon code.
 
 ## Contract layers
 
@@ -82,7 +82,7 @@ manifest is parsed and must reproduce exactly when sealed state is reopened.
 `factory` names Python executed only in the disposable compiler child. It is not
 an engine entry point. The compatibility `ops.entry` field remains syntactically required
 by the bundle ABI, but direct-artifact execution does not call it and canonicalizes
-the runtime entry to `_optima_direct_artifact`.
+the runtime entry to `_cacheon_direct_artifact`.
 
 Plan variants use exact-equality specialization predicates. Overlap is accepted
 only when it forms a strict fallback chain. Runtime chooses the unique
@@ -95,7 +95,7 @@ See [Bundle manifest](../reference/manifest-schema.md) for the field-level schem
 
 CuTe compilation can require hardware facts even though prebuild has no GPU. A
 trusted arena measures those facts first and writes a canonical
-`optima.native-cute-compile-profile.v1` document. The profile binds:
+`cacheon.native-cute-compile-profile.v1` document. The profile binds:
 
 - logical architecture, such as `sm103`;
 - compiler architecture, such as `sm_103a`;
@@ -169,7 +169,7 @@ publication but cannot compile a missing artifact or repair a mismatched index.
 
 ## Complete device ABI
 
-`device_plan` uses schema `optima.device-launch-plan.v1`. It contains two closed
+`device_plan` uses schema `cacheon.device-launch-plan.v1`. It contains two closed
 inventories:
 
 1. `kernels`: sorted, unique logical kernel names and the exact byte width of every
@@ -188,7 +188,7 @@ they are not a stable miner-facing identifier. After the scheduler rank has
 completed CUDA device setup, the loader opens the exact CUBIN, observes its full
 physical kernel inventory through the CUDA Driver API, and compares the complete
 per-ordinal parameter-width vectors. Canonical logical ordinal is then bound to
-physical ordinal. The admitted library handle is retained for launch; Optima does
+physical ordinal. The admitted library handle is retained for launch; Cacheon does
 not inspect, unload, and reopen a second object.
 
 Admission computes the CUBIN digest and size plus driver-observed ABI and contract
@@ -199,7 +199,7 @@ ordinal.
 
 ## Validator-owned materialization
 
-The device plan is a data program. At each invocation Optima constructs the CUDA
+The device plan is a data program. At each invocation Cacheon constructs the CUDA
 parameter frame from the live slot call. Its closed parameter primitives are:
 
 | Primitive | Validator action |
@@ -222,7 +222,7 @@ when one is declared, or on a validator-constructed default-stream handle.
 
 ## Artifact-owned storage and lifecycle
 
-`[[ops.artifact_resources]]` declares storage that Optima allocates. A declaration
+`[[ops.artifact_resources]]` declares storage that Cacheon allocates. A declaration
 names a dtype, power-of-two alignment, bounded shape, lifetime, and optional
 scope. The prefix fixes the lifetime:
 
@@ -286,7 +286,7 @@ that never executes cannot qualify as the measured contribution.
 
 ## Identity and copy signals
 
-Direct execution has canonical schema `optima.direct-artifact-execution.v1`.
+Direct execution has canonical schema `cacheon.direct-artifact-execution.v1`.
 Its identity covers the resource plan and every execution-bearing export field:
 provider, factory, profile inputs, role, plan, step, ordered bindings,
 specializations, prelaunch operations, derived capability requirements, and the
@@ -321,7 +321,7 @@ The following are contract boundaries, not implementation suggestions:
 - Compile profiles and sealed artifacts are exact to their measured launch
   authority; architecture-family compatibility alone does not make them reusable.
 - Release identity can bind a direct-artifact native build and publication. The
-  serving environment must derive `OPTIMA_CUTE_COMPILE_PROFILE_DIGEST` from that
+  serving environment must derive `CACHEON_CUTE_COMPILE_PROFILE_DIGEST` from that
   signed build specification and propagate it unchanged. Missing propagation or
   missing direct-artifact serve-smoke authority must fail closed; identity support
   alone cannot authorize serving.
@@ -345,14 +345,14 @@ provider/slot combination.
 
 ## Source map
 
-- [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_provider.py) — closed provider registry and profile-input policy
-- [`manifest.py`](https://github.com/latent-to/cacheon/blob/main/optima/manifest.py) — export parsing and target admission
-- [`artifact_abi.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_abi.py) — semantic bindings, storage, and lifecycle
-- [`artifact_device_launch.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_device_launch.py) — device-plan schema, admission, and runtime
-- [`cuda_materialize.py`](https://github.com/latent-to/cacheon/blob/main/optima/cuda_materialize.py) — checked parameter and TMA materialization
-- [`cuda_cubin.py`](https://github.com/latent-to/cacheon/blob/main/optima/cuda_cubin.py) — Driver API observation and retained-handle admission
-- [`cute_aot.py`](https://github.com/latent-to/cacheon/blob/main/optima/cute_aot.py) — compiler-factory boundary and invocation evidence
-- [`cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/optima/cute_cubin.py) — sealed index and runtime binding
-- [`eval/native_compile_profile.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/native_compile_profile.py) — measured GPU-free compile inputs
-- [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_prebuild.py) — hermetic native prebuild
-- [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/optima/artifact_identity.py) — canonical direct-execution identity
+- [`artifact_provider.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_provider.py) — closed provider registry and profile-input policy
+- [`manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/manifest.py) — export parsing and target admission
+- [`artifact_abi.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_abi.py) — semantic bindings, storage, and lifecycle
+- [`artifact_device_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_device_launch.py) — device-plan schema, admission, and runtime
+- [`cuda_materialize.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cuda_materialize.py) — checked parameter and TMA materialization
+- [`cuda_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cuda_cubin.py) — Driver API observation and retained-handle admission
+- [`cute_aot.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cute_aot.py) — compiler-factory boundary and invocation evidence
+- [`cute_cubin.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cute_cubin.py) — sealed index and runtime binding
+- [`eval/native_compile_profile.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/native_compile_profile.py) — measured GPU-free compile inputs
+- [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) — hermetic native prebuild
+- [`artifact_identity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/artifact_identity.py) — canonical direct-execution identity

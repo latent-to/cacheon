@@ -10,15 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.discovery as discovery
-import optima.eval.oci_backend as backend
-from optima.eval.device_state import (
+import cacheon.discovery as discovery
+import cacheon.eval.oci_backend as backend
+from cacheon.eval.device_state import (
     DeviceStateActiveReceipt,
     DeviceStatePolicy,
     DeviceStateReceipt,
     GPUConfiguration,
 )
-from optima.eval.engine_launch import (
+from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     LogicalHardwareSpec,
     NativeBuildSpec,
@@ -29,7 +29,7 @@ from optima.eval.engine_launch import (
     native_patcher_digest,
     native_toolchain_digest,
 )
-from optima.eval.oci_backend import (
+from cacheon.eval.oci_backend import (
     EngineExecutionEvidence,
     OCIBackendConfig,
     OCIBackendError,
@@ -40,25 +40,25 @@ from optima.eval.oci_backend import (
     expected_runtime_preflight,
     runtime_identity_from_preflight,
 )
-from optima.eval.oci_outer_session import (
+from cacheon.eval.oci_outer_session import (
     OuterSessionProtocolError,
     SessionExecutionEvidence,
     SessionExecutionPlan,
 )
-from optima.eval.oci_prebuild import (
+from cacheon.eval.oci_prebuild import (
     OCIPrebuildConfig,
     OCIPrebuildPolicy,
     OCIPrebuildResult,
 )
-from optima.eval.oci_process import (
+from cacheon.eval.oci_process import (
     STDERR_ARTIFACT_SCHEMA,
     CommandResult,
     OCIAttachedDiagnostic,
     OCIProcessManager,
     OCIStderrArtifactReceipt,
 )
-from optima.eval.oci_session_protocol import EngineSessionConfig
-from optima.eval.runtime_preflight import RuntimePreflightReceipt
+from cacheon.eval.oci_session_protocol import EngineSessionConfig
+from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 
 
 DOCKER = "/usr/bin/docker"
@@ -117,18 +117,18 @@ def _preflight(
     *, image: str, platform: str, worker: str, runtime: OCIRuntimeResourcePolicy
 ) -> RuntimePreflightReceipt:
     return RuntimePreflightReceipt(
-        schema="optima-runtime-preflight-v2",
-        requested_image="registry.example/optima@sha256:" + image,
+        schema="cacheon-runtime-preflight-v2",
+        requested_image="registry.example/cacheon@sha256:" + image,
         image_digest=image,
         local_image_id=IMAGE_ID,
-        repo_digests=("registry.example/optima@sha256:" + image,),
+        repo_digests=("registry.example/cacheon@sha256:" + image,),
         oci_platform="linux/amd64",
         platform_digest=platform,
         docker_binary=DOCKER,
         uid=runtime.uid,
         gid=runtime.gid,
         sglang_version="0.0.0.dev1+g56e290315",
-        worker_distribution="optima-harness",
+        worker_distribution="cacheon-harness",
         worker_version="0.0.1",
         worker_distribution_digest=worker,
         worker_file_count=200,
@@ -234,7 +234,7 @@ def _case(tmp_path: Path) -> SimpleNamespace:
         dependency_policy_digest=prebuild_policy.dependency_policy_digest,
     )
     engine_config = EngineSessionConfig(
-        model_path="/optima/input/model",
+        model_path="/cacheon/input/model",
         dtype="bfloat16",
         deterministic=False,
         attention_backend="flashinfer",
@@ -366,7 +366,7 @@ def _idle_receipt(
     case: SimpleNamespace, launch_id: str, phase: str, sequence: int, start: float
 ) -> DeviceStateReceipt:
     return DeviceStateReceipt(
-        "optima.device-state.v1",
+        "cacheon.device-state.v1",
         sequence,
         launch_id,
         phase,
@@ -384,7 +384,7 @@ def _active_receipt(
     case: SimpleNamespace, launch_id: str
 ) -> DeviceStateActiveReceipt:
     return DeviceStateActiveReceipt(
-        "optima.device-state-active.v1",
+        "cacheon.device-state-active.v1",
         2,
         launch_id,
         "final-warmup",
@@ -701,7 +701,7 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
     manager = _manager(case)
     lease = manager.register(
         lease_id="runtime-" + "1" * 32,
-        container_name="optima-runtime-" + "1" * 32,
+        container_name="cacheon-runtime-" + "1" * 32,
         mount_relpaths=("runtime-cache",),
         stage_relpaths=("seccomp.json",),
     )
@@ -729,10 +729,10 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         "--gpus=device=0",
         f"--user={case.runtime.uid}:{case.runtime.gid}",
         IMAGE_ID,
-        "--env=OPTIMA_TARGET_GPU_ARCH=sm120",
-        f"--env=OPTIMA_NATIVE_BUILD_SPEC_DIGEST={case.native.digest}",
-        f"--env=OPTIMA_NATIVE_ARTIFACT_PUBLICATION_DIGEST={case.publication.publication_digest}",
-        "--env=OPTIMA_REBUILD_PHASE=load",
+        "--env=CACHEON_TARGET_GPU_ARCH=sm120",
+        f"--env=CACHEON_NATIVE_BUILD_SPEC_DIGEST={case.native.digest}",
+        f"--env=CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST={case.publication.publication_digest}",
+        "--env=CACHEON_REBUILD_PHASE=load",
     ):
         assert exact in argv
     assert not any(row.startswith("--cap-add") for row in argv)
@@ -744,12 +744,12 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
     mounts = tuple(row for row in argv if row.startswith("--mount="))
     assert len(mounts) == 4
     assert sum(",readonly" not in row for row in mounts) == 1
-    assert f"src={case.model},dst=/optima/input/model" in mounts[0]
-    assert f"src={case.tree},dst=/optima/engine-tree" in mounts[1]
-    assert f"src={case.publication.root},dst=/optima/native-artifacts/" in mounts[2]
+    assert f"src={case.model},dst=/cacheon/input/model" in mounts[0]
+    assert f"src={case.tree},dst=/cacheon/engine-tree" in mounts[1]
+    assert f"src={case.publication.root},dst=/cacheon/native-artifacts/" in mounts[2]
     assert f"src={case.publication.root.parent.parent}," not in mounts[2]
-    assert f"src={cache},dst=/optima/runtime-cache" in mounts[3]
-    assert not any("OPTIMA_DISCOVERY_" in row for row in argv)
+    assert f"src={cache},dst=/cacheon/runtime-cache" in mounts[3]
+    assert not any("CACHEON_DISCOVERY_" in row for row in argv)
     encoded = "\n".join(argv).lower()
     for forbidden in (".pass", "credentials", "docker.sock", "result-output"):
         assert forbidden not in encoded
@@ -768,8 +768,8 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         seccomp_path=lease.stage_paths[0],
         runtime=case.runtime,
     )
-    assert f"--env=OPTIMA_CUTE_COMPILE_PROFILE_DIGEST={profile_digest}" in profiled_argv
-    assert not any("OPTIMA_CUTE_COMPILE_PROFILE_DIGEST" in row for row in argv)
+    assert f"--env=CACHEON_CUTE_COMPILE_PROFILE_DIGEST={profile_digest}" in profiled_argv
+    assert not any("CACHEON_CUTE_COMPILE_PROFILE_DIGEST" in row for row in argv)
 
     multi_resolved = replace(
         case.resolved,
@@ -833,12 +833,12 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         runtime=case.runtime,
         discovery_overlay_identity_digest=identity,
     )
-    assert f"--env=OPTIMA_DISCOVERY_EXPECTED_IDENTITY={identity}" in discovery_argv
-    assert "--env=OPTIMA_DISCOVERY_OVERLAY_ARMED=1" in discovery_argv
+    assert f"--env=CACHEON_DISCOVERY_EXPECTED_IDENTITY={identity}" in discovery_argv
+    assert "--env=CACHEON_DISCOVERY_OVERLAY_ARMED=1" in discovery_argv
     assert len(tuple(row for row in discovery_argv if row.startswith("--mount="))) == 4
     assert not any(
-        "OPTIMA_DISCOVERY_OVERLAY_ROOT" in row
-        or "OPTIMA_DISCOVERY_DRIVER_PID" in row
+        "CACHEON_DISCOVERY_OVERLAY_ROOT" in row
+        or "CACHEON_DISCOVERY_DRIVER_PID" in row
         for row in discovery_argv
     )
 
@@ -853,8 +853,8 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         runtime=case.runtime,
         session_protocol="reference",
     )
-    assert "--env=OPTIMA_SESSION_PROTOCOL=reference" in reference_argv
-    assert not any("OPTIMA_DISCOVERY_" in row for row in reference_argv)
+    assert "--env=CACHEON_SESSION_PROTOCOL=reference" in reference_argv
+    assert not any("CACHEON_DISCOVERY_" in row for row in reference_argv)
     with pytest.raises(OCIBackendError, match="ordinary runtime publication"):
         build_runtime_argv(
             lease=lease,
@@ -904,7 +904,7 @@ def test_launch_validation_requires_discovery_tree_plan_parity(
         case.plan,
         expected_discovery_overlay_identity_digest=_digest("discovery-overlay"),
     )
-    marker = SimpleNamespace(path="metadata/optima_discovery.json")
+    marker = SimpleNamespace(path="metadata/cacheon_discovery.json")
     discovery_resolved = replace(
         case.resolved,
         materialized_tree=SimpleNamespace(root=case.tree, files=(marker,)),
@@ -1146,7 +1146,7 @@ def test_execute_opened_keeps_normal_isolation_and_teardown(
         driver=driver,
     )
 
-    assert result.schema == "optima.oci-resident-engine-execution.v1"
+    assert result.schema == "cacheon.oci-resident-engine-execution.v1"
     assert result.session == _session_evidence(case)
     assert not tuple(manager.leases_root.glob("*.json"))
     assert not tuple(manager.resources_root.iterdir())
@@ -1302,12 +1302,12 @@ def test_execute_failure_attaches_finalized_stderr_artifact_after_abort(
 def test_execute_reference_selects_reference_transport_and_binds_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from optima.eval.oci_reference_session import (
+    from cacheon.eval.oci_reference_session import (
         ReferenceExchangeEvidence,
         ReferenceSessionEvidence,
     )
-    from optima.eval.reference_protocol import encode_reference_evidence, request_sha256
-    from optima.stack_identity import sha256_hex
+    from cacheon.eval.reference_protocol import encode_reference_evidence, request_sha256
+    from cacheon.stack_identity import sha256_hex
     from tests.test_oci_reference_session import _plan as reference_plan, _raw
 
     case = _case(tmp_path)
@@ -1323,7 +1323,7 @@ def test_execute_reference_selects_reference_transport_and_binds_plan(
             2.0 + index * 2, 3.0 + index * 2, evidence,
         ))
     session = ReferenceSessionEvidence(
-        "optima.pristine-reference-session.v1",
+        "cacheon.pristine-reference-session.v1",
         plan.requests[0].session_id,
         launch.digest,
         plan.reference.digest,
@@ -1410,5 +1410,5 @@ def test_trusted_backend_has_no_economic_fields_or_runtime_authority() -> None:
             imported.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
-    for forbidden in ("torch", "sglang", "bittensor", "optima.chain", "quality"):
+    for forbidden in ("torch", "sglang", "bittensor", "cacheon.chain", "quality"):
         assert all(forbidden not in name for name in imported)

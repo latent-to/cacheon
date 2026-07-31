@@ -7,13 +7,13 @@ walk — a miner could ship a byte-identical stolen binary/CUDA source behind a
 trivially different ``.py`` shim and evade both scanning and copy detection.
 
 Covers:
-  * ``optima.manifest``: the new ``cuda_sources`` field and its validation
+  * ``cacheon.manifest``: the new ``cuda_sources`` field and its validation
     (existence, containment, symlink refusal, suffix).
-  * ``optima.sandbox.scan_tree``: fail-CLOSED once a manifest's declared
+  * ``cacheon.sandbox.scan_tree``: fail-CLOSED once a manifest's declared
     cuda_sources are threaded in (an undeclared ``.cu`` or a ``.so`` anywhere is
     rejected); the old suffix-gated behavior is preserved when no allowlist is
     passed, EXCEPT binary/artifact suffixes are now rejected unconditionally.
-  * ``optima.copy_fingerprint``: declared cuda_sources fold into the per-slot,
+  * ``cacheon.copy_fingerprint``: declared cuda_sources fold into the per-slot,
     path-independent file fingerprint set (the relocation-proof containment
     compare), by exact bytes AND a reformat-invariant normalization.
 """
@@ -24,18 +24,18 @@ from pathlib import Path
 
 import pytest
 
-from optima.manifest import (
+from cacheon.manifest import (
     ManifestError,
     all_declared_cuda_sources,
     load_manifest,
     resolve_cuda_sources,
 )
-from optima.copy_fingerprint import (
+from cacheon.copy_fingerprint import (
     bundle_slot_file_fingerprints,
     cuda_source_fingerprint,
     normalized_cuda_source,
 )
-from optima.sandbox import scan_tree
+from cacheon.sandbox import scan_tree
 
 CUDA_BODY = """\
 // a silu-and-mul epilogue
@@ -66,7 +66,7 @@ PY_ENTRY = "import torch\n\ndef silu_and_mul(x, out):\n    out.copy_(x)\n"
 def _write_manifest(root: Path, ops_toml: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     (root / "manifest.toml").write_text(
-        'bundle_id = "t"\nabi_version = "optima-op-abi-v0"\n\n' + ops_toml
+        'bundle_id = "t"\nabi_version = "cacheon-op-abi-v0"\n\n' + ops_toml
     )
 
 
@@ -219,7 +219,7 @@ def test_scan_tree_benign_metadata_allowlisted_in_strict_mode(tmp_path):
     (root / "LICENSE").write_text("MIT\n")
     (root / ".gitignore").write_text("*.pyc\n")
     # rebuild.json is load-bearing (not free-form): strictly validated by
-    # optima/rebuild.py, so the scan allowlists it by name. A bundle using the
+    # cacheon/rebuild.py, so the scan allowlists it by name. A bundle using the
     # CUDA-source tier ALWAYS carries one — rejecting it would break the tier.
     (root / "rebuild.json").write_text('{"steps": []}')
     (root / "metadata").mkdir()

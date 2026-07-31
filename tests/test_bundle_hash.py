@@ -1,4 +1,4 @@
-"""Deterministic bundle identity (``optima/bundle_hash.py``).
+"""Deterministic bundle identity (``cacheon/bundle_hash.py``).
 
 ``content_hash`` is what chain commitments bind to (``chain-package`` prints it,
 intake re-hashes the fetched tree against it), so its stability and its
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from optima.bundle_hash import content_hash
+from cacheon.bundle_hash import content_hash
 
 TRITON = "examples/miner_silu_triton"
 BROKEN = "examples/miner_silu_broken"

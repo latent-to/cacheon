@@ -1,6 +1,6 @@
 # Isolation
 
-Production Optima treats each candidate as a complete hostile engine. The trust boundary
+Production Cacheon treats each candidate as a complete hostile engine. The trust boundary
 is the validator-owned OCI lifecycle plus the external controller—not the AST scanner,
 Python subprocess, SGLang plugin, or candidate engine itself.
 
@@ -101,10 +101,10 @@ The runtime container receives only:
 
 | Mount/resource | Access |
 |---|---|
-| Exact sealed model tree | Read-only at `/optima/input/model` |
-| Materialized engine tree | Read-only at `/optima/engine-tree` |
-| Reopened native artifact publication | Read-only under `/optima/native-artifacts` |
-| Lease-scoped runtime cache | Writable private tmpfs at `/optima/runtime-cache` |
+| Exact sealed model tree | Read-only at `/cacheon/input/model` |
+| Materialized engine tree | Read-only at `/cacheon/engine-tree` |
+| Reopened native artifact publication | Read-only under `/cacheon/native-artifacts` |
+| Lease-scoped runtime cache | Writable private tmpfs at `/cacheon/runtime-cache` |
 | `/tmp` and shared memory | Bounded private ephemeral storage |
 | GPUs | Only the physical devices bound by trusted launch identity |
 
@@ -258,9 +258,9 @@ See [Threat model](threat-model.md) and [Evidence and replay](evidence.md).
 
 ## Source anchors
 
-- [Engine launch identities](https://github.com/latent-to/cacheon/blob/main/optima/eval/engine_launch.py)
-- [OCI prebuild](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_prebuild.py)
-- [OCI process leases](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_process.py)
-- [OCI runtime backend](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_backend.py)
-- [Reference session](https://github.com/latent-to/cacheon/blob/main/optima/eval/oci_reference_session.py)
-- [Scheduler-only candidate load gate](https://github.com/latent-to/cacheon/blob/main/optima/integrations/sglang_scheduler_gate.py)
+- [Engine launch identities](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_launch.py)
+- [OCI prebuild](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py)
+- [OCI process leases](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_process.py)
+- [OCI runtime backend](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py)
+- [Reference session](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_reference_session.py)
+- [Scheduler-only candidate load gate](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_scheduler_gate.py)

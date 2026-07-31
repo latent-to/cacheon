@@ -8,15 +8,15 @@ from dataclasses import replace
 
 import pytest
 
-from optima.eval.evidence_store import EvidenceArtifactRef
-from optima.stack_identity import (
+from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.stack_identity import (
     StackIdentityError,
     canonical_digest,
     canonical_json_bytes,
     require_sha256_hex,
     sha256_hex,
 )
-from optima.stack_manifest import (
+from cacheon.stack_manifest import (
     EngineReleaseManifest,
     EvaluationStackContext,
     EvaluationStackManifest,
@@ -37,7 +37,7 @@ def _d(char: str) -> str:
 
 def _evidence(domain: str, digest: str) -> EvidenceArtifactRef:
     return EvidenceArtifactRef(
-        domain, digest, 1, "application/json", f"optima.{domain}.v1"
+        domain, digest, 1, "application/json", f"cacheon.{domain}.v1"
     )
 
 
@@ -58,12 +58,12 @@ def _catalog(*, marker: str = "base") -> dict[str, object]:
 
 
 def _catalog_digest(snapshot: dict[str, object]) -> str:
-    return canonical_digest("optima.target-catalog", snapshot)
+    return canonical_digest("cacheon.target-catalog", snapshot)
 
 
 def _catalog_specs(snapshot: dict[str, object]) -> dict[str, str]:
     return {
-        row["target_id"]: canonical_digest("optima.target-spec", row)
+        row["target_id"]: canonical_digest("cacheon.target-spec", row)
         for row in snapshot["targets"]  # type: ignore[union-attr]
     }
 
@@ -150,11 +150,11 @@ def test_canonical_identity_is_order_stable_domain_separated_and_strict() -> Non
     left = {"z": [1, True, None], "a": {"unicode": "λ"}}
     right = {"a": {"unicode": "λ"}, "z": (1, True, None)}
     assert canonical_json_bytes(left) == canonical_json_bytes(right)
-    assert canonical_digest("optima.test.left", left) == canonical_digest(
-        "optima.test.left", right
+    assert canonical_digest("cacheon.test.left", left) == canonical_digest(
+        "cacheon.test.left", right
     )
-    assert canonical_digest("optima.test.left", left) != canonical_digest(
-        "optima.test.right", left
+    assert canonical_digest("cacheon.test.left", left) != canonical_digest(
+        "cacheon.test.right", left
     )
     assert sha256_hex(b"payload") == sha256_hex(b"payload")
     assert require_sha256_hex(_d("a")) == _d("a")
@@ -501,7 +501,7 @@ def test_import_surface_is_stdlib_only_and_does_not_require_bittensor_or_torch()
     code = """
 import os, sys
 sys.path.insert(0, os.getcwd())
-import optima.stack_manifest
+import cacheon.stack_manifest
 assert 'torch' not in sys.modules
 assert 'bittensor' not in sys.modules
 """

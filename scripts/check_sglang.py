@@ -4,7 +4,7 @@
 Two checks, both cheap:
   1. PyPI release check (pure HTTP, no deps) — is there a newer sglang than the
      pinned one? This is the "should we consider a bump?" signal.
-  2. The seam compat canary (`optima.compat`) — if sglang is importable here, do
+  2. The seam compat canary (`cacheon.compat`) — if sglang is importable here, do
      our integration points still exist? (Full behavioral confirmation needs a GPU
      box; see docs/SGLANG_TRACKING.md.)
 
@@ -13,7 +13,7 @@ committed pin, or a seam/API moved. A newer PyPI release is only a WARNING: bump
 deliberate human decision (re-baseline), not a code fix.
 
 Schedule it: the GitHub Action in .github/workflows/sglang-canary.yml, or cron:
-    0 9 * * 1  cd /path/to/optima && .venv/bin/python scripts/check_sglang.py
+    0 9 * * 1  cd /path/to/cacheon && .venv/bin/python scripts/check_sglang.py
 """
 
 from __future__ import annotations
@@ -42,9 +42,9 @@ def latest_sglang() -> str | None:
 
 def main() -> int:
     try:
-        from optima.compat import PINNED_SGLANG, format_checks, run_checks
+        from cacheon.compat import PINNED_SGLANG, format_checks, run_checks
     except Exception as exc:  # noqa: BLE001
-        print(f"cannot import optima.compat (install the harness: pip install -e .): {exc}")
+        print(f"cannot import cacheon.compat (install the harness: pip install -e .): {exc}")
         return 1
     finally:
         # Avoid shadowing an installed sglang package with the repo's vendored
@@ -81,7 +81,7 @@ def main() -> int:
         import sglang  # noqa: F401
     except Exception:  # noqa: BLE001
         print("\n(sglang not importable here — can't run the seam canary; "
-              "run `optima compat` on a pod/venv with sglang installed)")
+              "run `cacheon compat` on a pod/venv with sglang installed)")
         # No way to verify seams here -> nothing code-actionable -> don't fail CI.
         return 0
 

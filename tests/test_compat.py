@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from types import ModuleType
 
-from optima.compat import PINNED_SGLANG, run_checks
+from cacheon.compat import PINNED_SGLANG, run_checks
 
 
 def _version_check(monkeypatch, version: str):

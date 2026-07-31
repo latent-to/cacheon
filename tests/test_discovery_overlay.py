@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.discovery_overlay as overlay_module
+import cacheon.discovery_overlay as overlay_module
 
-from optima.discovery_overlay import (
+from cacheon.discovery_overlay import (
     ACTIVE_IDENTITY,
     ARMED,
     DISCOVERY_ENVIRONMENT_KEYS,
@@ -46,7 +46,7 @@ def test_activation_policy_identity_is_fixed_and_content_addressed(monkeypatch) 
     monkeypatch.setattr(
         overlay_module,
         "_SCHEDULER_ARGUMENT_SCHEMA",
-        "optima.discovery-scheduler-arguments.v2",
+        "cacheon.discovery-scheduler-arguments.v2",
     )
     assert activation_policy_digest() != digest
 
@@ -204,7 +204,7 @@ def test_scheduler_spawn_substitutes_trampoline_then_restores_target(
     original_arguments = process._args
     assert multiprocessing.process.BaseProcess.start(process) == "started"
     assert observed == [
-        ("optima.discovery_overlay", "_scheduler_overlay_entry")
+        ("cacheon.discovery_overlay", "_scheduler_overlay_entry")
     ]
     assert observed_arguments[0][0] == overlay_module._SCHEDULER_ARGUMENT_SCHEMA
     assert isinstance(observed_arguments[0][1], bytes)

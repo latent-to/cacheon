@@ -11,8 +11,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.slots import Correctness, get_slot  # noqa: E402
-from optima.verify import _compare, verify_entry  # noqa: E402
+from cacheon.slots import Correctness, get_slot  # noqa: E402
+from cacheon.verify import _compare, verify_entry  # noqa: E402
 
 SLOT = get_slot("attention.msa_block_score")
 

@@ -4,27 +4,27 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.eval.qualification_intake as intake
-from optima.eval.evidence_store import EvidenceArtifactRef
-from optima.eval.oci_backend import OCIBackendError
-from optima.eval.marginal_runtime import CandidateArmWorkerError
-from optima.eval.oci_outer_session import (
+import cacheon.eval.qualification_intake as intake
+from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.oci_backend import OCIBackendError
+from cacheon.eval.marginal_runtime import CandidateArmWorkerError
+from cacheon.eval.oci_outer_session import (
     OuterSessionProcessError,
     OuterSessionWorkerError,
 )
-from optima.eval.qualification import (
+from cacheon.eval.qualification import (
     GraphVariantRequirement,
     GraphVerificationBinding,
     GraphVerificationMemberBinding,
     GraphVerificationRequirement,
     QualificationDecision,
 )
-from optima.eval.qualification_runner import (
+from cacheon.eval.qualification_runner import (
     QualificationRunnerError,
     SpeedStageDisposition,
 )
-from optima.eval.scoring import RawSpeedEvidenceError
-from optima.verify import VerifyResult
+from cacheon.eval.scoring import RawSpeedEvidenceError
+from cacheon.verify import VerifyResult
 
 
 def _d(label: str) -> str:
@@ -321,7 +321,7 @@ def _install_success_runner(monkeypatch, manifest, decisions):
         _d("attempt-artifact"),
         1,
         "application/json",
-        "optima.qualification.cohort-attempt.v1",
+        "cacheon.qualification.cohort-attempt.v1",
     )
     reports = tuple(
         _FakeReport(delta, decision, index)
@@ -736,7 +736,7 @@ def test_outcomes_and_batches_cannot_claim_evidence_free_pass() -> None:
         _d("attempt"),
         1,
         "application/json",
-        "optima.qualification.cohort-attempt.v1",
+        "cacheon.qualification.cohort-attempt.v1",
     )
     outcome = intake.QualificationIntakeOutcome(
         _d("reservation"),
@@ -758,7 +758,7 @@ def test_single_pass_outcome_cannot_smuggle_a_settlement_candidate() -> None:
         _d("attempt"),
         1,
         "application/json",
-        "optima.qualification.cohort-attempt.v1",
+        "cacheon.qualification.cohort-attempt.v1",
     )
     with pytest.raises(
         intake.QualificationIntakeError, match="settlement qualification"

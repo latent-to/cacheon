@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.discovery import (
+from cacheon.discovery import (
     DEFAULT_DISCOVERY_POLICY,
     DISCOVERY_ABI_VERSION,
     DiscoveryBuildProfile,
@@ -19,11 +19,11 @@ from optima.discovery import (
     reopen_discovery_engine_binding,
     reopen_discovery_overlay,
 )
-from optima.engine_tree import (
+from cacheon.engine_tree import (
     materialize_discovery_engine_tree,
     materialize_engine_tree,
 )
-from optima.eval.engine_launch import (
+from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     LogicalHardwareSpec,
     NativeBuildSpec,
@@ -34,7 +34,7 @@ from optima.eval.engine_launch import (
     native_toolchain_digest,
     resolve_engine_launch,
 )
-from optima.eval.oci_prebuild import (
+from cacheon.eval.oci_prebuild import (
     OCIPrebuildConfig,
     OCIPrebuildError,
     OCIPrebuildPolicy,
@@ -45,18 +45,18 @@ from optima.eval.oci_prebuild import (
     container_build,
     run_oci_prebuild,
 )
-from optima.eval.native_compile_profile import NativeCuTeCompileProfile
-from optima.eval.native_artifact import publish_native_artifact
-from optima.eval.oci_process import (
+from cacheon.eval.native_compile_profile import NativeCuTeCompileProfile
+from cacheon.eval.native_artifact import publish_native_artifact
+from cacheon.eval.oci_process import (
     CommandResult,
     OCIAttachedDiagnostic,
     OCIProcessManager,
     OCIProcessResult,
 )
-from optima.eval.runtime_preflight import RuntimePreflightReceipt
-from optima.stack_identity import canonical_json_bytes
-from optima.stack_manifest import EvaluationStackContext, EvaluationStackManifest
-from optima.target_catalog import default_target_catalog
+from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
+from cacheon.stack_identity import canonical_json_bytes
+from cacheon.stack_manifest import EvaluationStackContext, EvaluationStackManifest
+from cacheon.target_catalog import default_target_catalog
 
 
 DOCKER = "/usr/bin/docker"
@@ -228,18 +228,18 @@ def _preflight(
     sglang_version: str = "0.0.0.dev1",
 ):
     return RuntimePreflightReceipt(
-        schema="optima-runtime-preflight-v2",
-        requested_image="registry.example/optima@sha256:" + image,
+        schema="cacheon-runtime-preflight-v2",
+        requested_image="registry.example/cacheon@sha256:" + image,
         image_digest=image,
         local_image_id=IMAGE_ID,
-        repo_digests=("registry.example/optima@sha256:" + image,),
+        repo_digests=("registry.example/cacheon@sha256:" + image,),
         oci_platform="linux/amd64",
         platform_digest=platform,
         docker_binary=DOCKER,
         uid=policy.uid,
         gid=policy.gid,
         sglang_version=sglang_version,
-        worker_distribution="optima-harness",
+        worker_distribution="cacheon-harness",
         worker_version="0.0.1",
         worker_distribution_digest=worker,
         worker_file_count=200,
@@ -484,7 +484,7 @@ def test_exact_prebuild_argv_has_only_two_mounts_no_gpu_no_egress_no_caps(
     )
     lease = manager.register(
         lease_id="prebuild-test",
-        container_name="optima-prebuild-test",
+        container_name="cacheon-prebuild-test",
         mount_relpaths=("stage",),
         stage_relpaths=("seccomp.json",),
     )
@@ -517,12 +517,12 @@ def test_exact_prebuild_argv_has_only_two_mounts_no_gpu_no_egress_no_caps(
     assert not any("--gpus" in value or "--device" in value for value in argv)
     env_rows = [value for value in argv if value.startswith("--env=")]
     assert any(
-        "OPTIMA_NATIVE_BUILD_SPEC_DIGEST=" + binding.native_build_spec.digest in value
+        "CACHEON_NATIVE_BUILD_SPEC_DIGEST=" + binding.native_build_spec.digest in value
         for value in env_rows
     )
-    assert any("OPTIMA_BUILD_PATH=" in value for value in env_rows)
-    assert any("OPTIMA_BUILD_TMPDIR=/tmp" in value for value in env_rows)
-    assert any("OPTIMA_NATIVE_COMPILE_TIMEOUT_S=6000" in value for value in env_rows)
+    assert any("CACHEON_BUILD_PATH=" in value for value in env_rows)
+    assert any("CACHEON_BUILD_TMPDIR=/tmp" in value for value in env_rows)
+    assert any("CACHEON_NATIVE_COMPILE_TIMEOUT_S=6000" in value for value in env_rows)
     env_keys = {value.split("=", 2)[1] for value in env_rows}
     assert not any(
         key.upper().endswith("PROXY") or key.startswith("LD_") or key == "PYTHONPATH"
@@ -532,7 +532,7 @@ def test_exact_prebuild_argv_has_only_two_mounts_no_gpu_no_egress_no_caps(
         IMAGE_ID,
         "-I",
         "-m",
-        "optima.eval.oci_prebuild",
+        "cacheon.eval.oci_prebuild",
         "--container-build",
     )
 
@@ -555,7 +555,7 @@ def test_profiled_prebuild_adds_one_read_only_profile_mount_and_digest_env(
     )
     lease = manager.register(
         lease_id="profiled-prebuild-test",
-        container_name="optima-profiled-prebuild-test",
+        container_name="cacheon-profiled-prebuild-test",
         mount_relpaths=("stage",),
         stage_relpaths=("seccomp.json", "cute-profile.json"),
     )
@@ -575,8 +575,8 @@ def test_profiled_prebuild_adds_one_read_only_profile_mount_and_digest_env(
     ]
     assert len(profile_mounts) == 1
     assert "readonly" in profile_mounts[0]
-    assert f"--env=OPTIMA_CUTE_COMPILE_PROFILE_DIGEST={profile_digest}" in argv
-    assert "--env=OPTIMA_CUTE_COMPILE_PROFILE=/optima/cute-compile-profile.json" in argv
+    assert f"--env=CACHEON_CUTE_COMPILE_PROFILE_DIGEST={profile_digest}" in argv
+    assert "--env=CACHEON_CUTE_COMPILE_PROFILE=/cacheon/cute-compile-profile.json" in argv
 
     with pytest.raises(OCIPrebuildError, match="does not match launch authority"):
         build_prebuild_argv(
@@ -755,7 +755,7 @@ def test_prebuild_rejects_expired_deadline_before_binding_or_lease(
 def test_prebuild_rechecks_deadline_after_binding_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import optima.eval.oci_prebuild as prebuild_mod
+    import cacheon.eval.oci_prebuild as prebuild_mod
 
     _tree_row, launch, binding, _preflight_row, config = _case(tmp_path)
     now = {"value": 100.0}
@@ -958,8 +958,8 @@ def test_publication_and_recovery_roots_must_not_overlap_materialized_tree_or_ea
 def test_container_build_scrubs_ambient_environment_and_applies_build_phase(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import optima.eval.oci_prebuild as prebuild_mod
-    import optima.rebuild as rebuild_mod
+    import cacheon.eval.oci_prebuild as prebuild_mod
+    import cacheon.rebuild as rebuild_mod
 
     tree = _tree(tmp_path)
     stage = tmp_path / "stage"
@@ -974,15 +974,15 @@ def test_container_build_scrubs_ambient_environment_and_applies_build_phase(
     )
     original_environment = dict(os.environ)
     required = {
-        "OPTIMA_NATIVE_BUILD_SPEC_DIGEST": _digest("build"),
-        "OPTIMA_ENGINE_TREE_DIGEST": tree.tree_digest,
-        "OPTIMA_TARGET_GPU_ARCH": "sm120",
-        "OPTIMA_NATIVE_ARTIFACT_STAGE": str(stage),
-        "OPTIMA_PINNED_BUILD_ROOTS": "/usr/include:/usr/lib",
-        "OPTIMA_BUILD_PATH": "/usr/local/cuda/bin:/usr/bin:/bin",
-        "OPTIMA_BUILD_TMPDIR": "/tmp",
-        "OPTIMA_NATIVE_COMPILE_TIMEOUT_S": "60",
-        "OPTIMA_REBUILD_CONTAINER": "1",
+        "CACHEON_NATIVE_BUILD_SPEC_DIGEST": _digest("build"),
+        "CACHEON_ENGINE_TREE_DIGEST": tree.tree_digest,
+        "CACHEON_TARGET_GPU_ARCH": "sm120",
+        "CACHEON_NATIVE_ARTIFACT_STAGE": str(stage),
+        "CACHEON_PINNED_BUILD_ROOTS": "/usr/include:/usr/lib",
+        "CACHEON_BUILD_PATH": "/usr/local/cuda/bin:/usr/bin:/bin",
+        "CACHEON_BUILD_TMPDIR": "/tmp",
+        "CACHEON_NATIVE_COMPILE_TIMEOUT_S": "60",
+        "CACHEON_REBUILD_CONTAINER": "1",
         "HTTPS_PROXY": "https://must-not-survive.invalid",
         "LD_PRELOAD": "/tmp/evil.so",
         "PYTHONPATH": "/tmp/evil",
@@ -994,10 +994,10 @@ def test_container_build_scrubs_ambient_environment_and_applies_build_phase(
         assert seen == [(tree.root.resolve(), "build")]
         for forbidden in ("HTTPS_PROXY", "LD_PRELOAD", "PYTHONPATH"):
             assert forbidden not in os.environ
-        assert os.environ["OPTIMA_REBUILD_PHASE"] == "build"
+        assert os.environ["CACHEON_REBUILD_PHASE"] == "build"
         ordinary = json.loads(receipt.read_text())
         assert ordinary == {
-            "build_spec_digest": required["OPTIMA_NATIVE_BUILD_SPEC_DIGEST"],
+            "build_spec_digest": required["CACHEON_NATIVE_BUILD_SPEC_DIGEST"],
             "rebuild_applied": False,
             "schema": PREBUILD_SCHEMA,
             "stage_entries": [PREBUILD_RECEIPT],
@@ -1014,7 +1014,7 @@ def test_discovery_container_builds_fixed_overlay_and_conditional_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import importlib.metadata
-    import optima.eval.oci_prebuild as prebuild_mod
+    import cacheon.eval.oci_prebuild as prebuild_mod
 
     tree = _discovery_tree(tmp_path)
     stage = tmp_path / "stage"
@@ -1034,15 +1034,15 @@ def test_discovery_container_builds_fixed_overlay_and_conditional_receipt(
     monkeypatch.setattr(prebuild_mod, "CONTAINER_STAGE", str(stage))
     original_environment = dict(os.environ)
     required = {
-        "OPTIMA_NATIVE_BUILD_SPEC_DIGEST": _digest("discovery-build"),
-        "OPTIMA_ENGINE_TREE_DIGEST": tree.tree_digest,
-        "OPTIMA_TARGET_GPU_ARCH": "sm120",
-        "OPTIMA_NATIVE_ARTIFACT_STAGE": str(stage),
-        "OPTIMA_PINNED_BUILD_ROOTS": str(stock_site.resolve()),
-        "OPTIMA_BUILD_PATH": "/usr/local/cuda/bin:/usr/bin:/bin",
-        "OPTIMA_BUILD_TMPDIR": "/tmp",
-        "OPTIMA_NATIVE_COMPILE_TIMEOUT_S": "60",
-        "OPTIMA_REBUILD_CONTAINER": "1",
+        "CACHEON_NATIVE_BUILD_SPEC_DIGEST": _digest("discovery-build"),
+        "CACHEON_ENGINE_TREE_DIGEST": tree.tree_digest,
+        "CACHEON_TARGET_GPU_ARCH": "sm120",
+        "CACHEON_NATIVE_ARTIFACT_STAGE": str(stage),
+        "CACHEON_PINNED_BUILD_ROOTS": str(stock_site.resolve()),
+        "CACHEON_BUILD_PATH": "/usr/local/cuda/bin:/usr/bin:/bin",
+        "CACHEON_BUILD_TMPDIR": "/tmp",
+        "CACHEON_NATIVE_COMPILE_TIMEOUT_S": "60",
+        "CACHEON_REBUILD_CONTAINER": "1",
     }
     try:
         os.environ.update(required)
@@ -1058,7 +1058,7 @@ def test_discovery_container_builds_fixed_overlay_and_conditional_receipt(
     publication = publish_native_artifact(
         stage,
         tmp_path / "publications",
-        build_spec_digest=required["OPTIMA_NATIVE_BUILD_SPEC_DIGEST"],
+        build_spec_digest=required["CACHEON_NATIVE_BUILD_SPEC_DIGEST"],
     )
     overlay = reopen_discovery_overlay(
         publication,
@@ -1087,7 +1087,7 @@ def test_stock_sglang_distribution_must_match_version_and_pinned_root(
     match: str,
 ) -> None:
     import importlib.metadata
-    import optima.eval.oci_prebuild as prebuild_mod
+    import cacheon.eval.oci_prebuild as prebuild_mod
 
     stock_site = _stock_sglang(tmp_path)
     pinned = stock_site if inside_root else tmp_path / "other-root"
@@ -1115,7 +1115,7 @@ def test_stock_sglang_distribution_resolves_pinned_editable_install(
     import importlib.util
     from types import SimpleNamespace
 
-    import optima.eval.oci_prebuild as prebuild_mod
+    import cacheon.eval.oci_prebuild as prebuild_mod
 
     source_site = _stock_sglang(tmp_path)
     metadata_site = tmp_path / "site-packages"
@@ -1179,15 +1179,15 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
     import types
     from dataclasses import asdict
 
-    import optima.dep_policy as dep_policy
-    import optima.eval.oci_prebuild as prebuild_module
-    import optima.integrations.flashinfer_overlay as flashinfer_overlay
-    import optima.patchers.build_cuda_ext as cuda_patcher
-    import optima.rebuild as rebuild
-    from optima.bundle_hash import content_hash
-    from optima.engine_tree import inspect_contribution
-    from optima.eval.native_artifact import publish_native_artifact
-    from optima.stack_manifest import ProposalContributionRef
+    import cacheon.dep_policy as dep_policy
+    import cacheon.eval.oci_prebuild as prebuild_module
+    import cacheon.integrations.flashinfer_overlay as flashinfer_overlay
+    import cacheon.patchers.build_cuda_ext as cuda_patcher
+    import cacheon.rebuild as rebuild
+    from cacheon.bundle_hash import content_hash
+    from cacheon.engine_tree import inspect_contribution
+    from cacheon.eval.native_artifact import publish_native_artifact
+    from cacheon.stack_manifest import ProposalContributionRef
 
     fixture = Path(__file__).parent / "fixtures" / "stack_fused_epilogue_atomic"
     catalog = default_target_catalog()
@@ -1226,16 +1226,16 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
         resolver={("proposal", proposal.artifact_digest): fixture},
         destination=tmp_path / "materialized",
     )
-    manifest = __import__("optima.manifest", fromlist=["load_manifest"]).load_manifest(
+    manifest = __import__("cacheon.manifest", fromlist=["load_manifest"]).load_manifest(
         tree.root
     )
-    assert manifest.bundle_id == "optima-materialized-v1"
+    assert manifest.bundle_id == "cacheon-materialized-v1"
     assert [step["path"] for step in json.loads((tree.root / "rebuild.json").read_text())["steps"]] == [
-        "optima/patchers/apply_dep_patch.py",
-        "optima/patchers/build_cuda_ext.py",
+        "cacheon/patchers/apply_dep_patch.py",
+        "cacheon/patchers/build_cuda_ext.py",
     ]
-    assert manifest.dep_patches[0].path.startswith("patches/optima_c_")
-    assert manifest.ops[0].cuda_sources[0].startswith("cuda/optima_c_")
+    assert manifest.dep_patches[0].path.startswith("patches/cacheon_c_")
+    assert manifest.ops[0].cuda_sources[0].startswith("cuda/cacheon_c_")
 
     # A minimal image-owned FlashInfer source tree matching the policy-valid patch.
     image_root = tmp_path / "image-root"
@@ -1248,7 +1248,7 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
         dep_policy, "dependency_site_root", lambda _policy: image_root
     )
 
-    apply_script = Path(__file__).parents[1] / "optima/patchers/apply_dep_patch.py"
+    apply_script = Path(__file__).parents[1] / "cacheon/patchers/apply_dep_patch.py"
     apply_namespace: dict[str, object] = {}
     exec(
         compile(
@@ -1334,7 +1334,7 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
 
     def fake_compile(*, bundle, source, output, depfile, module_name, context, env):
         assert Path(bundle) == tree.root.resolve()
-        assert source.startswith("cuda/optima_c_")
+        assert source.startswith("cuda/cacheon_c_")
         assert env == compiler_environment
         output.write_bytes((module_name + ":synthetic-cuda-extension").encode())
         depfile.write_text(f"{module_name}: {source}\n")
@@ -1349,7 +1349,7 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
 
     def run_reviewed_patcher(path, *, run_name):
         name = Path(path).name
-        patcher_phases.append((name, os.environ["OPTIMA_REBUILD_PHASE"]))
+        patcher_phases.append((name, os.environ["CACHEON_REBUILD_PHASE"]))
         if name == "apply_dep_patch.py":
             apply_namespace["main"]()
         elif name == "build_cuda_ext.py":
@@ -1363,15 +1363,15 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
     stage = tmp_path / "native-stage"
     stage.mkdir()
     build_spec_digest = _digest("joined-native-build")
-    monkeypatch.setenv("OPTIMA_REBUILD_CONTAINER", "1")
-    monkeypatch.setenv("OPTIMA_NATIVE_ARTIFACT_STAGE", str(stage))
-    monkeypatch.setenv("OPTIMA_NATIVE_BUILD_SPEC_DIGEST", build_spec_digest)
-    monkeypatch.setenv("OPTIMA_ENGINE_TREE_DIGEST", tree.tree_digest)
-    monkeypatch.setenv("OPTIMA_TARGET_GPU_ARCH", "sm103")
-    monkeypatch.setenv("OPTIMA_PINNED_BUILD_ROOTS", str(image_root))
-    monkeypatch.setenv("OPTIMA_BUILD_PATH", compiler_environment["PATH"])
-    monkeypatch.setenv("OPTIMA_BUILD_TMPDIR", "/tmp")
-    monkeypatch.setenv("OPTIMA_NATIVE_COMPILE_TIMEOUT_S", "60")
+    monkeypatch.setenv("CACHEON_REBUILD_CONTAINER", "1")
+    monkeypatch.setenv("CACHEON_NATIVE_ARTIFACT_STAGE", str(stage))
+    monkeypatch.setenv("CACHEON_NATIVE_BUILD_SPEC_DIGEST", build_spec_digest)
+    monkeypatch.setenv("CACHEON_ENGINE_TREE_DIGEST", tree.tree_digest)
+    monkeypatch.setenv("CACHEON_TARGET_GPU_ARCH", "sm103")
+    monkeypatch.setenv("CACHEON_PINNED_BUILD_ROOTS", str(image_root))
+    monkeypatch.setenv("CACHEON_BUILD_PATH", compiler_environment["PATH"])
+    monkeypatch.setenv("CACHEON_BUILD_TMPDIR", "/tmp")
+    monkeypatch.setenv("CACHEON_NATIVE_COMPILE_TIMEOUT_S", "60")
 
     monkeypatch.setattr(prebuild_module, "CONTAINER_TREE", str(tree.root.resolve()))
     monkeypatch.setattr(prebuild_module, "CONTAINER_STAGE", str(stage.resolve()))
@@ -1395,20 +1395,20 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
         tmp_path / "publications",
         build_spec_digest=build_spec_digest,
     )
-    monkeypatch.setenv("OPTIMA_ENGINE_WORKER", "1")
-    monkeypatch.setenv("OPTIMA_REBUILD_PHASE", "load")
-    monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(tree.root))
-    monkeypatch.setenv("OPTIMA_NATIVE_ARTIFACT_ROOT", str(publication.root))
+    monkeypatch.setenv("CACHEON_ENGINE_WORKER", "1")
+    monkeypatch.setenv("CACHEON_REBUILD_PHASE", "load")
+    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(tree.root))
+    monkeypatch.setenv("CACHEON_NATIVE_ARTIFACT_ROOT", str(publication.root))
     monkeypatch.setenv(
-        "OPTIMA_NATIVE_ARTIFACT_PUBLICATION_DIGEST",
+        "CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST",
         publication.publication_digest,
     )
 
     assert rebuild.apply_rebuild_plan(tree.root, phase="load")
     assert len(native_loads) == 1
     alias, module_name, artifact = native_loads[0]
-    assert alias.startswith("optima_c_")
-    assert module_name.startswith("optima_cuda_")
+    assert alias.startswith("cacheon_c_")
+    assert module_name.startswith("cacheon_cuda_")
     assert publication.root in artifact.parents
 
     environment = types.ModuleType("flashinfer.jit.env")
@@ -1439,7 +1439,7 @@ def test_materialized_dep_cuda_tree_builds_publishes_and_reopens_load_only(
     ):
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr(flashinfer_overlay, "_installed", False)
-    monkeypatch.setenv("OPTIMA_ACTIVE", "1")
+    monkeypatch.setenv("CACHEON_ACTIVE", "1")
 
     flashinfer_overlay.install(registry=None)
     expected_overlay = (

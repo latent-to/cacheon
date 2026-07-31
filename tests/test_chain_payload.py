@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from optima.chain.payload import (
+from cacheon.chain.payload import (
     MAX_PAYLOAD_BYTES,
     PAYLOAD_VERSION,
     PayloadError,

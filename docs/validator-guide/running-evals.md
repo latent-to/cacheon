@@ -1,6 +1,6 @@
 # Verification and diagnostics
 
-Optima exposes two local contribution checks: `scan` and `verify`. Complete-engine
+Cacheon exposes two local contribution checks: `scan` and `verify`. Complete-engine
 throughput and quality decisions belong to a registered validator arena; the CLI does
 not provide a local qualification substitute.
 
@@ -20,7 +20,7 @@ not an adequate boundary for untrusted native GPU code.
 ## Static policy scan
 
 ```bash
-python -m optima.cli scan ./my_bundle
+python -m cacheon.cli scan ./my_bundle
 ```
 
 The command parses the manifest, applies the Python policy to every declared and vendored
@@ -35,13 +35,13 @@ defense in depth, not a sandbox or a correctness proof.
 CPU smoke:
 
 ```bash
-python -m optima.cli verify ./my_bundle --device cpu --dtype float32
+python -m cacheon.cli verify ./my_bundle --device cpu --dtype float32
 ```
 
 CUDA verification:
 
 ```bash
-python -m optima.cli verify ./my_bundle \
+python -m cacheon.cli verify ./my_bundle \
   --device cuda --dtype bfloat16 --seed 17 \
   --model <registered-model-key>
 ```
@@ -50,7 +50,7 @@ Distributed verification:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
-python -m optima.cli verify ./my_collective_bundle \
+python -m cacheon.cli verify ./my_collective_bundle \
   --device cuda --world-size 4
 ```
 
@@ -155,9 +155,9 @@ See [Qualification](qualification.md), [Fidelity](fidelity.md), and
 
 ## Source anchors
 
-- [CLI](https://github.com/latent-to/cacheon/blob/main/optima/cli.py)
-- [Static scanner](https://github.com/latent-to/cacheon/blob/main/optima/sandbox.py)
-- [Typed verifier](https://github.com/latent-to/cacheon/blob/main/optima/verify.py)
-- [Distributed verifier](https://github.com/latent-to/cacheon/blob/main/optima/verify_collective.py)
-- [Qualification runner](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification_runner.py)
-- [Resident crossover runtime](https://github.com/latent-to/cacheon/blob/main/optima/eval/crossover_runtime.py)
+- [CLI](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py)
+- [Static scanner](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py)
+- [Typed verifier](https://github.com/latent-to/cacheon/blob/main/cacheon/verify.py)
+- [Distributed verifier](https://github.com/latent-to/cacheon/blob/main/cacheon/verify_collective.py)
+- [Qualification runner](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
+- [Resident crossover runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)

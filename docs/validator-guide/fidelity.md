@@ -1,6 +1,6 @@
 # Fidelity and quality authority
 
-Optima uses different quality checks at different stages. Confusing them creates a major
+Cacheon uses different quality checks at different stages. Confusing them creates a major
 security error: a useful development diagnostic is not necessarily safe as a grading
 oracle.
 
@@ -56,9 +56,9 @@ The sealed `SlotAuditPolicy` owns the sampling rate, validator seed, expected sl
 expected TP member count, and minimum calls. For the separate audit-only candidate
 session, the isolated engine worker maps that authority into two process-local controls:
 
-- `OPTIMA_SLOT_AUDIT` is the policy's integer parts-per-million sampling rate converted
+- `CACHEON_SLOT_AUDIT` is the policy's integer parts-per-million sampling rate converted
   to a fraction in `[0, 1]`.
-- `OPTIMA_SLOT_AUDIT_SEED` is the policy's validator seed converted to an integer. Every
+- `CACHEON_SLOT_AUDIT_SEED` is the policy's validator seed converted to an integer. Every
   rank receives the same seed so a sampled collective baseline is entered by all ranks
   rather than deadlocking on rank-divergent sampling.
 
@@ -69,7 +69,7 @@ worker disables CUDA graphs for that role. An unexpected audit receipt in a char
 candidate session is a protocol error.
 
 The tensor comparison still occurs inside the candidate engine through
-[`optima/audit.py`](https://github.com/latent-to/cacheon/blob/main/optima/audit.py).
+[`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py).
 For `matched_ratio` slots it grades against
 `max(0, SlotSpec.correctness.min_ratio - 0.005)`. This `0.005` audit margin is not a
 new slot tolerance and must not be applied by `verify`: component verification compares
@@ -82,7 +82,7 @@ The environment variables and rolling receipt are only worker instrumentation. R
 that instrumentation during development does not create crown authority. Authority
 requires the independently sealed audit-only plan, a distinct session from every timed
 role, bounded transport out of the worker, and Torch-free host regrading through
-[`optima/audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py).
+[`cacheon/audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py).
 The host requires the exact slot × TP-rank/PID matrix, the per-member minimum, zero
 violations, and zero comparison errors.
 
@@ -145,7 +145,7 @@ stale, incomplete, or context-mismatched calibration is not usable for a crown.
 The registered policy can grade metrics such as argmax disagreement, support coverage,
 teacher NLL, KL-derived measures, tail rate, and task score. Exact metrics depend on the
 frozen arena calibration; documentation must not present one universal threshold as the
-Optima quality contract.
+Cacheon quality contract.
 
 Missing teacher coverage, wrong prompt/trajectory identity, tampered evidence, or
 unreopenable calibration yields `NO_DECISION`. A measured candidate regression yields
@@ -168,9 +168,9 @@ retained and reopened.
 
 ## Source anchors
 
-- [Typed slot contracts](https://github.com/latent-to/cacheon/blob/main/optima/slots.py)
-- [Tensor output specifications](https://github.com/latent-to/cacheon/blob/main/optima/tensor_spec.py)
-- [Qualification quality model](https://github.com/latent-to/cacheon/blob/main/optima/eval/qualification.py)
-- [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/optima/audit_gate.py)
-- [Pristine wire protocol](https://github.com/latent-to/cacheon/blob/main/optima/eval/reference_protocol.py)
-- [Calibration authority](https://github.com/latent-to/cacheon/blob/main/optima/eval/calibration.py)
+- [Typed slot contracts](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
+- [Tensor output specifications](https://github.com/latent-to/cacheon/blob/main/cacheon/tensor_spec.py)
+- [Qualification quality model](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py)
+- [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
+- [Pristine wire protocol](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/reference_protocol.py)
+- [Calibration authority](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/calibration.py)

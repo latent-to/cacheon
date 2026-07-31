@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from optima import chain
-import optima.cli as cli
-from optima.finite_debt import (
+from cacheon import chain
+import cacheon.cli as cli
+from cacheon.finite_debt import (
     CampaignBudgetShare,
     PPM,
     DebtClaimBalance,
@@ -20,7 +20,7 @@ from optima.finite_debt import (
     RewardFamilyCampaign,
     issue_innovation_claim,
 )
-from optima.incentive_composition import (
+from cacheon.incentive_composition import (
     DISCOVERY_BOUNTY_ONLY,
     DiscoveryClaimBalance,
     DiscoveryClaimState,
@@ -28,14 +28,14 @@ from optima.incentive_composition import (
     issue_discovery_claim,
     review_discovery_disposition,
 )
-from optima.incentive_composition_shadow import (
+from cacheon.incentive_composition_shadow import (
     IncentiveCompositionShadowError,
     SyntheticDiscoveryStateFixture,
     execute_chain_incentive_composition_shadow,
     load_composed_shadow_inputs,
 )
-from optima.incentive_shadow import SyntheticClaimStateFixture
-from optima.stack_identity import canonical_json_bytes, sha256_hex
+from cacheon.incentive_shadow import SyntheticClaimStateFixture
+from cacheon.stack_identity import canonical_json_bytes, sha256_hex
 
 
 FAMILY = sha256_hex(b"composition-shadow-family")
@@ -496,7 +496,7 @@ def test_composed_shadow_never_replaces_output_or_connects(tmp_path: Path) -> No
 
 def test_composed_shadow_module_has_no_signer_storage_or_publication_imports() -> None:
     source_path = (
-        Path(__file__).parents[1] / "optima" / "incentive_composition_shadow.py"
+        Path(__file__).parents[1] / "cacheon" / "incentive_composition_shadow.py"
     )
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     imports: set[str] = set()
@@ -514,9 +514,9 @@ def test_composed_shadow_module_has_no_signer_storage_or_publication_imports() -
     forbidden_imports = {
         "bittensor",
         "sqlite3",
-        "optima.chain.intake",
-        "optima.chain.weights",
-        "optima.economics",
+        "cacheon.chain.intake",
+        "cacheon.chain.weights",
+        "cacheon.economics",
     }
     assert not imports & forbidden_imports
     assert not calls & {

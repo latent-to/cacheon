@@ -8,8 +8,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import optima.dispatch as dispatch  # noqa: E402
-from optima.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
+import cacheon.dispatch as dispatch  # noqa: E402
+from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
 
 
 @pytest.fixture()
@@ -159,7 +159,7 @@ def _attention_inputs():
 
 def test_attention_dispatcher_receipts(events, monkeypatch):
     completed, fallbacks = events
-    monkeypatch.setenv("OPTIMA_ATTENTION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ATTENTION_SEAM", "1")
     baseline = object()
     layer, batch = _attention_inputs()
     args = (
@@ -209,7 +209,7 @@ def _moe_call(entry, *, slot="moe.fused_experts"):
 
 def test_moe_records_actual_selected_slot(events, monkeypatch):
     completed, fallbacks = events
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
 
     def good_entry(x, _ids, _weights, _prepared, out):
         out.copy_(x)
@@ -224,7 +224,7 @@ def test_moe_records_actual_selected_slot(events, monkeypatch):
 
 def test_moe_selected_audit_prelude_failure_is_fallback(events, monkeypatch):
     completed, fallbacks = events
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch._audit, "sampled", lambda: True)
     monkeypatch.setattr(
         torch.Tensor,
@@ -243,7 +243,7 @@ def test_moe_selected_audit_prelude_failure_is_fallback(events, monkeypatch):
 
 def test_allreduce_dispatcher_receipts_and_topology_skip(events, monkeypatch):
     completed, fallbacks = events
-    monkeypatch.setenv("OPTIMA_COLLECTIVE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_allreduce_group_role", lambda *_args: "tp")
     x = torch.randn(2, 4)
 
@@ -275,7 +275,7 @@ def _fusion_baseline(x, residual, *_args, **_kwargs):
 
 def test_shallow_and_deep_fusion_receipts(events, monkeypatch):
     completed, fallbacks = events
-    monkeypatch.setenv("OPTIMA_ARFUSION_SEAM", "1")
+    monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     group = SimpleNamespace(size=lambda: 2)
     monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: group)
     monkeypatch.setattr(dispatch, "_arfusion_group_role", lambda _use_attn: "tp")

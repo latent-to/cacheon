@@ -1,6 +1,6 @@
 """Example Triton RMSNorm kernel for the norm.rmsnorm slot.
 
-Contract (validator-owned, see optima/slots.py):
+Contract (validator-owned, see cacheon/slots.py):
     rmsnorm(x, weight, out, eps)
       x:      (..., H)  input  (bf16/fp16)
       weight: (H,)      scale  (same dtype)

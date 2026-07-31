@@ -1,16 +1,16 @@
 # CLI reference
 
-The CLI is a thin operator and contributor surface over Optima's typed APIs. A
+The CLI is a thin operator and contributor surface over Cacheon's typed APIs. A
 command's output has only the authority listed here; human-readable output is not a
 qualification, settlement, or release receipt.
 
 ```bash
-python -m optima.cli <command> [options]
-python -m optima.cli <command> --help
+python -m cacheon.cli <command> [options]
+python -m cacheon.cli <command> --help
 ```
 
 Use module invocation on GPU hosts because SGLang starts child processes. The
-installed `optima` console script resolves to the same parser.
+installed `cacheon` console script resolves to the same parser.
 
 ## Command inventory
 
@@ -53,7 +53,7 @@ or JSON ledger is not an alternate production interface.
 ### `slots`
 
 ```bash
-python -m optima.cli slots
+python -m cacheon.cli slots
 ```
 
 Reads the registered `SLOTS` table without importing contribution code or requiring a
@@ -62,7 +62,7 @@ GPU. See the [slot catalog](slots-table.md).
 ### `scan`
 
 ```bash
-python -m optima.cli scan path/to/bundle
+python -m cacheon.cli scan path/to/bundle
 ```
 
 Loads `manifest.toml` as data and recursively applies the Python policy to declared and
@@ -75,15 +75,15 @@ code trusted.
 
 ```bash
 # CPU contract smoke
-python -m optima.cli verify examples/miner_silu_torch \
+python -m cacheon.cli verify examples/miner_silu_torch \
   --device cpu --dtype float32
 
 # CUDA contract and graph verification
-python -m optima.cli verify path/to/bundle \
+python -m cacheon.cli verify path/to/bundle \
   --device cuda --dtype bfloat16 --model MiniMax-M3
 
 # Distributed verification at the arena topology
-python -m optima.cli verify path/to/bundle \
+python -m cacheon.cli verify path/to/bundle \
   --device cuda --world-size 4
 ```
 
@@ -102,7 +102,7 @@ or settlement.
 ### Package
 
 ```bash
-python -m optima.cli chain-package path/to/bundle --out bundle.tar.gz
+python -m cacheon.cli chain-package path/to/bundle --out bundle.tar.gz
 ```
 
 The command writes one canonical wrapper archive and prints the deterministic content
@@ -117,24 +117,24 @@ source .env
 set +a
 
 python -m pip install -e ".[object-store]"
-python -m optima.cli chain-publish path/to/bundle \
+python -m cacheon.cli chain-publish path/to/bundle \
   --out bundle.tar.gz
 ```
 
-The command reads `OPTIMA_OBJECT_STORE_ACCESS_KEY_ID`,
-`OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY`, and
-`OPTIMA_OBJECT_STORE_BUCKET`. It uses generic S3 by default. Set
-`OPTIMA_OBJECT_STORE_ENDPOINT_URL` for any S3-compatible service; that endpoint
+The command reads `CACHEON_OBJECT_STORE_ACCESS_KEY_ID`,
+`CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY`, and
+`CACHEON_OBJECT_STORE_BUCKET`. It uses generic S3 by default. Set
+`CACHEON_OBJECT_STORE_ENDPOINT_URL` for any S3-compatible service; that endpoint
 selects the service without a provider name and defaults to path-style
-addressing. `OPTIMA_OBJECT_STORE_REGION` and
-`OPTIMA_OBJECT_STORE_ADDRESSING_STYLE` override its signing region and URL
-style. `OPTIMA_OBJECT_STORE_PROVIDER=hippius` and `minio` are optional presets,
+addressing. `CACHEON_OBJECT_STORE_REGION` and
+`CACHEON_OBJECT_STORE_ADDRESSING_STYLE` override its signing region and URL
+style. `CACHEON_OBJECT_STORE_PROVIDER=hippius` and `minio` are optional presets,
 not validator protocol identities. The miner's credentials authorize the
 upload only; they are not written into the archive, URL, on-chain payload, or
 validator configuration.
 
 The object key defaults to
-`optima/miner-bundles/sha256/<content_hash>.tar.gz`. Publication refuses an
+`cacheon/miner-bundles/sha256/<content_hash>.tar.gz`. Publication refuses an
 existing object that does not extract to the same committed hash, makes the
 object anonymously readable, and verifies the resulting URL with the same
 production HTTPS fetcher used by validator intake. `--dry-run` packages and
@@ -148,7 +148,7 @@ URLs must still resolve to canonical HTTPS.
 ### Submit
 
 ```bash
-python -m optima.cli chain-submit path/to/bundle \
+python -m cacheon.cli chain-submit path/to/bundle \
   --url https://artifacts.example/bundle.tar.gz \
   --network <network> --netuid <netuid> \
   --wallet <wallet> --hotkey <miner-hotkey> \
@@ -163,7 +163,7 @@ archive.
 ### Inspect public chain state
 
 ```bash
-python -m optima.cli chain-status \
+python -m cacheon.cli chain-status \
   --network <network> --netuid <netuid> \
   --wallet <wallet> --hotkey <hotkey>
 ```
@@ -174,7 +174,7 @@ validator's private intake, screening, qualification, or settlement database.
 ### Register a hotkey
 
 ```bash
-python -m optima.cli chain-register \
+python -m cacheon.cli chain-register \
   --network <network> --netuid <netuid> \
   --wallet <wallet> --hotkey <hotkey>
 ```
@@ -189,7 +189,7 @@ registration first, then runs the SDK preflight.
 The stock entrypoint supports complete finalized intake without a GPU service:
 
 ```bash
-python -m optima.cli chain-validate \
+python -m cacheon.cli chain-validate \
   --network <network> --netuid <netuid> \
   --intake-only --once
 ```
@@ -214,22 +214,22 @@ Install the optional S3 client on the validator host, then publish a private sna
 ```bash
 python -m pip install -e ".[object-store]"
 
-optima chain-snapshot \
+cacheon chain-snapshot \
   --intake-db chain_intake/intake.sqlite3 \
   --audit-log chain_intake/chain-audit.jsonl \
   --object-store-bucket <PRIVATE_BUCKET> \
   --object-store-endpoint <S3_COMPATIBLE_HTTPS_ENDPOINT> \
   --object-store-region <SIGNING_REGION> \
-  --sealed-input qualification-inputs=/srv/optima/sealed-inputs
+  --sealed-input qualification-inputs=/srv/cacheon/sealed-inputs
 ```
 
-Credentials come from `OPTIMA_OBJECT_STORE_ACCESS_KEY_ID` and
-`OPTIMA_OBJECT_STORE_SECRET_ACCESS_KEY` (or the equivalent flags). Generic S3 is
+Credentials come from `CACHEON_OBJECT_STORE_ACCESS_KEY_ID` and
+`CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY` (or the equivalent flags). Generic S3 is
 the default. `--object-store-provider hippius` or `minio` is only a convenience
 preset for endpoint, region, and addressing defaults; a custom endpoint needs no
 provider name. Archive keys default below the private
-`optima/validator-archive/v1` prefix, overridable with
-`OPTIMA_VALIDATOR_ARCHIVE_PREFIX` or `--object-store-prefix`.
+`cacheon/validator-archive/v1` prefix, overridable with
+`CACHEON_VALIDATOR_ARCHIVE_PREFIX` or `--object-store-prefix`.
 
 The command uses SQLite's online backup API and uploads digest-addressed blobs plus
 a closed snapshot manifest. It automatically includes:
@@ -250,7 +250,7 @@ remain deployment responsibilities.
 Verify every scheduled backup with a temporary semantic reopen:
 
 ```bash
-optima chain-snapshot-verify \
+cacheon chain-snapshot-verify \
   --manifest-key <KEY_PRINTED_BY_CHAIN_SNAPSHOT> \
   --object-store-bucket <PRIVATE_BUCKET> \
   --object-store-endpoint <S3_COMPATIBLE_HTTPS_ENDPOINT> \
@@ -267,7 +267,7 @@ authoritative only through a separately reviewed recovery cutover.
 ### `chain-archive-schema3-hold`
 
 ```bash
-python -m optima.cli chain-archive-schema3-hold \
+python -m cacheon.cli chain-archive-schema3-hold \
   --network <network> --netuid <netuid> \
   --intake-db chain_intake/intake.sqlite3 \
   --reservation-id <reservation-id> \
@@ -281,7 +281,7 @@ publish weights. Current-schema work must use the normal authority path.
 ### `set-weights`
 
 ```bash
-python -m optima.cli set-weights \
+python -m cacheon.cli set-weights \
   --network <network> --netuid <netuid> \
   --half-life-blocks <blocks> \
   --discovery-lifetime-blocks <blocks> \
@@ -324,7 +324,7 @@ weight offers. It cannot be combined with `--burn-hotkey`,
 object-store provider. Emissions policy flags and `--intake-db` are required.
 
 ```bash
-python -m optima.cli set-weights \
+python -m cacheon.cli set-weights \
   --burn-to-subnet-owner \
   --network <network> --netuid <netuid> \
   --intake-db chain_intake/intake.sqlite3 \
@@ -336,7 +336,7 @@ python -m optima.cli set-weights \
 ```
 
 ```bash
-python -m optima.cli set-weights \
+python -m cacheon.cli set-weights \
   --burn-to-subnet-owner \
   --network <network> --netuid <netuid> \
   --intake-db chain_intake/intake.sqlite3 \
@@ -363,8 +363,8 @@ Provision a **dedicated** gateway hotkey for HTTP response signatures. Do not
 reuse a follower / `set_weights` hotkey:
 
 ```bash
-python -m optima.cli mint-weight-gateway \
-  --wallet-path /var/lib/optima/wallets \
+python -m cacheon.cli mint-weight-gateway \
+  --wallet-path /var/lib/cacheon/wallets \
   --wallet gateway \
   --hotkey authority \
   --push-credentials /secret/push-credentials.json
@@ -377,18 +377,18 @@ Followers pin that ss58 with `--expected-authority` (or omit the flag to
 auto-pin the on-chain subnet-owner hotkey).
 
 ```bash
-python -m optima.cli mint-push-credentials --path /secret/push-credentials.json
+python -m cacheon.cli mint-push-credentials --path /secret/push-credentials.json
 
-python -m optima.cli serve-weights \
+python -m cacheon.cli serve-weights \
   --object-store-provider hippius \
-  --object-store-bucket optima-weights \
+  --object-store-bucket cacheon-weights \
   --push-credentials /secret/push-credentials.json \
   --network <network> --netuid <netuid> \
   --wallet gateway --hotkey authority \
-  --wallet-path /var/lib/optima/wallets \
+  --wallet-path /var/lib/cacheon/wallets \
   --host 0.0.0.0 --port 8080
 
-python -m optima.cli push-weight-offer \
+python -m cacheon.cli push-weight-offer \
   --intake-db chain_intake/intake.sqlite3 \
   --network <network> --netuid <netuid> \
   --url http://weights-gateway:8080 \
@@ -398,7 +398,7 @@ python -m optima.cli push-weight-offer \
   --discovery-lifetime-blocks <blocks> \
   --discovery-pool-ppm <ppm>
 
-python -m optima.cli follow-weights \
+python -m cacheon.cli follow-weights \
   --url http://weights-gateway:8080 \
   --network <network> --netuid <netuid> \
   --wallet default --hotkey follower \
@@ -410,8 +410,8 @@ python -m optima.cli follow-weights \
 `push-weight-offer` is the eval path: it builds a V2 debt/composition offer when
 incentive composition is active (else legacy V1), and HTTP-PUTs it. It never
 opens a weight-signing wallet or calls `set_weights`. Credentials resolve from
-`--push-credentials`, else `OPTIMA_WEIGHT_PUSH_CREDENTIALS` (JSON path), else
-`OPTIMA_WEIGHT_PUSH_KEY` (+ optional `OPTIMA_WEIGHT_PUSH_CREDENTIAL_ID`).
+`--push-credentials`, else `CACHEON_WEIGHT_PUSH_CREDENTIALS` (JSON path), else
+`CACHEON_WEIGHT_PUSH_KEY` (+ optional `CACHEON_WEIGHT_PUSH_CREDENTIAL_ID`).
 `serve-weights` exposes `GET /v1/current-weights` (permit + hotkey signature)
 and optional `PUT /v1/current-weights` (same credential resolution). A
 credentialed PUT stores an HMAC-authenticated envelope, and a push-enabled
@@ -431,8 +431,8 @@ carry the full `DebtWeightPublicationBinding` so follower `weights_ppm` match
 the economic projection.
 
 Provider swap is config-only via `--object-store-provider` /
-`OPTIMA_OBJECT_STORE_*`; an environment-only
-`OPTIMA_OBJECT_STORE_PROVIDER` is sufficient, while explicit flags take
+`CACHEON_OBJECT_STORE_*`; an environment-only
+`CACHEON_OBJECT_STORE_PROVIDER` is sufficient, while explicit flags take
 precedence over environment values. The optional S3-compatible dependency is
 `pip install -e ".[object-store]"` (boto3, Apache-2.0). See
 [Settlement and weights](../validator-guide/settlement-and-weights.md#shared-current-weights-endpoint).
@@ -440,7 +440,7 @@ precedence over environment values. The optional S3-compatible dependency is
 ### Incentive shadows
 
 ```bash
-python -m optima.cli chain-incentive-shadow \
+python -m cacheon.cli chain-incentive-shadow \
   --network <network> --netuid <netuid> \
   --policy core-policy.json \
   --claims-fixture synthetic-core-claims.json \
@@ -448,7 +448,7 @@ python -m optima.cli chain-incentive-shadow \
   --expected-claims-digest <sha256> \
   --output core-shadow-receipt.json
 
-python -m optima.cli chain-incentive-composition-shadow \
+python -m cacheon.cli chain-incentive-composition-shadow \
   --network <network> --netuid <netuid> \
   --core-policy core-policy.json \
   --core-claims-fixture synthetic-core-claims.json \
@@ -469,7 +469,7 @@ publication, or debit authority.
 ### `chain-activate-incentives`
 
 ```bash
-python -m optima.cli chain-activate-incentives \
+python -m cacheon.cli chain-activate-incentives \
   --network <network> --netuid <netuid> \
   --intake-db chain_intake/intake.sqlite3 \
   --core-policy core-policy.json \
@@ -486,7 +486,7 @@ campaign. It does not sign or publish weights.
 ### `set-debt-weights`
 
 ```bash
-python -m optima.cli set-debt-weights \
+python -m cacheon.cli set-debt-weights \
   --network <network> --netuid <netuid> \
   --intake-db chain_intake/intake.sqlite3 \
   --wallet <wallet> --hotkey <validator-hotkey> \
@@ -503,21 +503,21 @@ faster than the policy cadence. `--reconcile-only`, `--validator-hotkey`, and
 ## Environment checks
 
 ```bash
-python -m optima.cli compat
-python -m optima.cli chain-compat
+python -m cacheon.cli compat
+python -m cacheon.cli chain-compat
 ```
 
 `compat` checks the exact pinned SGLang version plus registered imports and signatures. A
 version mismatch is a failing result. `chain-compat` checks the Bittensor SDK API used by
-Optima without connecting to a network.
+Cacheon without connecting to a network.
 
 ## Release commands
 
 ### Provision model bytes
 
 ```bash
-python -m optima.cli model-provision \
-  /srv/models/model /srv/optima/model-publication \
+python -m cacheon.cli model-provision \
+  /srv/models/model /srv/cacheon/model-publication \
   --expected-content-digest <sha256> --workers <n>
 ```
 
@@ -526,7 +526,7 @@ The result is an immutable content-addressed model tree and receipt.
 ### Verify a release
 
 ```bash
-python -m optima.cli release-verify /srv/optima/releases/<digest> \
+python -m cacheon.cli release-verify /srv/cacheon/releases/<digest> \
   --expected-public-key <ed25519-public-key> \
   --descriptor-digest <expected-digest>
 ```
@@ -537,8 +537,8 @@ release cannot authenticate its signer.
 ### Materialize a container context
 
 ```bash
-python -m optima.cli release-context \
-  /srv/optima/releases/<digest> ./context \
+python -m cacheon.cli release-context \
+  /srv/cacheon/releases/<digest> ./context \
   --expected-public-key <ed25519-public-key> \
   --descriptor-digest <expected-digest>
 ```
@@ -556,4 +556,4 @@ requires later chain observation. Automation must inspect the typed status and r
 receipts or durable records emitted by the authoritative subsystem. Console prose and
 process status alone are never settlement or publication evidence.
 
-Source: [`optima/cli.py`](https://github.com/latent-to/cacheon/blob/main/optima/cli.py).
+Source: [`cacheon/cli.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py).

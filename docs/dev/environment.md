@@ -1,6 +1,6 @@
 # Development environment
 
-Optima supports a small CPU-only contributor loop and a separate GPU/runtime
+Cacheon supports a small CPU-only contributor loop and a separate GPU/runtime
 loop. Production qualification adds a third boundary: reviewed deployment code
 plus isolated OCI workers. Do not flatten those environments into one trust
 level.
@@ -37,9 +37,9 @@ python -m pip install -e ".[cpu,dev,release]"
 Run the deterministic local loop:
 
 ```bash
-python -m optima.cli slots
-python -m optima.cli scan examples/miner_silu_torch
-python -m optima.cli verify examples/miner_silu_torch \
+python -m cacheon.cli slots
+python -m cacheon.cli scan examples/miner_silu_torch
+python -m cacheon.cli verify examples/miner_silu_torch \
   --device cpu --dtype float32
 pytest -q
 ```
@@ -61,7 +61,7 @@ The faithful SiLU example should verify successfully. The companion
 operation and should fail correctness:
 
 ```bash
-python -m optima.cli verify examples/miner_silu_broken_torch \
+python -m cacheon.cli verify examples/miner_silu_broken_torch \
   --device cpu --dtype float32
 ```
 
@@ -83,9 +83,9 @@ test fixtures, and generated OCI contexts. Tests should use ephemeral keys.
 
 ## Working conventions
 
-- Invoke GPU commands as `python -m optima.cli ...` so SGLang child processes
+- Invoke GPU commands as `python -m cacheon.cli ...` so SGLang child processes
   resolve the same installed package.
-- Treat `optima/slots.py`, `optima/target_catalog.py`, stack manifests, and
+- Treat `cacheon/slots.py`, `cacheon/target_catalog.py`, stack manifests, and
   qualification schemas as contracts. Change tests and documentation with
   them.
 - Use temporary directories for intake, model, native, and release tests.
@@ -143,13 +143,13 @@ hardware campaign.
 | Release host policy | release, runtime, and host tests | real registry double-build and serving receipts |
 
 When a schema changes, add both a positive construction and a negative reopen
-case. Optima's security properties depend heavily on old or malformed objects
+case. Cacheon's security properties depend heavily on old or malformed objects
 failing closed rather than being silently upgraded.
 
 ## GPU and OCI work
 
 Use the exact SGLang pin and deployment-approved Torch/CUDA combination from
-[GPU setup](gpu-setup.md). Run `python -m optima.cli compat`. The version row
+[GPU setup](gpu-setup.md). Run `python -m cacheon.cli compat`. The version row
 compares the installed package with `PINNED_SGLANG`; a mismatch is marked
 `DIFFERS from pin`, fails the row, and makes the command exit nonzero.
 
@@ -173,8 +173,8 @@ command and call the result production qualification.
 ## Source layout
 
 See the [codebase map](../reference/codebase-map.md) for subsystem ownership.
-The executable package is `optima/`, validator-owned reference kernels are in
-`optima_kernels/`, examples are in `examples/`, and contract tests are in
+The executable package is `cacheon/`, validator-owned reference kernels are in
+`cacheon_kernels/`, examples are in `examples/`, and contract tests are in
 `tests/`.
 
 Source: [`pyproject.toml`](https://github.com/latent-to/cacheon/blob/main/pyproject.toml).

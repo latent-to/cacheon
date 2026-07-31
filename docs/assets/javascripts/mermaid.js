@@ -1,4 +1,4 @@
-const renderOptimaDiagrams = async () => {
+const renderCacheonDiagrams = async () => {
   const blocks = Array.from(document.querySelectorAll("pre.mermaid"));
   if (!blocks.length) return;
 
@@ -33,12 +33,12 @@ const renderOptimaDiagrams = async () => {
     await mermaid.run({ nodes });
   } catch (error) {
     const message = error && error.message ? error.message : String(error);
-    console.error(`Optima diagram render failed: ${message}`);
+    console.error(`Cacheon diagram render failed: ${message}`);
   }
 };
 
 if (typeof document$ !== "undefined") {
-  document$.subscribe(() => void renderOptimaDiagrams());
+  document$.subscribe(() => void renderCacheonDiagrams());
 } else {
-  document.addEventListener("DOMContentLoaded", () => void renderOptimaDiagrams());
+  document.addEventListener("DOMContentLoaded", () => void renderCacheonDiagrams());
 }

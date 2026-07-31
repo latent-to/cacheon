@@ -5,9 +5,9 @@ import json
 import sys
 from types import SimpleNamespace
 
-import optima.cli as cli
-from optima import chain
-from optima.chain.intake import FinalizedIntakeStore
+import cacheon.cli as cli
+from cacheon import chain
+from cacheon.chain.intake import FinalizedIntakeStore
 from tests.test_chain_intake import SCOPE, _store
 from tests.test_incentive_composition_store import (
     _activate_selected,

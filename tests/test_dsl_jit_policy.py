@@ -1,4 +1,4 @@
-"""Unit tests for the DSL tracing-JIT compile allowlist (optima/dsl_jit_policy.py).
+"""Unit tests for the DSL tracing-JIT compile allowlist (cacheon/dsl_jit_policy.py).
 
 Stdlib-only module (ast) — these tests exercise the fail-closed alias analysis
 and the call-shape predicate directly, independent of engine_tree wiring.
@@ -10,7 +10,7 @@ import ast
 
 import pytest
 
-from optima import dsl_jit_policy as pol
+from cacheon import dsl_jit_policy as pol
 
 
 def _receivers(src: str, *, local=None):

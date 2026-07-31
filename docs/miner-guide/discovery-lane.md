@@ -15,7 +15,7 @@ instead.
 | Question | Component proposal | Discovery proposal |
 |---|---|---|
 | What is being replaced? | one registered singleton or complete registered atomic target | an exact bounded patch that does not fit a current target |
-| ABI | `optima-op-abi-v0` registered slot rows, including sealed direct artifacts | `optima-discovery-abi-v1` closed patch manifest |
+| ABI | `cacheon-op-abi-v0` registered slot rows, including sealed direct artifacts | `cacheon-discovery-abi-v1` closed patch manifest |
 | Source shape | manifest, declared entry/metadata, and allowed advanced inputs | exactly the manifest and declared unified diffs |
 | Runtime authority | validator dispatches through a registered slot seam | validator applies a sealed overlay through fixed discovery process roles |
 | Economic result | standing target crown may participate in emissions | one bounded, non-renewable, expiring bounty claim when enabled |
@@ -66,14 +66,14 @@ makes overlap, fallback, attribution, and standing rewards well-defined.
 
 A discovery proposal is **not** an op bundle, and
 `[competition] mode = "system"` is not a valid discovery schema. Its closed manifest uses
-`optima-discovery-abi-v1` and contains only exact text patches plus applicability
+`cacheon-discovery-abi-v1` and contains only exact text patches plus applicability
 and build-profile claims.
 
 An illustrative schema fixture is:
 
 ```toml
 bundle_id = "proposal-one"
-abi_version = "optima-discovery-abi-v1"
+abi_version = "cacheon-discovery-abi-v1"
 build_profile = "minimax-m3-rtx-sm120-tp8-v1"
 patches = ["patches/change.patch"]
 dependencies = ["cuda13"]
@@ -99,7 +99,7 @@ canonical `.patch`/`.diff` paths. The proposal tree may contain exactly
 binaries, or undeclared notes.
 
 The parser and frozen-inventory checks are in
-[discovery.py](https://github.com/latent-to/cacheon/blob/main/optima/discovery.py).
+[discovery.py](https://github.com/latent-to/cacheon/blob/main/cacheon/discovery.py).
 
 ## Requested promotion is not authority
 
@@ -139,7 +139,7 @@ regions must remain unchanged.
 
 The exact current allowlists, symbol regions, suffixes, and forbidden names are
 the `DEFAULT_DISCOVERY_POLICY` in
-[discovery.py](https://github.com/latent-to/cacheon/blob/main/optima/discovery.py).
+[discovery.py](https://github.com/latent-to/cacheon/blob/main/cacheon/discovery.py).
 Do not rely on a prose list when preparing a patch.
 
 Diff application is exact: no fuzz, offset search, deletion, rename, copy, or
@@ -204,7 +204,7 @@ can exercise the closed parser directly from a development checkout:
 
 ```bash
 python - <<'PY'
-from optima.discovery import inspect_discovery
+from cacheon.discovery import inspect_discovery
 
 proposal = inspect_discovery("my_discovery")
 print(proposal.proposal_digest)
@@ -231,11 +231,11 @@ through the same content-addressed HTTPS timelock path described in
 [Submitting](submitting.md):
 
 ```bash
-python -m optima.cli chain-package my_discovery \
+python -m cacheon.cli chain-package my_discovery \
   --out dist/my_discovery.tar.gz
 
-python -m optima.cli chain-submit my_discovery \
-  --url https://downloads.example.org/optima/my_discovery.tar.gz \
+python -m cacheon.cli chain-submit my_discovery \
+  --url https://downloads.example.org/cacheon/my_discovery.tar.gz \
   --netuid <NETUID> --network <NETWORK> \
   --wallet <WALLET> --hotkey <HOTKEY> --dry-run
 ```

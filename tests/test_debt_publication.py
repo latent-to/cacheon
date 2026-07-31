@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.chain.debt_publication import (
+from cacheon.chain.debt_publication import (
     PUBLICATION_KIND_COMPOSED,
     PUBLICATION_KIND_CORE,
     ConfirmedDebtWeightPublication,
@@ -19,9 +19,9 @@ from optima.chain.debt_publication import (
     reopen_confirmed_debt_publication,
     retain_confirmed_debt_publication,
 )
-from optima.chain.weights import WeightPublicationRecord
-from optima.finite_debt import PPM, DebtEpochProjection, DebtHotkeyWeight
-from optima.stack_identity import canonical_digest
+from cacheon.chain.weights import WeightPublicationRecord
+from cacheon.finite_debt import PPM, DebtEpochProjection, DebtHotkeyWeight
+from cacheon.stack_identity import canonical_digest
 
 
 def _h(value: str) -> str:

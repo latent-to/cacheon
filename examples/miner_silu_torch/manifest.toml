@@ -4,7 +4,7 @@
 # GPU or Triton. Not a real competitive submission.
 
 bundle_id = "example-silu-torch-cpu"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [[ops]]
 slot = "activation.silu_and_mul"

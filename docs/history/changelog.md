@@ -6,7 +6,7 @@ Historical benchmark results on this page retain their original meaning. Results
 
 ## 2026-05-31 — Initial mechanism
 
-The initial Optima implementation established the core thesis:
+The initial Cacheon implementation established the core thesis:
 
 - a validator-owned typed slot ABI;
 - SGLang post-import seam adapters;
@@ -54,7 +54,7 @@ Representative changes: [PR #6](https://github.com/latent-to/cacheon/pull/6), [P
 
 ## 2026-06-02 — Collective slots
 
-Profiling showed that decode at tensor-parallel scale was frequently communication-bound. Optima introduced a collective all-reduce benchmark and then a real `collective.all_reduce` slot at `GroupCoordinator.all_reduce`.
+Profiling showed that decode at tensor-parallel scale was frequently communication-bound. Cacheon introduced a collective all-reduce benchmark and then a real `collective.all_reduce` slot at `GroupCoordinator.all_reduce`.
 
 Collectives widened the capability boundary by passing a process group, so single-process verification became invalid. `verify_collective` added multi-rank execution and comparison with trusted fp32 cross-rank partials. The design also established terminal all-rank selection: after ranks select a candidate collective, one rank cannot safely fall back while peers enter candidate communication.
 
@@ -103,7 +103,7 @@ Changes: [PR #23](https://github.com/latent-to/cacheon/pull/23), [PR #24](https:
 
 The shallow fused epilogue measured 1.044× against its noise-derived bar on MiniMax-M3-NVFP4, TP4, 4×B300 with graphs enabled, then reproduced at 1.049× on an independent prompt seed. The deep epilogue measured 1.074× and reproduced at 1.071×. The recorded audit samples had zero violations.
 
-These were the first submitted Optima kernels to beat the pinned SGLang baseline through the then-current referee. They are historical performance receipts. They predate the final hostile evaluation stack, SQLite authority, pristine T, independent two-pass settlement, and signed release pipeline.
+These were the first submitted Cacheon kernels to beat the pinned SGLang baseline through the then-current referee. They are historical performance receipts. They predate the final hostile evaluation stack, SQLite authority, pristine T, independent two-pass settlement, and signed release pipeline.
 
 ## 2026-07-07 — Fidelity authority correction
 
@@ -137,7 +137,7 @@ A whole-system optimization prototype exposed a product-model error: complete en
 
 The reset established the current invariants:
 
-- Optima Engine is chain-independent;
+- Cacheon Engine is chain-independent;
 - proposals, crowns, integrated contributions, and releases are separate objects;
 - complete engines are the isolation unit;
 - registered slot or atomic deltas are the reward unit;
@@ -255,7 +255,7 @@ The closure added the missing product authorities:
 - immutable signed release publication;
 - reproducible Registry-v2 image identity;
 - host digest, label, seccomp, mount, and inspect authorization;
-- fail-closed serving under `OPTIMA_RELEASE_REQUIRED`;
+- fail-closed serving under `CACHEON_RELEASE_REQUIRED`;
 - all-rank active/routed/completed release smoke receipts.
 
 The exact final structural proof used a synthetic 100-ppm candidate to exercise two-pass crown, restart, and a live `submitted=false` weight dry-run. It did not claim a real acceleration result. The real joined double-build and TP8 serve proof was not run.
@@ -327,7 +327,7 @@ Changes: `5afdf2e2`, `1796fc24`, `a52712ef`, `e9ac2f30`, `030d619c`, and
 
 The `refactor/strict-validation-kernel` branch centralizes canonical digest, integer,
 identifier, exact-field, duplicate-key, CUDA-driver-integer, and environment-flag checks
-in `optima/_strict.py`. Calling modules retain their own exception types, grammars, and
+in `cacheon/_strict.py`. Calling modules retain their own exception types, grammars, and
 bounds. Most authority digests now reject the all-zero placeholder; digest computation is
 unchanged.
 
@@ -340,7 +340,7 @@ manifest-reachable serving entrypoint before the branch is release-ready.
 
 ### MXFP4 throughput claim retracted — 2026-06-07
 
-An early sm120/MXFP4 example was described as a submitted throughput improvement before it had passed Optima's scored end-to-end gate. Commit [`c83c5a9`](https://github.com/latent-to/cacheon/commit/c83c5a9) removed the slot/example and the unsupported throughput language while retaining the useful generic MoE and cosine-correctness machinery.
+An early sm120/MXFP4 example was described as a submitted throughput improvement before it had passed Cacheon's scored end-to-end gate. Commit [`c83c5a9`](https://github.com/latent-to/cacheon/commit/c83c5a9) removed the slot/example and the unsupported throughput language while retaining the useful generic MoE and cosine-correctness machinery.
 
 ### Weight submission truthfulness — 2026-07
 
@@ -352,7 +352,7 @@ The July 7 and July 8 fused-epilogue results remain real, reproduced measurement
 
 ### Slot count corrected — 2026-07-13
 
-The live slot catalog contains 11 slots, not 10. `attention.msa_prefill_block_score` is the additional current slot. The executable [`slots.py`](https://github.com/latent-to/cacheon/blob/main/optima/slots.py) catalog is authoritative.
+The live slot catalog contains 11 slots, not 10. `attention.msa_prefill_block_score` is the additional current slot. The executable [`slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py) catalog is authoritative.
 
 ## Hardening merge index
 

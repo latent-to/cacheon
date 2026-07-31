@@ -11,20 +11,20 @@ from pathlib import Path
 
 import pytest
 
-import optima.eval.oci_session_protocol as protocol
-from optima.discovery_overlay import (
+import cacheon.eval.oci_session_protocol as protocol
+from cacheon.discovery_overlay import (
     DiscoveryActivationReceipt,
     DiscoveryDriverOrigin,
     DiscoverySchedulerMember,
 )
-from optima.seams import (
+from cacheon.seams import (
     SEAM_ADAPTERS,
     SEAM_BINDINGS,
     SEAM_BINDING_ENV_GATES,
     normalize_seam_bindings,
     seam_binding_environment,
 )
-from optima.eval.oci_session_protocol import (
+from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     EVIDENCE_MAGIC,
     FRAME_HEADER_BYTES,
@@ -78,7 +78,7 @@ LAUNCH = _digest("launch")
 
 def _discovery_receipt(**changes: object) -> DiscoveryActivationReceipt:
     values: dict[str, object] = {
-        "schema": "optima.discovery-driver-activation.v1",
+        "schema": "cacheon.discovery-driver-activation.v1",
         "overlay_identity_digest": _digest("discovery-overlay"),
         "driver_pid": 100,
         "driver_origin": DiscoveryDriverOrigin(
@@ -188,11 +188,11 @@ def test_engine_config_is_exact_immutable_and_digest_stable() -> None:
 
 def test_seam_binding_table_is_closed_and_deep_epilogue_shares_arfusion() -> None:
     assert dict(SEAM_BINDING_ENV_GATES) == {
-        "arfusion": "OPTIMA_ARFUSION_SEAM",
-        "attention": "OPTIMA_ATTENTION_SEAM",
-        "collective": "OPTIMA_COLLECTIVE_SEAM",
-        "moe": "OPTIMA_MOE_SEAM",
-        "msa_prefill": "OPTIMA_MSA_PREFILL_SEAM",
+        "arfusion": "CACHEON_ARFUSION_SEAM",
+        "attention": "CACHEON_ATTENTION_SEAM",
+        "collective": "CACHEON_COLLECTIVE_SEAM",
+        "moe": "CACHEON_MOE_SEAM",
+        "msa_prefill": "CACHEON_MSA_PREFILL_SEAM",
     }
     bindings = {binding.binding_id: binding for binding in SEAM_BINDINGS}
     assert bindings["arfusion"].adapters == (
@@ -216,18 +216,18 @@ def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> Non
     selected = normalize_seam_bindings(["arfusion", "msa_prefill"])
     assert selected == ("arfusion", "msa_prefill")
     assert seam_binding_environment(selected) == {
-        "OPTIMA_ARFUSION_SEAM": "1",
-        "OPTIMA_ATTENTION_SEAM": "0",
-        "OPTIMA_COLLECTIVE_SEAM": "0",
-        "OPTIMA_MOE_SEAM": "0",
-        "OPTIMA_MSA_PREFILL_SEAM": "1",
+        "CACHEON_ARFUSION_SEAM": "1",
+        "CACHEON_ATTENTION_SEAM": "0",
+        "CACHEON_COLLECTIVE_SEAM": "0",
+        "CACHEON_MOE_SEAM": "0",
+        "CACHEON_MSA_PREFILL_SEAM": "1",
     }
     assert seam_binding_environment(()) == {
-        "OPTIMA_ARFUSION_SEAM": "0",
-        "OPTIMA_ATTENTION_SEAM": "0",
-        "OPTIMA_COLLECTIVE_SEAM": "0",
-        "OPTIMA_MOE_SEAM": "0",
-        "OPTIMA_MSA_PREFILL_SEAM": "0",
+        "CACHEON_ARFUSION_SEAM": "0",
+        "CACHEON_ATTENTION_SEAM": "0",
+        "CACHEON_COLLECTIVE_SEAM": "0",
+        "CACHEON_MOE_SEAM": "0",
+        "CACHEON_MSA_PREFILL_SEAM": "0",
     }
 
 
@@ -433,7 +433,7 @@ def test_ready_is_only_an_exact_bound_marker() -> None:
     message = ready_message(session_id=SESSION, launch_digest=LAUNCH)
     expected_payload = (
         b'{"launch_digest":"' + LAUNCH.encode("ascii")
-        + b'","schema":"optima-isolated-engine-session-v1","session_id":"'
+        + b'","schema":"cacheon-isolated-engine-session-v1","session_id":"'
         + SESSION.encode("ascii") + b'","type":"ready"}'
     )
     assert encode_message(message, max_bytes=MAX_CONTROL_BYTES) == expected_payload
@@ -805,12 +805,12 @@ def test_protocol_module_has_no_evaluator_runtime_quality_or_chain_import() -> N
         elif isinstance(node, ast.ImportFrom) and node.module:
             imports.add(node.module)
     forbidden = {
-        "optima.eval.oci_protocol",
-        "optima.eval.throughput_kl",
-        "optima.eval.scoring",
-        "optima.eval.kl",
-        "optima.eval.external_quality",
-        "optima.chain",
+        "cacheon.eval.oci_protocol",
+        "cacheon.eval.throughput_kl",
+        "cacheon.eval.scoring",
+        "cacheon.eval.kl",
+        "cacheon.eval.external_quality",
+        "cacheon.chain",
         "torch",
         "sglang",
     }

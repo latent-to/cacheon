@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.copy_fingerprint import (
+from cacheon.copy_fingerprint import (
     SubmittedDeltaFingerprint,
     bundle_slot_file_fingerprints,
     bundle_slot_fingerprints,
@@ -175,7 +175,7 @@ def _write_bundle(root: Path, ops: list[tuple[str, str, str]], files: dict[str, 
     """Materialize a minimal bundle: ``ops`` = (slot, source, entry) rows; ``files`` =
     relpath -> python source."""
     root.mkdir(parents=True, exist_ok=True)
-    lines = ['bundle_id = "t"', 'abi_version = "optima-op-abi-v0"', ""]
+    lines = ['bundle_id = "t"', 'abi_version = "cacheon-op-abi-v0"', ""]
     for slot, source, entry in ops:
         lines += ["[[ops]]", f'slot = "{slot}"', f'source = "{source}"', f'entry = "{entry}"', ""]
     (root / "manifest.toml").write_text("\n".join(lines))
@@ -219,7 +219,7 @@ def _write_variant_bundle(
     declare non-overlapping capability domains there.
     """
     root.mkdir(parents=True, exist_ok=True)
-    lines = ['bundle_id = "t"', 'abi_version = "optima-op-abi-v0"', ""]
+    lines = ['bundle_id = "t"', 'abi_version = "cacheon-op-abi-v0"', ""]
     for slot, variant, source, entry, *rest in rows:
         lines += [
             "[[ops]]",
@@ -267,7 +267,7 @@ def test_padding_an_extra_op_cannot_even_resolve_a_target(tmp_path):
     # path this evasion is rejected STRUCTURALLY: a submission must resolve to one
     # registered target, and no target has these members — the padded bundle never
     # even reaches the copy comparator.
-    from optima.target_catalog import TargetResolutionError
+    from cacheon.target_catalog import TargetResolutionError
 
     pad = "import torch\n\ndef rmsnorm(x, w, out, eps):\n    v = (x * x).mean(-1, keepdim=True)\n    out.copy_(x * torch.rsqrt(v + eps) * w)\n"
     b = _write_bundle(tmp_path / "b",

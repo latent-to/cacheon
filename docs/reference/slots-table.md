@@ -5,8 +5,8 @@ contribution supplies an implementation for that boundary; the validator owns
 the call site, inputs, output allocation, reference, and verification policy.
 
 The live registry contains **11 slots**. The registry in
-[`optima/slots.py`](https://github.com/latent-to/cacheon/blob/main/optima/slots.py)
-is authoritative; print it with `python -m optima.cli slots`.
+[`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
+is authoritative; print it with `python -m cacheon.cli slots`.
 
 ## Registered slots
 

@@ -12,25 +12,25 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.bundle_hash import content_hash
-from optima.discovery import (
+from cacheon.bundle_hash import content_hash
+from cacheon.discovery import (
     DEFAULT_DISCOVERY_POLICY,
     DiscoveryArmPlan,
     DiscoveryBuildProfile,
     inspect_discovery,
 )
-from optima.discovery_overlay import (
+from cacheon.discovery_overlay import (
     DiscoveryActivationReceipt,
     DiscoveryDriverOrigin,
     DiscoverySchedulerMember,
 )
-from optima.engine_tree import (
+from cacheon.engine_tree import (
     inspect_contribution,
     materialize_discovery_engine_tree,
     materialize_engine_tree,
     reopen_materialized_engine_tree,
 )
-from optima.eval.engine_launch import (
+from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     LogicalHardwareSpec,
     NativeBuildSpec,
@@ -40,7 +40,7 @@ from optima.eval.engine_launch import (
     native_patcher_digest,
     native_toolchain_digest,
 )
-from optima.eval.marginal_runtime import (
+from cacheon.eval.marginal_runtime import (
     CandidateArmWorkerError,
     MarginalRuntimeError,
     MaterializedArmBinding,
@@ -49,32 +49,32 @@ from optima.eval.marginal_runtime import (
     prepare_marginal_runtime,
     run_marginal_lifecycle,
 )
-from optima.eval.native_compile_profile import NativeCuTeCompileProfile
-from optima.eval.oci_backend import (
+from cacheon.eval.native_compile_profile import NativeCuTeCompileProfile
+from cacheon.eval.oci_backend import (
     EngineExecutionEvidence,
     TrustedArenaModelMountReceipt,
     expected_runtime_preflight,
     runtime_identity_from_preflight,
 )
-from optima.eval.oci_outer_session import (
+from cacheon.eval.oci_outer_session import (
     BatchExecutionEvidence,
     OuterSessionWorkerError,
     SessionExecutionEvidence,
     SessionExecutionPlan,
 )
-from optima.eval.oci_session_protocol import (
+from cacheon.eval.oci_session_protocol import (
     BatchEvidence,
     EngineSessionConfig,
     PromptEvidence,
 )
-from optima.eval.runtime_preflight import RuntimePreflightReceipt
-from optima.stack_manifest import (
+from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
+from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
     ProposalContributionRef,
 )
-from optima.stack_plan import CohortPlan, MarginalArmPlan, plan_candidate_stack, plan_marginal_arm
-from optima.target_catalog import TargetCatalog, default_target_catalog
+from cacheon.stack_plan import CohortPlan, MarginalArmPlan, plan_candidate_stack, plan_marginal_arm
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
 from tests.test_engine_tree import _write_discovery_fixture
 
 
@@ -105,7 +105,7 @@ def _specs(catalog: TargetCatalog) -> dict[str, str]:
 def _preflight() -> RuntimePreflightReceipt:
     image = _digest("image")
     return RuntimePreflightReceipt(
-        schema="optima-runtime-preflight-v2",
+        schema="cacheon-runtime-preflight-v2",
         requested_image="registry.example/worker@sha256:" + image,
         image_digest=image,
         local_image_id="sha256:" + "a" * 64,
@@ -116,7 +116,7 @@ def _preflight() -> RuntimePreflightReceipt:
         uid=max(1, os.getuid()),
         gid=max(1, os.getgid()),
         sglang_version="0.0.0.dev1+g56e290315",
-        worker_distribution="optima-harness",
+        worker_distribution="cacheon-harness",
         worker_version="0.0.1",
         worker_distribution_digest=_digest("worker"),
         worker_file_count=200,
@@ -320,7 +320,7 @@ def _case(tmp_path: Path, source: Path = SILU, *, suffix: str = "") -> Case:
     )
     native = _native(baseline_tree.tree_digest, preflight)
     config = EngineSessionConfig(
-        model_path="/optima/input/model",
+        model_path="/cacheon/input/model",
         dtype="bfloat16",
         deterministic=False,
         attention_backend="flashinfer",
@@ -487,7 +487,7 @@ def _discovery_activation(
     overlay_identity_digest: str | None = None,
 ) -> DiscoveryActivationReceipt:
     return DiscoveryActivationReceipt(
-        "optima.discovery-driver-activation.v1",
+        "cacheon.discovery-driver-activation.v1",
         overlay_identity_digest or arm.overlay_identity_digest,
         100,
         DiscoveryDriverOrigin(
@@ -562,7 +562,7 @@ def _execution(
     )
     receipt = binding.runtime_preflight_receipt
     return EngineExecutionEvidence(
-        "optima.oci-engine-execution.v1",
+        "cacheon.oci-engine-execution.v1",
         launch.digest,
         runtime_identity_from_preflight(receipt),
         receipt.sha256,
@@ -992,7 +992,7 @@ def test_forged_empty_tree_claiming_candidate_stack_rejects_before_executor(
     case = _case(tmp_path)
     forged_root = tmp_path / "forged"
     shutil.copytree(case.baseline_tree.root, forged_root)
-    metadata_path = forged_root / "metadata" / "optima_engine_tree.json"
+    metadata_path = forged_root / "metadata" / "cacheon_engine_tree.json"
     metadata_path.chmod(0o644)
     metadata = json.loads(metadata_path.read_text())
     metadata["stack_digest"] = case.arm.candidate.digest
@@ -1029,7 +1029,7 @@ def test_prepare_never_imports_candidate_top_level(tmp_path: Path) -> None:
     (source / "kernels").mkdir(parents=True)
     (source / "metadata").mkdir()
     (source / "manifest.toml").write_text(
-        'bundle_id="raising"\nabi_version="optima-op-abi-v0"\n'
+        'bundle_id="raising"\nabi_version="cacheon-op-abi-v0"\n'
         '[[ops]]\nslot="activation.silu_and_mul"\nsource="kernels/raising.py"\n'
         'entry="silu_and_mul"\ndtypes=["bfloat16"]\nmetadata="metadata/op.json"\n'
     )
@@ -1234,7 +1234,7 @@ def test_bridge_import_and_records_exclude_grading_authority() -> None:
     script = f"""
 import sys
 sys.path.insert(0, {str(ROOT)!r})
-import optima.eval.marginal_runtime as module
+import cacheon.eval.marginal_runtime as module
 for name in ('torch', 'sglang', 'bittensor'):
     assert name not in sys.modules
 print(module.__name__)
@@ -1247,7 +1247,7 @@ print(module.__name__)
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    import optima.eval.marginal_runtime as module
+    import cacheon.eval.marginal_runtime as module
 
     names = {
         field.name
@@ -1275,7 +1275,7 @@ def test_sglang_plugin_resolves_only_materialized_namespace_after_spawn(
 ) -> None:
     trusted = tmp_path / "trusted"
     tree = tmp_path / "engine-tree"
-    module = tree / ("optima_c_" + "a" * 64) / "kernels"
+    module = tree / ("cacheon_c_" + "a" * 64) / "kernels"
     module.mkdir(parents=True)
     trusted.mkdir()
     target = trusted / "sglang/srt/layers"
@@ -1297,16 +1297,16 @@ def test_sglang_plugin_resolves_only_materialized_namespace_after_spawn(
 sys.path[:0] = [{str(ROOT)!r}, {str(trusted)!r}]
 TREE, NAMESPACE = {str(tree)!r}, {namespace!r}
 def child(send, bundle):
-    import optima.integrations.sglang_plugin as plugin
-    from optima import seam, seams
+    import cacheon.integrations.sglang_plugin as plugin
+    from cacheon import seam, seams
     seam._ENGINE_TREE = TREE
     seams.SEAM_ADAPTERS = tuple(a for a in seams.SEAM_ADAPTERS if a.integration == 'sglang_silu')
-    os.environ.update(OPTIMA_ENGINE_WORKER='1', OPTIMA_BUNDLE_PATH=bundle,
-        OPTIMA_ENGINE_TREE_DIGEST='1' * 64, OPTIMA_STACK_DIGEST='2' * 64,
-        OPTIMA_ACTIVE='0')
+    os.environ.update(CACHEON_ENGINE_WORKER='1', CACHEON_BUNDLE_PATH=bundle,
+        CACHEON_ENGINE_TREE_DIGEST='1' * 64, CACHEON_STACK_DIGEST='2' * 64,
+        CACHEON_ACTIVE='0')
     plugin.register()
     importlib.import_module('sglang.srt.layers.activation')
-    from optima.integrations import sglang_silu
+    from cacheon.integrations import sglang_silu
     found = importlib.util.find_spec(NAMESPACE)
     if bundle == TREE:
         import torch

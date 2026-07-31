@@ -1,4 +1,4 @@
-"""CPU tests for the FusedMoE block seam (optima.dispatch.make_moe_dispatcher).
+"""CPU tests for the FusedMoE block seam (cacheon.dispatch.make_moe_dispatcher).
 
 The seam replaces ``FusedMoE.forward_impl(self, hidden_states, topk_output)`` — the
 waist every path (eager, in-piecewise, the two piecewise custom ops) converges on; a
@@ -19,11 +19,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import optima.dispatch as dispatch  # noqa: E402
-from optima.dispatch import make_moe_dispatcher  # noqa: E402
-from optima.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
-from optima.sandbox import load_entry  # noqa: E402
-from optima.slots import get_slot  # noqa: E402
+import cacheon.dispatch as dispatch  # noqa: E402
+from cacheon.dispatch import make_moe_dispatcher  # noqa: E402
+from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E402
+from cacheon.sandbox import load_entry  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
 
 MOE_BUNDLE = "examples/miner_moe_fused_experts_torch/kernels/moe.py"
 _BASELINE = object()  # sentinel: the dispatcher returns this iff it fell back
@@ -95,7 +95,7 @@ def _matched_ratio(actual, expected, atol=1e-4, rtol=1e-4):
 
 
 def test_seam_routes_to_kernel_and_matches_reference(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     slot = get_slot("moe.fused_experts")
     reference = slot.invoke_reference(inputs)[0]
@@ -111,8 +111,8 @@ def test_seam_routes_to_kernel_and_matches_reference(monkeypatch):
 
 
 def test_disabled_when_env_flag_unset(monkeypatch):
-    # Opt-in: with OPTIMA_MOE_SEAM unset the seam is inert (trusts the baseline).
-    monkeypatch.delenv("OPTIMA_MOE_SEAM", raising=False)
+    # Opt-in: with CACHEON_MOE_SEAM unset the seam is inert (trusts the baseline).
+    monkeypatch.delenv("CACHEON_MOE_SEAM", raising=False)
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -121,7 +121,7 @@ def test_disabled_when_env_flag_unset(monkeypatch):
 
 
 def test_prepare_runs_once_and_is_memoized(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     base_prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -141,7 +141,7 @@ def test_prepare_runs_once_and_is_memoized(monkeypatch):
 
 def test_expert_parallel_falls_back(monkeypatch):
     # EP>1 adds an all-to-all the (M,H)->(M,H) contract doesn't model -> trust baseline.
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -152,7 +152,7 @@ def test_expert_parallel_falls_back(monkeypatch):
 
 def test_bypassed_routing_falls_back(monkeypatch):
     # Routing not materialized (no topk tensors) -> conservative fallback (no re-routing).
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -162,7 +162,7 @@ def test_bypassed_routing_falls_back(monkeypatch):
 
 def test_missing_prepare_falls_back(monkeypatch):
     # A (prepare, forward) slot with no prepare loaded can't honor the contract -> baseline.
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     dispatched = make_moe_dispatcher(_baseline_forward, registry=_registry(entry, prepare=None))
@@ -173,7 +173,7 @@ def test_quantized_layer_falls_back_for_dense_kernel(monkeypatch):
     # A quantized layer (packed bytes + *_scale) must NOT run a DENSE kernel (empty
     # Eligibility.quant) — it would mis-read the weights -> fall back. The pairing gate
     # (_quant_ok) never crosses dense<->quant.
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -185,7 +185,7 @@ def test_quantized_layer_falls_back_for_dense_kernel(monkeypatch):
 def test_quantized_layer_routes_when_kernel_declares_format(monkeypatch):
     # The unblock: a quantized layer DOES route to a kernel that DECLARES its format
     # (Eligibility.quant={"nvfp4"}). The gate admits it; the kernel runs.
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -200,7 +200,7 @@ def test_quantized_layer_routes_when_kernel_declares_format(monkeypatch):
 def test_dense_layer_skips_quant_only_kernel(monkeypatch):
     # The other direction: a DENSE layer must NOT run a quant-only kernel (it expects
     # scales that aren't there) -> fall back.
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -211,7 +211,7 @@ def test_dense_layer_skips_quant_only_kernel(monkeypatch):
 
 def test_non_2d_hidden_states_falls_back(monkeypatch):
     # The (M,H)->(M,H) contract assumes flattened 2D tokens; anything else -> baseline.
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -221,7 +221,7 @@ def test_non_2d_hidden_states_falls_back(monkeypatch):
 
 
 def test_raising_kernel_falls_back_unless_strict(monkeypatch):
-    monkeypatch.setenv("OPTIMA_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     prepare = load_entry(MOE_BUNDLE, "prepare")
 
@@ -246,7 +246,7 @@ def test_install_patches_forward_impl(monkeypatch):
     import sys
     from types import ModuleType
 
-    from optima.integrations import sglang_moe
+    from cacheon.integrations import sglang_moe
 
     def forward(self, hidden_states, topk_output):          # the router — must stay untouched
         return ("forward", hidden_states)
@@ -269,9 +269,9 @@ def test_install_patches_forward_impl(monkeypatch):
         assert sglang_moe.is_installed()
         assert FakeFusedMoE.forward_impl is not orig_impl          # patched
         assert FakeFusedMoE.forward is orig_forward                # router untouched
-        assert FakeFusedMoE._optima_orig_forward_impl is orig_impl  # captured for fallback/uninstall
+        assert FakeFusedMoE._cacheon_orig_forward_impl is orig_impl  # captured for fallback/uninstall
         sglang_moe.install()  # idempotent
-        assert FakeFusedMoE._optima_orig_forward_impl is orig_impl
+        assert FakeFusedMoE._cacheon_orig_forward_impl is orig_impl
     finally:
         sglang_moe.uninstall()
     assert FakeFusedMoE.forward_impl is orig_impl
@@ -284,7 +284,7 @@ def test_install_noop_without_forward_impl(monkeypatch):
     import sys
     from types import ModuleType
 
-    from optima.integrations import sglang_moe
+    from cacheon.integrations import sglang_moe
 
     class OldFusedMoE:
         def forward(self, hidden_states, topk_output):
@@ -296,4 +296,4 @@ def test_install_noop_without_forward_impl(monkeypatch):
 
     sglang_moe.install()
     assert not sglang_moe.is_installed()
-    assert not hasattr(OldFusedMoE, "_optima_orig_forward_impl")
+    assert not hasattr(OldFusedMoE, "_cacheon_orig_forward_impl")

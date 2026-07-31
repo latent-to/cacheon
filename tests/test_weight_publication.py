@@ -4,8 +4,8 @@ import types
 
 import pytest
 
-from optima import chain as chain_module
-from optima.chain.weights import (
+from cacheon import chain as chain_module
+from cacheon.chain.weights import (
     StaleWeightProjectionError,
     WeightProjection,
     WeightPublicationError,
@@ -14,7 +14,7 @@ from optima.chain.weights import (
     reconcile_weight_publication,
     resume_weight_projection,
 )
-from optima.stack_identity import canonical_digest
+from cacheon.stack_identity import canonical_digest
 
 
 def _d(char: str) -> str:
@@ -176,7 +176,7 @@ def _projection(
     *, crowns=1, weights=(("alice", 1_000_000),), marker="a", block=100
 ):
     metagraph_digest = canonical_digest(
-        "optima.economics.metagraph-membership",
+        "cacheon.economics.metagraph-membership",
         {
             "block": block,
             "block_hash": "0x" + f"{block:064x}",

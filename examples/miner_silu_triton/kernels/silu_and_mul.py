@@ -1,6 +1,6 @@
 """Example Triton kernel for the activation.silu_and_mul slot.
 
-Contract (validator-owned, see optima/slots.py):
+Contract (validator-owned, see cacheon/slots.py):
     silu_and_mul(x, out)
       x  : (..., 2*d)  input  (bf16/fp16)
       out: (..., d)    output (same dtype) — the validator already allocated it

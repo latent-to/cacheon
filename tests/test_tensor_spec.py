@@ -6,8 +6,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from optima.slots import get_slot  # noqa: E402
-from optima.tensor_spec import (  # noqa: E402
+from cacheon.slots import get_slot  # noqa: E402
+from cacheon.tensor_spec import (  # noqa: E402
     OutputSpec,
     TensorSpec,
     allocate_output_spec,

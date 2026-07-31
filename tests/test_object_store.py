@@ -9,16 +9,16 @@ from types import SimpleNamespace
 
 import pytest
 
-import optima.cli as cli
-from optima.chain.weight_share import (
+import cacheon.cli as cli
+from cacheon.chain.weight_share import (
     CurrentWeightOffer,
     load_current_weight_offer_from_store,
     object_store_offer_loader,
     publish_current_weight_offer,
     read_current_weight_offer,
 )
-from optima.chain.weights import WeightProjection
-from optima.object_store import (
+from cacheon.chain.weights import WeightProjection
+from cacheon.object_store import (
     LocalDirectoryObjectStore,
     MemoryObjectStore,
     ObjectStoreConfig,
@@ -29,7 +29,7 @@ from optima.object_store import (
     open_object_store,
     prefixed_store,
 )
-from optima.stack_identity import canonical_digest, sha256_hex
+from cacheon.stack_identity import canonical_digest, sha256_hex
 
 
 def _d(label: str) -> str:
@@ -43,7 +43,7 @@ def _projection(
 ) -> WeightProjection:
     scope = _d("scope")
     metagraph_digest = canonical_digest(
-        "optima.economics.metagraph-membership",
+        "cacheon.economics.metagraph-membership",
         {
             "block": block,
             "block_hash": "0x" + f"{block:064x}",
@@ -76,7 +76,7 @@ def test_provider_presets_are_swappable_by_name() -> None:
         cfg = ObjectStoreConfig(provider=provider, bucket="weights")
         assert cfg.provider == provider
         assert cfg.backend_kind() == "s3"
-    local = ObjectStoreConfig(provider="local", root_dir="/tmp/optima-store")
+    local = ObjectStoreConfig(provider="local", root_dir="/tmp/cacheon-store")
     assert local.provider == "local"
     assert local.backend_kind() == "local"
     with pytest.raises(ObjectStoreError, match="provider"):
@@ -260,23 +260,23 @@ def test_object_store_offer_loader(tmp_path: Path) -> None:
 
 
 def test_hippius_to_s3_swap_is_config_only() -> None:
-    hippius = ObjectStoreConfig(provider="hippius", bucket="optima-weights")
+    hippius = ObjectStoreConfig(provider="hippius", bucket="cacheon-weights")
     aws = ObjectStoreConfig(
         provider="s3",
-        bucket="optima-weights",
+        bucket="cacheon-weights",
         region_name="us-west-2",
         endpoint_url=None,
     )
     minio = ObjectStoreConfig(
         provider="minio",
-        bucket="optima-weights",
+        bucket="cacheon-weights",
         endpoint_url="http://minio.internal:9000",
     )
     assert hippius.provider != aws.provider != minio.provider
     # Same logical key resolution regardless of provider.
     assert hippius.resolve_key("current_weights.json") == "current_weights.json"
     prefixed = ObjectStoreConfig(
-        provider="hippius", bucket="optima-weights", key_prefix="prod/sn307"
+        provider="hippius", bucket="cacheon-weights", key_prefix="prod/sn307"
     )
     assert prefixed.resolve_key("current_weights.json") == "prod/sn307/current_weights.json"
 
@@ -286,8 +286,8 @@ def test_environment_only_object_store_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env_root = tmp_path / "env-store"
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_PROVIDER", "local")
-    monkeypatch.setenv("OPTIMA_OBJECT_STORE_ROOT_DIR", str(env_root))
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_PROVIDER", "local")
+    monkeypatch.setenv("CACHEON_OBJECT_STORE_ROOT_DIR", str(env_root))
     store, key = cli._object_store_from_args(
         SimpleNamespace(object_store_provider="")
     )
@@ -320,7 +320,7 @@ def test_object_store_config_from_env_defaults_to_generic_s3(
 def test_open_s3_requires_boto3_message() -> None:
     cfg = ObjectStoreConfig(
         provider="hippius",
-        bucket="optima-weights",
+        bucket="cacheon-weights",
         access_key_id="hip_test",
         secret_access_key="secret",
     )
@@ -332,4 +332,4 @@ def test_open_s3_requires_boto3_message() -> None:
     else:
         # boto3 present in this environment: construction should at least reach client create.
         store = open_object_store(cfg)
-        assert store.bucket == "optima-weights"
+        assert store.bucket == "cacheon-weights"

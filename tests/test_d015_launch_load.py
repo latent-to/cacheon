@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from optima.finite_debt import (
+from cacheon.finite_debt import (
     IMPROVEMENT_GROSS,
     PPM,
     CampaignBudgetShare,
@@ -16,11 +16,11 @@ from optima.finite_debt import (
     RewardFamilyCampaign,
     issue_innovation_claim,
 )
-from optima.incentive_composition import (
+from cacheon.incentive_composition import (
     IncentiveCompositionPolicyManifest,
     project_composed_epoch,
 )
-from optima.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
 from scripts import d015_launch_load as d015
 
 
@@ -48,7 +48,7 @@ def test_tracked_d015_launch_load_report_replays_exactly(
     assert match.group(1) == replayed_report["report_digest"]
     unsigned = dict(replayed_report)
     digest = unsigned.pop("report_digest")
-    assert digest == canonical_digest("optima.incentives.d015-load-report", unsigned)
+    assert digest == canonical_digest("cacheon.incentives.d015-load-report", unsigned)
 
 
 def test_d015_matrix_models_independent_active_family_streams(

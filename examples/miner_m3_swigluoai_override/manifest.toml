@@ -2,11 +2,11 @@
 #
 # The whole bundle is one epilogue. The fused NVFP4 MoE megakernel (gather -> GEMM1 ->
 # {epilogue} -> NVFP4 requant -> GEMM2 -> fused finalize) is the validator-owned base
-# (optima_kernels nvfp4_moe_megakernel); the miner ships ONLY the GEMM1 epilogue — M3's
+# (cacheon_kernels nvfp4_moe_megakernel); the miner ships ONLY the GEMM1 epilogue — M3's
 # clamped swigluoai, ~14 lines of CuTe-DSL + its torch reference. No vendored kernel, no
 # sglang import, no open()-patch: the override-point composes it into the base at load.
 #
-# GPU status: the override mechanism (manifest fields + optima_kernels.override composition)
+# GPU status: the override mechanism (manifest fields + cacheon_kernels.override composition)
 # is built and CPU-tested; the GPU base kernel it composes into is NOT yet built — M1.2 in
 # docs/SUBMISSION_MODEL_BUILD_SPEC.md. CPU/dense verify runs; the GPU path raises (see the
 # bundle README). The win numbers in metadata/moe.json are provenance, not a result of this
@@ -15,7 +15,7 @@
 # open()-patching site-packages flashinfer (sandbox-banned). This is its clean replacement.
 
 bundle_id = "m3-swigluoai-override-v1"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [[ops]]
 slot = "moe.fused_experts"

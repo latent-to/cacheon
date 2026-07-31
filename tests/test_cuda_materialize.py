@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.cuda_launch import CudaOpaqueBytes, CudaPointer
-from optima.cuda_materialize import (
+from cacheon.cuda_launch import CudaOpaqueBytes, CudaPointer
+from cacheon.cuda_materialize import (
     CudaCheckedExpression,
     CudaExpressionNode,
     CudaMaterializeError,
@@ -273,7 +273,7 @@ def test_packed_memref_uses_only_live_tensor_pointer_shape_and_stride() -> None:
                         {"op": "tensor_dim", "binding": 0, "axis": 0}
                     ],
                     "result": 0,
-                    "schema": "optima.cuda-expression-dag.v1",
+                    "schema": "cacheon.cuda-expression-dag.v1",
                 },
             },
             {

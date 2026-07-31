@@ -4,21 +4,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from optima.chain.debt_publication import (
+from cacheon.chain.debt_publication import (
     PUBLICATION_KIND_COMPOSED,
     build_debt_weight_publication_binding,
 )
-from optima.chain.finite_debt_store import reward_family_id
-from optima.chain.incentive_activation import selected_model_campaign_id
-from optima.chain.incentive_composition_store import (
+from cacheon.chain.finite_debt_store import reward_family_id
+from cacheon.chain.incentive_activation import selected_model_campaign_id
+from cacheon.chain.incentive_composition_store import (
     IncentiveCompositionStoreError,
     SELECTED_CORE_SELECTION_REPORT_DIGEST,
     SELECTED_SELECTION_REPORT_DIGEST,
     SelectedIncentiveActivationApproval,
 )
-from optima.chain.intake import IntakeError
-from optima.chain.weights import WeightPublicationRecord
-from optima.finite_debt import (
+from cacheon.chain.intake import IntakeError
+from cacheon.chain.weights import WeightPublicationRecord
+from cacheon.finite_debt import (
     CampaignBudgetShare,
     IMPROVEMENT_GROSS,
     PPM,
@@ -27,14 +27,14 @@ from optima.finite_debt import (
     pay_claim_balance,
     project_debt_epoch,
 )
-from optima.incentive_composition import (
+from cacheon.incentive_composition import (
     DISCOVERY_BOUNTY_ONLY,
     DISCOVERY_REGISTERED_PROMOTION,
     IncentiveCompositionPolicyManifest,
     pay_discovery_balance,
     review_discovery_disposition,
 )
-from optima.settlement import SettlementCandidate
+from cacheon.settlement import SettlementCandidate
 from tests.test_chain_intake import (
     _h,
     _qualified_discovery_candidate,
@@ -145,7 +145,7 @@ def _activate_selected(store, candidate):
 
 
 def _default_family() -> str:
-    from optima.target_catalog import default_target_catalog
+    from cacheon.target_catalog import default_target_catalog
 
     catalog = default_target_catalog()
     target = "activation.silu_and_mul"
@@ -208,7 +208,7 @@ def _review(
 
 
 def _retain_discovery_win(store, *, marker: str):
-    from optima.settlement import plan_settlement
+    from cacheon.settlement import plan_settlement
 
     core = _selected_core(_h(f"unused lifecycle family:{marker}"))
     policy, _activation = _activate_core(store, core)
@@ -468,7 +468,7 @@ def test_selected_composition_rejects_a_second_model_campaign(tmp_path) -> None:
 
 
 def test_legacy_standing_title_survives_composition_without_retro_debt(tmp_path) -> None:
-    from optima.economics import (
+    from cacheon.economics import (
         EmissionsPolicyManifest,
         GlobalRewardProjectionContext,
         MetagraphMember,
@@ -746,7 +746,7 @@ def test_publication_fence_survives_restart_and_holds_pending_settlement(
 def test_publication_intent_after_lease_blocks_commit_without_partial_crown(
     tmp_path,
 ) -> None:
-    from optima.settlement import plan_settlement
+    from cacheon.settlement import plan_settlement
 
     with _store(tmp_path, expiry_blocks=10_000) as store:
         _core, _composition, activation = _activate_selected(
@@ -850,7 +850,7 @@ def test_publication_fence_clears_only_after_exact_epoch_close(tmp_path) -> None
 
 
 def test_missed_boundaries_freeze_crowns_until_gapless_catch_up(tmp_path) -> None:
-    from optima.settlement import plan_settlement
+    from cacheon.settlement import plan_settlement
 
     with _store(tmp_path, expiry_blocks=30_000) as store:
         _core, _composition, activation = _activate_selected(
@@ -1021,7 +1021,7 @@ def test_composed_epoch_reopen_rejects_extra_revision_reusing_payout_event(
                 hotkey="discoverer-b",
             ),
         )
-        from optima.settlement import plan_settlement
+        from cacheon.settlement import plan_settlement
 
         # Keep the registered candidate from advancing the incumbent between
         # the two discovery-only settlements.  This is test fixture state, not
@@ -1165,7 +1165,7 @@ def test_active_composition_retains_review_pending_wins_and_binds_dispositions(
             proposal_digest=_h("post-composition discovery two"),
             hotkey="discoverer-two",
         )
-        from optima.settlement import plan_settlement
+        from cacheon.settlement import plan_settlement
 
         for block, expected in ((11, first), (12, second)):
             lease = store.lease_settlement_cohort(current_block=block)
@@ -1268,7 +1268,7 @@ def test_active_composition_retains_review_pending_wins_and_binds_dispositions(
 
 
 def test_discovery_bounty_cannot_refresh_or_outlive_retained_win(tmp_path) -> None:
-    from optima.settlement import plan_settlement
+    from cacheon.settlement import plan_settlement
 
     with _store(tmp_path) as store:
         core = _selected_core(_h("unused bounded family"))
@@ -1452,7 +1452,7 @@ def test_retained_win_reopen_validates_lifecycle_before_status_filter(
 
 
 def test_review_pending_win_reopens_exact_typed_settlement_event(tmp_path) -> None:
-    from optima.settlement import plan_settlement
+    from cacheon.settlement import plan_settlement
 
     with _store(tmp_path) as store:
         core = _selected_core(_h("unused event-bound family"))
@@ -1496,14 +1496,14 @@ def test_review_pending_win_reopens_exact_typed_settlement_event(tmp_path) -> No
 def test_core_policy_upgrade_and_legacy_v1_projection_publication_are_fenced(
     tmp_path,
 ) -> None:
-    from optima.chain.intake import SQLiteWeightPublicationJournal
-    from optima.chain.weights import WeightProjection, WeightPublicationRecord
-    from optima.economics import (
+    from cacheon.chain.intake import SQLiteWeightPublicationJournal
+    from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
+    from cacheon.economics import (
         EmissionsPolicyManifest,
         GlobalRewardProjectionContext,
         MetagraphMember,
     )
-    from optima.target_catalog import default_target_catalog
+    from cacheon.target_catalog import default_target_catalog
 
     with _store(tmp_path / "active") as store:
         _core, _composition, _activation = _activate_selected(
@@ -1689,7 +1689,7 @@ def test_atomic_cutover_requires_quiescence_and_exact_replay_is_idempotent(
 
 
 def test_active_composition_disables_burn_weight_projection(tmp_path) -> None:
-    from optima.economics import (
+    from cacheon.economics import (
         EmissionsPolicyManifest,
         GlobalRewardProjectionContext,
         MetagraphMember,

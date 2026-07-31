@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "optima-harness"
+name = "cacheon-harness"
 version = "0.0.1"
 description = "Validator harness for an inference-throughput competition on SGLang"
 license = {text = "Apache-2.0"}
@@ -29,23 +29,23 @@ release = ["cryptography>=41"]
 object-store = ["boto3>=1.34"]
 
 [project.scripts]
-optima = "optima.cli:main"
+cacheon = "cacheon.cli:main"
 
 [tool.setuptools]
 license-files = ["LICENSE", "NOTICE", "LICENSES/*.txt"]
 
 [tool.setuptools.package-data]
-"optima" = ["vendor_provenance.json"]
-"optima.eval" = ["seccomp_moby_v0_2_1.json"]
-"optima.arena_assets.minimax_m3.sglang_patch" = ["*.py"]
-"optima_kernels.collective" = ["*.cu"]
+"cacheon" = ["vendor_provenance.json"]
+"cacheon.eval" = ["seccomp_moby_v0_2_1.json"]
+"cacheon.arena_assets.minimax_m3.sglang_patch" = ["*.py"]
+"cacheon_kernels.collective" = ["*.cu"]
 
-# Installs the Optima seam inside every SGLang process (incl. the spawned
+# Installs the Cacheon seam inside every SGLang process (incl. the spawned
 # scheduler that runs the model). This is validator-owned code. Select it with
-# SGLANG_PLUGINS=optima (the eval harness sets this automatically).
+# SGLANG_PLUGINS=cacheon (the eval harness sets this automatically).
 [project.entry-points."sglang.srt.plugins"]
-optima = "optima.integrations.sglang_plugin:register"
+cacheon = "cacheon.integrations.sglang_plugin:register"
 
 [tool.setuptools.packages.find]
-include = ["optima*"]
+include = ["cacheon*"]
 exclude = ["sglang*", "examples*", "tests*"]

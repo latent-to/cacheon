@@ -1,4 +1,4 @@
-# Optima contributor and agent guide
+# Cacheon contributor and agent guide
 
 This file is the operational entry point for automated contributors. It is not
 a second product manual. The canonical engineering documentation lives under
@@ -59,11 +59,11 @@ security review—not a local implementation shortcut.
 ## Repository map
 
 ```text
-optima/                    runtime and control-plane package
+cacheon/                    runtime and control-plane package
   chain/                   finalized intake, durable state, activation, weights
   eval/                    screening, qualification, OCI, evidence, scoring
   integrations/            version-pinned SGLang adapters
-optima_kernels/            validator-owned reference kernel library
+cacheon_kernels/            validator-owned reference kernel library
 examples/                  miner bundles and adversarial controls
 tests/                     executable contracts and regressions
 docs/                      canonical documentation site
@@ -97,24 +97,24 @@ python -m pytest -q tests
 Contributor bundle checks:
 
 ```bash
-python -m optima.cli scan examples/miner_silu_torch
-python -m optima.cli verify examples/miner_silu_torch \
+python -m cacheon.cli scan examples/miner_silu_torch
+python -m cacheon.cli verify examples/miner_silu_torch \
   --device cpu \
   --dtype float32
 ```
 
-Use `python -m optima.cli` for GPU work; SGLang uses spawned processes and the
+Use `python -m cacheon.cli` for GPU work; SGLang uses spawned processes and the
 module entry point preserves the required guard.
 
 ## SGLang and GPU rules
 
-- `PINNED_SGLANG` in `optima/compat.py` is consensus-critical. An exact version
+- `PINNED_SGLANG` in `cacheon/compat.py` is consensus-critical. An exact version
   mismatch or failed chokepoint is an error.
 - The spawn-safe seam is installed in every interpreter through
-  `import optima.bootstrap` in a `.pth` file.
-- `optima/seams.py` is the only adapter registry. Bootstrap, activation, binding
+  `import cacheon.bootstrap` in a `.pth` file.
+- `cacheon/seams.py` is the only adapter registry. Bootstrap, activation, binding
   vocabulary, and compatibility checks derive from it.
-- Adding a slot starts in `optima/slots.py`. A new SGLang chokepoint adds one
+- Adding a slot starts in `cacheon/slots.py`. A new SGLang chokepoint adds one
   adapter implementation and one `SeamAdapter` row; do not create a parallel
   registry.
 - Block and collective contributions must satisfy graph capture/replay and

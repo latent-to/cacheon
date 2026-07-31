@@ -16,7 +16,7 @@ def _digest(label: str) -> str:
 
 
 def _patcher():
-    return importlib.import_module("optima.patchers.build_cuda_ext")
+    return importlib.import_module("cacheon.patchers.build_cuda_ext")
 
 
 def _bundle(
@@ -40,7 +40,7 @@ def _bundle(
         sources += ', "kernels/second.cu"'
     (root / "manifest.toml").write_text(
         'bundle_id = "miner-controlled-display-name"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "activation.silu_and_mul"\n'
         'source = "kernels/shim.py"\n'
@@ -66,7 +66,7 @@ def _architecture_variant_bundle(root: Path) -> tuple[Path, dict[str, Path]]:
             f"// {architecture} unit\n#include \"values.cuh\"\n"
         )
         (kernel_root / "values.cuh").write_text(
-            f"#define OPTIMA_VARIANT_{architecture.upper()} 1\n"
+            f"#define CACHEON_VARIANT_{architecture.upper()} 1\n"
         )
         rows.extend(
             (
@@ -83,7 +83,7 @@ def _architecture_variant_bundle(root: Path) -> tuple[Path, dict[str, Path]]:
         )
     (root / "manifest.toml").write_text(
         'bundle_id = "architecture-variants"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         + "\n".join(rows)
     )
     return root, markers
@@ -157,7 +157,7 @@ def test_development_with_sealed_architecture_does_not_probe_cuda(
     monkeypatch.setattr(mod, "_build_set", lambda **kwargs: None)
     monkeypatch.setattr(mod, "_validate_index", lambda **kwargs: [])
     monkeypatch.setitem(sys.modules, "torch", None)
-    monkeypatch.setenv("OPTIMA_CUDA_EXT_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("CACHEON_CUDA_EXT_CACHE", str(tmp_path / "cache"))
 
     mod._development_all(bundle, "", _digest("tree"), "sm103")
 
@@ -180,7 +180,7 @@ def test_development_sealed_architecture_resolves_container_cuda_root(
     observed: dict[str, object] = {}
 
     monkeypatch.setenv("CUDA_HOME", str(cuda_home))
-    monkeypatch.setenv("OPTIMA_CUDA_EXT_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("CACHEON_CUDA_EXT_CACHE", str(tmp_path / "cache"))
     monkeypatch.setattr(
         mod, "_compiler_environment", lambda: {"PATH": "/usr/bin:/bin"}
     )
@@ -267,16 +267,16 @@ def _set_build_env(
     tree_digest: str,
     architecture: str = "sm120",
 ) -> None:
-    monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(bundle))
-    monkeypatch.setenv("OPTIMA_REBUILD_PHASE", "build")
-    monkeypatch.setenv("OPTIMA_REBUILD_CONTAINER", "1")
-    monkeypatch.setenv("OPTIMA_BUILD_PATH", "/usr/bin:/bin")
-    monkeypatch.setenv("OPTIMA_BUILD_TMPDIR", "/tmp")
-    monkeypatch.setenv("OPTIMA_NATIVE_COMPILE_TIMEOUT_S", "60")
-    monkeypatch.setenv("OPTIMA_NATIVE_ARTIFACT_STAGE", str(stage))
-    monkeypatch.setenv("OPTIMA_NATIVE_BUILD_SPEC_DIGEST", build_spec)
-    monkeypatch.setenv("OPTIMA_ENGINE_TREE_DIGEST", tree_digest)
-    monkeypatch.setenv("OPTIMA_TARGET_GPU_ARCH", architecture)
+    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(bundle))
+    monkeypatch.setenv("CACHEON_REBUILD_PHASE", "build")
+    monkeypatch.setenv("CACHEON_REBUILD_CONTAINER", "1")
+    monkeypatch.setenv("CACHEON_BUILD_PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("CACHEON_BUILD_TMPDIR", "/tmp")
+    monkeypatch.setenv("CACHEON_NATIVE_COMPILE_TIMEOUT_S", "60")
+    monkeypatch.setenv("CACHEON_NATIVE_ARTIFACT_STAGE", str(stage))
+    monkeypatch.setenv("CACHEON_NATIVE_BUILD_SPEC_DIGEST", build_spec)
+    monkeypatch.setenv("CACHEON_ENGINE_TREE_DIGEST", tree_digest)
+    monkeypatch.setenv("CACHEON_TARGET_GPU_ARCH", architecture)
 
 
 def _build(
@@ -316,21 +316,21 @@ def _publish_and_arm_load(
     *,
     architecture: str = "sm120",
 ):
-    from optima.eval.native_artifact import publish_native_artifact
+    from cacheon.eval.native_artifact import publish_native_artifact
 
     publication_root = tmp_path / "publications"
     publication = publish_native_artifact(
         stage, publication_root, build_spec_digest=build_spec
     )
-    monkeypatch.setenv("OPTIMA_BUNDLE_PATH", str(bundle))
-    monkeypatch.setenv("OPTIMA_REBUILD_PHASE", "load")
-    monkeypatch.setenv("OPTIMA_ENGINE_WORKER", "1")
-    monkeypatch.setenv("OPTIMA_NATIVE_BUILD_SPEC_DIGEST", build_spec)
-    monkeypatch.setenv("OPTIMA_ENGINE_TREE_DIGEST", tree_digest)
-    monkeypatch.setenv("OPTIMA_TARGET_GPU_ARCH", architecture)
-    monkeypatch.setenv("OPTIMA_NATIVE_ARTIFACT_ROOT", str(publication.root))
+    monkeypatch.setenv("CACHEON_BUNDLE_PATH", str(bundle))
+    monkeypatch.setenv("CACHEON_REBUILD_PHASE", "load")
+    monkeypatch.setenv("CACHEON_ENGINE_WORKER", "1")
+    monkeypatch.setenv("CACHEON_NATIVE_BUILD_SPEC_DIGEST", build_spec)
+    monkeypatch.setenv("CACHEON_ENGINE_TREE_DIGEST", tree_digest)
+    monkeypatch.setenv("CACHEON_TARGET_GPU_ARCH", architecture)
+    monkeypatch.setenv("CACHEON_NATIVE_ARTIFACT_ROOT", str(publication.root))
     monkeypatch.setenv(
-        "OPTIMA_NATIVE_ARTIFACT_PUBLICATION_DIGEST",
+        "CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST",
         publication.publication_digest,
     )
     return publication
@@ -597,8 +597,8 @@ def test_every_native_unit_identity_dimension_rotates(changed, tmp_path, fake_bu
 
 def test_compiler_environment_is_an_allowlist_not_inherited(monkeypatch):
     mod = _patcher()
-    monkeypatch.setenv("OPTIMA_BUILD_PATH", "/usr/bin:/bin")
-    monkeypatch.setenv("OPTIMA_BUILD_TMPDIR", "/tmp")
+    monkeypatch.setenv("CACHEON_BUILD_PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("CACHEON_BUILD_TMPDIR", "/tmp")
     for name in (
         "CPATH",
         "CPLUS_INCLUDE_PATH",
@@ -673,9 +673,9 @@ def test_build_rejects_dependency_outside_tree_and_pinned_image_roots(
 @pytest.mark.parametrize(
     "missing",
     [
-        "OPTIMA_NATIVE_BUILD_SPEC_DIGEST",
-        "OPTIMA_ENGINE_TREE_DIGEST",
-        "OPTIMA_TARGET_GPU_ARCH",
+        "CACHEON_NATIVE_BUILD_SPEC_DIGEST",
+        "CACHEON_ENGINE_TREE_DIGEST",
+        "CACHEON_TARGET_GPU_ARCH",
     ],
 )
 def test_production_build_identity_is_mandatory(
@@ -710,7 +710,7 @@ def test_production_build_requires_container_marker(tmp_path, monkeypatch, fake_
         build_spec=_digest("build"),
         tree_digest=_digest("tree"),
     )
-    monkeypatch.delenv("OPTIMA_REBUILD_CONTAINER")
+    monkeypatch.delenv("CACHEON_REBUILD_CONTAINER")
     with pytest.raises(mod.CUDAExtensionError, match="disposable rebuild container"):
         mod.main()
 
@@ -718,9 +718,9 @@ def test_production_build_requires_container_marker(tmp_path, monkeypatch, fake_
 @pytest.mark.parametrize(
     "missing",
     (
-        "OPTIMA_BUILD_PATH",
-        "OPTIMA_BUILD_TMPDIR",
-        "OPTIMA_NATIVE_COMPILE_TIMEOUT_S",
+        "CACHEON_BUILD_PATH",
+        "CACHEON_BUILD_TMPDIR",
+        "CACHEON_NATIVE_COMPILE_TIMEOUT_S",
     ),
 )
 def test_production_build_requires_explicit_compiler_policy(
@@ -746,10 +746,10 @@ def test_pinned_build_roots_are_required_and_root_is_forbidden(
     tmp_path, monkeypatch
 ):
     mod = _patcher()
-    monkeypatch.delenv("OPTIMA_PINNED_BUILD_ROOTS", raising=False)
-    with pytest.raises(mod.CUDAExtensionError, match="requires OPTIMA_PINNED_BUILD_ROOTS"):
+    monkeypatch.delenv("CACHEON_PINNED_BUILD_ROOTS", raising=False)
+    with pytest.raises(mod.CUDAExtensionError, match="requires CACHEON_PINNED_BUILD_ROOTS"):
         mod._pinned_roots((), production=True)
-    monkeypatch.setenv("OPTIMA_PINNED_BUILD_ROOTS", "/")
+    monkeypatch.setenv("CACHEON_PINNED_BUILD_ROOTS", "/")
     with pytest.raises(mod.CUDAExtensionError, match="unsafe"):
         mod._pinned_roots((), production=True)
 
@@ -793,11 +793,11 @@ def test_load_requires_worker_and_exact_publication_digest(
     bundle = _bundle(tmp_path / "bundle")
     stage, build_spec, tree_digest, _ = _build(monkeypatch, mod, tmp_path, bundle)
     _publish_and_arm_load(monkeypatch, tmp_path, bundle, stage, build_spec, tree_digest)
-    monkeypatch.delenv("OPTIMA_ENGINE_WORKER")
+    monkeypatch.delenv("CACHEON_ENGINE_WORKER")
     with pytest.raises(mod.CUDAExtensionError, match="isolated engine worker"):
         mod.main()
-    monkeypatch.setenv("OPTIMA_ENGINE_WORKER", "1")
-    monkeypatch.setenv("OPTIMA_NATIVE_ARTIFACT_PUBLICATION_DIGEST", _digest("wrong"))
+    monkeypatch.setenv("CACHEON_ENGINE_WORKER", "1")
+    monkeypatch.setenv("CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST", _digest("wrong"))
     with pytest.raises(Exception, match="publication"):
         mod.main()
 
@@ -871,7 +871,7 @@ def test_native_import_alias_cannot_overwrite_existing_module(tmp_path):
     mod = _patcher()
     assert "json" in sys.modules
     with pytest.raises(mod.CUDAExtensionError, match="import alias collision"):
-        mod._load("json", "_optima_cuda_unique_deadbeef", tmp_path / "missing.so")
+        mod._load("json", "_cacheon_cuda_unique_deadbeef", tmp_path / "missing.so")
 
 
 def test_depfile_escape_parser_is_deterministic():

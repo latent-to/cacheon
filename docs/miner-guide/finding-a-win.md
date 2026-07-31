@@ -127,9 +127,9 @@ resident speed, audit A, and pristine T plan from the validator's stack,
 qualification, and reference manifests.
 
 The repository implementations are
-[`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/optima/stack_plan.py)
+[`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py)
 for incumbent/candidate stack construction and
-[`scoring.py`](https://github.com/latent-to/cacheon/blob/main/optima/eval/scoring.py)
+[`scoring.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/scoring.py)
 for conditioned serving-score calculation.
 
 ## Build the narrowest honest capability domain

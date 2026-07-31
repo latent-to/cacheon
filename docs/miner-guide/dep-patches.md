@@ -21,9 +21,9 @@ The target catalog grants the FlashInfer patch features only to the deep
 does not gain permission merely because the manifest parses.
 
 The authoritative allowlist is in
-[dep_policy.py](https://github.com/latent-to/cacheon/blob/main/optima/dep_policy.py),
+[dep_policy.py](https://github.com/latent-to/cacheon/blob/main/cacheon/dep_policy.py),
 and target feature policy is in
-[target_catalog.py](https://github.com/latent-to/cacheon/blob/main/optima/target_catalog.py).
+[target_catalog.py](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Declaration
 
@@ -52,7 +52,7 @@ sections, malformed hunks, and missing-newline markers. Application is byte
 exact at the declared location: there is no fuzzy context match or offset
 search. A patch prepared against a different dependency revision must fail.
 
-See [deppatch.py](https://github.com/latent-to/cacheon/blob/main/optima/deppatch.py).
+See [deppatch.py](https://github.com/latent-to/cacheon/blob/main/cacheon/deppatch.py).
 
 ## Rebuild plan
 
@@ -80,7 +80,7 @@ approved extension builder too:
 ```
 
 Those are the registered dependency-patch rebuild patchers. The same closed registry also
-contains `build_cute_cubin.py` (`optima.build-cute-cubin.v1`) for the sealed
+contains `build_cute_cubin.py` (`cacheon.build-cute-cubin.v1`) for the sealed
 direct-artifact provider; it is not a dependency-patch installer. The parser rejects
 `bundle_python`, arbitrary repository scripts, duplicate patchers, unknown
 fields, and unregistered step types. The validator snapshots each patcher's ID
@@ -88,7 +88,7 @@ and source digest; the bundle chooses a reviewed capability, not executable
 installer code.
 
 The rebuild contract is implemented in
-[rebuild.py](https://github.com/latent-to/cacheon/blob/main/optima/rebuild.py).
+[rebuild.py](https://github.com/latent-to/cacheon/blob/main/cacheon/rebuild.py).
 
 ## Build and load are separated
 
@@ -108,9 +108,9 @@ local cache is not authoritative evidence.
 
 This split prevents a bundle ID, ambient cache, or mutable shared install from
 selecting what runs. The overlay validation logic is in
-[dep_policy.py](https://github.com/latent-to/cacheon/blob/main/optima/dep_policy.py),
+[dep_policy.py](https://github.com/latent-to/cacheon/blob/main/cacheon/dep_policy.py),
 and the reviewed applier is
-[apply_dep_patch.py](https://github.com/latent-to/cacheon/blob/main/optima/patchers/apply_dep_patch.py).
+[apply_dep_patch.py](https://github.com/latent-to/cacheon/blob/main/cacheon/patchers/apply_dep_patch.py).
 
 ## Native source declarations
 

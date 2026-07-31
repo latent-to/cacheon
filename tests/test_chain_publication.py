@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from optima.bundle_hash import content_hash
-from optima.chain.publication import (
+from cacheon.bundle_hash import content_hash
+from cacheon.chain.publication import (
     WorkerBundlePublicationError,
     publish_worker_bundle,
     reopen_worker_bundle,
