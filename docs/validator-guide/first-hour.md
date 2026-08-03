@@ -142,7 +142,7 @@ cacheon chain-validate \
 `--network` defaults to `wss://archive.sub.latent.to:443` for `chain-validate`
 only. Override when you need another endpoint. For a recycled subnet
 competition, add `--start-block <N>` on the first empty-database pass so intake
-ignores pre-competition reveals.
+ignores reveals at or before `N`.
 
 This command reads finalized history, reserves new arrivals, performs HTTPS fetch and
 hash verification, and publishes safe immutable copies. It does not need a wallet and

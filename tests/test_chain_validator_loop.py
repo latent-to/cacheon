@@ -128,7 +128,6 @@ def test_finalized_reveal_publishes_once_and_restart_reopens(tmp_path, monkeypat
 
 def test_start_block_bootstraps_empty_intake_before_history_read(tmp_path, monkeypatch):
     start = 80
-    start_hash = "0x" + f"{start:064x}"
     empty = FinalizedRevealSnapshot(BLOCK, BLOCK_HASH, ())
     history_calls: list[object] = []
 
@@ -166,9 +165,47 @@ def test_start_block_bootstraps_empty_intake_before_history_read(tmp_path, monke
     with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
         assert store.finalized_cursor() == (BLOCK, BLOCK_HASH)
 
-    # Existing cursor ignores a repeated --start-block.
+    # Cursor advanced past the floor: repeated --start-block is a no-op.
     second = loop.run_pass(_ScopedSubtensor(), 307, **options)
     assert second.seen == 0 and history_calls == [start, BLOCK]
+
+
+def test_start_block_refuses_existing_cursor_below_floor(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        loop.chain,
+        "read_finalized_reveal_history",
+        lambda *_args, **_kwargs: FinalizedRevealSnapshot(BLOCK, BLOCK_HASH, ()),
+    )
+    monkeypatch.setattr(
+        loop.chain,
+        "read_finalized_head",
+        lambda *_: (BLOCK, BLOCK_HASH),
+    )
+
+    class _ScopedSubtensor(_NoWeightsSubtensor):
+        def get_block_hash(self, block):
+            if block == 0:
+                return SCOPE.genesis_hash
+            return "0x" + f"{block:064x}"
+
+    options = dict(
+        intake_db=tmp_path / "state" / "intake.sqlite3",
+        private_root=tmp_path / "private-cache",
+        publication_root=tmp_path / "worker",
+        intake_only=True,
+    )
+    # Seed an early cursor without --start-block.
+    loop.run_pass(_ScopedSubtensor(), 307, **options)
+    with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
+        assert store.finalized_cursor() == (BLOCK, BLOCK_HASH)
+
+    with pytest.raises(loop.IntakeControllerError, match="below --start-block"):
+        loop.run_pass(
+            _ScopedSubtensor(),
+            307,
+            **options,
+            start_block=BLOCK + 10,
+        )
 
 
 def test_malformed_finalized_payload_is_reserved_and_never_fetched(tmp_path, monkeypatch):

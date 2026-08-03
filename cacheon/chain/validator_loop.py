@@ -406,8 +406,10 @@ def run_pass(
     finalized head without rereading or advancing reveal history.
 
     ``start_block`` seeds an empty intake database's finalized cursor at that
-    competition floor so recycled-subnet alien history is not walked. It is
-    ignored once a cursor already exists.
+    block so recycled-subnet alien history is not walked. Intake then observes
+    reveals strictly after that block (the durable cursor meaning). It is a
+    no-op once the cursor is already at or above ``start_block``, and refuses
+    if an existing cursor is still below it.
     """
 
     if type(intake_only) is not bool or type(retained_only) is not bool:
@@ -436,25 +438,34 @@ def run_pass(
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), netuid)
     with FinalizedIntakeStore(intake_db, policy, scope=scope) as store:
         cursor = store.finalized_cursor()
-        if start_block is not None and cursor is None:
-            finalized_block, _finalized_hash = chain.read_finalized_head(subtensor)
-            if start_block > finalized_block:
-                raise IntakeControllerError(
-                    "competition start block is newer than the finalized head"
+        if start_block is not None:
+            if cursor is None:
+                finalized_block, _finalized_hash = chain.read_finalized_head(subtensor)
+                if start_block > finalized_block:
+                    raise IntakeControllerError(
+                        "competition start block is newer than the finalized head"
+                    )
+                try:
+                    start_hash = chain.read_block_hash(subtensor, start_block)
+                    cursor = store.bootstrap_finalized_cursor(
+                        block=start_block, block_hash=start_hash
+                    )
+                except (IntakeError, chain.ChainRevealHistoryError) as exc:
+                    raise IntakeControllerError(
+                        f"competition start-block bootstrap refused: {exc}"
+                    ) from None
+                logger.info(
+                    "bootstrapped competition intake cursor at block %d "
+                    "(reveals at or before this block are out of scope)",
+                    start_block,
                 )
-            try:
-                start_hash = chain.read_block_hash(subtensor, start_block)
-                cursor = store.bootstrap_finalized_cursor(
-                    block=start_block, block_hash=start_hash
-                )
-            except (IntakeError, chain.ChainRevealHistoryError) as exc:
+            elif cursor[0] < start_block:
+                # An earlier pass already advanced below the requested floor.
+                # Continuing would ingest the gap as eligible competition work.
                 raise IntakeControllerError(
-                    f"competition start-block bootstrap refused: {exc}"
-                ) from None
-            logger.info(
-                "bootstrapped competition intake cursor at block %d",
-                start_block,
-            )
+                    "existing intake cursor is below --start-block; "
+                    "refusing to ingest pre-start reveals (use a fresh intake DB)"
+                )
         if retained_only:
             if cursor is None:
                 raise IntakeControllerError("retained-only pass has no finalized cursor")

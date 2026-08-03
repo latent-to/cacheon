@@ -12,7 +12,9 @@ submit weights after each pass.
    netuid. A database created for another scope is not reused.
 2. **Optional competition floor.** When `--start-block` is set and the database has
    no cursor yet, seed the finalized cursor at that block/hash so recycled-subnet
-   alien history is not walked. An existing cursor is left unchanged.
+   alien history is not walked. Reveals at or before the floor stay out of scope.
+   An existing cursor at or above the floor is left unchanged; a cursor still
+   below the floor is refused.
 3. **Read finalized history.** Continue after the durable cursor and reconstruct exact
    reveal priority from finalized storage and canonical event positions.
 4. **Reserve before transport.** Persist every arrival in chain order before any fetch.
@@ -103,7 +105,7 @@ Omit `--network` on `chain-validate` to use the default Latent archive endpoint
 (`wss://archive.sub.latent.to:443`). Other chain commands still require an
 explicit network or keep their own defaults (for example `finney`). On recycled
 mainnet subnets, add `--start-block <N>` when creating an empty intake database
-so competition intake does not walk alien pre-start reveal history.
+so competition intake does not walk alien history at or before `N`.
 
 Remove `--once` to run continuously; `--interval` controls the delay between passes.
 

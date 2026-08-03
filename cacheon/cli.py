@@ -39,7 +39,7 @@ def _wallet_from_args(args: argparse.Namespace):
     return bt.Wallet(**kwargs)
 
 
-def _add_network_arg(parser: argparse.ArgumentParser) -> None:
+def _add_validate_network_arg(parser: argparse.ArgumentParser) -> None:
     """Attach ``--network`` for ``chain-validate`` (Latent archive default)."""
 
     from cacheon.chain import DEFAULT_CHAIN_NETWORK
@@ -52,6 +52,16 @@ def _add_network_arg(parser: argparse.ArgumentParser) -> None:
             f"(default: {DEFAULT_CHAIN_NETWORK})"
         ),
     )
+
+
+def _nonnegative_block(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("block must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("block must be non-negative")
+    return parsed
 
 
 def cmd_slots(_: argparse.Namespace) -> int:
@@ -2976,15 +2986,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("chain-validate",
                         help="finalized reveal -> private fetch -> immutable worker publication")
     sp.add_argument("--netuid", type=int, required=True)
-    _add_network_arg(sp)
+    _add_validate_network_arg(sp)
     sp.add_argument(
         "--start-block",
-        type=int,
+        type=_nonnegative_block,
         default=None,
         help=(
-            "competition floor: on an empty intake DB, seed the finalized cursor "
-            "at this block so recycled-subnet alien reveal history is not walked; "
-            "ignored once a cursor already exists"
+            "competition floor for an empty intake DB: seed the finalized cursor "
+            "at this block so reveals at or before it are out of scope (intake "
+            "observes strictly later blocks); refused if an existing cursor is "
+            "still below this floor; no-op once the cursor is at or above it"
         ),
     )
     sp.add_argument("--intake-only", action="store_true",

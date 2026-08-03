@@ -201,8 +201,9 @@ python -m cacheon.cli chain-validate \
 (`wss://archive.sub.latent.to:443`) for this intake/eval command only. Pass
 another named network or `wss://` URL to override. On a recycled subnet, open
 competition intake with `--start-block <N>` so an empty database seeds its
-finalized cursor at that floor and skips alien pre-competition reveal history;
-the flag is ignored once a cursor already exists.
+finalized cursor at that block; reveals at or before `N` are out of scope and
+intake observes strictly later blocks. If an existing cursor is still below
+`N`, the command refuses rather than ingesting the gap.
 
 Intake mode persists finalized order, hardened fetch and re-hash results, private
 retention, immutable worker publication, and copy disposition. Storage and loop controls

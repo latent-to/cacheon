@@ -1038,7 +1038,6 @@ def _storage_history(
                 raise ChainRevealHistoryError("chain reveal history has an invalid hotkey")
             if not isinstance(history, (list, tuple)):
                 raise ChainRevealHistoryError("chain reveal history has a malformed row set")
-            retained_blocks: list[int] = []
             history_blocks: list[int] = []
             for entry in history:
                 if not isinstance(entry, (list, tuple)) or len(entry) != 2:
@@ -1057,7 +1056,6 @@ def _storage_history(
                 history_blocks.append(block)
                 if after_block is not None and block <= after_block:
                     continue
-                retained_blocks.append(block)
                 page_counts[(block, hotkey, data)] += 1
             if len(history) >= CHAIN_REVEAL_HISTORY_CAP:
                 oldest = min(history_blocks)

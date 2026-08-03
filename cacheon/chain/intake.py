@@ -830,9 +830,10 @@ class FinalizedIntakeStore:
         """Seed the durable reveal cursor without ingesting historical reveals.
 
         Used to open a competition at a chosen start block on a recycled subnet
-        so intake does not walk alien pre-competition reveal history. Refuses
-        when a different cursor already exists. Idempotent when the stored
-        cursor already matches ``(block, block_hash)``.
+        so intake does not walk alien pre-competition reveal history. Reveals at
+        or before ``block`` stay out of scope; later passes observe strictly
+        after it. Refuses when a different cursor already exists. Idempotent
+        when the stored cursor already matches ``(block, block_hash)``.
         """
 
         if type(block) is not int or block < 0:

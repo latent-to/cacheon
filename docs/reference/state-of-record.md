@@ -99,8 +99,8 @@ The evidence classes are intentionally non-substitutable:
   `wss://archive.sub.latent.to:443` (override with an explicit named network or
   `wss://` URL). Other chain commands keep prior network defaults/requirements.
   `chain-validate --start-block <N>` seeds an empty intake database's finalized
-  cursor at that competition floor so recycled-subnet alien reveal history is
-  not walked (2026-08-03).
+  cursor at that competition floor so reveals at or before `N` stay out of
+  scope; an existing cursor below `N` is refused (2026-08-03).
 - `chain-snapshot` uses SQLite's online backup API and publishes a closed,
   digest-bound private recovery manifest. It includes the consistent database,
   redacted journal when present, database-referenced worker publications and
