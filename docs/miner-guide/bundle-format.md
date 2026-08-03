@@ -73,7 +73,7 @@ still resolve through a legacy singleton convenience:
 
 ```toml
 bundle_id = "alice-silu-sm90-v1"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [competition]
 target = "activation.silu_and_mul"
@@ -158,8 +158,8 @@ Each `[[ops]]` row describes one implementation:
 | `artifact_resources` | miner-named but validator-allocated workspace, prepared storage, or engine state |
 
 `bundle_id` must be a simple non-empty identifier, and the component ABI is
-currently exactly `optima-op-abi-v0`. This published protocol identifier is
-unchanged by the Cacheon product rename.
+exactly `cacheon-op-abi-v0`. Since 2026-08-03 this identifier follows the
+Cacheon protocol vocabulary; the pre-rename spelling is refused.
 
 Unknown op keys are preserved as extra data, but that does not make them
 meaningful or allowed by target policy.
@@ -279,7 +279,7 @@ direct execution the value is not called and is excluded from canonical direct-
 execution identity. The meaningful declaration is `[[ops.aot_exports]]`, which
 must include the provider, compiler-side factory, bounded compile-profile inputs,
 ordered bindings, specialization/lifecycle fields, and a complete
-`optima.device-launch-plan.v1` plan.
+`cacheon.device-launch-plan.v1` plan.
 
 The plan is intentionally explicit. It inventories every logical kernel and
 formal parameter width, then declares every launch's grid, block, optional

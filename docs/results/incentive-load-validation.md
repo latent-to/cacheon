@@ -116,9 +116,9 @@ promises. The report records an ROI row against every measured matrix cell.
 The tracked configuration is
 [`tests/fixtures/incentives/d015_launch_load_config.json`](https://github.com/latent-to/cacheon/blob/main/tests/fixtures/incentives/d015_launch_load_config.json).
 The exact pre-rename
-[`source`](https://github.com/latent-to/cacheon/blob/main/tests/fixtures/incentives/d015_launch_load_optima.py)
+[`source`](https://github.com/latent-to/cacheon/blob/main/tests/fixtures/incentives/d015_launch_load_cacheon.py)
 and
-[`report`](https://github.com/latent-to/cacheon/blob/main/tests/fixtures/incentives/d015_launch_load_report_optima.json)
+[`report`](https://github.com/latent-to/cacheon/blob/main/tests/fixtures/incentives/d015_launch_load_report_cacheon.json)
 are retained as sealed fixtures. They are historical artifacts, not importable
 Cacheon implementation modules.
 The replay uses production issuance from

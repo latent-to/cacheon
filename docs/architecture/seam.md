@@ -126,7 +126,7 @@ The exact binding set is derived from the materialized stack and retained in lau
 
 ## Sealed contribution namespaces
 
-The hardened path does not add an arbitrary miner directory to `PYTHONPATH`. `engine_tree.py` inspects contribution closure and emits each contribution under a deterministic namespace of the form `optima_c_<sha256>`.
+The hardened path does not add an arbitrary miner directory to `PYTHONPATH`. `engine_tree.py` inspects contribution closure and emits each contribution under a deterministic namespace of the form `cacheon_c_<sha256>`.
 
 At startup, `seam.py` exposes those namespaces only if all worker bindings agree:
 
@@ -175,7 +175,7 @@ For a signed release, one successful candidate-backed call crosses the seam in t
 4. Only a scheduler rank enters wrapped `run_scheduler_process`. At that positive role
    boundary it calls `load_candidate_bundle()`, reopens `/cacheon/engine-tree`, verifies
    the expected tree/stack/release identities, and exposes only its sealed
-   `optima_c_<sha256>` namespaces. Detokenizer/output-path children never do this.
+   `cacheon_c_<sha256>` namespaces. Detokenizer/output-path children never do this.
 5. At the pinned chokepoint, the adapter constructs a canonical descriptor from live
    tensors, topology, and engine state.
 6. The dispatcher resolves an eligible registered variant, allocates the typed output, and

@@ -43,7 +43,7 @@ Each receipt is exact-schema JSON with:
 
 ```json
 {
-  "type": "optima.model-provision",
+  "type": "cacheon.model-provision",
   "schema_version": 1,
   "content_digest": "<sha256>",
   "files": [
