@@ -32,11 +32,44 @@ def test_chain_validate_intake_path_has_no_wallet_or_weight_arguments():
     assert "--intake-only" in options
     assert "--arena-id" in options
     assert "--audit-log" in options
+    assert "--start-block" in options
     assert not {
         "--eval-cmd", "--eval-device", "--eval-timeout", "--margin",
         "--wallet", "--hotkey", "--dry-run-weights",
     } & options
     assert "chain-validate" in source
+
+
+def test_chain_validate_network_defaults_to_latent_archive_endpoint():
+    from cacheon.chain import DEFAULT_CHAIN_NETWORK
+
+    assert DEFAULT_CHAIN_NETWORK == "wss://archive.sub.latent.to:443"
+    parser = cli.build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    validate = next(
+        item
+        for item in subparsers.choices["chain-validate"]._actions
+        if "--network" in item.option_strings
+    )
+    assert validate.default == DEFAULT_CHAIN_NETWORK
+    assert validate.required is False
+    # Non-eval chain commands keep their prior defaults / requirements.
+    submit = next(
+        item
+        for item in subparsers.choices["chain-submit"]._actions
+        if "--network" in item.option_strings
+    )
+    assert submit.required is True
+    follow = next(
+        item
+        for item in subparsers.choices["follow-weights"]._actions
+        if "--network" in item.option_strings
+    )
+    assert follow.default == "finney"
 
 
 def test_chain_snapshot_surfaces_are_wallet_free_and_explicit() -> None:

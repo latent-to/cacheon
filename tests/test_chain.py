@@ -562,6 +562,24 @@ def test_stale_cursor_uses_complete_history_without_scanning_empty_blocks():
     assert visited == [99]
 
 
+def test_storage_history_stops_saturated_pagination_at_competition_cursor():
+    # Newest page is saturated (10 rows). Oldest retained entry is at/before the
+    # competition cursor, so older pages cannot hide post-cursor membership.
+    history = tuple((block, f"payload-{block}") for block in range(45, 55))
+    st = _MockSubtensor(hotkeys=["alice"], revealed={"alice": history}, block=200)
+    pages: list[int] = []
+    original = st.query_map
+
+    def query_map(module, name, params=None, block=None):
+        pages.append(block)
+        return original(module, name, params=params, block=block)
+
+    st.query_map = query_map
+    snapshot = chain.read_finalized_reveal_history(st, netuid=1, after_block=50)
+    assert [row.block for row in snapshot.reveals] == list(range(51, 55))
+    assert pages == [200]
+
+
 def test_same_hotkey_same_block_payloads_use_lexical_suborder_only():
     st = _MockSubtensor(
         hotkeys=["alice", "bob"],

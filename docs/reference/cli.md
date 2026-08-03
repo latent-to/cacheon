@@ -197,10 +197,17 @@ python -m cacheon.cli chain-validate \
   --intake-only --once
 ```
 
+`--network` defaults to the Latent archive endpoint
+(`wss://archive.sub.latent.to:443`) for this intake/eval command only. Pass
+another named network or `wss://` URL to override. On a recycled subnet, open
+competition intake with `--start-block <N>` so an empty database seeds its
+finalized cursor at that floor and skips alien pre-competition reveal history;
+the flag is ignored once a cursor already exists.
+
 Intake mode persists finalized order, hardened fetch and re-hash results, private
 retention, immutable worker publication, and copy disposition. Storage and loop controls
 are `--intake-db`, `--private-root`, `--publication-root`, `--audit-log`,
-`--interval`, and `--once`. The audit file is a redacted, fsynced JSONL chronology;
+`--start-block`, `--interval`, and `--once`. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 

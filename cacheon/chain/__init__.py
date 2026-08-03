@@ -34,6 +34,10 @@ logger = logging.getLogger("cacheon.chain")
 # Yuma-consensus version stamped on set_weights. A coordinated subnet parameter,
 # bumped deliberately (like PINNED_SGLANG) so every validator agrees.
 WEIGHTS_VERSION_KEY = 1
+# Default RPC endpoint for ``chain-validate`` / finalized intake history.
+# Archive depth is required for recycled-subnet reveal walks; other chain
+# commands keep their own ``--network`` defaults or require an explicit value.
+DEFAULT_CHAIN_NETWORK = "wss://archive.sub.latent.to:443"
 CHAIN_REVEAL_HISTORY_CAP = 10
 MAX_REVEAL_HISTORY_PAGES = 4_096
 MAX_REVEAL_HISTORY_ROWS = 1_000_000
@@ -409,13 +413,25 @@ def read_validator_weights(
 # RPC wrappers — lazy bittensor; the only code that touches the chain
 # --------------------------------------------------------------------------- #
 
-def connect(network: str = "finney", *, fallback_endpoints: Optional[list[str]] = None,
-            retry_forever: bool = False):
-    """Open a subtensor client. ``network`` is a named network ('finney', 'test') or an
-    explicit ``wss://`` endpoint URL. NOTE: the SDK's 'test' alias resolves to
-    ``wss://test.finney.opentensor.ai:443`` — pass the URL explicitly if you mean a
-    different testnet endpoint. ``fallback_endpoints``/``retry_forever`` enable the
-    SDK's retrying substrate client (auto-reconnect through the fallback list)."""
+def connect(
+    network: str = "finney",
+    *,
+    fallback_endpoints: Optional[list[str]] = None,
+    retry_forever: bool = False,
+):
+    """Open a subtensor client.
+
+    ``network`` is a named network (``finney``, ``test``) or an explicit
+    ``wss://`` endpoint URL. NOTE: the SDK's ``test`` alias resolves to
+    ``wss://test.finney.opentensor.ai:443`` — pass the URL explicitly if you
+    mean a different testnet endpoint. ``fallback_endpoints``/
+    ``retry_forever`` enable the SDK's retrying substrate client
+    (auto-reconnect through the fallback list).
+
+    ``chain-validate`` defaults its CLI ``--network`` to
+    :data:`DEFAULT_CHAIN_NETWORK` (the Latent archive). Other commands pass
+    their own network argument through to this helper.
+    """
     import bittensor as bt
 
     kwargs: dict = {}
@@ -755,6 +771,14 @@ def read_finalized_head(subtensor) -> tuple[int, str]:
     return _finalized_head(subtensor)
 
 
+def read_block_hash(subtensor, block: int) -> str:
+    """Resolve one canonical block hash; fails closed on missing/invalid answers."""
+
+    if type(block) is not int or block < 0:
+        raise ChainRevealHistoryError("block must be a non-negative integer")
+    return _block_hash(subtensor, block)
+
+
 def _unwrap(value: object) -> object:
     seen: set[int] = set()
     while not isinstance(value, (str, bytes, bytearray, dict, list, tuple, int)):
@@ -985,7 +1009,12 @@ def _raw_reveal_page(subtensor, netuid: int, block: int) -> dict[str, tuple]:
 def _storage_history(
     subtensor, netuid: int, *, finalized_block: int, after_block: int | None = None
 ) -> Counter[tuple[int, str, str]]:
-    """Recover complete finalized storage history with bounded backwards pages."""
+    """Recover complete finalized storage history with bounded backwards pages.
+
+    When ``after_block`` is set, only reveals strictly after that cursor are
+    retained, and saturated pagination stops once a page's oldest entry is at
+    or before the cursor (older pages cannot hide post-cursor membership).
+    """
 
     observed: Counter[tuple[int, str, str]] = Counter()
     if after_block is not None and (
@@ -1009,7 +1038,8 @@ def _storage_history(
                 raise ChainRevealHistoryError("chain reveal history has an invalid hotkey")
             if not isinstance(history, (list, tuple)):
                 raise ChainRevealHistoryError("chain reveal history has a malformed row set")
-            blocks: list[int] = []
+            retained_blocks: list[int] = []
+            history_blocks: list[int] = []
             for entry in history:
                 if not isinstance(entry, (list, tuple)) or len(entry) != 2:
                     raise ChainRevealHistoryError("chain reveal history has a malformed row")
@@ -1024,13 +1054,16 @@ def _storage_history(
                     raise ChainRevealHistoryError(
                         "chain reveal history has invalid block/data provenance"
                     )
+                history_blocks.append(block)
                 if after_block is not None and block <= after_block:
                     continue
-                blocks.append(block)
+                retained_blocks.append(block)
                 page_counts[(block, hotkey, data)] += 1
-            if after_block is None and len(history) >= CHAIN_REVEAL_HISTORY_CAP:
-                oldest = min(blocks)
-                saturated_oldest.append(oldest)
+            if len(history) >= CHAIN_REVEAL_HISTORY_CAP:
+                oldest = min(history_blocks)
+                # Paginate while the cap may still hide older post-cursor rows.
+                if after_block is None or oldest > after_block:
+                    saturated_oldest.append(oldest)
         for key, count in page_counts.items():
             observed[key] = max(observed[key], count)
         if len(observed) > MAX_REVEAL_HISTORY_ROWS:
@@ -1064,16 +1097,15 @@ def read_finalized_reveal_history(
         after_block is not None
         and finalized_block - after_block <= MAX_INCREMENTAL_REVEAL_BLOCK_SCAN
     )
+    # Always honor the durable cursor in storage recovery. Passing ``None`` and
+    # filtering afterwards forced a from-genesis saturated walk on recycled
+    # subnets even when competition intake only needed post-cursor membership.
     storage = _storage_history(
         subtensor,
         netuid,
         finalized_block=finalized_block,
-        after_block=after_block if scan_incrementally else None,
+        after_block=after_block,
     )
-    if after_block is not None and not scan_incrementally:
-        storage = Counter(
-            {key: count for key, count in storage.items() if key[0] > after_block}
-        )
     blocks = (
         tuple(range(after_block + 1, finalized_block + 1))
         if scan_incrementally

@@ -39,6 +39,21 @@ def _wallet_from_args(args: argparse.Namespace):
     return bt.Wallet(**kwargs)
 
 
+def _add_network_arg(parser: argparse.ArgumentParser) -> None:
+    """Attach ``--network`` for ``chain-validate`` (Latent archive default)."""
+
+    from cacheon.chain import DEFAULT_CHAIN_NETWORK
+
+    parser.add_argument(
+        "--network",
+        default=DEFAULT_CHAIN_NETWORK,
+        help=(
+            "named network or an explicit wss:// endpoint URL "
+            f"(default: {DEFAULT_CHAIN_NETWORK})"
+        ),
+    )
+
+
 def cmd_slots(_: argparse.Namespace) -> int:
     from cacheon.slots import SLOTS, list_slots
 
@@ -1912,6 +1927,7 @@ def cmd_chain_validate(
         arena_registry=injected,
         arena_id=None if args.intake_only else args.arena_id,
         intake_only=args.intake_only,
+        start_block=getattr(args, "start_block", None),
         interval_s=args.interval,
         once=args.once,
         audit_log=args.audit_log,
@@ -2960,7 +2976,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("chain-validate",
                         help="finalized reveal -> private fetch -> immutable worker publication")
     sp.add_argument("--netuid", type=int, required=True)
-    sp.add_argument("--network", required=True)
+    _add_network_arg(sp)
+    sp.add_argument(
+        "--start-block",
+        type=int,
+        default=None,
+        help=(
+            "competition floor: on an empty intake DB, seed the finalized cursor "
+            "at this block so recycled-subnet alien reveal history is not walked; "
+            "ignored once a cursor already exists"
+        ),
+    )
     sp.add_argument("--intake-only", action="store_true",
                     help="explicitly disable qualification, settlement, signing, and weights")
     sp.add_argument("--arena-id", default=None,

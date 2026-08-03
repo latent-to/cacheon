@@ -126,6 +126,51 @@ def test_finalized_reveal_publishes_once_and_restart_reopens(tmp_path, monkeypat
     assert second_calls == []
 
 
+def test_start_block_bootstraps_empty_intake_before_history_read(tmp_path, monkeypatch):
+    start = 80
+    start_hash = "0x" + f"{start:064x}"
+    empty = FinalizedRevealSnapshot(BLOCK, BLOCK_HASH, ())
+    history_calls: list[object] = []
+
+    def read_history(_subtensor, _netuid, *, after_block=None):
+        history_calls.append(after_block)
+        return empty
+
+    monkeypatch.setattr(loop.chain, "read_finalized_reveal_history", read_history)
+    monkeypatch.setattr(
+        loop.chain,
+        "read_finalized_head",
+        lambda *_: (BLOCK, BLOCK_HASH),
+    )
+    monkeypatch.setattr(
+        loop.chain,
+        "read_block_hash",
+        lambda _subtensor, block: "0x" + f"{block:064x}",
+    )
+
+    class _ScopedSubtensor(_NoWeightsSubtensor):
+        def get_block_hash(self, block):
+            if block == 0:
+                return SCOPE.genesis_hash
+            return "0x" + f"{block:064x}"
+
+    options = dict(
+        intake_db=tmp_path / "state" / "intake.sqlite3",
+        private_root=tmp_path / "private-cache",
+        publication_root=tmp_path / "worker",
+        intake_only=True,
+        start_block=start,
+    )
+    result = loop.run_pass(_ScopedSubtensor(), 307, **options)
+    assert result.seen == 0 and history_calls == [start]
+    with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
+        assert store.finalized_cursor() == (BLOCK, BLOCK_HASH)
+
+    # Existing cursor ignores a repeated --start-block.
+    second = loop.run_pass(_ScopedSubtensor(), 307, **options)
+    assert second.seen == 0 and history_calls == [start, BLOCK]
+
+
 def test_malformed_finalized_payload_is_reserved_and_never_fetched(tmp_path, monkeypatch):
     snapshot = _snapshot([("miner", "not-json")])
     result, calls, options = _run(tmp_path, monkeypatch, snapshot, {})

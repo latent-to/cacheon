@@ -29,6 +29,7 @@ from cacheon.chain.fetch import FetchError, FetchTransientError, fetch_bundle
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
+    IntakeError,
     IntakePolicy,
     IntakeReservation,
     IntakeScope,
@@ -397,17 +398,30 @@ def run_pass(
     arena_id: str | None = None,
     intake_only: bool = False,
     retained_only: bool = False,
+    start_block: int | None = None,
 ) -> PassResult:
     """Run one non-emitting intake/qualification pass.
 
     ``retained_only`` evaluates the already-durable queue at the current
     finalized head without rereading or advancing reveal history.
+
+    ``start_block`` seeds an empty intake database's finalized cursor at that
+    competition floor so recycled-subnet alien history is not walked. It is
+    ignored once a cursor already exists.
     """
 
     if type(intake_only) is not bool or type(retained_only) is not bool:
         raise IntakeControllerError("pass mode flags must be exact booleans")
     if intake_only and retained_only:
         raise IntakeControllerError("intake-only and retained-only modes conflict")
+    if start_block is not None and (
+        type(start_block) is not int or start_block < 0
+    ):
+        raise IntakeControllerError("competition start block must be a non-negative int")
+    if retained_only and start_block is not None:
+        raise IntakeControllerError(
+            "retained-only mode cannot bootstrap a competition start block"
+        )
     if intake_only:
         if arena_registry is not None or arena_id is not None:
             raise IntakeControllerError("intake-only mode cannot receive arena authority")
@@ -422,6 +436,25 @@ def run_pass(
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), netuid)
     with FinalizedIntakeStore(intake_db, policy, scope=scope) as store:
         cursor = store.finalized_cursor()
+        if start_block is not None and cursor is None:
+            finalized_block, _finalized_hash = chain.read_finalized_head(subtensor)
+            if start_block > finalized_block:
+                raise IntakeControllerError(
+                    "competition start block is newer than the finalized head"
+                )
+            try:
+                start_hash = chain.read_block_hash(subtensor, start_block)
+                cursor = store.bootstrap_finalized_cursor(
+                    block=start_block, block_hash=start_hash
+                )
+            except (IntakeError, chain.ChainRevealHistoryError) as exc:
+                raise IntakeControllerError(
+                    f"competition start-block bootstrap refused: {exc}"
+                ) from None
+            logger.info(
+                "bootstrapped competition intake cursor at block %d",
+                start_block,
+            )
         if retained_only:
             if cursor is None:
                 raise IntakeControllerError("retained-only pass has no finalized cursor")
@@ -592,6 +625,7 @@ def run_validator(
     arena_id: str | None = None,
     intake_only: bool = False,
     retained_only: bool = False,
+    start_block: int | None = None,
     interval_s: float = DEFAULT_INTERVAL_S,
     once: bool = False,
     max_consecutive_failures: int = 10,
@@ -614,6 +648,7 @@ def run_validator(
                 arena_id=arena_id,
                 intake_only=intake_only,
                 retained_only=retained_only,
+                start_block=start_block,
             )
             failures = 0
             if audit_log is not None:

@@ -507,6 +507,26 @@ def test_finalized_cursor_rejects_hash_change_or_regression(tmp_path):
             )
 
 
+def test_bootstrap_finalized_cursor_seeds_competition_floor(tmp_path):
+    start = 8_766_638
+    start_hash = "0x" + f"{start:064x}"
+    with _store(tmp_path) as store:
+        assert store.finalized_cursor() is None
+        assert store.bootstrap_finalized_cursor(
+            block=start, block_hash=start_hash
+        ) == (start, start_hash)
+        assert store.finalized_cursor() == (start, start_hash)
+        # Idempotent on the exact same floor.
+        assert store.bootstrap_finalized_cursor(
+            block=start, block_hash=start_hash
+        ) == (start, start_hash)
+        with pytest.raises(IntakeError, match="already has a finalized cursor"):
+            store.bootstrap_finalized_cursor(
+                block=start + 1, block_hash="0x" + f"{start + 1:064x}"
+            )
+        assert store.all() == ()
+
+
 def test_cursor_rejection_rolls_back_automatic_expiry(tmp_path, monkeypatch):
     with _store(tmp_path, expiry_blocks=20) as store:
         row = store.reserve_finalized(

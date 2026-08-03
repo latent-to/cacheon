@@ -95,6 +95,12 @@ The evidence classes are intentionally non-substitutable:
   parent directory to the owner-only mode when a sibling component created it
   first under the ambient umask (2026-07-30), instead of refusing every append
   on a split storage layout.
+- `chain-validate --network` defaults to the Latent archive endpoint
+  `wss://archive.sub.latent.to:443` (override with an explicit named network or
+  `wss://` URL). Other chain commands keep prior network defaults/requirements.
+  `chain-validate --start-block <N>` seeds an empty intake database's finalized
+  cursor at that competition floor so recycled-subnet alien reveal history is
+  not walked (2026-08-03).
 - `chain-snapshot` uses SQLite's online backup API and publishes a closed,
   digest-bound private recovery manifest. It includes the consistent database,
   redacted journal when present, database-referenced worker publications and

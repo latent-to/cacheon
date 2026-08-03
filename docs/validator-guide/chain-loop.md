@@ -10,25 +10,28 @@ submit weights after each pass.
 
 1. **Bind chain scope.** Open the SQLite store against the chain genesis hash and
    netuid. A database created for another scope is not reused.
-2. **Read finalized history.** Continue after the durable cursor and reconstruct exact
+2. **Optional competition floor.** When `--start-block` is set and the database has
+   no cursor yet, seed the finalized cursor at that block/hash so recycled-subnet
+   alien history is not walked. An existing cursor is left unchanged.
+3. **Read finalized history.** Continue after the durable cursor and reconstruct exact
    reveal priority from finalized storage and canonical event positions.
-3. **Reserve before transport.** Persist every arrival in chain order before any fetch.
+4. **Reserve before transport.** Persist every arrival in chain order before any fetch.
    Slow hosting therefore cannot rewrite priority.
-4. **Fetch privately.** Accept HTTPS only, validate DNS and every redirect, enforce
+5. **Fetch privately.** Accept HTTPS only, validate DNS and every redirect, enforce
    archive limits, extract regular files safely, and rederive the committed hash.
-5. **Classify and fingerprint.** Parse a normal target-scoped proposal or the distinct
+6. **Classify and fingerprint.** Parse a normal target-scoped proposal or the distinct
    discovery schema. Parser success—not a miner-selected mode switch—chooses the lane.
    Copy identity covers the submitted delta, never the validator's incumbent stack.
-6. **Publish immutably.** Copy the validated private tree to a content-addressed worker
+7. **Publish immutably.** Copy the validated private tree to a content-addressed worker
    publication and reopen it before use.
-7. **Reconcile copies.** Compare durable fingerprints in finalized order. This step is
+8. **Reconcile copies.** Compare durable fingerprints in finalized order. This step is
    separate and idempotent so a crash between publication and copy disposition cannot
    bypass priority.
-8. **Screen and qualify.** If a registered arena service was injected, run its staged
+9. **Screen and qualify.** If a registered arena service was injected, run its staged
    screens, use the routing-only resident lane where applicable, form a
    capacity-bounded cohort, execute authoritative resident qualification, and persist
    outcomes.
-9. **Settle retained pairs.** Lease economically unblocked, independently reproduced
+10. **Settle retained pairs.** Lease economically unblocked, independently reproduced
    candidates and apply the resulting settlement plan transactionally.
 
 The pass returns counts and dispositions. It never opens a wallet or calls
@@ -95,6 +98,12 @@ cacheon chain-validate \
   --intake-only \
   --once
 ```
+
+Omit `--network` on `chain-validate` to use the default Latent archive endpoint
+(`wss://archive.sub.latent.to:443`). Other chain commands still require an
+explicit network or keep their own defaults (for example `finney`). On recycled
+mainnet subnets, add `--start-block <N>` when creating an empty intake database
+so competition intake does not walk alien pre-start reveal history.
 
 Remove `--once` to run continuously; `--interval` controls the delay between passes.
 

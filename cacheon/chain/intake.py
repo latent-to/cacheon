@@ -824,6 +824,44 @@ class FinalizedIntakeStore:
 
         return self._cursor()
 
+    def bootstrap_finalized_cursor(
+        self, *, block: int, block_hash: str
+    ) -> tuple[int, str]:
+        """Seed the durable reveal cursor without ingesting historical reveals.
+
+        Used to open a competition at a chosen start block on a recycled subnet
+        so intake does not walk alien pre-competition reveal history. Refuses
+        when a different cursor already exists. Idempotent when the stored
+        cursor already matches ``(block, block_hash)``.
+        """
+
+        if type(block) is not int or block < 0:
+            raise IntakeError("competition start block is malformed")
+        if not isinstance(block_hash, str):
+            raise IntakeError("competition start block hash is malformed")
+        normalized_hash = block_hash.lower()
+        if _BLOCK_HASH.fullmatch(normalized_hash) is None:
+            raise IntakeError("competition start block hash is malformed")
+        existing = self._cursor()
+        if existing is not None:
+            if existing == (block, normalized_hash):
+                return existing
+            raise IntakeError(
+                "intake database already has a finalized cursor; "
+                "competition --start-block only bootstraps an empty database"
+            )
+        # Empty reservation advances the cursor under the same transactional
+        # rules as a real intake pass (no arrivals, exact head binding).
+        self.reserve_finalized(
+            (),
+            finalized_block=block,
+            finalized_block_hash=normalized_hash,
+        )
+        cursor = self._cursor()
+        if cursor != (block, normalized_hash):
+            raise IntakeError("competition start cursor failed to bind")
+        return cursor
+
     def reserve_finalized(
         self,
         arrivals: Iterable[FinalizedArrival],
