@@ -25,6 +25,7 @@ import logging
 import math
 import operator
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
@@ -702,9 +703,49 @@ def _chain_uint(value: object, *, field: str) -> int:
     return result
 
 
+_HISTORICAL_THROTTLE_MARKER = "rate limit"
+_HISTORICAL_THROTTLE_ATTEMPTS = 8
+_HISTORICAL_THROTTLE_BASE_DELAY_S = 5.0
+_HISTORICAL_THROTTLE_MAX_DELAY_S = 60.0
+
+
+def _with_historical_patience(read, *, what: str):
+    """Run one historical chain read through endpoint work-throttling.
+
+    Public archive endpoints meter historical work ("Historical work rate
+    limit exceeded"). A throttled read proves nothing about chain state, so
+    only that recognizable condition is retried, with bounded exponential
+    backoff. ChainRevealHistoryError and every other failure propagate
+    unchanged — the fail-closed ordering authority is not weakened.
+    """
+    delay = _HISTORICAL_THROTTLE_BASE_DELAY_S
+    for attempt in range(1, _HISTORICAL_THROTTLE_ATTEMPTS + 1):
+        try:
+            return read()
+        except ChainRevealHistoryError:
+            raise
+        except Exception as exc:
+            if _HISTORICAL_THROTTLE_MARKER not in str(exc).lower():
+                raise
+            if attempt == _HISTORICAL_THROTTLE_ATTEMPTS:
+                raise
+            logging.getLogger(__name__).warning(
+                "historical read throttled (%s); attempt %d/%d, retrying in %.0fs",
+                what, attempt, _HISTORICAL_THROTTLE_ATTEMPTS, delay,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2.0, _HISTORICAL_THROTTLE_MAX_DELAY_S)
+    raise AssertionError("unreachable")
+
+
 def _block_hash(subtensor, block: int) -> str:
     try:
-        value = str(subtensor.get_block_hash(block))
+        value = str(
+            _with_historical_patience(
+                lambda: subtensor.get_block_hash(block),
+                what=f"block hash {block}",
+            )
+        )
     except Exception as exc:
         raise ChainRevealHistoryError(
             f"cannot resolve canonical hash for block {block}: {exc}"
@@ -897,7 +938,10 @@ def _reveal_events_at(
     if not callable(get_events):
         raise ChainRevealHistoryError("subtensor exposes no finalized event API")
     try:
-        records = list(get_events(block_hash=block_hash))
+        records = _with_historical_patience(
+            lambda: list(get_events(block_hash=block_hash)),
+            what=f"finalized events at block {block}",
+        )
     except Exception as exc:
         raise ChainRevealHistoryError(
             f"cannot read finalized events for block {block}: {exc}"
@@ -938,9 +982,9 @@ def _raw_reveal_page(subtensor, netuid: int, block: int) -> dict[str, tuple]:
     query_map = getattr(subtensor, "query_map", None)
     if not callable(query_map):
         raise ChainRevealHistoryError("subtensor exposes no raw reveal-storage API")
-    decoded: dict[str, tuple] = {}
-    map_rows = history_entries = 0
-    try:
+    def _build_page() -> dict[str, tuple]:
+        decoded: dict[str, tuple] = {}
+        map_rows = history_entries = 0
         page = query_map(
             module="Commitments", name="RevealedCommitments",
             params=[netuid], block=block,
@@ -972,6 +1016,12 @@ def _raw_reveal_page(subtensor, netuid: int, block: int) -> dict[str, tuple]:
                 reveal_block = _chain_uint(_unwrap(entry[1]), field="reveal block")
                 entries.append((reveal_block, _decode_raw_reveal(entry[0])))
             decoded[hotkey] = tuple(entries)
+        return decoded
+
+    try:
+        return _with_historical_patience(
+            _build_page, what=f"reveal storage page at block {block}"
+        )
     except ChainRevealHistoryError:
         raise
     except Exception as exc:
@@ -979,7 +1029,6 @@ def _raw_reveal_page(subtensor, netuid: int, block: int) -> dict[str, tuple]:
             "cannot retrieve complete historical reveal state: "
             f"{type(exc).__name__}: {exc}"
         ) from None
-    return decoded
 
 
 def _storage_history(
