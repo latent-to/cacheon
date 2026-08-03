@@ -9,6 +9,21 @@ This is not a contest for self-reported microbenchmarks. The validator owns the
 model, runtime, prompts, reference behavior, build, launch policy, measurements,
 and final decision.
 
+## Why participate
+
+A miner has an opportunity to earn a share of validator weight by becoming the
+independently verified performance frontier for one target in one published
+evaluation arena. Submission itself earns nothing. If two independent validator
+attempts reproduce the improvement and settlement crowns it, settlement records the
+reward claim in the same transaction. The validator later combines eligible claims
+into a weight vector and publishes it on-chain.
+
+```text
+proposal -> two independent PASSes -> settlement crown -> reward claim -> confirmed weights
+```
+
+[Read how miner rewards work in plain English →](incentives.md)
+
 ## The job in one sentence
 
 Find one validator-registered boundary that matters to the published workload,
@@ -122,22 +137,9 @@ and [arena_service.py](https://github.com/latent-to/cacheon/blob/main/cacheon/ar
 
 ## How rewards work
 
-Rewards attach to canonical registered targets, not arbitrary bundles. The
-repository contains two non-interchangeable generations: V1 assigns the active
-crown a decaying relative share, while the selected but inactive V2 policy
-issues bounded principal and pays it down through confirmed epochs. Atomic
-targets suppress only the overlapping singleton families declared by the
-catalog.
-
-The validator publishes the active policy bytes and digest. Do not infer income
-from a local speedup: reward generation, arena availability, target activity,
-competing crowns or debt, discovery capacity, metagraph state, and confirmed
-publication all matter. Discovery proposals never receive a standing target
-crown. Although policy and typed records define registered discovery promotion,
-the durable settlement path does not transport that authority and fails closed;
-the implemented durable discovery disposition is bounty-only. Read
-[Incentives](incentives.md) for the exact formulas and activation boundary, then
-[Discovery lane](discovery-lane.md) for the separate proposal class.
+Reward details depend on the policy announced by the operator; a local speedup is
+never enough to estimate income. Read [How miners earn rewards](incentives.md).
+Cross-cutting work follows the separate [Discovery lane](discovery-lane.md).
 
 ## Your development loop
 
@@ -155,7 +157,7 @@ reproduces crown authority: local work does not possess the finalized intake rec
 validator stack manifest, hidden inputs, calibrated policies, immutable publications,
 isolated service, or second independent qualification attempt.
 
-Use this guide in order:
+Use the technical guide in this order:
 
 1. [Slots and targets](slots.md)
 2. [Bundle format](bundle-format.md)
@@ -163,8 +165,7 @@ Use this guide in order:
 4. [Your first kernel](your-first-kernel.md)
 5. [Finding a win](finding-a-win.md)
 6. [Submitting](submitting.md)
-7. [Incentives](incentives.md)
-8. [Diagnostics](diagnostics.md)
+7. [Diagnostics](diagnostics.md)
 
 Read [Override points](override-points.md), [Dependency patches](dep-patches.md),
 and [Discovery lane](discovery-lane.md) only when the registered target or

@@ -140,6 +140,7 @@ nav:
       - Release architecture: architecture/releases.md
   - Miner guide:
       - Overview: miner-guide/overview.md
+      - How miners earn rewards: miner-guide/incentives.md
       - Your first kernel: miner-guide/your-first-kernel.md
       - Choose a target: miner-guide/slots.md
       - Bundle format: miner-guide/bundle-format.md
@@ -150,7 +151,6 @@ nav:
       - Submit on-chain: miner-guide/submitting.md
       - Troubleshooting: miner-guide/diagnostics.md
       - Discovery lane: miner-guide/discovery-lane.md
-      - Incentives: miner-guide/incentives.md
       - Override points: miner-guide/override-points.md
       - Dependency patches: miner-guide/dep-patches.md
   - Validator guide:

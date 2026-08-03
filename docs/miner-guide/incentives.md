@@ -1,248 +1,267 @@
-# Incentives
+# How miners earn rewards
 
-Cacheon converts independently reproduced marginal improvements into weight
-projections. A local benchmark, a clean bundle, a qualification attempt, and a
-crown are different authorities. Only transactional settlement can create a
-reward claim, and only a confirmed weight publication can realize the
-corresponding projection.
+Cacheon does not reward the act of uploading a kernel. It rewards a measured
+improvement that survives independent reproduction and settlement.
 
-## Check the active policy before estimating a reward
+!!! tip "The 30-second answer"
+    You submit one optimization for a target in a validator-published evaluation
+    arena. The validator compares it with that arena's exact evaluation incumbent
+    on the registered workload and checks that it remains within the required
+    behavior and quality limits. If the same optimization passes two independently
+    bound qualification attempts, settlement may name it the new **crown** for that
+    target and record the corresponding reward claim in the same transaction.
 
-The repository contains two deliberately separate reward generations:
+    The active policy determines how that claim contributes to validator weights.
+    A separate publisher later combines all eligible claims into a weight vector and
+    confirms that vector on-chain. Merely submitting code, reporting a local
+    benchmark, or passing once earns nothing.
 
-- **V1 standing rewards** assign the active crown for each registered target a
-  decaying share of the current weight vector. This is the only publisher with
-  retained live exercise.
-- **V2 finite debt** issues a bounded claim when a registered-target crown
-  settles, then pays that principal down over later confirmed epochs. The
-  one-campaign MiniMax-M3 policy, activation transaction, and publisher are
-  implemented but inactive. There is no live V2 activation or publication
-  receipt.
+## Why participate?
 
-An operator announcement must identify the active policy digest, chain scope,
-arena, target catalog, reserve, and publication cadence. Do not combine V1 and
-V2 formulas or treat repository support for V2 as evidence that a deployment
-has activated it. Activation disables legacy V1 projection for that database;
-the two publishers must not run concurrently.
+The opportunity is simple: make one published part of the validator's inference
+workload faster. If the improvement wins and is independently reproduced, your
+miner hotkey—the Bittensor identity used to submit—can receive a share of that
+validator's on-chain weight. Bittensor uses network weights to determine token
+emissions.
 
-## Conditions shared by both generations
+Cacheon is designed so that a participant can contribute one valuable part of an
+inference engine rather than build or operate the whole system. The validator
+supplies the model, workload, current stack, reference behavior, and measurement
+environment. The miner focuses on one published optimization target.
 
-A registered-target proposal can affect incentives only after all of these
-conditions hold:
+The value proposition has three parts:
 
-1. finalized intake binds the proposal's arrival and content identity;
-2. immutable publication and target resolution bind the selected delta;
-3. every non-crown screen passes;
-4. a complete v3 qualification passes: resident B/C/B′, conditional C′/B″,
-   registered eager audit A, then pristine T;
-5. a fresh independent attempt reproduces the same proposal and authority;
-6. settlement reopens the retained evidence and resolves priority and overlap;
-7. the candidate settles as the crown for one canonical reward family; and
-8. the miner hotkey remains eligible under the active metagraph policy.
+- **Results, not promises.** Reward eligibility follows an end-to-end improvement
+  measured by the validator and reproduced independently. It does not depend on a
+  self-reported benchmark or how large the submission is.
+- **One focused improvement.** A miner can improve one published kernel or
+  multi-kernel target. Later candidates are measured on top of the current
+  frontier, so contributors do not need to resubmit the rest of the engine to
+  receive credit for one change.
+- **Verifiable credit.** The chain records which hotkey submitted each exact
+  bundle and when. Qualification, settlement, and the reward claim retain that
+  identity, creating an auditable record of the measured contribution.
 
-The lower of the two reproduced speedups is the settled measurement. Failed,
-held, neutralized, copied, discovery-only, or unreproduced proposals create no
-registered-target reward authority.
+This is an opportunity, not a guaranteed payout. It is economically sensible
+only when your expected share under the operator's active policy justifies your
+development and compute costs. A failed, unreproduced, or unsettled proposal has
+no reward claim, and an unconfirmed weight publication does not realize a
+projection on-chain.
 
-Atomic targets and singleton targets are separate reward families. A registered
-atomic crown suppresses only the overlapping singleton families declared by the
-target catalog. A bundle cannot create a new family or split one improvement
-across invented target identifiers.
+## From proposal to possible emission
 
-## V1 standing rewards
+```text
+submit -> pass twice -> settlement crowns proposal and records claim
+       -> validator publishes confirmed weights -> network determines emission
+```
 
-V1 retains exactly one active standing claim for every active target in every
-registered arena. Its policy converts conservative settled speedup and claim
-age into decaying standing credit. The exact conversion, flooring, and
-normalization rules are defined only in
-[Legacy V1](../reference/emissions-policy.md#legacy-v1).
+The stages have different meanings:
 
-The policy normalizes all live standing credit into the standing pool. If live
-legacy discovery claims exist, they are normalized separately into the configured
-discovery pool; otherwise that capacity remains in the standing pool. A V1 crown
-therefore represents a decaying relative share, not fixed principal and not a
-fixed token amount.
+| Stage | What it establishes | Reward status |
+|---|---|---|
+| Finalized reveal accepted into intake | Exact proposal identity, miner hotkey, and finalized arrival order | No reward |
+| First qualification `PASS` | One complete attempt succeeded | No reward; the proposal is `reproduction_pending` |
+| Qualified | A fresh independently bound attempt reproduced the result | No reward yet; settlement is still pending |
+| Crown settled | Settlement selected the proposal and recorded its crown and reward claim together | The claim is eligible under the active policy |
+| Weight publication confirmed | The intended recipients and weight values were read back from finalized chain state within the verifier tolerance | Cacheon's projection is realized; token income remains network-dependent |
+| Crown retired or neutralized | The standing claim is no longer active | V1 standing credit stops |
+| Active claimant becomes ineligible or evidence cannot reopen | Reward authority cannot be projected safely | Publication is held; the missing share is not redistributed |
 
-The complete V1 projection fails closed when an active target lacks exactly one
-compatible crown, a live claimant has left the metagraph, active targets overlap,
-the stack and catalog disagree, or all standing credit has decayed to zero.
+Passing twice makes a proposal eligible for settlement; it does not guarantee a
+win. Settlement rechecks the evidence and compares competing proposals for the
+same or overlapping work. It crowns at most one registered candidate before the
+incumbent changes, and other current candidates are held for fresh qualification
+against the new incumbent. The winning transition may also retire or neutralize
+claims displaced by registered target overlap.
 
-Before the first crown, an operator may use the explicit all-uncrowned bootstrap
-path to project the full vector to one registered burn hotkey. The implementation
-refuses that path as soon as any crown, active reward claim, or V2 activation
-exists. This is an operator bootstrap mechanism, not miner income.
+The speedup used for settlement is deliberately conservative:
 
-The pure projection is implemented in
-[`cacheon/economics.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py).
-Journaled chain publication is implemented separately from settlement.
+```text
+settled speedup = min(primary speedup, reproduction speedup)
+```
 
-## V2 finite-debt issuance
+This prevents one unusually favorable run from setting the reward basis.
 
-V2 pays for the independently reproduced improvement over the prior frontier.
-A settling crown issues finite principal; later crowns do not erase that debt,
-and an old crown does not receive a perpetual royalty.
+## What “validator weight” means
 
-### Improvement units
+Settlement records who earned credit. A separate publisher calculates how the
+validator should divide its weight among all eligible hotkeys and submits that
+division on-chain.
 
-V2 represents conservative settled speedup in log-relative fixed-point units.
-This makes base accounting path-independent apart from the policy's defined
-flooring and elapsed-time multiplier. The unit is an accounting denomination,
-not an acceptance threshold: an improvement must still clear the validator's
-calibrated marginal bar and reproduce. See
-[Registered-CROWN principal](../reference/emissions-policy.md#registered-crown-principal)
-for the normative conversion and flooring order.
+That confirmed vector is Cacheon's economic output, not a fixed cash or token
+prize. Bittensor combines it with the weights and stake of other active validators
+at the subnet's epoch. Network consensus, clipping, subnet emission, and the
+validator's realized influence determine the final miner emission. A Cacheon
+claim therefore does **not** promise a fixed amount of TAO, alpha, fiat value, or
+even a fixed percentage of subnet emission.
 
-### Family clock
+The terms mean:
 
-For a crown after an earlier accepted crown in the same reward family, V2
-applies the policy-defined multiplier for the finalized block gap. A family
-without retained or activation-seeded clock authority uses the policy's
-first-crown treatment. An activation may seed a clock from a retained
-pre-activation crown, but the seed creates no retroactive principal. The exact
-clock function and bounds live in
-[Registered-CROWN principal](../reference/emissions-policy.md#registered-crown-principal).
+- a **claim** is the validator's record that a hotkey earned credit for an
+  accepted improvement;
+- a **projection** is the calculation that divides this validator's weight among
+  eligible hotkeys;
+- a **confirmed publication** means the intended recipients and weights were read
+  back from finalized chain state within the verifier tolerance; and
+- **realized emission** is the token amount the wider network ultimately
+  allocates.
 
-Only an accepted registered-target crown advances the family clock. Waiting for
-the bonus is not risk-free: it delays payment and lets another qualifying
-proposal take priority, while the multiplier remains bounded.
+### Why this page does not quote an alpha amount
 
-### Campaign-sized principal
+A Cacheon weight share is one validator's intended allocation. It is not the
+miner's final Bittensor incentive share. At an epoch, Bittensor filters active
+permitted validators, weights their rows by stake, computes consensus, clips
+outlying weights, and only then derives each miner's incentive. The miner's alpha
+also depends on how much alpha is available to miners in that particular epoch.
 
-Every reward family maps once to a validator-owned model campaign. Campaign
-share sizes claim principal; it is not an epoch payout silo. The selected
-activation roster is a single immutable MiniMax-M3 campaign. Although the pure
-arithmetic supports another research shape, the current activation and durable
-store reject it. Model rotation, another active campaign, and successor
-activation require a new protocol. The normative roster constraints and
-principal arithmetic are in
-[Campaign policy](../reference/emissions-policy.md#campaign-policy) and
-[Registered-CROWN principal](../reference/emissions-policy.md#registered-crown-principal).
+That means a statement such as “this Cacheon claim has 10% of one validator's
+weight” is not enough to calculate “this miner receives 10% of alpha.” A defensible
+alpha estimate needs a specific live subnet and epoch, its accumulated alpha,
+tempo and halving state, the complete active validator stake-and-weight matrix,
+the subnet's consensus parameters, and the resulting miner incentive. Those
+inputs can change until the epoch runs.
 
-Adding unused target families to the sole campaign changes existing principal
-by zero.
-Each family still has an independent frontier and clock, while actual wins in
-more families create more total debt.
+Cacheon has no retained mainnet epoch that binds all of those inputs to a crowned
+miner, so this page does not invent a numeric alpha example. Once such a finalized
+epoch exists, the honest example is a historical calculation from that exact chain
+state—not a conversion from local speedup alone. See Bittensor's official
+[emissions and Yuma Consensus explanation](https://www.bittensor.com/docs/concepts/emissions).
 
-The issuance arithmetic is implemented in
-[`cacheon/finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py).
+## Which reward policy applies?
 
-## V2 epoch composition
+The repository contains two intentionally separate policy generations. A miner
+cannot choose between them. The operator must announce the active policy,
+including its exact digest, chain scope, arena, target catalog, and publication
+cadence.
 
-At each confirmed composed epoch, reviewed-discovery and registered-CROWN
-claims draw from separate policy-defined class allocations. Each class splits
-its allocation pro rata by remaining principal using claim-digest
-largest-remainder ordering before hotkey aggregation, so one hotkey owning
-several claims cannot alter the class's rounding order. The allocation formula
-and constants are defined in
-[Epoch composition](../reference/emissions-policy.md#epoch-composition).
+| Policy | Plain-English model | Current status |
+|---|---|---|
+| **Legacy V1 standing rewards** | The current crown for each active target receives standing credit based on its reproduced improvement. That credit decays with age and is normalized relative to all other live claims. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
+| **V2 finite debt** | An eligible post-activation crown receives a bounded claim that is paid down over later confirmed epochs. A later crown does not erase the unpaid balance, but the old crown receives no perpetual royalty. | Implemented but inactive. No live V2 activation or debit-confirming publication receipt exists. |
 
-Unused discovery capacity returns to registered-claim capacity. Capacity left
-after both classes' actual payouts goes to the reserve.
+V1 and V2 must not publish concurrently from the same economic authority. Do not
+estimate a current reward with V2 because its formula looks more attractive.
+Until an operator activates and announces V2, it creates no V2 claim and pays no
+V2 principal.
 
-A registered claim expires under the active lifecycle policy. Deregistration
-or a finalized runtime invalidation can forfeit the unpaid balance. Principal
-always conserves as paid, forfeited, and remaining units; expiry does not mint
-a separate reserve transfer. The normative lifetime is part of
-[Registered-CROWN principal](../reference/emissions-policy.md#registered-crown-principal).
+## How V1 standing rewards work
 
-The projection is pure and cannot debit debt. `set-debt-weights`:
+V1 is relative rather than fixed:
 
-1. reopens or constructs the earliest gapless due boundary;
-2. binds the economic projection to the signer-facing sparse vector;
-3. journals submission intent and outcome;
-4. obtains an exact finalized chain readback;
-5. confirms the publication only when that readback matches; and
-6. debits principal only after retained finalized intake reaches the readback.
+1. A settled crown creates one active standing claim for its registered target.
+2. The claim's starting credit comes from the conservative improvement above the
+   previous incumbent, not from total code size or effort.
+3. Credit decays with claim age. Age starts at the proposal's finalized
+   submission block, so qualification or settlement delay does not restart the
+   clock.
+4. The projector reopens every live claim, aggregates credit by miner hotkey,
+   and normalizes all eligible credit into one 1,000,000-part weight vector.
+5. A separate signer journals, submits, reads back, and confirms that vector.
+6. A later crown for the same target retires the previous standing claim.
 
-A dry run, projection build, SDK success, restart, or unconfirmed submission
-does not pay a claim. A delayed boundary remains first in sequence, and later
-boundaries cannot skip it.
+If live legacy discovery claims exist, they share a separately configured,
+bounded discovery pool; otherwise that capacity remains with standing claims.
+An invalid target set, missing evidence, or an ineligible active claimant prevents
+the complete projection. Submission or readback failure leaves publication
+pending or held. Neither path silently assigns a missing share elsewhere.
 
-The composed arithmetic is implemented in
-[`cacheon/incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py);
-the restart-safe publication authority is in
-[`cacheon/chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py).
+### A simplified V1 example
 
-## Discovery rewards
+Suppose a candidate records `1.040x` in its first passing attempt and `1.034x`
+in independent reproduction. Settlement can use at most `1.034x`.
 
-Discovery proposals do not own a registered target or family clock.
+Under V1, the `3.4%` marginal improvement becomes the input to the claim's
+standing-credit calculation. It does **not** mean the miner receives 3.4% of
+tokens or alpha. The final Cacheon weight share depends on that claim's age,
+every other live standing claim, any live discovery pool, claimant eligibility,
+and successful publication. If a later accepted contribution replaces this
+crown, its V1 standing credit ends.
 
-Under legacy V1, a retained discovery claim is non-renewable, expires under the
-policy lifetime, and shares only the configured discovery pool.
+The exact integer formula, flooring order, failure rules, and operator commands
+are in [Legacy V1 emissions policy](../reference/emissions-policy.md#legacy-v1).
 
-The selected V2 composition intends one qualified discovery win to take one of
-two mutually exclusive paths:
+## What actually determines a miner's reward?
 
-- `registered_promotion`: issue no discovery debt, register a reviewed target,
-  then require a fresh component submission, qualification, reproduction, and
-  crown; or
-- `bounty_only`: issue one policy-bounded, non-renewable discovery claim.
+At minimum:
 
-The durable implementation currently supports review-pending retention and
-`bounty_only`; it rejects `registered_promotion`. The promotion path still
-needs typed transport, target registration, fresh-crown linkage, and one
-cross-lane work identity. “Never both for the same work” is therefore policy
-intent, not an end-to-end property of the inactive implementation.
+- the exact policy and parameters announced for the deployment;
+- the lower speedup from the two accepted qualification attempts;
+- whether settlement crowns or holds the proposal, and whether its target
+  displaces an overlapping incumbent family;
+- the proposal's finalized block and, under V1, its age;
+- other live standing and discovery claims;
+- whether a newer crown replaces the contribution;
+- whether the claimant hotkey remains eligible in the bound metagraph;
+- whether the validator publishes and confirms the calculated vector; and
+- Bittensor's consensus, subnet emission, and chain mechanics after publication.
 
-The bounty lifetime begins at the retained qualified-win block, not at later
-review. Review delay consumes the policy-defined window, and review at or after
-expiry cannot mint principal. The bounty has no campaign share, elapsed-time
-bonus, renewal, or standing title. Exact bounty capacity and lifetime are
-defined in
-[Reviewed discovery](../reference/emissions-policy.md#reviewed-discovery).
+This is why a local speedup cannot be converted honestly into a token estimate
+by itself.
 
-See [Discovery lane](discovery-lane.md) for the proposal ABI.
+## Check this before spending money
 
-## Activation boundary
+Before renting GPUs or submitting, obtain the operator's current announcement
+and verify:
 
-`chain-activate-incentives` is a wallet-free local cutover. It requires canonical
-core and composition policies plus an independently pinned approval. Before one
-transaction activates the policy and raises the durable schema floor, preflight
-must reproduce:
+- network and netuid;
+- active arena and target catalog;
+- eligible targets and current evaluation stack;
+- active incentive generation and exact policy digest;
+- policy parameters and weight-publication cadence;
+- claimant-registration requirements; and
+- the status or receipt surface used after reveal.
 
-- one complete MiniMax-M3 reward-family roster from exactly one retained arena;
-- the arena, evaluation-stack, catalog, and finalized-membership digests;
-- reserve membership at the approved finalized metagraph;
-- equal approved and retained finalized intake cursors; and
-- the independently approved audit-control, canary, and residual-risk bindings.
+If those facts are missing, there is no defensible payout estimate. Repository
+support for a policy is not evidence that a particular deployment has activated
+it, announced matching policy authority, or produced confirmed publication
+evidence.
 
-Activation also requires quiescent pre-cutover intake, no open debt, no retained
-legacy discovery state, and no legacy publication state in the activation
-database. Existing V1 publisher databases are not silently rewritten or erased
-to force a cutover.
+## What about discovery work?
 
-The implementation boundary is in
-[`cacheon/chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py).
-The [state of record](../reference/state-of-record.md) distinguishes implemented
-authority from receipts that actually exist.
+A cross-cutting idea that does not fit a registered target uses the separate
+[discovery lane](discovery-lane.md). Discovery does not receive a standing target
+crown.
 
-## What miners should optimize for
+Under V1, a qualifying discovery that completes settlement as
+`DISCOVERY_BOUNTY` may receive one bounded, non-renewable claim under the active
+policy. If V2 were activated, the implemented discovery path would support only
+a one-time bounded `bounty_only` claim. Turning discovery work into a permanent
+registered target is not implemented, and inactive V2 cannot currently create a
+live reward.
 
-- Optimize one canonical registered target and publish the narrowest honest
-  capability domain.
-- Submit a reproducible improvement when it is ready. A bounded time bonus does
-  not compensate for pre-emption or delayed payment.
-- Do not split one gain to manufacture credit. Log units remove the base split
-  advantage, and each accepted piece resets its own family clock.
-- Do not budget from a microbenchmark or a first qualification PASS. Only the
-  lower independently reproduced speedup reaches settlement.
-- Do not assume that a discovery label earns a bounty. Review and the active
-  reward generation determine the disposition.
-- Keep the claimant hotkey registered while it owns a standing reward or unpaid
-  finite principal.
-- Model collection under plausible concurrent wins. Finite expiry bounds
-  liability; it does not guarantee that every issued unit is paid before expiry.
+## How inactive V2 would differ
 
-The deterministic one-campaign load study is reported separately in
-[Incentive load validation](../results/incentive-load-validation.md).
+V2 uses finite accounting principal for eligible post-activation crowns instead
+of projecting them through V1 standing-credit arithmetic. Activation does not
+convert an existing V1 claim or create retroactive principal.
 
-## Denomination and non-promises
+- an independently reproduced, post-activation `CROWN` that completes settlement
+  issues bounded principal based on its conservative marginal improvement;
+- later crowns do not erase already issued principal;
+- confirmed epochs pay down live claims subject to the epoch capacity;
+- unpaid claims can expire or be forfeited, so issuance does not guarantee that
+  the full amount will be collected; and
+- principal changes only after finalized weight readback and retained intake
+  catch-up.
 
-Cacheon accounts in confirmed validator weight-ppm epochs. It does not promise a
-fixed amount of TAO, alpha, fiat value, or realized validator influence. Token
-emission depends on Bittensor consensus, subnet state, chain mechanics, and the
-validator's realized position.
+The implementation currently accepts one immutable MiniMax-M3 campaign. Model
+rotation, a second live campaign, and successor activation need a new protocol.
+The deterministic load study tests accounting behavior, not live miner income or
+token value.
 
-Rental-cost and collection calculations are sensitivity analyses, not price
-forecasts or payout promises. Always bind an estimate to the exact active
-policy digest and retained publication evidence.
+See [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2) for the
+exact policy and [Current status](../reference/state-of-record.md#inactive-v2-finite-debt)
+for the maintained activation boundary.
+
+## Read the exact rules
+
+This page explains the participant-facing mechanism. The normative arithmetic
+and operational boundaries live in:
+
+- [Emissions policy](../reference/emissions-policy.md) — exact V1 and V2 formulas;
+- [Settlement and weights](../validator-guide/settlement-and-weights.md) — validator
+  settlement, signing, publication, and recovery;
+- [Current status](../reference/state-of-record.md) — what has actually been
+  exercised and what remains inactive; and
+- [Incentive load validation](../results/incentive-load-validation.md) — V2
+  accounting sensitivity, not a payout forecast.
