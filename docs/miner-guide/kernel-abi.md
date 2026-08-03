@@ -169,6 +169,13 @@ def attention_decode(q, k, v, seq_lens, sm_scale, out):
 
 Request `i` attends only to the first `seq_lens[i]` cached keys and values.
 
+The current live seam builds this dense, padded view by gathering from SGLang's
+paged KV cache. That path is an **eager diagnostic path only**: its request-dependent
+gather and host scalar read cannot be captured safely, so Cacheon keeps stock
+attention during CUDA graph capture. A graph-qualified production submission would
+need a separate paged-direct contract that exposes validator-owned paging metadata
+without the dense gather. Cacheon does not currently provide that larger contract.
+
 ### `attention.msa_block_score`
 
 ```python
@@ -208,6 +215,12 @@ def fused_experts(x, topk_ids, topk_weights, prepared, out):
     # x: (M, H); routing arrays: (M, K); out: (M, H)
     ...
 ```
+
+`topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
+They are not promised to be probabilities: do not assume that a row sums to one,
+or that its only value is `1.0` when `K == 1`. SGLang configurations that do not
+renormalize routing, or that apply a routed scaling factor, make those distinctions
+part of the result the kernel must preserve.
 
 `moe.fused_experts` produces the local expert result. The enclosing trusted path
 retains ownership of any later collective.
