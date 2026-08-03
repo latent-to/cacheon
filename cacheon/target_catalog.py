@@ -33,11 +33,11 @@ from cacheon.stack_identity import canonical_digest
 
 # Catalog identities are consensus-bearing and survive the product/package
 # rename. Existing crowns and evaluation stacks bind these exact domains.
-_TARGET_CONTRACT_DOMAIN = "optima.target-contract"
-_TARGET_CATALOG_DOMAIN = "optima.target-catalog"
-_ATOMIC_TARGET_CONTRACT_DOMAIN = "optima.atomic-target-contract"
-_TARGET_SPEC_DOMAIN = "optima.target-spec"
-_BINDING_CONTRACT_DOMAIN = "optima.binding-contract"
+_TARGET_CONTRACT_DOMAIN = "cacheon.target-contract"
+_TARGET_CATALOG_DOMAIN = "cacheon.target-catalog"
+_ATOMIC_TARGET_CONTRACT_DOMAIN = "cacheon.atomic-target-contract"
+_TARGET_SPEC_DOMAIN = "cacheon.target-spec"
+_BINDING_CONTRACT_DOMAIN = "cacheon.binding-contract"
 
 
 class TargetKind(str, Enum):

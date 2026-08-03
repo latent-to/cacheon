@@ -21,8 +21,8 @@ from cacheon.stack_identity import canonical_json_bytes
 
 
 DOMAIN = "qualification.raw"
-SCHEMA = "optima.qualification.raw.v1"
-MEDIA = "application/vnd.optima.qualification+json"
+SCHEMA = "cacheon.qualification.raw.v1"
+MEDIA = "application/vnd.cacheon.qualification+json"
 
 
 def _target(root: Path, reference: EvidenceArtifactRef) -> Path:

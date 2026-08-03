@@ -246,7 +246,7 @@ class ArtifactProviderRegistry:
             "providers": [self._by_id[key].snapshot() for key in self._by_id],
             "schema_version": 1,
         }
-        self._digest = canonical_digest("optima.artifact-provider-registry", self._snapshot)
+        self._digest = canonical_digest("cacheon.artifact-provider-registry", self._snapshot)
 
     @property
     def digest(self) -> str:
@@ -331,7 +331,7 @@ CUTE_CUBIN_PROFILE_INPUTS = frozenset(
 CUTE_CUBIN_PROVIDER_ID = "cutlass.cute.cubin.v1"
 CUTE_CUBIN_MANIFEST_FEATURE = f"aot:{CUTE_CUBIN_PROVIDER_ID}"
 CUTE_CUBIN_REBUILD_FEATURE = "rebuild:build_cute_cubin"
-CUTE_CUBIN_PATCHER_ID = "optima.build-cute-cubin.v1"
+CUTE_CUBIN_PATCHER_ID = "cacheon.build-cute-cubin.v1"
 CUTE_CUBIN_PROVIDER = ArtifactProviderDescriptor(
     provider_id=CUTE_CUBIN_PROVIDER_ID,
     artifact_kind=ArtifactKind.CUDA_CUBIN,

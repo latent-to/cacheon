@@ -17,11 +17,11 @@ from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 WEIGHT_PARTS = 1_000_000
 # These values are signed/persisted protocol identities. Keep the established
-# Optima domains across the Cacheon product/package rename.
-SUBNET_OWNER_BURN_AUTHORITY = "optima.chain.subnet-owner-burn-weight-authority"
-_WEIGHT_PROJECTION_DOMAIN = "optima.chain.weight-projection"
-_WEIGHT_PUBLICATION_DOMAIN = "optima.chain.weight-publication"
-_METAGRAPH_MEMBERSHIP_DOMAIN = "optima.economics.metagraph-membership"
+# Cacheon domains across the Cacheon product/package rename.
+SUBNET_OWNER_BURN_AUTHORITY = "cacheon.chain.subnet-owner-burn-weight-authority"
+_WEIGHT_PROJECTION_DOMAIN = "cacheon.chain.weight-projection"
+_WEIGHT_PUBLICATION_DOMAIN = "cacheon.chain.weight-publication"
+_METAGRAPH_MEMBERSHIP_DOMAIN = "cacheon.economics.metagraph-membership"
 PUBLICATION_STATUSES = frozenset(
     {"intent", "pending", "held", "confirmed", "released"}
 )

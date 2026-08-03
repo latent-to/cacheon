@@ -175,7 +175,7 @@ def _write_bundle(root: Path, ops: list[tuple[str, str, str]], files: dict[str, 
     """Materialize a minimal bundle: ``ops`` = (slot, source, entry) rows; ``files`` =
     relpath -> python source."""
     root.mkdir(parents=True, exist_ok=True)
-    lines = ['bundle_id = "t"', 'abi_version = "optima-op-abi-v0"', ""]
+    lines = ['bundle_id = "t"', 'abi_version = "cacheon-op-abi-v0"', ""]
     for slot, source, entry in ops:
         lines += ["[[ops]]", f'slot = "{slot}"', f'source = "{source}"', f'entry = "{entry}"', ""]
     (root / "manifest.toml").write_text("\n".join(lines))
@@ -219,7 +219,7 @@ def _write_variant_bundle(
     declare non-overlapping capability domains there.
     """
     root.mkdir(parents=True, exist_ok=True)
-    lines = ['bundle_id = "t"', 'abi_version = "optima-op-abi-v0"', ""]
+    lines = ['bundle_id = "t"', 'abi_version = "cacheon-op-abi-v0"', ""]
     for slot, variant, source, entry, *rest in rows:
         lines += [
             "[[ops]]",

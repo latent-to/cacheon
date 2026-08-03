@@ -548,9 +548,9 @@ failure domains, mainnet economics, V2 activation, or unattended operation.
 
 The tracked one-campaign load report contains 64 matrix rows and four burst
 controls. Its sealed pre-rename receipt retains semantic digest
-`505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`;
+`b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`;
 the separately labeled Cacheon-source replay has digest
-`42b0ea73a59bb431c0b390e40ccbf6a47706e95e762c7bfeef5068fe5f98b86f`.
+`b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`.
 The only report-field difference is the exact source-file SHA-256 and the
 report digest derived from it; all accounting semantics match.
 It is deterministic accounting sensitivity, not chain, GPU, token-value,

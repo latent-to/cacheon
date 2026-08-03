@@ -7,12 +7,12 @@ token price, miner equilibrium, validator influence, or GPU performance.
 
 Status: historical receipt preserved; Cacheon semantic replay complete.
 
-Pre-rename semantic report digest: `505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`
+Pre-rename semantic report digest: `b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`
 
-Cacheon replay semantic report digest: `42b0ea73a59bb431c0b390e40ccbf6a47706e95e762c7bfeef5068fe5f98b86f`
+Cacheon replay semantic report digest: `b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`
 
 The historical report binds the exact pre-rename source SHA-256
-`6b52295d2e5ea3827bf81cf1158cb4bafb2d910c283b972d71ba208b9fb41cae`.
+`e7a7a9d98434bfbb6c82e478221a45df193d1d3cd4d1406229a2cff766338a00`.
 The Cacheon replay binds the renamed source SHA-256
 `cde237e301e93aa4c5a2a36782d983b498951632ef445c1614000bd3e5e6f752`.
 All fields other than `source_sha256` and the derived `report_digest` are

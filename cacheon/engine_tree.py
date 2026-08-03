@@ -44,8 +44,8 @@ from cacheon.stack_identity import (
 _MATERIALIZER_VERSION = 2
 _FILE_MODE = 0o444
 _DIR_MODE = 0o755
-_INTERNAL_BUNDLE_ID = "optima-materialized-v1"
-_DISCOVERY_METADATA = "metadata/optima_discovery.json"
+_INTERNAL_BUNDLE_ID = "cacheon-materialized-v1"
+_DISCOVERY_METADATA = "metadata/cacheon_discovery.json"
 _REBUILD_ORDER = {
     "cacheon/patchers/apply_dep_patch.py": 0,
     "cacheon/patchers/build_cuda_ext.py": 1,
@@ -215,7 +215,7 @@ def _integrated_source_tree_digest(path: Path) -> str:
         {"mode": _FILE_MODE, "path": rel, "sha256": digest}
         for rel, _source_mode, digest in _tree_snapshot(path)
     ]
-    return canonical_digest("optima.integrated-source-tree", {"files": rows})
+    return canonical_digest("cacheon.integrated-source-tree", {"files": rows})
 
 
 def integrated_source_tree_digest(root: str | Path) -> str:
@@ -816,9 +816,9 @@ def _rebuild_features(plan: RebuildPlan | None) -> tuple[str, ...]:
         )
         if artifact_feature is not None:
             features.append(artifact_feature)
-        elif step.patcher_id == "optima.apply-dep-patch.v1":
+        elif step.patcher_id == "cacheon.apply-dep-patch.v1":
             features.append(FEATURE_REBUILD_APPLY_DEP_PATCH)
-        elif step.patcher_id == "optima.build-cuda-ext.v1":
+        elif step.patcher_id == "cacheon.build-cuda-ext.v1":
             features.append(FEATURE_REBUILD_BUILD_CUDA_EXT)
         else:
             raise EngineTreeError(
@@ -1054,11 +1054,11 @@ def _inspect_contribution(
         "rebuild": _rebuild_identity_data(plan),
     }
     selected_payload_digest = canonical_digest(
-        "optima.contribution.selected-payload", selected
+        "cacheon.contribution.selected-payload", selected
     )
     target_spec_digest = catalog.target_spec_digest(resolved.target_id)
     selected_delta_digest = canonical_digest(
-        "optima.contribution.selected_delta",
+        "cacheon.contribution.selected_delta",
         {
             "selected_payload_digest": selected_payload_digest,
             "target_id": resolved.target_id,
@@ -1190,7 +1190,7 @@ def _review_commit_source_digest(
     if not committed:
         raise EngineTreeError("integration review commit contains no source files")
     committed_digest = canonical_digest(
-        "optima.integrated-source-tree",
+        "cacheon.integrated-source-tree",
         {"files": sorted(committed, key=lambda row: str(row["path"]))},
     )
     current_digest = integrated_source_tree_digest(source)
@@ -1396,7 +1396,7 @@ def _contribution_files(
     delta_digest: str,
     patch_destinations: set[tuple[str, str]],
 ) -> tuple[dict[str, bytes], list[dict[str, object]], list[dict[str, str]], list[dict[str, object]]]:
-    prefix = f"optima_c_{delta_digest}"
+    prefix = f"cacheon_c_{delta_digest}"
     files: dict[str, bytes] = {}
     module_names = {
         relative: _module_name(prefix, relative)
@@ -1811,7 +1811,7 @@ def _emitted_rows(files: Mapping[str, bytes]) -> tuple[EmittedFile, ...]:
 
 def _logical_tree_digest(rows: tuple[EmittedFile, ...]) -> str:
     return canonical_digest(
-        "optima.materialized-engine-tree",
+        "cacheon.materialized-engine-tree",
         {
             "files": [row.identity_data() for row in rows],
             "materializer_policy_version": _MATERIALIZER_VERSION,
@@ -1852,7 +1852,7 @@ def _validate_contribution_rows(rows: object) -> list[dict[str, object]]:
             except ValueError as exc:
                 raise EngineTreeError(str(exc)) from exc
         expected_delta = canonical_digest(
-            "optima.contribution.selected_delta",
+            "cacheon.contribution.selected_delta",
             {
                 "selected_payload_digest": row["selected_payload_digest"],
                 "target_id": target_id,
@@ -1861,7 +1861,7 @@ def _validate_contribution_rows(rows: object) -> list[dict[str, object]]:
         )
         if row["selected_delta_digest"] != expected_delta:
             raise EngineTreeError("materialized selected-delta identity mismatch")
-        if row["namespace"] != f"optima_c_{expected_delta}":
+        if row["namespace"] != f"cacheon_c_{expected_delta}":
             raise EngineTreeError("materialized contribution namespace mismatch")
         if row["source_kind"] not in {"proposal_artifact", "integrated_source"}:
             raise EngineTreeError("materialized contribution source kind is invalid")
@@ -1947,7 +1947,7 @@ def _write_materialized_tree(
     }
     _put_file(
         files,
-        "metadata/optima_engine_tree.json",
+        "metadata/cacheon_engine_tree.json",
         json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n",
     )
     rows, tree_digest = _publish_engine_tree_files(
@@ -2001,10 +2001,10 @@ def _reopen_engine_tree(
             parent = parent.parent
     if directories != expected_directories:
         raise EngineTreeError("materialized directory inventory mismatch")
-    metadata_path = "metadata/optima_engine_tree.json"
+    metadata_path = "metadata/cacheon_engine_tree.json"
     metadata_row = next((row for row in row_tuple if row.path == metadata_path), None)
     if metadata_row is None:
-        raise EngineTreeError("materialized tree lacks metadata/optima_engine_tree.json")
+        raise EngineTreeError("materialized tree lacks metadata/cacheon_engine_tree.json")
     try:
         metadata = json.loads(_stable_read(path, metadata_path).decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
@@ -2135,7 +2135,7 @@ def materialize_discovery_engine_tree(
     try:
         metadata = json.loads(
             _stable_read(
-                incumbent.root, "metadata/optima_engine_tree.json"
+                incumbent.root, "metadata/cacheon_engine_tree.json"
             ).decode("utf-8")
         )
     except (OSError, UnicodeError, ValueError) as exc:
@@ -2146,7 +2146,7 @@ def materialize_discovery_engine_tree(
 
     files: dict[str, bytes] = {}
     for row in incumbent.files:
-        if row.path == "metadata/optima_engine_tree.json":
+        if row.path == "metadata/cacheon_engine_tree.json":
             continue
         raw = _stable_read(incumbent.root, row.path)
         if row.mode != _FILE_MODE or row.size != len(raw) or row.sha256 != sha256_hex(raw):
@@ -2174,7 +2174,7 @@ def materialize_discovery_engine_tree(
         "policy_digest": policy.digest,
         "proposal_digest": discovery.proposal_digest,
         "proposal_files": [row.to_dict() for row in discovery.files],
-        "schema": "optima.discovery-engine-tree.v1",
+        "schema": "cacheon.discovery-engine-tree.v1",
     }
     _put_file(
         files,
@@ -2323,7 +2323,7 @@ def materialize_engine_tree(
             contribution_rows.append(
                 {
                     "contribution_ref_digest": ref.digest,
-                    "namespace": f"optima_c_{ref.selected_delta_digest}",
+                    "namespace": f"cacheon_c_{ref.selected_delta_digest}",
                     "selected_delta_digest": ref.selected_delta_digest,
                     "selected_payload_digest": ref.selected_payload_digest,
                     "source_digest": source_digest,

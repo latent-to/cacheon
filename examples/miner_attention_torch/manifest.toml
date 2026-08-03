@@ -5,7 +5,7 @@
 # just mirrors the reference, so it passes the matched-ratio gate trivially.
 
 bundle_id = "example-attention-torch-cpu"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [[ops]]
 slot = "attention.sdpa"

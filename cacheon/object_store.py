@@ -165,23 +165,12 @@ class ObjectStoreConfig:
         cls,
         *,
         prefix: str = "CACHEON_OBJECT_STORE_",
-        legacy_prefix: str | None = None,
         defaults: "ObjectStoreConfig | None" = None,
     ) -> "ObjectStoreConfig":
-        """Build config from environment, overlaying optional CLI defaults.
-
-        The default Cacheon prefix falls back field-by-field to the transitional
-        ``OPTIMA_OBJECT_STORE_`` prefix. An explicit custom prefix remains exact
-        unless its caller also supplies ``legacy_prefix``.
-        """
-
-        if legacy_prefix is None and prefix == "CACHEON_OBJECT_STORE_":
-            legacy_prefix = "OPTIMA_OBJECT_STORE_"
+        """Build config from environment, overlaying optional CLI defaults."""
 
         def _env(name: str) -> str | None:
             value = os.environ.get(prefix + name)
-            if (value is None or value == "") and legacy_prefix:
-                value = os.environ.get(legacy_prefix + name)
             if value is None or value == "":
                 return None
             return value

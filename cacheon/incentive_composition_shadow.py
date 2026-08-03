@@ -37,7 +37,7 @@ from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
 
 COMPOSED_SHADOW_SCHEMA_VERSION = 1
-COMPOSED_SHADOW_RECEIPT_VERSION = "optima.chain-incentive-composition-shadow.v1"
+COMPOSED_SHADOW_RECEIPT_VERSION = "cacheon.chain-incentive-composition-shadow.v1"
 
 
 class IncentiveCompositionShadowError(ValueError):
@@ -148,7 +148,7 @@ class SyntheticDiscoveryStateFixture:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.chain-incentive-composition-shadow.synthetic-discovery-state-fixture",
+            "cacheon.chain-incentive-composition-shadow.synthetic-discovery-state-fixture",
             self.to_dict(),
         )
 
@@ -437,7 +437,7 @@ class ChainIncentiveCompositionShadowReceipt:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.chain-incentive-composition-shadow.receipt",
+            "cacheon.chain-incentive-composition-shadow.receipt",
             self.to_dict(),
         )
 
@@ -691,7 +691,7 @@ def _build_composed_receipt(
         finalized_block,
         finalized_block_hash,
         canonical_digest(
-            "optima.chain-incentive-composition-shadow.metagraph", metagraph
+            "cacheon.chain-incentive-composition-shadow.metagraph", metagraph
         ),
         len(hotkeys),
     )

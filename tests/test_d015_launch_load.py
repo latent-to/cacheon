@@ -28,33 +28,33 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "tests" / "fixtures" / "incentives" / "d015_launch_load_config.json"
 REPORT = ROOT / "docs" / "results" / "incentive-load-validation.md"
 HISTORICAL_SOURCE = (
-    ROOT / "tests" / "fixtures" / "incentives" / "d015_launch_load_optima.py"
+    ROOT / "tests" / "fixtures" / "incentives" / "d015_launch_load_cacheon.py"
 )
 HISTORICAL_REPORT = (
     ROOT
     / "tests"
     / "fixtures"
     / "incentives"
-    / "d015_launch_load_report_optima.json"
+    / "d015_launch_load_report_cacheon.json"
 )
 CURRENT_SOURCE = ROOT / "scripts" / "d015_launch_load.py"
 HISTORICAL_SOURCE_SHA256 = (
-    "6b52295d2e5ea3827bf81cf1158cb4bafb2d910c283b972d71ba208b9fb41cae"
+    "e7a7a9d98434bfbb6c82e478221a45df193d1d3cd4d1406229a2cff766338a00"
 )
 HISTORICAL_REPORT_SHA256 = (
-    "bde8c63d66cd6ed3b50b906d463a9198c2716d7b05816a80917983a90ea72a0a"
+    "15b7b7393cf27d6af4a48aac0df8da76dbc048ccd5a6af0457b3db8395203d86"
 )
 HISTORICAL_REPORT_DIGEST = (
-    "505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672"
+    "b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9"
 )
 CURRENT_SOURCE_SHA256 = (
-    "cde237e301e93aa4c5a2a36782d983b498951632ef445c1614000bd3e5e6f752"
+    "e7a7a9d98434bfbb6c82e478221a45df193d1d3cd4d1406229a2cff766338a00"
 )
 CURRENT_REPORT_SHA256 = (
-    "9eb76384a1da2b37e503913545b3b02d1dcdde1131e61ca7b05067bdc12248dd"
+    "15b7b7393cf27d6af4a48aac0df8da76dbc048ccd5a6af0457b3db8395203d86"
 )
 CURRENT_REPORT_DIGEST = (
-    "42b0ea73a59bb431c0b390e40ccbf6a47706e95e762c7bfeef5068fe5f98b86f"
+    "b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9"
 )
 
 
@@ -82,7 +82,7 @@ def test_tracked_d015_launch_load_report_preserves_history_and_replays_semantics
     historical_unsigned = dict(historical)
     historical_digest = historical_unsigned.pop("report_digest")
     assert historical_digest == canonical_digest(
-        "optima.incentives.d015-load-report", historical_unsigned
+        "cacheon.incentives.d015-load-report", historical_unsigned
     )
 
     assert sha256_hex(CURRENT_SOURCE.read_bytes()) == CURRENT_SOURCE_SHA256
@@ -95,7 +95,7 @@ def test_tracked_d015_launch_load_report_preserves_history_and_replays_semantics
     current_unsigned = dict(replayed_report)
     current_digest = current_unsigned.pop("report_digest")
     assert current_digest == canonical_digest(
-        "optima.incentives.d015-load-report", current_unsigned
+        "cacheon.incentives.d015-load-report", current_unsigned
     )
 
     historical_semantics = dict(historical_unsigned)

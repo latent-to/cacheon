@@ -237,7 +237,7 @@ def test_legacy_native_build_schema1_payload_bytes_and_digest_are_unchanged() ->
         "worker_distribution_digest": native.worker_distribution_digest,
     }
     assert native.compiler_flags_digest == canonical_digest(
-        "optima.eval.native-compiler-policy", expected_policy_payload
+        "cacheon.eval.native-compiler-policy", expected_policy_payload
     )
 
     expected_build_payload = {
@@ -258,7 +258,7 @@ def test_legacy_native_build_schema1_payload_bytes_and_digest_are_unchanged() ->
     assert native.to_dict() == expected_build_payload
     assert native.canonical_bytes == canonical_json_bytes(expected_build_payload)
     assert native.digest == canonical_digest(
-        "optima.eval.native-build", expected_build_payload
+        "cacheon.eval.native-build", expected_build_payload
     )
 
     # schema_version was historically the tenth positional argument.  Adding
@@ -295,7 +295,7 @@ def test_profiled_native_build_uses_closed_schema2_and_binds_policy() -> None:
     }
     assert profiled.schema_version == NATIVE_BUILD_SCHEMA_VERSION
     assert profiled.compiler_flags_digest == canonical_digest(
-        "optima.eval.native-compiler-policy", expected_policy_payload
+        "cacheon.eval.native-compiler-policy", expected_policy_payload
     )
     assert profiled.to_dict()["compile_profile_digest"] == profile_digest
     assert NativeBuildSpec.from_dict(profiled.to_dict()) == profiled
@@ -586,7 +586,7 @@ def test_reopen_rejects_tree_digest_and_embedded_stack_split_brains(
             replace(launch, stack_digest=_digest("wrong stack")), tree.root
         )
 
-    metadata = tree.root / "metadata" / "optima_engine_tree.json"
+    metadata = tree.root / "metadata" / "cacheon_engine_tree.json"
     metadata.chmod(0o644)
     with pytest.raises(EngineLaunchError, match="mode mismatch"):
         reopen_launch_tree(launch, tree.root)

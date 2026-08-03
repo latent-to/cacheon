@@ -5,7 +5,7 @@
 # FP4/FP8 weight layout in prepare + a fused GEMM in forward.
 
 bundle_id = "example-moe-fused-experts-torch"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [[ops]]
 slot = "moe.fused_experts"

@@ -7,7 +7,7 @@
 # eager-only); a real graph-capturable kernel sets graph_safe=true to be scored graphs-on.
 
 bundle_id = "example-moe-fused-experts-reduce-torch"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [[ops]]
 slot = "moe.fused_experts_reduce"

@@ -156,7 +156,7 @@ def _mk_bundle(tmp_path: Path, patch_text: str, *, declare: bool = True) -> Path
            if declare else "")
     (bundle / "manifest.toml").write_text(textwrap.dedent("""\
         bundle_id = "dep-patch-test"
-        abi_version = "optima-op-abi-v0"
+        abi_version = "cacheon-op-abi-v0"
 
         [[ops]]
         slot = "activation.silu_and_mul"
@@ -263,7 +263,7 @@ def test_overlay_namespace_rejects_bundle_ids(tmp_path, monkeypatch):
 
     monkeypatch.setenv("CACHEON_DEP_OVERLAY_CACHE", str(tmp_path))
     with pytest.raises(RuntimeError, match="64-hex"):
-        overlay_base("optima-materialized-v1")
+        overlay_base("cacheon-materialized-v1")
     digest = "d" * 64
     assert overlay_base(digest).parts[-2:] == (digest, "dep_overlays")
 

@@ -118,7 +118,7 @@ def reward_family_id(
     if not isinstance(target_id, str) or _TARGET.fullmatch(target_id) is None:
         raise FiniteDebtStoreError("target_id is malformed")
     return canonical_digest(
-        "optima.economics.standing-family",
+        "cacheon.economics.standing-family",
         {
             "arena_digest": arena,
             "target_id": target_id,
@@ -268,7 +268,7 @@ class FiniteDebtPolicyActivation:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.chain.finite-debt-policy-activation",
+            "cacheon.chain.finite-debt-policy-activation",
             self.to_dict(),
         )
 
@@ -404,7 +404,7 @@ class FiniteDebtRewardEpoch:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.chain.finite-debt-reward-epoch", self.to_dict())
+        return canonical_digest("cacheon.chain.finite-debt-reward-epoch", self.to_dict())
 
 
 _TABLE_DEFINITIONS = (
@@ -765,7 +765,7 @@ class FiniteDebtStore:
         payload: dict[str, object],
     ) -> str:
         return canonical_digest(
-            "optima.chain.finite-debt-reward-event",
+            "cacheon.chain.finite-debt-reward-event",
             {
                 "block": block,
                 "block_hash": block_hash,

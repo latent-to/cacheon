@@ -28,19 +28,12 @@ CREDENTIALS_SCHEMA = "cacheon.weight-push-credentials.v1"
 PUSH_AUTH_DOMAIN = "cacheon.weight-share.push.v1"
 PUSH_ACK_SCHEMA = "cacheon.weight-share.push-ack.v1"
 PUSH_ACK_AUTH_DOMAIN = "cacheon.weight-share.push-ack-auth.v1"
-LEGACY_CREDENTIALS_SCHEMA = "optima.weight-push-credentials.v1"
-LEGACY_PUSH_AUTH_DOMAIN = "optima.weight-share.push.v1"
-LEGACY_PUSH_ACK_SCHEMA = "optima.weight-share.push-ack.v1"
-LEGACY_PUSH_ACK_AUTH_DOMAIN = "optima.weight-share.push-ack-auth.v1"
 DEFAULT_MAX_SKEW_SECONDS = 60
 # File path to a PushCredentialSet JSON (serve + eval).
 ENV_PUSH_CREDENTIALS = "CACHEON_WEIGHT_PUSH_CREDENTIALS"
 # Inline single active secret for eval (and optionally serve with one key).
 ENV_PUSH_KEY = "CACHEON_WEIGHT_PUSH_KEY"
 ENV_PUSH_CREDENTIAL_ID = "CACHEON_WEIGHT_PUSH_CREDENTIAL_ID"
-LEGACY_ENV_PUSH_CREDENTIALS = "OPTIMA_WEIGHT_PUSH_CREDENTIALS"
-LEGACY_ENV_PUSH_KEY = "OPTIMA_WEIGHT_PUSH_KEY"
-LEGACY_ENV_PUSH_CREDENTIAL_ID = "OPTIMA_WEIGHT_PUSH_CREDENTIAL_ID"
 DEFAULT_ENV_CREDENTIAL_ID = "env"
 
 
@@ -121,7 +114,7 @@ class PushCredentialSet:
     def from_dict(cls, value: object) -> "PushCredentialSet":
         if type(value) is not dict or set(value) != {"credentials", "schema"}:
             raise WeightPushAuthError("push credential file fields do not match")
-        if value["schema"] not in {CREDENTIALS_SCHEMA, LEGACY_CREDENTIALS_SCHEMA}:
+        if value["schema"] != CREDENTIALS_SCHEMA:
             raise WeightPushAuthError("push credential schema is unsupported")
         raw = value["credentials"]
         if type(raw) is not list or not raw:
@@ -164,26 +157,13 @@ def push_credentials_from_env_key(
 
     import os
 
-    cacheon_secret = os.environ.get(ENV_PUSH_KEY, "")
-    uses_cacheon_environment = secret is None and bool(cacheon_secret)
-    raw_secret = (
-        secret
-        if secret is not None
-        else cacheon_secret or os.environ.get(LEGACY_ENV_PUSH_KEY, "")
-    )
+    raw_secret = secret if secret is not None else os.environ.get(ENV_PUSH_KEY, "")
     if not isinstance(raw_secret, str) or not raw_secret:
         raise WeightPushAuthError(
             f"{ENV_PUSH_KEY} is unset or empty; provide --push-credentials, "
             f"{ENV_PUSH_CREDENTIALS}, or {ENV_PUSH_KEY}"
         )
-    if secret is not None:
-        environment_id = os.environ.get(
-            ENV_PUSH_CREDENTIAL_ID, ""
-        ) or os.environ.get(LEGACY_ENV_PUSH_CREDENTIAL_ID, "")
-    elif uses_cacheon_environment:
-        environment_id = os.environ.get(ENV_PUSH_CREDENTIAL_ID, "")
-    else:
-        environment_id = os.environ.get(LEGACY_ENV_PUSH_CREDENTIAL_ID, "")
+    environment_id = os.environ.get(ENV_PUSH_CREDENTIAL_ID, "")
     raw_id = (
         credential_id
         if credential_id is not None
@@ -203,7 +183,6 @@ def resolve_push_credentials(
     1. Explicit ``path`` / ``--push-credentials``
     2. ``CACHEON_WEIGHT_PUSH_CREDENTIALS`` (JSON file path)
     3. ``CACHEON_WEIGHT_PUSH_KEY`` (+ optional ``CACHEON_WEIGHT_PUSH_CREDENTIAL_ID``)
-    4. The corresponding transitional ``OPTIMA_*`` aliases
     """
 
     import os
@@ -215,11 +194,6 @@ def resolve_push_credentials(
     if env_path:
         return load_push_credentials(env_path)
     if os.environ.get(ENV_PUSH_KEY, "").strip():
-        return push_credentials_from_env_key()
-    legacy_env_path = os.environ.get(LEGACY_ENV_PUSH_CREDENTIALS, "").strip()
-    if legacy_env_path:
-        return load_push_credentials(legacy_env_path)
-    if os.environ.get(LEGACY_ENV_PUSH_KEY, "").strip():
         return push_credentials_from_env_key()
     if required:
         raise WeightPushAuthError(
@@ -254,7 +228,6 @@ def push_auth_digest(
     path: str,
     timestamp: int,
     body_digest: str,
-    legacy: bool = False,
 ) -> str:
     if method != "PUT" or path != "/v1/current-weights":
         raise WeightPushAuthError("push auth route is unsupported")
@@ -262,7 +235,7 @@ def push_auth_digest(
         raise WeightPushAuthError("push timestamp is malformed")
     body_digest = require_sha256_hex(body_digest, field="body_digest")
     return canonical_digest(
-        LEGACY_PUSH_AUTH_DOMAIN if legacy else PUSH_AUTH_DOMAIN,
+        PUSH_AUTH_DOMAIN,
         {
             "body_digest": body_digest,
             "credential_id": credential_id,
@@ -280,7 +253,6 @@ def sign_push_request(
     body: bytes,
     method: str = "PUT",
     path: str = "/v1/current-weights",
-    legacy: bool = False,
 ) -> dict[str, str]:
     if type(credential) is not PushCredential or credential.status != "active":
         raise WeightPushAuthError("push signing requires an active credential")
@@ -293,32 +265,19 @@ def sign_push_request(
         path=path,
         timestamp=timestamp,
         body_digest=body_digest,
-        legacy=legacy,
     )
     signature = hmac.new(
         credential.secret.encode("utf-8"),
         digest.encode("ascii"),
         hashlib.sha256,
     ).hexdigest()
-    prefix = "Optima" if legacy else "Cacheon"
     return {
         "Content-Type": "application/json; charset=utf-8",
-        f"X-{prefix}-Push-Credential-Id": credential.credential_id,
-        f"X-{prefix}-Push-Timestamp": str(timestamp),
-        f"X-{prefix}-Push-Body-Digest": body_digest,
-        f"X-{prefix}-Push-Signature": signature,
+        "X-Cacheon-Push-Credential-Id": credential.credential_id,
+        "X-Cacheon-Push-Timestamp": str(timestamp),
+        "X-Cacheon-Push-Body-Digest": body_digest,
+        "X-Cacheon-Push-Signature": signature,
     }
-
-
-def push_request_uses_legacy_protocol(headers: dict[str, str]) -> bool:
-    """Select one exact push-header family and reject mixed downgrade attempts."""
-
-    normalized = {str(key).lower(): str(value) for key, value in headers.items()}
-    cacheon = any(key.startswith("x-cacheon-push-") for key in normalized)
-    optima = any(key.startswith("x-optima-push-") for key in normalized)
-    if cacheon and optima:
-        raise WeightPushAuthError("push request mixes Cacheon and Optima headers")
-    return optima
 
 
 def verify_push_request(
@@ -343,13 +302,10 @@ def verify_push_request(
         raise WeightPushAuthError("push skew bound is malformed")
 
     normalized = {str(key).lower(): str(value) for key, value in headers.items()}
-    legacy = push_request_uses_legacy_protocol(normalized)
-    prefix = "x-optima" if legacy else "x-cacheon"
-    display_prefix = "X-Optima" if legacy else "X-Cacheon"
-    credential_id = normalized.get(f"{prefix}-push-credential-id", "")
-    timestamp_raw = normalized.get(f"{prefix}-push-timestamp", "")
-    body_digest_header = normalized.get(f"{prefix}-push-body-digest", "")
-    signature = normalized.get(f"{prefix}-push-signature", "")
+    credential_id = normalized.get("x-cacheon-push-credential-id", "")
+    timestamp_raw = normalized.get("x-cacheon-push-timestamp", "")
+    body_digest_header = normalized.get("x-cacheon-push-body-digest", "")
+    signature = normalized.get("x-cacheon-push-signature", "")
     try:
         timestamp = int(timestamp_raw)
     except ValueError as exc:
@@ -360,7 +316,7 @@ def verify_push_request(
     body_digest = hashlib.sha256(bytes(body)).hexdigest()
     declared = require_sha256_hex(
         body_digest_header,
-        field=f"{display_prefix}-Push-Body-Digest",
+        field="X-Cacheon-Push-Body-Digest",
     )
     if not hmac.compare_digest(declared, body_digest):
         raise WeightPushAuthError("push body digest mismatch")
@@ -375,7 +331,6 @@ def verify_push_request(
         path=path,
         timestamp=timestamp,
         body_digest=body_digest,
-        legacy=legacy,
     )
     expected = hmac.new(
         credential.secret.encode("utf-8"),
@@ -398,7 +353,6 @@ def sign_push_acknowledgement(
     offer_digest: str,
     projection_digest: str,
     request_timestamp: int,
-    legacy: bool = False,
 ) -> dict[str, object]:
     """Authenticate the exact server acknowledgement to the eval client."""
 
@@ -421,11 +375,11 @@ def sign_push_acknowledgement(
             field="projection_digest",
         ),
         "request_timestamp": request_timestamp,
-        "schema": LEGACY_PUSH_ACK_SCHEMA if legacy else PUSH_ACK_SCHEMA,
+        "schema": PUSH_ACK_SCHEMA,
         "status": "accepted",
     }
     digest = canonical_digest(
-        LEGACY_PUSH_ACK_AUTH_DOMAIN if legacy else PUSH_ACK_AUTH_DOMAIN,
+        PUSH_ACK_AUTH_DOMAIN,
         unsigned,
     )
     mac = hmac.new(
@@ -443,7 +397,6 @@ def verify_push_acknowledgement(
     offer_digest: str,
     projection_digest: str,
     request_timestamp: int,
-    legacy: bool | None = None,
 ) -> None:
     """Require a fresh, HMAC-authenticated acknowledgement of one push."""
 
@@ -454,22 +407,15 @@ def verify_push_acknowledgement(
     if type(acknowledgement) is not dict:
         raise WeightPushAuthError("push acknowledgement fields do not match")
     schema = acknowledgement.get("schema")
-    if schema == PUSH_ACK_SCHEMA:
-        acknowledgement_is_legacy = False
-    elif schema == LEGACY_PUSH_ACK_SCHEMA:
-        acknowledgement_is_legacy = True
-    elif schema is None:
+    if schema is None:
         raise WeightPushAuthError("push acknowledgement fields do not match")
-    else:
+    if schema != PUSH_ACK_SCHEMA:
         raise WeightPushAuthError("push acknowledgement schema is unsupported")
-    if legacy is not None and acknowledgement_is_legacy is not legacy:
-        raise WeightPushAuthError("push acknowledgement protocol does not match request")
     expected = sign_push_acknowledgement(
         credential,
         offer_digest=offer_digest,
         projection_digest=projection_digest,
         request_timestamp=request_timestamp,
-        legacy=acknowledgement_is_legacy,
     )
     if type(acknowledgement) is not dict or set(acknowledgement) != set(expected):
         raise WeightPushAuthError("push acknowledgement fields do not match")
@@ -499,13 +445,6 @@ __all__ = [
     "ENV_PUSH_CREDENTIAL_ID",
     "ENV_PUSH_CREDENTIALS",
     "ENV_PUSH_KEY",
-    "LEGACY_CREDENTIALS_SCHEMA",
-    "LEGACY_ENV_PUSH_CREDENTIAL_ID",
-    "LEGACY_ENV_PUSH_CREDENTIALS",
-    "LEGACY_ENV_PUSH_KEY",
-    "LEGACY_PUSH_ACK_AUTH_DOMAIN",
-    "LEGACY_PUSH_ACK_SCHEMA",
-    "LEGACY_PUSH_AUTH_DOMAIN",
     "PUSH_ACK_AUTH_DOMAIN",
     "PUSH_ACK_SCHEMA",
     "PushCredential",
@@ -515,7 +454,6 @@ __all__ = [
     "mint_push_credential",
     "push_auth_digest",
     "push_credentials_from_env_key",
-    "push_request_uses_legacy_protocol",
     "resolve_push_credentials",
     "sign_push_acknowledgement",
     "sign_push_request",

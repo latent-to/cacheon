@@ -211,7 +211,7 @@ def test_topology_digest_normalizes_nvidia_smi_underlined_header(monkeypatch):
     payload = json.dumps(
         {
             "matrix": [["X", "PIX"], ["PIX", "X"]],
-            "schema": "optima-gpu-topology-v1",
+            "schema": "cacheon-gpu-topology-v1",
         },
         sort_keys=True,
         separators=(",", ":"),

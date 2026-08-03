@@ -78,7 +78,7 @@ LAUNCH = _digest("launch")
 
 def _discovery_receipt(**changes: object) -> DiscoveryActivationReceipt:
     values: dict[str, object] = {
-        "schema": "optima.discovery-driver-activation.v1",
+        "schema": "cacheon.discovery-driver-activation.v1",
         "overlay_identity_digest": _digest("discovery-overlay"),
         "driver_pid": 100,
         "driver_origin": DiscoveryDriverOrigin(
@@ -433,7 +433,7 @@ def test_ready_is_only_an_exact_bound_marker() -> None:
     message = ready_message(session_id=SESSION, launch_digest=LAUNCH)
     expected_payload = (
         b'{"launch_digest":"' + LAUNCH.encode("ascii")
-        + b'","schema":"optima-isolated-engine-session-v1","session_id":"'
+        + b'","schema":"cacheon-isolated-engine-session-v1","session_id":"'
         + SESSION.encode("ascii") + b'","type":"ready"}'
     )
     assert encode_message(message, max_bytes=MAX_CONTROL_BYTES) == expected_payload

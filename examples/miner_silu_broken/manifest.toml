@@ -4,7 +4,7 @@
 # MUST catch it. Used to prove the quality gate works end-to-end.
 
 bundle_id = "example-silu-broken"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [[ops]]
 slot = "activation.silu_and_mul"

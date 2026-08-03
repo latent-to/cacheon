@@ -1126,7 +1126,7 @@ class DeviceStateGuard:
                     raise DeviceStateTimeoutError("device receipt completed after its deadline")
                 self._sequence += 1
                 receipt = DeviceStateReceipt(
-                    schema="optima.device-state-receipt.v1",
+                    schema="cacheon.device-state-receipt.v1",
                     sequence=self._sequence,
                     launch_id=launch_id,
                     phase=phase,
@@ -1248,7 +1248,7 @@ class DeviceStateGuard:
                 )
             self._sequence += 1
             receipt = DeviceStateActiveReceipt(
-                schema="optima.device-state-active-receipt.v2",
+                schema="cacheon.device-state-active-receipt.v2",
                 sequence=self._sequence,
                 launch_id=launch_id,
                 event=event,

@@ -26,7 +26,7 @@ from cacheon._strict import require_digest, require_identifier, require_int
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _LANES = frozenset({"registered", "discovery"})
 _LEGACY_SPEED_POLICY_DIGEST = canonical_digest(
-    "optima.qualification.speed-evidence-policy",
+    "cacheon.qualification.speed-evidence-policy",
     {
         "candidate_reads": 1,
         "estimator": "bcbp-baseline-range.v1",
@@ -34,7 +34,7 @@ _LEGACY_SPEED_POLICY_DIGEST = canonical_digest(
     },
 )
 _RESIDENT_SPEED_POLICY_DIGEST = canonical_digest(
-    "optima.qualification.speed-evidence-policy",
+    "cacheon.qualification.speed-evidence-policy",
     {
         "candidate_reads": 0,
         "estimator": "resident-adaptive-bcbp-v1",
@@ -42,10 +42,10 @@ _RESIDENT_SPEED_POLICY_DIGEST = canonical_digest(
     },
 )
 _LEGACY_AUDIT_CONTROL_DIGEST = canonical_digest(
-    "optima.settlement.legacy-audit-control", {"status": "absent"}
+    "cacheon.settlement.legacy-audit-control", {"status": "absent"}
 )
 _LEGACY_AUDIT_EVIDENCE_DIGEST = canonical_digest(
-    "optima.settlement.legacy-audit-evidence", {"status": "absent"}
+    "cacheon.settlement.legacy-audit-evidence", {"status": "absent"}
 )
 
 
@@ -112,7 +112,7 @@ class SettlementReproductionIdentity:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.settlement.reproduction-identity", self.to_dict())
+        return canonical_digest("cacheon.settlement.reproduction-identity", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ class ResidentLaneOrientation:
             raise SettlementError("resident lane orientation lacks its exact speed witness")
         policy_digest = value.policy.digest
         control_digest = canonical_digest(
-            "optima.settlement.resident-lane-control.v1",
+            "cacheon.settlement.resident-lane-control.v1",
             {
                 # Calibration evidence is frozen per candidate/T physical lane,
                 # so its context and manifest digests legitimately change after
@@ -212,7 +212,7 @@ class ResidentLaneOrientation:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.settlement.resident-lane-orientation.v1", self.to_dict()
+            "cacheon.settlement.resident-lane-orientation.v1", self.to_dict()
         )
 
 
@@ -517,7 +517,7 @@ class SettlementQualification:
         ):
             raise SettlementError("qualification selected-delta identity differs")
         selection_evidence_digest = canonical_digest(
-            "optima.settlement.selection-evidence",
+            "cacheon.settlement.selection-evidence",
             {
                 "commitment_digest": attempt.commitment.digest,
                 "entropy_digest": attempt.entropy.digest,
@@ -660,11 +660,11 @@ class SettlementQualification:
     @property
     def digest(self) -> str:
         domain = (
-            "optima.settlement.qualification.resident-lane-v1"
+            "cacheon.settlement.qualification.resident-lane-v1"
             if self.resident_lane_orientation is not None
-            else "optima.settlement.qualification"
+            else "cacheon.settlement.qualification"
             if self.audit_policy is None
-            else "optima.settlement.qualification.audit-v1"
+            else "cacheon.settlement.qualification.audit-v1"
         )
         return canonical_digest(domain, self.to_dict())
 
@@ -812,11 +812,11 @@ class SettlementCandidate:
     @property
     def digest(self) -> str:
         domain = (
-            "optima.settlement.candidate.v4"
+            "cacheon.settlement.candidate.v4"
             if self.primary.resident_lane_orientation is not None
-            else "optima.settlement.candidate.v2"
+            else "cacheon.settlement.candidate.v2"
             if self.primary.audit_policy is None
-            else "optima.settlement.candidate.v3"
+            else "cacheon.settlement.candidate.v3"
         )
         return canonical_digest(domain, self.to_dict())
 
@@ -928,7 +928,7 @@ class SettlementEvidence:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.settlement.evidence", self.to_dict())
+        return canonical_digest("cacheon.settlement.evidence", self.to_dict())
 
 
 class SettlementEventType(str, Enum):
@@ -1000,7 +1000,7 @@ class SettlementEvent:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.settlement.event", self.to_dict())
+        return canonical_digest("cacheon.settlement.event", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -1074,7 +1074,7 @@ class SettlementPlan:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.settlement.plan", self.to_dict())
+        return canonical_digest("cacheon.settlement.plan", self.to_dict())
 
 
 class _Journal:

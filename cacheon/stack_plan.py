@@ -57,7 +57,7 @@ def _execution_order(
             arms,
             key=lambda arm: (
                 canonical_digest(
-                    "optima.stack.cohort-execution-key",
+                    "cacheon.stack.cohort-execution-key",
                     {
                         "entropy_digest": entropy_digest,
                         "selected_delta_digest": arm.selected_delta_digest,
@@ -239,7 +239,7 @@ class MarginalArmPlan:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.stack.marginal-arm-plan", self.to_dict())
+        return canonical_digest("cacheon.stack.marginal-arm-plan", self.to_dict())
 
     def require_current(
         self,
@@ -472,7 +472,7 @@ class RollbackPlan:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.stack.rollback-plan", self.to_dict())
+        return canonical_digest("cacheon.stack.rollback-plan", self.to_dict())
 
     def reopen(
         self,
@@ -630,7 +630,7 @@ class CohortPlan:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.stack.cohort-plan", self.to_dict())
+        return canonical_digest("cacheon.stack.cohort-plan", self.to_dict())
 
     @property
     def execution_arms(self) -> tuple[MarginalArmPlan, ...]:

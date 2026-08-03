@@ -31,7 +31,7 @@ from cacheon.object_store import (
     open_object_store,
 )
 
-DEFAULT_BUNDLE_KEY_PREFIX = "optima/miner-bundles/sha256"
+DEFAULT_BUNDLE_KEY_PREFIX = "cacheon/miner-bundles/sha256"
 PUBLIC_READ_GROUP = "http://acs.amazonaws.com/groups/global/AllUsers"
 _HASH_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MISSING_CODES = frozenset({"404", "NoSuchBucket", "NoSuchKey", "NotFound"})
@@ -324,9 +324,9 @@ class S3PublicBundlePublisher:
             "ContentType": "application/gzip",
             "CacheControl": "public, max-age=31536000, immutable",
             "Metadata": {
-                "optima-content-sha256": content_hash,
-                "optima-archive-sha256": archive_sha256,
-                "optima-schema": "bundle-archive-v1",
+                "cacheon-content-sha256": content_hash,
+                "cacheon-archive-sha256": archive_sha256,
+                "cacheon-schema": "bundle-archive-v1",
             },
         }
         try:

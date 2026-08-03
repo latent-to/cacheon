@@ -48,7 +48,7 @@ from cacheon.cute_aot import (
 from cacheon.stack_identity import canonical_json_bytes
 
 
-CUTE_CUBIN_SCHEMA = "optima.cute-cubin-set.v1"
+CUTE_CUBIN_SCHEMA = "cacheon.cute-cubin-set.v1"
 CUTE_CUBIN_PROVIDER_NAME = CUTE_CUBIN_PROVIDER_ID
 CUTE_CUBIN_PATCHER = CUTE_CUBIN_PATCHER_ID
 CUTE_CUBIN_BINDING_ABI = ArtifactBindingABI.CUDA_DRIVER_PARAMS_V1.value
@@ -1147,7 +1147,7 @@ def prepare_cute_cubin_runtime(
                     tuple(runtimes_by_op[key]),
                 )
                 evidence = {
-                    "artifact_abi": "optima.device-launch-plan.v1",
+                    "artifact_abi": "cacheon.device-launch-plan.v1",
                     "artifact_resource_plan_sha256": (
                         op_exports[0].artifact_resource_plan_sha256
                     ),

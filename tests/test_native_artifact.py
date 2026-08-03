@@ -48,7 +48,7 @@ def _publish(tmp_path: Path, data: bytes = b"native-bytes"):
 
 
 def _manifest(publication: NativeArtifactPublication) -> Path:
-    return publication.root / ".optima-native-artifact.json"
+    return publication.root / ".cacheon-native-artifact.json"
 
 
 def _make_writable(path: Path) -> None:
@@ -495,7 +495,7 @@ def test_empty_tree_empty_directory_hidden_and_reserved_names_reject(tmp_path):
         ("hidden", lambda root: (root / ".cache").write_bytes(b"x")),
         (
             "reserved",
-            lambda root: (root / ".optima-native-artifact.json").write_bytes(b"x"),
+            lambda root: (root / ".cacheon-native-artifact.json").write_bytes(b"x"),
         ),
     ]
     for name, populate in cases:

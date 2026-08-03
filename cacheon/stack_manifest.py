@@ -27,21 +27,21 @@ from cacheon._strict import require_digest, require_exact_fields
 # Domain separators are immutable wire/storage identifiers. The Python package
 # is Cacheon, but manifests written before the rename must retain the same
 # identities when they are reopened or reproduced.
-_TARGET_CATALOG_DOMAIN = "optima.target-catalog"
-_TARGET_SPEC_DOMAIN = "optima.target-spec"
-_SELECTED_DELTA_DOMAIN = "optima.contribution.selected_delta"
-_PROPOSAL_DOMAIN = "optima.contribution.proposal"
-_QUALIFICATION_COHORT_ATTEMPT_SCHEMA = "optima.qualification.cohort-attempt.v1"
-_INTEGRATION_LICENSE_SCHEMA = "optima.integration.license.v1"
-_INTEGRATION_PROVENANCE_SCHEMA = "optima.integration.provenance.v1"
-_INTEGRATION_SECURITY_REVIEW_SCHEMA = "optima.integration.security-review.v1"
-_INTEGRATION_COMPATIBILITY_SCHEMA = "optima.integration.compatibility.v1"
-_INTEGRATION_TESTS_SCHEMA = "optima.integration.tests.v1"
-_INTEGRATION_ARTIFACTS_DOMAIN = "optima.integration-review.artifacts"
-_INTEGRATION_REVIEW_DOMAIN = "optima.contribution.integration-review"
-_INTEGRATED_CONTRIBUTION_DOMAIN = "optima.contribution.integrated"
-_EVALUATION_STACK_DOMAIN = "optima.stack.evaluation"
-_RELEASE_STACK_DOMAIN = "optima.stack.release"
+_TARGET_CATALOG_DOMAIN = "cacheon.target-catalog"
+_TARGET_SPEC_DOMAIN = "cacheon.target-spec"
+_SELECTED_DELTA_DOMAIN = "cacheon.contribution.selected_delta"
+_PROPOSAL_DOMAIN = "cacheon.contribution.proposal"
+_QUALIFICATION_COHORT_ATTEMPT_SCHEMA = "cacheon.qualification.cohort-attempt.v1"
+_INTEGRATION_LICENSE_SCHEMA = "cacheon.integration.license.v1"
+_INTEGRATION_PROVENANCE_SCHEMA = "cacheon.integration.provenance.v1"
+_INTEGRATION_SECURITY_REVIEW_SCHEMA = "cacheon.integration.security-review.v1"
+_INTEGRATION_COMPATIBILITY_SCHEMA = "cacheon.integration.compatibility.v1"
+_INTEGRATION_TESTS_SCHEMA = "cacheon.integration.tests.v1"
+_INTEGRATION_ARTIFACTS_DOMAIN = "cacheon.integration-review.artifacts"
+_INTEGRATION_REVIEW_DOMAIN = "cacheon.contribution.integration-review"
+_INTEGRATED_CONTRIBUTION_DOMAIN = "cacheon.contribution.integrated"
+_EVALUATION_STACK_DOMAIN = "cacheon.stack.evaluation"
+_RELEASE_STACK_DOMAIN = "cacheon.stack.release"
 
 
 CONTRIBUTION_REF_SCHEMA_VERSION = 1

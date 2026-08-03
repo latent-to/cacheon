@@ -85,15 +85,15 @@ _SCHEMA3_ARCHIVE_REASON_PREFIX = "schema3_archived@"
 # package names. They were already committed to SQLite state before the
 # Cacheon rename, so changing them would make an existing validator authority
 # fail its own integrity checks on reopen.
-_INTAKE_SCOPE_DOMAIN = "optima.chain.intake-scope"
-_FINALIZED_PAYLOAD_DOMAIN = "optima.chain.finalized-payload"
-_FINALIZED_ARRIVAL_DOMAIN = "optima.chain.finalized-arrival"
-_EVALUATION_STACK_STATE_DOMAIN = "optima.chain.evaluation-stack-state"
-_QUALIFICATION_RETRY_GROUP_DOMAIN = "optima.chain.qualification-retry-group"
-_EVALUATION_STACK_GENESIS_DOMAIN = "optima.chain.evaluation-stack-genesis"
-_SETTLEMENT_LEASE_DOMAIN = "optima.chain.settlement-lease"
-_BURN_WEIGHT_AUTHORITY_DOMAIN = "optima.chain.burn-weight-authority"
-_SETTLEMENT_STATE_DOMAIN = "optima.chain.settlement-state"
+_INTAKE_SCOPE_DOMAIN = "cacheon.chain.intake-scope"
+_FINALIZED_PAYLOAD_DOMAIN = "cacheon.chain.finalized-payload"
+_FINALIZED_ARRIVAL_DOMAIN = "cacheon.chain.finalized-arrival"
+_EVALUATION_STACK_STATE_DOMAIN = "cacheon.chain.evaluation-stack-state"
+_QUALIFICATION_RETRY_GROUP_DOMAIN = "cacheon.chain.qualification-retry-group"
+_EVALUATION_STACK_GENESIS_DOMAIN = "cacheon.chain.evaluation-stack-genesis"
+_SETTLEMENT_LEASE_DOMAIN = "cacheon.chain.settlement-lease"
+_BURN_WEIGHT_AUTHORITY_DOMAIN = "cacheon.chain.burn-weight-authority"
+_SETTLEMENT_STATE_DOMAIN = "cacheon.chain.settlement-state"
 
 
 class IntakeError(RuntimeError):

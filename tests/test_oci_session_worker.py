@@ -73,7 +73,7 @@ def _facts(config: EngineSessionConfig, launch: str) -> RuntimePreflightFacts:
 
 def _receipt(identity: str) -> DiscoveryActivationReceipt:
     return DiscoveryActivationReceipt(
-        schema="optima.discovery-driver-activation.v1",
+        schema="cacheon.discovery-driver-activation.v1",
         overlay_identity_digest=identity,
         driver_pid=100,
         driver_origin=DiscoveryDriverOrigin(

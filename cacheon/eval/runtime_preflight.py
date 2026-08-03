@@ -40,11 +40,11 @@ from cacheon.eval.oci_process import (
 INSPECT_SCHEMA_KEYS = frozenset(
     {"Id", "RepoDigests", "Volumes", "Os", "Architecture"}
 )
-CONTAINER_RECEIPT_SCHEMA = "optima-runtime-container-preflight-v2"
-HOST_RECEIPT_SCHEMA = "optima-runtime-preflight-v2"
+CONTAINER_RECEIPT_SCHEMA = "cacheon-runtime-container-preflight-v2"
+HOST_RECEIPT_SCHEMA = "cacheon-runtime-preflight-v2"
 WORKER_DISTRIBUTION = "cacheon-harness"
-WORKER_DIGEST_SCHEMA = "optima-installed-distribution-v1"
-PLATFORM_DIGEST_SCHEMA = "optima-runtime-platform-v1"
+WORKER_DIGEST_SCHEMA = "cacheon-installed-distribution-v1"
+PLATFORM_DIGEST_SCHEMA = "cacheon-runtime-platform-v1"
 MAX_INSPECT_STDOUT_BYTES = 16 * 1024
 MAX_RECEIPT_STDOUT_BYTES = 16 * 1024
 MAX_STDERR_BYTES = 8 * 1024
@@ -179,7 +179,7 @@ if not records or not has_module or not has_metadata:
     raise RuntimeError("worker distribution inventory is incomplete")
 records.sort(key=lambda record: record[0])
 identity = {
-    "schema": "optima-installed-distribution-v1",
+    "schema": "cacheon-installed-distribution-v1",
     "distribution": WORKER,
     "version": dist.version,
     "files": records,
@@ -188,7 +188,7 @@ encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("ut
 def v(name):
     return versions.get(norm(name))
 out = {
-    "schema": "optima-runtime-container-preflight-v2",
+    "schema": "cacheon-runtime-container-preflight-v2",
     "sglang_version": v("sglang"),
     "worker": {
         "distribution": WORKER,

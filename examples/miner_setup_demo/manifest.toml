@@ -6,7 +6,7 @@
 # on new hardware) keeps tokens matching the baseline -> PASS. Not a real submission.
 
 bundle_id = "example-setup-demo"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [[ops]]
 slot = "activation.silu_and_mul"

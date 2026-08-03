@@ -27,8 +27,8 @@ from cacheon.stack_identity import canonical_digest
 from cacheon._strict import require_digest, require_driver_integer
 
 
-CUDA_CUBIN_ABI_SCHEMA = "optima.cuda-cubin-abi.v1"
-CUDA_CUBIN_CONTRACT_SCHEMA = "optima.cuda-cubin-contract.v1"
+CUDA_CUBIN_ABI_SCHEMA = "cacheon.cuda-cubin-abi.v1"
+CUDA_CUBIN_CONTRACT_SCHEMA = "cacheon.cuda-cubin-contract.v1"
 
 _KERNEL_NAME_RE = re.compile(r"[A-Za-z_.$][A-Za-z0-9_.$@]{0,4095}\Z")
 _MAX_CUBIN_BYTES = 1 << 30
@@ -307,7 +307,7 @@ class CudaCubinContract:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.cuda-cubin-contract", self.to_dict())
+        return canonical_digest("cacheon.cuda-cubin-contract", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -375,7 +375,7 @@ class CudaCubinABI:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.cuda-cubin-abi", self.to_dict())
+        return canonical_digest("cacheon.cuda-cubin-abi", self.to_dict())
 
     @property
     def contract(self) -> CudaCubinContract:

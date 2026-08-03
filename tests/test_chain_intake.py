@@ -54,7 +54,7 @@ ATTEMPT = EvidenceArtifactRef(
     "9" * 64,
     1,
     "application/json",
-    "optima.qualification.cohort-attempt.v1",
+    "cacheon.qualification.cohort-attempt.v1",
 )
 
 
@@ -172,14 +172,14 @@ def _qualified_settlement_candidate(
         b"retained primary qualification attempt",
         domain="qualification.cohort-attempt",
         media_type="application/json",
-        schema="optima.qualification.cohort-attempt.v1",
+        schema="cacheon.qualification.cohort-attempt.v1",
     )
     reproduction_attempt = publish_evidence(
         evidence_root,
         b"retained reproduction qualification attempt",
         domain="qualification.cohort-attempt",
         media_type="application/json",
-        schema="optima.qualification.cohort-attempt.v1",
+        schema="cacheon.qualification.cohort-attempt.v1",
     )
     row = store.reserve_finalized(
         (_arrival(0),),
@@ -325,7 +325,7 @@ def _qualified_discovery_candidate(
             f"retained discovery {index} {lane}".encode(),
             domain="qualification.cohort-attempt",
             media_type="application/json",
-            schema="optima.qualification.cohort-attempt.v1",
+            schema="cacheon.qualification.cohort-attempt.v1",
         )
         for lane in ("primary", "reproduction")
     )
