@@ -414,8 +414,9 @@ ATTENTION_SDPA = SlotSpec(
 #   contract: entry(q, k, v, seq_lens, sm_scale, out)
 #
 # This is the slot the attention seam routes *decode* attention to: the validator
-# gathers each request's paged KV out of forward_batch into the padded (B,S,Hkv,D)
-# view, the miner fills `out`. See dispatch.make_attention_dispatcher / _run_decode_kernel.
+# resolves the request-local SGLang backend, gathers its paged KV into the padded
+# (B,S,Hkv,D) view, and lets the miner fill `out`. See
+# dispatch.make_attention_dispatcher / _run_decode_kernel.
 # ---------------------------------------------------------------------------
 
 
@@ -551,6 +552,22 @@ def _moe_prepare_args_from_layer(layer):
     return (layer.w13_weight.data, layer.w2_weight.data)  # dense — unchanged default
 
 
+def _raw_topk_weights(
+    *, num_tokens: int, topk: int, generator: torch.Generator, device: str
+) -> torch.Tensor:
+    """Generate validator-owned raw routing multipliers, not probabilities.
+
+    Sglang can hand the expert path unnormalized weights (for example when routing
+    renormalization is disabled or routed scaling is applied). Keeping these values
+    positive but deliberately below one guarantees that ``topk == 1`` still varies
+    across graph replay cases instead of collapsing to a column of ones.
+    """
+
+    return 0.25 + 0.5 * torch.rand(
+        num_tokens, topk, generator=generator, device=device, dtype=torch.float32
+    )
+
+
 def _moe_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter: int, topk: int,
                 dtype: torch.dtype, device: str, seed: int) -> dict:
     g = torch.Generator(device=device).manual_seed(seed)
@@ -559,8 +576,9 @@ def _moe_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter: int, t
         return (torch.randn(*shape, generator=g, device=device, dtype=torch.float32) * scale).to(dtype)
 
     ids = torch.randint(0, num_experts, (num_tokens, topk), generator=g, device=device).to(torch.int32)
-    scores = torch.rand(num_tokens, topk, generator=g, device=device)
-    weights = (scores / scores.sum(dim=1, keepdim=True)).to(torch.float32)  # normalize per token
+    weights = _raw_topk_weights(
+        num_tokens=num_tokens, topk=topk, generator=g, device=device
+    )
     return {
         "x": rnd(num_tokens, hidden, scale=0.1),
         "w13": rnd(num_experts, 2 * inter, hidden, scale=0.05),
@@ -882,8 +900,9 @@ def _moe_reduce_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter:
     gx = torch.Generator(device=device).manual_seed(seed)
     x = (torch.randn(num_tokens, hidden, generator=gx, device=device, dtype=torch.float32) * 0.1).to(dtype)
     ids = torch.randint(0, num_experts, (num_tokens, topk), generator=gx, device=device).to(torch.int32)
-    scores = torch.rand(num_tokens, topk, generator=gx, device=device)
-    weights = (scores / scores.sum(dim=1, keepdim=True)).to(torch.float32)
+    weights = _raw_topk_weights(
+        num_tokens=num_tokens, topk=topk, generator=gx, device=device
+    )
     gw = torch.Generator(device=device).manual_seed(seed + 1_000_003 * rank)
     w13 = (torch.randn(num_experts, 2 * inter, hidden, generator=gw, device=device, dtype=torch.float32) * 0.05).to(dtype)
     w2 = (torch.randn(num_experts, hidden, inter, generator=gw, device=device, dtype=torch.float32) * 0.05).to(dtype)

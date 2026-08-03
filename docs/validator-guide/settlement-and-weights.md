@@ -3,6 +3,10 @@
 Settlement changes the evaluation incumbent. Weight publication projects settled reward
 claims onto the live metagraph. They are separate operations with separate authority.
 
+Miners looking for the participant-facing lifecycle should start with
+[How miners earn rewards](../miner-guide/incentives.md). This page is the validator
+operator runbook for settlement, signing, publication, and recovery.
+
 `chain-validate` may perform settlement when a trusted arena service is injected, but it
 never opens a wallet or calls a chain weight API. Legacy V1 uses `cacheon set-weights`;
 activated finite-debt V2 uses `cacheon set-debt-weights`.

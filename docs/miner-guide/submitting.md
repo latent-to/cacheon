@@ -257,6 +257,12 @@ The authoritative path is staged:
    cohort.
 9. Weight projection is a separate audited control-plane action.
 
+!!! info "When a reward begins"
+    `qualified` still means no reward. If settlement crowns the proposal, it
+    records the reward claim in the same transaction. The validator later combines
+    eligible claims into a weight vector and publishes it on-chain. See
+    [How miners earn rewards](incentives.md).
+
 There is no universal completion time. Finality, queue bounds, arena capacity,
 retry policy, reproduction scheduling, and settlement cadence are operator
 configuration.
@@ -305,10 +311,10 @@ reveal state, while production intake and qualification state live in validator 
 Use the operator's designated status surface rather than assuming absence from
 `chain-status` output means rejection.
 
-A crown remains separate from source integration and an Cacheon Engine release.
+A crown remains separate from source integration and a Cacheon Engine release.
 Submitting does not cause the validator to publish miner code as a release.
 Reward generation and confirmed publication are described in
-[Incentives](incentives.md).
+[How miners earn rewards](incentives.md).
 
 ## Production authority boundary
 

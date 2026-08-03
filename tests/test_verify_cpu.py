@@ -151,6 +151,80 @@ def test_graph_replay_orchestration_passes_all_replays_with_cpu_backend():
     assert result.shape_results[0].graph_replays == 3
 
 
+@pytest.mark.parametrize(
+    "slot_name", ("moe.fused_experts", "moe.fused_experts_reduce")
+)
+def test_moe_topk_one_generators_emit_raw_varying_weights(slot_name):
+    slot = get_slot(slot_name)
+    shape = {
+        "num_tokens": 4,
+        "num_experts": 3,
+        "hidden": 8,
+        "inter": 4,
+        "topk": 1,
+    }
+    first = slot.make_inputs(
+        **shape, dtype=torch.float32, device="cpu", seed=17
+    )
+    second = slot.make_inputs(
+        **shape, dtype=torch.float32, device="cpu", seed=18
+    )
+
+    assert slot.graph_dynamic_inputs == ("x", "topk_ids", "topk_weights")
+    assert first["topk_weights"].dtype == torch.float32
+    assert torch.all(first["topk_weights"] > 0)
+    assert torch.all(first["topk_weights"] < 1)
+    assert not torch.equal(first["topk_weights"], second["topk_weights"])
+    assert not torch.equal(
+        first["topk_weights"], torch.ones_like(first["topk_weights"])
+    )
+
+
+def test_moe_topk_one_graph_replay_verifies_dynamic_routing_weights():
+    slot = get_slot("moe.fused_experts")
+    backend = _FakeGraphBackend()
+    shape = {
+        "num_tokens": 4,
+        "num_experts": 3,
+        "hidden": 8,
+        "inter": 4,
+        "topk": 1,
+    }
+
+    def prepare(w13, w2):
+        return w13, w2
+
+    def entry(x, topk_ids, topk_weights, prepared, out):
+        w13, w2 = prepared
+        expected = slot.invoke_reference(
+            {
+                "x": x,
+                "w13": w13,
+                "w2": w2,
+                "topk_ids": topk_ids,
+                "topk_weights": topk_weights,
+            }
+        )[0]
+        out.copy_(expected.to(out.dtype))
+
+    result = verify_entry(
+        slot,
+        entry,
+        prepare=prepare,
+        dtype=torch.float32,
+        device="cpu",
+        seed=29,
+        shapes=[shape],
+        graph_safe=True,
+        graph_replays=3,
+        _graph_backend=backend,
+    )
+
+    assert result.passed, format_verify(result)
+    assert result.graph_verified
+    assert result.shape_results[0].graph_replays == 3
+
+
 def test_capture_only_wrong_branch_fails_graph_verification():
     # Models the real attack: eager/audit returns the reference, while a branch on
     # is_current_stream_capturing freezes a wrong kernel into the timed graph.

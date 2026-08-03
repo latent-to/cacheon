@@ -111,9 +111,13 @@ that registered singleton target and declare that it applies to BF16 calls on `s
 6. One complete PASS is retained as `reproduction_pending`. A fresh independent attempt
    must reproduce the result. If it does, settlement retains the lower reproduced
    speedup and may create the target crown.
-7. The crown can affect rewards, but production still runs the previous release until
-   maintainers separately review, integrate, package, sign, and publish a new Engine
-   release.
+7. If settlement creates the crown, it also creates the corresponding reward claim
+   for the miner's hotkey. The active incentive policy determines how that claim
+   contributes to the validator's weight vector, which a separate publisher later
+   submits and confirms on-chain. Product integration remains a separate decision,
+   so production still runs the previous release until maintainers review, integrate,
+   package, sign, and publish a new one. See
+   [How miners earn rewards](../miner-guide/incentives.md).
 
 If the implementation is wrong at step 1, the miner changes the bundle. If its HTTPS
 server times out at step 3, the validator may retry the same identity. If the candidate
@@ -179,6 +183,7 @@ policies, evidence, and independent reproduction bound to the production path.
 
 ## Read next
 
+- [See why miners participate and how rewards work](../miner-guide/incentives.md)
 - [Run the CPU quickstart](quickstart.md)
 - [Understand the architecture](../architecture/overview.md)
 - [Choose a registered target](../miner-guide/slots.md)

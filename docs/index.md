@@ -10,10 +10,21 @@ plane. The current revision does not claim a completed production Engine release
 
 <div class="cacheon-actions" markdown>
 [Build a kernel](miner-guide/overview.md){ .md-button .md-button--primary }
+[How miners earn rewards](miner-guide/incentives.md){ .md-button }
 [Operate the referee](validator-guide/overview.md){ .md-button }
 [Understand the architecture](architecture/overview.md){ .md-button }
 </div>
 </div>
+
+## Why miners participate
+
+Cacheon rewards independently reproduced performance improvements, not uploads or
+self-reported benchmarks. If settlement crowns a proposal for a published target, it
+records the corresponding reward claim in the same transaction. The validator later
+combines eligible claims into a weight vector and publishes it on-chain; realized token
+emission still depends on the wider Bittensor network.
+
+[See the reward lifecycle in plain English →](miner-guide/incentives.md)
 
 At the highest level, Cacheon has two systems: the chain-independent product and
 the market that improves it. Operationally, the market side separates the

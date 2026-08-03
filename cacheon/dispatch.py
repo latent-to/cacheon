@@ -320,8 +320,9 @@ def make_attention_dispatcher(
     every attention call funnels through (so it is backend-agnostic).
 
     Attention is a *block* slot. At **decode** (one query token per request) we
-    extract the request's paged KV out of ``forward_batch`` and hand the miner kernel
-    a dense ``(q, k, v, seq_lens)`` view; the validator keeps the backend metadata,
+    resolve the active backend from Sglang's forward context, gather its paged KV,
+    and hand the miner kernel a dense ``(q, k, v, seq_lens)`` view; the validator
+    keeps the backend metadata,
     owns the KV-cache **write** (``set_kv_buffer``), and only ever lets the miner
     *read* q/k/v. The kernel output feeds the residual stream -> downstream layers ->
     sampler (all stock), so there is no final output to substitute — the same
@@ -331,11 +332,12 @@ def make_attention_dispatcher(
     only when ``CACHEON_ATTENTION_SEAM=1`` (opt-in until paged-direct lands). It is a
     *gather* MVP — it pulls the paged KV into a dense padded tensor so the miner writes
     an ordinary attention kernel, but the gather is variable-shape, hence
-    **eager-only** (a per-step ``max_len`` is not CUDA-graph-capturable). The
-    production rung is a paged-direct contract (the miner consumes the page table +
-    pool buffers, graph-safe). Prefill / MLA / cross-attention / windowed paths fall
-    back to the trusted backend. Conservative by construction: when in doubt, trust
-    the baseline.
+    **eager-only** (a per-step ``max_len`` and host ``.item()`` are not CUDA-graph-
+    capturable). Graph capture and calls that do not save this step's KV remain stock.
+    A graph-qualified production path would require a separate paged-direct contract;
+    that contract is not implemented here. Prefill / MLA / cross-attention / windowed
+    paths fall back to the trusted backend. Conservative by construction: when in
+    doubt, trust the baseline.
 
     NO IN-ENGINE AUDIT here (cacheon.audit): re-running ``baseline_forward`` would
     re-drive the backend's KV-cache write path (``save_kv_cache``) — stateful, and
@@ -349,6 +351,14 @@ def make_attention_dispatcher(
             return baseline_forward(self, q, k, v, forward_batch, save_kv_cache, **kwargs)
         selected = False
         if _attention_seam_active():
+            # The current dense gather performs a host sync and allocates from a
+            # request-dependent max length. It must never enter a captured graph.
+            # It also assumes the validator first writes the current token into
+            # the active KV pool; save-free calls therefore retain stock semantics.
+            if _in_cuda_graph() or not save_kv_cache:
+                return baseline_forward(
+                    self, q, k, v, forward_batch, save_kv_cache, **kwargs
+                )
             try:
                 if forward_batch.forward_mode.is_decode() and _decode_supported(self, k, v, kwargs):
                     impl = registry.lookup(
@@ -402,17 +412,36 @@ def _decode_supported(self, k, v, kwargs) -> bool:
     return getattr(self, "qk_head_dim", None) == getattr(self, "v_head_dim", None)
 
 
+def _active_attention_backend():
+    """Return the request-local backend owned by SGLang's forward context.
+
+    The pinned runtime no longer stores KV-pool authorities on ``ForwardBatch``.
+    Import lazily so CPU tooling and processes that never exercise the attention seam
+    do not need to import Sglang's model-executor stack.
+    """
+
+    from sglang.srt.model_executor.forward_context import get_attn_backend
+
+    backend = get_attn_backend()
+    if backend is None:
+        raise RuntimeError("SGLang forward context has no active attention backend")
+    return backend
+
+
 def _run_decode_kernel(self, q, k, v, forward_batch, save_kv_cache, impl):
     """Extract this decode step's paged KV, gather it dense, run the miner kernel.
 
-    Mirrors what a stock backend does: store the new token's k/v at ``out_cache_loc``
+    Mirrors what a stock backend does in eager mode: resolve its active KV pools from
+    Sglang's forward context, store the new token's k/v at ``out_cache_loc``
     (validator-owned write), then gather each request's context via
-    ``req_to_token[req_pool_idx, :seq_len]`` and let the miner compute attention.
+    ``req_to_token[req_pool_idx, :seq_len]`` and let the miner compute attention. The
+    caller fences graph capture and save-free calls to stock before selecting this path.
     """
     Hq = self.tp_q_head_num
     Hkv = self.tp_k_head_num
     D = self.qk_head_dim
-    pool = forward_batch.token_to_kv_pool
+    backend = _active_attention_backend()
+    pool = backend.token_to_kv_pool
 
     # Validator owns the KV-cache write (miner only reads). Store BEFORE gathering so
     # the gathered context includes the current token.
@@ -423,7 +452,7 @@ def _run_decode_kernel(self, q, k, v, forward_batch, save_kv_cache, impl):
     seq_lens = forward_batch.seq_lens
     B = seq_lens.shape[0]
     max_len = int(seq_lens.max().item())  # variable shape -> eager only (see docstring)
-    req_to_token = forward_batch.req_to_token_pool.req_to_token
+    req_to_token = backend.req_to_token_pool.req_to_token
     slots = req_to_token[forward_batch.req_pool_indices][:, :max_len].long()  # (B, max_len)
 
     k_cache = pool.get_key_buffer(self.layer_id)   # (pool_size, Hkv, D)

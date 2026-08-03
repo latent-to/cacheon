@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -119,7 +120,7 @@ def test_fallback_requires_successful_stock_and_strict_never_falls_back(events):
     assert completed == fallbacks == []
 
 
-def _attention_inputs():
+def _attention_inputs(monkeypatch):
     class Pool:
         def __init__(self):
             self.k = torch.zeros(2, 1, 2)
@@ -136,12 +137,34 @@ def _attention_inputs():
             return self.v
 
     pool = Pool()
+    backend = SimpleNamespace(
+        token_to_kv_pool=pool,
+        req_to_token_pool=SimpleNamespace(
+            req_to_token=torch.tensor([[0, 1]])
+        ),
+    )
+
+    # SGLang 0.5.13.post1 owns the pools on the request-local attention backend,
+    # reached through forward_context.get_attn_backend(). ForwardBatch deliberately
+    # carries no pool references in this fixture.
+    for package_name in (
+        "sglang",
+        "sglang.srt",
+        "sglang.srt.model_executor",
+    ):
+        package = ModuleType(package_name)
+        package.__path__ = []
+        monkeypatch.setitem(sys.modules, package_name, package)
+    forward_context = ModuleType("sglang.srt.model_executor.forward_context")
+    forward_context.get_attn_backend = lambda: backend
+    monkeypatch.setitem(
+        sys.modules, "sglang.srt.model_executor.forward_context", forward_context
+    )
+
     batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_decode=lambda: True),
-        token_to_kv_pool=pool,
         out_cache_loc=torch.tensor([1]),
         seq_lens=torch.tensor([2]),
-        req_to_token_pool=SimpleNamespace(req_to_token=torch.tensor([[0, 1]])),
         req_pool_indices=torch.tensor([0]),
     )
     layer = SimpleNamespace(
@@ -154,14 +177,14 @@ def _attention_inputs():
         is_cross_attention=False,
         sliding_window_size=-1,
     )
-    return layer, batch
+    return layer, batch, backend
 
 
 def test_attention_dispatcher_receipts(events, monkeypatch):
     completed, fallbacks = events
     monkeypatch.setenv("CACHEON_ATTENTION_SEAM", "1")
     baseline = object()
-    layer, batch = _attention_inputs()
+    layer, batch, backend = _attention_inputs(monkeypatch)
     args = (
         layer,
         torch.ones(1, 2),
@@ -169,8 +192,10 @@ def test_attention_dispatcher_receipts(events, monkeypatch):
         torch.ones(1, 1, 2),
         batch,
     )
+    candidate_calls: list[str] = []
 
     def entry(q, _k, _v, _seq_lens, _scale, out):
+        candidate_calls.append("candidate")
         out.copy_(q)
 
     good = dispatch.make_attention_dispatcher(
@@ -178,13 +203,102 @@ def test_attention_dispatcher_receipts(events, monkeypatch):
         registry=_registry("attention.decode", entry),
     )
     assert good(*args) is not baseline
+    assert candidate_calls == ["candidate"]
     bad = dispatch.make_attention_dispatcher(
         lambda *_a, **_k: baseline,
         registry=_registry("attention.decode", _boom),
     )
     assert bad(*args) is baseline
+    assert not hasattr(batch, "token_to_kv_pool")
+    assert not hasattr(batch, "req_to_token_pool")
+    assert backend.token_to_kv_pool.k[1].equal(torch.ones(1, 2))
     assert completed == ["attention.decode"]
     assert fallbacks == [("attention.decode", "RuntimeError")]
+
+
+def test_attention_dispatcher_keeps_dense_gather_stock_in_graphs(
+    events, monkeypatch
+):
+    completed, fallbacks = events
+    monkeypatch.setenv("CACHEON_ATTENTION_SEAM", "1")
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: True)
+    baseline = object()
+    baseline_save_values: list[bool] = []
+    layer, batch, _backend = _attention_inputs(monkeypatch)
+    calls: list[str] = []
+
+    def baseline_forward(
+        _self, _q, _k, _v, _batch, save_kv_cache=True, **_kwargs
+    ):
+        baseline_save_values.append(save_kv_cache)
+        return baseline
+
+    def entry(*_args):
+        calls.append("candidate")
+
+    monkeypatch.setattr(
+        dispatch,
+        "_active_attention_backend",
+        lambda: pytest.fail("graph fence must return before backend lookup"),
+    )
+    wrapped = dispatch.make_attention_dispatcher(
+        baseline_forward,
+        registry=_registry("attention.decode", entry, graph_safe=True),
+    )
+    result = wrapped(
+        layer,
+        torch.ones(1, 2),
+        torch.ones(1, 1, 2),
+        torch.ones(1, 1, 2),
+        batch,
+    )
+
+    assert result is baseline
+    assert calls == []
+    assert baseline_save_values == [True]
+    assert completed == fallbacks == []
+
+
+def test_attention_dispatcher_keeps_save_free_calls_stock(events, monkeypatch):
+    completed, fallbacks = events
+    monkeypatch.setenv("CACHEON_ATTENTION_SEAM", "1")
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: False)
+    baseline = object()
+    baseline_save_values: list[bool] = []
+    layer, batch, _backend = _attention_inputs(monkeypatch)
+    calls: list[str] = []
+
+    def baseline_forward(
+        _self, _q, _k, _v, _batch, save_kv_cache=True, **_kwargs
+    ):
+        baseline_save_values.append(save_kv_cache)
+        return baseline
+
+    def entry(*_args):
+        calls.append("candidate")
+
+    monkeypatch.setattr(
+        dispatch,
+        "_active_attention_backend",
+        lambda: pytest.fail("save-free fence must return before backend lookup"),
+    )
+    wrapped = dispatch.make_attention_dispatcher(
+        baseline_forward,
+        registry=_registry("attention.decode", entry),
+    )
+    result = wrapped(
+        layer,
+        torch.ones(1, 2),
+        torch.ones(1, 1, 2),
+        torch.ones(1, 1, 2),
+        batch,
+        False,
+    )
+
+    assert result is baseline
+    assert calls == []
+    assert baseline_save_values == [False]
+    assert completed == fallbacks == []
 
 
 def _moe_call(entry, *, slot="moe.fused_experts"):

@@ -151,6 +151,20 @@ def run_checks() -> list[Check]:
     except Exception as exc:  # noqa: BLE001
         add("seam: RadixAttention (attention)", False, repr(exc))
 
+    # The decode gather also depends on the pinned request-local backend authority.
+    # ForwardBatch no longer carries the KV pools, so a surviving RadixAttention
+    # signature alone is not enough to declare the attention adapter compatible.
+    try:
+        from sglang.srt.model_executor.forward_context import get_attn_backend
+
+        add(
+            "attention backend accessor: get_attn_backend",
+            callable(get_attn_backend),
+            "sglang.srt.model_executor.forward_context",
+        )
+    except Exception as exc:  # noqa: BLE001
+        add("attention backend accessor: get_attn_backend", False, repr(exc))
+
     # MoE seam (the MoE BLOCK slot chokepoint: FusedMoE.forward_impl(hidden_states,
     # topk_output) — the waist all paths converge on; .forward is bypassed under
     # piecewise capture, so we patch forward_impl, see cacheon/integrations/sglang_moe.py)

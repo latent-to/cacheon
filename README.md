@@ -22,6 +22,7 @@ release tooling.
 | Goal | Documentation |
 |---|---|
 | Understand the system | [Concepts](docs/get-started/concepts.md) and [architecture overview](docs/architecture/overview.md) |
+| Understand why miners participate and how rewards work | [How miners earn rewards](docs/miner-guide/incentives.md) |
 | Build a miner contribution | [Miner guide](docs/miner-guide/overview.md) |
 | Operate a validator | [Validator guide](docs/validator-guide/overview.md) |
 | Integrate an approved contribution | [Cacheon Engine](docs/engine/overview.md) |
