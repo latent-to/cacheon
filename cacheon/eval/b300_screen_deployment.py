@@ -1107,20 +1107,16 @@ def _derive_inputs(
         topology.get("lane_digest"), "topology authority lane digest"
     )
     topology_class = _text(topology.get("topology_class"), "topology class")
+    # ``RuntimePreflightFacts.topology_digest`` is measured inside the OCI
+    # lifetime from the visible TP lane's canonical ``nvidia-smi topo -m``
+    # matrix.  The sealed authority's lane digest is that same-domain value.
+    # Do not wrap it in a second deployment-identity domain: doing so makes an
+    # otherwise exact live lane impossible to compare with the host policy.
+    # READY's independently bound lane/inventory identity remains retained in
+    # the deployment payload below and in the device execution policy.
     ready_lane = _mapping(ready.get("lane"), "READY lane")
-    topology_digest = canonical_digest(
-        "cacheon.eval.b300-commissioned-topology.v1",
-        {
-            "architecture": ARCHITECTURE,
-            "authority_lane_digest": authority_lane_digest,
-            "gpu_configurations": [gpu.canonical_dict() for gpu in gpus],
-            "ready_lane_digest": _digest(
-                ready_lane.get("lane_digest"), "READY lane digest"
-            ),
-            "tensor_parallel_size": TP_SIZE,
-            "topology_class": topology_class,
-        },
-    )
+    _digest(ready_lane.get("lane_digest"), "READY lane digest")
+    topology_digest = authority_lane_digest
 
     worker = _mapping(authority.get("worker"), "worker authority")
     image = _text(worker.get("image"), "worker image")
