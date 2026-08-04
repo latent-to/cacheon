@@ -48,10 +48,11 @@ SCHEMA_REGISTRATION = "cacheon-remote-worker-registration-v1"
 SCHEMA_REQUEST = "cacheon-remote-evaluation-request-v1"
 SCHEMA_ADAPTER_RESULT = "cacheon-b300-adapter-result-v1"
 SCHEMA_RESULT_READY = "cacheon-remote-result-ready-v1"
-SCHEMA_HEARTBEAT = "cacheon-remote-worker-heartbeat-v1"
+SCHEMA_HEARTBEAT = "cacheon-remote-worker-heartbeat-v2"
 SCHEMA_DISPATCH_STATE = "cacheon-remote-dispatch-state-v1"
 SCHEMA_ADAPTER_COMMAND = "cacheon-b300-adapter-command-v1"
 SCHEMA_ADAPTER_CONTROL = "cacheon-b300-adapter-control-v1"
+SCHEMA_ADAPTER_LIFECYCLE_EVENT = "cacheon-b300-adapter-lifecycle-event-v1"
 
 DOMAIN_REGISTRATION = "cacheon.chain.remote-worker-registration.v1"
 DOMAIN_REQUEST = "cacheon.chain.remote-evaluation-request.v1"
@@ -191,8 +192,11 @@ ALLOWED_ARTIFACT_ROLES = frozenset(
 )
 ALLOWED_FAILURE_CODES = frozenset(
     {
+        "adapter_epoch_failed",
         "adapter_exit_nonzero",
+        "adapter_request_failed",
         "adapter_result_invalid",
+        "adapter_start_failed",
         "adapter_timeout",
         "pod_service_restart",
         "request_deadline_elapsed",
@@ -208,6 +212,10 @@ MAX_JOB_SECONDS = 4 * 60 * 60
 DEFAULT_POLL_SECONDS = 5
 DEFAULT_HEARTBEAT_SECONDS = 10
 DEFAULT_MAX_HEARTBEAT_AGE = 45
+# A command-level adapter failure means the standing engine is no longer a
+# proven service.  Fail the epoch on the first such event; never spend another
+# miner request silently booting a replacement model.
+MAX_CONSECUTIVE_ADAPTER_FAILURES = 1
 NATIVE_ARTIFACT_MANIFEST = ".cacheon-native-artifact.json"
 
 
@@ -2225,9 +2233,20 @@ def _authenticated_wire_response(
     return digest
 
 
-def heartbeat_payload(registration: Mapping[str, Any], state: str, active_request_id: str | None) -> dict[str, Any]:
+def heartbeat_payload(
+    registration: Mapping[str, Any],
+    state: str,
+    active_request_id: str | None,
+    *,
+    adapter_start_count: int = 0,
+    adapter_alive: bool = False,
+    consecutive_adapter_failures: int = 0,
+) -> dict[str, Any]:
     unsigned: dict[str, Any] = {
         "active_request_id": active_request_id,
+        "adapter_alive": adapter_alive,
+        "adapter_start_count": adapter_start_count,
+        "consecutive_adapter_failures": consecutive_adapter_failures,
         "pid": os.getpid(),
         "ready_receipt_digest": registration["ready_receipt_digest"],
         "schema": SCHEMA_HEARTBEAT,
@@ -2243,6 +2262,9 @@ def verify_heartbeat(row: object, registration: Mapping[str, Any], max_age: int)
     fields = frozenset(
         {
             "active_request_id",
+            "adapter_alive",
+            "adapter_start_count",
+            "consecutive_adapter_failures",
             "heartbeat_digest",
             "pid",
             "ready_receipt_digest",
@@ -2267,6 +2289,23 @@ def verify_heartbeat(row: object, registration: Mapping[str, Any], max_age: int)
         fail(f"worker heartbeat is outside liveness bound: age={age}s")
     if value["active_request_id"] is not None:
         require_digest(value["active_request_id"], "active request id")
+    if type(value["adapter_alive"]) is not bool:
+        fail("worker heartbeat adapter liveness is not boolean")
+    starts = require_int(
+        value["adapter_start_count"],
+        "worker heartbeat adapter start count",
+        minimum=0,
+    )
+    failures = require_int(
+        value["consecutive_adapter_failures"],
+        "worker heartbeat consecutive adapter failures",
+        minimum=0,
+        maximum=MAX_CONSECUTIVE_ADAPTER_FAILURES,
+    )
+    if value["adapter_alive"] and starts == 0:
+        fail("worker heartbeat reports an unstarted live adapter")
+    if value["state"] == "epoch_failed" and failures < MAX_CONSECUTIVE_ADAPTER_FAILURES:
+        fail("worker heartbeat failed epoch lacks its failure threshold")
     return value
 
 
@@ -2333,6 +2372,17 @@ def cpu_serve(args: argparse.Namespace) -> None:
                 return
             try:
                 heartbeat = remote_heartbeat(registration, args.max_heartbeat_age)
+                if heartbeat["state"] == "epoch_failed":
+                    append_event(
+                        spool,
+                        "dispatcher_epoch_failed",
+                        adapter_start_count=heartbeat["adapter_start_count"],
+                        consecutive_adapter_failures=heartbeat[
+                            "consecutive_adapter_failures"
+                        ],
+                        worker_epoch=registration["worker_epoch"],
+                    )
+                    return
                 queue = iter_queue(outbox, registration)
                 active = heartbeat.get("active_request_id")
                 for job_dir, request in queue:
@@ -2675,11 +2725,32 @@ class _PersistentAdapterProcess:
         self.heartbeat_seconds = heartbeat_seconds
         self.process: subprocess.Popen[bytes] | None = None
         self.log_handle: io.BufferedWriter | None = None
+        self.start_count = 0
+        self.consecutive_failures = 0
+
+    @property
+    def alive(self) -> bool:
+        process = self.process
+        return process is not None and process.poll() is None
+
+    def record_result(self, *, completed: bool) -> None:
+        if type(completed) is not bool:
+            fail("adapter completion state is not boolean")
+        self.consecutive_failures = (
+            0 if completed else self.consecutive_failures + 1
+        )
 
     def _heartbeat(self, request_id: str | None, state: str) -> None:
         atomic_json(
             POD_ROOT / "heartbeat.json",
-            heartbeat_payload(self.registration, state, request_id),
+            heartbeat_payload(
+                self.registration,
+                state,
+                request_id,
+                adapter_start_count=self.start_count,
+                adapter_alive=self.alive,
+                consecutive_adapter_failures=self.consecutive_failures,
+            ),
             mode=0o400,
         )
 
@@ -2730,6 +2801,16 @@ class _PersistentAdapterProcess:
             env=_adapter_environment(self.registration, None),
             start_new_session=True,
         )
+        self.start_count += 1
+        append_event(
+            POD_ROOT,
+            "adapter_process_started",
+            adapter_pid=self.process.pid,
+            adapter_start_count=self.start_count,
+            request_id=request_id,
+            schema=SCHEMA_ADAPTER_LIFECYCLE_EVENT,
+            worker_epoch=self.registration["worker_epoch"],
+        )
         ready = self._read_control(
             deadline=deadline,
             request_id=request_id,
@@ -2739,8 +2820,25 @@ class _PersistentAdapterProcess:
             "schema": SCHEMA_ADAPTER_CONTROL,
             "state": "ready",
         }:
+            append_event(
+                POD_ROOT,
+                "adapter_process_start_failed",
+                adapter_start_count=self.start_count,
+                request_id=request_id,
+                schema=SCHEMA_ADAPTER_LIFECYCLE_EVENT,
+                worker_epoch=self.registration["worker_epoch"],
+            )
             self.close()
             return False
+        append_event(
+            POD_ROOT,
+            "adapter_process_ready",
+            adapter_pid=self.process.pid,
+            adapter_start_count=self.start_count,
+            request_id=request_id,
+            schema=SCHEMA_ADAPTER_LIFECYCLE_EVENT,
+            worker_epoch=self.registration["worker_epoch"],
+        )
         return True
 
     def evaluate(
@@ -2753,15 +2851,17 @@ class _PersistentAdapterProcess:
     ) -> str | None:
         request_id = request["request_id"]
         process = self.process
-        if process is None or process.poll() is not None:
-            self.close()
+        if process is None:
+            if self.start_count:
+                return "adapter_exit_nonzero"
             if not self._start(deadline=deadline, request_id=request_id):
                 return "adapter_start_failed"
             process = self.process
+        elif process.poll() is not None:
+            return "adapter_exit_nonzero"
         assert process is not None
         if process.stdin is None:
-            self.close()
-            return "adapter_start_failed"
+            return "adapter_exit_nonzero"
         command = {
             "operation": "evaluate",
             "request_dir": str(job_root),
@@ -2773,7 +2873,6 @@ class _PersistentAdapterProcess:
             process.stdin.write(canonical_json_bytes(command) + b"\n")
             process.stdin.flush()
         except (BrokenPipeError, OSError):
-            self.close()
             return "adapter_exit_nonzero"
         control = self._read_control(
             deadline=deadline,
@@ -2787,8 +2886,21 @@ class _PersistentAdapterProcess:
         }
         if control == expected:
             return None
+        request_failed = {
+            "request_id": request_id,
+            "schema": SCHEMA_ADAPTER_CONTROL,
+            "state": "request_failed",
+        }
+        if control == request_failed:
+            return "adapter_request_failed"
+        epoch_failed = {
+            "request_id": request_id,
+            "schema": SCHEMA_ADAPTER_CONTROL,
+            "state": "epoch_failed",
+        }
+        if control == epoch_failed:
+            return "adapter_epoch_failed"
         timed_out = int(time.time()) >= deadline
-        self.close()
         return "adapter_timeout" if timed_out else "adapter_exit_nonzero"
 
     def close(self) -> None:
@@ -2941,11 +3053,7 @@ def pod_serve(args: argparse.Namespace) -> None:
         try:
             while True:
                 verify_pod_registration(POD_REGISTRATION)
-                atomic_json(
-                    POD_ROOT / "heartbeat.json",
-                    heartbeat_payload(registration, "idle", None),
-                    mode=0o400,
-                )
+                adapter_process._heartbeat(None, "idle")
                 item = next_incoming(registration)
                 if item is not None:
                     job_root, request = item
@@ -2958,6 +3066,23 @@ def pod_serve(args: argparse.Namespace) -> None:
                         args.heartbeat_seconds,
                         adapter_process,
                     )
+                    result_row = verify_adapter_result(
+                        load_json(result / "result.json"),
+                        result,
+                        request,
+                        registration,
+                        request_root=job_root,
+                    )
+                    # A typed request-local refusal leaves the commissioned
+                    # adapter and resident model healthy.  Every other adapter
+                    # failure is epoch-fatal on its first occurrence.
+                    adapter_process.record_result(
+                        completed=(
+                            result_row["state"] == "completed"
+                            or result_row["failure_code"]
+                            == "adapter_request_failed"
+                        )
+                    )
                     publish_result(
                         registration,
                         request,
@@ -2968,6 +3093,28 @@ def pod_serve(args: argparse.Namespace) -> None:
                     if not completed.exists():
                         os.replace(job_root, completed)
                     append_event(POD_ROOT, "adapter_finished", request_id=request_id)
+                    if (
+                        adapter_process.consecutive_failures
+                        >= MAX_CONSECUTIVE_ADAPTER_FAILURES
+                    ):
+                        append_event(
+                            POD_ROOT,
+                            "resident_epoch_failed",
+                            adapter_start_count=adapter_process.start_count,
+                            consecutive_adapter_failures=(
+                                adapter_process.consecutive_failures
+                            ),
+                            schema=SCHEMA_ADAPTER_LIFECYCLE_EVENT,
+                            worker_epoch=registration["worker_epoch"],
+                        )
+                        # Fail the epoch closed without tearing down a still-live
+                        # resident model.  A human may inspect or recover the
+                        # epoch, but this service must never turn a candidate or
+                        # transport failure into an avoidable model unload.
+                        while True:
+                            verify_pod_registration(POD_REGISTRATION)
+                            adapter_process._heartbeat(None, "epoch_failed")
+                            time.sleep(args.poll_seconds)
                 time.sleep(args.poll_seconds)
         finally:
             adapter_process.close()

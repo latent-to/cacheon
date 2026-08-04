@@ -61,6 +61,9 @@ _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
 _READINESS_SCHEMA_VERSION = 1
 _RESULT_SCHEMA_VERSION = 1
 _LOCK_COLLISION = "another intake controller owns this database"
+_TRANSIENT_COORDINATOR_OWNERSHIP_MESSAGE = (
+    "evaluation store lock/cursor did not stabilize within retry bounds"
+)
 
 SYSTEMIC_QUALIFICATION_REASONS = frozenset(
     {
@@ -76,6 +79,10 @@ SYSTEMIC_QUALIFICATION_REASONS = frozenset(
 
 class EvaluationCoordinatorError(RuntimeError):
     """The CPU coordinator cannot safely claim, run, or commit evaluation work."""
+
+
+class _TransientCoordinatorOwnership(EvaluationCoordinatorError):
+    """A bounded flock/cursor acquisition pass lost only a transient race."""
 
 
 def _digest(value: object, field: str) -> str:
@@ -537,10 +544,26 @@ class _LeaseHeartbeat:
                 extended = self._coordinator._heartbeat_once(lease, self._stop)
             except _HeartbeatCancelled:
                 return
+            except _TransientCoordinatorOwnership:
+                # The independently running intake controller legitimately owns
+                # the flock during a pass.  A single collision must not
+                # permanently kill a multi-minute lease heartbeat; retry promptly
+                # until ownership becomes available or the remote call ends.
+                # Expired/stale/CAS failures still surface below as fatal errors.
+                interval = min(
+                    self._coordinator.heartbeat_interval_s,
+                    max(0.05, self._coordinator.lock_retry_delay_s),
+                )
+                continue
+            except EvaluationCoordinatorError as exc:
+                with self._lock:
+                    self._error = exc
+                return
             except BaseException as exc:
                 with self._lock:
                     self._error = exc
                 return
+            interval = self._coordinator.heartbeat_interval_s
             with self._lock:
                 self._lease = extended
 
@@ -674,8 +697,8 @@ class EvaluationCoordinator:
                 raise _HeartbeatCancelled()
             if attempt + 1 < self.lock_attempts and self.lock_retry_delay_s:
                 time.sleep(self.lock_retry_delay_s)
-        raise EvaluationCoordinatorError(
-            "evaluation store lock/cursor did not stabilize within retry bounds"
+        raise _TransientCoordinatorOwnership(
+            _TRANSIENT_COORDINATOR_OWNERSHIP_MESSAGE
         ) from last_error
 
     def _heartbeat_once(

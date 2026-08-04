@@ -267,10 +267,17 @@ class ResidentScreenLoop:
         self._baseline_prev: float | None = None
         self._processed = 0
         self._stopped: str | None = None
+        self._withdrawn_reference: float | None = None
 
     @property
     def stopped_reason(self) -> str | None:
         return self._stopped
+
+    @property
+    def withdrawn_reference(self) -> float | None:
+        """Exact pre-drift stock mean used by the tripped canary."""
+
+        return self._withdrawn_reference
 
     @property
     def stock_throughputs(self) -> tuple[float, ...]:
@@ -396,6 +403,7 @@ class ResidentScreenLoop:
                 result.batch_indices,
             )
             self._processed -= 1
+            self._withdrawn_reference = statistics.fmean(self._stock[:-1])
             self._stopped = (
                 "stock canary drifted beyond tolerance after "
                 f"{candidate.candidate_id}; lifetime requires recycle"
