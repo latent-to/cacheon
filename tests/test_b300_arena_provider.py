@@ -67,7 +67,7 @@ def _h(label: str) -> str:
 
 def _runtime() -> ArenaRuntimeIdentity:
     return ArenaRuntimeIdentity(
-        arena_id="production-b300-tp8",
+        arena_id="production-b300-tp4",
         runtime_digest=_h("runtime"),
         base_engine_digest=_h("base-engine"),
         validator_overlay_digest=_h("validator-overlay"),
@@ -75,11 +75,11 @@ def _runtime() -> ArenaRuntimeIdentity:
         model_revision_digest=_h("model-revision"),
         model_manifest_digest=_h("model-manifest"),
         model_content_digest=_h("model-content"),
-        target_architecture="sm120",
+        target_architecture="sm103",
         topology_class="nvlink-domain",
         topology_digest=_h("topology"),
-        gpu_count=8,
-        tensor_parallel_size=8,
+        gpu_count=4,
+        tensor_parallel_size=4,
     )
 
 
@@ -168,7 +168,7 @@ def executor_factory(tmp_path: Path):
         executor = OCIEngineExecutor(
             config,
             DeviceStatePolicy(
-                expected_gpus=tuple(_gpu(index, role) for index in range(8)),
+                expected_gpus=tuple(_gpu(index, role) for index in range(4)),
                 required_consecutive_idle_samples=2,
                 poll_interval_s=0.05,
                 ready_poll_interval_s=0.05,
