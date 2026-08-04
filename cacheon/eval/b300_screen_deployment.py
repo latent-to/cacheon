@@ -498,13 +498,6 @@ def _catalog_specs(catalog: TargetCatalog) -> dict[str, str]:
     }
 
 
-def _arena_digest(runtime: ArenaRuntimeIdentity) -> str:
-    return canonical_digest(
-        "cacheon.eval.b300-screen-arena.v1",
-        {"runtime": runtime.to_dict()},
-    )
-
-
 def _seam_bindings(target_members: tuple[str, ...]) -> tuple[str, ...]:
     members = set(target_members)
     return tuple(
@@ -621,22 +614,6 @@ class _CommissionedScreenPlanResolver:
         self.executor = executor
         self.catalog = catalog
         self.clock = clock
-        self.context = EvaluationStackContext(
-            runtime_digest=inputs.runtime.runtime_digest,
-            base_engine_digest=inputs.runtime.base_engine_digest,
-            arena_digest=_arena_digest(inputs.runtime),
-            catalog_snapshot=catalog.snapshot(),
-            catalog_digest=catalog.digest,
-            target_spec_digests=_catalog_specs(catalog),
-        )
-        self.incumbent = EvaluationStackManifest(
-            runtime_digest=self.context.runtime_digest,
-            base_engine_digest=self.context.base_engine_digest,
-            arena_digest=self.context.arena_digest,
-            catalog_snapshot=catalog.snapshot(),
-            catalog_digest=catalog.digest,
-            entries={},
-        )
 
     def __call__(
         self,
@@ -679,11 +656,27 @@ class _CommissionedScreenPlanResolver:
         )
         if proposal.selected_delta_digest != reservation.selected_delta_digest:
             raise B300ScreenDeploymentError("proposal changed selected delta identity")
+        context = EvaluationStackContext(
+            runtime_digest=self.inputs.runtime.runtime_digest,
+            base_engine_digest=self.inputs.runtime.base_engine_digest,
+            arena_digest=manifest.digest,
+            catalog_snapshot=self.catalog.snapshot(),
+            catalog_digest=self.catalog.digest,
+            target_spec_digests=_catalog_specs(self.catalog),
+        )
+        incumbent = EvaluationStackManifest(
+            runtime_digest=context.runtime_digest,
+            base_engine_digest=context.base_engine_digest,
+            arena_digest=context.arena_digest,
+            catalog_snapshot=self.catalog.snapshot(),
+            catalog_digest=self.catalog.digest,
+            entries={},
+        )
         stack = plan_candidate_stack(
-            self.incumbent,
+            incumbent,
             proposal,
             catalog=self.catalog,
-            expected_context=self.context,
+            expected_context=context,
         )
         trees_root = self.inputs.root / "engine-trees"
         trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -697,7 +690,7 @@ class _CommissionedScreenPlanResolver:
         else:
             tree = materialize_engine_tree(
                 stack,
-                context=self.context,
+                context=context,
                 catalog=self.catalog,
                 resolver={
                     ("proposal", proposal.artifact_digest): candidate.publication.root
@@ -740,7 +733,7 @@ class _CommissionedScreenPlanResolver:
             runtime_preflight_receipt=self.inputs.preflight,
             physical_hardware=physical,
         )
-        arena_digest = self.context.arena_digest
+        arena_digest = manifest.digest
         mount = TrustedArenaModelMountReceipt.capture(
             self.inputs.model_root,
             arena_digest=arena_digest,
