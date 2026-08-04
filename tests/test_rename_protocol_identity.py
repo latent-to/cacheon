@@ -1,9 +1,9 @@
 """The Cacheon rename is total: protocol vocabulary, runtime ABI, and salts.
 
-Subnet 14 launched with the Cacheon vocabulary as the only protocol identity.
-The retired Optima spellings are not accepted, emitted, or present in shipping
-source. These pins keep an accidental revert from silently rotating hash
-domains or wire schemas.
+Subnet 14 emits Cacheon vocabulary as its protocol identity.  One pre-cutover
+bundle ABI spelling remains a reader-only alias so already-finalized commitment
+bytes can cross a validator rollout without being rewritten.  These pins keep
+an accidental revert from silently rotating hash domains or wire schemas.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def test_protocol_and_runtime_abi_vocabulary_is_cacheon() -> None:
     assert PLATFORM_DIGEST_SCHEMA == "cacheon-runtime-platform-v1"
     assert WORKER_DISTRIBUTION == "cacheon-harness"
     assert ABI_VERSION == "cacheon-op-abi-v0"
-    assert SUPPORTED_ABI_VERSIONS == frozenset({"cacheon-op-abi-v0"})
+    assert SUPPORTED_ABI_VERSIONS == frozenset({ABI_VERSION})
     assert DEFAULT_BUNDLE_KEY_PREFIX == "cacheon/miner-bundles/sha256"
 
 

@@ -116,6 +116,43 @@ def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
     )
 
 
+def test_exact_manifest_compatibility_failure_can_return_to_fifo(tmp_path) -> None:
+    reason = (
+        "manifest:submission is neither a registered component nor a closed "
+        "discovery proposal: component=unsupported abi_version 'pre-cutover'"
+    )
+    with _store(tmp_path) as store:
+        row = store.reserve_finalized(
+            (_arrival(0),),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )[0]
+        store.mark_fetching(row.reservation_id)
+        terminal = store.mark_failed(row.reservation_id, reason)
+        assert terminal.status == "failed"
+
+        with pytest.raises(IntakeError, match="exact pre-publication"):
+            store.release_manifest_compatibility_failure(
+                row.reservation_id,
+                expected_reason_digest=_h("wrong reason"),
+            )
+
+        released = store.release_manifest_compatibility_failure(
+            row.reservation_id,
+            expected_reason_digest=sha256_hex(reason.encode()),
+        )
+        assert released.status == "reserved"
+        assert released.decision == ""
+        assert released.reason == "manifest_compatibility_released"
+        assert store.pending() == (released,)
+
+        with pytest.raises(IntakeError, match="exact pre-publication"):
+            store.release_manifest_compatibility_failure(
+                row.reservation_id,
+                expected_reason_digest=sha256_hex(reason.encode()),
+            )
+
+
 def _stack_context(catalog: TargetCatalog) -> EvaluationStackContext:
     targets = catalog.snapshot()["targets"]
     assert isinstance(targets, list)
