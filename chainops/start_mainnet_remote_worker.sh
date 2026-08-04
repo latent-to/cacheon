@@ -27,6 +27,8 @@ SCREEN_DISPATCHER_TEMPLATE=/root/cacheon-ops/state/mainnet-screen-dispatcher-tem
 SPOOL_ROOT=/root/cacheon-ops/remote-worker/spool
 STATE_ROOT=/root/cacheon-ops/remote-worker/state
 LOG_ROOT=/root/cacheon-ops/logs
+CURRENT_REGISTRATION=$STATE_ROOT/current-registration.json
+SCREEN_SESSION=cacheon-mainnet-screen-dispatcher
 POLL_SECONDS=5
 MAX_HEARTBEAT_AGE=45
 COMMISSION_CURRENT_POD=0
@@ -341,6 +343,37 @@ for guarded in "$STATE_ROOT" "$STATE_ROOT/registrations" "$SPOOL_ROOT" "$LOG_ROO
   [[ ! -L "$guarded" ]] || fail "refusing symlinked local state path: $guarded"
 done
 
+OLD_WORKER_EPOCH=
+OLD_POD_HOST=
+OLD_POD_PORT=
+if [[ -e "$CURRENT_REGISTRATION" ]]; then
+  [[ -f "$CURRENT_REGISTRATION" && ! -L "$CURRENT_REGISTRATION" ]] \
+    || fail "current registration is not a regular file"
+  readarray -t old_registration_summary < <(
+    "$CPU_PYTHON" - "$CURRENT_REGISTRATION" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    row = json.load(handle)
+epoch = row.get("worker_epoch")
+host = row.get("pod_host")
+port = row.get("pod_port")
+if not isinstance(epoch, str) or re.fullmatch(r"[0-9a-f]{32}", epoch) is None:
+    raise SystemExit("current registration has malformed worker epoch")
+if not isinstance(host, str) or not host or type(port) is not int:
+    raise SystemExit("current registration has malformed pod endpoint")
+print(epoch)
+print(host)
+print(port)
+PY
+  )
+  OLD_WORKER_EPOCH=${old_registration_summary[0]}
+  OLD_POD_HOST=${old_registration_summary[1]}
+  OLD_POD_PORT=${old_registration_summary[2]}
+fi
+
 SSH=(
   ssh -p "$POD_PORT"
   -o "UserKnownHostsFile=$KNOWN_HOSTS"
@@ -358,6 +391,35 @@ SCP=(
   -o BatchMode=yes
   -o ConnectTimeout=15
 )
+
+if [[ -n "$OLD_WORKER_EPOCH" \
+      && "$OLD_POD_HOST" == "$POD_HOST" \
+      && "$OLD_POD_PORT" == "$POD_PORT" ]]; then
+  old_pod_session=cacheon-remote-worker-${OLD_WORKER_EPOCH:0:12}
+  log "stopping the prior pod worker before same-pod recommissioning: $old_pod_session"
+  "${SSH[@]}" 'bash -s' -- "$old_pod_session" <<'REMOTE'
+set -euo pipefail
+session=$1
+if tmux has-session -t "$session" 2>/dev/null; then
+  tmux send-keys -t "$session" C-c >/dev/null 2>&1 || true
+  stopped=0
+  for _ in $(seq 1 30); do
+    if ! tmux has-session -t "$session" 2>/dev/null; then
+      stopped=1
+      break
+    fi
+    if [[ "$(tmux display-message -p -t "$session:0.0" '#{pane_dead}')" == 1 ]]; then
+      stopped=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$stopped" != 1 ]]; then
+    tmux kill-session -t "$session"
+  fi
+fi
+REMOTE
+fi
 
 temporary_root=$(mktemp -d "$STATE_ROOT/.register.XXXXXX")
 cleanup() {
@@ -622,6 +684,62 @@ module.load_config(config_path)
 PY
 log "sealed standing screen dispatcher config: $DISPATCHER_CONFIG"
 
+log "retiring any prior pod epoch without deleting its transport evidence"
+"${SSH[@]}" 'bash -s' -- "$WORKER_EPOCH" <<'REMOTE'
+set -euo pipefail
+new_epoch=$1
+root=/data/cacheon-b300/remote-worker
+registration=$root/registration.json
+if [[ -f "$registration" && ! -L "$registration" ]]; then
+  old_epoch=$(python3 - "$registration" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    row = json.load(handle)
+epoch = row.get("worker_epoch")
+if not isinstance(epoch, str) or re.fullmatch(r"[0-9a-f]{32}", epoch) is None:
+    raise SystemExit("prior pod registration has malformed worker epoch")
+print(epoch)
+PY
+  )
+  if [[ "$old_epoch" != "$new_epoch" ]]; then
+    old_session=cacheon-remote-worker-${old_epoch:0:12}
+    if tmux has-session -t "$old_session" 2>/dev/null; then
+      tmux send-keys -t "$old_session" C-c >/dev/null 2>&1 || true
+      for _ in $(seq 1 30); do
+        tmux has-session -t "$old_session" 2>/dev/null || break
+        [[ "$(tmux display-message -p -t "$old_session:0.0" '#{pane_dead}')" == 1 ]] && break
+        sleep 1
+      done
+      if tmux has-session -t "$old_session" 2>/dev/null \
+          && [[ "$(tmux display-message -p -t "$old_session:0.0" '#{pane_dead}')" != 1 ]]; then
+        tmux kill-session -t "$old_session"
+      fi
+    fi
+    archive=$root/retired-epochs/$old_epoch
+    [[ ! -e "$archive" ]] || {
+      echo "prior pod epoch archive already exists: $archive" >&2
+      exit 1
+    }
+    install -d -m 0700 "$archive"
+    install -m 0400 "$registration" "$archive/registration.json"
+    for name in completed inbox incoming outgoing processing results verify; do
+      if [[ -e "$root/$name" ]]; then
+        [[ ! -L "$root/$name" ]] || exit 1
+        mv -- "$root/$name" "$archive/$name"
+      fi
+      install -d -m 0700 "$root/$name"
+    done
+    if [[ -e "$root/heartbeat.json" ]]; then
+      [[ -f "$root/heartbeat.json" && ! -L "$root/heartbeat.json" ]] || exit 1
+      mv -- "$root/heartbeat.json" "$archive/heartbeat.json"
+    fi
+  fi
+fi
+REMOTE
+
 log "installing the closed service, fixed adapter, and registration on worker epoch $WORKER_EPOCH"
 "${SSH[@]}" 'bash -s' -- "$REMOTE_PYTHON" <<'REMOTE'
 set -euo pipefail
@@ -733,10 +851,50 @@ if [[ "$heartbeat_ready" != 1 ]]; then
   fail "pod service did not publish its bound heartbeat; inspect $POD_LOG"
 fi
 
-CURRENT_REGISTRATION=$STATE_ROOT/current-registration.json
+if [[ -n "$OLD_WORKER_EPOCH" && "$OLD_WORKER_EPOCH" != "$WORKER_EPOCH" ]]; then
+  if tmux has-session -t "$SCREEN_SESSION" 2>/dev/null; then
+    log "stopping the prior screen dispatcher before transport epoch rotation"
+    tmux send-keys -t "$SCREEN_SESSION" C-c >/dev/null 2>&1 || true
+    for _ in $(seq 1 30); do
+      tmux has-session -t "$SCREEN_SESSION" 2>/dev/null || break
+      [[ "$(tmux display-message -p -t "$SCREEN_SESSION:0.0" '#{pane_dead}')" == 1 ]] && break
+      sleep 1
+    done
+    if tmux has-session -t "$SCREEN_SESSION" 2>/dev/null \
+        && [[ "$(tmux display-message -p -t "$SCREEN_SESSION:0.0" '#{pane_dead}')" != 1 ]]; then
+      tmux kill-session -t "$SCREEN_SESSION"
+    fi
+  fi
+fi
+
 current_tmp=$(mktemp "$STATE_ROOT/.current-registration.XXXXXX")
 install -m 0400 "$REGISTRATION" "$current_tmp"
 mv -f -- "$current_tmp" "$CURRENT_REGISTRATION"
+
+if [[ -n "$OLD_WORKER_EPOCH" && "$OLD_WORKER_EPOCH" != "$WORKER_EPOCH" ]]; then
+  old_cpu_session=cacheon-remote-dispatch-${OLD_WORKER_EPOCH:0:12}
+  log "waiting for the superseded CPU transfer service to release its outbox"
+  old_cpu_stopped=0
+  for _ in $(seq 1 30); do
+    if ! tmux has-session -t "$old_cpu_session" 2>/dev/null; then
+      old_cpu_stopped=1
+      break
+    fi
+    if [[ "$(tmux display-message -p -t "$old_cpu_session:0.0" '#{pane_dead}')" == 1 ]]; then
+      old_cpu_stopped=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "$old_cpu_stopped" == 1 ]] \
+    || fail "superseded CPU transfer service did not stop; refusing outbox rotation"
+  retired_outbox=$SPOOL_ROOT/outbox-retired-$OLD_WORKER_EPOCH
+  [[ ! -e "$retired_outbox" ]] \
+    || fail "retired outbox already exists: $retired_outbox"
+  mv -- "$SPOOL_ROOT/outbox" "$retired_outbox"
+  install -d -m 0700 "$SPOOL_ROOT/outbox"
+  log "retained prior transport jobs at $retired_outbox"
+fi
 
 CPU_SESSION=cacheon-remote-dispatch-${WORKER_EPOCH:0:12}
 CPU_LOG=$LOG_ROOT/remote-dispatch-$WORKER_EPOCH.log
@@ -778,7 +936,6 @@ done
 [[ "$cpu_heartbeat_ready" == 1 ]] \
   || fail "CPU transfer service did not publish its bound heartbeat; inspect $CPU_LOG"
 
-SCREEN_SESSION=cacheon-mainnet-screen-dispatcher
 SCREEN_LOG=$LOG_ROOT/mainnet-screen-dispatcher-$WORKER_EPOCH.log
 if tmux has-session -t "$SCREEN_SESSION" 2>/dev/null; then
   log "superseding the prior standing screen dispatcher before worker replacement"

@@ -15,6 +15,7 @@ from cacheon.arena_service import ArenaCandidateBinding
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
 from cacheon.engine_tree import inspect_contribution
+from cacheon.eval.b300_arena_provider import B300ResidentScreenLifetime
 from cacheon.eval.b300_screen_stages import B300ScreenExecutionPlan
 from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.oci_backend import runtime_identity_from_preflight
@@ -356,5 +357,31 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
             composition.manifest, candidate, plan
         )
     finally:
-        composition.pipeline.close()
-        composition.executor.manager.close()
+        composition.close()
+
+
+def test_commissioned_resident_factory_builds_real_stock_lifetime(
+    tmp_path: Path,
+) -> None:
+    paths, gpus, _ready = _case(tmp_path)
+    inputs = deployment._authority_inputs(
+        **paths,
+        provisioner=None,
+        provisioned_gpus=gpus,
+    )
+    composition = deployment._compose(inputs)
+    lifetime = None
+    try:
+        lifetime = composition.authorities.resident_screen_factory.create()
+        assert type(lifetime) is B300ResidentScreenLifetime
+        assert composition.build_executor is not composition.resident_executor
+        assert (
+            composition.build_executor.manager
+            is not composition.resident_executor.manager
+        )
+        stock_roots = tuple((inputs.root / "engine-trees").glob("resident-stock-*"))
+        assert len(stock_roots) == 1
+    finally:
+        if lifetime is not None:
+            lifetime.close()
+        composition.close()

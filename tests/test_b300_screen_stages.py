@@ -642,6 +642,64 @@ def test_pipeline_retains_reopens_and_host_regrades_each_stage(
     assert calls.count("graph") == 1
 
 
+def test_resident_pipeline_builds_then_defers_gpu_checks_to_resident_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = default_target_catalog()
+    manifest, candidate, executor, plan, prebuild, _identity = _screen_case(
+        tmp_path,
+        catalog,
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        screen_stages,
+        "_resolve_candidate_tree",
+        lambda *_args, **_kwargs: calls.append("resolve"),
+    )
+    monkeypatch.setattr(
+        screen_stages,
+        "run_oci_prebuild",
+        lambda *_args, **_kwargs: (calls.append("prebuild") or prebuild),
+    )
+    monkeypatch.setattr(
+        OCIEngineExecutor,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resident routing must not boot a per-candidate engine")
+        ),
+    )
+    adapter = B300BuildABIGraphScreenAdapter(
+        catalog=catalog,
+        executor=executor,
+        plan_resolver_digest=_h("plan-resolver"),
+        plan_resolver=lambda _manifest, _candidate: plan,
+        evidence_policy_digest=_h("evidence-policy"),
+        evidence_root=tmp_path / "evidence",
+        execution_mode="resident",
+    )
+    try:
+        results = tuple(
+            adapter.run_screen(
+                manifest,
+                ScreenStagePolicy(stage, 30_000),
+                candidate,
+            )
+            for stage in ("build", "abi", "graph")
+        )
+    finally:
+        adapter.close()
+        executor.manager.close()
+
+    assert tuple(row.grade for row in results) == (
+        ScreenGrade.PASS,
+        ScreenGrade.PASS,
+        ScreenGrade.PASS,
+    )
+    assert calls.count("prebuild") == 1
+    assert calls.count("resolve") >= 3
+
+
 def test_pipeline_order_or_execution_exception_is_no_decision_and_clears_carrier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
