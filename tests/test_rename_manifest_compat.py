@@ -1,4 +1,4 @@
-"""Hash-bound bundle manifests accept only the Cacheon ABI spelling."""
+"""Hash-bound bundle manifests preserve both cutover reader spellings."""
 
 from __future__ import annotations
 
@@ -48,7 +48,21 @@ def test_cacheon_abi_spelling_loads_without_normalizing(tmp_path: Path) -> None:
     assert content_hash(bundle) == committed_digest
 
 
-def test_retired_optima_abi_spelling_is_refused(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path / "bundle", "optima-op-abi-v0")
+def test_pre_cutover_abi_spelling_loads_without_normalizing(tmp_path: Path) -> None:
+    pre_cutover = "optima-op-abi-v0"
+    bundle = _bundle(tmp_path / "bundle", pre_cutover)
+    manifest_bytes = (bundle / "manifest.toml").read_bytes()
+    committed_digest = content_hash(bundle)
+
+    parsed = load_manifest(bundle)
+
+    assert parsed.abi_version == pre_cutover
+    assert parsed.raw["abi_version"] == pre_cutover
+    assert (bundle / "manifest.toml").read_bytes() == manifest_bytes
+    assert content_hash(bundle) == committed_digest
+
+
+def test_unknown_abi_spelling_is_refused(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "bundle", "unknown-op-abi-v0")
     with pytest.raises(ManifestError, match="unsupported abi_version"):
         load_manifest(bundle)
