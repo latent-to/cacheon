@@ -473,10 +473,11 @@ REMOTE
   "${SSH[@]}" \
     "'$REMOTE_PYTHON' '$REMOTE_SERVICE_DEST' install-source --archive '$remote_source_archive' --archive-sha256 '$source_archive_sha' --source-revision '$POD_SOURCE_REVISION'"
   log "rotating the prior immutable commission before binding the new source"
-  "${SSH[@]}" 'bash -s' -- "$OLD_WORKER_EPOCH" "$POD_SOURCE_REVISION" <<'REMOTE'
+  "${SSH[@]}" 'bash -s' -- "$OLD_WORKER_EPOCH" "$POD_SOURCE_REVISION" "$POD_WORKER_IMAGE" <<'REMOTE'
 set -euo pipefail
 registered_old_epoch=$1
 new_revision=$2
+new_image=$3
 bootstrap=/data/cacheon-b300/worker-bootstrap
 remote_root=/data/cacheon-b300/remote-worker
 ready=$bootstrap/ready-receipt.json
@@ -493,17 +494,22 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 epoch = row.get("worker_epoch")
 source = row.get("source")
 revision = source.get("revision") if isinstance(source, dict) else None
+image = row.get("worker_image")
 if not isinstance(epoch, str) or re.fullmatch(r"[0-9a-f]{32}", epoch) is None:
     raise SystemExit("prior READY receipt has malformed worker epoch")
 if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
     raise SystemExit("prior READY receipt has malformed source revision")
+if not isinstance(image, str) or not image:
+    raise SystemExit("prior READY receipt has malformed worker image")
 print(epoch)
 print(revision)
+print(image)
 PY
 }
 
 old_epoch=
 old_revision=
+old_image=
 if [[ -e "$ready" ]]; then
   [[ -f "$ready" && ! -L "$ready" ]] || {
     echo "prior READY receipt is not a regular file" >&2
@@ -512,6 +518,7 @@ if [[ -e "$ready" ]]; then
   readarray -t prior < <(read_identity "$ready")
   old_epoch=${prior[0]}
   old_revision=${prior[1]}
+  old_image=${prior[2]}
 elif [[ -n "$registered_old_epoch" \
         && -f "$bootstrap/retired-commissions/$registered_old_epoch/ready-receipt.json" ]]; then
   readarray -t prior < <(
@@ -519,6 +526,7 @@ elif [[ -n "$registered_old_epoch" \
   )
   old_epoch=${prior[0]}
   old_revision=${prior[1]}
+  old_image=${prior[2]}
 fi
 
 if [[ -z "$old_epoch" ]]; then
@@ -532,7 +540,10 @@ if [[ -n "$registered_old_epoch" && "$registered_old_epoch" != "$old_epoch" ]]; 
   echo "CPU registration and pod READY receipt bind different prior epochs" >&2
   exit 1
 fi
-if [[ "$old_revision" == "$new_revision" ]]; then
+# Same source revision with a different sealed worker image must rotate too:
+# commission-current-pod binds image identity into READY and refuses in-place
+# overwrite (image-only ABI/cutover rollouts hit this path).
+if [[ "$old_revision" == "$new_revision" && "$old_image" == "$new_image" ]]; then
   exit 0
 fi
 

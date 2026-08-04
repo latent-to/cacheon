@@ -532,6 +532,11 @@ def _engine_config(
     if "arfusion" in bindings:
         kwargs["disable_radix_cache"] = True
         kwargs["enable_flashinfer_allreduce_fusion"] = True
+    if not disable_cuda_graph:
+        # SGLang's default 300s scheduler watchdog SIGKILLs ranks mid CUDA-graph
+        # capture on a live resident loop (measured 2026-07-20; reproduced on
+        # mainnet FIFO recommission 2026-08-04 as outer_oci_client_returncode=137).
+        kwargs["watchdog_timeout"] = 1800
     return EngineSessionConfig(
         model_path="/cacheon/input/model",
         dtype="bfloat16",
@@ -991,7 +996,13 @@ def _resident_factory(
             temperature=0.0,
         )
         swap_root = inputs.root / "resident-intake"
-        swap_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Owner retains write for host-side staging; other/execute lets the
+        # non-root OCI --user traverse to a known digest. mode=0o700 made the
+        # intake root pass ST_RDONLY preflight while digest lstat failed with
+        # EACCES, surfaced as "staged swap bundle is absent or writable"
+        # (mainnet FIFO 2026-08-04 after CUDA-graph capture completed).
+        swap_root.mkdir(parents=True, exist_ok=True, mode=0o711)
+        os.chmod(swap_root, 0o711)
         lifetime = make_backend_lifetime_factory(
             executor,
             launch,
