@@ -30,6 +30,7 @@ import io
 import json
 import os
 import re
+import select
 import shutil
 import signal
 import stat
@@ -49,6 +50,8 @@ SCHEMA_ADAPTER_RESULT = "cacheon-b300-adapter-result-v1"
 SCHEMA_RESULT_READY = "cacheon-remote-result-ready-v1"
 SCHEMA_HEARTBEAT = "cacheon-remote-worker-heartbeat-v1"
 SCHEMA_DISPATCH_STATE = "cacheon-remote-dispatch-state-v1"
+SCHEMA_ADAPTER_COMMAND = "cacheon-b300-adapter-command-v1"
+SCHEMA_ADAPTER_CONTROL = "cacheon-b300-adapter-control-v1"
 
 DOMAIN_REGISTRATION = "cacheon.chain.remote-worker-registration.v1"
 DOMAIN_REQUEST = "cacheon.chain.remote-evaluation-request.v1"
@@ -2469,12 +2472,14 @@ def accept_request(args: argparse.Namespace) -> None:
     print("accepted")
 
 
-def _adapter_environment(registration: Mapping[str, Any], request_id: str) -> dict[str, str]:
-    return {
+def _adapter_environment(
+    registration: Mapping[str, Any],
+    request_id: str | None,
+) -> dict[str, str]:
+    environment = {
         "CACHEON_REMOTE_READY_RECEIPT_DIGEST": registration["ready_receipt_digest"],
         "CACHEON_REMOTE_CREDENTIAL_PATH": str(POD_CREDENTIAL),
         "CACHEON_REMOTE_REGISTRATION_PATH": str(POD_REGISTRATION),
-        "CACHEON_REMOTE_REQUEST_ID": request_id,
         "CACHEON_REMOTE_TRANSPORT_IDENTITY_DIGEST": registration[
             "transport_identity_digest"
         ],
@@ -2490,6 +2495,9 @@ def _adapter_environment(registration: Mapping[str, Any], request_id: str) -> di
         "PYTHONDONTWRITEBYTECODE": "1",
         "TMPDIR": "/data/cacheon-b300/remote-worker/tmp",
     }
+    if request_id is not None:
+        environment["CACHEON_REMOTE_REQUEST_ID"] = request_id
+    return environment
 
 
 def infrastructure_result(request: Mapping[str, Any], result_root: Path, failure_code: str) -> None:
@@ -2633,6 +2641,181 @@ def recover_interrupted(registration: Mapping[str, Any]) -> None:
             os.replace(job, completed)
 
 
+def _decode_adapter_control(raw: bytes) -> dict[str, Any]:
+    if not raw or len(raw) > 64 * 1024 or not raw.endswith(b"\n"):
+        fail("persistent adapter emitted a malformed control frame")
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_no_duplicates,
+            parse_float=_reject_constant,
+            parse_constant=_reject_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        fail(f"persistent adapter emitted invalid JSON: {exc}")
+    if (
+        type(value) is not dict
+        or raw != canonical_json_bytes(value) + b"\n"
+        or value.get("schema") != SCHEMA_ADAPTER_CONTROL
+    ):
+        fail("persistent adapter control frame is not canonical")
+    return value
+
+
+class _PersistentAdapterProcess:
+    """One fixed adapter process and commissioned worker per pod epoch."""
+
+    def __init__(
+        self,
+        registration: Mapping[str, Any],
+        *,
+        heartbeat_seconds: int,
+    ) -> None:
+        self.registration = registration
+        self.heartbeat_seconds = heartbeat_seconds
+        self.process: subprocess.Popen[bytes] | None = None
+        self.log_handle: io.BufferedWriter | None = None
+
+    def _heartbeat(self, request_id: str | None, state: str) -> None:
+        atomic_json(
+            POD_ROOT / "heartbeat.json",
+            heartbeat_payload(self.registration, state, request_id),
+            mode=0o400,
+        )
+
+    def _read_control(
+        self,
+        *,
+        deadline: int,
+        request_id: str | None,
+        state: str,
+    ) -> dict[str, Any] | None:
+        process = self.process
+        if process is None or process.stdout is None:
+            return None
+        while int(time.time()) < deadline:
+            if process.poll() is not None:
+                return None
+            remaining = max(0.0, deadline - time.time())
+            timeout = min(float(self.heartbeat_seconds), remaining)
+            readable, _, _ = select.select([process.stdout], [], [], timeout)
+            self._heartbeat(request_id, state)
+            if not readable:
+                continue
+            raw = process.stdout.readline()
+            if not raw:
+                return None
+            try:
+                return _decode_adapter_control(raw)
+            except RemoteWorkerError:
+                return None
+        return None
+
+    def _start(self, *, deadline: int, request_id: str) -> bool:
+        verify_fixed_adapter(self.registration)
+        log_root = POD_ROOT / "logs"
+        log_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.log_handle = (log_root / "persistent-adapter.log").open(
+            "ab", buffering=0
+        )
+        self.process = subprocess.Popen(
+            [
+                self.registration["python_executable"],
+                str(POD_ADAPTER),
+                "--serve",
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=self.log_handle,
+            env=_adapter_environment(self.registration, None),
+            start_new_session=True,
+        )
+        ready = self._read_control(
+            deadline=deadline,
+            request_id=request_id,
+            state="adapter_starting",
+        )
+        if ready != {
+            "schema": SCHEMA_ADAPTER_CONTROL,
+            "state": "ready",
+        }:
+            self.close()
+            return False
+        return True
+
+    def evaluate(
+        self,
+        request: Mapping[str, Any],
+        job_root: Path,
+        result_root: Path,
+        *,
+        deadline: int,
+    ) -> str | None:
+        request_id = request["request_id"]
+        process = self.process
+        if process is None or process.poll() is not None:
+            self.close()
+            if not self._start(deadline=deadline, request_id=request_id):
+                return "adapter_start_failed"
+            process = self.process
+        assert process is not None
+        if process.stdin is None:
+            self.close()
+            return "adapter_start_failed"
+        command = {
+            "operation": "evaluate",
+            "request_dir": str(job_root),
+            "request_id": request_id,
+            "result_dir": str(result_root),
+            "schema": SCHEMA_ADAPTER_COMMAND,
+        }
+        try:
+            process.stdin.write(canonical_json_bytes(command) + b"\n")
+            process.stdin.flush()
+        except (BrokenPipeError, OSError):
+            self.close()
+            return "adapter_exit_nonzero"
+        control = self._read_control(
+            deadline=deadline,
+            request_id=request_id,
+            state="evaluating",
+        )
+        expected = {
+            "request_id": request_id,
+            "schema": SCHEMA_ADAPTER_CONTROL,
+            "state": "completed",
+        }
+        if control == expected:
+            return None
+        timed_out = int(time.time()) >= deadline
+        self.close()
+        return "adapter_timeout" if timed_out else "adapter_exit_nonzero"
+
+    def close(self) -> None:
+        process = self.process
+        self.process = None
+        if process is not None:
+            if process.stdin is not None:
+                with contextlib.suppress(BrokenPipeError, OSError, ValueError):
+                    process.stdin.close()
+            try:
+                process.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=20)
+            if process.stdout is not None:
+                process.stdout.close()
+        if self.log_handle is not None:
+            self.log_handle.close()
+            self.log_handle = None
+
+
 def next_incoming(registration: Mapping[str, Any]) -> tuple[Path, dict[str, Any]] | None:
     incoming = POD_ROOT / "incoming"
     candidates: list[tuple[int, str, Path, dict[str, Any]]] = []
@@ -2671,6 +2854,7 @@ def run_adapter(
     job_root: Path,
     request: Mapping[str, Any],
     heartbeat_seconds: int,
+    adapter_process: _PersistentAdapterProcess | None = None,
 ) -> Path:
     request_id = request["request_id"]
     results = POD_ROOT / "results"
@@ -2687,49 +2871,22 @@ def run_adapter(
         return final
     temporary = results / f".{request_id}.{os.getpid()}"
     temporary.mkdir(mode=0o700)
-    verify_fixed_adapter(registration)
-    log_root = POD_ROOT / "logs"
-    log_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    log_path = log_root / f"{request_id}.log"
-    command = [
-        registration["python_executable"],
-        str(POD_ADAPTER),
-        "--request-dir",
-        str(job_root),
-        "--result-dir",
-        str(temporary),
-    ]
     deadline = min(request["deadline_unix"], int(time.time()) + MAX_JOB_SECONDS)
-    with log_path.open("ab", buffering=0) as output:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            env=_adapter_environment(registration, request_id),
-            start_new_session=True,
+    owns_process = adapter_process is None
+    process = adapter_process or _PersistentAdapterProcess(
+        registration,
+        heartbeat_seconds=heartbeat_seconds,
+    )
+    try:
+        failure = process.evaluate(
+            request,
+            job_root,
+            temporary,
+            deadline=deadline,
         )
-        failure: str | None = None
-        while process.poll() is None:
-            atomic_json(
-                POD_ROOT / "heartbeat.json",
-                heartbeat_payload(registration, "evaluating", request_id),
-                mode=0o400,
-            )
-            if int(time.time()) >= deadline:
-                failure = "adapter_timeout"
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    with contextlib.suppress(ProcessLookupError):
-                        os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=20)
-                break
-            time.sleep(heartbeat_seconds)
-        if failure is None and process.returncode != 0:
-            failure = "adapter_exit_nonzero"
+    finally:
+        if owns_process:
+            process.close()
     if failure is not None:
         shutil.rmtree(temporary, ignore_errors=True)
         infrastructure_result(request, temporary, failure)
@@ -2777,30 +2934,43 @@ def pod_serve(args: argparse.Namespace) -> None:
             fail("another pod worker service already owns this root")
         recover_interrupted(registration)
         append_event(POD_ROOT, "pod_service_started", worker_epoch=registration["worker_epoch"])
-        while True:
-            verify_pod_registration(POD_REGISTRATION)
-            atomic_json(
-                POD_ROOT / "heartbeat.json",
-                heartbeat_payload(registration, "idle", None),
-                mode=0o400,
-            )
-            item = next_incoming(registration)
-            if item is not None:
-                job_root, request = item
-                request_id = request["request_id"]
-                append_event(POD_ROOT, "adapter_started", request_id=request_id)
-                result = run_adapter(registration, job_root, request, args.heartbeat_seconds)
-                publish_result(
-                    registration,
-                    request,
-                    result,
-                    request_root=job_root,
+        adapter_process = _PersistentAdapterProcess(
+            registration,
+            heartbeat_seconds=args.heartbeat_seconds,
+        )
+        try:
+            while True:
+                verify_pod_registration(POD_REGISTRATION)
+                atomic_json(
+                    POD_ROOT / "heartbeat.json",
+                    heartbeat_payload(registration, "idle", None),
+                    mode=0o400,
                 )
-                completed = POD_ROOT / "completed" / request_id
-                if not completed.exists():
-                    os.replace(job_root, completed)
-                append_event(POD_ROOT, "adapter_finished", request_id=request_id)
-            time.sleep(args.poll_seconds)
+                item = next_incoming(registration)
+                if item is not None:
+                    job_root, request = item
+                    request_id = request["request_id"]
+                    append_event(POD_ROOT, "adapter_started", request_id=request_id)
+                    result = run_adapter(
+                        registration,
+                        job_root,
+                        request,
+                        args.heartbeat_seconds,
+                        adapter_process,
+                    )
+                    publish_result(
+                        registration,
+                        request,
+                        result,
+                        request_root=job_root,
+                    )
+                    completed = POD_ROOT / "completed" / request_id
+                    if not completed.exists():
+                        os.replace(job_root, completed)
+                    append_event(POD_ROOT, "adapter_finished", request_id=request_id)
+                time.sleep(args.poll_seconds)
+        finally:
+            adapter_process.close()
 
 
 def heartbeat_status() -> None:

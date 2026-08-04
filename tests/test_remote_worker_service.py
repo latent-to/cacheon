@@ -20,6 +20,10 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     seal_remote_request,
     seal_remote_response,
 )
+from cacheon.chain.evaluation_coordinator import (
+    EvaluationResultEnvelope,
+    EvaluationRun,
+)
 from cacheon.chain.publication import reopen_worker_bundle
 from chainops import cacheon_b300_evaluation_adapter as adapter
 from chainops import remote_worker_service as worker
@@ -270,3 +274,138 @@ def test_local_protocol_digest_matches_typed_dispatcher() -> None:
     assert worker.REMOTE_EVALUATION_PROTOCOL_DIGEST == REMOTE_EVALUATION_PROTOCOL_DIGEST
     parser = worker.build_parser()
     assert "command" not in {action.dest for action in parser._actions}
+
+
+def test_pod_service_reuses_one_adapter_process_for_two_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.pid = 12345
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            del timeout
+            self.returncode = 0
+            return 0
+
+    fake = FakeProcess()
+    starts: list[str] = []
+
+    def start(self, *, deadline, request_id):
+        del deadline
+        starts.append(request_id)
+        self.process = fake
+        return True
+
+    def read_control(self, *, deadline, request_id, state):
+        del deadline, state
+        return {
+            "request_id": request_id,
+            "schema": worker.SCHEMA_ADAPTER_CONTROL,
+            "state": "completed",
+        }
+
+    monkeypatch.setattr(worker._PersistentAdapterProcess, "_start", start)
+    monkeypatch.setattr(
+        worker._PersistentAdapterProcess,
+        "_read_control",
+        read_control,
+    )
+    process = worker._PersistentAdapterProcess({}, heartbeat_seconds=5)
+    request_ids = ("1" * 64, "2" * 64)
+    try:
+        for request_id in request_ids:
+            assert (
+                process.evaluate(
+                    {"request_id": request_id},
+                    tmp_path / request_id,
+                    tmp_path / f".{request_id}.123",
+                    deadline=int(time.time()) + 60,
+                )
+                is None
+            )
+        frames = tuple(
+            json.loads(line)
+            for line in fake.stdin.getvalue().splitlines()
+        )
+    finally:
+        process.close()
+
+    assert starts == [request_ids[0]]
+    assert tuple(frame["request_id"] for frame in frames) == request_ids
+    assert all(
+        frame["schema"] == worker.SCHEMA_ADAPTER_COMMAND
+        and frame["operation"] == "evaluate"
+        for frame in frames
+    )
+
+
+def test_adapter_runtime_does_not_close_worker_between_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (
+        coordinator,
+        claim,
+        service,
+        credential,
+        identity,
+        registration,
+        _request,
+        _request_id,
+        job_dir,
+    ) = _screen_authority(tmp_path)
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.closes = 0
+
+        def run_remote_screen(self, lease, candidate):
+            self.calls += 1
+            receipt = service.screen(candidate)
+            return EvaluationRun(
+                lease,
+                EvaluationResultEnvelope.seal(
+                    lease,
+                    coordinator.readiness,
+                    service,
+                    receipt,
+                ),
+                receipt,
+                "completed",
+            )
+
+        def close(self) -> None:
+            self.closes += 1
+
+    fake_worker = FakeWorker()
+    runtime = object.__new__(adapter._AdapterRuntime)
+    runtime.service = worker
+    runtime.registration = registration
+    runtime.credential = credential
+    runtime.identity = identity
+    runtime.worker = fake_worker
+    runtime.closed = False
+    runtime.verify_current = lambda: None
+    monkeypatch.setattr(adapter, "PUBLICATION_ROOT", tmp_path / "pod-publications")
+    first = tmp_path / "pod-results" / ("." + "1" * 64 + ".123")
+    second = tmp_path / "pod-results" / ("." + "2" * 64 + ".123")
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    try:
+        adapter._run_with_runtime(job_dir, first, runtime)
+        adapter._run_with_runtime(job_dir, second, runtime)
+        assert fake_worker.calls == 2
+        assert fake_worker.closes == 0
+    finally:
+        runtime.close()
+        coordinator._release(claim.lease, reason="test_cleanup")
+    assert fake_worker.closes == 1

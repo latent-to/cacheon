@@ -115,6 +115,7 @@ GRAPH_EVIDENCE_SCHEMA = "cacheon.b300-screen-graph.v1"
 EVIDENCE_MEDIA_TYPE = "application/json"
 
 _PIPELINE_STAGES = ("build", "abi", "graph")
+_PIPELINE_EXECUTION_MODES = frozenset({"isolated", "resident"})
 _TREE_METADATA = "metadata/cacheon_engine_tree.json"
 
 
@@ -765,10 +766,20 @@ class _PipelineCarrier:
     prebuild: OCIPrebuildResult
     abi_reference: EvidenceArtifactRef | None = None
     abi_witness_digest: str | None = None
+    abi_deferred: bool = False
 
 
 class B300BuildABIGraphScreenAdapter:
-    """Strict single-flight build→eager ABI→graph screen coordinator."""
+    """Strict single-flight build→ABI→graph screen coordinator.
+
+    ``isolated`` preserves the ordinary eager and graph launch pair.  A
+    deployment with a standing resident screen lane uses ``resident``: build
+    still produces and reopens the candidate-native carrier, while ABI and
+    graph execution are explicitly deferred to the final resident stage.  The
+    resident swap acknowledgement proves the all-rank slot registration and
+    its read forces graph recapture/replay without tearing down the stock
+    model between arrivals.  These stages are routing-only and never crown.
+    """
 
     def __init__(
         self,
@@ -779,6 +790,7 @@ class B300BuildABIGraphScreenAdapter:
         plan_resolver: B300ScreenPlanResolver,
         evidence_policy_digest: str,
         evidence_root: str | Path,
+        execution_mode: str = "isolated",
     ) -> None:
         if type(catalog) is not TargetCatalog:
             raise B300ScreenStagesError("pipeline catalog is not exact")
@@ -786,6 +798,8 @@ class B300BuildABIGraphScreenAdapter:
             raise B300ScreenStagesError("pipeline executor is not exact")
         if not callable(plan_resolver):
             raise B300ScreenStagesError("pipeline plan resolver is not callable")
+        if execution_mode not in _PIPELINE_EXECUTION_MODES:
+            raise B300ScreenStagesError("pipeline execution mode is invalid")
         self.catalog = catalog
         self.executor = executor
         self.evidence_root = prepare_evidence_root(Path(evidence_root))
@@ -800,11 +814,13 @@ class B300BuildABIGraphScreenAdapter:
             evidence_policy_digest,
             "evidence_policy_digest",
         )
+        self._execution_mode = execution_mode
         self.identity_digest = canonical_digest(
             PIPELINE_SCREEN_SCHEMA,
             {
                 "catalog_digest": self._catalog_digest,
                 "evidence_policy_digest": self._evidence_policy_digest,
+                "execution_mode": self._execution_mode,
                 "executor_policy_digest": self._executor_digest,
                 "plan_resolver_digest": self._plan_resolver_digest,
                 "stages": list(_PIPELINE_STAGES),
@@ -868,7 +884,12 @@ class B300BuildABIGraphScreenAdapter:
             expected = (
                 "build"
                 if self._active is None
-                else ("abi" if self._active.abi_reference is None else "graph")
+                else (
+                    "abi"
+                    if self._active.abi_reference is None
+                    and not self._active.abi_deferred
+                    else "graph"
+                )
             )
             if policy.stage != expected or (
                 self._active is not None
@@ -890,7 +911,15 @@ class B300BuildABIGraphScreenAdapter:
             if policy.stage == "build":
                 return self._run_build(manifest, candidate, started)
             if policy.stage == "abi":
+                if self._execution_mode == "resident":
+                    return self._defer_abi_to_resident(
+                        manifest, candidate, started
+                    )
                 return self._run_abi(manifest, candidate, started)
+            if self._execution_mode == "resident":
+                return self._defer_graph_to_resident(
+                    manifest, candidate, started
+                )
             return self._run_graph(manifest, candidate, started)
 
     def _no_decision(
@@ -1171,6 +1200,92 @@ class B300BuildABIGraphScreenAdapter:
             facts={
                 "artifact_sha256": reference.sha256,
                 "audit_witness_digest": witness.digest,
+            },
+        )
+
+    def _defer_abi_to_resident(
+        self,
+        manifest: ArenaServiceManifest,
+        candidate: ArenaCandidateBinding,
+        started: float,
+    ) -> ScreenStageResult:
+        """Retain the built carrier for the resident all-rank swap check."""
+
+        carrier = self._active
+        assert carrier is not None
+        try:
+            publication = self._reopen_carrier(
+                carrier,
+                candidate,
+                launch=carrier.plan.graph_launch,
+            )
+        except Exception as exc:
+            self._active = None
+            return self._no_decision(
+                manifest,
+                candidate,
+                "abi",
+                "resident_abi_carrier_infrastructure",
+                started,
+                exc,
+            )
+        self._active = replace(carrier, abi_deferred=True)
+        return _stage_result(
+            manifest=manifest,
+            candidate=candidate,
+            stage="abi",
+            grade=ScreenGrade.PASS,
+            reason="resident_abi_deferred",
+            authority_digest=self.identity_digest,
+            started=started,
+            facts={
+                "build_spec_digest": carrier.prebuild.build_spec_digest,
+                "native_publication_digest": publication.publication_digest,
+            },
+        )
+
+    def _defer_graph_to_resident(
+        self,
+        manifest: ArenaServiceManifest,
+        candidate: ArenaCandidateBinding,
+        started: float,
+    ) -> ScreenStageResult:
+        """Close the carrier chain before the resident recapture/read stage."""
+
+        carrier = self._active
+        assert carrier is not None
+        self._active = None
+        try:
+            if not carrier.abi_deferred:
+                raise B300ScreenStagesError(
+                    "resident graph stage lacks its deferred ABI carrier"
+                )
+            publication = self._reopen_carrier(
+                carrier,
+                candidate,
+                launch=carrier.plan.graph_launch,
+            )
+            _reopen_publication(candidate)
+        except Exception as exc:
+            return self._no_decision(
+                manifest,
+                candidate,
+                "graph",
+                "resident_graph_carrier_infrastructure",
+                started,
+                exc,
+            )
+        return _stage_result(
+            manifest=manifest,
+            candidate=candidate,
+            stage="graph",
+            grade=ScreenGrade.PASS,
+            reason="resident_graph_deferred",
+            authority_digest=self.identity_digest,
+            started=started,
+            facts={
+                "build_spec_digest": carrier.prebuild.build_spec_digest,
+                "native_publication_digest": publication.publication_digest,
             },
         )
 

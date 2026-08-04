@@ -84,12 +84,14 @@ from cacheon.eval.oci_backend import (
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
+from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.oci_session_protocol import EngineSessionConfig, SlotAuditPolicy
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_queue import ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentServingScreenStage,
+    make_backend_lifetime_factory,
 )
 from cacheon.eval.runtime_preflight import (
     HOST_RECEIPT_SCHEMA,
@@ -836,31 +838,178 @@ class _CommissionedScreenPlanResolver:
         )
 
 
-def _resident_factory(inputs: _CommissionedInputs) -> B300ResidentScreenFactory:
-    """Build the routing screen lifetime.
+def _resident_factory(
+    inputs: _CommissionedInputs,
+    executor: OCIEngineExecutor,
+    catalog: TargetCatalog,
+    manifest_provider: Callable[[], ArenaServiceManifest],
+) -> B300ResidentScreenFactory:
+    """Build one stock TP4 engine lifetime shared by queued arrivals."""
 
-    Native/rebuild contributions receive the existing explicit qualification
-    waiver before this lane opens an engine.  A swappable contribution cannot
-    borrow a synthetic resident baseline: the unavailable lifetime raises and
-    the provider converts that infrastructure condition to ``NO_DECISION``.
-    """
-
+    if type(executor) is not OCIEngineExecutor or type(catalog) is not TargetCatalog:
+        raise B300ScreenDeploymentError("resident factory inputs are not exact")
+    if not callable(manifest_provider):
+        raise B300ScreenDeploymentError("resident manifest provider is not callable")
     prompts = tuple(prompt for batch in inputs.prompt_batches[:1] for prompt in batch)
 
     def create() -> B300ResidentScreenLifetime:
-        def unavailable(_driver: Callable[[object], object]) -> object:
+        manifest = manifest_provider()
+        if (
+            type(manifest) is not ArenaServiceManifest
+            or manifest.runtime != inputs.runtime
+        ):
             raise B300ScreenDeploymentError(
-                "commission has no separately sealed resident baseline lifetime"
+                "resident service manifest differs from commission"
+            )
+        snapshot = catalog.snapshot()
+        rows = snapshot.get("targets")
+        if not isinstance(rows, list):
+            raise B300ScreenDeploymentError("target catalog snapshot is malformed")
+        target_members = tuple(
+            sorted(
+                {
+                    member
+                    for row in rows
+                    if isinstance(row, dict)
+                    for member in row.get("members", ())
+                    if isinstance(member, str)
+                }
+            )
+        )
+        if not target_members:
+            raise B300ScreenDeploymentError("resident target member set is empty")
+        context = EvaluationStackContext(
+            runtime_digest=inputs.runtime.runtime_digest,
+            base_engine_digest=inputs.runtime.base_engine_digest,
+            arena_digest=manifest.digest,
+            catalog_snapshot=snapshot,
+            catalog_digest=catalog.digest,
+            target_spec_digests=_catalog_specs(catalog),
+        )
+        stock = EvaluationStackManifest(
+            runtime_digest=context.runtime_digest,
+            base_engine_digest=context.base_engine_digest,
+            arena_digest=context.arena_digest,
+            catalog_snapshot=snapshot,
+            catalog_digest=catalog.digest,
+            entries={},
+        )
+        trees_root = inputs.root / "engine-trees"
+        trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        destination = trees_root / f"resident-stock-{stock.digest}"
+        if destination.exists():
+            tree = reopen_materialized_engine_tree(destination)
+        else:
+            tree = materialize_engine_tree(
+                stock,
+                context=context,
+                catalog=catalog,
+                resolver={},
+                destination=destination,
+            )
+        if tree.stack_digest != stock.digest or tree.runtime_manifest is not None:
+            raise B300ScreenDeploymentError(
+                "resident stock tree differs from the empty commissioned stack"
             )
 
+        policy = inputs.device_policy
+        hardware = LogicalHardwareSpec(
+            visible_gpu_count=GPU_COUNT,
+            architecture=ARCHITECTURE,
+            topology_class=inputs.runtime.topology_class,
+            topology_digest=inputs.topology_digest,
+            tp_size=TP_SIZE,
+            ep_size=1,
+            dp_size=1,
+            device_policy_digest=policy.policy_sha256,
+        )
+        physical = PhysicalHardwareBinding(
+            physical_gpu_ids=tuple(str(gpu.physical_id) for gpu in inputs.gpus),
+            architecture=ARCHITECTURE,
+            topology_class=inputs.runtime.topology_class,
+            topology_digest=inputs.topology_digest,
+            tp_size=TP_SIZE,
+            ep_size=1,
+            dp_size=1,
+            device_policy_digest=policy.policy_sha256,
+        )
+        native = _native_build(
+            tree.tree_digest,
+            inputs.preflight,
+            executor.config.prebuild.policy,
+        )
+        binding = TrustedLaunchBinding(
+            materialized_tree_root=tree.root,
+            controller_distribution_digest=inputs.controller_distribution_digest,
+            native_build_spec=native,
+            runtime_preflight_receipt=inputs.preflight,
+            physical_hardware=physical,
+        )
+        config = _engine_config(target_members, disable_cuda_graph=False)
+        launch = EngineLaunchSpec(
+            runtime_digest=inputs.runtime.runtime_digest,
+            base_engine_digest=inputs.runtime.base_engine_digest,
+            arena_digest=manifest.digest,
+            stack_digest=tree.stack_digest,
+            tree_digest=tree.tree_digest,
+            image_digest=inputs.preflight.image_digest,
+            platform_digest=inputs.preflight.platform_digest,
+            controller_distribution_digest=inputs.controller_distribution_digest,
+            worker_distribution_digest=inputs.preflight.worker_distribution_digest,
+            model_revision_digest=inputs.runtime.model_revision_digest,
+            model_manifest_digest=inputs.runtime.model_manifest_digest,
+            model_content_digest=inputs.runtime.model_content_digest,
+            validator_overlay_digest=inputs.runtime.validator_overlay_digest,
+            engine_config_digest=config.digest,
+            seccomp_policy_digest=_file_sha256(
+                executor.config.prebuild.seccomp_profile
+            ),
+            resource_policy_digest=(
+                executor.config.prebuild.policy.resource_policy_digest
+            ),
+            native_build_spec_digest=native.digest,
+            hardware=hardware,
+        )
+        mount = TrustedArenaModelMountReceipt.capture(
+            inputs.model_root,
+            arena_digest=manifest.digest,
+            model_revision_digest=inputs.runtime.model_revision_digest,
+            model_manifest_digest=inputs.runtime.model_manifest_digest,
+            model_content_digest=inputs.runtime.model_content_digest,
+        )
+        plan = ResidentSessionPlan(
+            launch_digest=launch.digest,
+            expected_engine_config_digest=config.digest,
+            engine_config=config,
+            expected_preflight=expected_runtime_preflight(
+                launch, inputs.preflight
+            ),
+            max_swaps=10_000,
+            max_batches=100_000,
+            max_new_tokens=4,
+            top_logprobs_num=0,
+            temperature=0.0,
+        )
+        swap_root = inputs.root / "resident-intake"
+        swap_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lifetime = make_backend_lifetime_factory(
+            executor,
+            launch,
+            binding,
+            mount,
+            plan,
+            swap_intake_root=swap_root,
+            deadline_provider=lambda: float(executor.manager.clock())
+            + 30 * 24 * 60 * 60,
+        )
         lane = ResidentScreenLane(
-            unavailable,
+            lifetime,
             prompts=prompts,
-            policy=ScreenPolicy(),
+            policy=ScreenPolicy(max_candidates_per_lifetime=1_000),
             verdict_timeout_s=3600.0,
             close_timeout_s=1800.0,
         )
-        stage = ResidentServingScreenStage(lane, inputs.root / "resident-intake")
+        stage = ResidentServingScreenStage(lane, swap_root)
         return B300ResidentScreenLifetime(stage, lane.close)
 
     return B300ResidentScreenFactory(
@@ -874,32 +1023,56 @@ def _resident_factory(inputs: _CommissionedInputs) -> B300ResidentScreenFactory:
 class _Composition:
     manifest: ArenaServiceManifest
     authorities: B300ScreenDeploymentAuthorities
-    executor: OCIEngineExecutor
+    build_executor: OCIEngineExecutor
+    resident_executor: OCIEngineExecutor
     pipeline: B300BuildABIGraphScreenAdapter
+
+    def close(self) -> None:
+        self.pipeline.close()
+        self.build_executor.manager.close()
+        self.resident_executor.manager.close()
 
 
 def _compose(inputs: _CommissionedInputs) -> _Composition:
     catalog = default_target_catalog()
-    executor = _build_executor(inputs.root, inputs.preflight, inputs.device_policy)
-    resolver = _CommissionedScreenPlanResolver(inputs, executor, catalog)
+    build_executor = _build_executor(
+        inputs.root,
+        inputs.preflight,
+        inputs.device_policy,
+        executor_id="b300-screen-build",
+    )
+    resident_executor = _build_executor(
+        inputs.root,
+        inputs.preflight,
+        inputs.device_policy,
+        executor_id="b300-screen-resident",
+    )
+    resolver = _CommissionedScreenPlanResolver(inputs, build_executor, catalog)
     static = B300StaticScreenAdapter(catalog)
     pipeline = B300BuildABIGraphScreenAdapter(
         catalog=catalog,
-        executor=executor,
+        executor=build_executor,
         plan_resolver_digest=inputs.plan_resolver_digest,
         plan_resolver=resolver,
         evidence_policy_digest=inputs.evidence_policy_digest,
         evidence_root=inputs.root / "screen-evidence",
+        execution_mode="resident",
     )
     handlers = compose_b300_non_serving_screen_handlers(
         static,
         pipeline,
-        pipeline_resource_ids=("b300-screen-executor",),
+        pipeline_resource_ids=("b300-screen-build",),
     )
+    manifest_box: list[ArenaServiceManifest] = []
     authorities = B300ScreenDeploymentAuthorities(
         runtime_identity=inputs.runtime,
         screen_handlers=handlers,
-        resident_screen_factory=_resident_factory(inputs),
+        resident_screen_factory=_resident_factory(
+            inputs,
+            resident_executor,
+            catalog,
+            lambda: manifest_box[0],
+        ),
         qualification=inputs.declared_qualification,
     )
     manifest = ArenaServiceManifest(
@@ -938,7 +1111,14 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
         ),
         provider_digest=b300_arena_provider_digest(authorities),
     )
-    return _Composition(manifest, authorities, executor, pipeline)
+    manifest_box.append(manifest)
+    return _Composition(
+        manifest,
+        authorities,
+        build_executor,
+        resident_executor,
+        pipeline,
+    )
 
 
 def _prompt_batches(value: object) -> tuple[tuple[str, ...], ...]:
@@ -1213,9 +1393,12 @@ def _derive_inputs(
     resident_factory_digest = canonical_digest(
         "cacheon.eval.b300-resident-routing-factory.v1",
         {
+            "candidate_limit_per_lifetime": 1_000,
+            "engine_mode": "stock-tp4-graph-resident",
+            "lifetime_deadline_seconds": 30 * 24 * 60 * 60,
             "native_rebuild_route": "qualification-waiver",
             "prompt_authority_sha256": prompt_identity["sha256"],
-            "swappable_without_baseline": "no-decision",
+            "swappable_route": "all-rank-swap-recapture-read",
         },
     )
 
@@ -1511,8 +1694,7 @@ def materialize_b300_screen_identities(
         }
     finally:
         if composition is not None:
-            composition.pipeline.close()
-            composition.executor.manager.close()
+            composition.close()
 
 
 def _runtime_from_dict(value: object) -> ArenaRuntimeIdentity:
@@ -1579,16 +1761,14 @@ class _CommissionedB300ScreenWorker(B300MainnetWorker):
         try:
             super().__init__(composition.manifest, composition.authorities, readiness)
         except BaseException:
-            composition.pipeline.close()
-            composition.executor.manager.close()
+            composition.close()
             raise
 
     def close(self) -> None:
         try:
             super().close()
         finally:
-            self._commissioned_composition.pipeline.close()
-            self._commissioned_composition.executor.manager.close()
+            self._commissioned_composition.close()
 
 
 def _ref_path(refs: dict[str, object], name: str) -> Path:
@@ -1712,8 +1892,7 @@ def build_commissioned_b300_screen_worker(
         return worker
     finally:
         if composition is not None:
-            composition.pipeline.close()
-            composition.executor.manager.close()
+            composition.close()
 
 
 def _parser() -> argparse.ArgumentParser:

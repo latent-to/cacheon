@@ -81,6 +81,14 @@ The queue may reuse a preceding stock bracket under policy and withdraws the lan
 stock canary leaves tolerance. Screening remains serialized and routing-only. Its rates
 cannot be copied into a qualification witness, and its PASS cannot crown.
 
+A commissioned standing-resident deployment must not boot separate eager and graph model
+lifetimes for every arrival. It performs the immutable native build first, records typed
+ABI/graph carrier deferrals in their fixed stage positions, and resolves the all-rank slot
+registration, graph recapture/replay, and abbreviated speed check together in the final
+resident swap/read. The deferrals are non-crown routing receipts, not correctness or graph
+evidence. Full qualification still supplies the independent eager audit, numerical judge,
+and crownable graph evidence.
+
 Sealed AOT device artifacts, dependency patches, native-source rebuilds, and setup hooks
 are deliberately non-swappable. The bridge records an explicit waiver and routes that
 work to full qualification. A waiver is not a performance PASS; qualification decides

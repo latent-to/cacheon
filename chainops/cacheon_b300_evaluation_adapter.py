@@ -46,6 +46,8 @@ PROCESSING_ROOT = Path("/data/cacheon-b300/remote-worker/processing")
 RESULTS_ROOT = Path("/data/cacheon-b300/remote-worker/results")
 MAX_PUBLICATION_BYTES = 4 * 1024 * 1024 * 1024
 NATIVE_ARTIFACT_MANIFEST = ".cacheon-native-artifact.json"
+ADAPTER_COMMAND_SCHEMA = "cacheon-b300-adapter-command-v1"
+ADAPTER_CONTROL_SCHEMA = "cacheon-b300-adapter-control-v1"
 
 
 class AdapterError(RuntimeError):
@@ -320,14 +322,75 @@ def _file_sha256(path: Path) -> str:
             digest.update(chunk)
 
 
-def _run(request_dir: Path, result_dir: Path) -> None:
-    service = _load_service()
-    registration = service.verify_registration(service.load_json(REGISTRATION_PATH))
-    ready = service.verify_ready_receipt(service.load_json(READY_RECEIPT_PATH))
-    if ready["receipt_digest"] != registration["ready_receipt_digest"]:
-        raise AdapterError("READY receipt differs from registration")
-    source = _source_from_ready(ready)
-    sys.path.insert(0, str(source))
+class _AdapterRuntime:
+    """One commissioned worker process retained across sequential requests."""
+
+    def __init__(self) -> None:
+        service = _load_service()
+        registration = service.verify_registration(
+            service.load_json(REGISTRATION_PATH)
+        )
+        ready = service.verify_ready_receipt(
+            service.load_json(READY_RECEIPT_PATH)
+        )
+        if ready["receipt_digest"] != registration["ready_receipt_digest"]:
+            raise AdapterError("READY receipt differs from registration")
+        source = _source_from_ready(ready)
+        if str(source) not in sys.path:
+            sys.path.insert(0, str(source))
+
+        from cacheon.chain.remote_evaluation_dispatcher import (
+            RemoteWorkerCredential,
+            RemoteWorkerTransportIdentity,
+        )
+        from cacheon.eval.b300_screen_deployment import (
+            build_commissioned_b300_screen_worker,
+        )
+
+        self.service = service
+        self.registration = registration
+        self.ready = ready
+        self.source = source
+        self.credential = RemoteWorkerCredential(
+            registration["credential_id"], CREDENTIAL_PATH.read_bytes()
+        )
+        self.identity = RemoteWorkerTransportIdentity(
+            **registration["transport_identity"]
+        )
+        self.worker = build_commissioned_b300_screen_worker(
+            registration, ready
+        )
+        self.closed = False
+
+    def verify_current(self) -> None:
+        registration = self.service.verify_registration(
+            self.service.load_json(REGISTRATION_PATH)
+        )
+        ready = self.service.verify_ready_receipt(
+            self.service.load_json(READY_RECEIPT_PATH)
+        )
+        if registration != self.registration or ready != self.ready:
+            raise AdapterError(
+                "commissioned registration or READY authority changed"
+            )
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.worker.close()
+        self.closed = True
+
+
+def _run_with_runtime(
+    request_dir: Path,
+    result_dir: Path,
+    runtime: _AdapterRuntime,
+) -> None:
+    if type(runtime) is not _AdapterRuntime or runtime.closed:
+        raise AdapterError("persistent adapter runtime is unavailable")
+    runtime.verify_current()
+    service = runtime.service
+    registration = runtime.registration
 
     from cacheon.arena_service import ArenaCandidateBinding, ArenaScreenReceipt
     from cacheon.chain.evaluation_leases import (
@@ -336,13 +399,8 @@ def _run(request_dir: Path, result_dir: Path) -> None:
     )
     from cacheon.chain.remote_evaluation_dispatcher import (
         RemoteEvaluationRequest,
-        RemoteWorkerCredential,
-        RemoteWorkerTransportIdentity,
         seal_remote_response,
         verify_remote_request,
-    )
-    from cacheon.eval.b300_screen_deployment import (
-        build_commissioned_b300_screen_worker,
     )
     from cacheon.eval.qualification_intake import QualificationReservation
 
@@ -356,10 +414,8 @@ def _run(request_dir: Path, result_dir: Path) -> None:
         maximum=64 << 20,
     )
     wire = RemoteEvaluationRequest.from_dict(wire_value)
-    credential = RemoteWorkerCredential(
-        registration["credential_id"], CREDENTIAL_PATH.read_bytes()
-    )
-    identity = RemoteWorkerTransportIdentity(**registration["transport_identity"])
+    credential = runtime.credential
+    identity = runtime.identity
     verify_remote_request(wire, identity, credential)
     lease_value = outer["lease"]
     lease = EvaluationLease(
@@ -388,11 +444,7 @@ def _run(request_dir: Path, result_dir: Path) -> None:
         or lease.reservation_ids != (reservation.reservation_digest,)
     ):
         raise AdapterError("reconstructed candidate differs from authenticated lease")
-    worker = build_commissioned_b300_screen_worker(registration, ready)
-    try:
-        evaluation = worker.run_remote_screen(lease, candidate)
-    finally:
-        worker.close()
+    evaluation = runtime.worker.run_remote_screen(lease, candidate)
     receipt = evaluation.payload
     if type(receipt) is not ArenaScreenReceipt:
         raise AdapterError("B300 screen worker returned an untyped receipt")
@@ -412,11 +464,142 @@ def _run(request_dir: Path, result_dir: Path) -> None:
     os.chmod(output, 0o400)
 
 
+def _run(request_dir: Path, result_dir: Path) -> None:
+    runtime = _AdapterRuntime()
+    try:
+        _run_with_runtime(request_dir, result_dir, runtime)
+    finally:
+        runtime.close()
+
+
+def _decode_command(raw: bytes) -> dict[str, object]:
+    if not raw or len(raw) > 64 * 1024 or not raw.endswith(b"\n"):
+        raise AdapterError("adapter command frame is malformed")
+
+    def pairs(rows: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in rows:
+            if key in result:
+                raise AdapterError("adapter command repeats a JSON key")
+            result[key] = value
+        return result
+
+    def reject_number(value: str) -> None:
+        raise AdapterError(f"adapter command contains invalid number {value}")
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=pairs,
+            parse_float=reject_number,
+            parse_constant=reject_number,
+        )
+    except AdapterError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise AdapterError(f"adapter command is invalid JSON: {exc}") from None
+    if type(value) is not dict or raw != _canonical_json(value) + b"\n":
+        raise AdapterError("adapter command is not canonical JSON")
+    return value
+
+
+def _emit_control(
+    state: str,
+    request_id: str | None = None,
+    *,
+    output=None,
+) -> None:
+    value: dict[str, object] = {
+        "schema": ADAPTER_CONTROL_SCHEMA,
+        "state": state,
+    }
+    if request_id is not None:
+        value["request_id"] = request_id
+    stream = sys.stdout.buffer if output is None else output
+    stream.write(_canonical_json(value) + b"\n")
+    stream.flush()
+
+
+def _serve() -> int:
+    # Reserve the original stdout exclusively for the tiny control protocol.
+    # Imported controller/runtime code is redirected to stderr so an
+    # incidental diagnostic cannot be mistaken for a completed request.
+    control_output = sys.stdout.buffer
+    sys.stdout = sys.stderr
+    runtime = _AdapterRuntime()
+    try:
+        _emit_control("ready", output=control_output)
+        for raw in sys.stdin.buffer:
+            request_id: str | None = None
+            try:
+                command = _decode_command(raw)
+                if set(command) != {
+                    "operation",
+                    "request_dir",
+                    "request_id",
+                    "result_dir",
+                    "schema",
+                } or command.get("schema") != ADAPTER_COMMAND_SCHEMA:
+                    raise AdapterError("adapter command fields are not closed")
+                if command.get("operation") != "evaluate":
+                    raise AdapterError("adapter command operation is unsupported")
+                request_id = command.get("request_id")  # type: ignore[assignment]
+                if (
+                    not isinstance(request_id, str)
+                    or len(request_id) != 64
+                    or any(character not in "0123456789abcdef" for character in request_id)
+                ):
+                    raise AdapterError("adapter command request ID is malformed")
+                request_dir = _closed_path(
+                    command.get("request_dir"),  # type: ignore[arg-type]
+                    PROCESSING_ROOT,
+                    "request directory",
+                    temporary=False,
+                )
+                result_dir = _closed_path(
+                    command.get("result_dir"),  # type: ignore[arg-type]
+                    RESULTS_ROOT,
+                    "result directory",
+                    temporary=True,
+                )
+                if request_dir.name != request_id:
+                    raise AdapterError("adapter command names another request")
+                if (
+                    request_dir.is_symlink()
+                    or not request_dir.is_dir()
+                    or result_dir.is_symlink()
+                    or not result_dir.is_dir()
+                    or any(result_dir.iterdir())
+                ):
+                    raise AdapterError("request/result carrier state is invalid")
+                _run_with_runtime(request_dir, result_dir, runtime)
+            except Exception as exc:
+                print(
+                    "CACHEON-B300-ADAPTER-ERROR: "
+                    f"request={request_id or 'unknown'} type={type(exc).__name__}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _emit_control("failed", request_id, output=control_output)
+                return 2
+            _emit_control("completed", request_id, output=control_output)
+        return 0
+    finally:
+        runtime.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--request-dir", required=True)
-    parser.add_argument("--result-dir", required=True)
+    parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--request-dir")
+    parser.add_argument("--result-dir")
     args = parser.parse_args(argv)
+    if args.serve:
+        if args.request_dir is not None or args.result_dir is not None:
+            parser.error("--serve does not accept one-shot request paths")
+        return _serve()
+    if args.request_dir is None or args.result_dir is None:
+        parser.error("one-shot mode requires --request-dir and --result-dir")
     request_dir = _closed_path(
         args.request_dir, PROCESSING_ROOT, "request directory", temporary=False
     )
