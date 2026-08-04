@@ -472,6 +472,103 @@ REMOTE
   "${SCP[@]}" -- "$source_archive" "root@$POD_HOST:$remote_source_archive"
   "${SSH[@]}" \
     "'$REMOTE_PYTHON' '$REMOTE_SERVICE_DEST' install-source --archive '$remote_source_archive' --archive-sha256 '$source_archive_sha' --source-revision '$POD_SOURCE_REVISION'"
+  log "rotating the prior immutable commission before binding the new source"
+  "${SSH[@]}" 'bash -s' -- "$OLD_WORKER_EPOCH" "$POD_SOURCE_REVISION" <<'REMOTE'
+set -euo pipefail
+registered_old_epoch=$1
+new_revision=$2
+bootstrap=/data/cacheon-b300/worker-bootstrap
+remote_root=/data/cacheon-b300/remote-worker
+ready=$bootstrap/ready-receipt.json
+epoch_file=$remote_root/commission-worker-epoch
+
+read_identity() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    row = json.load(handle)
+epoch = row.get("worker_epoch")
+source = row.get("source")
+revision = source.get("revision") if isinstance(source, dict) else None
+if not isinstance(epoch, str) or re.fullmatch(r"[0-9a-f]{32}", epoch) is None:
+    raise SystemExit("prior READY receipt has malformed worker epoch")
+if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+    raise SystemExit("prior READY receipt has malformed source revision")
+print(epoch)
+print(revision)
+PY
+}
+
+old_epoch=
+old_revision=
+if [[ -e "$ready" ]]; then
+  [[ -f "$ready" && ! -L "$ready" ]] || {
+    echo "prior READY receipt is not a regular file" >&2
+    exit 1
+  }
+  readarray -t prior < <(read_identity "$ready")
+  old_epoch=${prior[0]}
+  old_revision=${prior[1]}
+elif [[ -n "$registered_old_epoch" \
+        && -f "$bootstrap/retired-commissions/$registered_old_epoch/ready-receipt.json" ]]; then
+  readarray -t prior < <(
+    read_identity "$bootstrap/retired-commissions/$registered_old_epoch/ready-receipt.json"
+  )
+  old_epoch=${prior[0]}
+  old_revision=${prior[1]}
+fi
+
+if [[ -z "$old_epoch" ]]; then
+  [[ ! -e "$epoch_file" ]] || {
+    echo "commission epoch exists without a recoverable READY receipt" >&2
+    exit 1
+  }
+  exit 0
+fi
+if [[ -n "$registered_old_epoch" && "$registered_old_epoch" != "$old_epoch" ]]; then
+  echo "CPU registration and pod READY receipt bind different prior epochs" >&2
+  exit 1
+fi
+if [[ "$old_revision" == "$new_revision" ]]; then
+  exit 0
+fi
+
+archive=$bootstrap/retired-commissions/$old_epoch
+install -d -m 0700 "$bootstrap/retired-commissions" "$archive"
+
+move_once() {
+  source=$1
+  destination=$2
+  if [[ -e "$source" ]]; then
+    [[ ! -e "$destination" ]] || {
+      echo "commission rotation collision: $destination" >&2
+      exit 1
+    }
+    mv -- "$source" "$destination"
+  fi
+}
+
+if [[ -e "$epoch_file" ]]; then
+  [[ -f "$epoch_file" && ! -L "$epoch_file" ]] || exit 1
+  [[ "$(tr -d '\n' <"$epoch_file")" == "$old_epoch" ]] || {
+    echo "commission epoch file differs from prior READY receipt" >&2
+    exit 1
+  }
+fi
+move_once "$remote_root/commissioned" "$archive/commissioned"
+move_once "$epoch_file" "$archive/commission-worker-epoch"
+move_once "$ready" "$archive/ready-receipt.json"
+
+[[ -f "$archive/ready-receipt.json" \
+   && -f "$archive/commission-worker-epoch" \
+   && -d "$archive/commissioned" ]] || {
+  echo "prior commission rotation is incomplete" >&2
+  exit 1
+}
+REMOTE
   log "commissioning current pod identities without running GPU work"
   "${SSH[@]}" \
     "'$REMOTE_PYTHON' '$REMOTE_SERVICE_DEST' commission-current-pod --source-root '$POD_SOURCE_ROOT' --source-revision '$POD_SOURCE_REVISION' --runtime-root '$POD_RUNTIME_ROOT' --model-root '$POD_MODEL_ROOT' --model-receipt '$POD_MODEL_RECEIPT' --worker-image '$POD_WORKER_IMAGE' --python-executable '$REMOTE_PYTHON' --lane-devices '$LANE_DEVICES' --pod-endpoint '$POD_HOST:$POD_PORT' --output '$REMOTE_READY'"
