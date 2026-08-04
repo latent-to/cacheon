@@ -1702,7 +1702,8 @@ def build_commissioned_b300_screen_worker(
             != ready_receipt.get("receipt_digest")
             or registration.get("worker_epoch")
             != ready_receipt.get("worker_epoch")
-            or registration.get("service_identity") != composition.manifest.digest
+            or registration.get("service_identity")
+            != composition.manifest.service_id
             or registration.get("worker_readiness") != readiness.to_dict()
             or registration.get("worker_readiness_digest") != readiness.digest
             or type(lane_devices) is not list
