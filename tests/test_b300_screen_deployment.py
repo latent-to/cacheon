@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -357,6 +358,38 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
             composition.manifest, candidate, plan
         )
     finally:
+        composition.close()
+
+
+def test_graph_engine_config_extends_sglang_watchdog_past_cuda_graph_capture() -> None:
+    eager = deployment._engine_config(("msa",), disable_cuda_graph=True)
+    graph = deployment._engine_config(("msa",), disable_cuda_graph=False)
+    assert "watchdog_timeout" not in eager.engine_kwargs
+    assert graph.engine_kwargs["watchdog_timeout"] == 1800
+
+
+def test_resident_intake_is_traversable_by_non_owner(tmp_path: Path) -> None:
+    paths, gpus, _ready = _case(tmp_path)
+    inputs = deployment._authority_inputs(
+        **paths,
+        provisioner=None,
+        provisioned_gpus=gpus,
+    )
+    composition = deployment._compose(inputs)
+    lifetime = None
+    try:
+        lifetime = composition.authorities.resident_screen_factory.create()
+        intake = inputs.root / "resident-intake"
+        assert intake.is_dir()
+        assert stat.S_IMODE(intake.stat().st_mode) == 0o711
+        # exist_ok must not leave a prior private root in place
+        intake.chmod(0o700)
+        lifetime.close()
+        lifetime = composition.authorities.resident_screen_factory.create()
+        assert stat.S_IMODE(intake.stat().st_mode) == 0o711
+    finally:
+        if lifetime is not None:
+            lifetime.close()
         composition.close()
 
 
