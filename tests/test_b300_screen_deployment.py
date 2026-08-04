@@ -245,6 +245,7 @@ def test_materialize_and_replay_exact_service_identity(
     assert manifest.runtime.gpu_count == 4
     assert manifest.runtime.tensor_parallel_size == 4
     assert manifest.runtime.target_architecture == "sm103"
+    assert manifest.runtime.topology_digest == _h("sealed-lane")
 
     monkeypatch.setattr(deployment, "DEFAULT_OUTPUT_ROOT", output)
     registration = {
