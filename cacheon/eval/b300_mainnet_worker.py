@@ -16,11 +16,13 @@ from __future__ import annotations
 import threading
 
 from cacheon.arena_service import (
+    ArenaCandidateBinding,
     ArenaQualificationWork,
     ArenaScreenReceipt,
     ArenaService,
     ArenaServiceManifest,
 )
+from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.evaluation_coordinator import (
     SYSTEMIC_QUALIFICATION_REASONS,
     ClaimedQualificationEvaluation,
@@ -33,6 +35,7 @@ from cacheon.chain.evaluation_coordinator import (
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
     B300DeploymentAuthorities,
+    B300ScreenDeploymentAuthorities,
 )
 from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.qualification import QualificationDecision
@@ -57,12 +60,15 @@ class B300MainnetWorker:
     def __init__(
         self,
         manifest: ArenaServiceManifest,
-        authorities: B300DeploymentAuthorities,
+        authorities: B300DeploymentAuthorities | B300ScreenDeploymentAuthorities,
         readiness: WorkerReadiness,
     ) -> None:
         if type(manifest) is not ArenaServiceManifest:
             raise B300MainnetWorkerError("worker manifest is not exactly typed")
-        if type(authorities) is not B300DeploymentAuthorities:
+        if type(authorities) not in {
+            B300DeploymentAuthorities,
+            B300ScreenDeploymentAuthorities,
+        }:
             raise B300MainnetWorkerError("worker deployment authorities are not exact")
         if type(readiness) is not WorkerReadiness:
             raise B300MainnetWorkerError("worker readiness is not exactly typed")
@@ -113,6 +119,42 @@ class B300MainnetWorker:
             )
             return EvaluationRun(job.lease, envelope, payload, disposition)
 
+    def run_remote_screen(
+        self,
+        lease: EvaluationLease,
+        candidate: ArenaCandidateBinding,
+    ) -> EvaluationRun:
+        """Run the path-free authenticated screen DTO used by the pod codec.
+
+        Remote transport does not possess the CPU-only ``IntakeReservation``
+        needed to recreate ``ClaimedScreenEvaluation``.  The lease already
+        commits the sole qualification reservation, so this narrow entrypoint
+        verifies that exact binding and returns the ordinary sealed run.
+        """
+
+        if (
+            type(lease) is not EvaluationLease
+            or type(candidate) is not ArenaCandidateBinding
+            or lease.stage != "screen"
+            or lease.reservation_ids
+            != (candidate.reservation.reservation_digest,)
+        ):
+            raise B300MainnetWorkerError(
+                "remote screen lease differs from the exact candidate"
+            )
+        with self._lock:
+            if self._closed:
+                raise B300MainnetWorkerError("B300 mainnet worker is closed")
+            self._validate_readiness(self.readiness, self.service)
+            payload = self._screen_candidate(candidate)
+            envelope = EvaluationResultEnvelope.seal(
+                lease,
+                self.readiness,
+                self.service,
+                payload,
+            )
+            return EvaluationRun(lease, envelope, payload, "completed")
+
     def close(self) -> None:
         """Permanently release the resident provider lifetime."""
 
@@ -132,12 +174,18 @@ class B300MainnetWorker:
         self.close()
 
     def _run_screen(self, job: ClaimedScreenEvaluation) -> ArenaScreenReceipt:
-        receipt = self.service.screen(job.candidate)
+        return self._screen_candidate(job.candidate)
+
+    def _screen_candidate(
+        self,
+        candidate: ArenaCandidateBinding,
+    ) -> ArenaScreenReceipt:
+        receipt = self.service.screen(candidate)
         if (
             type(receipt) is not ArenaScreenReceipt
             or receipt.service_digest != self.service.identity
-            or receipt.candidate_digest != job.candidate.digest
-            or receipt.screen_attempt != job.candidate.screen_attempt
+            or receipt.candidate_digest != candidate.digest
+            or receipt.screen_attempt != candidate.screen_attempt
         ):
             raise B300MainnetWorkerError(
                 "screen result changed the exact leased candidate"
@@ -229,7 +277,7 @@ def run_b300_mainnet_job(
     job: ClaimedScreenEvaluation | ClaimedQualificationEvaluation,
     *,
     manifest: ArenaServiceManifest,
-    authorities: B300DeploymentAuthorities,
+    authorities: B300DeploymentAuthorities | B300ScreenDeploymentAuthorities,
     readiness: WorkerReadiness,
 ) -> EvaluationRun:
     """One-shot in-process entrypoint for a deployment-owned sealed adapter."""

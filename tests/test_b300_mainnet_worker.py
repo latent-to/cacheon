@@ -85,7 +85,7 @@ def _h(label: str) -> str:
 
 def _runtime() -> ArenaRuntimeIdentity:
     return ArenaRuntimeIdentity(
-        arena_id="production-b300-tp8",
+        arena_id="production-b300-tp4",
         runtime_digest=_h("runtime"),
         base_engine_digest=_h("base-engine"),
         validator_overlay_digest=_h("validator-overlay"),
@@ -93,11 +93,11 @@ def _runtime() -> ArenaRuntimeIdentity:
         model_revision_digest=_h("model-revision"),
         model_manifest_digest=_h("model-manifest"),
         model_content_digest=_h("model-content"),
-        target_architecture="sm120",
+        target_architecture="sm103",
         topology_class="nvlink-domain",
         topology_digest=_h("topology"),
-        gpu_count=8,
-        tensor_parallel_size=8,
+        gpu_count=4,
+        tensor_parallel_size=4,
     )
 
 
@@ -184,7 +184,7 @@ def executor_factory(tmp_path: Path):
                 runtime,
             ),
             DeviceStatePolicy(
-                expected_gpus=tuple(_gpu(index, role) for index in range(8)),
+                expected_gpus=tuple(_gpu(index, role) for index in range(4)),
                 required_consecutive_idle_samples=2,
                 poll_interval_s=0.05,
                 ready_poll_interval_s=0.05,
@@ -576,6 +576,27 @@ def test_screen_job_runs_all_real_provider_stages_and_seals_result(
         result.envelope.verify(claim.lease, readiness, worker.service, result.payload)
     finally:
         worker.close()
+    assert resident.closed == 1
+
+
+def test_remote_screen_dto_needs_no_cpu_intake_reservation(
+    tmp_path: Path,
+    executor_factory,
+) -> None:
+    authorities, resident, _builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(authorities)
+    readiness = _readiness(manifest, authorities)
+    claim = _screen_claim(tmp_path / "candidate", manifest)
+    worker = B300MainnetWorker(manifest, authorities, readiness)
+    try:
+        result = worker.run_remote_screen(claim.lease, claim.candidate)
+    finally:
+        worker.close()
+
+    assert type(result) is EvaluationRun
+    assert result.lease is claim.lease
+    assert result.payload.candidate_digest == claim.candidate.digest
+    assert result.envelope.payload_digest == result.payload.digest
     assert resident.closed == 1
 
 

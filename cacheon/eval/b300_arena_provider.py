@@ -1,4 +1,4 @@
-"""Closed B300/TP8 composition root for arena screening and qualification.
+"""Closed B300/TP4 composition root for arena screening and qualification.
 
 The generic arena service deliberately leaves deployment assembly out of the
 consensus-facing types.  This module supplies that assembly without resolving
@@ -45,9 +45,9 @@ from cacheon.stack_identity import canonical_digest
 
 PROVIDER_SCHEMA = "cacheon.eval.b300-arena-provider.v1"
 SCREEN_EXCEPTION_SCHEMA = "cacheon.eval.b300-screen-exception.v1"
-B300_ARCHITECTURE = "sm120"
-B300_GPU_COUNT = 8
-B300_TENSOR_PARALLEL_SIZE = 8
+B300_ARCHITECTURE = "sm103"
+B300_GPU_COUNT = 4
+B300_TENSOR_PARALLEL_SIZE = 4
 _NON_SERVING_STAGES = SCREEN_STAGES[:-1]
 _SERVING_STAGE = SCREEN_STAGES[-1]
 
@@ -178,8 +178,87 @@ DeadlineProvider = Callable[[ArenaQualificationRequest, object | None], float]
 
 
 @dataclass(frozen=True)
+class B300DeclaredQualificationAuthorities:
+    """Path-free qualification identities retained by screen-only workers.
+
+    A commissioned screen worker must identify the later qualification worker
+    without pretending to possess its private judge, entropy, executors, or
+    factory.  These declarations are therefore sufficient for provider/service
+    identity, but grant no qualification capability.
+    """
+
+    qualification_policy_digest: str
+    qualification_builder_digest: str
+    candidate_executor_digest: str
+    resident_baseline_executor_digest: str
+    entropy_provider_digest: str
+    hidden_judge_binding_digest: str
+    deadline_policy_digest: str
+
+    def __post_init__(self) -> None:
+        for field in self.__dataclass_fields__:
+            object.__setattr__(self, field, _digest(getattr(self, field), field))
+
+
+def _validate_screen_authorities(
+    runtime_identity: ArenaRuntimeIdentity,
+    screen_handlers: tuple[B300ScreenStageHandler, ...],
+    resident_screen_factory: B300ResidentScreenFactory,
+) -> tuple[B300ScreenStageHandler, ...]:
+    if type(runtime_identity) is not ArenaRuntimeIdentity:
+        raise B300ArenaProviderError("runtime identity is not exact")
+    _validate_b300_runtime(runtime_identity)
+    handlers = tuple(screen_handlers)
+    if (
+        type(screen_handlers) is not tuple
+        or any(type(row) is not B300ScreenStageHandler for row in handlers)
+        or tuple(row.stage for row in handlers) != _NON_SERVING_STAGES
+    ):
+        raise B300ArenaProviderError(
+            "screen handlers differ from the canonical stage order"
+        )
+    if type(resident_screen_factory) is not B300ResidentScreenFactory:
+        raise B300ArenaProviderError("resident screen factory is not exact")
+    resident_resources = set(resident_screen_factory.resource_ids)
+    non_serving_resources = {
+        resource for handler in handlers for resource in handler.resource_ids
+    }
+    if resident_resources.intersection(non_serving_resources):
+        raise B300ArenaProviderError(
+            "resident screen resources overlap a retained non-serving handler"
+        )
+    return handlers
+
+
+@dataclass(frozen=True)
+class B300ScreenDeploymentAuthorities:
+    """Executable screen authority with declared, but unavailable, qualification."""
+
+    runtime_identity: ArenaRuntimeIdentity
+    screen_handlers: tuple[B300ScreenStageHandler, ...]
+    resident_screen_factory: B300ResidentScreenFactory
+    qualification: B300DeclaredQualificationAuthorities
+
+    def __post_init__(self) -> None:
+        handlers = _validate_screen_authorities(
+            self.runtime_identity,
+            self.screen_handlers,
+            self.resident_screen_factory,
+        )
+        object.__setattr__(self, "screen_handlers", handlers)
+        if type(self.qualification) is not B300DeclaredQualificationAuthorities:
+            raise B300ArenaProviderError(
+                "declared qualification authority is not exact"
+            )
+
+    @property
+    def qualification_policy_digest(self) -> str:
+        return self.qualification.qualification_policy_digest
+
+
+@dataclass(frozen=True)
 class B300DeploymentAuthorities:
-    """All non-public authorities needed by one B300/TP8 service.
+    """All non-public authorities needed by one B300/TP4 service.
 
     The public arena manifest cannot and does not recreate these values.  In
     particular, private selection-secret lookup, plan construction, entropy,
@@ -202,21 +281,12 @@ class B300DeploymentAuthorities:
     deadline_provider: DeadlineProvider
 
     def __post_init__(self) -> None:
-        if type(self.runtime_identity) is not ArenaRuntimeIdentity:
-            raise B300ArenaProviderError("runtime identity is not exact")
-        _validate_b300_runtime(self.runtime_identity)
-        handlers = tuple(self.screen_handlers)
-        if (
-            type(self.screen_handlers) is not tuple
-            or any(type(row) is not B300ScreenStageHandler for row in handlers)
-            or tuple(row.stage for row in handlers) != _NON_SERVING_STAGES
-        ):
-            raise B300ArenaProviderError(
-                "screen handlers differ from the canonical stage order"
-            )
+        handlers = _validate_screen_authorities(
+            self.runtime_identity,
+            self.screen_handlers,
+            self.resident_screen_factory,
+        )
         object.__setattr__(self, "screen_handlers", handlers)
-        if type(self.resident_screen_factory) is not B300ResidentScreenFactory:
-            raise B300ArenaProviderError("resident screen factory is not exact")
         for field in (
             "qualification_policy_digest",
             "qualification_builder_digest",
@@ -244,7 +314,7 @@ class B300DeploymentAuthorities:
                 "B300" not in gpu.name.upper() for gpu in gpus
             ):
                 raise B300ArenaProviderError(
-                    f"{role} executor does not bind exactly eight B300 devices"
+                    f"{role} executor does not bind exactly four B300 devices"
                 )
         if not callable(self.entropy_provider) or not callable(self.hidden_judge):
             raise B300ArenaProviderError("entropy or hidden-judge authority is not callable")
@@ -252,16 +322,24 @@ class B300DeploymentAuthorities:
             raise B300ArenaProviderError("hidden judge has no exact sealed binding")
         if not callable(self.deadline_provider):
             raise B300ArenaProviderError("deadline provider is not callable")
-        resident_resources = set(self.resident_screen_factory.resource_ids)
-        non_serving_resources = {
-            resource
-            for handler in handlers
-            for resource in handler.resource_ids
-        }
-        if resident_resources.intersection(non_serving_resources):
-            raise B300ArenaProviderError(
-                "resident screen resources overlap a retained non-serving handler"
-            )
+
+    @property
+    def qualification(self) -> B300DeclaredQualificationAuthorities:
+        binding = getattr(self.hidden_judge, "binding", None)
+        if type(binding) is not HiddenJudgeBinding:
+            raise B300ArenaProviderError("hidden judge binding changed or is untyped")
+        return B300DeclaredQualificationAuthorities(
+            self.qualification_policy_digest,
+            self.qualification_builder_digest,
+            _executor_identity(self.executor, role="candidate"),
+            _executor_identity(
+                self.resident_baseline_executor,
+                role="resident_baseline",
+            ),
+            self.entropy_provider_digest,
+            binding.digest,
+            self.deadline_policy_digest,
+        )
 
 
 def _validate_b300_runtime(runtime: ArenaRuntimeIdentity) -> None:
@@ -271,7 +349,7 @@ def _validate_b300_runtime(runtime: ArenaRuntimeIdentity) -> None:
         or runtime.tensor_parallel_size != B300_TENSOR_PARALLEL_SIZE
     ):
         raise B300ArenaProviderError(
-            "runtime must be an exact sm120, eight-GPU, TP8 authority"
+            "runtime must be an exact sm103, four-GPU, TP4 authority"
         )
 
 
@@ -310,10 +388,16 @@ def _executor_identity(executor: OCIEngineExecutor, *, role: str) -> str:
     )
 
 
-def b300_arena_provider_digest(authorities: B300DeploymentAuthorities) -> str:
+_AuthorityBundle = B300DeploymentAuthorities | B300ScreenDeploymentAuthorities
+
+
+def b300_arena_provider_digest(authorities: _AuthorityBundle) -> str:
     """Return the path-free provider identity before a manifest is constructed."""
 
-    if type(authorities) is not B300DeploymentAuthorities:
+    if type(authorities) not in {
+        B300DeploymentAuthorities,
+        B300ScreenDeploymentAuthorities,
+    }:
         raise B300ArenaProviderError("deployment authorities are not exact")
     handlers = authorities.screen_handlers
     resident_resources = set(authorities.resident_screen_factory.resource_ids)
@@ -324,9 +408,7 @@ def b300_arena_provider_digest(authorities: B300DeploymentAuthorities) -> str:
         raise B300ArenaProviderError(
             "resident screen resources overlap a retained non-serving handler"
         )
-    binding = getattr(authorities.hidden_judge, "binding", None)
-    if type(binding) is not HiddenJudgeBinding:
-        raise B300ArenaProviderError("hidden judge binding changed or is untyped")
+    qualification = authorities.qualification
     return canonical_digest(
         PROVIDER_SCHEMA,
         {
@@ -336,17 +418,16 @@ def b300_arena_provider_digest(authorities: B300DeploymentAuthorities) -> str:
                 "tensor_parallel_size": B300_TENSOR_PARALLEL_SIZE,
             },
             "qualification": {
-                "builder_digest": authorities.qualification_builder_digest,
-                "candidate_executor_digest": _executor_identity(
-                    authorities.executor, role="candidate"
+                "builder_digest": qualification.qualification_builder_digest,
+                "candidate_executor_digest": qualification.candidate_executor_digest,
+                "deadline_policy_digest": qualification.deadline_policy_digest,
+                "entropy_provider_digest": qualification.entropy_provider_digest,
+                "hidden_judge_binding_digest": (
+                    qualification.hidden_judge_binding_digest
                 ),
-                "deadline_policy_digest": authorities.deadline_policy_digest,
-                "entropy_provider_digest": authorities.entropy_provider_digest,
-                "hidden_judge_binding_digest": binding.digest,
-                "policy_digest": authorities.qualification_policy_digest,
-                "resident_baseline_executor_digest": _executor_identity(
-                    authorities.resident_baseline_executor,
-                    role="resident_baseline",
+                "policy_digest": qualification.qualification_policy_digest,
+                "resident_baseline_executor_digest": (
+                    qualification.resident_baseline_executor_digest
                 ),
             },
             "resident_screen": {
@@ -372,18 +453,21 @@ class B300ArenaServiceProvider:
     def __init__(
         self,
         manifest: ArenaServiceManifest,
-        authorities: B300DeploymentAuthorities,
+        authorities: _AuthorityBundle,
     ) -> None:
         if type(manifest) is not ArenaServiceManifest:
             raise B300ArenaProviderError("arena service manifest is not exact")
-        if type(authorities) is not B300DeploymentAuthorities:
+        if type(authorities) not in {
+            B300DeploymentAuthorities,
+            B300ScreenDeploymentAuthorities,
+        }:
             raise B300ArenaProviderError("deployment authorities are not exact")
         observed = b300_arena_provider_digest(authorities)
         if manifest.provider_digest != observed:
             raise B300ArenaProviderError("provider identity differs from the manifest")
         if manifest.runtime != authorities.runtime_identity:
             raise B300ArenaProviderError(
-                "runtime, model, topology, or TP8 identity differs from the manifest"
+                "runtime, model, topology, or TP4 identity differs from the manifest"
             )
         if (
             manifest.qualification_policy_digest
@@ -400,8 +484,10 @@ class B300ArenaServiceProvider:
             for handler in authorities.screen_handlers
         }
         self._create_resident = authorities.resident_screen_factory.create
-        self._build_factory = authorities.qualification_factory_builder
-        self._deadline_provider = authorities.deadline_provider
+        capabilities = (
+            authorities if type(authorities) is B300DeploymentAuthorities else None
+        )
+        self._qualification_capabilities = capabilities
         self._resident_lifetime: B300ResidentScreenLifetime | None = None
         self._resident_teardown_failed = False
         self._closed = False
@@ -483,12 +569,17 @@ class B300ArenaServiceProvider:
                 "qualification request differs from deployment authority"
             )
         with self._lock:
+            capabilities = self._qualification_capabilities
+            if capabilities is None:
+                raise B300ArenaProviderError(
+                    "qualification capabilities are unavailable on this screen worker"
+                )
             if not self._closed and self._resident_teardown_failed:
                 self._release_resident()
             self._require_open_and_current()
             self._release_resident()
             try:
-                factory = self._build_factory(request, state)
+                factory = capabilities.qualification_factory_builder(request, state)
             except Exception as exc:
                 raise B300ArenaProviderError(
                     "qualification factory construction failed"
@@ -505,27 +596,27 @@ class B300ArenaServiceProvider:
                     "qualification builder changed finalized cohort order"
                 )
             try:
-                deadline = self._deadline_provider(request, state)
+                deadline = capabilities.deadline_provider(request, state)
             except Exception as exc:
                 raise B300ArenaProviderError("deadline authority failed") from exc
             if (
                 isinstance(deadline, bool)
                 or not isinstance(deadline, (int, float))
                 or not math.isfinite(float(deadline))
-                or float(deadline) <= float(self._authorities.executor.manager.clock())
+                or float(deadline) <= float(capabilities.executor.manager.clock())
             ):
                 raise B300ArenaProviderError(
                     "deadline authority returned no future absolute deadline"
                 )
             return ArenaQualificationWork(
                 factory=factory,
-                executor=self._authorities.executor,
-                entropy_provider=self._authorities.entropy_provider,
-                hidden_judge=self._authorities.hidden_judge,
+                executor=capabilities.executor,
+                entropy_provider=capabilities.entropy_provider,
+                hidden_judge=capabilities.hidden_judge,
                 deadline=float(deadline),
                 qualification_policy_digest=request.qualification_policy_digest,
                 resident_baseline_executor=(
-                    self._authorities.resident_baseline_executor
+                    capabilities.resident_baseline_executor
                 ),
             )
 
@@ -596,7 +687,7 @@ class B300ArenaServiceProvider:
 
 def compose_b300_arena_service(
     manifest: ArenaServiceManifest,
-    authorities: B300DeploymentAuthorities,
+    authorities: _AuthorityBundle,
 ) -> ArenaService:
     """Construct the generic service from one exact B300 deployment bundle."""
 
@@ -606,10 +697,12 @@ def compose_b300_arena_service(
 __all__ = [
     "B300ArenaProviderError",
     "B300ArenaServiceProvider",
+    "B300DeclaredQualificationAuthorities",
     "B300DeploymentAuthorities",
     "B300ResidentScreenFactory",
     "B300ResidentScreenLifetime",
     "B300ScreenStageHandler",
+    "B300ScreenDeploymentAuthorities",
     "PROVIDER_SCHEMA",
     "SCREEN_EXCEPTION_SCHEMA",
     "b300_arena_provider_digest",
