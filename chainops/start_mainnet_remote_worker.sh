@@ -37,6 +37,13 @@ POD_MODEL_ROOT=
 POD_MODEL_RECEIPT=
 POD_WORKER_IMAGE=
 LANE_DEVICES=0,1,2,3
+POD_AUTHORITY_ROOT=/data/cacheon-b300/launch-b300-v3-m4l/primary-authority-v3-m4l
+POD_AUTHORITY_CONFIG=
+POD_MEASUREMENT_CONFIG=
+POD_CALIBRATION_PACKAGE=
+POD_CALIBRATION_PROJECTION_RECEIPT=
+POD_PROMPT_AUTHORITY=
+REMOTE_COMMISSIONED_ROOT=/data/cacheon-b300/remote-worker/commissioned
 
 REMOTE_ROOT=/data/cacheon-b300/remote-worker
 REMOTE_BIN=/data/cacheon-b300/worker-bootstrap/bin
@@ -74,6 +81,7 @@ If the existing pod predates the worker-bootstrap READY receipt, add:
   --pod-model-receipt /absolute/model-provision-sha256-DIGEST.json \
   --pod-worker-image repository@sha256:DIGEST
   [--lane-devices 0,1,2,3]
+  [--pod-authority-root /data/cacheon-b300/launch-b300-v3-m4l/primary-authority-v3-m4l]
 
 Commissioning runs only bounded identity reads: exact 8xB300 inventory/topology,
 source/runtime tree hashing, read-only model-receipt inventory reopening, and
@@ -223,6 +231,11 @@ while (($#)); do
       LANE_DEVICES=$2
       shift 2
       ;;
+    --pod-authority-root)
+      (($# >= 2)) || fail "--pod-authority-root requires a value"
+      POD_AUTHORITY_ROOT=$2
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -237,10 +250,12 @@ done
 [[ "$POD_HOST" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || fail "pod host is missing or malformed"
 [[ "$POD_PORT" =~ ^[0-9]+$ ]] || fail "pod port is missing or malformed"
 ((POD_PORT >= 1 && POD_PORT <= 65535)) || fail "pod port is outside 1..65535"
-[[ -n "$WORKER_READINESS" && "$WORKER_READINESS" == /* ]] \
-  || fail "worker readiness must be an absolute path"
-[[ "$SERVICE_IDENTITY" =~ ^[A-Za-z0-9._:@/+\-]{1,512}$ ]] \
-  || fail "service identity is missing or malformed"
+if [[ "$COMMISSION_CURRENT_POD" == 0 ]]; then
+  [[ -n "$WORKER_READINESS" && "$WORKER_READINESS" == /* ]] \
+    || fail "worker readiness must be an absolute path"
+  [[ "$SERVICE_IDENTITY" =~ ^[A-Za-z0-9._:@/+\-]{1,512}$ ]] \
+    || fail "service identity is missing or malformed"
+fi
 [[ "$CREDENTIAL_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] \
   || fail "credential id is malformed"
 [[ "$CPU_PYTHON" == /* && -x "$CPU_PYTHON" ]] \
@@ -265,6 +280,13 @@ if [[ "$COMMISSION_CURRENT_POD" == 1 ]]; then
     || fail "pod source revision must be exact lowercase 40-hex"
   [[ "$POD_WORKER_IMAGE" =~ ^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$ ]] \
     || fail "pod worker image must be an immutable repo digest"
+  [[ "$POD_AUTHORITY_ROOT" =~ ^/[A-Za-z0-9._/+\-]+$ ]] \
+    || fail "pod authority root must be absolute and shell-closed"
+  POD_AUTHORITY_CONFIG=$POD_AUTHORITY_ROOT/authority-config.json
+  POD_MEASUREMENT_CONFIG=$POD_AUTHORITY_ROOT/measurement-config.json
+  POD_CALIBRATION_PACKAGE=$POD_AUTHORITY_ROOT/calibration-package.json
+  POD_CALIBRATION_PROJECTION_RECEIPT=$POD_AUTHORITY_ROOT/calibration-projection-receipt.json
+  POD_PROMPT_AUTHORITY=$POD_AUTHORITY_ROOT/prompt-authority.json
 fi
 
 for command_name in python3 ssh scp ssh-keygen sha256sum awk stat install mktemp tmux openssl grep seq sleep git; do
@@ -280,9 +302,13 @@ if [[ ! -e "$CREDENTIAL" ]]; then
   log "created one root-only remote worker credential: $CREDENTIAL"
 fi
 
-for path in "$KNOWN_HOSTS" "$WORKER_READINESS" "$ADAPTER" "$REMOTE_SERVICE" "$CREDENTIAL" "$SCREEN_DISPATCHER" "$SCREEN_DISPATCHER_TEMPLATE"; do
+for path in "$KNOWN_HOSTS" "$ADAPTER" "$REMOTE_SERVICE" "$CREDENTIAL" "$SCREEN_DISPATCHER" "$SCREEN_DISPATCHER_TEMPLATE"; do
   [[ -f "$path" && ! -L "$path" ]] || fail "required file missing or symlink: $path"
 done
+if [[ "$COMMISSION_CURRENT_POD" == 0 ]]; then
+  [[ -f "$WORKER_READINESS" && ! -L "$WORKER_READINESS" ]] \
+    || fail "worker readiness is missing or symlinked"
+fi
 [[ "$KNOWN_HOSTS" == /* && "$ADAPTER" == /* && "$REMOTE_SERVICE" == /* && "$CREDENTIAL" == /* ]] \
   || fail "known_hosts, adapter, and service paths must be absolute"
 known_mode=$(stat -c %a "$KNOWN_HOSTS")
@@ -341,6 +367,8 @@ trap cleanup EXIT
 
 READY_COPY=$temporary_root/ready-receipt.json
 REGISTRATION_BUILD=$temporary_root/registration.json
+ARENA_MANIFEST_COPY=
+SCREEN_DEPLOYMENT_COPY=
 
 if [[ "$COMMISSION_CURRENT_POD" == 1 ]]; then
   [[ "$(git -C "$CACHEON_SOURCE" rev-parse HEAD)" == "$POD_SOURCE_REVISION" ]] \
@@ -386,6 +414,85 @@ fi
 
 log "reading the exact READY receipt through the pinned endpoint"
 "${SCP[@]}" -- "root@$POD_HOST:$REMOTE_READY" "$READY_COPY"
+
+if [[ "$COMMISSION_CURRENT_POD" == 1 ]]; then
+  log "materializing the exact sealed TP4 screen service identities"
+  "${SSH[@]}" 'bash -s' -- \
+    "$REMOTE_PYTHON" "$POD_SOURCE_ROOT" "$REMOTE_READY" \
+    "$POD_AUTHORITY_CONFIG" "$POD_MEASUREMENT_CONFIG" \
+    "$POD_CALIBRATION_PACKAGE" "$POD_CALIBRATION_PROJECTION_RECEIPT" \
+    "$POD_PROMPT_AUTHORITY" "$REMOTE_COMMISSIONED_ROOT" <<'REMOTE'
+set -euo pipefail
+python=$1
+source_root=$2
+ready_receipt=$3
+authority_config=$4
+measurement_config=$5
+calibration_package=$6
+calibration_projection_receipt=$7
+prompt_authority=$8
+output_root=$9
+test -x "$python"
+test -f "$source_root/cacheon/eval/b300_screen_deployment.py"
+for authority in "$ready_receipt" "$authority_config" "$measurement_config" "$calibration_package" "$calibration_projection_receipt" "$prompt_authority"; do
+  test -f "$authority"
+  test ! -L "$authority"
+done
+env PYTHONPATH="$source_root" PYTHONDONTWRITEBYTECODE=1 \
+  "$python" -m cacheon.eval.b300_screen_deployment materialize \
+  --ready-receipt "$ready_receipt" \
+  --authority-config "$authority_config" \
+  --measurement-config "$measurement_config" \
+  --calibration-package "$calibration_package" \
+  --calibration-projection-receipt "$calibration_projection_receipt" \
+  --prompt-authority "$prompt_authority" \
+  --output-root "$output_root"
+for product in screen-deployment.json arena-service-manifest.json worker-readiness.json; do
+  test -f "$output_root/$product"
+  test ! -L "$output_root/$product"
+done
+REMOTE
+  ARENA_MANIFEST_COPY=$temporary_root/arena-service-manifest.json
+  WORKER_READINESS=$temporary_root/worker-readiness.json
+  SCREEN_DEPLOYMENT_COPY=$temporary_root/screen-deployment.json
+  "${SCP[@]}" -- \
+    "root@$POD_HOST:$REMOTE_COMMISSIONED_ROOT/arena-service-manifest.json" \
+    "$ARENA_MANIFEST_COPY"
+  "${SCP[@]}" -- \
+    "root@$POD_HOST:$REMOTE_COMMISSIONED_ROOT/worker-readiness.json" \
+    "$WORKER_READINESS"
+  "${SCP[@]}" -- \
+    "root@$POD_HOST:$REMOTE_COMMISSIONED_ROOT/screen-deployment.json" \
+    "$SCREEN_DEPLOYMENT_COPY"
+  chmod 0400 "$ARENA_MANIFEST_COPY" "$WORKER_READINESS" "$SCREEN_DEPLOYMENT_COPY"
+  SERVICE_IDENTITY=$(env PYTHONPATH="$CACHEON_SOURCE" "$CPU_PYTHON" - \
+    "$SCREEN_DISPATCHER" "$ARENA_MANIFEST_COPY" <<'PY'
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+dispatcher_path, manifest_path = sys.argv[1:]
+specification = importlib.util.spec_from_file_location(
+    "cacheon_fixed_mainnet_screen_dispatcher", dispatcher_path
+)
+if specification is None or specification.loader is None:
+    raise SystemExit("standing screen dispatcher cannot be loaded")
+module = importlib.util.module_from_spec(specification)
+sys.path.insert(0, str(Path(dispatcher_path).parent))
+specification.loader.exec_module(module)
+with open(manifest_path, encoding="utf-8") as handle:
+    manifest = module._manifest_from_dict(json.load(handle))
+print(manifest.service_id)
+PY
+  )
+  [[ "$SERVICE_IDENTITY" =~ ^[A-Za-z0-9._:@/+\-]{1,512}$ ]] \
+    || fail "materialized service identity is malformed"
+  log "materialized service identity: $SERVICE_IDENTITY"
+fi
+
+[[ -f "$WORKER_READINESS" && ! -L "$WORKER_READINESS" ]] \
+  || fail "materialized worker readiness is missing or symlinked"
 
 env PYTHONPATH="$CACHEON_SOURCE" "$CPU_PYTHON" "$REMOTE_SERVICE" make-registration \
   --ready-receipt "$READY_COPY" \
@@ -440,16 +547,27 @@ dispatcher_config_tmp=$(mktemp "$STATE_ROOT/.mainnet-screen-dispatcher.XXXXXX")
 env PYTHONPATH="$CACHEON_SOURCE:$(dirname "$SCREEN_DISPATCHER")" \
   "$CPU_PYTHON" - \
   "$SCREEN_DISPATCHER_TEMPLATE" "$REGISTRATION" "$CREDENTIAL" \
-  "$SPOOL_ROOT" "$dispatcher_config_tmp" <<'PY'
+  "$SPOOL_ROOT" "$dispatcher_config_tmp" "$ARENA_MANIFEST_COPY" <<'PY'
 import json
 import os
 import sys
 
-template_path, registration_path, credential_path, spool_root, output_path = sys.argv[1:]
+(
+    template_path,
+    registration_path,
+    credential_path,
+    spool_root,
+    output_path,
+    manifest_path,
+) = sys.argv[1:]
 with open(template_path, encoding="utf-8") as handle:
     config = json.load(handle)
 with open(registration_path, encoding="utf-8") as handle:
     registration = json.load(handle)
+manifest = None
+if manifest_path:
+    with open(manifest_path, encoding="utf-8") as handle:
+        manifest = json.load(handle)
 expected = {
     "arena_service_manifest", "credential_digest", "credential_path",
     "heartbeat_interval_ms", "heartbeat_join_timeout_ms", "idle_poll_ms",
@@ -471,6 +589,8 @@ config.update({
     "transport_identity_digest": registration["transport_identity_digest"],
     "worker_readiness": registration["worker_readiness"],
 })
+if manifest is not None:
+    config["arena_service_manifest"] = manifest
 encoded = json.dumps(config, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 with open(output_path, "wb") as handle:
     handle.write(encoded)
