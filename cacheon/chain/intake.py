@@ -21,6 +21,15 @@ from cacheon.chain.incentive_composition_store import (
     IncentiveCompositionStoreError,
     migrate_schema4_to5,
 )
+from cacheon.chain.evaluation_lease_store import (
+    EvaluationLeaseStoreError,
+    EvaluationLeaseStoreMixin,
+    configure_evaluation_lease_connection,
+    ensure_evaluation_lease_schema,
+)
+from cacheon.chain.evaluation_leases import (
+    EvaluationLease, EvaluationLeaseEvent, EvaluationLeaseMember,
+)
 from cacheon.copy_fingerprint import (
     SubmittedDeltaFingerprint, compare_submitted_deltas,
 )
@@ -64,17 +73,17 @@ if TYPE_CHECKING:
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
 _ACTIVE = (
-    "reserved", "fetching", "transport_retry", "published", "screening",
+    "deferred", "reserved", "fetching", "transport_retry", "published", "screening",
     "promoted", "qualifying", "reproduction_pending",
 )
 _TERMINAL = ("failed", "expired", "qualified")
 _STATUSES = frozenset((*_ACTIVE, *_TERMINAL, "held", "no_decision"))
 _EXPLICITLY_EXPIRABLE = (
-    "reserved", "transport_retry", "published", "promoted",
+    "deferred", "reserved", "transport_retry", "published", "promoted",
     "reproduction_pending", "held", "no_decision",
 )
 _AUTOMATICALLY_EXPIRABLE = (
-    "reserved", "transport_retry", "published", "promoted",
+    "deferred", "reserved", "transport_retry", "published", "promoted",
     "reproduction_pending", "held", "no_decision",
 )
 _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
@@ -392,7 +401,7 @@ class CrownedSettlement:
             raise IntakeError("active crown authority is inconsistent")
 
 
-class FinalizedIntakeStore:
+class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     """Single SQLite authority for arrival order, admission, and qualification state."""
 
     def __init__(
@@ -461,6 +470,10 @@ class FinalizedIntakeStore:
                 raise IntakeError("another intake controller owns this database") from None
             self._db = sqlite3.connect(self.path, isolation_level=None, timeout=30.0)
             self._db.row_factory = sqlite3.Row
+            self._evaluation_mutation_authority: set[str] = set()
+            configure_evaluation_lease_connection(
+                self._db, self._evaluation_mutation_authority
+            )
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=FULL")
             self._db.execute("PRAGMA foreign_keys=ON")
@@ -697,6 +710,10 @@ class FinalizedIntakeStore:
                 "ALTER TABLE settlement_candidates ADD COLUMN "
                 "reproduction_evidence_root TEXT NOT NULL DEFAULT ''"
             )
+        try:
+            ensure_evaluation_lease_schema(self._db)
+        except EvaluationLeaseStoreError as exc:
+            raise IntakeError(f"evaluation lease schema cannot open: {exc}") from None
         schema = self._db.execute(
             "SELECT value FROM metadata WHERE key='schema'"
         ).fetchone()
@@ -851,6 +868,9 @@ class FinalizedIntakeStore:
             # cache.  Apply the already-bound arrival-block SLA in the same write
             # transaction before counting unresolved rows.
             self._expire_stale_rows(finalized_block)
+            # Capacity released by expiry belongs to the already-retained oldest
+            # deferred arrivals before any newly observed arrival may compete.
+            self._activate_deferred_rows()
             cursor = self._cursor()
             if cursor is not None and (
                 finalized_block < cursor[0]
@@ -888,7 +908,10 @@ class FinalizedIntakeStore:
                 elif hotkey_count >= self.policy.max_per_hotkey_epoch:
                     status, reason = "failed", "hotkey_epoch_admission_limit"
                 elif pending >= self.policy.max_pending:
-                    status, reason = "failed", "pending_queue_admission_limit"
+                    # GPU/worker backpressure is validator capacity, not a miner
+                    # fault.  Retain the finalized arrival in FIFO order and
+                    # promote it automatically when an active queue slot opens.
+                    status, reason = "deferred", "pending_queue_deferred"
                 else:
                     pending += 1
                 self._db.execute(
@@ -962,15 +985,53 @@ class FinalizedIntakeStore:
             "SELECT * FROM reservations ORDER BY block,event_index,event_subindex,hotkey,content_hash"
         ))
 
+    def _activate_deferred_rows(self) -> tuple[str, ...]:
+        active = self._db.execute(
+            "SELECT COUNT(*) AS n FROM reservations WHERE status IN ("
+            "'reserved','fetching','transport_retry','published','screening',"
+            "'promoted','qualifying','reproduction_pending','held','no_decision')"
+        ).fetchone()["n"]
+        capacity = max(0, self.policy.max_pending - active)
+        if capacity == 0:
+            return ()
+        ids = tuple(
+            row["reservation_id"]
+            for row in self._db.execute(
+                "SELECT reservation_id FROM reservations WHERE status='deferred' "
+                "ORDER BY block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
+                (capacity,),
+            )
+        )
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            cursor = self._db.execute(
+                f"UPDATE reservations SET status='reserved',reason='' WHERE "
+                f"status='deferred' AND reservation_id IN ({marks})",
+                ids,
+            )
+            if cursor.rowcount != len(ids):
+                raise IntakeError("deferred queue changed while activating capacity")
+        return ids
+
+    def activate_deferred(self) -> tuple[IntakeReservation, ...]:
+        """Fill free active capacity from durable finalized FIFO backlog."""
+
+        with self._transaction():
+            ids = self._activate_deferred_rows()
+        return tuple(self.get(reservation_id) for reservation_id in ids)
+
     def pending(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
         bound = self.policy.max_cohort if limit is None else limit
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_pending:
             raise IntakeError("pending reservation limit is invalid")
-        rows = self._db.execute(
-            "SELECT * FROM reservations WHERE status IN ('reserved','transport_retry') "
-            "AND transport_attempts < ? ORDER BY block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
-            (self.policy.max_transport_retries, bound),
-        )
+        with self._transaction():
+            self._activate_deferred_rows()
+            rows = tuple(self._db.execute(
+                "SELECT * FROM reservations WHERE status IN ('reserved','transport_retry') "
+                "AND transport_attempts < ? ORDER BY block,event_index,event_subindex,"
+                "hotkey,content_hash LIMIT ?",
+                (self.policy.max_transport_retries, bound),
+            ))
         return tuple(self._row(row) for row in rows)
 
     def mark_fetching(self, reservation_id: str) -> IntakeReservation:
@@ -1105,8 +1166,10 @@ class FinalizedIntakeStore:
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
             raise IntakeError("screen cohort limit is invalid")
         rows = self._db.execute(
-            "SELECT * FROM reservations WHERE status IN "
-            "('published','reproduction_pending') ORDER BY "
+            "SELECT r.* FROM reservations AS r WHERE status IN "
+            "('published','reproduction_pending') AND NOT EXISTS ("
+            "SELECT 1 FROM evaluation_lease_members AS em WHERE "
+            "em.reservation_id=r.reservation_id AND em.active=1) ORDER BY "
             "CASE status WHEN 'reproduction_pending' THEN 0 ELSE 1 END,"
             "block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
             (bound,),
@@ -1119,14 +1182,22 @@ class FinalizedIntakeStore:
         if type(current_block) is not int or current_block < 0:
             raise IntakeError("arena queue block is malformed")
         queued = self._db.execute(
-            "SELECT COUNT(*) AS n,MIN(block) AS oldest FROM reservations WHERE "
-            "status IN ('published','reproduction_pending','promoted')"
+            "SELECT COUNT(*) AS n,MIN(block) AS oldest FROM reservations AS r WHERE "
+            "status IN ('published','reproduction_pending','promoted') AND NOT EXISTS ("
+            "SELECT 1 FROM evaluation_lease_members AS em WHERE "
+            "em.reservation_id=r.reservation_id AND em.active=1)"
         ).fetchone()
         active_screens = self._db.execute(
-            "SELECT COUNT(*) AS n FROM reservations WHERE status='screening'"
+            "SELECT (SELECT COUNT(*) FROM reservations WHERE status='screening') + "
+            "(SELECT COUNT(*) FROM evaluation_lease_members AS em JOIN "
+            "evaluation_leases AS el USING(lease_id) WHERE em.active=1 "
+            "AND el.stage='screen') AS n"
         ).fetchone()["n"]
         active_qualifications = self._db.execute(
-            "SELECT COUNT(*) AS n FROM reservations WHERE status='qualifying'"
+            "SELECT (SELECT COUNT(*) FROM reservations WHERE status='qualifying') + "
+            "(SELECT COUNT(*) FROM evaluation_lease_members AS em JOIN "
+            "evaluation_leases AS el USING(lease_id) WHERE em.active=1 "
+            "AND el.stage='qualification') AS n"
         ).fetchone()["n"]
         oldest = queued["oldest"]
         return ArenaQueueSnapshot(
@@ -1141,6 +1212,7 @@ class FinalizedIntakeStore:
     ) -> IntakeReservation:
         require_sha256_hex(service_digest, field="arena service digest")
         with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
             row = self.get(reservation_id)
             if row.status not in {"published", "reproduction_pending"}:
                 raise IntakeError("only screenable intake may begin arena screening")
@@ -1267,8 +1339,10 @@ class FinalizedIntakeStore:
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
             raise IntakeError("promoted cohort limit is invalid")
         first = self._db.execute(
-            "SELECT retry_group_digest,screen_lane FROM reservations "
-            "WHERE status='promoted' ORDER BY "
+            "SELECT retry_group_digest,screen_lane FROM reservations AS r "
+            "WHERE status='promoted' AND NOT EXISTS (SELECT 1 FROM "
+            "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
+            "AND em.active=1) ORDER BY "
             "CASE screen_lane WHEN 'reproduction' THEN 0 ELSE 1 END,"
             "block,event_index,event_subindex,hotkey,content_hash LIMIT 1"
         ).fetchone()
@@ -1276,20 +1350,26 @@ class FinalizedIntakeStore:
             return ()
         if first["screen_lane"] == "reproduction":
             rows = self._db.execute(
-                "SELECT * FROM reservations WHERE status='promoted' "
-                "AND screen_lane='reproduction' ORDER BY block,event_index,"
+                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
+                "AND screen_lane='reproduction' AND NOT EXISTS (SELECT 1 FROM "
+                "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
+                "AND em.active=1) ORDER BY block,event_index,"
                 "event_subindex,hotkey,content_hash LIMIT 1"
             )
         elif first["retry_group_digest"]:
             rows = self._db.execute(
-                "SELECT * FROM reservations WHERE status='promoted' "
-                "AND retry_group_digest=? ORDER BY retry_position LIMIT ?",
+                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
+                "AND retry_group_digest=? AND NOT EXISTS (SELECT 1 FROM "
+                "evaluation_lease_members AS em WHERE em.reservation_id=r.reservation_id "
+                "AND em.active=1) ORDER BY retry_position LIMIT ?",
                 (first["retry_group_digest"], bound),
             )
         else:
             rows = self._db.execute(
-                "SELECT * FROM reservations WHERE status='promoted' "
-                "AND screen_lane='primary' AND retry_group_digest='' ORDER BY "
+                "SELECT r.* FROM reservations AS r WHERE status='promoted' "
+                "AND screen_lane='primary' AND retry_group_digest='' AND NOT EXISTS "
+                "(SELECT 1 FROM evaluation_lease_members AS em WHERE "
+                "em.reservation_id=r.reservation_id AND em.active=1) ORDER BY "
                 "block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
                 (bound,),
             )
@@ -1375,6 +1455,7 @@ class FinalizedIntakeStore:
         if len(authority_json.encode("utf-8")) > 1 << 20:
             raise IntakeError("qualification authority manifest is oversized")
         with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
             row = self.get(reservation_id)
             if row.status != "promoted" or row.screen_status != "promote":
                 raise IntakeError("only screen-promoted intake may enter qualification")
@@ -1704,9 +1785,17 @@ class FinalizedIntakeStore:
                         reason = (
                             outcome.reason if completed == 2 else "reproduction_pending"
                         )
-                    else:
+                    elif outcome.decision is QualificationDecision.FAIL:
                         status, decision, reason = (
-                            "failed", outcome.decision.value, outcome.reason
+                            "failed", "FAIL", outcome.reason
+                        )
+                    else:
+                        # A validator/infrastructure NO_DECISION is never a
+                        # candidate failure.  Typed retry plans take the branch
+                        # above; a terminal no-plan disposition remains explicit
+                        # and operator-releasable rather than fabricating FAIL.
+                        status, decision, reason = (
+                            "no_decision", "NO_DECISION", outcome.reason
                         )
                     self._db.execute(
                         "UPDATE reservations SET status=?,decision=?,reason=?,"
@@ -2003,6 +2092,10 @@ class FinalizedIntakeStore:
         if (
             self.unclosed_debt_publication_bindings()
             or self.due_debt_publication_boundary() is not None
+            or self._db.execute(
+                "SELECT 1 FROM evaluation_leases WHERE state='active' "
+                "AND stage='qualification' LIMIT 1"
+            ).fetchone() is not None
         ):
             return False
 
@@ -2033,6 +2126,10 @@ class FinalizedIntakeStore:
             if (
                 self.unclosed_debt_publication_bindings()
                 or self.due_debt_publication_boundary() is not None
+                or self._db.execute(
+                    "SELECT 1 FROM evaluation_leases WHERE state='active' "
+                    "AND stage='qualification' LIMIT 1"
+                ).fetchone() is not None
             ):
                 return None
             # A stale unresolved predecessor must not retain economic priority
@@ -2170,6 +2267,13 @@ class FinalizedIntakeStore:
             # intent was retained.  Recheck under the write transaction so the
             # stale lease cannot create a CROWN or discovery lifecycle state.
             self._require_no_unclosed_debt_publication("settlement commit")
+            if self._db.execute(
+                "SELECT 1 FROM evaluation_leases WHERE state='active' "
+                "AND stage='qualification' LIMIT 1"
+            ).fetchone() is not None:
+                raise IntakeError(
+                    "settlement commit is fenced by active qualification"
+                )
             # Re-evaluate the same finalized-block SLA at commit time.  Opening
             # retained evidence may cross the boundary after the lease was made.
             self._expire_stale_rows(current_block)
@@ -3573,6 +3677,7 @@ class FinalizedIntakeStore:
         if status not in _STATUSES or not isinstance(reason, str) or len(reason) > 2_048:
             raise IntakeError("intake transition is malformed")
         with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
             row = self.get(reservation_id)
             if row.status not in expected:
                 raise IntakeError(f"intake transition from {row.status!r} is forbidden")
@@ -3618,7 +3723,9 @@ class FinalizedIntakeStore:
             raise IntakeError("retained qualification block is not finalized")
         placeholders = ",".join("?" for _ in _AUTOMATICALLY_EXPIRABLE)
         predicate = (
-            f"r.status IN ({placeholders}) AND r.reason!=? AND ("
+            f"r.status IN ({placeholders}) AND r.reason!=? AND NOT EXISTS ("
+            "SELECT 1 FROM evaluation_lease_members AS em WHERE "
+            "em.reservation_id=r.reservation_id AND em.active=1) AND ("
             "(r.block<=? AND NOT EXISTS ("
             "SELECT 1 FROM settlement_qualifications AS q "
             "WHERE q.reservation_id=r.reservation_id)) OR EXISTS ("

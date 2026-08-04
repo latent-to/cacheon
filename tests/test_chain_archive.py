@@ -135,6 +135,33 @@ def test_redacted_chain_audit_is_append_only_and_excludes_messages(tmp_path):
         )
 
 
+def test_chain_audit_maps_arena_screen_dispositions_to_audit_grades():
+    result = loop.PassResult(BLOCK, BLOCK_HASH)
+    result.screens = {
+        "a" * 64: "promote",
+        "b" * 64: "reject",
+        "c" * 64: "retry",
+        "d" * 64: "hold",
+    }
+
+    record = pass_audit_record(result, timestamp_ns=1)
+
+    assert record["screens"] == {
+        "a" * 64: "pass",
+        "b" * 64: "fail",
+        "c" * 64: "no_decision",
+        "d" * 64: "hold",
+    }
+
+
+def test_chain_audit_refuses_unknown_arena_screen_disposition():
+    result = loop.PassResult(BLOCK, BLOCK_HASH)
+    result.screens = {"a" * 64: "untyped"}
+
+    with pytest.raises(ChainAuditLogError, match="screen disposition is unsupported"):
+        pass_audit_record(result, timestamp_ns=1)
+
+
 def test_chain_audit_heals_wrong_mode_on_owned_parent_directory(tmp_path):
     parent = tmp_path / "chain_intake"
     parent.mkdir(mode=0o755)

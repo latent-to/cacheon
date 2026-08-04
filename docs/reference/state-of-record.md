@@ -567,7 +567,7 @@ The live command inventory is:
 ```text
 slots  compat  chain-compat  scan  verify
 chain-package  chain-publish  chain-submit  chain-status  chain-register
-chain-validate  chain-snapshot  chain-snapshot-verify
+chain-reservation-status  chain-validate  chain-snapshot  chain-snapshot-verify
 chain-archive-schema3-hold
 model-provision  release-verify  release-context
 chain-incentive-shadow  chain-incentive-composition-shadow

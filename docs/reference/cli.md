@@ -25,6 +25,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
+| `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
 | `chain-register` | operator | chain mutation | Burn-register a hotkey and run the SDK preflight |
 | `chain-validate` | validator | production intake | Consume finalized reveals; a deployment may inject qualification services |
 | `chain-snapshot` | validator | private object-store mutation | Publish and reopen a consistent validator recovery snapshot |
@@ -186,6 +187,49 @@ This is a chain mutation and may burn registration cost. It checks for existing
 registration first, then runs the SDK preflight.
 
 ## Validator commands
+
+### `chain-reservation-status`
+
+Run this command on the CPU validator host while `chain-validate` is running:
+
+```bash
+python -m cacheon.cli chain-reservation-status \
+  --intake-db /srv/cacheon/state/intake.sqlite3 \
+  --audit-log /srv/cacheon/state/chain-audit.jsonl \
+  --reservation-id <64-HEX-RESERVATION-ID>
+```
+
+`--content-hash` and `--miner-hotkey` are alternative exact selectors. The command
+refuses either selector when it matches more than one row; use the reservation ID to
+remove that ambiguity. Add `--json` for a machine-readable support record.
+
+The command opens the live WAL database read-only and takes one consistent SQLite read
+snapshot. It does not acquire the `FinalizedIntakeStore` process lock, mutate a row, or
+interrupt the intake daemon. Its queue position is a position among work that is
+actually selectable: reproduction work precedes new primary work, both lanes retain
+finalized arrival order, and active screening or qualification is reported as active
+rather than assigned a fictitious queue rank. Work held by an active remote evaluation
+lease is reported as `leased`, is excluded from waiting position and depth, and includes
+the lease ID, stage, generation, cohort position, and expiry block. The private worker
+owner is not printed. Promoted qualification work may be selected as an indivisible
+retry group or bounded cohort, so the command does not invent a per-row numeric rank for
+that phase.
+
+Human and JSON output omit the submitted URL, private publication paths, evidence-root
+paths, and raw exception text. A redacted reason includes its digest so an operator can
+correlate it with private incident material without disclosing that material. The
+record includes the finalized arrival key, typed screen stages and grades, qualification
+decisions and artifact references, retained settlement qualification references, and
+whether referenced evidence is available on the host.
+
+This is an evidence reader, not a promise that every historical failure has complete
+evidence. Some infrastructure `NO_DECISION` paths in the current durable schema retain
+only a failure digest. Those rows are labeled
+`qualification_failure_retained_by_digest_only`; the digest proves which failure
+product was recorded but cannot reconstruct its contents. Do not turn such a row into a
+candidate `FAIL` or invent a cause. See the
+[operator diagnostics procedure](../validator-guide/chain-loop.md#operator-reservation-diagnostics)
+for the exact support interpretation and current retention boundary.
 
 ### `chain-validate`
 

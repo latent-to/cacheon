@@ -26,6 +26,12 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _BLOCK_HASH = re.compile(r"^0x[0-9a-f]{64}$")
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _MAX_PASS_ITEMS = 65_536
+_SCREEN_AUDIT_DISPOSITIONS = {
+    "promote": "pass",
+    "reject": "fail",
+    "retry": "no_decision",
+    "hold": "hold",
+}
 MAX_AUDIT_RECORD_BYTES = 8 << 20
 _PASS_FIELDS = {
     "copies",
@@ -167,6 +173,15 @@ def pass_audit_record(result, *, timestamp_ns: int | None = None) -> dict[str, o
     observed_ns = time.time_ns() if timestamp_ns is None else timestamp_ns
     if type(observed_ns) is not int or observed_ns < 0:
         raise ChainAuditLogError("chain pass audit timestamp is malformed")
+    try:
+        screens = {
+            reservation: _SCREEN_AUDIT_DISPOSITIONS[decision]
+            for reservation, decision in sorted(result.screens.items())
+        }
+    except KeyError as exc:
+        raise ChainAuditLogError(
+            f"chain audit screen disposition is unsupported: {exc.args[0]}"
+        ) from None
     record = {
         "copies": dict(sorted(result.copies.items())),
         "decisions": dict(sorted(result.decisions.items())),
@@ -181,7 +196,7 @@ def pass_audit_record(result, *, timestamp_ns: int | None = None) -> dict[str, o
         },
         "reserved": list(result.reserved),
         "schema": "cacheon.chain-audit.v1",
-        "screens": dict(sorted(result.screens.items())),
+        "screens": screens,
         "seen": result.seen,
         "settlements": dict(sorted(result.settlements.items())),
         "timestamp_ns": observed_ns,
