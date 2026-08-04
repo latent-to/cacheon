@@ -39,7 +39,11 @@ from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
 from cacheon.eval.qualification_intake import QualificationPlanFactory
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
-from cacheon.eval.resident_screen_lane import ResidentServingScreenStage
+from cacheon.eval.resident_screen_lane import (
+    ResidentScreenLaneQuarantined,
+    ResidentScreenLifetimeFailed,
+    ResidentServingScreenStage,
+)
 from cacheon.stack_identity import canonical_digest
 
 
@@ -489,6 +493,7 @@ class B300ArenaServiceProvider:
         )
         self._qualification_capabilities = capabilities
         self._resident_lifetime: B300ResidentScreenLifetime | None = None
+        self._resident_failed = False
         self._resident_teardown_failed = False
         self._closed = False
         self._lock = threading.RLock()
@@ -496,7 +501,7 @@ class B300ArenaServiceProvider:
     @property
     def resident_screen_active(self) -> bool:
         with self._lock:
-            return self._resident_lifetime is not None
+            return self._resident_lifetime is not None and not self._resident_failed
 
     def run_screen(
         self,
@@ -536,8 +541,22 @@ class B300ArenaServiceProvider:
                     self._resident_lifetime = lifetime
                 try:
                     result = lifetime.screen_stage.run_screen(candidate)
+                except ResidentScreenLaneQuarantined as exc:
+                    # A canary quarantine retains the standing model for
+                    # inspection/recovery.  It is infrastructure NO_DECISION,
+                    # never an authority to destroy and reload the engine.
+                    return self._exception_result(
+                        manifest, stage, candidate, exc, started
+                    )
+                except ResidentScreenLifetimeFailed as exc:
+                    self._resident_failed = True
+                    raise B300ArenaProviderError(
+                        "resident screen lifetime failed; epoch restart required"
+                    ) from exc
                 except Exception as exc:
-                    self._release_resident()
+                    # Candidate-carrier and host-side stage errors are typed
+                    # NO_DECISION.  They do not own the standing engine and
+                    # therefore cannot release or reload it.
                     return self._exception_result(manifest, stage, candidate, exc, started)
             else:
                 configured = self._handlers.get(stage.stage)
@@ -677,6 +696,10 @@ class B300ArenaServiceProvider:
     def _require_open_and_current(self) -> None:
         if self._closed:
             raise B300ArenaProviderError("arena provider is closed")
+        if self._resident_failed:
+            raise B300ArenaProviderError(
+                "resident screen lifetime failed; epoch restart required"
+            )
         if self._resident_teardown_failed:
             raise B300ArenaProviderError("resident screen teardown is unresolved")
         if b300_arena_provider_digest(self._authorities) != self.provider_digest:

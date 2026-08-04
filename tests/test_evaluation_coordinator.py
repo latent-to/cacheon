@@ -391,6 +391,170 @@ def test_intake_advances_while_worker_is_blocked_and_heartbeat_cas_extends(
     ]
 
 
+def test_heartbeat_retries_after_full_transient_lock_attempt_budget(
+    tmp_path: Path,
+) -> None:
+    row = _published_rows(tmp_path, 1)[0]
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        cursor,
+        lease_blocks=3,
+        heartbeat_interval_s=0.01,
+        lock_attempts=3,
+        lock_retry_delay_s=0.001,
+    )
+    claim = coordinator.claim_screen()
+    assert claim is not None
+    _advance(tmp_path, cursor, BLOCK + 1)
+    calls = 0
+
+    def contended_factory(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls <= coordinator.lock_attempts:
+            raise IntakeError("another intake controller owns this database")
+        return FinalizedIntakeStore(*args, **kwargs)
+
+    coordinator._store_factory = contended_factory
+    heartbeat = coordinator_module._LeaseHeartbeat(coordinator, claim.lease)
+    heartbeat.start()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            with _store(tmp_path) as store:
+                events = store.evaluation_lease_events(
+                    reservation_id=row.reservation_id
+                )
+        except IntakeError as exc:
+            assert str(exc) == "another intake controller owns this database"
+        else:
+            if any(event.event_type == "heartbeat" for event in events):
+                break
+        threading.Event().wait(0.01)
+    else:  # pragma: no cover - deterministic failure aid
+        pytest.fail("heartbeat did not recover from transient intake ownership")
+    lease, error = heartbeat.stop()
+    assert error is None
+    assert calls >= coordinator.lock_attempts + 1
+    assert lease.expires_block == BLOCK + 4
+    with _store(tmp_path) as store:
+        events = store.evaluation_lease_events(lease_id=lease.lease_id)
+    assert [event.event_type for event in events] == ["claimed", "heartbeat"]
+
+
+def test_heartbeat_retries_after_full_transient_cursor_mismatch_budget(
+    tmp_path: Path,
+) -> None:
+    row = _published_rows(tmp_path, 1)[0]
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        cursor,
+        lease_blocks=3,
+        heartbeat_interval_s=0.01,
+        lock_attempts=3,
+        lock_retry_delay_s=0.001,
+    )
+    claim = coordinator.claim_screen()
+    assert claim is not None
+    _advance(tmp_path, cursor, BLOCK + 1)
+    calls = 0
+
+    def stale_then_live_cursor() -> tuple[int, str]:
+        nonlocal calls
+        calls += 1
+        if calls <= coordinator.lock_attempts:
+            return BLOCK, _block_hash(BLOCK)
+        return cursor()
+
+    coordinator.advance_finalized_cursor = stale_then_live_cursor
+    heartbeat = coordinator_module._LeaseHeartbeat(coordinator, claim.lease)
+    heartbeat.start()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            with _store(tmp_path) as store:
+                events = store.evaluation_lease_events(
+                    reservation_id=row.reservation_id
+                )
+        except IntakeError as exc:
+            assert str(exc) == "another intake controller owns this database"
+        else:
+            if any(event.event_type == "heartbeat" for event in events):
+                break
+        threading.Event().wait(0.01)
+    else:  # pragma: no cover - deterministic failure aid
+        pytest.fail("heartbeat did not recover from transient cursor mismatch")
+    lease, error = heartbeat.stop()
+
+    assert error is None
+    assert calls >= coordinator.lock_attempts + 1
+    assert lease.expires_block == BLOCK + 4
+    with _store(tmp_path) as store:
+        events = store.evaluation_lease_events(lease_id=lease.lease_id)
+    assert [event.event_type for event in events] == ["claimed", "heartbeat"]
+
+
+def test_transient_heartbeat_contention_does_not_admit_an_expired_result(
+    tmp_path: Path,
+) -> None:
+    row = _published_rows(tmp_path, 1)[0]
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        cursor,
+        lease_blocks=3,
+        heartbeat_interval_s=0.01,
+        lock_attempts=3,
+        lock_retry_delay_s=0.001,
+    )
+    claim = coordinator.claim_screen()
+    assert claim is not None
+    receipt = service.screen(claim.candidate)
+    exhausted = threading.Event()
+    calls = 0
+
+    def always_contended(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls >= coordinator.lock_attempts:
+            exhausted.set()
+        raise IntakeError("another intake controller owns this database")
+
+    coordinator._store_factory = always_contended
+    heartbeat = coordinator_module._LeaseHeartbeat(coordinator, claim.lease)
+    heartbeat.start()
+    assert exhausted.wait(2)
+    _advance(tmp_path, cursor, claim.lease.expires_block)
+    lease, error = heartbeat.stop()
+
+    assert error is None
+    assert calls >= coordinator.lock_attempts
+    assert lease == claim.lease
+    coordinator._store_factory = FinalizedIntakeStore
+    envelope = EvaluationResultEnvelope.seal(
+        lease,
+        coordinator.readiness,
+        service,
+        receipt,
+    )
+    with pytest.raises(EvaluationCoordinatorError, match="after lease expiry"):
+        coordinator.commit_screen_result(claim, receipt, envelope)
+
+    with _store(tmp_path) as store:
+        retained = store.get(row.reservation_id)
+        events = store.evaluation_lease_events(lease_id=lease.lease_id)
+    assert (retained.status, retained.screen_attempts) == ("published", 0)
+    assert [event.event_type for event in events] == ["claimed", "expired"]
+
+
 def test_provider_exception_releases_without_consuming_screen_attempt(
     tmp_path: Path,
 ) -> None:

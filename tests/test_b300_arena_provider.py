@@ -54,6 +54,8 @@ from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_queue import ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
+    ResidentScreenLaneQuarantined,
+    ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
 )
 
@@ -515,6 +517,91 @@ def test_handler_exception_is_no_decision_but_untyped_output_is_not(
             bad_manifest.screens.stages[1],
             candidate,
         )
+
+
+def test_serving_host_error_does_not_release_or_reload_resident(
+    tmp_path: Path, executor_factory, monkeypatch
+) -> None:
+    authorities, _runner, resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    manifest = _manifest(authorities)
+    provider = B300ArenaServiceProvider(manifest, authorities)
+    candidate = _binding(tmp_path / "candidate")
+    calls = 0
+
+    def run(_stage, _candidate):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("candidate carrier unavailable")
+        return ScreenStageResult(
+            "abbreviated_serving", ScreenGrade.PASS, _h("serving-pass"), 1
+        )
+
+    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", run)
+    first = provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
+    second = provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
+    assert first.grade is ScreenGrade.NO_DECISION
+    assert second.grade is ScreenGrade.PASS
+    assert resident.created == 1
+    assert resident.closed == 0
+    provider.close()
+    assert resident.closed == 1
+
+
+def test_canary_quarantine_keeps_model_loaded_and_returns_no_decision(
+    tmp_path: Path, executor_factory, monkeypatch
+) -> None:
+    authorities, _runner, resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    manifest = _manifest(authorities)
+    provider = B300ArenaServiceProvider(manifest, authorities)
+    candidate = _binding(tmp_path / "candidate")
+    monkeypatch.setattr(
+        ResidentServingScreenStage,
+        "run_screen",
+        lambda _stage, _candidate: (_ for _ in ()).throw(
+            ResidentScreenLaneQuarantined("model retained in quarantine")
+        ),
+    )
+    for _ in range(2):
+        result = provider.run_screen(
+            manifest, manifest.screens.stages[-1], candidate
+        )
+        assert result.grade is ScreenGrade.NO_DECISION
+    assert resident.created == 1
+    assert resident.closed == 0
+    provider.close()
+    assert resident.closed == 1
+
+
+def test_engine_death_latches_epoch_without_silent_reboot(
+    tmp_path: Path, executor_factory, monkeypatch
+) -> None:
+    authorities, _runner, resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    manifest = _manifest(authorities)
+    provider = B300ArenaServiceProvider(manifest, authorities)
+    candidate = _binding(tmp_path / "candidate")
+    monkeypatch.setattr(
+        ResidentServingScreenStage,
+        "run_screen",
+        lambda _stage, _candidate: (_ for _ in ()).throw(
+            ResidentScreenLifetimeFailed("engine lost")
+        ),
+    )
+    for _ in range(2):
+        with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
+            provider.run_screen(
+                manifest, manifest.screens.stages[-1], candidate
+            )
+    assert resident.created == 1
+    assert resident.closed == 0
+    provider.close()
+    assert resident.closed == 1
 
 
 def test_qualification_preserves_exact_request_order_and_real_authorities(

@@ -54,6 +54,18 @@ class AdapterError(RuntimeError):
     """The fixed adapter could not authenticate or execute screen work."""
 
 
+class AdapterRequestFailed(AdapterError):
+    """One authenticated request failed before it could touch the resident lane."""
+
+    def __init__(self, message: str, *, request_id: str | None = None) -> None:
+        super().__init__(message)
+        self.request_id = request_id
+
+
+class AdapterEpochFailed(AdapterError):
+    """The commissioned runtime can no longer safely accept another request."""
+
+
 def _load_service():
     if SERVICE_PATH.is_symlink() or not SERVICE_PATH.is_file():
         raise AdapterError("fixed remote worker service is unavailable")
@@ -387,8 +399,13 @@ def _run_with_runtime(
     runtime: _AdapterRuntime,
 ) -> None:
     if type(runtime) is not _AdapterRuntime or runtime.closed:
-        raise AdapterError("persistent adapter runtime is unavailable")
-    runtime.verify_current()
+        raise AdapterEpochFailed("persistent adapter runtime is unavailable")
+    try:
+        runtime.verify_current()
+    except Exception as exc:
+        raise AdapterEpochFailed(
+            "commissioned adapter authority is no longer current"
+        ) from exc
     service = runtime.service
     registration = runtime.registration
 
@@ -404,64 +421,89 @@ def _run_with_runtime(
     )
     from cacheon.eval.qualification_intake import QualificationReservation
 
-    outer = service.verify_request(
-        service.load_json(request_dir / "request.json"),
-        request_dir,
-        registration,
-    )
-    wire_value = service.load_json(
-        service._artifact_for_role(outer, request_dir, "screen_payload"),
-        maximum=64 << 20,
-    )
-    wire = RemoteEvaluationRequest.from_dict(wire_value)
-    credential = runtime.credential
-    identity = runtime.identity
-    verify_remote_request(wire, identity, credential)
-    lease_value = outer["lease"]
-    lease = EvaluationLease(
-        lease_value["lease_id"],
-        lease_value["generation"],
-        lease_value["stage"],
-        lease_value["owner"],
-        tuple(EvaluationLeaseMember(**row) for row in lease_value["members"]),
-        lease_value["claimed_block"],
-        lease_value["initial_expires_block"],
-        lease_value["expires_block"],
-    )
-    body = wire.body
-    publication = _safe_publication(
-        service._artifact_for_role(outer, request_dir, "candidate_publication"),
-        body["publication"],
-    )
-    reservation = QualificationReservation.from_dict(body["reservation"])
-    candidate = ArenaCandidateBinding(
-        reservation,
-        publication,
-        body["screen_attempt"],
-    )
-    if (
-        candidate.digest != body["candidate_digest"]
-        or lease.reservation_ids != (reservation.reservation_digest,)
-    ):
-        raise AdapterError("reconstructed candidate differs from authenticated lease")
-    evaluation = runtime.worker.run_remote_screen(lease, candidate)
-    receipt = evaluation.payload
-    if type(receipt) is not ArenaScreenReceipt:
-        raise AdapterError("B300 screen worker returned an untyped receipt")
-    if (
-        evaluation.lease != lease
-        or evaluation.disposition != "completed"
-        or evaluation.envelope.lease_id != lease.lease_id
-        or evaluation.envelope.payload_digest != receipt.digest
-    ):
-        raise AdapterError("B300 screen worker changed the exact lease/result envelope")
-    response = seal_remote_response(wire, receipt, identity, credential)
-    output = result_dir / "response.json"
-    with output.open("xb") as handle:
-        handle.write(_canonical_json(response.to_dict()) + b"\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(output, 0o400)
+    # Everything in this block consumes only the per-request carrier.  It has
+    # not called the commissioned worker and therefore cannot have mutated the
+    # standing model.  Reject that request without sacrificing residency.
+    try:
+        outer = service.verify_request(
+            service.load_json(request_dir / "request.json"),
+            request_dir,
+            registration,
+        )
+        wire_value = service.load_json(
+            service._artifact_for_role(outer, request_dir, "screen_payload"),
+            maximum=64 << 20,
+        )
+        wire = RemoteEvaluationRequest.from_dict(wire_value)
+        credential = runtime.credential
+        identity = runtime.identity
+        verify_remote_request(wire, identity, credential)
+        lease_value = outer["lease"]
+        lease = EvaluationLease(
+            lease_value["lease_id"],
+            lease_value["generation"],
+            lease_value["stage"],
+            lease_value["owner"],
+            tuple(
+                EvaluationLeaseMember(**row) for row in lease_value["members"]
+            ),
+            lease_value["claimed_block"],
+            lease_value["initial_expires_block"],
+            lease_value["expires_block"],
+        )
+        body = wire.body
+        publication = _safe_publication(
+            service._artifact_for_role(
+                outer, request_dir, "candidate_publication"
+            ),
+            body["publication"],
+        )
+        reservation = QualificationReservation.from_dict(body["reservation"])
+        candidate = ArenaCandidateBinding(
+            reservation,
+            publication,
+            body["screen_attempt"],
+        )
+        if (
+            candidate.digest != body["candidate_digest"]
+            or lease.reservation_ids != (reservation.reservation_digest,)
+        ):
+            raise AdapterError(
+                "reconstructed candidate differs from authenticated lease"
+            )
+    except Exception as exc:
+        raise AdapterRequestFailed(
+            "request carrier/authentication/staging failed before resident work"
+        ) from exc
+
+    # Once the worker is called, an exception is conservatively epoch-fatal:
+    # it may have followed resident mutation.  Typed NO_DECISION is a normal
+    # ArenaScreenReceipt and therefore completes through this path.
+    try:
+        evaluation = runtime.worker.run_remote_screen(lease, candidate)
+        receipt = evaluation.payload
+        if type(receipt) is not ArenaScreenReceipt:
+            raise AdapterError("B300 screen worker returned an untyped receipt")
+        if (
+            evaluation.lease != lease
+            or evaluation.disposition != "completed"
+            or evaluation.envelope.lease_id != lease.lease_id
+            or evaluation.envelope.payload_digest != receipt.digest
+        ):
+            raise AdapterError(
+                "B300 screen worker changed the exact lease/result envelope"
+            )
+        response = seal_remote_response(wire, receipt, identity, credential)
+        output = result_dir / "response.json"
+        with output.open("xb") as handle:
+            handle.write(_canonical_json(response.to_dict()) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(output, 0o400)
+    except Exception as exc:
+        raise AdapterEpochFailed(
+            "resident evaluation failed after entering commissioned worker"
+        ) from exc
 
 
 def _run(request_dir: Path, result_dir: Path) -> None:
@@ -520,6 +562,86 @@ def _emit_control(
     stream.flush()
 
 
+def _validated_command_paths(
+    raw: bytes,
+) -> tuple[str, Path, Path]:
+    command = _decode_command(raw)
+    if set(command) != {
+        "operation",
+        "request_dir",
+        "request_id",
+        "result_dir",
+        "schema",
+    } or command.get("schema") != ADAPTER_COMMAND_SCHEMA:
+        raise AdapterEpochFailed("adapter command fields are not closed")
+    if command.get("operation") != "evaluate":
+        raise AdapterEpochFailed("adapter command operation is unsupported")
+    request_id = command.get("request_id")
+    if (
+        not isinstance(request_id, str)
+        or len(request_id) != 64
+        or any(character not in "0123456789abcdef" for character in request_id)
+    ):
+        raise AdapterEpochFailed("adapter command request ID is malformed")
+    request_dir = _closed_path(
+        command.get("request_dir"),  # type: ignore[arg-type]
+        PROCESSING_ROOT,
+        "request directory",
+        temporary=False,
+    )
+    result_dir = _closed_path(
+        command.get("result_dir"),  # type: ignore[arg-type]
+        RESULTS_ROOT,
+        "result directory",
+        temporary=True,
+    )
+    if request_dir.name != request_id:
+        raise AdapterEpochFailed("adapter command names another request")
+    if (
+        request_dir.is_symlink()
+        or not request_dir.is_dir()
+        or result_dir.is_symlink()
+        or not result_dir.is_dir()
+        or any(result_dir.iterdir())
+    ):
+        raise AdapterRequestFailed(
+            "request/result carrier state is invalid", request_id=request_id
+        )
+    return request_id, request_dir, result_dir
+
+
+def _serve_runtime(runtime: _AdapterRuntime, input_stream, control_output) -> int:
+    """Serve frames on exactly one runtime; never replace it in-process."""
+
+    _emit_control("ready", output=control_output)
+    for raw in input_stream:
+        request_id: str | None = None
+        try:
+            request_id, request_dir, result_dir = _validated_command_paths(raw)
+            _run_with_runtime(request_dir, result_dir, runtime)
+        except AdapterRequestFailed as exc:
+            request_id = request_id or exc.request_id
+            print(
+                "CACHEON-B300-ADAPTER-REQUEST-FAILED: "
+                f"request={request_id or 'unknown'} type={type(exc.__cause__ or exc).__name__}",
+                file=sys.stderr,
+                flush=True,
+            )
+            _emit_control("request_failed", request_id, output=control_output)
+            continue
+        except Exception as exc:
+            print(
+                "CACHEON-B300-ADAPTER-EPOCH-FAILED: "
+                f"request={request_id or 'unknown'} type={type(exc.__cause__ or exc).__name__}",
+                file=sys.stderr,
+                flush=True,
+            )
+            _emit_control("epoch_failed", request_id, output=control_output)
+            return 2
+        _emit_control("completed", request_id, output=control_output)
+    return 0
+
+
 def _serve() -> int:
     # Reserve the original stdout exclusively for the tiny control protocol.
     # Imported controller/runtime code is redirected to stderr so an
@@ -528,62 +650,7 @@ def _serve() -> int:
     sys.stdout = sys.stderr
     runtime = _AdapterRuntime()
     try:
-        _emit_control("ready", output=control_output)
-        for raw in sys.stdin.buffer:
-            request_id: str | None = None
-            try:
-                command = _decode_command(raw)
-                if set(command) != {
-                    "operation",
-                    "request_dir",
-                    "request_id",
-                    "result_dir",
-                    "schema",
-                } or command.get("schema") != ADAPTER_COMMAND_SCHEMA:
-                    raise AdapterError("adapter command fields are not closed")
-                if command.get("operation") != "evaluate":
-                    raise AdapterError("adapter command operation is unsupported")
-                request_id = command.get("request_id")  # type: ignore[assignment]
-                if (
-                    not isinstance(request_id, str)
-                    or len(request_id) != 64
-                    or any(character not in "0123456789abcdef" for character in request_id)
-                ):
-                    raise AdapterError("adapter command request ID is malformed")
-                request_dir = _closed_path(
-                    command.get("request_dir"),  # type: ignore[arg-type]
-                    PROCESSING_ROOT,
-                    "request directory",
-                    temporary=False,
-                )
-                result_dir = _closed_path(
-                    command.get("result_dir"),  # type: ignore[arg-type]
-                    RESULTS_ROOT,
-                    "result directory",
-                    temporary=True,
-                )
-                if request_dir.name != request_id:
-                    raise AdapterError("adapter command names another request")
-                if (
-                    request_dir.is_symlink()
-                    or not request_dir.is_dir()
-                    or result_dir.is_symlink()
-                    or not result_dir.is_dir()
-                    or any(result_dir.iterdir())
-                ):
-                    raise AdapterError("request/result carrier state is invalid")
-                _run_with_runtime(request_dir, result_dir, runtime)
-            except Exception as exc:
-                print(
-                    "CACHEON-B300-ADAPTER-ERROR: "
-                    f"request={request_id or 'unknown'} type={type(exc).__name__}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                _emit_control("failed", request_id, output=control_output)
-                return 2
-            _emit_control("completed", request_id, output=control_output)
-        return 0
+        return _serve_runtime(runtime, sys.stdin.buffer, control_output)
     finally:
         runtime.close()
 

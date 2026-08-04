@@ -301,6 +301,7 @@ def test_pod_service_reuses_one_adapter_process_for_two_requests(
     def start(self, *, deadline, request_id):
         del deadline
         starts.append(request_id)
+        self.start_count += 1
         self.process = fake
         return True
 
@@ -339,6 +340,7 @@ def test_pod_service_reuses_one_adapter_process_for_two_requests(
         process.close()
 
     assert starts == [request_ids[0]]
+    assert process.start_count == 1
     assert tuple(frame["request_id"] for frame in frames) == request_ids
     assert all(
         frame["schema"] == worker.SCHEMA_ADAPTER_COMMAND
@@ -409,3 +411,273 @@ def test_adapter_runtime_does_not_close_worker_between_requests(
         runtime.close()
         coordinator._release(claim.lease, reason="test_cleanup")
     assert fake_worker.closes == 1
+
+
+def test_adapter_start_count_is_durable_in_events_and_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO()
+            self.pid = 4321
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            del timeout
+            self.returncode = 0
+            return 0
+
+    registration = {
+        "python_executable": sys.executable,
+        "ready_receipt_digest": "a" * 64,
+        "worker_epoch": "b" * 32,
+        "worker_readiness_digest": "c" * 64,
+    }
+    events: list[tuple[str, dict[str, object]]] = []
+    adapter_path = tmp_path / "adapter"
+    adapter_path.write_text("adapter", encoding="utf-8")
+    monkeypatch.setattr(worker, "POD_ROOT", tmp_path)
+    monkeypatch.setattr(worker, "POD_ADAPTER", adapter_path)
+    monkeypatch.setattr(worker, "verify_fixed_adapter", lambda _registration: None)
+    monkeypatch.setattr(
+        worker,
+        "_adapter_environment",
+        lambda _registration, _request_id: {},
+    )
+    monkeypatch.setattr(worker.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(
+        worker,
+        "append_event",
+        lambda _root, event, **fields: events.append((event, fields)),
+    )
+    monkeypatch.setattr(
+        worker._PersistentAdapterProcess,
+        "_read_control",
+        lambda *_args, **_kwargs: {
+            "schema": worker.SCHEMA_ADAPTER_CONTROL,
+            "state": "ready",
+        },
+    )
+
+    process = worker._PersistentAdapterProcess(registration, heartbeat_seconds=5)
+    try:
+        assert process._start(deadline=int(time.time()) + 60, request_id="d" * 64)
+        assert process.start_count == 1
+        assert process.alive
+        process._heartbeat("d" * 64, "evaluating")
+        heartbeat = worker.verify_heartbeat(
+            worker.load_json(tmp_path / "heartbeat.json"),
+            registration,
+            30,
+        )
+    finally:
+        process.close()
+
+    assert heartbeat["adapter_alive"] is True
+    assert heartbeat["adapter_start_count"] == 1
+    assert [event for event, _fields in events] == [
+        "adapter_process_started",
+        "adapter_process_ready",
+    ]
+    assert all(fields["adapter_start_count"] == 1 for _event, fields in events)
+
+
+def test_first_adapter_failure_trips_epoch_and_success_resets() -> None:
+    process = worker._PersistentAdapterProcess({}, heartbeat_seconds=5)
+    process.record_result(completed=False)
+    assert (
+        process.consecutive_failures
+        == worker.MAX_CONSECUTIVE_ADAPTER_FAILURES
+    )
+    process.record_result(completed=True)
+    assert process.consecutive_failures == 0
+
+
+def test_dead_adapter_is_never_silently_restarted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DeadProcess:
+        def poll(self):
+            return 2
+
+    process = worker._PersistentAdapterProcess({}, heartbeat_seconds=5)
+    process.process = DeadProcess()  # type: ignore[assignment]
+    process.start_count = 1
+    monkeypatch.setattr(
+        process,
+        "_start",
+        lambda **_kwargs: pytest.fail("dead adapter must not restart"),
+    )
+    failure = process.evaluate(
+        {"request_id": "d" * 64},
+        tmp_path / "request",
+        tmp_path / "result",
+        deadline=int(time.time()) + 60,
+    )
+    assert failure == "adapter_exit_nonzero"
+    assert process.start_count == 1
+
+
+def test_adapter_runtime_refuses_changed_commission_authority() -> None:
+    class FakeService:
+        @staticmethod
+        def load_json(path):
+            if path == adapter.REGISTRATION_PATH:
+                return {"identity": "changed"}
+            return {"identity": "ready"}
+
+        @staticmethod
+        def verify_registration(value):
+            return value
+
+        @staticmethod
+        def verify_ready_receipt(value):
+            return value
+
+    runtime = object.__new__(adapter._AdapterRuntime)
+    runtime.service = FakeService()
+    runtime.registration = {"identity": "original"}
+    runtime.ready = {"identity": "ready"}
+    with pytest.raises(adapter.AdapterError, match="authority changed"):
+        runtime.verify_current()
+
+
+def test_adapter_pre_resident_carrier_failure_never_calls_worker(
+    tmp_path: Path,
+) -> None:
+    class FakeService:
+        @staticmethod
+        def load_json(_path, maximum=None):
+            del maximum
+            return {}
+
+        @staticmethod
+        def verify_request(_value, _root, _registration):
+            raise worker.RemoteWorkerError("malformed request carrier")
+
+    class FakeWorker:
+        calls = 0
+
+        def run_remote_screen(self, _lease, _candidate):
+            self.calls += 1
+            raise AssertionError("pre-resident failure must not call worker")
+
+    runtime = object.__new__(adapter._AdapterRuntime)
+    runtime.service = FakeService()
+    runtime.registration = {}
+    runtime.worker = FakeWorker()
+    runtime.closed = False
+    runtime.verify_current = lambda: None
+
+    with pytest.raises(adapter.AdapterRequestFailed) as captured:
+        adapter._run_with_runtime(tmp_path / "request", tmp_path / "result", runtime)
+
+    assert isinstance(captured.value.__cause__, worker.RemoteWorkerError)
+    assert runtime.worker.calls == 0
+
+
+def test_adapter_request_failure_continues_on_same_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_ids = ("1" * 64, "2" * 64)
+    paths = {
+        b"first\n": (
+            request_ids[0],
+            tmp_path / request_ids[0],
+            tmp_path / f".{request_ids[0]}.1",
+        ),
+        b"second\n": (
+            request_ids[1],
+            tmp_path / request_ids[1],
+            tmp_path / f".{request_ids[1]}.1",
+        ),
+    }
+    runtime = object()
+    seen: list[tuple[object, str]] = []
+
+    monkeypatch.setattr(
+        adapter,
+        "_validated_command_paths",
+        lambda raw: paths[raw],
+    )
+
+    def run_with_runtime(request_dir, _result_dir, observed_runtime):
+        request_id = request_dir.name
+        seen.append((observed_runtime, request_id))
+        if request_id == request_ids[0]:
+            raise adapter.AdapterRequestFailed("bad carrier")
+
+    monkeypatch.setattr(adapter, "_run_with_runtime", run_with_runtime)
+    controls = io.BytesIO()
+
+    assert adapter._serve_runtime(runtime, iter(paths), controls) == 0
+    frames = tuple(json.loads(row) for row in controls.getvalue().splitlines())
+
+    assert seen == [(runtime, request_ids[0]), (runtime, request_ids[1])]
+    assert frames == (
+        {"schema": adapter.ADAPTER_CONTROL_SCHEMA, "state": "ready"},
+        {
+            "request_id": request_ids[0],
+            "schema": adapter.ADAPTER_CONTROL_SCHEMA,
+            "state": "request_failed",
+        },
+        {
+            "request_id": request_ids[1],
+            "schema": adapter.ADAPTER_CONTROL_SCHEMA,
+            "state": "completed",
+        },
+    )
+
+
+def test_adapter_epoch_failure_exits_before_next_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_ids = ("3" * 64, "4" * 64)
+    paths = {
+        b"first\n": (
+            request_ids[0],
+            tmp_path / request_ids[0],
+            tmp_path / f".{request_ids[0]}.1",
+        ),
+        b"second\n": (
+            request_ids[1],
+            tmp_path / request_ids[1],
+            tmp_path / f".{request_ids[1]}.1",
+        ),
+    }
+    runtime = object()
+    seen: list[tuple[object, str]] = []
+
+    monkeypatch.setattr(
+        adapter,
+        "_validated_command_paths",
+        lambda raw: paths[raw],
+    )
+
+    def run_with_runtime(request_dir, _result_dir, observed_runtime):
+        seen.append((observed_runtime, request_dir.name))
+        raise adapter.AdapterEpochFailed("resident lifetime failed")
+
+    monkeypatch.setattr(adapter, "_run_with_runtime", run_with_runtime)
+    controls = io.BytesIO()
+
+    assert adapter._serve_runtime(runtime, iter(paths), controls) == 2
+    frames = tuple(json.loads(row) for row in controls.getvalue().splitlines())
+
+    assert seen == [(runtime, request_ids[0])]
+    assert frames == (
+        {"schema": adapter.ADAPTER_CONTROL_SCHEMA, "state": "ready"},
+        {
+            "request_id": request_ids[0],
+            "schema": adapter.ADAPTER_CONTROL_SCHEMA,
+            "state": "epoch_failed",
+        },
+    )
