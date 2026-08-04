@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import threading
 from pathlib import Path
 
@@ -140,9 +141,15 @@ def _setup_authority(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "credential_path": str(credential_path),
         "known_hosts_path": str(known_hosts),
         "known_hosts_sha256": worker_service.file_sha256(known_hosts),
+        "lane_devices": list(range(readiness.gpu_count)),
+        "lane_digest": _h("lane"),
         "pod_host": "example.invalid",
         "pod_port": 2222,
         "pod_user": "root",
+        "python_executable": sys.executable,
+        "python_executable_sha256": worker_service.file_sha256(
+            Path(sys.executable).resolve()
+        ),
         "ready_receipt_digest": readiness.ready_receipt_digest,
         "ready_receipt_file_sha256": _h("ready-receipt-file"),
         "remote_service_sha256": _h("remote-service"),
