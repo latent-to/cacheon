@@ -479,6 +479,7 @@ specification = importlib.util.spec_from_file_location(
 if specification is None or specification.loader is None:
     raise SystemExit("standing screen dispatcher cannot be loaded")
 module = importlib.util.module_from_spec(specification)
+sys.modules[specification.name] = module
 sys.path.insert(0, str(Path(dispatcher_path).parent))
 specification.loader.exec_module(module)
 with open(manifest_path, encoding="utf-8") as handle:
@@ -611,6 +612,7 @@ specification = importlib.util.spec_from_file_location(
 if specification is None or specification.loader is None:
     raise SystemExit("standing screen dispatcher cannot be loaded")
 module = importlib.util.module_from_spec(specification)
+sys.modules[specification.name] = module
 sys.path.insert(0, str(__import__("pathlib").Path(dispatcher_path).parent))
 specification.loader.exec_module(module)
 module.load_config(config_path)
