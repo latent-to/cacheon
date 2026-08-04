@@ -1864,6 +1864,35 @@ def cmd_chain_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_reservation_status(args: argparse.Namespace) -> int:
+    """Inspect one retained reservation without acquiring validator write authority."""
+
+    import json
+
+    from cacheon.chain.operator_status import (
+        OperatorStatusError,
+        format_reservation_status,
+        reservation_status,
+    )
+
+    try:
+        value = reservation_status(
+            args.intake_db,
+            reservation_id=args.reservation_id or None,
+            content_hash=args.content_hash or None,
+            hotkey=args.miner_hotkey or None,
+            audit_log=args.audit_log or None,
+        )
+    except OperatorStatusError as exc:
+        print(f"RESERVATION STATUS REFUSED: {exc}")
+        return 2
+    if args.json:
+        print(json.dumps(value, separators=(",", ":"), sort_keys=True))
+    else:
+        print(format_reservation_status(value))
+    return 0
+
+
 def cmd_chain_validate(
     args: argparse.Namespace, *, arena_registry=None
 ) -> int:
@@ -2956,6 +2985,30 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--wallet", default=None, help="also report this wallet's uid/permit")
     sp.add_argument("--hotkey", default="default")
     sp.set_defaults(func=cmd_chain_status)
+
+    sp = sub.add_parser(
+        "chain-reservation-status",
+        help=(
+            "operator: read one durable reservation, queue position, typed outcome, "
+            "and retained evidence without taking the validator write lock"
+        ),
+    )
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    selectors = sp.add_mutually_exclusive_group(required=True)
+    selectors.add_argument("--reservation-id", default="")
+    selectors.add_argument("--content-hash", default="")
+    selectors.add_argument(
+        "--miner-hotkey",
+        default="",
+        help="exact miner hotkey; refuses when it matches more than one reservation",
+    )
+    sp.add_argument(
+        "--audit-log",
+        default="",
+        help="optional redacted chain-audit JSONL to attach matching UTC chronology",
+    )
+    sp.add_argument("--json", action="store_true", help="emit canonical compact JSON")
+    sp.set_defaults(func=cmd_chain_reservation_status)
 
     sp = sub.add_parser("chain-validate",
                         help="finalized reveal -> private fetch -> immutable worker publication")
