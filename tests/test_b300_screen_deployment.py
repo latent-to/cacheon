@@ -5,14 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
 
 import cacheon.eval.b300_screen_deployment as deployment
+from cacheon.arena_service import ArenaCandidateBinding
+from cacheon.bundle_hash import content_hash
+from cacheon.chain.publication import publish_worker_bundle
+from cacheon.engine_tree import inspect_contribution
+from cacheon.eval.b300_screen_stages import B300ScreenExecutionPlan
 from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.oci_backend import runtime_identity_from_preflight
+from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
+from cacheon.target_catalog import default_target_catalog
 
 
 def _h(label: str) -> str:
@@ -278,3 +286,68 @@ def test_materializer_rejects_mutated_sealed_prompt(tmp_path: Path) -> None:
             **paths,
             gpu_provisioner=lambda selected, *, deadline: gpus,
         )
+
+
+def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
+    tmp_path: Path,
+) -> None:
+    paths, gpus, _ready = _case(tmp_path)
+    inputs = deployment._authority_inputs(
+        **paths,
+        provisioner=None,
+        provisioned_gpus=gpus,
+    )
+    composition = deployment._compose(inputs)
+    try:
+        source = tmp_path / "candidate-source"
+        shutil.copytree(
+            Path(__file__).parents[1] / "examples" / "miner_silu_torch",
+            source,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        for child in sorted(source.rglob("*")):
+            child.chmod(0o700 if child.is_dir() else 0o600)
+        source.chmod(0o700)
+        catalog = default_target_catalog()
+        inspected = inspect_contribution(source, catalog=catalog)
+        publication = publish_worker_bundle(
+            source,
+            tmp_path / "candidate-publications",
+            content_hash(source),
+        )
+        target = catalog.require(inspected.target_id)
+        candidate = ArenaCandidateBinding(
+            QualificationReservation(
+                _h("reservation"),
+                publication.digest,
+                inspected.target_id,
+                inspected.selected_delta_digest,
+                0,
+                "miner",
+                100,
+                0,
+                0,
+                target.members,
+            ),
+            publication,
+            1,
+        )
+        plan = composition.pipeline._plan_resolver(  # noqa: SLF001 - exact deployment seam
+            composition.manifest, candidate
+        )
+        assert type(plan) is B300ScreenExecutionPlan
+        assert plan.service_digest == composition.manifest.digest
+        assert plan.binding.physical_hardware.physical_gpu_ids == (
+            "0",
+            "1",
+            "2",
+            "3",
+        )
+        assert plan.eager_launch.hardware.tp_size == 4
+        assert plan.eager_session.engine_config.disable_cuda_graph is True
+        assert plan.graph_session.engine_config.disable_cuda_graph is False
+        assert plan.eager_launch.tree_digest == plan.graph_launch.tree_digest
+        assert plan.eager_launch.digest != plan.graph_launch.digest
+    finally:
+        composition.pipeline.close()
+        composition.executor.manager.close()
