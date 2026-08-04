@@ -7,6 +7,7 @@ import json
 import sys
 import tarfile
 import time
+import stat
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,8 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     seal_remote_request,
     seal_remote_response,
 )
+from cacheon.chain.publication import reopen_worker_bundle
+from chainops import cacheon_b300_evaluation_adapter as adapter
 from chainops import remote_worker_service as worker
 
 
@@ -165,6 +168,65 @@ def test_spool_screen_request_and_response_are_exact_authenticated_authority(
     assert result["state"] == "completed"
     assert result["response_digest"] == response.digest
     coordinator._release(claim.lease, reason="test_cleanup")
+
+
+def test_publication_transport_reconstructs_reopenable_immutable_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (
+        coordinator,
+        claim,
+        _service,
+        _credential,
+        _identity,
+        registration,
+        _request,
+        _request_id,
+        job_dir,
+    ) = _screen_authority(tmp_path)
+    try:
+        outer = worker.verify_request(
+            worker.load_json(job_dir / "request.json"), job_dir, registration
+        )
+        archive_path = worker._artifact_for_role(
+            outer, job_dir, "candidate_publication"
+        )
+        with tarfile.open(archive_path, "r:") as archive:
+            assert "bundle/.cacheon-native-artifact.json" in archive.getnames()
+
+        publication_root = tmp_path / "pod-publications"
+        monkeypatch.setattr(adapter, "PUBLICATION_ROOT", publication_root)
+        reconstructed = adapter._safe_publication(
+            archive_path, claim.publication.to_dict()
+        )
+
+        assert reconstructed.to_dict() == claim.publication.to_dict()
+        assert stat.S_IMODE(reconstructed.root.stat().st_mode) == 0o555
+        assert stat.S_IMODE(
+            (reconstructed.root / ".cacheon-native-artifact.json").stat().st_mode
+        ) == 0o444
+        for logical in reconstructed.directories:
+            assert stat.S_IMODE(
+                reconstructed.root.joinpath(*Path(logical).parts).stat().st_mode
+            ) == 0o555
+        for row in reconstructed.files:
+            assert stat.S_IMODE(
+                reconstructed.root.joinpath(*Path(row.path).parts).stat().st_mode
+            ) == 0o444
+
+        reopened = reopen_worker_bundle(
+            reconstructed.root,
+            claim.publication.content_hash,
+            expected_publication_digest=claim.publication.publication_digest,
+            expected_receipt_digest=claim.publication.digest,
+        )
+        assert reopened.to_dict() == claim.publication.to_dict()
+        reused = adapter._safe_publication(
+            archive_path, claim.publication.to_dict()
+        )
+        assert reused.to_dict() == claim.publication.to_dict()
+    finally:
+        coordinator._release(claim.lease, reason="test_cleanup")
 
 
 def test_spool_rejects_forged_request_hmac(tmp_path: Path) -> None:

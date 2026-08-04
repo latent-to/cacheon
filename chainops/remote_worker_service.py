@@ -205,6 +205,7 @@ MAX_JOB_SECONDS = 4 * 60 * 60
 DEFAULT_POLL_SECONDS = 5
 DEFAULT_HEARTBEAT_SECONDS = 10
 DEFAULT_MAX_HEARTBEAT_AGE = 45
+NATIVE_ARTIFACT_MANIFEST = ".cacheon-native-artifact.json"
 
 
 class RemoteWorkerError(RuntimeError):
@@ -2846,7 +2847,10 @@ def _publication_archive(publication: object, destination: Path) -> None:
     """Copy one exact WorkerBundlePublication into a path-free worker archive."""
 
     try:
-        from cacheon.chain.publication import WorkerBundlePublication
+        from cacheon.chain.publication import (
+            WorkerBundlePublication,
+            reopen_worker_bundle,
+        )
     except ImportError as exc:
         fail(f"worker publication type is unavailable: {exc}")
     if type(publication) is not WorkerBundlePublication:
@@ -2854,6 +2858,69 @@ def _publication_archive(publication: object, destination: Path) -> None:
     root = publication.root
     if root.is_symlink() or not root.is_dir():
         fail("worker publication root is unavailable or symlinked")
+    try:
+        reopened = reopen_worker_bundle(
+            root,
+            publication.content_hash,
+            expected_publication_digest=publication.publication_digest,
+            expected_receipt_digest=publication.digest,
+        )
+    except Exception as exc:
+        fail(f"worker publication cannot be reopened before transport: {exc}")
+    if reopened.to_dict() != publication.to_dict():
+        fail("reopened worker publication differs before transport")
+
+    def stable_bytes(path: Path, *, size: int | None, sha256: str | None) -> bytes:
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o444
+            or before.st_size < 0
+            or (size is not None and before.st_size != size)
+        ):
+            fail("worker publication file shape differs during transport")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
+            os, "O_NOFOLLOW", 0
+        )
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+                or opened.st_mode != before.st_mode
+                or opened.st_nlink != before.st_nlink
+                or opened.st_size != before.st_size
+            ):
+                fail("worker publication file changed while opening")
+            chunks: list[bytes] = []
+            remaining = before.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(4 << 20, remaining))
+                if not chunk:
+                    fail("worker publication file was truncated")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                fail("worker publication file grew during transport")
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        data = b"".join(chunks)
+        if (
+            after.st_dev != before.st_dev
+            or after.st_ino != before.st_ino
+            or after.st_mode != before.st_mode
+            or after.st_nlink != before.st_nlink
+            or after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+            or (sha256 is not None and hashlib.sha256(data).hexdigest() != sha256)
+        ):
+            fail("worker publication bytes differ from retained inventory")
+        return data
+
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{destination.name}.", dir=destination.parent
@@ -2870,52 +2937,25 @@ def _publication_archive(publication: object, destination: Path) -> None:
             archive.addfile(
                 _tar_info("publication.json", len(manifest)), io.BytesIO(manifest)
             )
+            native_manifest = stable_bytes(
+                root / NATIVE_ARTIFACT_MANIFEST,
+                size=None,
+                sha256=None,
+            )
+            if len(native_manifest) > 16 << 20:
+                fail("worker publication native manifest exceeds its hard bound")
+            archive.addfile(
+                _tar_info(
+                    f"bundle/{NATIVE_ARTIFACT_MANIFEST}", len(native_manifest)
+                ),
+                io.BytesIO(native_manifest),
+            )
             for row in publication.files:
                 relative = Path(row.path)
                 if relative.is_absolute() or ".." in relative.parts:
                     fail("worker publication inventory contains an unsafe path")
                 path = root.joinpath(*relative.parts)
-                before = path.lstat()
-                if (
-                    not stat.S_ISREG(before.st_mode)
-                    or stat.S_ISLNK(before.st_mode)
-                    or before.st_nlink != 1
-                    or before.st_size != row.size
-                ):
-                    fail("worker publication file shape differs during transport")
-                flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
-                    os, "O_NOFOLLOW", 0
-                )
-                descriptor = os.open(path, flags)
-                try:
-                    opened = os.fstat(descriptor)
-                    if (
-                        opened.st_dev != before.st_dev
-                        or opened.st_ino != before.st_ino
-                        or opened.st_size != before.st_size
-                    ):
-                        fail("worker publication file changed while opening")
-                    data = b""
-                    remaining = row.size
-                    chunks: list[bytes] = []
-                    while remaining:
-                        chunk = os.read(descriptor, min(4 << 20, remaining))
-                        if not chunk:
-                            fail("worker publication file was truncated")
-                        chunks.append(chunk)
-                        remaining -= len(chunk)
-                    if os.read(descriptor, 1):
-                        fail("worker publication file grew during transport")
-                    data = b"".join(chunks)
-                    after = os.fstat(descriptor)
-                finally:
-                    os.close(descriptor)
-                if (
-                    after.st_size != before.st_size
-                    or after.st_mtime_ns != before.st_mtime_ns
-                    or hashlib.sha256(data).hexdigest() != row.sha256
-                ):
-                    fail("worker publication bytes differ from retained inventory")
+                data = stable_bytes(path, size=row.size, sha256=row.sha256)
                 archive.addfile(
                     _tar_info(f"bundle/{relative.as_posix()}", len(data)),
                     io.BytesIO(data),
