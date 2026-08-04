@@ -60,6 +60,7 @@ def _load_service():
     if specification is None or specification.loader is None:
         raise AdapterError("fixed remote worker service cannot be loaded")
     module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
     specification.loader.exec_module(module)
     return module
 
