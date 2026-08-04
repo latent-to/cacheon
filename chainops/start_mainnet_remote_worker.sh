@@ -58,8 +58,6 @@ usage() {
   cat <<'USAGE'
 Usage: start_mainnet_remote_worker.sh \
   --pod-host HOST --pod-port PORT \
-  --worker-readiness /absolute/path/worker-readiness.json \
-  --service-identity ARENA_SERVICE_ID \
   [--known-hosts /root/cacheon-ops/state/lium-worker-known-hosts] \
   [--adapter /root/cacheon-ops/bin/cacheon_b300_evaluation_adapter.py] \
   [--credential /root/cacheon-ops/state/remote-worker-credential.secret] \
@@ -71,10 +69,14 @@ Usage: start_mainnet_remote_worker.sh \
   [--screen-dispatcher-template /root/cacheon-ops/state/mainnet-screen-dispatcher-template.json] \
   [--spool-root /root/cacheon-ops/remote-worker/spool]
 
-If the existing pod predates the worker-bootstrap READY receipt, add:
+For an already-commissioned pod, also supply:
+
+  --worker-readiness /absolute/path/worker-readiness.json \
+  --service-identity ARENA_SERVICE_ID
+
+For the current/pre-READY pod, instead supply:
 
   --commission-current-pod \
-  --pod-source-root /absolute/current/source \
   --pod-source-revision 40_HEX_COMMIT \
   --pod-runtime-root /absolute/current/runtime-seeds \
   --pod-model-root /absolute/current/model \
@@ -87,7 +89,8 @@ Commissioning runs only bounded identity reads: exact 8xB300 inventory/topology,
 source/runtime tree hashing, read-only model-receipt inventory reopening, and
 local immutable image inspection. It runs no evaluator, profiler, or kernel.
 
-The pod must already have a verified cacheon-lium-worker-ready-v1 receipt.
+Without --commission-current-pod, the pod must already have a verified READY
+receipt and the matching WorkerReadiness/service identity must be supplied.
 The adapter is a reviewed deployment codec with a fixed CLI; miner bytes never
 select a command, module, executable, or argv.
 USAGE
