@@ -788,8 +788,14 @@ class _CommissionedScreenPlanResolver:
             validator_seed=canonical_digest(
                 "cacheon.eval.b300-screen-audit-seed.v1",
                 {
-                    "prompt_authority": self.inputs.prompt_identity,
-                    "service_digest": manifest.digest,
+                    "candidate_digest": candidate.digest,
+                    "device_execution_sha256": self.inputs.authority_refs[
+                        "device_execution"
+                    ]["sha256"],
+                    "screen_attempt": candidate.screen_attempt,
+                    "selection_policy_digest": self.inputs.prompt_identity[
+                        "selection_policy_digest"
+                    ],
                 },
             )[:32],
             sample_rate_ppm=1_000_000,
