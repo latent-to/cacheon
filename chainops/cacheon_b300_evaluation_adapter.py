@@ -45,6 +45,7 @@ PUBLICATION_ROOT = Path("/data/cacheon-b300/remote-worker/publications")
 PROCESSING_ROOT = Path("/data/cacheon-b300/remote-worker/processing")
 RESULTS_ROOT = Path("/data/cacheon-b300/remote-worker/results")
 MAX_PUBLICATION_BYTES = 4 * 1024 * 1024 * 1024
+NATIVE_ARTIFACT_MANIFEST = ".cacheon-native-artifact.json"
 
 
 class AdapterError(RuntimeError):
@@ -130,7 +131,7 @@ def _safe_publication(
     archive_path: Path,
     expected_wire: object,
 ):
-    from cacheon.chain.publication import WorkerBundlePublication
+    from cacheon.chain.publication import reopen_worker_bundle
     from cacheon.eval.native_artifact import NativeArtifactFile
 
     if archive_path.is_symlink() or not archive_path.is_file():
@@ -178,9 +179,19 @@ def _safe_publication(
         raw_directories = publication["directories"]
         if type(raw_files) is not list or type(raw_directories) is not list:
             raise AdapterError("candidate publication inventory is malformed")
-        files = tuple(NativeArtifactFile(**row) for row in raw_files)
+        try:
+            files = tuple(NativeArtifactFile(**row) for row in raw_files)
+        except (TypeError, ValueError) as exc:
+            raise AdapterError(
+                f"candidate publication file inventory is malformed: {exc}"
+            ) from None
+        if any(type(logical) is not str for logical in raw_directories):
+            raise AdapterError("candidate publication directory inventory is malformed")
         directories = tuple(raw_directories)
-        expected_names = {"publication.json"} | {
+        expected_names = {
+            "publication.json",
+            f"bundle/{NATIVE_ARTIFACT_MANIFEST}",
+        } | {
             f"bundle/{row.path}" for row in files
         }
         if set(by_name) != expected_names:
@@ -202,35 +213,41 @@ def _safe_publication(
         final = parent / address
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if final.exists():
-            candidate = WorkerBundlePublication(
+            candidate = reopen_worker_bundle(
                 final,
                 publication["content_hash"],
-                address,
-                publication["publication_digest"],
-                directories,
-                files,
-                True,
+                expected_publication_digest=publication["publication_digest"],
             )
-            _verify_publication_bytes(candidate)
+            if candidate.to_dict() != publication:
+                raise AdapterError(
+                    "reopened candidate publication differs from wire authority"
+                )
             return candidate
         temporary = Path(tempfile.mkdtemp(prefix=f".{address}.", dir=parent))
         try:
-            for logical in directories:
+            for logical in sorted(
+                directories,
+                key=lambda value: (len(PurePosixPath(value).parts), value),
+            ):
                 relative = PurePosixPath(logical)
                 if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
                     raise AdapterError("candidate publication directory is unsafe")
                 temporary.joinpath(*relative.parts).mkdir(
                     parents=True, exist_ok=True, mode=0o700
                 )
-            for row in files:
-                member = by_name[f"bundle/{row.path}"]
+            carriers = (
+                (NATIVE_ARTIFACT_MANIFEST, None),
+                *((row.path, row) for row in files),
+            )
+            for logical_name, row in carriers:
+                member = by_name[f"bundle/{logical_name}"]
                 source = archive.extractfile(member)
                 if source is None:
                     raise AdapterError("candidate archive file is unreadable")
-                target = temporary.joinpath(*PurePosixPath(row.path).parts)
+                target = temporary.joinpath(*PurePosixPath(logical_name).parts)
                 target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 with target.open("xb") as output:
-                    remaining = row.size
+                    remaining = member.size if row is None else row.size
                     while remaining:
                         chunk = source.read(min(4 << 20, remaining))
                         if not chunk:
@@ -241,8 +258,7 @@ def _safe_publication(
                         raise AdapterError("candidate archive file exceeded its inventory")
                     output.flush()
                     os.fsync(output.fileno())
-                os.chmod(target, 0o400)
-            os.chmod(temporary, 0o700)
+                os.chmod(target, 0o444)
             for row in files:
                 path = temporary.joinpath(*PurePosixPath(row.path).parts)
                 if (
@@ -254,19 +270,32 @@ def _safe_publication(
                     raise AdapterError(
                         "reconstructed candidate publication bytes differ"
                     )
+            for logical in sorted(
+                directories,
+                key=lambda value: (-len(PurePosixPath(value).parts), value),
+            ):
+                os.chmod(
+                    temporary.joinpath(*PurePosixPath(logical).parts), 0o555
+                )
+            os.chmod(temporary, 0o555)
             os.replace(temporary, final)
         finally:
             if temporary.exists():
+                for current, directory_names, file_names in os.walk(
+                    temporary, topdown=False
+                ):
+                    os.chmod(current, 0o700)
+                    for name in file_names:
+                        os.chmod(Path(current) / name, 0o600)
                 shutil.rmtree(temporary)
-    return WorkerBundlePublication(
+    candidate = reopen_worker_bundle(
         final,
         publication["content_hash"],
-        address,
-        publication["publication_digest"],
-        directories,
-        files,
-        False,
+        expected_publication_digest=publication["publication_digest"],
     )
+    if candidate.to_dict() != publication:
+        raise AdapterError("reconstructed candidate differs from wire authority")
+    return candidate
 
 
 def _verify_publication_bytes(publication) -> None:
