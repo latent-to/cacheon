@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import stat
+
 import pytest
 
 from cacheon.bundle_hash import content_hash
@@ -27,6 +29,26 @@ class TestStageSwapBundle:
         staged = root / digest
         assert staged.is_dir()
         assert content_hash(staged) == digest
+        assert stat.S_IMODE(staged.stat().st_mode) == 0o555
+        assert stat.S_IMODE((staged / "manifest.toml").stat().st_mode) == 0o444
+        assert stat.S_IMODE((staged / "kernels").stat().st_mode) == 0o555
+        assert stat.S_IMODE((staged / "kernels" / "k.py").stat().st_mode) == 0o444
+
+    def test_stage_normalizes_root_private_source_modes(self, tmp_path) -> None:
+        root = tmp_path / "intake"
+        root.mkdir()
+        source = self._source(tmp_path)
+        (source / "manifest.toml").chmod(0o400)
+        (source / "kernels").chmod(0o700)
+        (source / "kernels" / "k.py").chmod(0o400)
+
+        digest = stage_swap_bundle(root, source)
+
+        staged = root / digest
+        assert stat.S_IMODE(staged.stat().st_mode) == 0o555
+        assert stat.S_IMODE((staged / "manifest.toml").stat().st_mode) == 0o444
+        assert stat.S_IMODE((staged / "kernels").stat().st_mode) == 0o555
+        assert stat.S_IMODE((staged / "kernels" / "k.py").stat().st_mode) == 0o444
 
     def test_stage_is_idempotent(self, tmp_path) -> None:
         root = tmp_path / "intake"
@@ -48,6 +70,7 @@ class TestStageSwapBundle:
         root.mkdir()
         source = self._source(tmp_path)
         digest = stage_swap_bundle(root, source)
+        (root / digest / "kernels" / "k.py").chmod(0o644)
         (root / digest / "kernels" / "k.py").write_text("def k(): return 1\n")
         with pytest.raises(OCIBackendError, match="different bytes"):
             stage_swap_bundle(root, source)

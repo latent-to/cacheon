@@ -14,6 +14,7 @@ arena manifest selects that adapter.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 
 from cacheon.arena_service import (
     ArenaCandidateBinding,
@@ -21,6 +22,7 @@ from cacheon.arena_service import (
     ArenaScreenReceipt,
     ArenaService,
     ArenaServiceManifest,
+    PromotionDecision,
 )
 from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.evaluation_coordinator import (
@@ -40,6 +42,7 @@ from cacheon.eval.b300_arena_provider import (
 from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_intake import (
+    QualificationAuthorityManifest,
     QualificationIntakeBatch,
     QualificationPlanFactory,
     run_qualification_intake,
@@ -52,6 +55,36 @@ WORKER_SCHEMA = "cacheon.eval.b300-mainnet-worker.v1"
 
 class B300MainnetWorkerError(RuntimeError):
     """A leased job or sealed worker authority is inconsistent."""
+
+
+@dataclass(frozen=True)
+class B300RemoteQualificationRun:
+    """Pod result plus the public authority that produced its evidence.
+
+    ``EvaluationRun`` deliberately carries only the qualification batch.  The
+    CPU cannot safely infer the private plan's public authority from that batch,
+    so the remote boundary returns the exact manifest alongside it.  Evidence
+    bytes and incumbent identities remain deployment-owned product fields; they
+    are not filesystem paths on this object.
+    """
+
+    run: EvaluationRun
+    authority_manifest: QualificationAuthorityManifest
+    screen_lane: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.run) is not EvaluationRun
+            or type(self.authority_manifest) is not QualificationAuthorityManifest
+            or type(self.run.payload) is not QualificationIntakeBatch
+            or self.run.lease.stage != "qualification"
+            or self.run.payload.authority_manifest_digest
+            != self.authority_manifest.digest
+            or self.screen_lane not in {"primary", "reproduction"}
+        ):
+            raise B300MainnetWorkerError(
+                "remote qualification result changed its sealed authority"
+            )
 
 
 class B300MainnetWorker:
@@ -78,6 +111,11 @@ class B300MainnetWorker:
         self.service = service
         self.readiness = readiness
         self._provider = provider
+        self._remote_qualification_lane = (
+            authorities.qualification_stage
+            if type(authorities) is B300DeploymentAuthorities
+            else None
+        )
         self._closed = False
         self._lock = threading.RLock()
         self.worker_digest = canonical_digest(
@@ -86,6 +124,7 @@ class B300MainnetWorker:
                 "provider_digest": provider.provider_digest,
                 "ready_epoch": readiness.ready_epoch,
                 "ready_receipt_digest": readiness.ready_receipt_digest,
+                "remote_qualification_lane": self._remote_qualification_lane,
                 "service_digest": service.identity,
                 "worker_readiness_digest": readiness.digest,
             },
@@ -155,6 +194,72 @@ class B300MainnetWorker:
             )
             return EvaluationRun(lease, envelope, payload, "completed")
 
+    def run_remote_qualification(
+        self,
+        lease: EvaluationLease,
+        candidates: tuple[ArenaCandidateBinding, ...],
+        screen_receipts: tuple[ArenaScreenReceipt, ...],
+        *,
+        screen_lane: str,
+    ) -> B300RemoteQualificationRun:
+        """Run one path-free, lane-bound remote qualification cohort.
+
+        The CPU transport sends immutable publications, reservations, promoted
+        receipts, and the retained primary/reproduction lane.  A deployment
+        composes this worker with the corresponding physical TP4 role
+        orientation; this method refuses a missing or differently oriented lane
+        before constructing private qualification work.
+        """
+
+        candidate_rows = tuple(candidates) if type(candidates) is tuple else ()
+        receipt_rows = (
+            tuple(screen_receipts) if type(screen_receipts) is tuple else ()
+        )
+        if (
+            type(lease) is not EvaluationLease
+            or lease.stage != "qualification"
+            or not candidate_rows
+            or any(type(row) is not ArenaCandidateBinding for row in candidate_rows)
+            or len(candidate_rows) != len(receipt_rows)
+            or any(type(row) is not ArenaScreenReceipt for row in receipt_rows)
+            or lease.reservation_ids
+            != tuple(row.reservation.reservation_digest for row in candidate_rows)
+            or tuple(row.candidate_digest for row in receipt_rows)
+            != tuple(row.digest for row in candidate_rows)
+            or any(
+                row.service_digest != self.service.identity
+                or row.decision is not PromotionDecision.PROMOTE
+                for row in receipt_rows
+            )
+            or screen_lane not in {"primary", "reproduction"}
+            or screen_lane != self._remote_qualification_lane
+            or (screen_lane == "reproduction" and len(candidate_rows) != 1)
+        ):
+            raise B300MainnetWorkerError(
+                "remote qualification lease differs from the exact promoted cohort"
+            )
+        with self._lock:
+            if self._closed:
+                raise B300MainnetWorkerError("B300 mainnet worker is closed")
+            self._validate_readiness(self.readiness, self.service)
+            payload, authority_manifest = self._execute_qualification(
+                candidate_rows,
+                receipt_rows,
+            )
+            disposition = "released" if self._systemic(payload) else "completed"
+            envelope = EvaluationResultEnvelope.seal(
+                lease,
+                self.readiness,
+                self.service,
+                payload,
+            )
+            run = EvaluationRun(lease, envelope, payload, disposition)
+            return B300RemoteQualificationRun(
+                run,
+                authority_manifest,
+                screen_lane,
+            )
+
     def close(self) -> None:
         """Permanently release the resident provider lifetime."""
 
@@ -196,12 +301,23 @@ class B300MainnetWorker:
         self,
         job: ClaimedQualificationEvaluation,
     ) -> QualificationIntakeBatch:
-        work = self.service.plan_qualification(
+        batch, _manifest = self._execute_qualification(
             job.candidates,
             job.screen_receipts,
+        )
+        return batch
+
+    def _execute_qualification(
+        self,
+        candidates: tuple[ArenaCandidateBinding, ...],
+        screen_receipts: tuple[ArenaScreenReceipt, ...],
+    ) -> tuple[QualificationIntakeBatch, QualificationAuthorityManifest]:
+        work = self.service.plan_qualification(
+            candidates,
+            screen_receipts,
             state=None,
         )
-        self._validate_work(work, job)
+        self._validate_work(work, candidates)
         batch = run_qualification_intake(
             work.factory,
             executor=work.executor,
@@ -210,15 +326,15 @@ class B300MainnetWorker:
             hidden_judge=work.hidden_judge,
             deadline=float(work.deadline),
         )
-        self._validate_batch(batch, work, job)
-        return batch
+        self._validate_batch(batch, work, candidates)
+        return batch, work.factory.manifest
 
     @staticmethod
     def _validate_work(
         work: ArenaQualificationWork,
-        job: ClaimedQualificationEvaluation,
+        candidates: tuple[ArenaCandidateBinding, ...],
     ) -> None:
-        expected = tuple(candidate.reservation for candidate in job.candidates)
+        expected = tuple(candidate.reservation for candidate in candidates)
         if (
             type(work) is not ArenaQualificationWork
             or type(work.factory) is not QualificationPlanFactory
@@ -237,9 +353,9 @@ class B300MainnetWorker:
     def _validate_batch(
         batch: QualificationIntakeBatch,
         work: ArenaQualificationWork,
-        job: ClaimedQualificationEvaluation,
+        candidates: tuple[ArenaCandidateBinding, ...],
     ) -> None:
-        expected = tuple(candidate.reservation for candidate in job.candidates)
+        expected = tuple(candidate.reservation for candidate in candidates)
         if (
             type(batch) is not QualificationIntakeBatch
             or batch.authority_manifest_digest != work.factory.manifest.digest
@@ -289,6 +405,7 @@ def run_b300_mainnet_job(
 __all__ = [
     "B300MainnetWorker",
     "B300MainnetWorkerError",
+    "B300RemoteQualificationRun",
     "WORKER_SCHEMA",
     "run_b300_mainnet_job",
 ]

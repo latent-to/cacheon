@@ -658,3 +658,22 @@ class TestResidentOuterSession:
         session = self._open()
         with pytest.raises(OuterSessionInfrastructureError, match="no batches"):
             session.finish()
+
+    def test_finish_allows_explicit_empty_epoch_retirement(self) -> None:
+        session = self._open()
+
+        evidence = session.finish(allow_empty=True)
+
+        assert evidence.batches == ()
+        assert evidence.swaps == ()
+        assert session.closed
+        assert session.transport.finalized
+
+    def test_empty_finish_policy_requires_an_exact_boolean(self) -> None:
+        from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError
+
+        session = self._open()
+        with pytest.raises(OuterSessionInfrastructureError, match="boolean"):
+            session.finish(allow_empty=1)  # type: ignore[arg-type]
+        assert not session.closed
+        assert not session.transport.finalized

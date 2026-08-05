@@ -43,6 +43,7 @@ from cacheon.chain.intake import (
 )
 from cacheon.chain.publication import publish_worker_bundle
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
+from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
@@ -817,6 +818,77 @@ def _no_decision_batch(work, reason: str) -> QualificationIntakeBatch:
     )
 
 
+def _remote_incumbent(
+    service: ArenaService,
+    *,
+    arena_digest: str | None = None,
+    marker: str = "remote-commit",
+) -> EvaluationStackManifest:
+    snapshot = {
+        "schema_version": 1,
+        "policy_version": "target-catalog.v1",
+        "targets": [{"target_id": "target.0", "marker": marker}],
+        "composition_rules": [],
+    }
+    return EvaluationStackManifest(
+        runtime_digest=service.manifest.runtime.runtime_digest,
+        base_engine_digest=service.manifest.runtime.base_engine_digest,
+        arena_digest=arena_digest or service.identity,
+        catalog_snapshot=snapshot,
+        catalog_digest=canonical_digest("cacheon.target-catalog", snapshot),
+        entries={},
+    )
+
+
+def _remote_commit_product(
+    tmp_path: Path,
+    coordinator: EvaluationCoordinator,
+    claim: ClaimedQualificationEvaluation,
+):
+    reservations = tuple(row.reservation for row in claim.candidates)
+    authority = QualificationAuthorityManifest(
+        "registered",
+        _h("remote-commit-authority"),
+        _h("remote-commit-source"),
+        _h("remote-commit-commitment"),
+        _h("remote-commit-secret"),
+        tuple(row.selected_delta_digest for row in reservations),
+        reservations,
+    )
+    evidence_root = tmp_path / "remote-cpu-evidence"
+    attempt_ref = publish_evidence(
+        evidence_root,
+        b'{"remote":"attempt"}',
+        domain="qualification-attempt",
+        media_type="application/json",
+        schema="cacheon.qualification.remote-commit-test.v1",
+    )
+    batch = QualificationIntakeBatch(
+        authority.digest,
+        tuple(
+            QualificationIntakeOutcome(
+                row.reservation_digest,
+                row.selected_delta_digest,
+                authority.digest,
+                QualificationDecision.FAIL,
+                "speed_regression",
+                False,
+                attempt_artifact_sha256=attempt_ref.sha256,
+                report_digest=_h(f"remote-report:{row.reservation_digest}"),
+            )
+            for row in reservations
+        ),
+        attempt_ref,
+    )
+    envelope = EvaluationResultEnvelope.seal(
+        claim.lease,
+        coordinator.readiness,
+        coordinator.service,
+        batch,
+    )
+    return authority, batch, envelope, evidence_root, attempt_ref
+
+
 def test_systemic_qualification_releases_whole_cohort_without_attempt(
     tmp_path: Path,
     monkeypatch,
@@ -970,3 +1042,189 @@ def test_partial_qualification_payload_is_rejected_before_any_cohort_mutation(
         )
         assert all(store.qualification_dispositions(value) == () for value in ids)
         assert store.active_evaluation_leases() == (claim.lease,)
+
+
+def test_remote_commit_reopens_complete_cpu_inventory_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    provider = _Provider()
+    service = ArenaService(_manifest(), provider)
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    ids = _promote_all(tmp_path, service, cursor, 1)
+    coordinator = _coordinator(tmp_path, service, cursor)
+    claim = coordinator.claim_qualification()
+    assert type(claim) is ClaimedQualificationEvaluation
+    authority, batch, envelope, _root, attempt_ref = _remote_commit_product(
+        tmp_path,
+        coordinator,
+        claim,
+    )
+    missing_root = tmp_path / "missing-cpu-evidence"
+    missing_root.mkdir(mode=0o700)
+
+    with pytest.raises(EvaluationCoordinatorError, match="cannot reopen from the CPU CAS"):
+        coordinator.commit_remote_qualification_result(
+            claim,
+            authority_manifest=authority,
+            incumbent_stack=_remote_incumbent(service),
+            incumbent_tree_digest=_h("remote-tree"),
+            batch=batch,
+            envelope=envelope,
+            evidence_root=missing_root,
+            evidence_inventory=(attempt_ref,),
+        )
+
+    with _store(tmp_path) as store:
+        assert tuple(store.get(value).status for value in ids) == ("promoted",)
+        assert store.qualification_dispositions(ids[0]) == ()
+        assert store.active_evaluation_leases() == (claim.lease,)
+        with pytest.raises(IntakeError, match="not initialized"):
+            store.evaluation_stack(service.identity)
+
+
+def test_remote_commit_rejects_wrong_incumbent_and_existing_tree_atomically(
+    tmp_path: Path,
+) -> None:
+    provider = _Provider()
+    service = ArenaService(_manifest(), provider)
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    ids = _promote_all(tmp_path, service, cursor, 1)
+    coordinator = _coordinator(tmp_path, service, cursor)
+    incumbent = _remote_incumbent(service)
+    with _store(tmp_path) as store:
+        store.initialize_evaluation_stack(
+            incumbent,
+            tree_digest=_h("authoritative-tree"),
+        )
+    claim = coordinator.claim_qualification()
+    assert type(claim) is ClaimedQualificationEvaluation
+    authority, batch, envelope, root, attempt_ref = _remote_commit_product(
+        tmp_path,
+        coordinator,
+        claim,
+    )
+
+    wrong_authority = dataclasses.replace(
+        authority,
+        source_digest=_h("wrong-remote-authority-source"),
+    )
+    with pytest.raises(EvaluationCoordinatorError, match="qualification result changed"):
+        coordinator.commit_remote_qualification_result(
+            claim,
+            authority_manifest=wrong_authority,
+            incumbent_stack=incumbent,
+            incumbent_tree_digest=_h("authoritative-tree"),
+            batch=batch,
+            envelope=envelope,
+            evidence_root=root,
+            evidence_inventory=(attempt_ref,),
+        )
+
+    with pytest.raises(EvaluationCoordinatorError, match="differs from the CPU service"):
+        coordinator.commit_remote_qualification_result(
+            claim,
+            authority_manifest=authority,
+            incumbent_stack=_remote_incumbent(
+                service,
+                arena_digest=_h("wrong-service"),
+                marker="wrong-service",
+            ),
+            incumbent_tree_digest=_h("authoritative-tree"),
+            batch=batch,
+            envelope=envelope,
+            evidence_root=root,
+            evidence_inventory=(attempt_ref,),
+        )
+
+    with pytest.raises(EvaluationCoordinatorError, match="durable lease"):
+        coordinator.commit_remote_qualification_result(
+            claim,
+            authority_manifest=authority,
+            incumbent_stack=incumbent,
+            incumbent_tree_digest=_h("wrong-tree"),
+            batch=batch,
+            envelope=envelope,
+            evidence_root=root,
+            evidence_inventory=(attempt_ref,),
+        )
+
+    with _store(tmp_path) as store:
+        retained = store.get(ids[0])
+        stack = store.evaluation_stack(service.identity)
+        dispositions = store.qualification_dispositions(ids[0])
+        active = store.active_evaluation_leases()
+    assert retained.status == "promoted"
+    assert stack.tree_digest == _h("authoritative-tree")
+    assert dispositions == ()
+    assert active == (claim.lease,)
+
+
+@pytest.mark.parametrize("lane", ["", "reproduction"])
+def test_claimed_qualification_rejects_blank_or_mixed_screen_lanes(
+    tmp_path: Path,
+    lane: str,
+) -> None:
+    provider = _Provider()
+    service = ArenaService(_manifest(), provider)
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    _promote_all(tmp_path, service, cursor, 2)
+    claim = _coordinator(tmp_path, service, cursor).claim_qualification()
+    assert type(claim) is ClaimedQualificationEvaluation
+    reservations = (
+        claim.reservations[0],
+        dataclasses.replace(claim.reservations[1], screen_lane=lane),
+    )
+
+    with pytest.raises(EvaluationCoordinatorError, match="inconsistent"):
+        ClaimedQualificationEvaluation(
+            claim.lease,
+            reservations,
+            claim.publications,
+            claim.candidates,
+            claim.screen_receipts,
+        )
+
+
+def test_remote_commit_rejects_late_lease_without_consuming_attempt(
+    tmp_path: Path,
+) -> None:
+    provider = _Provider()
+    service = ArenaService(_manifest(), provider)
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    ids = _promote_all(tmp_path, service, cursor, 1)
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        cursor,
+        lease_blocks=2,
+    )
+    claim = coordinator.claim_qualification()
+    assert type(claim) is ClaimedQualificationEvaluation
+    authority, batch, envelope, root, attempt_ref = _remote_commit_product(
+        tmp_path,
+        coordinator,
+        claim,
+    )
+    _advance(tmp_path, cursor, claim.lease.expires_block)
+
+    with pytest.raises(EvaluationCoordinatorError, match="durable lease"):
+        coordinator.commit_remote_qualification_result(
+            claim,
+            authority_manifest=authority,
+            incumbent_stack=_remote_incumbent(service),
+            incumbent_tree_digest=_h("late-tree"),
+            batch=batch,
+            envelope=envelope,
+            evidence_root=root,
+            evidence_inventory=(attempt_ref,),
+        )
+
+    with _store(tmp_path) as store:
+        retained = store.get(ids[0])
+        dispositions = store.qualification_dispositions(ids[0])
+        events = store.evaluation_lease_events(lease_id=claim.lease.lease_id)
+        active = store.active_evaluation_leases()
+    assert retained.status == "promoted"
+    assert dispositions == ()
+    assert active == ()
+    assert [row.event_type for row in events] == ["claimed", "expired"]

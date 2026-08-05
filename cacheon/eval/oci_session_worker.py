@@ -66,6 +66,19 @@ from cacheon.seams import seam_binding_environment
 CONTAINER_TREE_PATH = "/cacheon/engine-tree"
 CONTAINER_ARTIFACT_BASE = "/cacheon/native-artifacts"
 CONTAINER_CACHE_PATH = "/cacheon/runtime-cache"
+_WRITABLE_RUNTIME_DIRECTORIES = (
+    "CUDA_CACHE_PATH",
+    "FLASHINFER_WORKSPACE_BASE",
+    "HF_HOME",
+    "HOME",
+    "SGLANG_CACHE_DIR",
+    "TMPDIR",
+    "TORCH_EXTENSIONS_DIR",
+    "TORCHINDUCTOR_CACHE_DIR",
+    "TRITON_CACHE_DIR",
+    "TRITON_HOME",
+    "XDG_CACHE_HOME",
+)
 DISCOVERY_OVERLAY_RELPATH = Path("dep_overlays/discovery")
 NVIDIA_SMI = "/usr/bin/nvidia-smi"
 WORKER_STDERR_DIAGNOSTIC_MAX_BYTES = 8 << 10
@@ -240,19 +253,75 @@ def _validate_private_cache() -> None:
         or not os.path.ismount(path)
     ):
         raise SessionWorkerError("private runtime cache is not an owned writable 0700 mount")
-    probe = path / (".preflight-" + secrets.token_hex(16))
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    fd = -1
-    try:
-        fd = os.open(probe, flags, 0o600)
-        os.write(fd, b"preflight")
-        os.fsync(fd)
-    except OSError as exc:
-        raise SessionWorkerError(f"private runtime cache write probe failed: {exc}") from None
-    finally:
-        if fd >= 0:
+    cache_root = path.resolve(strict=True)
+    for name in _WRITABLE_RUNTIME_DIRECTORIES:
+        raw = os.environ.get(name, "")
+        selected = Path(raw)
+        if not raw or not selected.is_absolute() or selected.is_symlink():
+            raise SessionWorkerError(f"{name} is not one absolute runtime directory")
+        if name != "TMPDIR":
+            try:
+                selected.relative_to(cache_root)
+            except ValueError:
+                raise SessionWorkerError(f"{name} escapes the private runtime cache") from None
+        try:
+            selected.mkdir(mode=0o700, parents=True, exist_ok=True)
+            resolved = selected.resolve(strict=True)
+            if name != "TMPDIR":
+                resolved.relative_to(cache_root)
+            info = resolved.stat()
+        except (OSError, ValueError) as exc:
+            raise SessionWorkerError(f"{name} runtime directory is unavailable: {exc}") from None
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_gid != os.getegid()
+            or _path_is_read_only(resolved)
+        ):
+            raise SessionWorkerError(f"{name} is not an owned writable runtime directory")
+        source = resolved / (".preflight-" + secrets.token_hex(16))
+        renamed = source.with_name(source.name + "-renamed")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        fd = -1
+        try:
+            fd = os.open(source, flags, 0o600)
+            os.write(fd, b"preflight")
+            os.fsync(fd)
             os.close(fd)
-        probe.unlink(missing_ok=True)
+            fd = -1
+            source.rename(renamed)
+            renamed.unlink()
+        except OSError as exc:
+            raise SessionWorkerError(f"{name} write/rename/delete probe failed: {exc}") from None
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            source.unlink(missing_ok=True)
+            renamed.unlink(missing_ok=True)
+
+    executable = cache_root / (".preflight-exec-" + secrets.token_hex(16))
+    try:
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
+        executable.chmod(0o700)
+        result = subprocess.run(
+            (str(executable),),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+            close_fds=True,
+            env={"PATH": "/usr/bin:/bin"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SessionWorkerError(f"private runtime cache execute probe failed: {exc}") from None
+    finally:
+        executable.unlink(missing_ok=True)
+    if result.returncode != 0:
+        raise SessionWorkerError(
+            "private runtime cache execute probe failed: "
+            + result.stderr.decode("utf-8", errors="replace")[:256]
+        )
 
 
 def _run_nvidia_smi(*args: str) -> str:

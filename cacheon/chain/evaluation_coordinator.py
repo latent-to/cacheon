@@ -17,6 +17,7 @@ while the controller lock is held.
 from __future__ import annotations
 
 import math
+import os
 import re
 import threading
 import time
@@ -47,6 +48,11 @@ from cacheon.chain.publication import (
     reopen_worker_bundle,
 )
 from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.evidence_store import (
+    EvidenceArtifactRef,
+    EvidenceStoreError,
+    reopen_evidence,
+)
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
@@ -55,6 +61,7 @@ from cacheon.eval.qualification_intake import (
     run_qualification_intake,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
+from cacheon.stack_manifest import EvaluationStackManifest
 
 
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
@@ -64,6 +71,9 @@ _LOCK_COLLISION = "another intake controller owns this database"
 _TRANSIENT_COORDINATOR_OWNERSHIP_MESSAGE = (
     "evaluation store lock/cursor did not stabilize within retry bounds"
 )
+_REMOTE_EVIDENCE_ARTIFACT_LIMIT = 16 << 20
+_REMOTE_EVIDENCE_ARTIFACTS_LIMIT = 256
+_REMOTE_EVIDENCE_TOTAL_LIMIT = 32 << 20
 
 SYSTEMIC_QUALIFICATION_REASONS = frozenset(
     {
@@ -465,6 +475,7 @@ class ClaimedQualificationEvaluation:
         publications = tuple(self.publications)
         candidates = tuple(self.candidates)
         receipts = tuple(self.screen_receipts)
+        lanes = {row.screen_lane for row in reservations}
         if (
             type(self.lease) is not EvaluationLease
             or self.lease.stage != "qualification"
@@ -486,12 +497,20 @@ class ClaimedQualificationEvaluation:
             != self.lease.reservation_ids
             or tuple(row.candidate_digest for row in receipts)
             != tuple(row.digest for row in candidates)
+            or lanes not in ({"primary"}, {"reproduction"})
+            or (lanes == {"reproduction"} and len(reservations) != 1)
         ):
             raise EvaluationCoordinatorError("claimed qualification work is inconsistent")
         object.__setattr__(self, "reservations", reservations)
         object.__setattr__(self, "publications", publications)
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "screen_receipts", receipts)
+
+    @property
+    def screen_lane(self) -> str:
+        """Return the exact uniform primary or reproduction intake lane."""
+
+        return self.reservations[0].screen_lane
 
 
 @dataclass(frozen=True)
@@ -992,6 +1011,136 @@ class EvaluationCoordinator:
             arms[0].baseline_before.tree_digest,
             Path(prepared.evidence_root),
         )
+
+    def commit_remote_qualification_result(
+        self,
+        claim: ClaimedQualificationEvaluation,
+        *,
+        authority_manifest: QualificationAuthorityManifest,
+        incumbent_stack: EvaluationStackManifest,
+        incumbent_tree_digest: str,
+        batch: QualificationIntakeBatch,
+        envelope: EvaluationResultEnvelope,
+        evidence_root: str | Path,
+        evidence_inventory: tuple[EvidenceArtifactRef, ...],
+    ) -> tuple[IntakeReservation, ...]:
+        """CAS-commit one imported, path-free worker qualification product.
+
+        Every evidence byte has already crossed the authenticated transport and
+        been published into ``evidence_root`` by the CPU.  This method reopens
+        the complete inventory itself before acquiring the intake controller,
+        then atomically installs the exact public authority and applies the
+        batch under the live lease.  No provider plan or pod filesystem path is
+        consulted.
+        """
+
+        if type(claim) is not ClaimedQualificationEvaluation:
+            raise EvaluationCoordinatorError("qualification claim is not exactly typed")
+        if (
+            type(authority_manifest) is not QualificationAuthorityManifest
+            or type(incumbent_stack) is not EvaluationStackManifest
+            or type(batch) is not QualificationIntakeBatch
+            or type(envelope) is not EvaluationResultEnvelope
+        ):
+            raise EvaluationCoordinatorError(
+                "remote qualification authority is not exactly typed"
+            )
+        expected = tuple(row.reservation for row in claim.candidates)
+        if authority_manifest.reservations != expected:
+            raise EvaluationCoordinatorError(
+                "remote qualification authority changed the exact finalized cohort"
+            )
+        if (
+            batch.authority_manifest_digest != authority_manifest.digest
+            or tuple(row.reservation_digest for row in batch.outcomes)
+            != tuple(row.reservation_digest for row in expected)
+            or tuple(row.selected_delta_digest for row in batch.outcomes)
+            != tuple(row.selected_delta_digest for row in expected)
+        ):
+            raise EvaluationCoordinatorError(
+                "qualification result changed the exact finalized cohort"
+            )
+        envelope.verify(claim.lease, self.readiness, self.service, batch)
+        tree_digest = _digest(incumbent_tree_digest, "incumbent_tree_digest")
+        runtime = self.service.manifest.runtime
+        if (
+            incumbent_stack.runtime_digest != runtime.runtime_digest
+            or incumbent_stack.base_engine_digest != runtime.base_engine_digest
+            or incumbent_stack.arena_digest != self.service.identity
+        ):
+            raise EvaluationCoordinatorError(
+                "remote qualification incumbent differs from the CPU service"
+            )
+        root = Path(evidence_root)
+        if (
+            not root.is_absolute()
+            or root != Path(os.path.normpath(root))
+        ):
+            raise EvaluationCoordinatorError(
+                "remote qualification evidence root is not canonical and absolute"
+            )
+        inventory = tuple(evidence_inventory)
+        if (
+            type(evidence_inventory) is not tuple
+            or len(inventory) > _REMOTE_EVIDENCE_ARTIFACTS_LIMIT
+            or any(type(row) is not EvidenceArtifactRef for row in inventory)
+            or len(set(inventory)) != len(inventory)
+            or len({row.sha256 for row in inventory}) != len(inventory)
+            or sum(row.size for row in inventory) > _REMOTE_EVIDENCE_TOTAL_LIMIT
+            or (
+                batch.attempt_ref is not None
+                and batch.attempt_ref not in inventory
+            )
+        ):
+            raise EvaluationCoordinatorError(
+                "remote qualification evidence inventory is incomplete or duplicated"
+            )
+        try:
+            for reference in inventory:
+                reopen_evidence(
+                    root,
+                    reference,
+                    max_bytes=_REMOTE_EVIDENCE_ARTIFACT_LIMIT,
+                )
+        except EvidenceStoreError as exc:
+            raise EvaluationCoordinatorError(
+                f"remote qualification evidence cannot reopen from the CPU CAS: {exc}"
+            ) from exc
+        store, point = self._open_at_durable_cursor()
+        try:
+            with store.accept_evaluation_result(
+                claim.lease,
+                current_block=point[0],
+                result_digest=envelope.digest,
+            ) as rows:
+                if rows != claim.reservations:
+                    raise EvaluationCoordinatorError(
+                        "qualification cohort changed before result commit"
+                    )
+                store.initialize_evaluation_stack(
+                    incumbent_stack,
+                    tree_digest=tree_digest,
+                )
+                authority_digest = authority_manifest.digest
+                authority_value = authority_manifest.to_dict()
+                for row in rows:
+                    store.mark_qualifying(
+                        row.reservation_id,
+                        authority_digest,
+                        authority_value,
+                    )
+                result = store.apply_qualification_batch(
+                    batch,
+                    current_finalized_block=point[0],
+                    evidence_root=root,
+                )
+            return result
+        except IntakeError as exc:
+            raise EvaluationCoordinatorError(
+                f"qualification result was rejected by the durable lease: {exc}"
+            ) from exc
+        finally:
+            store.close()
 
     def commit_qualification_result(
         self,
