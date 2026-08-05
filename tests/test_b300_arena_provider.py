@@ -31,9 +31,13 @@ from cacheon.chain.publication import publish_worker_bundle
 from cacheon.eval.b300_arena_provider import (
     B300ArenaProviderError,
     B300ArenaServiceProvider,
+    B300DeclaredQualificationAuthorities,
     B300DeploymentAuthorities,
+    B300QualificationLanePair,
+    B300QualificationLanePolicy,
     B300ResidentScreenFactory,
     B300ResidentScreenLifetime,
+    B300ScreenDeploymentAuthorities,
     B300ScreenStageHandler,
     b300_arena_provider_digest,
     compose_b300_arena_service,
@@ -123,13 +127,11 @@ def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
     )
 
 
-def _gpu(index: int, role: str) -> GPUConfiguration:
-    role_value = 1 if role == "candidate" else 2
+def _gpu(index: int) -> GPUConfiguration:
     return GPUConfiguration(
         physical_id=index,
         uuid=(
-            f"GPU-{role_value:08x}-{index:04x}-0000-0000-"
-            f"{(role_value * 100 + index):012x}"
+            f"GPU-00000000-{index:04x}-0000-0000-{index:012x}"
         ),
         pci_bus_id=f"00000000:{index + 1:02x}:00.0",
         name="NVIDIA B300 SXM6 AC",
@@ -150,9 +152,15 @@ def executor_factory(tmp_path: Path):
     executors: list[OCIEngineExecutor] = []
     sequence = 0
 
-    def create(role: str) -> OCIEngineExecutor:
+    def create(role: str, lane: str = "A") -> OCIEngineExecutor:
         nonlocal sequence
         sequence += 1
+        normalized_role = (
+            "candidate" if role == "candidate" else "resident_baseline"
+        )
+        if lane not in {"A", "B"}:
+            raise AssertionError("fixture lane must be A or B")
+        first_gpu = 0 if lane == "A" else 4
         runtime = _runtime_policy()
         policy = _prebuild_policy(runtime)
         root = tmp_path / f"executor-{sequence}-{role}"
@@ -162,7 +170,7 @@ def executor_factory(tmp_path: Path):
                 recovery_root=root / "recovery",
                 publication_root=root / "publications",
                 seccomp_profile=root / "seccomp.json",
-                executor_id=f"{role}-{sequence}",
+                executor_id=f"qualification-{normalized_role}",
                 policy=policy,
             ),
             runtime,
@@ -170,7 +178,9 @@ def executor_factory(tmp_path: Path):
         executor = OCIEngineExecutor(
             config,
             DeviceStatePolicy(
-                expected_gpus=tuple(_gpu(index, role) for index in range(4)),
+                expected_gpus=tuple(
+                    _gpu(index) for index in range(first_gpu, first_gpu + 4)
+                ),
                 required_consecutive_idle_samples=2,
                 poll_interval_s=0.05,
                 ready_poll_interval_s=0.05,
@@ -301,6 +311,16 @@ def _authorities(
     resident = _ResidentFactory(tmp_path)
     factory_builder = builder or _FactoryBuilder()
     policy_digest = _h("qualification-policy")
+    candidate_executor = executor_factory("candidate", "A")
+    baseline_executor = executor_factory("resident_baseline", "B")
+    lane_pair = B300QualificationLanePair(
+        B300QualificationLanePolicy.from_device_policy(
+            "A", candidate_executor.device_policy
+        ),
+        B300QualificationLanePolicy.from_device_policy(
+            "B", baseline_executor.device_policy
+        ),
+    )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
         screen_handlers=handlers,
@@ -312,13 +332,15 @@ def _authorities(
         qualification_policy_digest=policy_digest,
         qualification_builder_digest=_h("qualification-builder"),
         qualification_factory_builder=factory_builder,
-        executor=executor_factory("candidate"),
-        resident_baseline_executor=executor_factory("baseline"),
+        executor=candidate_executor,
+        resident_baseline_executor=baseline_executor,
         entropy_provider_digest=_h("entropy-provider"),
         entropy_provider=lambda *_args: None,
         hidden_judge=_Judge(),
         deadline_policy_digest=_h("deadline-policy"),
         deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
+        qualification_lane_pair=lane_pair,
+        qualification_stage="primary",
     )
     return authorities, runner, resident, factory_builder
 
@@ -718,6 +740,93 @@ def test_provider_digest_binds_handler_runtime_and_qualification_policy(
             b300_arena_provider_digest(changed_runtime),
         }
     ) == 4
+
+
+def test_provider_identity_is_stable_across_exact_primary_reproduction_swap(
+    tmp_path: Path, executor_factory
+) -> None:
+    primary, _runner, _resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    reproduction = dataclasses.replace(
+        primary,
+        executor=executor_factory("candidate", "B"),
+        resident_baseline_executor=executor_factory("resident_baseline", "A"),
+        qualification_stage="reproduction",
+    )
+
+    assert primary.qualification_orientation.stage == "primary"
+    assert primary.qualification_orientation.candidate.lane_id == "A"
+    assert primary.qualification_orientation.resident_baseline.lane_id == "B"
+    assert reproduction.qualification_orientation.stage == "reproduction"
+    assert reproduction.qualification_orientation.candidate.lane_id == "B"
+    assert reproduction.qualification_orientation.resident_baseline.lane_id == "A"
+    assert primary.qualification == reproduction.qualification
+    assert primary.qualification_lane_pair.digest == (
+        reproduction.qualification_lane_pair.digest
+    )
+    assert primary.qualification_lane_pair.role_swap_digest == (
+        reproduction.qualification_lane_pair.role_swap_digest
+    )
+    assert b300_arena_provider_digest(primary) == b300_arena_provider_digest(
+        reproduction
+    )
+
+
+def test_lane_pair_rejects_overlap_and_full_authority_rejects_orientation_drift(
+    tmp_path: Path, executor_factory
+) -> None:
+    primary, _runner, _resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    with pytest.raises(B300ArenaProviderError, match="overlapping"):
+        B300QualificationLanePair(
+            primary.qualification_lane_pair.lane_a,
+            dataclasses.replace(
+                primary.qualification_lane_pair.lane_a,
+                lane_id="B",
+            ),
+        )
+
+    with pytest.raises(B300ArenaProviderError, match="selected physical TP4 lane"):
+        dataclasses.replace(
+            primary,
+            executor=executor_factory("candidate", "B"),
+        )
+    with pytest.raises(B300ArenaProviderError, match="selected physical TP4 lane"):
+        dataclasses.replace(
+            primary,
+            qualification_stage="reproduction",
+        )
+
+    primary.executor.device_policy = executor_factory(
+        "candidate", "B"
+    ).device_policy
+    with pytest.raises(B300ArenaProviderError, match="selected physical TP4 lane"):
+        b300_arena_provider_digest(primary)
+
+
+def test_screen_only_and_full_authorities_share_exact_provider_identity(
+    tmp_path: Path, executor_factory
+) -> None:
+    full, _runner, _resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    declared = full.qualification
+    assert type(declared) is B300DeclaredQualificationAuthorities
+    screen_only = B300ScreenDeploymentAuthorities(
+        full.runtime_identity,
+        full.screen_handlers,
+        full.resident_screen_factory,
+        declared,
+    )
+
+    assert b300_arena_provider_digest(screen_only) == b300_arena_provider_digest(
+        full
+    )
+    assert _manifest(full).provider_digest == b300_arena_provider_digest(
+        screen_only
+    )
 
 
 def test_factory_exception_stays_a_provider_error(

@@ -722,7 +722,6 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         "--pull=never",
         "--runtime=runc",
         "--network=none",
-        "--read-only",
         "--ipc=private",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges=true",
@@ -733,8 +732,12 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         f"--env=CACHEON_NATIVE_BUILD_SPEC_DIGEST={case.native.digest}",
         f"--env=CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST={case.publication.publication_digest}",
         "--env=CACHEON_REBUILD_PHASE=load",
+        "--env=SGLANG_CACHE_DIR=/cacheon/runtime-cache/sglang",
+        "--env=TORCHINDUCTOR_CACHE_DIR=/cacheon/runtime-cache/torchinductor",
+        "--env=TRITON_HOME=/cacheon/runtime-cache/triton-home",
     ):
         assert exact in argv
+    assert any(row.startswith("--tmpfs=/tmp:rw,nosuid,nodev,exec,") for row in argv)
     assert not any(row.startswith("--cap-add") for row in argv)
     assert "--pid=host" not in argv
     assert not any('"' in row or "'" in row for row in argv)
@@ -768,6 +771,7 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         seccomp_path=lease.stage_paths[0],
         runtime=case.runtime,
     )
+    assert "--read-only" not in argv
     assert f"--env=CACHEON_CUTE_COMPILE_PROFILE_DIGEST={profile_digest}" in profiled_argv
     assert not any("CACHEON_CUTE_COMPILE_PROFILE_DIGEST" in row for row in argv)
 

@@ -47,8 +47,11 @@ from cacheon.eval.resident_screen_lane import (
 from cacheon.stack_identity import canonical_digest
 
 
-PROVIDER_SCHEMA = "cacheon.eval.b300-arena-provider.v1"
+PROVIDER_SCHEMA = "cacheon.eval.b300-arena-provider.v2"
 SCREEN_EXCEPTION_SCHEMA = "cacheon.eval.b300-screen-exception.v1"
+QUALIFICATION_LANE_SCHEMA = "cacheon.eval.b300-qualification-lane.v1"
+QUALIFICATION_LANE_PAIR_SCHEMA = "cacheon.eval.b300-qualification-lane-pair.v1"
+QUALIFICATION_ROLE_SWAP_SCHEMA = "cacheon.eval.b300-qualification-role-swap.v1"
 B300_ARCHITECTURE = "sm103"
 B300_GPU_COUNT = 4
 B300_TENSOR_PARALLEL_SIZE = 4
@@ -182,6 +185,175 @@ DeadlineProvider = Callable[[ArenaQualificationRequest, object | None], float]
 
 
 @dataclass(frozen=True)
+class B300QualificationLanePolicy:
+    """One exact physical TP4 lane, independent of its execution role."""
+
+    lane_id: str
+    physical_gpu_ids: tuple[int, ...]
+    gpu_uuids: tuple[str, ...]
+    device_configuration_digest: str
+    device_policy_digest: str
+
+    def __post_init__(self) -> None:
+        if self.lane_id not in {"A", "B"}:
+            raise B300ArenaProviderError("qualification lane id must be A or B")
+        physical_ids = self.physical_gpu_ids
+        uuids = self.gpu_uuids
+        if (
+            type(physical_ids) is not tuple
+            or len(physical_ids) != B300_GPU_COUNT
+            or any(type(row) is not int or row < 0 for row in physical_ids)
+            or physical_ids != tuple(sorted(set(physical_ids)))
+            or type(uuids) is not tuple
+            or len(uuids) != B300_GPU_COUNT
+            or len(set(uuids)) != B300_GPU_COUNT
+            or any(
+                not isinstance(row, str)
+                or not row
+                or row.strip() != row
+                or len(row) > 128
+                or any(character in row for character in "\x00\r\n")
+                for row in uuids
+            )
+        ):
+            raise B300ArenaProviderError(
+                "qualification lane must bind one canonical physical TP4"
+            )
+        for field in ("device_configuration_digest", "device_policy_digest"):
+            object.__setattr__(self, field, _digest(getattr(self, field), field))
+
+    @classmethod
+    def from_device_policy(
+        cls,
+        lane_id: str,
+        policy: DeviceStatePolicy,
+    ) -> "B300QualificationLanePolicy":
+        if type(policy) is not DeviceStatePolicy:
+            raise B300ArenaProviderError("qualification lane policy is not exact")
+        gpus = policy.expected_gpus
+        if len(gpus) != B300_GPU_COUNT or any(
+            "B300" not in gpu.name.upper() for gpu in gpus
+        ):
+            raise B300ArenaProviderError(
+                "qualification lane does not bind exactly four B300 devices"
+            )
+        return cls(
+            lane_id,
+            tuple(gpu.physical_id for gpu in gpus),
+            tuple(gpu.uuid for gpu in gpus),
+            policy.configuration_sha256,
+            policy.policy_sha256,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "device_configuration_digest": self.device_configuration_digest,
+            "device_policy_digest": self.device_policy_digest,
+            "gpu_uuids": list(self.gpu_uuids),
+            "lane_id": self.lane_id,
+            "physical_gpu_ids": list(self.physical_gpu_ids),
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(QUALIFICATION_LANE_SCHEMA, self.to_dict())
+
+
+@dataclass(frozen=True)
+class B300QualificationLaneOrientation:
+    """The exact physical roles selected for one qualification stage."""
+
+    stage: str
+    candidate: B300QualificationLanePolicy
+    resident_baseline: B300QualificationLanePolicy
+
+    def __post_init__(self) -> None:
+        if (
+            self.stage not in {"primary", "reproduction"}
+            or type(self.candidate) is not B300QualificationLanePolicy
+            or type(self.resident_baseline) is not B300QualificationLanePolicy
+            or self.candidate.lane_id == self.resident_baseline.lane_id
+        ):
+            raise B300ArenaProviderError(
+                "qualification lane orientation is not an exact stage mapping"
+            )
+
+
+@dataclass(frozen=True)
+class B300QualificationLanePair:
+    """Stable two-lane authority with one permitted primary/reproduction swap.
+
+    Lane A always carries the primary candidate and lane B the primary resident
+    baseline.  Reproduction must exchange those exact physical roles.  The pair
+    and its digest do not depend on which of those two stages is executing.
+    """
+
+    lane_a: B300QualificationLanePolicy
+    lane_b: B300QualificationLanePolicy
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.lane_a) is not B300QualificationLanePolicy
+            or type(self.lane_b) is not B300QualificationLanePolicy
+            or self.lane_a.lane_id != "A"
+            or self.lane_b.lane_id != "B"
+        ):
+            raise B300ArenaProviderError(
+                "qualification lane pair must contain canonical lanes A and B"
+            )
+        if (
+            set(self.lane_a.physical_gpu_ids).intersection(
+                self.lane_b.physical_gpu_ids
+            )
+            or set(self.lane_a.gpu_uuids).intersection(self.lane_b.gpu_uuids)
+            or self.lane_a.device_configuration_digest
+            == self.lane_b.device_configuration_digest
+            or self.lane_a.device_policy_digest == self.lane_b.device_policy_digest
+        ):
+            raise B300ArenaProviderError(
+                "qualification lane pair is overlapping or not physically distinct"
+            )
+
+    def orientation(self, stage: str) -> B300QualificationLaneOrientation:
+        if stage == "primary":
+            return B300QualificationLaneOrientation(
+                stage, self.lane_a, self.lane_b
+            )
+        if stage == "reproduction":
+            return B300QualificationLaneOrientation(
+                stage, self.lane_b, self.lane_a
+            )
+        raise B300ArenaProviderError("qualification stage must be primary or reproduction")
+
+    @property
+    def role_swap_digest(self) -> str:
+        return canonical_digest(
+            QUALIFICATION_ROLE_SWAP_SCHEMA,
+            {
+                "primary": {
+                    "candidate": "A",
+                    "resident_baseline": "B",
+                },
+                "reproduction": {
+                    "candidate": "B",
+                    "resident_baseline": "A",
+                },
+            },
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "lane_a": self.lane_a.to_dict(),
+            "lane_b": self.lane_b.to_dict(),
+            "role_swap_digest": self.role_swap_digest,
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(QUALIFICATION_LANE_PAIR_SCHEMA, self.to_dict())
+
+
+@dataclass(frozen=True)
 class B300DeclaredQualificationAuthorities:
     """Path-free qualification identities retained by screen-only workers.
 
@@ -193,15 +365,42 @@ class B300DeclaredQualificationAuthorities:
 
     qualification_policy_digest: str
     qualification_builder_digest: str
-    candidate_executor_digest: str
-    resident_baseline_executor_digest: str
+    candidate_executor_policy_digest: str
+    resident_baseline_executor_policy_digest: str
+    lane_pair: B300QualificationLanePair
     entropy_provider_digest: str
     hidden_judge_binding_digest: str
     deadline_policy_digest: str
 
     def __post_init__(self) -> None:
-        for field in self.__dataclass_fields__:
+        for field in (
+            "qualification_policy_digest",
+            "qualification_builder_digest",
+            "candidate_executor_policy_digest",
+            "resident_baseline_executor_policy_digest",
+            "entropy_provider_digest",
+            "hidden_judge_binding_digest",
+            "deadline_policy_digest",
+        ):
             object.__setattr__(self, field, _digest(getattr(self, field), field))
+        if type(self.lane_pair) is not B300QualificationLanePair:
+            raise B300ArenaProviderError("qualification lane pair is not exact")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "candidate_executor_policy_digest": (
+                self.candidate_executor_policy_digest
+            ),
+            "deadline_policy_digest": self.deadline_policy_digest,
+            "entropy_provider_digest": self.entropy_provider_digest,
+            "hidden_judge_binding_digest": self.hidden_judge_binding_digest,
+            "lane_pair": self.lane_pair.to_dict(),
+            "qualification_builder_digest": self.qualification_builder_digest,
+            "qualification_policy_digest": self.qualification_policy_digest,
+            "resident_baseline_executor_policy_digest": (
+                self.resident_baseline_executor_policy_digest
+            ),
+        }
 
 
 def _validate_screen_authorities(
@@ -283,6 +482,8 @@ class B300DeploymentAuthorities:
     hidden_judge: object
     deadline_policy_digest: str
     deadline_provider: DeadlineProvider
+    qualification_lane_pair: B300QualificationLanePair
+    qualification_stage: str
 
     def __post_init__(self) -> None:
         handlers = _validate_screen_authorities(
@@ -300,6 +501,11 @@ class B300DeploymentAuthorities:
             object.__setattr__(self, field, _digest(getattr(self, field), field))
         if not callable(self.qualification_factory_builder):
             raise B300ArenaProviderError("qualification factory builder is not callable")
+        if type(self.qualification_lane_pair) is not B300QualificationLanePair:
+            raise B300ArenaProviderError("qualification lane pair is not exact")
+        orientation = self.qualification_lane_pair.orientation(
+            self.qualification_stage
+        )
         if (
             type(self.executor) is not OCIEngineExecutor
             or type(self.resident_baseline_executor) is not OCIEngineExecutor
@@ -320,6 +526,16 @@ class B300DeploymentAuthorities:
                 raise B300ArenaProviderError(
                     f"{role} executor does not bind exactly four B300 devices"
                 )
+        _validate_executor_lane(
+            self.executor,
+            orientation.candidate,
+            role="candidate",
+        )
+        _validate_executor_lane(
+            self.resident_baseline_executor,
+            orientation.resident_baseline,
+            role="resident_baseline",
+        )
         if not callable(self.entropy_provider) or not callable(self.hidden_judge):
             raise B300ArenaProviderError("entropy or hidden-judge authority is not callable")
         if type(getattr(self.hidden_judge, "binding", None)) is not HiddenJudgeBinding:
@@ -332,18 +548,34 @@ class B300DeploymentAuthorities:
         binding = getattr(self.hidden_judge, "binding", None)
         if type(binding) is not HiddenJudgeBinding:
             raise B300ArenaProviderError("hidden judge binding changed or is untyped")
+        orientation = self.qualification_orientation
+        _validate_executor_lane(
+            self.executor,
+            orientation.candidate,
+            role="candidate",
+        )
+        _validate_executor_lane(
+            self.resident_baseline_executor,
+            orientation.resident_baseline,
+            role="resident_baseline",
+        )
         return B300DeclaredQualificationAuthorities(
             self.qualification_policy_digest,
             self.qualification_builder_digest,
-            _executor_identity(self.executor, role="candidate"),
-            _executor_identity(
+            _executor_role_policy_identity(self.executor, role="candidate"),
+            _executor_role_policy_identity(
                 self.resident_baseline_executor,
                 role="resident_baseline",
             ),
+            self.qualification_lane_pair,
             self.entropy_provider_digest,
             binding.digest,
             self.deadline_policy_digest,
         )
+
+    @property
+    def qualification_orientation(self) -> B300QualificationLaneOrientation:
+        return self.qualification_lane_pair.orientation(self.qualification_stage)
 
 
 def _validate_b300_runtime(runtime: ArenaRuntimeIdentity) -> None:
@@ -364,7 +596,11 @@ def _native_limits_payload(config: OCIBackendConfig) -> dict[str, int]:
     }
 
 
-def _executor_identity(executor: OCIEngineExecutor, *, role: str) -> str:
+def _executor_config(
+    executor: OCIEngineExecutor,
+    *,
+    role: str,
+) -> tuple[OCIBackendConfig, DeviceStatePolicy]:
     if type(executor) is not OCIEngineExecutor:
         raise B300ArenaProviderError(f"{role} executor is not exact")
     config = getattr(executor, "config", None)
@@ -377,12 +613,25 @@ def _executor_identity(executor: OCIEngineExecutor, *, role: str) -> str:
         or getattr(manager, "executor_id", None) != config.prebuild.executor_id
     ):
         raise B300ArenaProviderError(f"{role} executor configuration is inconsistent")
+    return config, device_policy
+
+
+def b300_executor_role_policy_digest(
+    config: OCIBackendConfig,
+    *,
+    role: str,
+) -> str:
+    """Bind an executor role without binding it to one physical TP4 lane."""
+
+    if type(config) is not OCIBackendConfig or role not in {
+        "candidate",
+        "resident_baseline",
+    }:
+        raise B300ArenaProviderError("qualification executor role policy is invalid")
     return canonical_digest(
-        "cacheon.eval.b300-oci-executor-policy.v1",
+        "cacheon.eval.b300-oci-executor-role-policy.v1",
         {
             "dependency_policy_digest": config.prebuild.policy.dependency_policy_digest,
-            "device_configuration_digest": device_policy.configuration_sha256,
-            "device_policy_digest": device_policy.policy_sha256,
             "executor_id": config.prebuild.executor_id,
             "native_limits": _native_limits_payload(config),
             "resource_policy_digest": config.prebuild.policy.resource_policy_digest,
@@ -390,6 +639,42 @@ def _executor_identity(executor: OCIEngineExecutor, *, role: str) -> str:
             "runtime_policy_digest": config.runtime.digest,
         },
     )
+
+
+def _executor_role_policy_identity(executor: OCIEngineExecutor, *, role: str) -> str:
+    config, _device_policy = _executor_config(executor, role=role)
+    return b300_executor_role_policy_digest(config, role=role)
+
+
+def _executor_identity(executor: OCIEngineExecutor, *, role: str) -> str:
+    config, device_policy = _executor_config(executor, role=role)
+    return canonical_digest(
+        "cacheon.eval.b300-oci-executor-policy.v1",
+        {
+            "device_configuration_digest": device_policy.configuration_sha256,
+            "device_policy_digest": device_policy.policy_sha256,
+            "role_policy_digest": b300_executor_role_policy_digest(
+                config, role=role
+            ),
+        },
+    )
+
+
+def _validate_executor_lane(
+    executor: OCIEngineExecutor,
+    expected: B300QualificationLanePolicy,
+    *,
+    role: str,
+) -> None:
+    _config, policy = _executor_config(executor, role=role)
+    observed = B300QualificationLanePolicy.from_device_policy(
+        expected.lane_id,
+        policy,
+    )
+    if observed != expected:
+        raise B300ArenaProviderError(
+            f"{role} executor differs from its selected physical TP4 lane"
+        )
 
 
 _AuthorityBundle = B300DeploymentAuthorities | B300ScreenDeploymentAuthorities
@@ -423,15 +708,18 @@ def b300_arena_provider_digest(authorities: _AuthorityBundle) -> str:
             },
             "qualification": {
                 "builder_digest": qualification.qualification_builder_digest,
-                "candidate_executor_digest": qualification.candidate_executor_digest,
+                "candidate_executor_policy_digest": (
+                    qualification.candidate_executor_policy_digest
+                ),
                 "deadline_policy_digest": qualification.deadline_policy_digest,
                 "entropy_provider_digest": qualification.entropy_provider_digest,
                 "hidden_judge_binding_digest": (
                     qualification.hidden_judge_binding_digest
                 ),
+                "lane_pair": qualification.lane_pair.to_dict(),
                 "policy_digest": qualification.qualification_policy_digest,
-                "resident_baseline_executor_digest": (
-                    qualification.resident_baseline_executor_digest
+                "resident_baseline_executor_policy_digest": (
+                    qualification.resident_baseline_executor_policy_digest
                 ),
             },
             "resident_screen": {
@@ -492,6 +780,9 @@ class B300ArenaServiceProvider:
             authorities if type(authorities) is B300DeploymentAuthorities else None
         )
         self._qualification_capabilities = capabilities
+        self.qualification_stage = (
+            capabilities.qualification_stage if capabilities is not None else None
+        )
         self._resident_lifetime: B300ResidentScreenLifetime | None = None
         self._resident_failed = False
         self._resident_teardown_failed = False
@@ -722,12 +1013,19 @@ __all__ = [
     "B300ArenaServiceProvider",
     "B300DeclaredQualificationAuthorities",
     "B300DeploymentAuthorities",
+    "B300QualificationLaneOrientation",
+    "B300QualificationLanePair",
+    "B300QualificationLanePolicy",
     "B300ResidentScreenFactory",
     "B300ResidentScreenLifetime",
     "B300ScreenStageHandler",
     "B300ScreenDeploymentAuthorities",
     "PROVIDER_SCHEMA",
+    "QUALIFICATION_LANE_PAIR_SCHEMA",
+    "QUALIFICATION_LANE_SCHEMA",
+    "QUALIFICATION_ROLE_SWAP_SCHEMA",
     "SCREEN_EXCEPTION_SCHEMA",
+    "b300_executor_role_policy_digest",
     "b300_arena_provider_digest",
     "compose_b300_arena_service",
 ]
