@@ -15,3 +15,14 @@ chain_intake/
 *.log
 .env
 .DS_Store
+
+# Private operator continuity and deployment state
+/chainops/
+/AUTHORITY_REBIND_RUNBOOK.md
+/CONTEXT_MAINNET_FIFO.md
+/HANDOVER_ops_mainnet_fifo_screen_hardening.md
+/STATUS_MAINNET_FIFO.md
+/TODO_MAINNET_FIFO.md
+/handoff.md
+/tests/test_mainnet_screen_dispatcher.py
+/tests/test_remote_worker_service.py
