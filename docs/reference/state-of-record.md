@@ -129,7 +129,23 @@ plans fail closed.
 The abbreviated-serving stage may keep a stock engine resident and hot-swap a
 bounded candidate queue. Each swap is generation-bound, triggers graph
 recapture, and is checked by shared stock brackets and contamination canaries.
-The calibrated screen policy is retained by the arena provider.
+The calibrated screen policy is retained by the arena provider. Graph-enabled
+B300 screen engines set SGLang `watchdog_timeout=1800` so the default 300s
+scheduler watchdog cannot SIGKILL ranks mid CUDA-graph capture on the live
+resident loop (observed on netuid-14 FIFO recommission 2026-08-04 as
+`outer_oci_client_returncode=137`). The host `resident-intake` root is mode
+`0711` so the non-root OCI runtime user can traverse to a content-addressed
+digest under the read-only swap mount; `0700` left digests unreachable and
+failed closed as `staged swap bundle is absent or writable` after capture
+completed. After that fix, live swap still requires the sealed worker image's
+installed `cacheon.manifest` to accept the pre-cutover
+`optima-op-abi-v0` spelling (`fe55be1` `_PRE_CUTOVER_ABI_SHA256`); the
+standing `13c72417` image (built at `77fae0ec`) does not, and an image-only
+rollout cannot pass sealed primary-authority worker/preflight pins. On
+2026-08-04 the sealed primary-authority worker/preflight was rebound to
+derived image `cfc0c7a3660b…` (harness with `_PRE_CUTOVER_ABI_SHA256`); epoch
+`4d3df000…` then completed §10 two durable FIFO screens with
+`adapter_start_count=1` (screening only; not green).
 
 Direct AOT artifacts, dependency patches, native rebuilds, and setup hooks are
 not safely hot-swappable. They receive a typed screen waiver and proceed to

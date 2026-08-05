@@ -759,6 +759,12 @@ def _apply_resident_swap(
         bundle_value: str | None = None
     else:
         staged = Path(CONTAINER_SWAP_INTAKE_PATH) / request.bundle_digest
+        try:
+            staged.lstat()
+        except OSError as exc:
+            raise SessionProtocolError(
+                f"staged swap bundle is inaccessible: {exc}"
+            ) from None
         if not _read_only_directory(staged):
             raise SessionProtocolError("staged swap bundle is absent or writable")
         from cacheon.bundle_hash import content_hash
