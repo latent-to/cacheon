@@ -286,7 +286,11 @@ Remote execution of leased work is a durable-spool transport, not a second
 evaluation authority. `chain/remote_worker_registration.py` binds one worker
 epoch — endpoint, pinned host keys, commissioned READY receipt, worker
 readiness, physical lane, interpreter, and shared credential — under one
-semantic digest. `chain/remote_worker_spool.py` owns the sealed
+semantic digest. The immutable worker carrier places the validator's
+`.cacheon-native-artifact.json` receipt beside the miner's committed source;
+`bundle_hash.committed_content_hash` is the one canonical rehash of a
+receipt-bearing carrier back to the chain-committed identity, excluding
+exactly that top-level receipt and nothing else. `chain/remote_worker_spool.py` owns the sealed
 request/result carriers and their verification;
 `chain/ssh_worker_transport.py` shuttles them over host-key-pinned SSH and
 implements the authenticated transport the remote evaluation dispatcher uses
