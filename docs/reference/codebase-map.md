@@ -71,6 +71,12 @@ reopens evidence but accepts only reviewed integrated source.
 | Hardened archive fetch | [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py) |
 | Validator loop | [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py) |
 | One-shot evaluation-lease operations | [`chain/evaluation_lease_operator.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_lease_operator.py) |
+| Remote worker registration authority | [`chain/remote_worker_registration.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_worker_registration.py) |
+| Durable transport spool schemas | [`chain/remote_worker_spool.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_worker_spool.py) |
+| CPU SSH shuttle and spool transport | [`chain/ssh_worker_transport.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/ssh_worker_transport.py) |
+| Pod worker service | [`chain/remote_worker_pod_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_worker_pod_service.py) |
+| Remote transport CLI composition | [`chain/remote_worker_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_worker_service.py) |
+| B300 pod evaluation adapter | [`eval/b300_remote_worker_adapter.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_worker_adapter.py) |
 | Redacted chain journal | [`chain/audit_log.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py) |
 | Private validator snapshot/restore | [`chain/archive.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py) |
 | Injected arena boundary | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py) |

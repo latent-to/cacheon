@@ -280,6 +280,31 @@ filesystem paths, and sealed production configs — stays in the private deploym
 tree outside this repository. Tracked code owns lease semantics; private operations
 own only identities and launch composition.
 
+## Remote worker transport
+
+Remote execution of leased work is a durable-spool transport, not a second
+evaluation authority. `chain/remote_worker_registration.py` binds one worker
+epoch — endpoint, pinned host keys, commissioned READY receipt, worker
+readiness, physical lane, interpreter, and shared credential — under one
+semantic digest. `chain/remote_worker_spool.py` owns the sealed
+request/result carriers and their verification;
+`chain/ssh_worker_transport.py` shuttles them over host-key-pinned SSH and
+implements the authenticated transport the remote evaluation dispatcher uses
+for both screen and qualification; `chain/remote_worker_pod_service.py`
+supervises one persistent pod adapter per epoch and parks the epoch on its
+first command-level adapter failure rather than restarting into an unproven
+resident model. Transport, pod, and adapter failures surface as
+infrastructure `no_decision` records that release the durable lease without
+consuming an evaluation attempt.
+
+The tracked B300 pod adapter executes screen work through the commissioned
+screen deployment; it refuses a qualification request as a typed pre-resident
+infrastructure failure because the qualification entrypoint requires
+deployment authorities the screen commission does not carry. Deployment
+wrappers supply every installed path as an explicit argument; active
+endpoints, credentials, sealed configs, and tmux composition stay in the
+private operations tree.
+
 ## Durable reservation states
 
 The store makes work and failure class explicit:
