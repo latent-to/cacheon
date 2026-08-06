@@ -2064,6 +2064,32 @@ def cmd_chain_archive_schema3_hold(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_evaluation_lease(args: argparse.Namespace) -> int:
+    """Run one sealed evaluation-lease store operation."""
+
+    from cacheon.chain.evaluation_lease_operator import (
+        FifoLeaseError,
+        canonical_json,
+        load_config,
+        operate,
+    )
+    from cacheon.chain.intake import IntakeError
+
+    try:
+        result = operate(
+            load_config(args.config),
+            args.lease_operation,
+            lease_id=getattr(args, "lease_id", None),
+            reason=getattr(args, "reason", None),
+            result_digest=getattr(args, "result_digest", ""),
+        )
+    except (FifoLeaseError, IntakeError, OSError) as exc:
+        print(f"chain-evaluation-lease: {exc}", file=sys.stderr)
+        return 2
+    print(canonical_json(result))
+    return 0
+
+
 def cmd_chain_register(args: argparse.Namespace) -> int:
     import bittensor as bt
 
@@ -3009,6 +3035,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--json", action="store_true", help="emit canonical compact JSON")
     sp.set_defaults(func=cmd_chain_reservation_status)
+
+    sp = sub.add_parser(
+        "chain-evaluation-lease",
+        help="run one sealed, one-shot evaluation-lease store operation",
+    )
+    sp.add_argument("--config", required=True, help="absolute sealed config JSON path")
+    lease_ops = sp.add_subparsers(dest="lease_operation", required=True)
+    lease_ops.add_parser("preview", help="read the next canonical FIFO member IDs")
+    lease_ops.add_parser("claim", help="claim the next canonical FIFO lease")
+    heartbeat = lease_ops.add_parser("heartbeat", help="extend one exact active lease")
+    heartbeat.add_argument("lease_id")
+    released = lease_ops.add_parser("release", help="release one exact active lease")
+    released.add_argument("lease_id")
+    released.add_argument("--reason", required=True)
+    released.add_argument("--result-digest", default="")
+    sp.set_defaults(func=cmd_chain_evaluation_lease)
 
     sp = sub.add_parser("chain-validate",
                         help="finalized reveal -> private fetch -> immutable worker publication")

@@ -42,6 +42,7 @@ from cacheon.chain.intake import (
     IntakePolicy,
     IntakeReservation,
     IntakeScope,
+    is_lock_collision,
 )
 from cacheon.chain.publication import (
     WorkerBundlePublication,
@@ -67,7 +68,6 @@ from cacheon.stack_manifest import EvaluationStackManifest
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
 _READINESS_SCHEMA_VERSION = 1
 _RESULT_SCHEMA_VERSION = 1
-_LOCK_COLLISION = "another intake controller owns this database"
 _TRANSIENT_COORDINATOR_OWNERSHIP_MESSAGE = (
     "evaluation store lock/cursor did not stabilize within retry bounds"
 )
@@ -693,7 +693,7 @@ class EvaluationCoordinator:
                     scope=self.scope,
                 )
             except IntakeError as exc:
-                if str(exc) != _LOCK_COLLISION:
+                if not is_lock_collision(exc):
                     raise EvaluationCoordinatorError(
                         f"evaluation store cannot open: {exc}"
                     ) from exc
