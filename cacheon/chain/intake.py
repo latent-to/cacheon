@@ -110,6 +110,14 @@ class IntakeError(RuntimeError):
     """Finalized arrival state is malformed, stale, or unsafe to advance."""
 
 
+_LOCK_COLLISION_MESSAGE = "another intake controller owns this database"
+
+
+def is_lock_collision(error: BaseException) -> bool:
+    """Classify whether opening failed only because another controller holds the store."""
+    return isinstance(error, IntakeError) and str(error) == _LOCK_COLLISION_MESSAGE
+
+
 @dataclass(frozen=True)
 class IntakeScope:
     genesis_hash: str
@@ -468,7 +476,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             try:
                 fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise IntakeError("another intake controller owns this database") from None
+                raise IntakeError(_LOCK_COLLISION_MESSAGE) from None
             self._db = sqlite3.connect(self.path, isolation_level=None, timeout=30.0)
             self._db.row_factory = sqlite3.Row
             self._evaluation_mutation_authority: set[str] = set()
