@@ -44,13 +44,13 @@ from cacheon.stack_identity import (
 # Version-1 archive identities are persistent wire/storage contracts.  The
 # product/package rename must not strand snapshots already written below the
 # original prefix or change the digests that authenticate their manifests.
-ARCHIVE_SCHEMA = "optima.validator-archive.v1"
-DEFAULT_VALIDATOR_ARCHIVE_PREFIX = "optima/validator-archive/v1"
-_ARCHIVED_TREE_DIGEST_DOMAIN = "optima.validator.archived-tree"
-_ARCHIVE_MANIFEST_DIGEST_DOMAIN = "optima.validator.archive-manifest"
-_ARCHIVE_SCOPE_DIGEST_DOMAIN = "optima.chain.intake-scope"
-_ARCHIVED_EVIDENCE_ROOT_DIGEST_DOMAIN = "optima.validator.archived-evidence-root"
-_RESTORE_MAP_SCHEMA = "optima.validator-archive-restore-map.v1"
+ARCHIVE_SCHEMA = "cacheon.validator-archive.v1"
+DEFAULT_VALIDATOR_ARCHIVE_PREFIX = "cacheon/validator-archive/v1"
+_ARCHIVED_TREE_DIGEST_DOMAIN = "cacheon.validator.archived-tree"
+_ARCHIVE_MANIFEST_DIGEST_DOMAIN = "cacheon.validator.archive-manifest"
+_ARCHIVE_SCOPE_DIGEST_DOMAIN = "cacheon.chain.intake-scope"
+_ARCHIVED_EVIDENCE_ROOT_DIGEST_DOMAIN = "cacheon.validator.archived-evidence-root"
+_RESTORE_MAP_SCHEMA = "cacheon.validator-archive-restore-map.v1"
 MAX_MANIFEST_BYTES = 16 << 20
 MAX_ARCHIVE_FILE_BYTES = 1 << 30
 MAX_SQLITE_BYTES = 1 << 30

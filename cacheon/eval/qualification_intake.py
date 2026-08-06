@@ -238,7 +238,7 @@ class QualificationAuthorityManifest:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.qualification.intake-authority", self.to_dict())
+        return canonical_digest("cacheon.qualification.intake-authority", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -692,7 +692,7 @@ class QualificationIntakeBatch:
 
 def _failure_digest(manifest: QualificationAuthorityManifest, exc: BaseException) -> str:
     return canonical_digest(
-        "optima.qualification.intake-failure",
+        "cacheon.qualification.intake-failure",
         {
             "authority_manifest_digest": manifest.digest,
             "exception": type(exc).__name__,
@@ -812,7 +812,7 @@ def run_qualification_intake(
             retry_plan = None
             if terminal.decision is QualificationDecision.NO_DECISION:
                 retry_failure = canonical_digest(
-                    "optima.qualification.intake-stage-retry",
+                    "cacheon.qualification.intake-stage-retry",
                     {
                         "artifact": reference.sha256,
                         "authority_manifest_digest": manifest.digest,
@@ -931,7 +931,7 @@ def run_qualification_intake(
     retry_plan = None
     if retry_reservations:
         retry_failure = canonical_digest(
-            "optima.qualification.intake-report-retry",
+            "cacheon.qualification.intake-report-retry",
             {
                 "attempt": reference.sha256,
                 "authority_manifest_digest": manifest.digest,

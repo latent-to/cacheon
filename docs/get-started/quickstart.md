@@ -47,7 +47,7 @@ admission signal, not a sandbox and not correctness evidence.
 Expected output for the clean example:
 
 ```text
-bundle: example-silu-torch-cpu  abi: optima-op-abi-v0  ops: 1
+bundle: example-silu-torch-cpu  abi: cacheon-op-abi-v0  ops: 1
   [clean] activation.silu_and_mul <- kernels/silu_and_mul.py
 ```
 

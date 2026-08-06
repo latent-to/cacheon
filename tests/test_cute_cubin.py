@@ -791,7 +791,7 @@ def test_device_publication_load_resolve_invoke_and_shutdown(
                 "cubin_size": index.exports[0].cubin.size,
                 "observed_abi_digest": _digest("abi"),
                 "observed_contract_digest": _digest("contract"),
-                "schema": "optima.device-artifact-admission.v1",
+                "schema": "cacheon.device-artifact-admission.v1",
             }
 
     class FakeRuntime:

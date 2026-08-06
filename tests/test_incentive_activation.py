@@ -248,7 +248,7 @@ def _membership_digest(
         )
     ]
     return canonical_digest(
-        "optima.economics.metagraph-membership",
+        "cacheon.economics.metagraph-membership",
         {
             "block": 100,
             "block_hash": "0x" + f"{100:064x}",
@@ -262,7 +262,7 @@ def _evaluation_state(
     manifest: EvaluationStackManifest, *, tree_digest: str
 ) -> EvaluationStackState:
     transition_event_id = canonical_digest(
-        "optima.chain.evaluation-stack-genesis",
+        "cacheon.chain.evaluation-stack-genesis",
         {
             "arena_digest": manifest.arena_digest,
             "stack_digest": manifest.digest,
@@ -345,7 +345,7 @@ def _execution_paths(tmp_path: Path, *, retained_fault: str | None = None):
             snapshot = catalog.snapshot()
             snapshot["policy_version"] = "target-catalog.v1-different"
             retained_catalog_digest = canonical_digest(
-                "optima.target-catalog", snapshot
+                "cacheon.target-catalog", snapshot
             )
             retained_manifest = EvaluationStackManifest(
                 runtime_digest=manifest.runtime_digest,

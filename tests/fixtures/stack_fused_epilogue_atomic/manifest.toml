@@ -1,5 +1,5 @@
 bundle_id = "fixture-fused-epilogue-atomic"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [competition]
 target = "collective.moe_epilogue.v1"

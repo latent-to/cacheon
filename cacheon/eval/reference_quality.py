@@ -39,7 +39,7 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 QUALITY_SCHEMA_VERSION = 1
 QUALITY_POLICY_VERSION = "pristine-reference-quality.v1"
 RAW_QUALITY_DOMAIN = "reference-quality.raw"
-RAW_QUALITY_SCHEMA = "optima.reference-quality-raw.v1"
+RAW_QUALITY_SCHEMA = "cacheon.reference-quality-raw.v1"
 SUPPORT_POLICY_ID = "retained-support-f32-q18.v1"
 QUALITY_DECISIONS = frozenset({"PASS", "FAIL", "NO_DECISION"})
 _METRICS = frozenset(
@@ -248,7 +248,7 @@ class PromptQualityEvidence(_Record):
                      candidate=RolloutQualityEvidence.from_dict, stock_control=RolloutQualityEvidence.from_dict)
 @dataclass(frozen=True)
 class ReferenceQualityEvidence(_Record):
-    _domain: ClassVar[str] = "optima.qualification.reference-quality"
+    _domain: ClassVar[str] = "cacheon.qualification.reference-quality"
     reference_manifest_digest: str
     calibration_digest: str
     raw_evidence_digest: str
@@ -280,7 +280,7 @@ class ReferenceQualityEvidence(_Record):
                      prompts=lambda rows: _rows(rows, PromptQualityEvidence.from_dict, "prompts"))
 @dataclass(frozen=True)
 class ReferenceQualityRawBinding(_Record):
-    _domain: ClassVar[str] = "optima.qualification.reference-quality-raw-binding"
+    _domain: ClassVar[str] = "cacheon.qualification.reference-quality-raw-binding"
     qualification_identity_digest: str
     reference_manifest_digest: str
     calibration_digest: str
@@ -350,7 +350,7 @@ class NormalizedTopKDistribution(_Record):
 
 def retained_support_policy_digest() -> str:
     return canonical_digest(
-        "optima.qualification.support-policy",
+        "cacheon.qualification.support-policy",
         {"clamp_min_logprob": "-80", "mass_units": 10**18, "policy_id": SUPPORT_POLICY_ID},
     )
 
@@ -485,7 +485,7 @@ class RawPromptQualityEvidence(_Record):
                      candidate=RawRolloutEvidence.from_dict, stock_control=RawRolloutEvidence.from_dict)
 def hidden_task_plan_digest(prompts: tuple[RawPromptQualityEvidence, ...]) -> str:
     return canonical_digest(
-        "optima.qualification.hidden-task-plan",
+        "cacheon.qualification.hidden-task-plan",
         [{"prompt": row.prompt_digest,
           "tasks": [task.task_digest for task in row.baseline.hidden_tasks]}
          for row in prompts],
@@ -500,7 +500,7 @@ def raw_trajectory_projection_digest(prompts: tuple[RawPromptQualityEvidence, ..
             ],
         }
     return canonical_digest(
-        "optima.qualification.selected-trajectory-projection",
+        "cacheon.qualification.selected-trajectory-projection",
         {
             "support_policy_digest": retained_support_policy_digest(),
             "prompts": [
@@ -521,7 +521,7 @@ def raw_trajectory_projection_digest(prompts: tuple[RawPromptQualityEvidence, ..
     )
 @dataclass(frozen=True)
 class ReferenceQualityRawArtifact(_Record):
-    _domain: ClassVar[str] = "optima.qualification.reference-quality-raw"
+    _domain: ClassVar[str] = "cacheon.qualification.reference-quality-raw"
     binding: ReferenceQualityRawBinding
     prompts: tuple[RawPromptQualityEvidence, ...]
     policy_version: str = QUALITY_POLICY_VERSION

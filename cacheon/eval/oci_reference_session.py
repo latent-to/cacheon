@@ -165,7 +165,7 @@ class ReferenceSessionPlan:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.eval.reference-session-plan",
+            "cacheon.eval.reference-session-plan",
             {
                 "engine_config_digest": self.engine_config.digest,
                 "expected_preflight_digest": self.expected_preflight.digest,
@@ -236,7 +236,7 @@ class ReferenceSessionEvidence:
     session_completed_at: float
 
     def __post_init__(self) -> None:
-        if self.schema != "optima.pristine-reference-session.v1":
+        if self.schema != "cacheon.pristine-reference-session.v1":
             raise ReferenceSessionError("reference session schema is invalid")
         for field in (
             "launch_digest",
@@ -283,7 +283,7 @@ class ReferenceSessionEvidence:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.eval.pristine-reference-session",
+            "cacheon.eval.pristine-reference-session",
             {
                 "exchanges": [
                     {
@@ -504,7 +504,7 @@ def run_reference_session(
     if preflight is None:  # pragma: no cover - successful handshake sets it
         raise OuterSessionInfrastructureError("reference session lacks preflight evidence")
     return ReferenceSessionEvidence(
-        "optima.pristine-reference-session.v1",
+        "cacheon.pristine-reference-session.v1",
         session_id,
         launch_digest,
         plan.reference.digest,

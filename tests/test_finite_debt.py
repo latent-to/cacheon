@@ -191,7 +191,7 @@ def test_selected_curve_policy_vector_binds_epoch_cadence_and_claim_terms() -> N
         "improvement_basis": IMPROVEMENT_GROSS,
         "k_ppm": PPM,
         "lifetime_blocks": 648_000,
-        "policy_version": "optima.finite-debt.v2",
+        "policy_version": "cacheon.finite-debt.v2",
         "reserve_hotkey": "reserve",
         "reserve_ppm": 100_000,
         "reward_family_campaigns": [

@@ -62,7 +62,7 @@ Common failures and fixes:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| unsupported ABI | `abi_version` is not a supported identifier | author new bundles with the published `optima-op-abi-v0` component ABI |
+| unsupported ABI | `abi_version` is not a supported identifier | author new bundles with the published `cacheon-op-abi-v0` component ABI |
 | unsafe/missing path | absolute path, traversal, symlink, or undeclared file | make every declaration bundle-relative and source-only |
 | competition mode mismatch | `slot`/`atomic` assertion disagrees with catalog | select the exact registered target and mode |
 | target members differ | op rows do not implement the complete registered delta | use the exact singleton member or all atomic members |

@@ -50,8 +50,8 @@ from cacheon.stack_identity import canonical_digest
 
 
 SERVING_SCREEN_STAGE = "abbreviated_serving"
-_STAGE_EVIDENCE_SCHEMA = "optima.arena.resident-screen-stage.v1"
-_WAIVER_EVIDENCE_SCHEMA = "optima.arena.resident-screen-waiver.v1"
+_STAGE_EVIDENCE_SCHEMA = "cacheon.arena.resident-screen-stage.v1"
+_WAIVER_EVIDENCE_SCHEMA = "cacheon.arena.resident-screen-waiver.v1"
 
 
 class ResidentScreenLaneError(RuntimeError):

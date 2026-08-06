@@ -111,7 +111,7 @@ def _reason_map(value: object) -> None:
 def validate_chain_audit_record(record: object) -> None:
     """Validate the closed redacted record schema used on append and restore."""
 
-    if type(record) is not dict or record.get("schema") != "optima.chain-audit.v1":
+    if type(record) is not dict or record.get("schema") != "cacheon.chain-audit.v1":
         raise ChainAuditLogError("chain audit record schema is malformed")
     event = record.get("event")
     if event == "validator_fault":
@@ -180,7 +180,7 @@ def pass_audit_record(result, *, timestamp_ns: int | None = None) -> dict[str, o
             for reservation, reason in sorted(result.rejected.items())
         },
         "reserved": list(result.reserved),
-        "schema": "optima.chain-audit.v1",
+        "schema": "cacheon.chain-audit.v1",
         "screens": dict(sorted(result.screens.items())),
         "seen": result.seen,
         "settlements": dict(sorted(result.settlements.items())),
@@ -210,7 +210,7 @@ def fault_audit_record(
         "consecutive_failures": consecutive_failures,
         "error_type": type(exc).__name__[:128],
         "event": "validator_fault",
-        "schema": "optima.chain-audit.v1",
+        "schema": "cacheon.chain-audit.v1",
         "timestamp_ns": observed_ns,
     }
     validate_chain_audit_record(record)

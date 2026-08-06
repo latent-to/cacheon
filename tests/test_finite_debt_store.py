@@ -278,7 +278,7 @@ def test_schema1_family_share_activation_fails_closed_during_open(tmp_path) -> N
         legacy_policy["family_budget_shares"] = [
             {"family_id": _family(candidate), "share_ppm": PPM}
         ]
-        legacy_policy["policy_version"] = "optima.finite-debt.v1"
+        legacy_policy["policy_version"] = "cacheon.finite-debt.v1"
         legacy_policy["schema_version"] = 1
         legacy_activation = activation.to_dict()
         legacy_activation["policy"] = legacy_policy

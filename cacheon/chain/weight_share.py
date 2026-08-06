@@ -24,7 +24,7 @@ import os
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, Protocol
@@ -44,7 +44,6 @@ from cacheon.chain.weight_push_auth import (
     WeightPushAuthError,
     sign_push_acknowledgement,
     sign_push_request,
-    push_request_uses_legacy_protocol,
     verify_push_acknowledgement,
     verify_push_request,
 )
@@ -73,10 +72,6 @@ OFFER_SCHEMA_V1 = "cacheon.current-weight-offer.v1"
 OFFER_SCHEMA = "cacheon.current-weight-offer.v2"
 STORED_OFFER_SCHEMA = "cacheon.authenticated-weight-offer.v1"
 OFFER_DOMAIN = "cacheon.current-weight-offer"
-LEGACY_OFFER_SCHEMA_V1 = "optima.current-weight-offer.v1"
-LEGACY_OFFER_SCHEMA = "optima.current-weight-offer.v2"
-LEGACY_STORED_OFFER_SCHEMA = "optima.authenticated-weight-offer.v1"
-LEGACY_OFFER_DOMAIN = "optima.current-weight-offer"
 LANE_LEGACY_V1 = "legacy_v1"
 LANE_COMPOSED = "incentive_composition"
 LANE_CORE = "finite_debt"
@@ -84,9 +79,6 @@ OFFER_LANES = frozenset({LANE_LEGACY_V1, LANE_COMPOSED, LANE_CORE})
 REQUEST_DOMAIN = "cacheon.weight-share.request.v1"
 RESPONSE_DOMAIN = "cacheon.weight-share.response.v1"
 STORAGE_AUTH_DOMAIN = "cacheon.weight-share.storage.v1"
-LEGACY_REQUEST_DOMAIN = "optima.weight-share.request.v1"
-LEGACY_RESPONSE_DOMAIN = "optima.weight-share.response.v1"
-LEGACY_STORAGE_AUTH_DOMAIN = "optima.weight-share.storage.v1"
 CURRENT_WEIGHTS_PATH = "/v1/current-weights"
 DEFAULT_MAX_SKEW_SECONDS = 60
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30
@@ -136,11 +128,8 @@ class CurrentWeightOffer:
     lane: str
     projection: WeightProjection
     debt_binding: DebtWeightPublicationBinding | None = None
-    _legacy_protocol: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        if type(self._legacy_protocol) is not bool:
-            raise WeightShareError("current weight offer protocol is malformed")
         if self.lane not in OFFER_LANES:
             raise WeightShareError("current weight offer lane is unsupported")
         if type(self.projection) is not WeightProjection:
@@ -174,21 +163,14 @@ class CurrentWeightOffer:
 
     @property
     def digest(self) -> str:
-        return self.digest_for_protocol(legacy=self._legacy_protocol)
+        return canonical_digest(OFFER_DOMAIN, self.to_dict())
 
-    def digest_for_protocol(self, *, legacy: bool) -> str:
-        return canonical_digest(
-            LEGACY_OFFER_DOMAIN if legacy else OFFER_DOMAIN,
-            self.to_dict(legacy=legacy),
-        )
-
-    def to_dict(self, *, legacy: bool | None = None) -> dict[str, object]:
-        legacy = self._legacy_protocol if legacy is None else legacy
+    def to_dict(self) -> dict[str, object]:
         row: dict[str, object] = {
             "lane": self.lane,
             "projection": self.projection.to_dict(),
             "projection_digest": self.projection.digest,
-            "schema": LEGACY_OFFER_SCHEMA if legacy else OFFER_SCHEMA,
+            "schema": OFFER_SCHEMA,
         }
         if self.debt_binding is not None:
             row["debt_binding"] = self.debt_binding.to_dict()
@@ -198,8 +180,8 @@ class CurrentWeightOffer:
             row["debt_binding_digest"] = None
         return row
 
-    def to_bytes(self, *, legacy: bool | None = None) -> bytes:
-        return canonical_json_bytes(self.to_dict(legacy=legacy)) + b"\n"
+    def to_bytes(self) -> bytes:
+        return canonical_json_bytes(self.to_dict()) + b"\n"
 
     @classmethod
     def from_legacy_projection(cls, projection: WeightProjection) -> "CurrentWeightOffer":
@@ -225,8 +207,7 @@ class CurrentWeightOffer:
         if type(value) is not dict:
             raise WeightShareError("current weight offer fields do not match")
         schema = value.get("schema")
-        if schema in {OFFER_SCHEMA_V1, LEGACY_OFFER_SCHEMA_V1}:
-            legacy = schema == LEGACY_OFFER_SCHEMA_V1
+        if schema == OFFER_SCHEMA_V1:
             # Historical local files: projection-only legacy V1.
             if set(value) != {"projection", "projection_digest", "schema"}:
                 raise WeightShareError("legacy weight offer fields do not match")
@@ -243,10 +224,9 @@ class CurrentWeightOffer:
                 raise WeightShareError(
                     "current weight offer projection digest does not match"
                 )
-            return cls(LANE_LEGACY_V1, projection, None, legacy)
-        if schema not in {OFFER_SCHEMA, LEGACY_OFFER_SCHEMA}:
+            return cls(LANE_LEGACY_V1, projection, None)
+        if schema != OFFER_SCHEMA:
             raise WeightShareError("current weight offer schema is unsupported")
-        legacy = schema == LEGACY_OFFER_SCHEMA
         expected = {
             "debt_binding",
             "debt_binding_digest",
@@ -288,7 +268,7 @@ class CurrentWeightOffer:
                 )
         elif value["debt_binding_digest"] is not None:
             raise WeightShareError("debt binding digest present without binding")
-        return cls(str(lane), projection, binding, legacy)
+        return cls(str(lane), projection, binding)
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> "CurrentWeightOffer":
@@ -307,7 +287,6 @@ def storage_auth_digest(
     *,
     credential_id: str,
     offer_digest: str,
-    legacy: bool = False,
 ) -> str:
     if (
         not isinstance(credential_id, str)
@@ -316,7 +295,7 @@ def storage_auth_digest(
     ):
         raise WeightShareError("stored offer credential id is malformed")
     return canonical_digest(
-        LEGACY_STORAGE_AUTH_DOMAIN if legacy else STORAGE_AUTH_DOMAIN,
+        STORAGE_AUTH_DOMAIN,
         {
             "credential_id": credential_id,
             "offer_digest": require_sha256_hex(
@@ -343,42 +322,23 @@ class AuthenticatedWeightOffer:
     credential_id: str
     offer: CurrentWeightOffer
     mac: str
-    _legacy_protocol: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        if type(self._legacy_protocol) is not bool:
-            raise WeightShareError(
-                "authenticated weight offer protocol is malformed"
-            )
         if type(self.offer) is not CurrentWeightOffer:
             raise WeightShareError("authenticated weight offer is untyped")
-        if self.offer._legacy_protocol is not self._legacy_protocol:
-            raise WeightShareError(
-                "authenticated weight offer mixes storage protocol schemas"
-            )
         storage_auth_digest(
             credential_id=self.credential_id,
-            offer_digest=self.offer.digest_for_protocol(
-                legacy=self._legacy_protocol
-            ),
-            legacy=self._legacy_protocol,
+            offer_digest=self.offer.digest,
         )
         require_sha256_hex(self.mac, field="storage_mac")
 
     def to_dict(self) -> dict[str, object]:
-        offer_digest = self.offer.digest_for_protocol(
-            legacy=self._legacy_protocol
-        )
         return {
             "credential_id": self.credential_id,
             "mac": self.mac,
-            "offer": self.offer.to_dict(legacy=self._legacy_protocol),
-            "offer_digest": offer_digest,
-            "schema": (
-                LEGACY_STORED_OFFER_SCHEMA
-                if self._legacy_protocol
-                else STORED_OFFER_SCHEMA
-            ),
+            "offer": self.offer.to_dict(),
+            "offer_digest": self.offer.digest,
+            "schema": STORED_OFFER_SCHEMA,
         }
 
     def to_bytes(self) -> bytes:
@@ -397,20 +357,15 @@ class AuthenticatedWeightOffer:
                 "authenticated weight offer fields do not match"
             )
         schema = value["schema"]
-        if schema not in {STORED_OFFER_SCHEMA, LEGACY_STORED_OFFER_SCHEMA}:
+        if schema != STORED_OFFER_SCHEMA:
             raise WeightShareError(
                 "authenticated weight offer schema is unsupported"
             )
-        legacy = schema == LEGACY_STORED_OFFER_SCHEMA
         offer = CurrentWeightOffer.from_dict(value["offer"])
-        if offer._legacy_protocol is not legacy:
-            raise WeightShareError(
-                "authenticated weight offer mixes storage protocol schemas"
-            )
         offer_digest = require_sha256_hex(
             value["offer_digest"], field="offer_digest"
         )
-        if offer.digest_for_protocol(legacy=legacy) != offer_digest:
+        if offer.digest != offer_digest:
             raise WeightShareError(
                 "authenticated weight offer digest does not match"
             )
@@ -418,7 +373,6 @@ class AuthenticatedWeightOffer:
             str(value["credential_id"]),
             offer,
             require_sha256_hex(value["mac"], field="storage_mac"),
-            legacy,
         )
 
     @classmethod
@@ -444,14 +398,12 @@ def authenticate_weight_offer(
         raise WeightShareError("weight offer authentication requires an exact offer")
     digest = storage_auth_digest(
         credential_id=credential.credential_id,
-        offer_digest=offer.digest_for_protocol(legacy=offer._legacy_protocol),
-        legacy=offer._legacy_protocol,
+        offer_digest=offer.digest,
     )
     return AuthenticatedWeightOffer(
         credential.credential_id,
         offer,
         _storage_mac(credential, digest),
-        offer._legacy_protocol,
     )
 
 
@@ -472,10 +424,7 @@ def verify_authenticated_weight_offer(
         )
     digest = storage_auth_digest(
         credential_id=stored.credential_id,
-        offer_digest=stored.offer.digest_for_protocol(
-            legacy=stored._legacy_protocol
-        ),
-        legacy=stored._legacy_protocol,
+        offer_digest=stored.offer.digest,
     )
     if not hmac.compare_digest(stored.mac, _storage_mac(credential, digest)):
         raise WeightShareError("stored weight offer authentication failed")
@@ -495,7 +444,7 @@ def _parse_offer_storage(
         ) from None
     if type(value) is not dict:
         raise WeightShareError("stored weight offer fields do not match")
-    if value.get("schema") in {STORED_OFFER_SCHEMA, LEGACY_STORED_OFFER_SCHEMA}:
+    if value.get("schema") == STORED_OFFER_SCHEMA:
         return AuthenticatedWeightOffer.from_dict(value)
     return CurrentWeightOffer.from_dict(value)
 
@@ -531,8 +480,7 @@ def assert_monotonic_offer_update(
         raise WeightShareError("weight offer effective block regressed")
     if (
         proposed.projection.effective_block == current.projection.effective_block
-        # A rename-only wire migration is idempotent when the typed economic
-        # offer is unchanged, even though the outer protocol digest differs.
+        # Republishing the identical typed offer is idempotent.
         and proposed != current
     ):
         raise WeightShareError("weight offer conflicts at the current effective block")
@@ -876,12 +824,7 @@ def rebind_offer_signer(
         raise WeightShareError("rebind requires an exact CurrentWeightOffer")
     projection = rebind_projection_signer(offer.projection, signer_hotkey)
     if offer.debt_binding is None:
-        return CurrentWeightOffer(
-            LANE_LEGACY_V1,
-            projection,
-            None,
-            offer._legacy_protocol,
-        )
+        return CurrentWeightOffer(LANE_LEGACY_V1, projection, None)
     binding = DebtWeightPublicationBinding(
         offer.debt_binding.publication_kind,
         offer.debt_binding.activation_digest,
@@ -889,8 +832,7 @@ def rebind_offer_signer(
         offer.debt_binding.economic_projection,
         projection,
     )
-    rebound = CurrentWeightOffer.from_debt_binding(binding)
-    return replace(rebound, _legacy_protocol=offer._legacy_protocol)
+    return CurrentWeightOffer.from_debt_binding(binding)
 
 
 def request_auth_digest(
@@ -900,7 +842,6 @@ def request_auth_digest(
     netuid: int,
     path: str,
     timestamp: int,
-    legacy: bool = False,
 ) -> str:
     if (
         not isinstance(hotkey, str)
@@ -916,7 +857,7 @@ def request_auth_digest(
     if type(timestamp) is not int or timestamp <= 0:
         raise WeightShareError("request timestamp is malformed")
     return canonical_digest(
-        LEGACY_REQUEST_DOMAIN if legacy else REQUEST_DOMAIN,
+        REQUEST_DOMAIN,
         {
             "hotkey": hotkey,
             "method": method,
@@ -933,7 +874,6 @@ def response_auth_digest(
     body_digest: str,
     netuid: int,
     timestamp: int,
-    legacy: bool = False,
 ) -> str:
     if (
         not isinstance(authority_hotkey, str)
@@ -948,7 +888,7 @@ def response_auth_digest(
     if type(timestamp) is not int or timestamp <= 0:
         raise WeightShareError("response timestamp is malformed")
     return canonical_digest(
-        LEGACY_RESPONSE_DOMAIN if legacy else RESPONSE_DOMAIN,
+        RESPONSE_DOMAIN,
         {
             "authority_hotkey": authority_hotkey,
             "body_digest": body_digest,
@@ -1064,7 +1004,6 @@ def build_signed_offer_response(
     authority: HotkeySigner,
     netuid: int,
     timestamp: int,
-    legacy: bool = False,
 ) -> tuple[bytes, dict[str, str]]:
     if type(offer) is not CurrentWeightOffer:
         raise WeightShareError("signed response requires an exact CurrentWeightOffer")
@@ -1076,7 +1015,7 @@ def build_signed_offer_response(
     body_obj = {
         "authority_hotkey": authority.ss58_address,
         "netuid": netuid,
-        "offer": offer.to_dict(legacy=legacy),
+        "offer": offer.to_dict(),
         "timestamp": timestamp,
     }
     body = canonical_json_bytes(body_obj) + b"\n"
@@ -1086,35 +1025,26 @@ def build_signed_offer_response(
         body_digest=body_digest,
         netuid=netuid,
         timestamp=timestamp,
-        legacy=legacy,
     )
     signature = sign_auth_digest(authority, digest)
-    prefix = "Optima" if legacy else "Cacheon"
     headers = {
         "Content-Type": "application/json; charset=utf-8",
-        f"X-{prefix}-Authority-Hotkey": authority.ss58_address,
-        f"X-{prefix}-Netuid": str(netuid),
-        f"X-{prefix}-Timestamp": str(timestamp),
-        f"X-{prefix}-Signature": signature,
-        f"X-{prefix}-Body-Digest": body_digest,
+        "X-Cacheon-Authority-Hotkey": authority.ss58_address,
+        "X-Cacheon-Netuid": str(netuid),
+        "X-Cacheon-Timestamp": str(timestamp),
+        "X-Cacheon-Signature": signature,
+        "X-Cacheon-Body-Digest": body_digest,
     }
     return body, headers
 
 
-def _headers_use_legacy_protocol(headers: object) -> tuple[bool, dict[str, str]]:
+def _lower_headers(headers: object) -> dict[str, str]:
     if not hasattr(headers, "items"):
         raise WeightShareError("weight-share headers are malformed")
-    normalized = {
+    return {
         str(key).lower(): str(value)
         for key, value in headers.items()  # type: ignore[attr-defined]
     }
-    cacheon = any(key.startswith("x-cacheon-") for key in normalized)
-    optima = any(key.startswith("x-optima-") for key in normalized)
-    if cacheon and optima:
-        raise WeightShareError(
-            "weight-share message mixes Cacheon and Optima headers"
-        )
-    return optima, normalized
 
 
 def parse_signed_offer_response(
@@ -1127,7 +1057,6 @@ def parse_signed_offer_response(
     verify: VerifyFn,
     expected_authority: str | None = None,
     metagraph: chain.MetagraphView | None = None,
-    expected_legacy_protocol: bool | None = None,
 ) -> CurrentWeightOffer:
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -1150,23 +1079,12 @@ def parse_signed_offer_response(
     assert_fresh_timestamp(
         timestamp, now=now, max_skew_seconds=max_skew_seconds
     )
-    legacy, normalized_headers = _headers_use_legacy_protocol(headers)
-    if (
-        expected_legacy_protocol is not None
-        and legacy is not expected_legacy_protocol
-    ):
-        raise WeightShareError(
-            "weight-share response protocol does not match request"
-        )
-    prefix = "x-optima" if legacy else "x-cacheon"
-    display_prefix = "X-Optima" if legacy else "X-Cacheon"
-    header_authority = normalized_headers.get(
-        f"{prefix}-authority-hotkey", ""
-    )
-    header_timestamp = normalized_headers.get(f"{prefix}-timestamp", "")
-    header_netuid = normalized_headers.get(f"{prefix}-netuid", "")
-    signature = normalized_headers.get(f"{prefix}-signature", "")
-    header_body_digest = normalized_headers.get(f"{prefix}-body-digest", "")
+    normalized_headers = _lower_headers(headers)
+    header_authority = normalized_headers.get("x-cacheon-authority-hotkey", "")
+    header_timestamp = normalized_headers.get("x-cacheon-timestamp", "")
+    header_netuid = normalized_headers.get("x-cacheon-netuid", "")
+    signature = normalized_headers.get("x-cacheon-signature", "")
+    header_body_digest = normalized_headers.get("x-cacheon-body-digest", "")
     if (
         header_authority != authority_hotkey
         or header_timestamp != str(timestamp)
@@ -1176,7 +1094,7 @@ def parse_signed_offer_response(
     body_digest = sha256_hex(body)
     if header_body_digest:
         declared = require_sha256_hex(
-            header_body_digest, field=f"{display_prefix}-Body-Digest"
+            header_body_digest, field="X-Cacheon-Body-Digest"
         )
         if declared != body_digest:
             raise WeightShareError("weight-share response body digest mismatch")
@@ -1185,7 +1103,6 @@ def parse_signed_offer_response(
         body_digest=body_digest,
         netuid=netuid,
         timestamp=timestamp,
-        legacy=legacy,
     )
     verify_auth_digest(authority_hotkey, digest, signature, verify=verify)
     if expected_authority is not None and authority_hotkey != expected_authority:
@@ -1194,10 +1111,6 @@ def parse_signed_offer_response(
     # Callers pin it with expected_authority. Live validator_permit is required of
     # the GET requester (enforced by serve_current_weights), not of this hotkey.
     offer = CurrentWeightOffer.from_dict(payload["offer"])
-    if offer._legacy_protocol is not legacy:
-        raise WeightShareError(
-            "weight-share response signature protocol differs from offer schema"
-        )
     if offer.projection.netuid != netuid:
         raise WeightShareError("offer projection netuid mismatch")
     return offer
@@ -1264,12 +1177,11 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
             return
         server = self.server
         try:
-            legacy, request_headers = _headers_use_legacy_protocol(self.headers)
-            prefix = "x-optima" if legacy else "x-cacheon"
-            hotkey = request_headers.get(f"{prefix}-hotkey", "")
-            timestamp_raw = request_headers.get(f"{prefix}-timestamp", "")
-            signature = request_headers.get(f"{prefix}-signature", "")
-            header_netuid = request_headers.get(f"{prefix}-netuid", "")
+            request_headers = _lower_headers(self.headers)
+            hotkey = request_headers.get("x-cacheon-hotkey", "")
+            timestamp_raw = request_headers.get("x-cacheon-timestamp", "")
+            signature = request_headers.get("x-cacheon-signature", "")
+            header_netuid = request_headers.get("x-cacheon-netuid", "")
             if header_netuid != str(server.netuid):
                 raise WeightShareError("request netuid header mismatch")
             try:
@@ -1286,7 +1198,6 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                 netuid=server.netuid,
                 path=CURRENT_WEIGHTS_PATH,
                 timestamp=timestamp,
-                legacy=legacy,
             )
             verify_auth_digest(hotkey, digest, signature, verify=server.verify)
             metagraph = chain.fetch_metagraph(server.subtensor, server.netuid)
@@ -1316,7 +1227,6 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                 authority=server.authority,
                 netuid=server.netuid,
                 timestamp=now,
-                legacy=legacy,
             )
         except WeightShareRetryableError as exc:
             self._error(503, str(exc))
@@ -1361,12 +1271,7 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                 now=now,
                 max_skew_seconds=server.max_skew_seconds,
             )
-            legacy = push_request_uses_legacy_protocol(push_headers)
             offer = CurrentWeightOffer.from_bytes(body)
-            if offer._legacy_protocol is not legacy:
-                raise WeightShareError(
-                    "push signature protocol differs from offer schema"
-                )
             if offer.projection.netuid != server.netuid:
                 raise WeightShareError("pushed offer netuid differs from server netuid")
             credential = server.push_credentials.get(credential_id)
@@ -1374,8 +1279,7 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                 raise WeightPushAuthError(
                     "verified push credential is no longer retained"
                 )
-            prefix = "x-optima" if legacy else "x-cacheon"
-            request_timestamp = int(push_headers[f"{prefix}-push-timestamp"])
+            request_timestamp = int(push_headers["x-cacheon-push-timestamp"])
             stored = authenticate_weight_offer(offer, credential)
             with server._offer_lock:
                 server.save_offer(stored)
@@ -1391,7 +1295,6 @@ class _WeightShareHandler(BaseHTTPRequestHandler):
                     offer_digest=offer.digest,
                     projection_digest=offer.projection.digest,
                     request_timestamp=request_timestamp,
-                    legacy=legacy,
                 )
             ) + b"\n"
         except WeightShareRetryableError as exc:
@@ -1483,7 +1386,6 @@ def push_current_weights(
     timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     clock: Callable[[], int] | None = None,
     opener: Callable[..., object] | None = None,
-    legacy: bool = False,
 ) -> dict[str, object]:
     """Eval-side: push one offer to the weights service. Never touches the chain."""
 
@@ -1496,13 +1398,12 @@ def push_current_weights(
     timeout = float(timeout_seconds)
     if not 0.1 <= timeout <= 600:
         raise WeightShareError("timeout is out of bounds")
-    body = offer.to_bytes(legacy=legacy)
+    body = offer.to_bytes()
     now = int((clock or (lambda: int(time.time())))())
     headers = sign_push_request(
         credential,
         timestamp=now,
         body=body,
-        legacy=legacy,
     )
     endpoint = url.rstrip("/") + CURRENT_WEIGHTS_PATH
     request = Request(endpoint, data=body, method="PUT", headers=headers)
@@ -1538,10 +1439,9 @@ def push_current_weights(
         verify_push_acknowledgement(
             credential,
             payload,
-            offer_digest=offer.digest_for_protocol(legacy=legacy),
+            offer_digest=offer.digest,
             projection_digest=offer.projection.digest,
             request_timestamp=now,
-            legacy=legacy,
         )
     except WeightPushAuthError as exc:
         raise WeightShareError(str(exc)) from None
@@ -1594,7 +1494,6 @@ def fetch_current_weights(
     expected_authority: str | None = None,
     metagraph: chain.MetagraphView | None = None,
     opener: Callable[..., object] | None = None,
-    legacy: bool = False,
 ) -> CurrentWeightOffer:
     """Authenticated GET of the current publishable weight offer."""
 
@@ -1612,20 +1511,18 @@ def fetch_current_weights(
         netuid=netuid,
         path=CURRENT_WEIGHTS_PATH,
         timestamp=now,
-        legacy=legacy,
     )
     signature = sign_auth_digest(signer, digest)
     endpoint = url.rstrip("/") + CURRENT_WEIGHTS_PATH
-    prefix = "Optima" if legacy else "Cacheon"
     request = Request(
         endpoint,
         method="GET",
         headers={
             "Accept": "application/json",
-            f"X-{prefix}-Hotkey": signer.ss58_address,
-            f"X-{prefix}-Netuid": str(netuid),
-            f"X-{prefix}-Timestamp": str(now),
-            f"X-{prefix}-Signature": signature,
+            "X-Cacheon-Hotkey": signer.ss58_address,
+            "X-Cacheon-Netuid": str(netuid),
+            "X-Cacheon-Timestamp": str(now),
+            "X-Cacheon-Signature": signature,
         },
     )
     open_url = opener or urlopen
@@ -1662,7 +1559,6 @@ def fetch_current_weights(
         verify=verify or default_verify_fn,
         expected_authority=expected_authority,
         metagraph=metagraph,
-        expected_legacy_protocol=legacy,
     )
 
 

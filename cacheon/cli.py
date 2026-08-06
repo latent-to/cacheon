@@ -567,14 +567,14 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
 
 
 def _renamed_environment(name: str) -> str:
-    """Read a Cacheon variable, then its transitional Optima alias."""
+    """Read a Cacheon variable, then its transitional Cacheon alias."""
 
     import os
 
     value = os.environ.get(name, "")
     if value or not name.startswith("CACHEON_"):
         return value
-    return os.environ.get("OPTIMA_" + name.removeprefix("CACHEON_"), "")
+    return os.environ.get("CACHEON_" + name.removeprefix("CACHEON_"), "")
 
 
 def _object_store_from_args(args: argparse.Namespace):

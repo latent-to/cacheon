@@ -34,8 +34,8 @@ from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_plan import StackArmIdentity
 
 
-DISCOVERY_ABI_VERSION = "optima-discovery-abi-v1"
-DISCOVERY_OVERLAY_SCHEMA = "optima.discovery-overlay.v1"
+DISCOVERY_ABI_VERSION = "cacheon-discovery-abi-v1"
+DISCOVERY_OVERLAY_SCHEMA = "cacheon.discovery-overlay.v1"
 DISCOVERY_POLICY_ID = "sglang-inference-discovery-v1"
 DISCOVERY_PROMOTIONS = frozenset(
     {"new_singleton", "atomic_target", "reviewed_engine_change", "bounty_only"}
@@ -70,8 +70,8 @@ _STAMP_FIELDS = frozenset({"identity", "schema"})
 _DISCOVERY_ENVELOPE = "dep_overlays/discovery"
 _DISCOVERY_STAMP = f"{_DISCOVERY_ENVELOPE}/overlay.json"
 _DISCOVERY_PACKAGE = f"{_DISCOVERY_ENVELOPE}/site/sglang/"
-_DISCOVERY_ENGINE_METADATA = "metadata/optima_discovery.json"
-_DISCOVERY_ENGINE_SCHEMA = "optima.discovery-engine-tree.v1"
+_DISCOVERY_ENGINE_METADATA = "metadata/cacheon_discovery.json"
+_DISCOVERY_ENGINE_SCHEMA = "cacheon.discovery-engine-tree.v1"
 _DISCOVERY_ENGINE_FIELDS = frozenset(
     {
         "build_profile", "build_profile_digest", "incumbent_stack_digest",
@@ -270,7 +270,7 @@ class DiscoveryManifest:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.discovery.manifest", self.to_dict())
+        return canonical_digest("cacheon.discovery.manifest", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -337,7 +337,7 @@ class InspectedDiscovery:
 
     @property
     def proposal_digest(self) -> str:
-        return canonical_digest("optima.discovery.proposal", self.to_dict())
+        return canonical_digest("cacheon.discovery.proposal", self.to_dict())
 
 
 def _stable_read(path: Path, *, field: str, limit: int | None = None) -> bytes:
@@ -527,7 +527,7 @@ class DiscoveryPolicy:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.discovery.policy", self.to_dict())
+        return canonical_digest("cacheon.discovery.policy", self.to_dict())
 
     @classmethod
     def from_dict(cls, value: object) -> "DiscoveryPolicy":
@@ -656,7 +656,7 @@ class DiscoveryBuildProfile:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.discovery.build-profile", self.to_dict())
+        return canonical_digest("cacheon.discovery.build-profile", self.to_dict())
 
     @classmethod
     def from_dict(cls, value: object) -> "DiscoveryBuildProfile":
@@ -995,7 +995,7 @@ def _tree_inventory(
 
 def discovery_tree_digest(files: tuple[DiscoveryFile, ...]) -> str:
     return canonical_digest(
-        "optima.discovery.sglang-tree", {"files": [row.to_dict() for row in files]}
+        "cacheon.discovery.sglang-tree", {"files": [row.to_dict() for row in files]}
     )
 
 
@@ -1106,7 +1106,7 @@ class DiscoveryOverlayIdentity:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.discovery.overlay-identity", self.to_dict())
+        return canonical_digest("cacheon.discovery.overlay-identity", self.to_dict())
 
     @classmethod
     def from_dict(cls, value: object) -> "DiscoveryOverlayIdentity":
@@ -1433,7 +1433,7 @@ def discovery_selected_delta_digest(
     """Source intent of one discovery delta, before build output exists."""
 
     return canonical_digest(
-        "optima.discovery.selected-delta",
+        "cacheon.discovery.selected-delta",
         {
             "build_profile_digest": _digest(
                 build_profile_digest, field="build_profile_digest"
@@ -1455,7 +1455,7 @@ def discovery_candidate_stack_digest(
     """Pre-build identity of ephemeral C without a permanent stack entry."""
 
     return canonical_digest(
-        "optima.discovery.candidate-stack",
+        "cacheon.discovery.candidate-stack",
         {
             "incumbent_stack_digest": _digest(incumbent_stack_digest, field="incumbent_stack_digest"),
             "incumbent_tree_digest": _digest(incumbent_tree_digest, field="incumbent_tree_digest"),
@@ -1564,7 +1564,7 @@ class DiscoveryArmPlan:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.discovery.arm-plan", self.to_dict())
+        return canonical_digest("cacheon.discovery.arm-plan", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -1597,7 +1597,7 @@ class DiscoveryWinRecord:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.discovery.win-record", self.to_dict())
+        return canonical_digest("cacheon.discovery.win-record", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -1631,4 +1631,4 @@ class DiscoveryPromotion:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.discovery.promotion", self.to_dict())
+        return canonical_digest("cacheon.discovery.promotion", self.to_dict())

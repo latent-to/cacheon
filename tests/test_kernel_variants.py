@@ -32,7 +32,7 @@ def _write_bundle(
     rows: list[dict[str, str]],
 ) -> Path:
     root.mkdir(parents=True)
-    lines = ['bundle_id = "variants-test"', 'abi_version = "optima-op-abi-v0"', ""]
+    lines = ['bundle_id = "variants-test"', 'abi_version = "cacheon-op-abi-v0"', ""]
     for index, row in enumerate(rows):
         source = row.get("source", f"kernels/k{index}.py")
         entry = row.get("entry", f"entry_{index}")
@@ -319,7 +319,7 @@ def test_shared_setup_runs_once_across_variants(tmp_path, monkeypatch):
     )
     (bundle / "manifest.toml").write_text(
         'bundle_id = "setup-variants"\n'
-        'abi_version = "optima-op-abi-v0"\n'
+        'abi_version = "cacheon-op-abi-v0"\n'
         '[[ops]]\nslot = "activation.silu_and_mul"\nvariant = "a"\n'
         'source = "kernels/shared.py"\nentry = "entry_a"\nsetup = "setup_engine"\n'
         'metadata = "metadata/a.json"\n'

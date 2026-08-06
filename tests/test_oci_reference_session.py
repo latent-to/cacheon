@@ -68,7 +68,7 @@ def _stack(*, entries=()) -> EvaluationStackManifest:
         base_engine_digest=_digest("base"),
         arena_digest=_digest("arena"),
         catalog_snapshot=catalog,
-        catalog_digest=canonical_digest("optima.target-catalog", catalog),
+        catalog_digest=canonical_digest("cacheon.target-catalog", catalog),
         entries=entries,
     )
 
@@ -298,7 +298,7 @@ def test_plan_closes_empty_stack_identity_and_ordered_cohort() -> None:
     proposal = ProposalContributionRef(
         "activation.silu_and_mul",
         canonical_digest(
-            "optima.target-spec",
+            "cacheon.target-spec",
             {"target_id": "activation.silu_and_mul", "marker": "base"},
         ),
         _digest("artifact"),

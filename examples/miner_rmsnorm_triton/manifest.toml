@@ -3,7 +3,7 @@
 # the MoE kernel and never goes through SiluAndMul).
 
 bundle_id = "example-rmsnorm-triton-v1"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [[ops]]
 slot = "norm.rmsnorm"

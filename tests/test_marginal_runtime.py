@@ -105,7 +105,7 @@ def _specs(catalog: TargetCatalog) -> dict[str, str]:
 def _preflight() -> RuntimePreflightReceipt:
     image = _digest("image")
     return RuntimePreflightReceipt(
-        schema="optima-runtime-preflight-v2",
+        schema="cacheon-runtime-preflight-v2",
         requested_image="registry.example/worker@sha256:" + image,
         image_digest=image,
         local_image_id="sha256:" + "a" * 64,
@@ -487,7 +487,7 @@ def _discovery_activation(
     overlay_identity_digest: str | None = None,
 ) -> DiscoveryActivationReceipt:
     return DiscoveryActivationReceipt(
-        "optima.discovery-driver-activation.v1",
+        "cacheon.discovery-driver-activation.v1",
         overlay_identity_digest or arm.overlay_identity_digest,
         100,
         DiscoveryDriverOrigin(
@@ -562,7 +562,7 @@ def _execution(
     )
     receipt = binding.runtime_preflight_receipt
     return EngineExecutionEvidence(
-        "optima.oci-engine-execution.v1",
+        "cacheon.oci-engine-execution.v1",
         launch.digest,
         runtime_identity_from_preflight(receipt),
         receipt.sha256,
@@ -992,7 +992,7 @@ def test_forged_empty_tree_claiming_candidate_stack_rejects_before_executor(
     case = _case(tmp_path)
     forged_root = tmp_path / "forged"
     shutil.copytree(case.baseline_tree.root, forged_root)
-    metadata_path = forged_root / "metadata" / "optima_engine_tree.json"
+    metadata_path = forged_root / "metadata" / "cacheon_engine_tree.json"
     metadata_path.chmod(0o644)
     metadata = json.loads(metadata_path.read_text())
     metadata["stack_digest"] = case.arm.candidate.digest
@@ -1029,7 +1029,7 @@ def test_prepare_never_imports_candidate_top_level(tmp_path: Path) -> None:
     (source / "kernels").mkdir(parents=True)
     (source / "metadata").mkdir()
     (source / "manifest.toml").write_text(
-        'bundle_id="raising"\nabi_version="optima-op-abi-v0"\n'
+        'bundle_id="raising"\nabi_version="cacheon-op-abi-v0"\n'
         '[[ops]]\nslot="activation.silu_and_mul"\nsource="kernels/raising.py"\n'
         'entry="silu_and_mul"\ndtypes=["bfloat16"]\nmetadata="metadata/op.json"\n'
     )
@@ -1275,7 +1275,7 @@ def test_sglang_plugin_resolves_only_materialized_namespace_after_spawn(
 ) -> None:
     trusted = tmp_path / "trusted"
     tree = tmp_path / "engine-tree"
-    module = tree / ("optima_c_" + "a" * 64) / "kernels"
+    module = tree / ("cacheon_c_" + "a" * 64) / "kernels"
     module.mkdir(parents=True)
     trusted.mkdir()
     target = trusted / "sglang/srt/layers"

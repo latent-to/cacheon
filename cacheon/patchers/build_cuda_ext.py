@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 
-_SCHEMA = "optima.cuda-extension-set.v3"
+_SCHEMA = "cacheon.cuda-extension-set.v3"
 _ARTIFACT_DIR = "cuda"
 _INDEX_NAME = "extensions.json"
 _COMPILE_FLAGS = (
@@ -526,7 +526,7 @@ def _artifact_identity(
     # A fixed-length validator name avoids miner-controlled path length and still
     # gives every PyInit symbol a collision-resistant identity.  ``alias`` is added
     # to sys.modules only after the exact native module has loaded.
-    module_name = f"optima_cuda_{artifact_id}"
+    module_name = f"cacheon_cuda_{artifact_id}"
     return artifact_id, module_name
 
 
@@ -1106,7 +1106,7 @@ def _development_all(
             {
                 "build_context": context,
                 "patcher_sha256": _patcher_hash(),
-                "schema": "optima.cuda-extension-development.v1",
+                "schema": "cacheon.cuda-extension-development.v1",
                 "target_architecture": architecture,
                 "tree_digest": tree_digest,
             }

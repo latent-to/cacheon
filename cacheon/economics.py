@@ -19,7 +19,7 @@ from cacheon._strict import require_digest, require_exact_fields, require_int
 
 
 POLICY_SCHEMA_VERSION = 1
-POLICY_VERSION = "optima.emissions.v1"
+POLICY_VERSION = "cacheon.emissions.v1"
 WEIGHT_PPM = 1_000_000
 _BLOCK_HASH = re.compile(r"0x[0-9a-f]{64}\Z")
 _HOTKEY = re.compile(r"[^\s]{1,256}\Z")
@@ -100,7 +100,7 @@ class EmissionsPolicyManifest:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.economics.policy", self.to_dict())
+        return canonical_digest("cacheon.economics.policy", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ class RewardProjectionContext:
     @property
     def metagraph_digest(self) -> str:
         return canonical_digest(
-            "optima.economics.metagraph-membership",
+            "cacheon.economics.metagraph-membership",
             {
                 "block": self.current_block,
                 "block_hash": self.current_block_hash,
@@ -184,7 +184,7 @@ class RewardProjectionContext:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.economics.projection-context", self.to_dict())
+        return canonical_digest("cacheon.economics.projection-context", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -217,7 +217,7 @@ class GlobalRewardProjectionContext:
     @property
     def metagraph_digest(self) -> str:
         return canonical_digest(
-            "optima.economics.metagraph-membership",
+            "cacheon.economics.metagraph-membership",
             {
                 "block": self.current_block,
                 "block_hash": self.current_block_hash,
@@ -238,7 +238,7 @@ class GlobalRewardProjectionContext:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.economics.global-context", self.to_dict())
+        return canonical_digest("cacheon.economics.global-context", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -271,7 +271,7 @@ class StandingRewardClaim:
     @property
     def family_id(self) -> str:
         return canonical_digest(
-            "optima.economics.standing-family",
+            "cacheon.economics.standing-family",
             {
                 "arena_digest": self.arena_digest,
                 "target_id": self.target_id,
@@ -308,7 +308,7 @@ class StandingRewardClaim:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.economics.standing-claim", self.to_dict())
+        return canonical_digest("cacheon.economics.standing-claim", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -350,7 +350,7 @@ class DiscoveryBountyClaim:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.economics.discovery-claim", self.to_dict())
+        return canonical_digest("cacheon.economics.discovery-claim", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -390,7 +390,7 @@ class ArenaRewardAuthority:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.economics.arena-authority", self.to_dict())
+        return canonical_digest("cacheon.economics.arena-authority", self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -484,7 +484,7 @@ class RewardProjection:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.economics.reward-projection", self.to_dict())
+        return canonical_digest("cacheon.economics.reward-projection", self.to_dict())
 
     @property
     def weights_by_hotkey(self) -> Mapping[str, int]:
@@ -533,7 +533,7 @@ class GlobalRewardProjection:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.economics.global-reward-projection", self.to_dict())
+        return canonical_digest("cacheon.economics.global-reward-projection", self.to_dict())
 
     @property
     def weights_by_hotkey(self) -> Mapping[str, int]:

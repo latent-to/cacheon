@@ -61,9 +61,9 @@ def _registry_objects(*, descriptor: str | None = None, platform: str = "linux/a
                 "Entrypoint": ["python"],
                 "Env": ["A=B"],
                 "Labels": {
-                    "org.optima.release.descriptor": descriptor or _d("release"),
-                    "org.optima.seccomp.sha256": _d("seccomp"),
-                    "org.optima.runtime-overlays": _d("overlay"),
+                    "org.cacheon.release.descriptor": descriptor or _d("release"),
+                    "org.cacheon.seccomp.sha256": _d("seccomp"),
+                    "org.cacheon.runtime-overlays": _d("overlay"),
                 },
             },
             "os": os_name,
@@ -123,9 +123,9 @@ def _image(*, descriptor: str | None = None, image_digest: str | None = None,
         ),
         platform,
         {
-            "org.optima.release.descriptor": descriptor or _d("release"),
-            "org.optima.seccomp.sha256": _d("seccomp"),
-            "org.optima.runtime-overlays": _d("overlay"),
+            "org.cacheon.release.descriptor": descriptor or _d("release"),
+            "org.cacheon.seccomp.sha256": _d("seccomp"),
+            "org.cacheon.runtime-overlays": _d("overlay"),
         },
         ("python",),
         ("serve",),
@@ -253,9 +253,9 @@ def _authorized(tmp_path: Path, monkeypatch):
     image = replace(
         _image(descriptor=release.descriptor.digest),
         labels={
-            "org.optima.release.descriptor": release.descriptor.digest,
-            "org.optima.seccomp.sha256": release.descriptor.seccomp.sha256,
-            "org.optima.runtime-overlays": _d("overlay"),
+            "org.cacheon.release.descriptor": release.descriptor.digest,
+            "org.cacheon.seccomp.sha256": release.descriptor.seccomp.sha256,
+            "org.cacheon.runtime-overlays": _d("overlay"),
         },
     )
     key = b"\x44" * 32
@@ -313,9 +313,9 @@ def test_authorization_rejects_wrong_key_digest_and_label(
     wrong_label = replace(
         image,
         labels={
-            "org.optima.release.descriptor": _d("wrong-release"),
-            "org.optima.seccomp.sha256": release.descriptor.seccomp.sha256,
-            "org.optima.runtime-overlays": _d("overlay"),
+            "org.cacheon.release.descriptor": _d("wrong-release"),
+            "org.cacheon.seccomp.sha256": release.descriptor.seccomp.sha256,
+            "org.cacheon.runtime-overlays": _d("overlay"),
         },
     )
     with pytest.raises(host.ReleaseHostError, match="registry image differs"):

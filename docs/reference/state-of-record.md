@@ -18,24 +18,22 @@ Snapshot date: **2026-07-31**
 | Implementation parent | [`a04b824f`](https://github.com/latent-to/cacheon/commit/a04b824f); this page accompanies the Optima→Cacheon identifier rename |
 | Production Python | 129 files and 106,756 lines under `cacheon/` |
 | Tests | 127 Python files and 65,135 lines under `tests/` |
-| Complete local suite | 2,417 passed, 19 skipped, 0 failed after the compatibility repair; the initial rename head recorded 2,389 passed and 21 skipped |
+| Complete local suite | 2,420 passed, 17 skipped, 0 failed at the 2026-08-03 protocol rename head; the 2026-07-31 rename head recorded 2,417 passed and 19 skipped |
 | Test command | `python3 -m pytest -q tests` with Python 3.10.4 in an unrestricted local environment |
 | SGLang pin | `0.5.13.post1` in `cacheon/compat.py` |
 | Bittensor raw-reveal storage ABI | `10.3.2` in `cacheon/chain_canary.py` |
 | Public CLI | 27 commands |
 
-The public product, Python package, CLI, environment-variable, and HTTP-header
-names formerly branded Optima are now Cacheon (`cacheon` / `CACHEON` /
-`X-Cacheon-*`). Persisted and signed pre-rename identifiers remain valid in the
-`optima.*` namespace, including digest domains, durable schemas, recovery keys,
-weight-share envelopes, and `optima-op-abi-v0`. The shared-weight transport reads
-strict, distinct Optima and Cacheon dialects; it does not normalize one into the
-other. These are wire/storage ABI labels, not current product branding, and must
-not be rewritten in retained evidence or an existing validator database. Both
-`HOW_CACHEON_WORKS.md` and the inbound
-compatibility path `HOW_OPTIMA_WORKS.md` redirect to the canonical architecture
-documentation. The rename does not alter kernels, timed evaluation arithmetic,
-or crown/settlement formulas. File and line counts describe the accompanying
+The public product, Python package, CLI, environment-variable, HTTP-header,
+and protocol-identity names formerly branded Optima are now Cacheon
+(`cacheon` / `CACHEON` / `X-Cacheon-*` / `cacheon.*` digest domains /
+`cacheon-op-abi-v0`). Since 2026-08-03 the Cacheon vocabulary is the only
+accepted identity: the shared-weight transport reads a single strict Cacheon
+dialect, pre-rename `optima.*` identifiers are refused fail-closed, and
+domain-stamped digests (model provision, weight projections, intake scope)
+rotated with the vocabulary. `HOW_CACHEON_WORKS.md` redirects to the canonical
+architecture documentation. The rename does not alter kernels, timed
+evaluation arithmetic, or crown/settlement formulas. File and line counts describe the accompanying
 change set; they are not quality metrics. The suite is
 CPU/non-empirical validation and does not establish GPU performance,
 container-runtime isolation, chain finality, or serving readiness.
@@ -412,7 +410,7 @@ The exact fused-epilogue proposal from the version-3 program (content hash
 `747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709`)
 was packaged and uploaded to a miner-side Hippius S3-compatible bucket under
 the content-addressed key
-`optima/miner-bundles/sha256/747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709.tar.gz`.
+`cacheon/miner-bundles/sha256/747405b41845506800939507a93b6011d38f5a94e69a5ec303a3d39a48e77709.tar.gz`.
 An anonymous download from the resulting public HTTPS URL was byte-identical
 to the 24,012-byte stored archive (archive SHA-256
 `d86162982a72b66bed39751686cfdced15a2e25518a39ead61f8eb57f8533d7f`).
@@ -442,7 +440,7 @@ The input was a fresh synthetic-finalized intake of the public fused-epilogue
 bundle above plus one retained qualification artifact, one redacted chain-audit
 record, and one harmless explicitly sealed policy file. The first canary stored
 11 new blobs representing 591,709 source bytes below
-`optima/validator-archive/v1/canary/20260727-provider-neutral`. Its manifest
+`cacheon/validator-archive/v1/canary/20260727-provider-neutral`. Its manifest
 digest was
 `4148e6a3815f557345fd01004b1a88313c840512182c8d495a131c78983d62fa`
 and its online SQLite backup digest was
@@ -453,15 +451,15 @@ artifact, validated the journal, and emitted the closed restore map. Anonymous
 HTTPS access to the manifest returned 403.
 
 The current worktree was then deployed through the validator's rsync setup path
-to an idle eight-B200 pod. The host deployment tree and container `/optima` both
+to an idle eight-B200 pod. The host deployment tree and container `/cacheon` both
 matched local runtime-source aggregate SHA-256
 `dd11ab2d8f40f586a7f9661871c68ce6480cec6b63e7ea0190eca6a7ac1c59f8`;
 the sync excluded `.env` and the private worklog, and the spawned-interpreter
-bootstrap resolved Optima from `/optima`. Without starting a GPU process, the
+bootstrap resolved Cacheon from `/cacheon`. Without starting a GPU process, the
 pod independently repeated anonymous HTTPS intake, uploaded another 11-blob
-snapshot under `optima/validator-archive/v1/canary/pod-b200-20260727`, and
+snapshot under `cacheon/validator-archive/v1/canary/pod-b200-20260727`, and
 semantically restored it from both the isolated source copy and the final
-`/optima` deployment. That manifest and database digests were respectively
+`/cacheon` deployment. That manifest and database digests were respectively
 `0e856820f37c1031407afda701591a443c1f0866ae4c0663c461118d2e0bba74`
 and
 `2beaafbd28fdc337f9e1cd28a3bffa183fb017e0f4a0f9790dcfaaa1aa91589e`;
@@ -547,12 +545,12 @@ failure domains, mainnet economics, V2 activation, or unattended operation.
 ### Incentive evidence
 
 The tracked one-campaign load report contains 64 matrix rows and four burst
-controls. Its sealed pre-rename receipt retains semantic digest
-`505fed4d40a6acc6bc92d6330170e8e2260a52e5f3099c22a6c0eb4b2308c672`;
-the separately labeled Cacheon-source replay has digest
-`42b0ea73a59bb431c0b390e40ccbf6a47706e95e762c7bfeef5068fe5f98b86f`.
-The only report-field difference is the exact source-file SHA-256 and the
-report digest derived from it; all accounting semantics match.
+controls. Its semantic report digest under the Cacheon vocabulary is
+`b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`; the
+retained historical record and the live replay converge on this digest, so all
+accounting semantics are preserved across the identifier rename. The only
+report-field differences across the rename are the source-file SHA-256, the
+config identity, and the report digest derived from them.
 It is deterministic accounting sensitivity, not chain, GPU, token-value,
 miner-equilibrium, activation, or publication evidence. See
 [Incentive load validation](../results/incentive-load-validation.md).

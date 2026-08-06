@@ -35,7 +35,7 @@ from cacheon.target_catalog import (
 MSA = "attention.msa_prefill_block_score"
 SILU = "activation.silu_and_mul"
 RESIDENT_SPEED_POLICY_DIGEST = canonical_digest(
-    "optima.qualification.speed-evidence-policy",
+    "cacheon.qualification.speed-evidence-policy",
     {
         "candidate_reads": 0,
         "estimator": "resident-adaptive-bcbp-v1",
@@ -357,10 +357,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "a4590bd5542b2108a559efce5af22a48aa51711dc3ece0317730ffc6e800b12c"
+        "e022a73e3fbf4ef2154a7934ffd2d28f52572fb5e79897c2eaf0e69e520a2788"
     )
     assert candidate.digest == (
-        "a0466a07d7067cc11945a331fd553a1d8b760bd19e210ec36f22a7efe3831034"
+        "58c6028e7129671ec2b39a30e90fc232be59b2b12adb0a46cdf5daaf8018b900"
     )
 
 
@@ -515,14 +515,14 @@ def test_settlement_evidence_binds_both_retained_attempts() -> None:
         candidate.primary.qualification_attempt_digest,
         1,
         "application/json",
-        "optima.qualification.cohort-attempt.v1",
+        "cacheon.qualification.cohort-attempt.v1",
     )
     reproduction_ref = EvidenceArtifactRef(
         "qualification.cohort-attempt",
         candidate.reproduction.qualification_attempt_digest,
         1,
         "application/json",
-        "optima.qualification.cohort-attempt.v1",
+        "cacheon.qualification.cohort-attempt.v1",
     )
     evidence = SettlementEvidence.bind(
         candidate,

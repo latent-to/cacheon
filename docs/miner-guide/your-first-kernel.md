@@ -42,7 +42,7 @@ Replace `my_silu/manifest.toml` with an explicitly targeted manifest:
 
 ```toml
 bundle_id = "my-silu-v1"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [competition]
 target = "activation.silu_and_mul"

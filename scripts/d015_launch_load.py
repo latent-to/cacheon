@@ -35,8 +35,8 @@ from cacheon.stack_identity import (
 )
 
 
-SCHEMA = "optima.incentive-launch-load.d015.v1"
-REPORT_SCHEMA = "optima.incentive-launch-load-report.d015.v1"
+SCHEMA = "cacheon.incentive-launch-load.d015.v1"
+REPORT_SCHEMA = "cacheon.incentive-launch-load-report.d015.v1"
 
 
 class LaunchLoadError(ValueError):
@@ -403,7 +403,7 @@ def _run_tape(
                 else recurring_principal_by_gap[day - prior_day]
             )
             claim_id = canonical_digest(
-                "optima.incentives.d015-load-claim",
+                "cacheon.incentives.d015-load-claim",
                 {
                     "day": day,
                     "event_index": event_index,
@@ -605,7 +605,7 @@ def simulate(config_path: Path) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "anchor_claims": anchors,
         "burst_rows": burst_rows,
-        "config_digest": canonical_digest("optima.incentives.d015-load-config", config),
+        "config_digest": canonical_digest("cacheon.incentives.d015-load-config", config),
         "config_sha256": sha256_hex(config_path.read_bytes()),
         "matrix_rows": matrix_rows,
         "nonclaims": list(config["nonclaims"]),
@@ -641,7 +641,7 @@ def simulate(config_path: Path) -> dict[str, Any]:
         },
     }
     payload["report_digest"] = canonical_digest(
-        "optima.incentives.d015-load-report", payload
+        "cacheon.incentives.d015-load-report", payload
     )
     canonical_json_bytes(payload)
     return payload

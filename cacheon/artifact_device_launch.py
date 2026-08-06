@@ -46,8 +46,8 @@ from cacheon.cuda_materialize import (
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
-DEVICE_LAUNCH_PLAN_SCHEMA = "optima.device-launch-plan.v1"
-DEVICE_ARTIFACT_ADMISSION_SCHEMA = "optima.device-artifact-admission.v1"
+DEVICE_LAUNCH_PLAN_SCHEMA = "cacheon.device-launch-plan.v1"
+DEVICE_ARTIFACT_ADMISSION_SCHEMA = "cacheon.device-artifact-admission.v1"
 
 _MAX_KERNELS = 1_024
 _MAX_LAUNCHES = 256
@@ -100,7 +100,7 @@ class DeviceArtifactAdmission:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.device-artifact-admission", self.to_dict())
+        return canonical_digest("cacheon.device-artifact-admission", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -317,7 +317,7 @@ class DeviceLaunchPlan:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.device-launch-plan", self.to_dict())
+        return canonical_digest("cacheon.device-launch-plan", self.to_dict())
 
     @property
     def required_capabilities(self) -> frozenset[str]:

@@ -1,4 +1,4 @@
-"""Chain-independent, reviewed Optima Engine release products.
+"""Chain-independent, reviewed Cacheon Engine release products.
 
 Release construction consumes only an ``EngineReleaseManifest``, exact approved
 integration records, a reopened materialized engine tree, and validator-owned build
@@ -51,10 +51,10 @@ _ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 _ARTIFACT_ROLES = {
     "runtime_source": (SOURCE_ARCHIVE, "application/gzip"),
     "runtime_wheel": (RUNTIME_WHEEL, "application/vnd.python.wheel"),
-    "model_receipt": ("model-provision.json", "application/vnd.optima.model-provision+json"),
-    "seccomp": ("seccomp.json", "application/vnd.optima.seccomp+json"),
-    "reference_manifest": ("reference-manifest.json", "application/vnd.optima.reference-manifest+json"),
-    "calibration_manifest": ("calibration-manifest.json", "application/vnd.optima.calibration-manifest+json"),
+    "model_receipt": ("model-provision.json", "application/vnd.cacheon.model-provision+json"),
+    "seccomp": ("seccomp.json", "application/vnd.cacheon.seccomp+json"),
+    "reference_manifest": ("reference-manifest.json", "application/vnd.cacheon.reference-manifest+json"),
+    "calibration_manifest": ("calibration-manifest.json", "application/vnd.cacheon.calibration-manifest+json"),
     "sbom": ("sbom.spdx.json", "application/spdx+json"),
     "provenance": ("provenance.intoto.json", "application/vnd.in-toto+json"),
 }
@@ -392,7 +392,7 @@ class NativeReleaseIdentity:
         }
         supplied_publication = _digest(self.publication_digest, "native publication")
         if supplied_publication != canonical_digest(
-            "optima.native-artifact-publication", identity
+            "cacheon.native-artifact-publication", identity
         ):
             raise ReleaseError("native publication digest differs from its inventory")
         object.__setattr__(self, "build_spec", MappingProxyType(spec.to_dict()))
@@ -518,7 +518,7 @@ class EngineReleaseDescriptor:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.engine-release.descriptor", self.to_dict())
+        return canonical_digest("cacheon.engine-release.descriptor", self.to_dict())
 
     @property
     def canonical_bytes(self) -> bytes:
@@ -727,7 +727,7 @@ def _wheel(files: Mapping[str, bytes]) -> bytes:
         "Metadata-Version: 2.1\nName: cacheon-engine\nVersion: " + RUNTIME_VERSION
         + "\nSummary: Chain-independent Cacheon inference runtime\n\n"
     ).encode("utf-8")
-    payloads[f"{dist}/WHEEL"] = b"Wheel-Version: 1.0\nGenerator: optima-release-v1\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+    payloads[f"{dist}/WHEEL"] = b"Wheel-Version: 1.0\nGenerator: cacheon-release-v1\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
     payloads[f"{dist}/entry_points.txt"] = b"[sglang.srt.plugins]\ncacheon = cacheon.integrations.sglang_plugin:register\n"
     for legal in _RELEASE_LEGAL:
         payloads[f"{dist}/licenses/{legal}"] = files[legal]
@@ -780,17 +780,17 @@ def build_spdx_sbom(
         raise ReleaseError("SBOM artifact names are duplicated")
     document = {
         "SPDXID": "SPDXRef-DOCUMENT",
-        "creationInfo": {"created": "1970-01-01T00:00:00Z", "creators": ["Tool: optima-release-v1"]},
+        "creationInfo": {"created": "1970-01-01T00:00:00Z", "creators": ["Tool: cacheon-release-v1"]},
         "dataLicense": "CC0-1.0",
-        "documentNamespace": "urn:optima:engine-release:" + release_manifest.digest,
-        "name": "Optima Engine " + release_manifest.digest[:12],
+        "documentNamespace": "urn:cacheon:engine-release:" + release_manifest.digest,
+        "name": "Cacheon Engine " + release_manifest.digest[:12],
         "packages": [
             {
                 "SPDXID": "SPDXRef-Engine",
                 "checksums": [{"algorithm": "SHA256", "checksumValue": tree.tree_digest}],
                 "downloadLocation": "NOASSERTION",
                 "filesAnalyzed": False,
-                "name": "optima-engine-tree",
+                "name": "cacheon-engine-tree",
                 "versionInfo": release_manifest.digest,
             },
             {
@@ -820,7 +820,7 @@ def build_spdx_sbom(
                 "SPDXID": "SPDXRef-Native",
                 "checksums": [{"algorithm": "SHA256", "checksumValue": native.publication_digest}],
                 "downloadLocation": "NOASSERTION", "filesAnalyzed": False,
-                "name": "optima-native-artifact", "versionInfo": native.build_spec_digest,
+                "name": "cacheon-native-artifact", "versionInfo": native.build_spec_digest,
             },
             *(
                 {
@@ -864,7 +864,7 @@ def build_provenance(
         "_type": "https://in-toto.io/Statement/v1",
         "predicate": {
             "buildDefinition": {
-                "buildType": "https://optima.engine/build/v1",
+                "buildType": "https://cacheon.engine/build/v1",
                 "externalParameters": {
                     "engine_release_manifest": release_manifest.digest,
                     "base_engine_digest": release_manifest.base_engine_digest,
@@ -881,18 +881,18 @@ def build_provenance(
                 },
                 "internalParameters": {},
                 "resolvedDependencies": [
-                    {"digest": {"sha256": model_receipt.sha256}, "uri": "optima:model-provision-receipt"},
-                    {"digest": {"sha256": native.publication_digest}, "uri": "optima:native-artifact"},
-                    {"digest": {"sha256": seccomp.sha256}, "uri": "optima:seccomp-profile"},
-                    {"digest": {"sha256": reference_manifest.sha256}, "uri": "optima:reference-manifest"},
-                    {"digest": {"sha256": calibration_manifest.sha256}, "uri": "optima:calibration-manifest"},
+                    {"digest": {"sha256": model_receipt.sha256}, "uri": "cacheon:model-provision-receipt"},
+                    {"digest": {"sha256": native.publication_digest}, "uri": "cacheon:native-artifact"},
+                    {"digest": {"sha256": seccomp.sha256}, "uri": "cacheon:seccomp-profile"},
+                    {"digest": {"sha256": reference_manifest.sha256}, "uri": "cacheon:reference-manifest"},
+                    {"digest": {"sha256": calibration_manifest.sha256}, "uri": "cacheon:calibration-manifest"},
                     *(
-                        {"digest": {"sha256": row.integrated_source_tree_digest}, "uri": f"optima:integration:{row.target_id}"}
+                        {"digest": {"sha256": row.integrated_source_tree_digest}, "uri": f"cacheon:integration:{row.target_id}"}
                         for row in records
                     ),
                 ],
             },
-            "runDetails": {"builder": {"id": "https://optima.engine/builder/v1"}, "metadata": {"invocationId": release_manifest.digest}},
+            "runDetails": {"builder": {"id": "https://cacheon.engine/builder/v1"}, "metadata": {"invocationId": release_manifest.digest}},
         },
         "predicateType": "https://slsa.dev/provenance/v1",
         "subject": [
@@ -1078,7 +1078,7 @@ class ContainerReproducibility:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.engine-release.container-reproducibility", self.to_dict())
+        return canonical_digest("cacheon.engine-release.container-reproducibility", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {field: getattr(self, field) for field in self.__dataclass_fields__}
@@ -1179,7 +1179,7 @@ class ServeReceiptVerification:
 
     @property
     def digest(self) -> str:
-        return canonical_digest("optima.engine-release.serve-receipts", self.to_dict())
+        return canonical_digest("cacheon.engine-release.serve-receipts", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1433,7 +1433,7 @@ def _release_tree_digest(root: Path) -> str:
         if path.is_file():
             data = _stable_regular(path)
             rows.append({"path": relative, "sha256": _sha(data), "size": len(data)})
-    return canonical_digest("optima.engine-release.tree", {"files": rows})
+    return canonical_digest("cacheon.engine-release.tree", {"files": rows})
 
 
 def publish_release(
@@ -1642,9 +1642,9 @@ def _container_dockerfile(release: PublishedRelease, overlay_digest: str) -> byt
             f"ENV {key}={json.dumps(value, ensure_ascii=True)}\n"
             for key, value in descriptor.serve.environment
         )
-        + "LABEL org.optima.release.descriptor=\"" + descriptor.digest + "\" "
-        + "org.optima.seccomp.sha256=\"" + descriptor.seccomp.sha256 + "\" "
-        + "org.optima.runtime-overlays=\"" + overlay_digest + "\"\n"
+        + "LABEL org.cacheon.release.descriptor=\"" + descriptor.digest + "\" "
+        + "org.cacheon.seccomp.sha256=\"" + descriptor.seccomp.sha256 + "\" "
+        + "org.cacheon.runtime-overlays=\"" + overlay_digest + "\"\n"
         + "ENTRYPOINT [\"/usr/bin/python3\",\"-m\",\"cacheon.release_runtime\","
         + "\"--release-root\",\"/cacheon\","
         + "\"--expected-public-key-file\",\"/etc/cacheon/trusted-release-key\","

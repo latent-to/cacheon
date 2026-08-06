@@ -80,7 +80,7 @@ approved extension builder too:
 ```
 
 Those are the registered dependency-patch rebuild patchers. The same closed registry also
-contains `build_cute_cubin.py` (`optima.build-cute-cubin.v1`) for the sealed
+contains `build_cute_cubin.py` (`cacheon.build-cute-cubin.v1`) for the sealed
 direct-artifact provider; it is not a dependency-patch installer. The parser rejects
 `bundle_python`, arbitrary repository scripts, duplicate patchers, unknown
 fields, and unregistered step types. The validator snapshots each patcher's ID

@@ -26,16 +26,16 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Callable, Iterable, Protocol
 
 
-LEASE_SCHEMA = "optima.oci-process-lease.v1"
-EXECUTOR_LABEL = "optima.executor_id"
-NAMESPACE_LABEL = "optima.namespace_digest"
-LEASE_LABEL = "optima.lease_id"
+LEASE_SCHEMA = "cacheon.oci-process-lease.v1"
+EXECUTOR_LABEL = "cacheon.executor_id"
+NAMESPACE_LABEL = "cacheon.namespace_digest"
+LEASE_LABEL = "cacheon.lease_id"
 GPU_RESERVATION_ENV = "CACHEON_GPU_RESERVATION_ID"
-GPU_RESERVATION_LABEL = "optima.gpu_reservation_id"
+GPU_RESERVATION_LABEL = "cacheon.gpu_reservation_id"
 ATTACHED_STDERR_MAX_BYTES = 64 << 10
 ATTACHED_STDERR_EXCERPT_BYTES = 2 << 10
 ATTACHED_STDERR_ARTIFACT_MAX_BYTES = 16 << 20
-STDERR_ARTIFACT_SCHEMA = "optima.oci-stderr-artifact.v1"
+STDERR_ARTIFACT_SCHEMA = "cacheon.oci-stderr-artifact.v1"
 _ATTACHED_STDERR_READ_BYTES = 64 << 10
 _ATTACHED_STDERR_JOIN_SECONDS = 2.0
 _SIMPLE_ID = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}\Z")
@@ -549,7 +549,7 @@ class OCIQuiescenceReceipt:
 
     def __post_init__(self) -> None:
         if (
-            self.schema != "optima.oci-quiescence.v1"
+            self.schema != "cacheon.oci-quiescence.v1"
             or not isinstance(self.executor_id, str)
             or _SIMPLE_ID.fullmatch(self.executor_id) is None
             or not isinstance(self.manager_instance_id, str)
@@ -578,7 +578,7 @@ class OCIQuiescenceReceipt:
             "schema": self.schema,
             "sequence": self.sequence,
         }
-        return hashlib.sha256(b"optima.oci-quiescence.v1\0" + _canonical_json(payload)).hexdigest()
+        return hashlib.sha256(b"cacheon.oci-quiescence.v1\0" + _canonical_json(payload)).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -818,7 +818,7 @@ class OCIProcessManager:
             ) from None
         self.manager_instance_id = secrets.token_hex(16)
         self.namespace_digest = hashlib.sha256(
-            b"optima.oci-namespace.v1\0"
+            b"cacheon.oci-namespace.v1\0"
             + _canonical_json(
                 {
                     "docker_binary": self.docker_binary,
@@ -919,7 +919,7 @@ class OCIProcessManager:
             raise OCIProcessError("OCI quiescence clock is invalid")
         self._quiescence_sequence += 1
         return OCIQuiescenceReceipt(
-            "optima.oci-quiescence.v1",
+            "cacheon.oci-quiescence.v1",
             self.executor_id,
             self.manager_instance_id,
             self.namespace_digest,

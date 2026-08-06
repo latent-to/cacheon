@@ -43,7 +43,7 @@ def _projection(
 ) -> WeightProjection:
     scope = _d("scope")
     metagraph_digest = canonical_digest(
-        "optima.economics.metagraph-membership",
+        "cacheon.economics.metagraph-membership",
         {
             "block": block,
             "block_hash": "0x" + f"{block:064x}",

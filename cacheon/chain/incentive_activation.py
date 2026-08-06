@@ -174,7 +174,7 @@ class SelectedIncentiveActivationBundle:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.chain.selected-incentive-activation-bundle", self.to_dict()
+            "cacheon.chain.selected-incentive-activation-bundle", self.to_dict()
         )
 
 
@@ -323,7 +323,7 @@ class SelectedIncentiveActivationResult:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.chain.selected-incentive-activation-result", self.to_dict()
+            "cacheon.chain.selected-incentive-activation-result", self.to_dict()
         )
 
 
@@ -357,7 +357,7 @@ def selected_model_campaign_id(
     ):
         raise IncentiveActivationError("campaign reward-family roster is malformed")
     return canonical_digest(
-        "optima.economics.model-campaign.v1",
+        "cacheon.economics.model-campaign.v1",
         {
             "arena_digest": arena,
             "catalog_digest": catalog,
@@ -426,7 +426,7 @@ def _preflight_selected_campaign(
                 reward_family_id(
                     state.arena_digest,
                     row["target_id"],
-                    canonical_digest("optima.target-spec", row),
+                    canonical_digest("cacheon.target-spec", row),
                 )
                 for row in targets
             )
@@ -459,7 +459,7 @@ def _preflight_selected_campaign(
         "catalog_digest": state.manifest.catalog_digest,
         "evaluation_stack_digest": state.digest,
         "membership_digest": canonical_digest(
-            "optima.economics.metagraph-membership",
+            "cacheon.economics.metagraph-membership",
             {
                 "block": metagraph_block,
                 "block_hash": metagraph_hash,

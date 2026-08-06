@@ -28,7 +28,7 @@ from cacheon.stack_identity import canonical_digest
 from cacheon._strict import require_digest
 
 
-_SCHEMA = "optima.worker-bundle-publication.v1"
+_SCHEMA = "cacheon.worker-bundle-publication.v1"
 _EXCLUDED_DIRECTORIES = frozenset({".git", "__pycache__"})
 _EXCLUDED_SUFFIXES = frozenset({".pyc", ".pyo"})
 _CURRENT_OWNER = object()
@@ -105,7 +105,7 @@ class WorkerBundlePublication:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.chain.worker-bundle-publication",
+            "cacheon.chain.worker-bundle-publication",
             {
                 "address_digest": self.address_digest,
                 "content_hash": self.content_hash,
@@ -306,7 +306,7 @@ def _address(
     files: tuple[NativeArtifactFile, ...],
 ) -> str:
     return canonical_digest(
-        "optima.chain.worker-bundle-address",
+        "cacheon.chain.worker-bundle-address",
         {
             "content_hash": content_hash,
             "directories": list(directories),

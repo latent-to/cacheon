@@ -38,7 +38,7 @@ from cacheon.stack_identity import canonical_digest
 
 
 COMPOSITION_POLICY_SCHEMA_VERSION = 1
-COMPOSITION_POLICY_VERSION = "optima.incentive-composition.v1"
+COMPOSITION_POLICY_VERSION = "cacheon.incentive-composition.v1"
 DISCOVERY_BOUNTY_ONLY = "bounty_only"
 DISCOVERY_REGISTERED_PROMOTION = "registered_promotion"
 DISCOVERY_DECISIONS = frozenset(
@@ -186,7 +186,7 @@ class IncentiveCompositionPolicyManifest:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.incentive-composition.policy", self.to_dict()
+            "cacheon.incentive-composition.policy", self.to_dict()
         )
 
 
@@ -268,7 +268,7 @@ class ReviewedDiscoveryDisposition:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.incentive-composition.discovery-disposition", self.to_dict()
+            "cacheon.incentive-composition.discovery-disposition", self.to_dict()
         )
 
 
@@ -407,7 +407,7 @@ class DiscoveryDebtClaim:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.incentive-composition.discovery-claim", self.to_dict()
+            "cacheon.incentive-composition.discovery-claim", self.to_dict()
         )
 
 
@@ -531,7 +531,7 @@ class DiscoveryClaimBalance:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.incentive-composition.discovery-balance", self.to_dict()
+            "cacheon.incentive-composition.discovery-balance", self.to_dict()
         )
 
 
@@ -662,7 +662,7 @@ class DiscoveryClaimState:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.incentive-composition.discovery-state", self.to_dict()
+            "cacheon.incentive-composition.discovery-state", self.to_dict()
         )
 
 
@@ -899,7 +899,7 @@ class ComposedEpochProjection:
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "optima.incentive-composition.epoch-projection", self.to_dict()
+            "cacheon.incentive-composition.epoch-projection", self.to_dict()
         )
 
 

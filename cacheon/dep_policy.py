@@ -21,7 +21,7 @@ from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 from cacheon._strict import require_digest
 
 
-OVERLAY_SCHEMA = "optima.dep-overlay.v3"
+OVERLAY_SCHEMA = "cacheon.dep-overlay.v3"
 _STAMP_NAME = "overlay.json"
 _STAMP_KEYS = frozenset(
     {
@@ -303,7 +303,7 @@ def tree_inventory(root: Path, *, require_read_only: bool = False) -> tuple[str,
     if not files:
         raise DepOverlayError(f"overlay subtree is empty: {root}")
     payload = [row.to_dict() for row in files]
-    return canonical_digest("optima.dep-overlay-tree", payload), tuple(files)
+    return canonical_digest("cacheon.dep-overlay-tree", payload), tuple(files)
 
 
 def _patch_rows(bundle: Path, target: str, manifest: Any) -> list[dict[str, str]]:
@@ -562,7 +562,7 @@ def derive_development_build_digest(bundle: str | Path, targets: list[str]) -> s
         )
     patcher = Path(__file__).resolve().parent / "patchers" / "apply_dep_patch.py"
     return canonical_digest(
-        "optima.dev-native-build",
+        "cacheon.dev-native-build",
         {
             "bundle_tree_digest": content_hash(bundle_path),
             "dependencies": dependencies,

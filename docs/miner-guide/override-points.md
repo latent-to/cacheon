@@ -40,7 +40,7 @@ A competitive version must still request its registered singleton target:
 
 ```toml
 bundle_id = "my-moe-epilogue-v1"
-abi_version = "optima-op-abi-v0"
+abi_version = "cacheon-op-abi-v0"
 
 [competition]
 target = "moe.fused_experts"

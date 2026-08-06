@@ -73,7 +73,7 @@ def _bundle(root: Path) -> Path:
     (bundle / "kernels").mkdir(parents=True)
     (bundle / "manifest.toml").write_text(
         'bundle_id = "publish-test"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "activation.silu_and_mul"\n'
         'source = "kernels/k.py"\n'
@@ -126,7 +126,7 @@ def test_publish_new_bundle_is_content_addressed_public_and_reopened(tmp_path):
     assert result.stored_archive_bytes == len(client.objects[expected_key])
     assert client.acls[expected_key] == "public-read"
     assert client.puts[0]["ContentType"] == "application/gzip"
-    assert client.puts[0]["Metadata"]["optima-content-sha256"] == content_hash
+    assert client.puts[0]["Metadata"]["cacheon-content-sha256"] == content_hash
     assert fetched == [(expected_url, content_hash, 12.0)]
 
 

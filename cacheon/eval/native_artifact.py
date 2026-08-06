@@ -31,8 +31,8 @@ from cacheon.stack_identity import (
 )
 
 
-_SCHEMA = "optima.native-artifact-publication.v1"
-_MANIFEST = ".optima-native-artifact.json"
+_SCHEMA = "cacheon.native-artifact-publication.v1"
+_MANIFEST = ".cacheon-native-artifact.json"
 # SGLang ships declarative tuning tables whose canonical filenames contain
 # commas, brackets, and spaces (for example ``block_shape=[128, 128].json``).
 # Keep a finite ASCII alphabet: path separators, dotfiles, quotes, shell
@@ -271,7 +271,7 @@ def _identity_payload(
 
 
 def _publication_digest(payload: dict[str, object]) -> str:
-    return canonical_digest("optima.native-artifact-publication", payload)
+    return canonical_digest("cacheon.native-artifact-publication", payload)
 
 
 def _same_stat(left: os.stat_result, right: os.stat_result) -> bool:

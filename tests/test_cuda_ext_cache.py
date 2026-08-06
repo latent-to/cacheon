@@ -40,7 +40,7 @@ def _bundle(
         sources += ', "kernels/second.cu"'
     (root / "manifest.toml").write_text(
         'bundle_id = "miner-controlled-display-name"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
         'slot = "activation.silu_and_mul"\n'
         'source = "kernels/shim.py"\n'
@@ -83,7 +83,7 @@ def _architecture_variant_bundle(root: Path) -> tuple[Path, dict[str, Path]]:
         )
     (root / "manifest.toml").write_text(
         'bundle_id = "architecture-variants"\n'
-        'abi_version = "optima-op-abi-v0"\n\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
         + "\n".join(rows)
     )
     return root, markers
@@ -871,7 +871,7 @@ def test_native_import_alias_cannot_overwrite_existing_module(tmp_path):
     mod = _patcher()
     assert "json" in sys.modules
     with pytest.raises(mod.CUDAExtensionError, match="import alias collision"):
-        mod._load("json", "_optima_cuda_unique_deadbeef", tmp_path / "missing.so")
+        mod._load("json", "_cacheon_cuda_unique_deadbeef", tmp_path / "missing.so")
 
 
 def test_depfile_escape_parser_is_deterministic():

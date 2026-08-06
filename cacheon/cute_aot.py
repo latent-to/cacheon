@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from cacheon.manifest import ArtifactTargetAuthority
 
 
-CUTE_AOT_CHILD_SCHEMA = "optima.cute-aot-build-child.v5"
+CUTE_AOT_CHILD_SCHEMA = "cacheon.cute-aot-build-child.v5"
 CUTE_COMPILE_PROFILE_ENV = "CACHEON_CUTE_COMPILE_PROFILE"
 CUTE_COMPILE_PROFILE_DIGEST_ENV = "CACHEON_CUTE_COMPILE_PROFILE_DIGEST"
 
@@ -452,7 +452,7 @@ def deterministic_export_names(
         }
     )
     digest = hashlib.sha256(identity).hexdigest()
-    return f"cute_{digest}", f"optima_cute_{digest}"
+    return f"cute_{digest}", f"cacheon_cute_{digest}"
 
 
 def _canonical_launch_plan(value: Mapping[str, object]) -> dict[str, object]:
