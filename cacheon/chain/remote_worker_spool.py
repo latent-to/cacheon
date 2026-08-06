@@ -220,10 +220,7 @@ def spool_digest(domain: str, payload: object) -> str:
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
+        while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -271,6 +268,23 @@ def require_closed(row: object, fields: frozenset[str], name: str) -> dict[str, 
     if type(row) is not dict or set(row) != fields:
         fail(f"{name} fields are not closed")
     return row
+
+
+def strict_json_object(text: str) -> dict[str, Any]:
+    """Decode one closed JSON object from trusted-channel text."""
+
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_no_duplicates,
+            parse_float=_reject_constant,
+            parse_constant=_reject_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        fail(f"strict JSON object is invalid: {exc}")
+    if type(value) is not dict:
+        fail("strict JSON root is not an object")
+    return value
 
 
 def load_json(path: Path, *, maximum: int = MAX_JSON_BYTES) -> dict[str, Any]:
