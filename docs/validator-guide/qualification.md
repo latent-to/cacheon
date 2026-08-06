@@ -316,6 +316,16 @@ tracks the missing commissioning authorities explicitly, and production activati
 requires supplying them through a reviewed provider rather than through test
 fixtures.
 
+`eval/resident_evaluation_pair.py` is a distinct authority in this design: it owns
+the standing resident-pair service lifecycle — two persistent sessions, request
+admission and history, capability revocation, and one explicit close — while
+`eval/crossover_runtime.py` owns qualification planning and scoring. The two are
+not interchangeable and must not be merged: one is lifecycle, the other is
+evidence policy. Deployment composition currently commissions the standing pair
+outside the tracked qualification path; wiring it into tracked commissioning is
+part of the qualification-activation work, and the module must not be treated as
+removable in the meantime.
+
 ## Nonclaims
 
 - Passing proves the registered arena/workload and policy, not universal model quality or
