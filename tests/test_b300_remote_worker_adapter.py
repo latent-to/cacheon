@@ -155,6 +155,7 @@ def _runtime_shell(
     runtime.identity = object()
     runtime.worker = _FakeWorker()
     runtime.qualification_commission = qualification_commission
+    runtime._commissioned_service = None
     runtime.closed = False
     runtime.verify_current = lambda: None
     return runtime
@@ -672,3 +673,221 @@ def test_adapter_epoch_failure_exits_before_next_command(
             "state": "epoch_failed",
         },
     )
+
+
+def _qualification_capabilities():
+    import hashlib
+
+    from cacheon.eval.b300_qualification_commission import (
+        B300QualificationCapabilities,
+    )
+    from cacheon.eval.qualification_runner import HiddenJudgeBinding
+
+    def _h(seed: str) -> str:
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+    class _Judge:
+        binding = HiddenJudgeBinding(
+            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
+        )
+
+        def __call__(self, **_kwargs):
+            raise AssertionError("wiring tests must not execute the hidden judge")
+
+    class _Resolver:
+        def resolve_proposal(self, *_args, **_kwargs):
+            raise AssertionError("wiring tests must not resolve sources")
+
+        def resolve_integrated(self, *_args, **_kwargs):
+            raise AssertionError("wiring tests must not resolve sources")
+
+    return B300QualificationCapabilities(
+        secret_loader=lambda _reference: b"s" * 32,
+        entropy_provider=lambda *_args: None,
+        hidden_judge=_Judge(),
+        source_resolver=_Resolver(),
+        source_resolver_digest=_h("source-resolver"),
+        graph_facts_builder=lambda *_args: None,
+        graph_facts_builder_digest=_h("graph-facts"),
+    )
+
+
+def test_adapter_runtime_rejects_untyped_or_doubled_qualification_authority(
+    tmp_path: Path,
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    # Both checks fail closed before any sealed file is read.
+    with pytest.raises(adapter.AdapterError, match="capabilities.*typed"):
+        adapter.AdapterRuntime(paths, qualification_capabilities=object())
+    commission = object.__new__(adapter.B300RemoteQualificationCommission)
+    with pytest.raises(adapter.AdapterError, match="mutually exclusive"):
+        adapter.AdapterRuntime(
+            paths,
+            qualification_commission=commission,
+            qualification_capabilities=_qualification_capabilities(),
+        )
+
+
+def test_capabilities_commission_one_service_for_screen_and_qualification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cacheon.eval.b300_qualification_commission as commission_module
+
+    paths = _adapter_paths(tmp_path)
+    registration = {"ready_receipt_digest": "d" * 64}
+    ready = {"receipt_digest": "d" * 64}
+    monkeypatch.setattr(
+        adapter,
+        "load_json",
+        lambda path: registration if path == paths.registration else ready,
+    )
+    monkeypatch.setattr(adapter, "verify_registration", lambda value: value)
+    monkeypatch.setattr(adapter, "verify_ready_receipt", lambda value: value)
+    monkeypatch.setattr(
+        adapter, "registration_credential", lambda _registration, _path: object()
+    )
+    monkeypatch.setattr(
+        adapter, "registration_transport_identity", lambda _registration: object()
+    )
+
+    worker = _FakeWorker()
+    commission = object.__new__(adapter.B300RemoteQualificationCommission)
+    closed: list[str] = []
+    service = SimpleNamespace(
+        worker=worker,
+        commission=commission,
+        close=lambda: closed.append("service"),
+    )
+    observed: list[tuple[object, object, object]] = []
+
+    def build(observed_registration, observed_ready, observed_capabilities):
+        observed.append(
+            (observed_registration, observed_ready, observed_capabilities)
+        )
+        return service
+
+    monkeypatch.setattr(
+        commission_module,
+        "build_commissioned_b300_qualification_service",
+        build,
+    )
+
+    def forbidden_screen_only(_registration, _ready):
+        raise AssertionError(
+            "capabilities path must not build a second screen-only worker"
+        )
+
+    import cacheon.eval.b300_screen_deployment as screen_deployment
+
+    monkeypatch.setattr(
+        screen_deployment,
+        "build_commissioned_b300_screen_worker",
+        forbidden_screen_only,
+    )
+
+    capabilities = _qualification_capabilities()
+    runtime = adapter.AdapterRuntime(paths, qualification_capabilities=capabilities)
+    assert observed == [(registration, ready, capabilities)]
+    assert runtime.worker is worker
+    assert runtime.qualification_commission is commission
+
+    runtime.close()
+    runtime.close()
+    assert closed == ["service"]
+    assert worker.calls == 0
+
+
+def test_screen_only_runtime_still_closes_its_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cacheon.eval.b300_screen_deployment as screen_deployment
+
+    paths = _adapter_paths(tmp_path)
+    registration = {"ready_receipt_digest": "d" * 64}
+    ready = {"receipt_digest": "d" * 64}
+    monkeypatch.setattr(
+        adapter,
+        "load_json",
+        lambda path: registration if path == paths.registration else ready,
+    )
+    monkeypatch.setattr(adapter, "verify_registration", lambda value: value)
+    monkeypatch.setattr(adapter, "verify_ready_receipt", lambda value: value)
+    monkeypatch.setattr(
+        adapter, "registration_credential", lambda _registration, _path: object()
+    )
+    monkeypatch.setattr(
+        adapter, "registration_transport_identity", lambda _registration: object()
+    )
+    closed: list[str] = []
+    worker = SimpleNamespace(close=lambda: closed.append("worker"))
+    monkeypatch.setattr(
+        screen_deployment,
+        "build_commissioned_b300_screen_worker",
+        lambda _registration, _ready: worker,
+    )
+    runtime = adapter.AdapterRuntime(paths)
+    assert runtime.worker is worker
+    assert runtime.qualification_commission is None
+    runtime.close()
+    assert closed == ["worker"]
+
+
+def test_load_qualification_capabilities_names_one_reviewed_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import ModuleType
+
+    for specifier in ("", "module-only", ":attribute-only", "module:"):
+        with pytest.raises(adapter.AdapterError, match="MODULE:ATTRIBUTE"):
+            adapter._load_qualification_capabilities(specifier)
+
+    with pytest.raises(adapter.AdapterError, match="unavailable"):
+        adapter._load_qualification_capabilities(
+            "cacheon.eval.b300_remote_worker_adapter:no_such_factory"
+        )
+    with pytest.raises(adapter.AdapterError, match="unavailable"):
+        adapter._load_qualification_capabilities(
+            "cacheon_no_such_module_exists:factory"
+        )
+
+    module = ModuleType("cacheon_test_qualification_capabilities")
+    module.wrong = lambda: object()
+    module.right = _qualification_capabilities
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    with pytest.raises(adapter.AdapterError, match="exact capabilities"):
+        adapter._load_qualification_capabilities(f"{module.__name__}:wrong")
+    capabilities = adapter._load_qualification_capabilities(
+        f"{module.__name__}:right"
+    )
+    from cacheon.eval.b300_qualification_commission import (
+        B300QualificationCapabilities,
+    )
+
+    assert type(capabilities) is B300QualificationCapabilities
+
+
+def test_one_shot_mode_cannot_commission_qualification(tmp_path: Path) -> None:
+    paths = _adapter_paths(tmp_path)
+    argv = [
+        "--registration",
+        str(paths.registration),
+        "--ready-receipt",
+        str(paths.ready_receipt),
+        "--credential",
+        str(paths.credential),
+        "--publication-root",
+        str(paths.publication_root),
+        "--processing-root",
+        str(paths.processing_root),
+        "--results-root",
+        str(paths.results_root),
+        "--request-dir",
+        str(paths.processing_root / ("5" * 64)),
+        "--result-dir",
+        str(paths.results_root / ("5" * 64)),
+        "--qualification-capabilities",
+        "some.module:factory",
+    ]
+    with pytest.raises(SystemExit) as captured:
+        adapter.main(argv)
+    assert captured.value.code == 2

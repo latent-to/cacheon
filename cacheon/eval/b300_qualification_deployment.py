@@ -63,6 +63,7 @@ from cacheon.target_catalog import TargetCatalog
 
 CONSTRUCTION_SCHEMA = "cacheon.eval.b300-qualification-construction.v1"
 POLICY_SCHEMA = "cacheon.eval.b300-qualification-policy.v1"
+REGISTRY_SCHEMA = "cacheon.eval.b300-qualification-profile-registry.v1"
 COHORT_SCHEMA = "cacheon.eval.b300-qualification-cohort.v1"
 SELECTION_REFERENCE_SCHEMA = (
     "cacheon.eval.b300-qualification-selection-secret-reference.v1"
@@ -358,7 +359,7 @@ class B300QualificationConstructionAuthority:
     @property
     def profile_registry_digest(self) -> str:
         return canonical_digest(
-            "cacheon.eval.b300-qualification-profile-registry.v1",
+            REGISTRY_SCHEMA,
             {
                 "catalog_digest": self.catalog.digest,
                 "profiles": [
@@ -904,6 +905,7 @@ __all__ = [
     "COHORT_SCHEMA",
     "CONSTRUCTION_SCHEMA",
     "POLICY_SCHEMA",
+    "REGISTRY_SCHEMA",
     "SELECTION_REFERENCE_SCHEMA",
     "compose_b300_qualification_deployment",
 ]

@@ -386,6 +386,8 @@ class AdapterRuntime:
         self,
         paths: AdapterPaths,
         qualification_commission: B300RemoteQualificationCommission | None = None,
+        *,
+        qualification_capabilities: object | None = None,
     ) -> None:
         if type(paths) is not AdapterPaths:
             raise AdapterError("adapter paths are not exactly typed")
@@ -395,22 +397,53 @@ class AdapterRuntime:
             is not B300RemoteQualificationCommission
         ):
             raise AdapterError("qualification commission is not exactly typed")
+        if (
+            qualification_commission is not None
+            and qualification_capabilities is not None
+        ):
+            raise AdapterError(
+                "qualification commission and capabilities are mutually exclusive"
+            )
+        if qualification_capabilities is not None:
+            from cacheon.eval.b300_qualification_commission import (
+                B300QualificationCapabilities,
+            )
+
+            if type(qualification_capabilities) is not B300QualificationCapabilities:
+                raise AdapterError(
+                    "qualification capabilities are not exactly typed"
+                )
         registration = verify_registration(load_json(paths.registration))
         ready = verify_ready_receipt(load_json(paths.ready_receipt))
         if ready["receipt_digest"] != registration["ready_receipt_digest"]:
             raise AdapterError("READY receipt differs from registration")
-
-        from cacheon.eval.b300_screen_deployment import (
-            build_commissioned_b300_screen_worker,
-        )
 
         self.paths = paths
         self.registration = registration
         self.ready = ready
         self.credential = registration_credential(registration, paths.credential)
         self.identity = registration_transport_identity(registration)
-        self.worker = build_commissioned_b300_screen_worker(registration, ready)
-        self.qualification_commission = qualification_commission
+        self._commissioned_service = None
+        if qualification_capabilities is not None:
+            from cacheon.eval.b300_qualification_commission import (
+                build_commissioned_b300_qualification_service,
+            )
+
+            # One replay yields both the screen worker and the qualification
+            # commission over the same resident model lifetime.
+            service = build_commissioned_b300_qualification_service(
+                registration, ready, qualification_capabilities
+            )
+            self._commissioned_service = service
+            self.worker = service.worker
+            self.qualification_commission = service.commission
+        else:
+            from cacheon.eval.b300_screen_deployment import (
+                build_commissioned_b300_screen_worker,
+            )
+
+            self.worker = build_commissioned_b300_screen_worker(registration, ready)
+            self.qualification_commission = qualification_commission
         self.closed = False
 
     def verify_current(self) -> None:
@@ -422,8 +455,11 @@ class AdapterRuntime:
     def close(self) -> None:
         if self.closed:
             return
-        self.worker.close()
         self.closed = True
+        if self._commissioned_service is not None:
+            self._commissioned_service.close()
+        else:
+            self.worker.close()
 
 
 def run_with_runtime(
@@ -696,13 +732,52 @@ def serve_runtime(
     return 0
 
 
-def _serve(paths: AdapterPaths) -> int:
+def _load_qualification_capabilities(specifier: str):
+    """Resolve one explicitly named tracked capabilities factory.
+
+    The operand names a reviewed module attribute (``MODULE:ATTRIBUTE``); the
+    factory takes no arguments and must return exactly one
+    ``B300QualificationCapabilities``.  Nothing is probed from the environment
+    and nothing digest-bearing enters through this path -- every identity the
+    returned capabilities carry is checked against the sealed commission block
+    before the adapter accepts a request.
+    """
+
+    import importlib
+
+    from cacheon.eval.b300_qualification_commission import (
+        B300QualificationCapabilities,
+    )
+
+    module_name, separator, attribute = specifier.partition(":")
+    if not module_name or separator != ":" or not attribute:
+        raise AdapterError(
+            "qualification capabilities operand must be MODULE:ATTRIBUTE"
+        )
+    try:
+        module = importlib.import_module(module_name)
+        factory = getattr(module, attribute)
+    except (ImportError, AttributeError) as exc:
+        raise AdapterError(
+            f"qualification capabilities factory is unavailable: {exc}"
+        ) from None
+    capabilities = factory()
+    if type(capabilities) is not B300QualificationCapabilities:
+        raise AdapterError(
+            "qualification capabilities factory did not return exact capabilities"
+        )
+    return capabilities
+
+
+def _serve(paths: AdapterPaths, qualification_capabilities=None) -> int:
     # Reserve the original stdout exclusively for the tiny control protocol.
     # Imported controller/runtime code is redirected to stderr so an
     # incidental diagnostic cannot be mistaken for a completed request.
     control_output = sys.stdout.buffer
     sys.stdout = sys.stderr
-    runtime = AdapterRuntime(paths)
+    runtime = AdapterRuntime(
+        paths, qualification_capabilities=qualification_capabilities
+    )
     try:
         return serve_runtime(runtime, paths, sys.stdin.buffer, control_output)
     finally:
@@ -731,12 +806,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results-root", required=True)
     parser.add_argument("--request-dir")
     parser.add_argument("--result-dir")
+    parser.add_argument(
+        "--qualification-capabilities",
+        help=(
+            "MODULE:ATTRIBUTE naming a reviewed zero-argument factory returning"
+            " B300QualificationCapabilities; commissions qualification in this"
+            " same persistent service (requires --serve)"
+        ),
+    )
     args = parser.parse_args(argv)
     paths = _adapter_paths(args)
     if args.serve:
         if args.request_dir is not None or args.result_dir is not None:
             parser.error("--serve does not accept one-shot request paths")
-        return _serve(paths)
+        capabilities = None
+        if args.qualification_capabilities is not None:
+            capabilities = _load_qualification_capabilities(
+                args.qualification_capabilities
+            )
+        return _serve(paths, capabilities)
+    if args.qualification_capabilities is not None:
+        parser.error(
+            "--qualification-capabilities requires the persistent --serve"
+            " service; one-shot mode cannot commission qualification"
+        )
     if args.request_dir is None or args.result_dir is None:
         parser.error("one-shot mode requires --request-dir and --result-dir")
     request_dir = _closed_path(
