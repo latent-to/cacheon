@@ -261,6 +261,66 @@ passes so remote object-store failure cannot enter the SQLite controller's commi
 path. Protect the archive with a private bucket or policy-isolated private prefix and
 exercise restore regularly.
 
+## Evaluation-lease ownership
+
+`FinalizedIntakeStore` owns durable evaluation-lease state. FIFO selection order,
+reproduction priority, qualification cohort formation, lease generations, heartbeat
+compare-and-swap, expiry, and infrastructure release are store policy. No other
+module implements a second lease state machine, and deployment tooling must not
+mutate lease rows with raw SQL.
+
+`cacheon chain-evaluation-lease` is the tracked one-shot operator adapter over that
+API: `preview`, `claim`, `heartbeat`, and infrastructure `release`, with all
+authority coming from one sealed owner-controlled config file. It is not an
+evaluation worker, daemon, or scheduler; see the
+[CLI reference](../reference/cli.md#chain-evaluation-lease).
+
+Site orchestration — launch wrappers, tmux composition, endpoints, wallets, exact
+filesystem paths, and sealed production configs — stays in the private deployment
+tree outside this repository. Tracked code owns lease semantics; private operations
+own only identities and launch composition.
+
+## Remote worker transport
+
+Remote execution of leased work is a durable-spool transport, not a second
+evaluation authority. `chain/remote_worker_registration.py` binds one worker
+epoch — endpoint, pinned host keys, commissioned READY receipt, worker
+readiness, physical lane, interpreter, and shared credential — under one
+semantic digest. `chain/remote_worker_spool.py` owns the sealed
+request/result carriers and their verification;
+`chain/ssh_worker_transport.py` shuttles them over host-key-pinned SSH and
+implements the authenticated transport the remote evaluation dispatcher uses
+for both screen and qualification; `chain/remote_worker_pod_service.py`
+supervises one persistent pod adapter per epoch and parks the epoch on its
+first command-level adapter failure rather than restarting into an unproven
+resident model. Transport, pod, and adapter failures surface as
+infrastructure `no_decision` records that release the durable lease without
+consuming an evaluation attempt.
+
+The tracked B300 pod adapter executes screen work through the commissioned
+screen deployment; it refuses a qualification request as a typed pre-resident
+infrastructure failure because the qualification entrypoint requires
+deployment authorities the screen commission does not carry. Deployment
+wrappers supply every installed path as an explicit argument; active
+endpoints, credentials, sealed configs, and tmux composition stay in the
+private operations tree.
+
+## Standing screen dispatcher
+
+`python -m cacheon.chain.mainnet_screen_dispatcher --config <path>` is the
+standing CPU daemon over those pieces. One sealed, closed, owner-controlled
+config file supplies every authority: intake scope and policy, the arena
+service manifest, worker readiness, the registration and credential paths,
+and the digests they must match. The daemon reopens the intake-only
+validator's durable finalized cursor read-only — rejecting scope drift,
+regression, and hash changes — claims exactly one durable screen lease at a
+time, and hands the typed request to the authenticated spool transport.
+Qualification is not an exposed operation, and the required `ArenaService`
+provider slot is filled by a digest-exact remote-only proxy whose execution
+methods always fail closed. Dispatcher faults tear down the constructed
+authority and rebuild it under bounded exponential backoff; every lifecycle
+event is one canonical-JSON line on stdout.
+
 ## Durable reservation states
 
 The store makes work and failure class explicit:
@@ -419,6 +479,7 @@ Continue with [Arena service](arena-service.md) and
 - [Finalized intake store](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
 - [Immutable publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publication.py)
 - [Validator loop](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py)
+- [Evaluation-lease operator adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_lease_operator.py)
 - [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py)
 - [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
 - [Archive-bound tests](https://github.com/latent-to/cacheon/blob/main/tests/test_chain_fetch.py)
