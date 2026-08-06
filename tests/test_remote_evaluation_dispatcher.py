@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import cacheon.chain.remote_evaluation_dispatcher as remote_dispatcher_module
+import cacheon.chain.remote_qualification_evidence as remote_evidence_module
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCapacityPolicy,
@@ -760,7 +761,7 @@ def test_remote_qualification_product_closes_inventory_bytes_and_bounds(
         )
 
     monkeypatch.setattr(
-        remote_dispatcher_module,
+        remote_evidence_module,
         "_MAX_REMOTE_EVIDENCE_ARTIFACT_BYTES",
         4,
     )
