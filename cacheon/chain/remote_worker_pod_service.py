@@ -30,6 +30,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from cacheon.chain.execution_disposition import (
+    PRE_RESIDENT_REQUEUE_FAILURES,
+    infrastructure_result_payload,
+)
 from cacheon.chain.remote_worker_registration import (
     PodPaths,
     registration_credential,
@@ -110,7 +114,7 @@ def adapter_environment(
 
 
 def infrastructure_result(
-    request: Mapping[str, Any], result_root: Path, failure_code: str
+    request: Mapping[str, Any], result_root: Path, failure_code: str, *, credential=None
 ) -> None:
     if failure_code not in ALLOWED_FAILURE_CODES:
         fail("pod failure code is not registered")
@@ -119,11 +123,7 @@ def infrastructure_result(
     blobs.mkdir(mode=0o700)
     payload = (
         spool_canonical_json(
-            {
-                "failure_code": failure_code,
-                "request_id": request["request_id"],
-                "state": "no_decision",
-            }
+            infrastructure_result_payload(request, failure_code, credential)
         )
         + b"\n"
     )
@@ -216,7 +216,7 @@ RECOVERY_HOLD_REASONS = frozenset(
         "results_root_invalid",
     }
 )
-PRE_RESIDENT_FAILURES = frozenset({"adapter_request_failed", "adapter_start_failed"})
+PRE_RESIDENT_FAILURES = PRE_RESIDENT_REQUEUE_FAILURES
 
 
 def recovery_hold(paths: PodPaths, request_id: str, reason: str) -> None:
@@ -735,7 +735,7 @@ def run_adapter(
     if failure is not None:
         require_pre_resident_failure(paths, temporary, request, failure)
         shutil.rmtree(temporary, ignore_errors=True)
-        infrastructure_result(request, temporary, failure)
+        infrastructure_result(request, temporary, failure, credential=credential)
     else:
         try:
             finalize_adapter_response(

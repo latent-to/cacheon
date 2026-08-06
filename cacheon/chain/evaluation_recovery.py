@@ -17,6 +17,17 @@ from cacheon.stack_identity import canonical_digest, require_sha256_hex
 _RECOVERY_DOMAIN = "cacheon.evaluation-recovery.v1"
 _EVENT_DOMAIN = "cacheon.evaluation-recovery-event.v1"
 
+# A post-publication release is legal only for one authenticated, closed,
+# marker-absent pre-resident refusal.  These reasons mirror the pod protocol
+# set (execution_disposition.PRE_RESIDENT_REQUEUE_FAILURES) one-for-one.
+WORKER_PRE_RESIDENT_REASON_PREFIX = "worker_pre_resident:"
+WORKER_PRE_RESIDENT_RELEASE_REASONS = frozenset(
+    {
+        "worker_pre_resident:adapter_request_failed",
+        "worker_pre_resident:adapter_start_failed",
+    }
+)
+
 
 class EvaluationRecoveryError(ValueError):
     """A recovery identity, transition, or retained row is malformed."""
@@ -345,9 +356,16 @@ def valid_evaluation_recovery_event_transition(
             and bool(event.reason)
         )
     if event.event_type is RecoveryEventType.PRE_RESIDENT_RELEASED:
+        if event.reason in WORKER_PRE_RESIDENT_RELEASE_REASONS:
+            phase_permitted = previous.phase is RecoveryPhase.REQUEST_READY
+        else:
+            phase_permitted = previous.phase in {
+                RecoveryPhase.CLAIMED,
+                RecoveryPhase.PREPARED,
+            }
         return (
             previous.resolution is RecoveryResolution.UNRESOLVED
-            and previous.phase in {RecoveryPhase.CLAIMED, RecoveryPhase.PREPARED}
+            and phase_permitted
             and event.phase is previous.phase
             and event.resolution is RecoveryResolution.PRE_RESIDENT_RELEASED
             and bool(event.reason)
@@ -372,6 +390,8 @@ __all__ = [
     "RecoveryEventType",
     "RecoveryPhase",
     "RecoveryResolution",
+    "WORKER_PRE_RESIDENT_REASON_PREFIX",
+    "WORKER_PRE_RESIDENT_RELEASE_REASONS",
     "evaluation_recovery_event_id",
     "evaluation_recovery_id",
     "valid_evaluation_recovery_event_transition",

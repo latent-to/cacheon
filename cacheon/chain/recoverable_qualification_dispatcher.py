@@ -26,6 +26,13 @@ from cacheon.chain.evaluation_recovery import (
     EvaluationRecoveryHoldError,
     RecoveryPhase,
 )
+from cacheon.chain.execution_disposition import (
+    AuthenticatedPreResidentRefusal,
+    ExecutionDisposition,
+    ExecutionOutcome,
+    resolve_completed_result,
+    resolve_infrastructure_result,
+)
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
@@ -113,6 +120,37 @@ class RecoverableQualificationHold:
             raise RecoverableQualificationDispatcherError(
                 "qualification hold reason is malformed"
             )
+
+
+@dataclass(frozen=True)
+class RecoverableQualificationRequeue:
+    """One typed NO_DECISION + REQUEUE from an authenticated pre-resident refusal."""
+
+    recovery_id: str
+    request_id: str
+    outcome: ExecutionOutcome
+
+    def __post_init__(self) -> None:
+        require_sha256_hex(self.recovery_id, field="requeued recovery id")
+        require_sha256_hex(self.request_id, field="requeued request id")
+        if (
+            type(self.outcome) is not ExecutionOutcome
+            or self.outcome.disposition is not ExecutionDisposition.REQUEUE
+        ):
+            raise RecoverableQualificationDispatcherError(
+                "qualification requeue outcome is malformed"
+            )
+
+
+class _PreResidentRefusalObserved(Exception):
+    """Internal control flow: an authenticated refusal permits one requeue."""
+
+    def __init__(
+        self, refusal: AuthenticatedPreResidentRefusal, outcome: ExecutionOutcome
+    ) -> None:
+        super().__init__(refusal.failure_code)
+        self.refusal = refusal
+        self.outcome = outcome
 
 
 @dataclass(frozen=True)
@@ -362,6 +400,23 @@ class RecoverableQualificationDispatcher:
             held.reason,
         )
 
+    def _requeue(
+        self,
+        recovery: EvaluationRecovery,
+        refusal: AuthenticatedPreResidentRefusal,
+        outcome: ExecutionOutcome,
+    ) -> RecoverableQualificationRequeue:
+        store, point, current = self._current_recovery(recovery.recovery_id)
+        try:
+            store.release_worker_pre_resident_recovery(
+                current, refusal=refusal, current_block=point[0]
+            )
+        finally:
+            store.close()
+        return RecoverableQualificationRequeue(
+            recovery.recovery_id, refusal.request_id, outcome
+        )
+
     def _renew_if_due(self, recovery: EvaluationRecovery) -> EvaluationRecovery:
         store, point, current = self._current_recovery(recovery.recovery_id)
         try:
@@ -471,6 +526,15 @@ class RecoverableQualificationDispatcher:
     ) -> tuple[EvaluationRecovery, AuthenticatedRemoteEvaluationResponse]:
         observed = self.transport.inspect_planned_qualification(plan)
         if observed.state == "result_ready":
+            outcome = resolve_infrastructure_result(
+                observed.failure_code, observed.refusal, request_id=plan.request_id
+            )
+            if (
+                outcome.disposition is ExecutionDisposition.REQUEUE
+                and recovery.phase is RecoveryPhase.REQUEST_READY
+            ):
+                assert observed.refusal is not None
+                raise _PreResidentRefusalObserved(observed.refusal, outcome)
             raise QualificationRecoveryHold(
                 "worker_infrastructure_result",
                 plan.request_id,
@@ -574,7 +638,12 @@ class RecoverableQualificationDispatcher:
 
     def dispatch_once(
         self,
-    ) -> EvaluationRun | RecoverableQualificationHold | None:
+    ) -> (
+        EvaluationRun
+        | RecoverableQualificationHold
+        | RecoverableQualificationRequeue
+        | None
+    ):
         """Run or resume one FIFO item without ever creating replacement work."""
 
         self._validate_live_authority()
@@ -650,8 +719,11 @@ class RecoverableQualificationDispatcher:
                     raise RecoverableQualificationDispatcherError(
                         "recovery entered an unsupported phase"
                     )
-                if self._has_no_decision(product.batch):
-                    return self._hold(recovery, "post_publication_no_decision")
+                completed = resolve_completed_result(
+                    self._has_no_decision(product.batch)
+                )
+                if completed.disposition is not ExecutionDisposition.COMPLETE:
+                    return self._hold(recovery, completed.reason)
                 if recovery.phase is RecoveryPhase.RESULT_READY:
                     import_remote_qualification_evidence(
                         product, self.qualification_evidence_root
@@ -660,6 +732,8 @@ class RecoverableQualificationDispatcher:
                     continue
                 if recovery.phase is RecoveryPhase.EVIDENCE_IMPORTED:
                     return self._commit_product(recovery, claim, product)
+        except _PreResidentRefusalObserved as signal:
+            return self._requeue(recovery, signal.refusal, signal.outcome)
         except QualificationRecoveryHold as exc:
             return self._hold(recovery, f"transport_hold:{exc.code}")
         except (EvaluationRecoveryHoldError, IntakeError) as exc:
@@ -672,5 +746,6 @@ __all__ = [
     "RecoverableQualificationDispatcher",
     "RecoverableQualificationDispatcherError",
     "RecoverableQualificationHold",
+    "RecoverableQualificationRequeue",
     "RecoverableQualificationTransport",
 ]

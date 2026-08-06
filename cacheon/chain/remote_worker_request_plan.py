@@ -28,6 +28,12 @@ from cacheon.chain.evaluation_leases import (
     EvaluationLease,
     EvaluationLeaseMember,
 )
+from cacheon.chain.execution_disposition import (
+    PRE_RESIDENT_REQUEUE_FAILURES,
+    AuthenticatedPreResidentRefusal,
+    ExecutionDispositionError,
+    reopen_pre_resident_refusal,
+)
 from cacheon.chain.remote_evaluation_dispatcher import (
     AuthenticatedRemoteEvaluationResponse,
     RemoteEvaluationDispatcherError,
@@ -325,6 +331,7 @@ class PlannedQualificationObservation:
     dispatch_state: str | None = None
     failure_code: str | None = None
     response: AuthenticatedRemoteEvaluationResponse | None = None
+    refusal: AuthenticatedPreResidentRefusal | None = None
 
     def __post_init__(self) -> None:
         require_digest(self.plan_digest, "planned observation digest")
@@ -364,6 +371,13 @@ class PlannedQualificationObservation:
                 fail("planned completed response is not exactly typed")
         elif self.response is not None:
             fail("planned observation has a response before completion")
+        if self.refusal is not None and (
+            type(self.refusal) is not AuthenticatedPreResidentRefusal
+            or self.state != "result_ready"
+            or self.refusal.request_id != self.request_id
+            or self.refusal.failure_code != self.failure_code
+        ):
+            fail("planned observation refusal is inconsistent")
 
 
 def _request_matches_lease(
@@ -688,6 +702,27 @@ def _hidden_state(
     return "partial"
 
 
+def _pre_resident_refusal(
+    plan: QualificationRequestPlan,
+    result: Mapping[str, Any],
+    root: Path,
+    credential: RemoteWorkerCredential,
+) -> AuthenticatedPreResidentRefusal | None:
+    """Reopen a pod-signed refusal; unauthenticated failures never requeue."""
+
+    if result["failure_code"] not in PRE_RESIDENT_REQUEUE_FAILURES:
+        return None
+    try:
+        return reopen_pre_resident_refusal(
+            load_json(artifact_for_role(result, root, "adapter_result")),
+            request_id=plan.request_id,
+            worker_epoch=plan.worker_epoch,
+            credential=credential,
+        )
+    except (RemoteWorkerError, ExecutionDispositionError):
+        return None
+
+
 def _local_result(
     plan: QualificationRequestPlan,
     carrier: Path | None,
@@ -695,10 +730,15 @@ def _local_result(
     registration: Mapping[str, Any],
     identity: RemoteWorkerTransportIdentity,
     credential: RemoteWorkerCredential,
-) -> tuple[str | None, str | None, AuthenticatedRemoteEvaluationResponse | None]:
+) -> tuple[
+    str | None,
+    str | None,
+    AuthenticatedRemoteEvaluationResponse | None,
+    AuthenticatedPreResidentRefusal | None,
+]:
     root = results_root / plan.request_id
     if not root.exists():
-        return None, None, None
+        return None, None, None, None
     if carrier is None:
         _hold(plan, "published_carrier_missing", "local result exists without its carrier")
     if root.is_symlink() or not root.is_dir():
@@ -725,14 +765,15 @@ def _local_result(
     except RemoteWorkerError as exc:
         _hold(plan, "result_tampered", str(exc))
     if result["state"] != "completed":
-        return "result_ready", result["failure_code"], None
+        refusal = _pre_resident_refusal(plan, result, root, credential)
+        return "result_ready", result["failure_code"], None, refusal
     try:
         response = AuthenticatedRemoteEvaluationResponse.from_dict(
             load_json(artifact_for_role(result, root, "adapter_result"), maximum=64 << 20)
         )
     except (RemoteWorkerError, RemoteEvaluationDispatcherError) as exc:
         _hold(plan, "result_tampered", str(exc))
-    return "completed_response", None, response
+    return "completed_response", None, response, None
 
 
 def _inspect_locked(
@@ -758,7 +799,7 @@ def _inspect_locked(
         carrier = final
         ready = _ready_state(plan, final)
         dispatch = _dispatch_state(plan, final, ready=ready)
-    result_state, failure, response = _local_result(
+    result_state, failure, response, refusal = _local_result(
         plan, carrier, results_root, registration, identity, credential
     )
     if result_state is not None and not ready:
@@ -783,6 +824,7 @@ def _inspect_locked(
         dispatch,
         failure,
         response,
+        refusal,
     )
 
 

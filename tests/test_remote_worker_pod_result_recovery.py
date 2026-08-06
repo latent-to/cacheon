@@ -23,6 +23,7 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     seal_remote_request,
     seal_remote_response,
 )
+from cacheon.chain.execution_disposition import reopen_pre_resident_refusal
 from cacheon.chain.remote_worker_execution_marker import (
     RESIDENT_ENTRY_MARKER,
     publish_resident_entry,
@@ -674,14 +675,24 @@ def test_typed_pre_resident_failure_without_marker_remains_no_decision(
     process = FailedAdapter(failure)
     original = pod_service.infrastructure_result
     infrastructure: list[str] = []
-    def counted(request, root, observed):
+    def counted(request, root, observed, *, credential=None):
         infrastructure.append(observed)
-        original(request, root, observed)
+        original(request, root, observed, credential=credential)
 
     monkeypatch.setattr(pod_service, "infrastructure_result", counted)
     result = _run_failed_adapter(authority, process)
     row = spool.load_json(result / "result.json")
     assert row["state"] == "no_decision" and row["failure_code"] == failure
+    payload = spool.load_json(
+        spool.artifact_for_role(row, result, "adapter_result")
+    )
+    refusal = reopen_pre_resident_refusal(
+        payload,
+        request_id=authority.request_id,
+        worker_epoch=authority.registration["worker_epoch"],
+        credential=authority.credential,
+    )
+    assert refusal.failure_code == failure
     assert process.calls == 1 and infrastructure == [failure]
     assert not (authority.paths.root / "events.jsonl").exists()
 

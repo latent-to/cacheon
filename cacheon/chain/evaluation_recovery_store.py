@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Iterator
 
 from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.evaluation_recovery import (
+    WORKER_PRE_RESIDENT_RELEASE_REASONS,
     EvaluationRecovery,
     EvaluationRecoveryError,
     EvaluationRecoveryEvent,
@@ -847,16 +848,53 @@ class EvaluationRecoveryStoreMixin:
     ) -> EvaluationLease:
         """Atomically resolve and release only before publication is committed."""
 
-        self._require_evaluation_clock(current_block)
         if (
-            type(recovery) is not EvaluationRecovery
-            or recovery.resolution is not RecoveryResolution.UNRESOLVED
-            or recovery.phase not in {RecoveryPhase.CLAIMED, RecoveryPhase.PREPARED}
-            or not isinstance(reason, str)
+            not isinstance(reason, str)
             or not reason
             or reason.strip() != reason
             or len(reason) > 2_048
             or any(ord(char) < 32 or ord(char) == 127 for char in reason)
+            or reason in WORKER_PRE_RESIDENT_RELEASE_REASONS
+            or type(recovery) is not EvaluationRecovery
+            or recovery.phase not in {RecoveryPhase.CLAIMED, RecoveryPhase.PREPARED}
+        ):
+            raise _intake_error("pre-resident recovery release is forbidden")
+        return self._release_recovery(recovery, current_block=current_block, reason=reason)
+
+    def release_worker_pre_resident_recovery(
+        self,
+        recovery: EvaluationRecovery,
+        *,
+        refusal: object,
+        current_block: int,
+    ) -> EvaluationLease:
+        """Requeue one published request after an authenticated, marker-absent
+        pre-resident refusal signed by the pod.  Never generic; never a rerun
+        of anything that may have entered resident execution."""
+
+        from cacheon.chain.execution_disposition import AuthenticatedPreResidentRefusal
+
+        if (
+            type(refusal) is not AuthenticatedPreResidentRefusal
+            or type(recovery) is not EvaluationRecovery
+            or recovery.phase is not RecoveryPhase.REQUEST_READY
+            or refusal.request_id != recovery.request_id
+        ):
+            raise _intake_error("worker pre-resident recovery release is forbidden")
+        return self._release_recovery(
+            recovery, current_block=current_block, reason=refusal.release_reason
+        )
+
+    def _release_recovery(
+        self,
+        recovery: EvaluationRecovery,
+        *,
+        current_block: int,
+        reason: str,
+    ) -> EvaluationLease:
+        self._require_evaluation_clock(current_block)
+        if (
+            recovery.resolution is not RecoveryResolution.UNRESOLVED
             or current_block >= recovery.lease.expires_block
         ):
             raise _intake_error("pre-resident recovery release is forbidden")
