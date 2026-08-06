@@ -261,6 +261,25 @@ passes so remote object-store failure cannot enter the SQLite controller's commi
 path. Protect the archive with a private bucket or policy-isolated private prefix and
 exercise restore regularly.
 
+## Evaluation-lease ownership
+
+`FinalizedIntakeStore` owns durable evaluation-lease state. FIFO selection order,
+reproduction priority, qualification cohort formation, lease generations, heartbeat
+compare-and-swap, expiry, and infrastructure release are store policy. No other
+module implements a second lease state machine, and deployment tooling must not
+mutate lease rows with raw SQL.
+
+`cacheon chain-evaluation-lease` is the tracked one-shot operator adapter over that
+API: `preview`, `claim`, `heartbeat`, and infrastructure `release`, with all
+authority coming from one sealed owner-controlled config file. It is not an
+evaluation worker, daemon, or scheduler; see the
+[CLI reference](../reference/cli.md#chain-evaluation-lease).
+
+Site orchestration — launch wrappers, tmux composition, endpoints, wallets, exact
+filesystem paths, and sealed production configs — stays in the private deployment
+tree outside this repository. Tracked code owns lease semantics; private operations
+own only identities and launch composition.
+
 ## Durable reservation states
 
 The store makes work and failure class explicit:
@@ -419,6 +438,7 @@ Continue with [Arena service](arena-service.md) and
 - [Finalized intake store](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
 - [Immutable publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publication.py)
 - [Validator loop](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py)
+- [Evaluation-lease operator adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_lease_operator.py)
 - [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py)
 - [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
 - [Archive-bound tests](https://github.com/latent-to/cacheon/blob/main/tests/test_chain_fetch.py)

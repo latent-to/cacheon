@@ -70,6 +70,7 @@ reopens evidence but accepts only reviewed integrated source.
 | Finalized intake and SQLite state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
 | Hardened archive fetch | [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py) |
 | Validator loop | [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py) |
+| One-shot evaluation-lease operations | [`chain/evaluation_lease_operator.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_lease_operator.py) |
 | Redacted chain journal | [`chain/audit_log.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py) |
 | Private validator snapshot/restore | [`chain/archive.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py) |
 | Injected arena boundary | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py) |
