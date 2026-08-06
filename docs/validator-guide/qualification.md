@@ -106,6 +106,14 @@ PyTorch and requires the expected slot × TP-rank/PID coverage, minimum call cou
 absence of retained violations or protocol errors. Live floating-point facts are
 canonicalized into stable decimal strings before they enter the durable witness.
 
+The audit role is deliberately a minimum-cost slot-call integrity check, not a
+semantic or shape-coverage instrument: it deterministically selects the single
+shortest committed prompt (ties broken by prompt digest) and repeats it for the
+required minimum call count. Semantic and prompt-dependent coverage belong to the
+pristine T reference, which the audit role never replaces. This selection policy is
+pinned by a regression test; changing it is a reviewed policy decision, not a
+tuning knob.
+
 T remains untimed and candidate-free. The host owns role assignment, monotonic clocks,
 token numerators, conditioning windows, absolute deadlines, device observations, audit
 grading, selection entropy, and teardown. Candidate wall-clock reports and aggregate
