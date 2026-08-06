@@ -608,3 +608,163 @@ def test_registered_target_and_canonical_evidence_root_are_fail_closed(
         match="absolute authority",
     ):
         replace(construction, evidence_root=Path("relative-evidence"))
+
+
+def _registered_fixtures():
+    import importlib.util
+    import sys
+
+    path = Path(__file__).with_name("test_b300_registered_qualification.py")
+    specification = importlib.util.spec_from_file_location(
+        "cacheon_registered_qualification_fixtures_for_deployment", path
+    )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module
+
+
+def _executor_mirror(arm):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        device_policy=SimpleNamespace(
+            physical_gpu_ids=tuple(
+                int(value)
+                for value in arm.binding.physical_hardware.physical_gpu_ids
+            ),
+            policy_sha256=arm.launch.hardware.device_policy_digest,
+            configuration_sha256=arm.device_configuration_digest,
+        ),
+        config=SimpleNamespace(
+            prebuild=SimpleNamespace(
+                policy=SimpleNamespace(
+                    resource_policy_digest=arm.launch.resource_policy_digest
+                )
+            ),
+            runtime=SimpleNamespace(digest=arm.runtime_resource_policy_digest),
+        ),
+        manager=SimpleNamespace(namespace_digest=arm.executor_namespace_digest),
+    )
+
+
+def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
+    tmp_path: Path,
+) -> None:
+    fixtures = _registered_fixtures()
+    harness = fixtures._harness(tmp_path)
+    secret = b"ordinary prefill blockscore selection"[:32]
+    value = harness.factory.plan_builder(harness.cohort, secret)
+    incumbent_tree = value.prepared.incumbent_binding.tree.tree_digest
+    assert incumbent_tree == harness.inputs.incumbent_binding.tree.tree_digest
+
+    class _RegisteredJudge:
+        def __init__(self) -> None:
+            self.binding = HiddenJudgeBinding(
+                _h("hidden-corpus"),
+                _h("hidden-judge"),
+                _h("ordinary-hidden-task-policy"),
+            )
+
+        def __call__(self, **_kwargs):
+            raise AssertionError("plan validation must not execute the judge")
+
+    construction = deployment.B300QualificationConstructionAuthority(
+        catalog=harness.inputs.catalog,
+        profiles=harness.factory.profiles,
+        incumbent_stack=harness.inputs.incumbent_stack,
+        incumbent_tree_digest=incumbent_tree,
+        pristine_stack=harness.inputs.pristine_stack,
+        pristine_tree_digest=value.pristine_launch.tree_digest,
+        evidence_root=harness.inputs.evidence_root,
+        evidence_policy_digest=_h("evidence-policy"),
+        builder_source_digest=_h("builder-source"),
+        selection_store_digest=_h("selection-store"),
+        secret_loader=lambda _reference: secret,
+        plan_builder=harness.factory.plan_builder,
+        entropy_provider_digest=_h("entropy-provider"),
+        entropy_provider=lambda *_args: None,
+        hidden_judge=_RegisteredJudge(),
+        deadline_policy_digest=_h("deadline-policy"),
+        deadline_provider=lambda _cohort: time.monotonic() + 600.0,
+    )
+    resident = value.resident_speed_plan
+    candidate_executor = _executor_mirror(resident.candidate)
+    baseline_executor = _executor_mirror(resident.baseline)
+
+    accepted = deployment._validate_plan(
+        value,
+        harness.cohort,
+        secret,
+        construction,
+        candidate_executor,
+        baseline_executor,
+    )
+    assert accepted is value
+
+    with pytest.raises(
+        deployment.B300QualificationDeploymentError,
+        match="differs from resident-v3 deployment authority",
+    ):
+        deployment._validate_plan(
+            value,
+            harness.cohort,
+            b"y" * 32,
+            construction,
+            candidate_executor,
+            baseline_executor,
+        )
+
+    with pytest.raises(
+        deployment.B300QualificationDeploymentError,
+        match="candidate executor differs from the sealed resident arm",
+    ):
+        deployment._validate_plan(
+            value,
+            harness.cohort,
+            secret,
+            construction,
+            baseline_executor,
+            candidate_executor,
+        )
+
+    source = fixtures._candidate_source(tmp_path / "foreign-source")
+    kernel = source / "kernels" / "msa_prefill_block_score.py"
+    kernel.write_text(kernel.read_text() + "\n# foreign contribution variant\n")
+    publication = fixtures.publish_worker_bundle(
+        source,
+        fixtures._private_directory(tmp_path / "foreign-publications"),
+        fixtures.content_hash(source),
+    )
+    catalog = fixtures.default_target_catalog()
+    inspected = fixtures.inspect_contribution(publication.root, catalog=catalog)
+    foreign = fixtures.ArenaCandidateBinding(
+        fixtures.QualificationReservation(
+            _h("foreign-reservation"),
+            publication.digest,
+            fixtures.TARGET,
+            inspected.selected_delta_digest,
+            0,
+            "miner-hotkey",
+            8_775_104,
+            155,
+            0,
+            catalog.require(fixtures.TARGET).members,
+        ),
+        publication,
+        1,
+    )
+    foreign_cohort = fixtures._cohort(foreign, harness.policy.digest)
+    with pytest.raises(
+        deployment.B300QualificationDeploymentError,
+        match="marginal arm differs from finalized intake or incumbent",
+    ):
+        deployment._validate_plan(
+            value,
+            foreign_cohort,
+            secret,
+            construction,
+            candidate_executor,
+            baseline_executor,
+        )

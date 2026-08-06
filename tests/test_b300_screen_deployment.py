@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import stat
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -435,3 +436,76 @@ def test_commissioned_resident_factory_builds_real_stock_lifetime(
         if lifetime is not None:
             lifetime.close()
         composition.close()
+
+
+def test_ready_gpu_ids_require_one_canonical_eight_device_set(
+    tmp_path: Path,
+) -> None:
+    _paths, _gpus, ready = _case(tmp_path)
+
+    short = json.loads(json.dumps(ready))
+    short["gpu"]["count"] = 7
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError,
+        match="not an eight-B300 pod",
+    ):
+        deployment._ready_gpu_ids(short)
+
+    duplicated = json.loads(json.dumps(ready))
+    duplicated["gpu"]["inventory"][7]["index"] = 6
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError,
+        match="one canonical eight-device set",
+    ):
+        deployment._ready_gpu_ids(duplicated)
+
+    unordered = json.loads(json.dumps(ready))
+    unordered["gpu"]["inventory"][0]["index"] = 1
+    unordered["gpu"]["inventory"][1]["index"] = 0
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError,
+        match="one canonical eight-device set",
+    ):
+        deployment._ready_gpu_ids(unordered)
+
+
+def test_materializer_refuses_id_drift_and_non_b300_names(tmp_path: Path) -> None:
+    paths, gpus, _ready = _case(tmp_path)
+    drifted = gpus[:7] + (_gpu(9),)
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError,
+        match="exact commissioned eight-B300 pair",
+    ):
+        deployment.materialize_b300_screen_identities(
+            **paths,
+            gpu_provisioner=lambda selected, *, deadline: drifted,
+        )
+
+    renamed = gpus[:7] + (replace(gpus[7], name="NVIDIA H100 SXM5"),)
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError,
+        match="exact commissioned eight-B300 pair",
+    ):
+        deployment.materialize_b300_screen_identities(
+            **paths,
+            gpu_provisioner=lambda selected, *, deadline: renamed,
+        )
+
+
+def test_materializer_refuses_lane_absent_from_eight_device_pair(
+    tmp_path: Path,
+) -> None:
+    paths, gpus, ready = _case(tmp_path)
+    mutated = json.loads(json.dumps(ready))
+    mutated["lane"]["devices"] = [8, 9, 10, 11]
+    ready_path = paths["ready_receipt"]
+    ready_path.chmod(0o600)
+    _write(ready_path, mutated)
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError,
+        match="screen lane is absent from the eight-device pair",
+    ):
+        deployment.materialize_b300_screen_identities(
+            **paths,
+            gpu_provisioner=lambda selected, *, deadline: gpus,
+        )

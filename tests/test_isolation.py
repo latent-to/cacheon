@@ -1,3 +1,5 @@
+import hashlib
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase, mock
@@ -5,7 +7,13 @@ from unittest import TestCase, mock
 from cacheon.eval import engine_worker
 
 
-def _sandbox_proc_reader(*, seccomp: int = 2, filters: int = 1, caps: int = 0):
+def _sandbox_proc_reader(
+    *,
+    seccomp: int = 2,
+    filters: int = 1,
+    caps: int = 0,
+    root: str = "ro,relatime",
+):
     values = {
         "/proc/self/status": (
             f"CapEff:\t{caps:x}\n"
@@ -15,7 +23,7 @@ def _sandbox_proc_reader(*, seccomp: int = 2, filters: int = 1, caps: int = 0):
             f"Seccomp_filters:\t{filters}\n"
         ),
         "/proc/sys/kernel/yama/ptrace_scope": "1\n",
-        "/proc/mounts": "overlay / overlay ro,relatime 0 0\n",
+        "/proc/mounts": f"overlay / overlay {root} 0 0\n",
     }
 
     def read_text(path: Path, *args, **kwargs):
@@ -42,6 +50,62 @@ class IsolationTests(TestCase):
                 side_effect=_sandbox_proc_reader(**kwargs),
             ):
                 self.assertFalse(engine_worker._process_sandbox_is_hardened())
+
+    def test_writable_root_requires_sealed_policy_digest(self):
+        module_digest = hashlib.sha256(
+            Path(engine_worker.__file__).read_bytes()
+        ).hexdigest()
+        sealed = {
+            "CACHEON_DISPOSABLE_WRITABLE_ROOT": "1",
+            "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256": module_digest,
+        }
+        with mock.patch.object(
+            Path,
+            "read_text",
+            autospec=True,
+            side_effect=_sandbox_proc_reader(root="rw,relatime"),
+        ):
+            with mock.patch.dict(os.environ, sealed):
+                self.assertTrue(engine_worker._process_sandbox_is_hardened())
+            for broken in (
+                {},
+                {"CACHEON_CONTROLLER_ENGINE_WORKER_SHA256": module_digest},
+                {"CACHEON_DISPOSABLE_WRITABLE_ROOT": "1"},
+                {**sealed, "CACHEON_DISPOSABLE_WRITABLE_ROOT": "0"},
+                {
+                    **sealed,
+                    "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256": hashlib.sha256(
+                        b"different policy bytes"
+                    ).hexdigest(),
+                },
+                {
+                    **sealed,
+                    "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256": module_digest[:63],
+                },
+                {
+                    **sealed,
+                    "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256": (
+                        "z" + module_digest[1:]
+                    ),
+                },
+            ):
+                with mock.patch.dict(os.environ, broken):
+                    for name in sealed:
+                        if name not in broken:
+                            os.environ.pop(name, None)
+                    self.assertFalse(engine_worker._process_sandbox_is_hardened())
+
+    def test_read_only_root_stays_hardened_without_overlay_policy(self):
+        with mock.patch.object(
+            Path, "read_text", autospec=True, side_effect=_sandbox_proc_reader()
+        ):
+            with mock.patch.dict(os.environ, {}):
+                for name in (
+                    "CACHEON_DISPOSABLE_WRITABLE_ROOT",
+                    "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256",
+                ):
+                    os.environ.pop(name, None)
+                self.assertTrue(engine_worker._process_sandbox_is_hardened())
 
 
 def test_engine_kwargs_preserve_candidate_overrides():
