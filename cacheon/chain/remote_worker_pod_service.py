@@ -37,6 +37,11 @@ from cacheon.chain.remote_worker_registration import (
     verify_fixed_adapter,
     verify_pod_registration,
 )
+from cacheon.chain.remote_worker_execution_marker import (
+    RESIDENT_ENTRY_MARKER,
+    RemoteWorkerExecutionMarkerError,
+    reopen_resident_entry,
+)
 from cacheon.chain.remote_worker_spool import (
     ALLOWED_FAILURE_CODES,
     HEX64,
@@ -66,6 +71,11 @@ from cacheon.chain.remote_worker_spool import (
     verify_adapter_result,
     verify_request,
     RemoteWorkerError,
+)
+from cacheon.eval.native_artifact import (
+    NativeArtifactError,
+    NativeArtifactRaceError,
+    _rename_noreplace,
 )
 from cacheon.stack_identity import sha256_hex
 
@@ -190,6 +200,97 @@ def publish_result(
     )
 
 
+RECOVERY_HOLD_REASONS = frozenset(
+    {
+        "ambiguous_temporary_results",
+        "invalid_final_result",
+        "invalid_resident_entry_marker",
+        "invalid_temporary_entry",
+        "invalid_temporary_product",
+        "missing_temporary_result",
+        "partial_temporary_result",
+        "promotion_collision",
+        "promotion_durability_failure",
+        "promotion_failure",
+        "resident_entry_failure",
+        "results_root_invalid",
+    }
+)
+PRE_RESIDENT_FAILURES = frozenset({"adapter_request_failed", "adapter_start_failed"})
+
+
+def recovery_hold(paths: PodPaths, request_id: str, reason: str) -> None:
+    """Record one closed operational reason, then leave the job processing."""
+
+    if reason not in RECOVERY_HOLD_REASONS:
+        fail("interrupted result recovery hold reason is not registered")
+    append_event(
+        paths.root,
+        "recovery_hold",
+        reason=reason,
+        request_id=request_id,
+        state="processing",
+    )
+    fail(f"interrupted result recovery held: {reason}")
+
+
+def require_pre_resident_failure(
+    paths: PodPaths,
+    result_root: Path,
+    request: Mapping[str, Any],
+    failure: str,
+) -> None:
+    """Return only when cleanup is proven to precede resident entry."""
+
+    marker_path = result_root / RESIDENT_ENTRY_MARKER
+    try:
+        marker_path.lstat()
+    except FileNotFoundError:
+        marker_present = False
+    except OSError:
+        recovery_hold(paths, request["request_id"], "invalid_resident_entry_marker")
+    else:
+        marker_present = True
+    if marker_present:
+        try:
+            reopen_resident_entry(result_root, request)
+        except RemoteWorkerExecutionMarkerError:
+            recovery_hold(paths, request["request_id"], "invalid_resident_entry_marker")
+        recovery_hold(paths, request["request_id"], "resident_entry_failure")
+    if failure not in PRE_RESIDENT_FAILURES:
+        recovery_hold(paths, request["request_id"], "resident_entry_failure")
+
+
+def interrupted_temporary_result(
+    paths: PodPaths, results: Path, request_id: str
+) -> Path:
+    """Select only one exact ``.<request-id>.<decimal-pid>`` directory."""
+
+    if results.is_symlink() or (results.exists() and not results.is_dir()):
+        recovery_hold(paths, request_id, "results_root_invalid")
+    if not results.exists():
+        recovery_hold(paths, request_id, "missing_temporary_result")
+    prefix = f".{request_id}."
+    matches: list[Path] = []
+    try:
+        candidates = results.glob(f"{prefix}[0-9]*")
+        for candidate in candidates:
+            suffix = candidate.name[len(prefix) :]
+            if not suffix or not suffix.isascii() or not suffix.isdigit():
+                continue
+            matches.append(candidate)
+            if len(matches) > 1:
+                recovery_hold(paths, request_id, "ambiguous_temporary_results")
+    except OSError:
+        recovery_hold(paths, request_id, "results_root_invalid")
+    if not matches:
+        recovery_hold(paths, request_id, "missing_temporary_result")
+    temporary = matches[0]
+    if temporary.is_symlink() or not temporary.is_dir():
+        recovery_hold(paths, request_id, "invalid_temporary_entry")
+    return temporary
+
+
 def recover_interrupted(
     registration: Mapping[str, Any],
     paths: PodPaths,
@@ -212,8 +313,83 @@ def recover_interrupted(
             credential=credential,
         )
         result_root = results / request["request_id"]
-        if not result_root.exists():
-            infrastructure_result(request, result_root, "pod_service_restart")
+        result_present = result_root.is_symlink() or result_root.exists()
+        if result_present:
+            if result_root.is_symlink() or not result_root.is_dir():
+                recovery_hold(paths, request["request_id"], "invalid_final_result")
+            try:
+                verify_adapter_result(
+                    load_json(result_root / "result.json"),
+                    result_root,
+                    request,
+                    registration,
+                    request_root=job,
+                    identity=identity,
+                    credential=credential,
+                )
+            except (OSError, RemoteWorkerError):
+                recovery_hold(paths, request["request_id"], "invalid_final_result")
+        else:
+            temporary = interrupted_temporary_result(paths, results, request["request_id"])
+            result_json = temporary / "result.json"
+            response_json = temporary / "response.json"
+            has_result = result_json.is_symlink() or result_json.exists()
+            has_response = response_json.is_symlink() or response_json.exists()
+            if not has_result and not has_response:
+                recovery_hold(paths, request["request_id"], "partial_temporary_result")
+            try:
+                if has_result:
+                    verify_adapter_result(
+                        load_json(result_json),
+                        temporary,
+                        request,
+                        registration,
+                        request_root=job,
+                        identity=identity,
+                        credential=credential,
+                    )
+                else:
+                    finalize_adapter_response(
+                        request,
+                        job,
+                        temporary,
+                        identity=identity,
+                        credential=credential,
+                    )
+                    verify_adapter_result(
+                        load_json(result_json),
+                        temporary,
+                        request,
+                        registration,
+                        request_root=job,
+                        identity=identity,
+                        credential=credential,
+                    )
+            except (OSError, RemoteWorkerError):
+                recovery_hold(
+                    paths, request["request_id"], "invalid_temporary_product"
+                )
+            if result_root.is_symlink() or result_root.exists():
+                recovery_hold(paths, request["request_id"], "promotion_collision")
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                results_fd = os.open(results, flags)
+            except OSError:
+                recovery_hold(paths, request["request_id"], "results_root_invalid")
+            try:
+                try:
+                    _rename_noreplace(results_fd, temporary.name, results_fd, result_root.name)
+                except NativeArtifactRaceError:
+                    recovery_hold(paths, request["request_id"], "promotion_collision")
+                except NativeArtifactError:
+                    recovery_hold(paths, request["request_id"], "promotion_failure")
+                try:
+                    os.fsync(results_fd)
+                except OSError:
+                    recovery_hold(paths, request["request_id"], "promotion_durability_failure")
+            finally:
+                os.close(results_fd)
         publish_result(
             registration,
             request,
@@ -557,6 +733,7 @@ def run_adapter(
         if owns_process:
             process.close()
     if failure is not None:
+        require_pre_resident_failure(paths, temporary, request, failure)
         shutil.rmtree(temporary, ignore_errors=True)
         infrastructure_result(request, temporary, failure)
     else:
@@ -578,8 +755,10 @@ def run_adapter(
                 credential=credential,
             )
         except RemoteWorkerError:
-            shutil.rmtree(temporary, ignore_errors=True)
-            infrastructure_result(request, temporary, "adapter_result_invalid")
+            require_pre_resident_failure(
+                paths, temporary, request, "adapter_result_invalid"
+            )
+            fail("invalid adapter result escaped resident-entry hold")
     os.replace(temporary, final)
     return final
 
