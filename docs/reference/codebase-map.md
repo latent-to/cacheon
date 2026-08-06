@@ -89,6 +89,7 @@ reopens evidence but accepts only reviewed integrated source.
 | Physical qualification lane pair | [`eval/b300_qualification_lanes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_qualification_lanes.py) |
 | Remote qualification evidence products | [`chain/remote_qualification_evidence.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_qualification_evidence.py) |
 | Remote qualification adapter | [`eval/b300_remote_qualification_adapter.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_qualification_adapter.py) |
+| Standing resident-pair lifecycle | [`eval/resident_evaluation_pair.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_evaluation_pair.py) |
 | Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py) |
 | OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py) |
 | Host-owned resident B/C/B′ and conditional C′/B″ session | [`eval/oci_outer_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_outer_session.py) |
