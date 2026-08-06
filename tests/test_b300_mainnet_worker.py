@@ -43,6 +43,8 @@ from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
     B300DeploymentAuthorities,
+    B300QualificationLanePair,
+    B300QualificationLanePolicy,
     B300ResidentScreenFactory,
     B300ResidentScreenLifetime,
     B300ScreenStageHandler,
@@ -51,6 +53,7 @@ from cacheon.eval.b300_arena_provider import (
 from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorker,
     B300MainnetWorkerError,
+    B300RemoteQualificationRun,
 )
 from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
 from cacheon.eval.oci_backend import (
@@ -139,14 +142,10 @@ def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
     )
 
 
-def _gpu(index: int, role: str) -> GPUConfiguration:
-    role_value = 1 if role == "candidate" else 2
+def _gpu(index: int) -> GPUConfiguration:
     return GPUConfiguration(
         physical_id=index,
-        uuid=(
-            f"GPU-{role_value:08x}-{index:04x}-0000-0000-"
-            f"{(role_value * 100 + index):012x}"
-        ),
+        uuid=f"GPU-00000000-{index:04x}-0000-0000-{index:012x}",
         pci_bus_id=f"00000000:{index + 1:02x}:00.0",
         name="NVIDIA B300 SXM6 AC",
         memory_total_mib=288_000,
@@ -166,9 +165,15 @@ def executor_factory(tmp_path: Path):
     executors: list[OCIEngineExecutor] = []
     sequence = 0
 
-    def create(role: str) -> OCIEngineExecutor:
+    def create(role: str, lane: str = "A") -> OCIEngineExecutor:
         nonlocal sequence
         sequence += 1
+        normalized_role = (
+            "candidate" if role == "candidate" else "resident_baseline"
+        )
+        if lane not in {"A", "B"}:
+            raise AssertionError("fixture lane must be A or B")
+        first_gpu = 0 if lane == "A" else 4
         runtime = _runtime_policy()
         root = tmp_path / f"executor-{sequence}-{role}"
         executor = OCIEngineExecutor(
@@ -178,13 +183,15 @@ def executor_factory(tmp_path: Path):
                     recovery_root=root / "recovery",
                     publication_root=root / "publications",
                     seccomp_profile=root / "seccomp.json",
-                    executor_id=f"{role}-{sequence}",
+                    executor_id=f"qualification-{normalized_role}",
                     policy=_prebuild_policy(runtime),
                 ),
                 runtime,
             ),
             DeviceStatePolicy(
-                expected_gpus=tuple(_gpu(index, role) for index in range(4)),
+                expected_gpus=tuple(
+                    _gpu(index) for index in range(first_gpu, first_gpu + 4)
+                ),
                 required_consecutive_idle_samples=2,
                 poll_interval_s=0.05,
                 ready_poll_interval_s=0.05,
@@ -283,6 +290,16 @@ def _authorities(tmp_path: Path, executor_factory):
         )
         for stage in SCREEN_STAGES[:-1]
     )
+    candidate_executor = executor_factory("candidate", "A")
+    baseline_executor = executor_factory("resident_baseline", "B")
+    lane_pair = B300QualificationLanePair(
+        B300QualificationLanePolicy.from_device_policy(
+            "A", candidate_executor.device_policy
+        ),
+        B300QualificationLanePolicy.from_device_policy(
+            "B", baseline_executor.device_policy
+        ),
+    )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
         screen_handlers=handlers,
@@ -294,13 +311,15 @@ def _authorities(tmp_path: Path, executor_factory):
         qualification_policy_digest=_h("qualification-policy"),
         qualification_builder_digest=_h("qualification-builder"),
         qualification_factory_builder=builder,
-        executor=executor_factory("candidate"),
-        resident_baseline_executor=executor_factory("baseline"),
+        executor=candidate_executor,
+        resident_baseline_executor=baseline_executor,
         entropy_provider_digest=_h("entropy-provider"),
         entropy_provider=lambda *_args: None,
         hidden_judge=_Judge(),
         deadline_policy_digest=_h("deadline-policy"),
         deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
+        qualification_lane_pair=lane_pair,
+        qualification_stage="primary",
     )
     return authorities, resident, builder
 
@@ -636,6 +655,133 @@ def test_qualification_uses_only_sealed_work_and_releases_systemic_batch(
         assert builder.calls[0][1] is None
         assert resident.created == 0
         result.envelope.verify(claim.lease, readiness, worker.service, result.payload)
+    finally:
+        worker.close()
+
+
+def test_remote_qualification_is_path_free_lane_bound_and_returns_authority(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch,
+) -> None:
+    authorities, resident, builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(authorities)
+    readiness = _readiness(manifest, authorities)
+    claim = _qualification_claim(tmp_path / "cohort", manifest)
+    calls = []
+
+    def run(factory, **kwargs):
+        calls.append((factory, kwargs))
+        return _systemic_batch(factory)
+
+    monkeypatch.setattr(worker_module, "run_qualification_intake", run)
+    worker = B300MainnetWorker(manifest, authorities, readiness)
+    try:
+        result = worker.run_remote_qualification(
+            claim.lease,
+            claim.candidates,
+            claim.screen_receipts,
+            screen_lane="primary",
+        )
+
+        assert type(result) is B300RemoteQualificationRun
+        assert result.screen_lane == "primary"
+        assert result.run.lease is claim.lease
+        assert result.run.disposition == "released"
+        assert result.run.payload.authority_manifest_digest == (
+            result.authority_manifest.digest
+        )
+        assert result.authority_manifest.reservations == tuple(
+            row.reservation for row in claim.candidates
+        )
+        assert builder.calls[0][1] is None
+        assert len(calls) == 1
+        assert resident.created == 0
+        result.run.envelope.verify(
+            claim.lease,
+            readiness,
+            worker.service,
+            result.run.payload,
+        )
+    finally:
+        worker.close()
+
+
+def test_remote_qualification_refuses_lane_or_cohort_drift(
+    tmp_path: Path,
+    executor_factory,
+) -> None:
+    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(authorities)
+    readiness = _readiness(manifest, authorities)
+    claim = _qualification_claim(tmp_path / "cohort", manifest)
+    worker = B300MainnetWorker(manifest, authorities, readiness)
+    try:
+        with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
+            worker.run_remote_qualification(
+                claim.lease,
+                claim.candidates,
+                claim.screen_receipts,
+                screen_lane="reproduction",
+            )
+        with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
+            worker.run_remote_qualification(
+                claim.lease,
+                tuple(reversed(claim.candidates)),
+                claim.screen_receipts,
+                screen_lane="primary",
+            )
+    finally:
+        worker.close()
+
+
+def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch,
+) -> None:
+    primary, _resident, _builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(primary)
+    readiness = _readiness(manifest, primary)
+    original = _qualification_claim(tmp_path / "cohort", manifest, count=1)
+    claim = dataclasses.replace(
+        original,
+        reservations=tuple(
+            dataclasses.replace(row, screen_lane="reproduction")
+            for row in original.reservations
+        ),
+    )
+    reproduction = dataclasses.replace(
+        primary,
+        executor=executor_factory("candidate", "B"),
+        resident_baseline_executor=executor_factory("resident_baseline", "A"),
+        qualification_stage="reproduction",
+    )
+    assert b300_arena_provider_digest(reproduction) == manifest.provider_digest
+
+    monkeypatch.setattr(
+        worker_module,
+        "run_qualification_intake",
+        lambda factory, **_kwargs: _systemic_batch(factory),
+    )
+    worker = B300MainnetWorker(manifest, reproduction, readiness)
+    try:
+        assert worker._remote_qualification_lane == "reproduction"
+        with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
+            worker.run_remote_qualification(
+                claim.lease,
+                claim.candidates,
+                claim.screen_receipts,
+                screen_lane="primary",
+            )
+        result = worker.run_remote_qualification(
+            claim.lease,
+            claim.candidates,
+            claim.screen_receipts,
+            screen_lane="reproduction",
+        )
+        assert result.screen_lane == "reproduction"
+        assert result.run.disposition == "released"
     finally:
         worker.close()
 

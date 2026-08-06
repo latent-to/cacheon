@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import cacheon.chain.remote_evaluation_dispatcher as remote_dispatcher_module
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCapacityPolicy,
@@ -38,21 +39,30 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteEvaluationDispatcher,
     RemoteEvaluationDispatcherError,
     RemoteEvaluationRequest,
+    RemoteQualificationProduct,
     RemoteWorkerCredential,
     RemoteWorkerTransportIdentity,
+    capture_remote_qualification_product,
+    import_remote_qualification_evidence,
     qualification_batch_from_dict,
     qualification_batch_to_dict,
+    remote_qualification_product_from_dict,
+    remote_qualification_product_to_dict,
     seal_remote_response,
     verify_remote_request,
 )
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
+from cacheon.eval.evidence_store import publish_evidence, reopen_evidence
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_intake import (
+    QualificationAuthorityManifest,
     QualificationIntakeBatch,
     QualificationIntakeOutcome,
+    QualificationReservation,
     QualificationRetryPlan,
 )
-from cacheon.stack_identity import sha256_hex
+from cacheon.stack_identity import canonical_digest, sha256_hex
+from cacheon.stack_manifest import EvaluationStackManifest
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 14)
@@ -109,11 +119,29 @@ def _manifest() -> ArenaServiceManifest:
     )
 
 
+def _incumbent(service: ArenaService, *, marker: str = "remote") -> EvaluationStackManifest:
+    snapshot = {
+        "composition_rules": [],
+        "policy_version": "target-catalog.v1",
+        "schema_version": 1,
+        "targets": [{"marker": marker, "target_id": "target.0"}],
+    }
+    return EvaluationStackManifest(
+        runtime_digest=service.manifest.runtime.runtime_digest,
+        base_engine_digest=service.manifest.runtime.base_engine_digest,
+        arena_digest=service.identity,
+        catalog_snapshot=snapshot,
+        catalog_digest=canonical_digest("cacheon.target-catalog", snapshot),
+        entries={},
+    )
+
+
 class _Provider:
     provider_digest = _h("provider")
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.qualification_calls = 0
 
     def run_screen(self, _manifest, stage, candidate):
         self.calls.append(stage.stage)
@@ -125,6 +153,7 @@ class _Provider:
         )
 
     def build_qualification(self, _request, state=None):  # pragma: no cover
+        self.qualification_calls += 1
         raise AssertionError("qualification is not part of the screen fixture")
 
 
@@ -315,6 +344,45 @@ def _dispatcher(
         coordinator=coordinator,
         transport=transport,
         credential=credential,
+    )
+
+
+def _authority_for_request(request: RemoteEvaluationRequest) -> QualificationAuthorityManifest:
+    reservations = tuple(
+        QualificationReservation.from_dict(row["reservation"])
+        for row in request.body["candidates"]
+    )
+    return QualificationAuthorityManifest(
+        "registered",
+        _h("remote-qualification-authority"),
+        _h("remote-qualification-source"),
+        _h("remote-qualification-commitment"),
+        _h("remote-qualification-secret-reference"),
+        tuple(row.selected_delta_digest for row in reservations),
+        reservations,
+    )
+
+
+def _failed_batch(
+    authority: QualificationAuthorityManifest,
+    attempt_ref,
+) -> QualificationIntakeBatch:
+    return QualificationIntakeBatch(
+        authority.digest,
+        tuple(
+            QualificationIntakeOutcome(
+                row.reservation_digest,
+                row.selected_delta_digest,
+                authority.digest,
+                QualificationDecision.FAIL,
+                "speed_regression",
+                False,
+                attempt_artifact_sha256=attempt_ref.sha256,
+                report_digest=_h(f"report:{row.reservation_digest}"),
+            )
+            for row in authority.reservations
+        ),
+        attempt_ref,
     )
 
 
@@ -518,3 +586,293 @@ def test_dispatcher_rejects_drifted_transport_identity_before_claim(
     with _store(tmp_path) as store:
         assert store.active_evaluation_leases() == ()
         assert store.get(row.reservation_id).screen_attempts == 0
+
+
+def test_remote_qualification_is_path_free_imported_and_committed_without_cpu_plan(
+    tmp_path: Path,
+) -> None:
+    row = _published_rows(tmp_path, 1)[0]
+    provider = _Provider()
+    service = ArenaService(_manifest(), provider)
+    cursor = _Cursor((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(tmp_path, service, cursor)
+    screened = coordinator.run_screen_once()
+    assert screened is not None and screened.disposition == "completed"
+
+    credential = RemoteWorkerCredential("qualification-key-v1", b"q" * 32)
+    pod_root = tmp_path / "pod-evidence"
+    attempt_ref = publish_evidence(
+        pod_root,
+        b'{"attempt":"pod-only"}',
+        domain="qualification-attempt",
+        media_type="application/json",
+        schema="cacheon.qualification.test-attempt.v1",
+    )
+    incumbent = _incumbent(service)
+    incumbent_tree_digest = _h("incumbent-tree")
+
+    class QualificationTransport:
+        def __init__(self) -> None:
+            self.identity = _transport_identity(coordinator, credential)
+            self.requests: list[RemoteEvaluationRequest] = []
+
+        def run_screen(self, request, *, job):  # pragma: no cover
+            raise AssertionError("screen is not part of the qualification transport")
+
+        def run_qualification(self, request):
+            parsed = RemoteEvaluationRequest.from_dict(request.to_dict())
+            verify_remote_request(parsed, self.identity, credential)
+            self.requests.append(parsed)
+            assert parsed.body["screen_lane"] == "primary"
+            assert "authority_manifest" not in parsed.body
+            authority = _authority_for_request(parsed)
+            batch = _failed_batch(authority, attempt_ref)
+            product = capture_remote_qualification_product(
+                batch=batch,
+                authority_manifest=authority,
+                incumbent_stack=incumbent,
+                incumbent_tree_digest=incumbent_tree_digest,
+                screen_lane=parsed.body["screen_lane"],
+                service_digest=service.identity,
+                readiness=coordinator.readiness,
+                evidence_root=pod_root,
+                evidence_references=(attempt_ref,),
+            )
+            wire = json.dumps(product.to_dict(), sort_keys=True)
+            assert str(pod_root) not in wire
+            return AuthenticatedRemoteEvaluationResponse.from_dict(
+                seal_remote_response(
+                    parsed,
+                    product,
+                    self.identity,
+                    credential,
+                ).to_dict()
+            )
+
+    transport = QualificationTransport()
+    cpu_root = tmp_path / "cpu-evidence"
+    result = RemoteEvaluationDispatcher(
+        coordinator=coordinator,
+        transport=transport,
+        credential=credential,
+        qualification_evidence_root=cpu_root,
+        qualification_incumbent_stack=incumbent,
+        qualification_incumbent_tree_digest=incumbent_tree_digest,
+    ).dispatch_qualification_once()
+
+    assert result is not None and result.disposition == "completed"
+    assert result.lease.reservation_ids == (row.reservation_id,)
+    assert provider.qualification_calls == 0
+    assert reopen_evidence(cpu_root, attempt_ref) == b'{"attempt":"pod-only"}'
+    with _store(tmp_path) as store:
+        retained = store.get(row.reservation_id)
+        stack = store.evaluation_stack(service.identity)
+        events = store.evaluation_lease_events(lease_id=result.lease.lease_id)
+    assert (retained.status, retained.decision) == ("failed", "FAIL")
+    assert stack.manifest == _incumbent(service)
+    assert stack.tree_digest == _h("incumbent-tree")
+    assert [event.event_type for event in events] == ["claimed", "completed"]
+    assert len(transport.requests) == 1
+
+
+def test_remote_qualification_product_closes_inventory_bytes_and_bounds(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = ArenaService(_manifest(), _Provider())
+    readiness = WorkerReadiness.for_service(
+        service,
+        ready_receipt_digest=_h("product-ready"),
+        ready_epoch=9,
+    )
+    reservation = QualificationReservation(
+        _h("product-reservation"),
+        _h("product-submission"),
+        "target.0",
+        _h("product-selected"),
+        0,
+        "product-miner",
+        BLOCK,
+        0,
+        0,
+        ("slot.0",),
+    )
+    authority = QualificationAuthorityManifest(
+        "registered",
+        _h("product-authority"),
+        _h("product-source"),
+        _h("product-commitment"),
+        _h("product-secret"),
+        (reservation.selected_delta_digest,),
+        (reservation,),
+    )
+    pod_root = tmp_path / "product-pod-evidence"
+    reference = publish_evidence(
+        pod_root,
+        b"exact evidence",
+        domain="qualification-attempt",
+        media_type="application/json",
+        schema="cacheon.qualification.product-test.v1",
+    )
+    product = capture_remote_qualification_product(
+        batch=_failed_batch(authority, reference),
+        authority_manifest=authority,
+        incumbent_stack=_incumbent(service),
+        incumbent_tree_digest=_h("product-tree"),
+        screen_lane="primary",
+        service_digest=service.identity,
+        readiness=readiness,
+        evidence_root=pod_root,
+        evidence_references=(reference,),
+    )
+    wire = remote_qualification_product_to_dict(product)
+    assert remote_qualification_product_from_dict(wire) == product
+    cpu_root = tmp_path / "product-cpu-evidence"
+    assert import_remote_qualification_evidence(product, cpu_root) == (reference,)
+    assert reopen_evidence(cpu_root, reference) == b"exact evidence"
+
+    missing = {**wire, "evidence": []}
+    with pytest.raises(RemoteEvaluationDispatcherError, match="authority is malformed"):
+        remote_qualification_product_from_dict(missing)
+
+    tampered = json.loads(json.dumps(wire))
+    tampered["evidence"][0]["payload_base64"] = "dGFtcGVyZWQ="
+    with pytest.raises(RemoteEvaluationDispatcherError, match="differs from its bounded"):
+        remote_qualification_product_from_dict(tampered)
+
+    duplicated = json.loads(json.dumps(wire))
+    duplicated["evidence_inventory"].append(duplicated["evidence_inventory"][0])
+    duplicated["evidence"].append(duplicated["evidence"][0])
+    with pytest.raises(RemoteEvaluationDispatcherError, match="duplicate"):
+        remote_qualification_product_from_dict(duplicated)
+
+    with pytest.raises(RemoteEvaluationDispatcherError, match="duplicated"):
+        capture_remote_qualification_product(
+            batch=product.batch,
+            authority_manifest=authority,
+            incumbent_stack=product.incumbent_stack,
+            incumbent_tree_digest=product.incumbent_tree_digest,
+            screen_lane="primary",
+            service_digest=service.identity,
+            readiness=readiness,
+            evidence_root=pod_root,
+            evidence_references=(reference, reference),
+        )
+
+    monkeypatch.setattr(
+        remote_dispatcher_module,
+        "_MAX_REMOTE_EVIDENCE_ARTIFACT_BYTES",
+        4,
+    )
+    with pytest.raises(RemoteEvaluationDispatcherError, match="cannot be captured"):
+        capture_remote_qualification_product(
+            batch=product.batch,
+            authority_manifest=authority,
+            incumbent_stack=product.incumbent_stack,
+            incumbent_tree_digest=product.incumbent_tree_digest,
+            screen_lane="primary",
+            service_digest=service.identity,
+            readiness=readiness,
+            evidence_root=pod_root,
+            evidence_references=(reference,),
+        )
+
+
+@pytest.mark.parametrize("drift", ["epoch", "service", "lane", "incumbent"])
+def test_remote_qualification_rejects_signed_product_outside_request_authority(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    row = _published_rows(tmp_path, 1)[0]
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _Cursor((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(tmp_path, service, cursor)
+    assert coordinator.run_screen_once() is not None
+    credential = RemoteWorkerCredential("qualification-drift-key", b"d" * 32)
+    pod_root = tmp_path / f"pod-evidence-{drift}"
+    reference = publish_evidence(
+        pod_root,
+        b"drift evidence",
+        domain="qualification-attempt",
+        media_type="application/json",
+        schema="cacheon.qualification.drift-test.v1",
+    )
+    expected_incumbent = _incumbent(service)
+    expected_tree_digest = _h("drift-tree")
+
+    class DriftTransport:
+        identity = _transport_identity(coordinator, credential)
+
+        def run_screen(self, request, *, job):  # pragma: no cover
+            raise AssertionError
+
+        def run_qualification(self, request):
+            parsed = RemoteEvaluationRequest.from_dict(request.to_dict())
+            authority = _authority_for_request(parsed)
+            incumbent = expected_incumbent
+            product = capture_remote_qualification_product(
+                batch=_failed_batch(authority, reference),
+                authority_manifest=authority,
+                incumbent_stack=incumbent,
+                incumbent_tree_digest=expected_tree_digest,
+                screen_lane="primary",
+                service_digest=service.identity,
+                readiness=coordinator.readiness,
+                evidence_root=pod_root,
+                evidence_references=(reference,),
+            )
+            if drift == "epoch":
+                product = dataclasses.replace(
+                    product,
+                    ready_epoch=product.ready_epoch + 1,
+                )
+            elif drift == "lane":
+                product = dataclasses.replace(product, screen_lane="reproduction")
+            elif drift == "service":
+                wrong_service = _h("another-service")
+                wrong_stack = EvaluationStackManifest(
+                    runtime_digest=incumbent.runtime_digest,
+                    base_engine_digest=incumbent.base_engine_digest,
+                    arena_digest=wrong_service,
+                    catalog_snapshot=incumbent.catalog_snapshot,
+                    catalog_digest=incumbent.catalog_digest,
+                    entries=incumbent.entries,
+                )
+                product = dataclasses.replace(
+                    product,
+                    service_digest=wrong_service,
+                    incumbent_stack=wrong_stack,
+                )
+            else:
+                product = dataclasses.replace(
+                    product,
+                    incumbent_stack=_incumbent(service, marker="pod-substituted"),
+                )
+            return seal_remote_response(
+                parsed,
+                product,
+                self.identity,
+                credential,
+            )
+
+    dispatcher = RemoteEvaluationDispatcher(
+        coordinator=coordinator,
+        transport=DriftTransport(),
+        credential=credential,
+        qualification_evidence_root=tmp_path / f"cpu-evidence-{drift}",
+        qualification_incumbent_stack=expected_incumbent,
+        qualification_incumbent_tree_digest=expected_tree_digest,
+    )
+    with pytest.raises(
+        RemoteEvaluationDispatcherError,
+        match="remote_qualification_infrastructure",
+    ):
+        dispatcher.dispatch_qualification_once()
+
+    with _store(tmp_path) as store:
+        retained = store.get(row.reservation_id)
+        events = store.evaluation_lease_events(reservation_id=row.reservation_id)
+        dispositions = store.qualification_dispositions(row.reservation_id)
+    assert retained.status == "promoted"
+    assert dispositions == ()
+    assert [event.event_type for event in events][-2:] == ["claimed", "released"]

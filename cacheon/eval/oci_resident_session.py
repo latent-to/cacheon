@@ -139,6 +139,33 @@ class ResidentSessionPlan:
 
 
 @dataclass(frozen=True)
+class ResidentBatchShape:
+    """One request-local read shape for an already-resident engine."""
+
+    max_new_tokens: int
+    top_logprobs_num: int
+    temperature: float
+
+    def __post_init__(self) -> None:
+        try:
+            batch_request(
+                session_id="1" * 32,
+                launch_digest="2" * 64,
+                request_id="3" * 32,
+                nonce="4" * 32,
+                batch_index=0,
+                prompts=("probe",),
+                max_new_tokens=self.max_new_tokens,
+                top_logprobs_num=self.top_logprobs_num,
+                temperature=self.temperature,
+            )
+        except SessionProtocolError as exc:
+            raise OuterSessionInfrastructureError(
+                f"resident batch shape violates protocol policy: {exc}"
+            ) from None
+
+
+@dataclass(frozen=True)
 class SwapReceipt:
     """Host-clock record of one applied swap on a live resident engine."""
 
@@ -443,8 +470,29 @@ class ResidentOuterSession:
     ) -> ResidentBatchEvidence:
         """Execute one timed read under the currently live generation."""
 
+        return self.execute_batch_with_shape(
+            prompts,
+            shape=ResidentBatchShape(
+                self.plan.max_new_tokens,
+                self.plan.top_logprobs_num,
+                self.plan.temperature,
+            ),
+            canary=canary,
+        )
+
+    def execute_batch_with_shape(
+        self,
+        prompts: Sequence[str],
+        *,
+        shape: ResidentBatchShape,
+        canary: bool = False,
+    ) -> ResidentBatchEvidence:
+        """Execute one read with a validated request-local generation shape."""
+
         if not self.started or self.closed:
             raise OuterSessionInfrastructureError("session is not open")
+        if type(shape) is not ResidentBatchShape:
+            raise OuterSessionInfrastructureError("resident batch shape is not exact")
         if type(canary) is not bool:
             raise OuterSessionInfrastructureError("canary flag must be boolean")
         if len(self.batch_rows) >= self.plan.max_batches:
@@ -466,9 +514,9 @@ class ResidentOuterSession:
                     nonce=nonce,
                     batch_index=index,
                     prompts=tuple(prompts),
-                    max_new_tokens=self.plan.max_new_tokens,
-                    top_logprobs_num=self.plan.top_logprobs_num,
-                    temperature=self.plan.temperature,
+                    max_new_tokens=shape.max_new_tokens,
+                    top_logprobs_num=shape.top_logprobs_num,
+                    temperature=shape.temperature,
                 )
             )
             if self.transport.has_pending_output():
@@ -487,7 +535,7 @@ class ResidentOuterSession:
                 raise OuterSessionInfrastructureError(
                     "host batch clock did not advance"
                 )
-            token_numerator = len(request.prompts) * self.plan.max_new_tokens
+            token_numerator = len(request.prompts) * request.max_new_tokens
             if evidence.observed_tokens != token_numerator:
                 raise OuterSessionProtocolError(
                     "worker evidence token count is not exact"
@@ -514,10 +562,14 @@ class ResidentOuterSession:
         except BaseException as exc:
             self._fail(exc)
 
-    def finish(self) -> ResidentSessionEvidence:
+    def finish(self, *, allow_empty: bool = False) -> ResidentSessionEvidence:
+        if type(allow_empty) is not bool:
+            raise OuterSessionInfrastructureError(
+                "resident empty-finish policy must be boolean"
+            )
         if not self.started or self.closed:
             raise OuterSessionInfrastructureError("session finish order is invalid")
-        if not self.batch_rows:
+        if not self.batch_rows and not allow_empty:
             raise OuterSessionInfrastructureError(
                 "resident session executed no batches"
             )
@@ -558,6 +610,7 @@ __all__ = [
     "MAX_RESIDENT_BATCHES",
     "MAX_RESIDENT_SWAPS",
     "ResidentBatchEvidence",
+    "ResidentBatchShape",
     "ResidentOuterSession",
     "ResidentSessionEvidence",
     "ResidentSessionPlan",

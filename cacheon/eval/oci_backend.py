@@ -95,6 +95,12 @@ CONTAINER_TREE = "/cacheon/engine-tree"
 CONTAINER_MODEL = "/cacheon/input/model"
 CONTAINER_ARTIFACT_BASE = "/cacheon/native-artifacts"
 CONTAINER_CACHE = "/cacheon/runtime-cache"
+CONTAINER_ENGINE_WORKER_POLICY = (
+    "/usr/local/lib/python3.12/dist-packages/cacheon/eval/engine_worker.py"
+)
+CONTAINER_SITE_BOOTSTRAP = (
+    "/usr/local/lib/python3.12/dist-packages/cacheon/eval/oci_site"
+)
 
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _IMAGE_REF = re.compile(r"[a-z0-9][a-z0-9._/:+-]{0,255}@sha256:[0-9a-f]{64}\Z")
@@ -575,12 +581,27 @@ def build_runtime_argv(
         f"{CONTAINER_ARTIFACT_BASE}/{publication.build_spec_digest[:2]}/"
         f"{publication.build_spec_digest}"
     )
+    worker_policy = Path(__file__).with_name("engine_worker.py")
+    site_bootstrap = Path(__file__).with_name("oci_site")
+    try:
+        worker_policy_info = worker_policy.lstat()
+        worker_policy_raw = worker_policy.read_bytes()
+    except OSError as exc:
+        raise OCIBackendError(f"controller engine-worker policy is unavailable: {exc}") from None
+    if stat.S_ISLNK(worker_policy_info.st_mode) or not stat.S_ISREG(
+        worker_policy_info.st_mode
+    ):
+        raise OCIBackendError("controller engine-worker policy has an unsafe shape")
+    worker_policy_digest = hashlib.sha256(worker_policy_raw).hexdigest()
     environment = {
+        "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256": worker_policy_digest,
+        "CACHEON_DISPOSABLE_WRITABLE_ROOT": "1",
         "CUDA_CACHE_PATH": f"{CONTAINER_CACHE}/cuda",
         "FLASHINFER_WORKSPACE_BASE": f"{CONTAINER_CACHE}/flashinfer",
         "HF_HOME": f"{CONTAINER_CACHE}/huggingface",
         "HF_HUB_OFFLINE": "1",
         "HOME": f"{CONTAINER_CACHE}/home",
+        "SGLANG_CACHE_DIR": f"{CONTAINER_CACHE}/sglang",
         "CACHEON_ENGINE_CONFIG_DIGEST": launch.engine_config_digest,
         "CACHEON_ENGINE_TREE_DIGEST": launch.tree_digest,
         "CACHEON_ENGINE_WORKER": "1",
@@ -605,8 +626,10 @@ def build_runtime_argv(
         "PYTHONSAFEPATH": "1",
         "TMPDIR": "/tmp",
         "TORCH_EXTENSIONS_DIR": f"{CONTAINER_CACHE}/torch-extensions",
+        "TORCHINDUCTOR_CACHE_DIR": f"{CONTAINER_CACHE}/torchinductor",
         "TRANSFORMERS_OFFLINE": "1",
         "TRITON_CACHE_DIR": f"{CONTAINER_CACHE}/triton",
+        "TRITON_HOME": f"{CONTAINER_CACHE}/triton-home",
         "XDG_CACHE_HOME": f"{CONTAINER_CACHE}/xdg",
     }
     if resolved.native_compile_profile is not None:
@@ -658,7 +681,9 @@ def build_runtime_argv(
         f"--platform={preflight.oci_platform}",
         "--runtime=runc",
         "--network=none",
-        "--read-only",
+        # The container overlay is disposable and may be written by libraries
+        # whose cache locations are not under our control.  Validator-owned
+        # model, tree, artifact, and intake binds remain explicitly read-only.
         "--ipc=private",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges=true",
@@ -678,7 +703,7 @@ def build_runtime_argv(
         f"--pids-limit={runtime.pids_limit}",
         f"--ulimit=nofile={runtime.nofile_limit}:{runtime.nofile_limit}",
         "--ulimit=core=0:0",
-        f"--tmpfs=/tmp:rw,nosuid,nodev,noexec,size={runtime.tmpfs_bytes},"
+        f"--tmpfs=/tmp:rw,nosuid,nodev,exec,size={runtime.tmpfs_bytes},"
         f"uid={runtime.uid},gid={runtime.gid},mode=0700",
         f"--shm-size={runtime.shm_bytes}",
         f"--gpus={gpu_request}",
@@ -686,6 +711,17 @@ def build_runtime_argv(
         "--no-healthcheck",
         "--log-driver=none",
         "--workdir=/tmp",
+        (
+            f"--mount=type=bind,src={worker_policy},"
+            f"dst={CONTAINER_ENGINE_WORKER_POLICY},"
+            "bind-propagation=rprivate,readonly"
+        ),
+        # The disposable container overlay is writable, but the descendant
+        # bootstrap remains validator-owned policy.  Bind the complete,
+        # installed bootstrap directory read-only so the worker's existing
+        # fail-closed mount check remains true without making the rest of the
+        # image filesystem read-only.
+        _mount(site_bootstrap, CONTAINER_SITE_BOOTSTRAP, readonly=True),
         _mount(model_root, CONTAINER_MODEL, readonly=True),
         _mount(resolved.materialized_tree_root, CONTAINER_TREE, readonly=True),
         _mount(publication.root, artifact_destination, readonly=True),
@@ -1665,6 +1701,29 @@ class OCIEngineExecutor:
             self._lock.release()
 
 
+def _seal_swap_tree_permissions(root: Path) -> None:
+    """Make staged immutable bytes readable by the unprivileged resident worker."""
+
+    for current, directories, files in os.walk(root, topdown=False, followlinks=False):
+        parent = Path(current)
+        for name in files:
+            entry = parent / name
+            if entry.is_symlink():
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise OCIBackendError(f"staged bundle file is unavailable: {exc}") from None
+            if not stat.S_ISREG(info.st_mode):
+                raise OCIBackendError("staged bundle contains a non-regular file")
+            os.chmod(entry, 0o555 if info.st_mode & 0o111 else 0o444)
+        for name in directories:
+            entry = parent / name
+            if not entry.is_symlink():
+                os.chmod(entry, 0o555)
+    os.chmod(root, 0o555)
+
+
 def stage_swap_bundle(
     swap_intake_root: str | Path,
     source_tree: str | Path,
@@ -1725,7 +1784,9 @@ def stage_swap_bundle(
                 raise OCIBackendError(
                     f"existing staged bundle is unreadable: {exc}"
                 ) from None
+            _seal_swap_tree_permissions(destination)
             return digest
+        _seal_swap_tree_permissions(staging)
         os.rename(staging, destination)
         return digest
     finally:

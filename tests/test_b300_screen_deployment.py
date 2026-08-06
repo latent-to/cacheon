@@ -171,18 +171,14 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
     _write(authority, authority_value)
     measurement = tmp_path / "measurement-config.json"
     _write(measurement, authority_value)
-    gpus = tuple(_gpu(index) for index in range(4))
+    gpus = tuple(_gpu(index) for index in range(8))
     inventory = [
         {
             "index": index,
             "memory_mib": 288_000,
             "name": "NVIDIA B300 SXM6 AC",
             "pci_bus_id": f"00000000:{index + 1:02x}:00.0",
-            "uuid": (
-                gpus[index].uuid
-                if index < 4
-                else f"GPU-00000001-{index:04x}-0000-0000-{index:012x}"
-            ),
+            "uuid": gpus[index].uuid,
         }
         for index in range(8)
     ]
@@ -248,6 +244,13 @@ def test_materialize_and_replay_exact_service_identity(
     assert manifest.runtime.tensor_parallel_size == 4
     assert manifest.runtime.target_architecture == "sm103"
     assert manifest.runtime.topology_digest == _h("sealed-lane")
+    deployment_row = json.loads((output / deployment.DEPLOYMENT_FILE).read_text())
+    pair = deployment_row["declared_qualification"]["lane_pair"]
+    assert pair["lane_a"]["physical_gpu_ids"] == [0, 1, 2, 3]
+    assert pair["lane_b"]["physical_gpu_ids"] == [4, 5, 6, 7]
+    assert set(pair["lane_a"]["gpu_uuids"]).isdisjoint(
+        pair["lane_b"]["gpu_uuids"]
+    )
 
     monkeypatch.setattr(deployment, "DEFAULT_OUTPUT_ROOT", output)
     registration = {
@@ -288,6 +291,20 @@ def test_materializer_rejects_mutated_sealed_prompt(tmp_path: Path) -> None:
         deployment.materialize_b300_screen_identities(
             **paths,
             gpu_provisioner=lambda selected, *, deadline: gpus,
+        )
+
+
+def test_materializer_refuses_single_tp4_as_declared_qualification_pair(
+    tmp_path: Path,
+) -> None:
+    paths, gpus, _ready = _case(tmp_path)
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError,
+        match="exact commissioned eight-B300 pair",
+    ):
+        deployment.materialize_b300_screen_identities(
+            **paths,
+            gpu_provisioner=lambda selected, *, deadline: gpus[:4],
         )
 
 

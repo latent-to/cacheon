@@ -8,6 +8,7 @@ or grading authority.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import shutil
@@ -74,7 +75,7 @@ def _egress_is_blocked() -> bool:
 
 
 def _process_sandbox_is_hardened() -> bool:
-    """Verify that the live worker cannot elevate or mutate its root filesystem."""
+    """Verify privilege isolation and the sealed disposable-root policy."""
 
     try:
         status: dict[str, str] = {}
@@ -94,8 +95,21 @@ def _process_sandbox_is_hardened() -> bool:
             if len(fields) >= 4 and fields[1] == "/":
                 root_options = set(fields[3].split(","))
                 break
+        policy_digest = os.environ.get(
+            "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256", ""
+        ).strip()
+        writable_overlay = (
+            _truthy_env("CACHEON_DISPOSABLE_WRITABLE_ROOT")
+            and len(policy_digest) == 64
+            and all(character in "0123456789abcdef" for character in policy_digest)
+            and hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+            == policy_digest
+        )
     except (OSError, KeyError, ValueError):
         return False
+    root_policy = root_options is not None and (
+        "ro" in root_options or ("rw" in root_options and writable_overlay)
+    )
     return (
         effective == 0
         and bounding == 0
@@ -103,8 +117,7 @@ def _process_sandbox_is_hardened() -> bool:
         and seccomp_mode == 2
         and seccomp_filters >= 1
         and ptrace_scope >= 1
-        and root_options is not None
-        and "ro" in root_options
+        and root_policy
     )
 
 
