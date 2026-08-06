@@ -105,7 +105,7 @@ class PodPaths:
             "credential",
         ):
             value = getattr(self, name)
-            if type(value) is not Path or not value.is_absolute():
+            if not isinstance(value, Path) or not value.is_absolute():
                 fail(f"pod {name} path must be an absolute Path")
 
 
