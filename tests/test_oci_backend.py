@@ -745,13 +745,15 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
     assert case.preflight.requested_image not in argv
     assert not any(row.startswith("--cpuset-") for row in argv)
     mounts = tuple(row for row in argv if row.startswith("--mount="))
-    assert len(mounts) == 4
+    assert len(mounts) == 6
     assert sum(",readonly" not in row for row in mounts) == 1
-    assert f"src={case.model},dst=/cacheon/input/model" in mounts[0]
-    assert f"src={case.tree},dst=/cacheon/engine-tree" in mounts[1]
-    assert f"src={case.publication.root},dst=/cacheon/native-artifacts/" in mounts[2]
-    assert f"src={case.publication.root.parent.parent}," not in mounts[2]
-    assert f"src={cache},dst=/cacheon/runtime-cache" in mounts[3]
+    assert f"dst={backend.CONTAINER_ENGINE_WORKER_POLICY}" in mounts[0]
+    assert f"dst={backend.CONTAINER_SITE_BOOTSTRAP}" in mounts[1]
+    assert f"src={case.model},dst=/cacheon/input/model" in mounts[2]
+    assert f"src={case.tree},dst=/cacheon/engine-tree" in mounts[3]
+    assert f"src={case.publication.root},dst=/cacheon/native-artifacts/" in mounts[4]
+    assert f"src={case.publication.root.parent.parent}," not in mounts[4]
+    assert f"src={cache},dst=/cacheon/runtime-cache" in mounts[5]
     assert not any("CACHEON_DISCOVERY_" in row for row in argv)
     encoded = "\n".join(argv).lower()
     for forbidden in (".pass", "credentials", "docker.sock", "result-output"):
@@ -839,7 +841,7 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
     )
     assert f"--env=CACHEON_DISCOVERY_EXPECTED_IDENTITY={identity}" in discovery_argv
     assert "--env=CACHEON_DISCOVERY_OVERLAY_ARMED=1" in discovery_argv
-    assert len(tuple(row for row in discovery_argv if row.startswith("--mount="))) == 4
+    assert len(tuple(row for row in discovery_argv if row.startswith("--mount="))) == 6
     assert not any(
         "CACHEON_DISCOVERY_OVERLAY_ROOT" in row
         or "CACHEON_DISCOVERY_DRIVER_PID" in row
