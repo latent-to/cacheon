@@ -182,6 +182,54 @@ SQLite remains the state machine. The journal is supplementary operational chron
 an audit append failure is reported but cannot cause the loop to replay a pass whose
 SQLite transitions already committed.
 
+## Operator reservation diagnostics
+
+The CPU validator can answer a miner's status question without stopping intake or
+opening a second writable controller:
+
+```bash
+cacheon chain-reservation-status \
+  --intake-db /srv/cacheon/state/intake.sqlite3 \
+  --audit-log /srv/cacheon/state/chain-audit.jsonl \
+  --reservation-id <64-HEX-RESERVATION-ID>
+```
+
+Use `--content-hash` or `--miner-hotkey` only when it identifies exactly one retained
+row. Ambiguous selectors are refused. `--json` emits the same privacy-safe record for a
+support tool. Both output forms omit proposal URLs, private filesystem roots, and raw
+exception messages.
+
+Read the result in this order:
+
+1. `arrival_authority` is the finalized-chain ordering fact. The order key is block,
+   event index, event subindex, hotkey, and content hash.
+2. `queue` is present only for queued or active work. A numeric position ranks actual
+   selectable work: reproduction first, then primary, with finalized order inside each
+   class. An active screen or qualification has no queue position. A durable remote
+   lease is `leased`, has no queue position, and is excluded from the remaining waiting
+   depth; `evaluation_lease` supplies its stage, generation, cohort position, and expiry
+   block without exposing the private worker owner. Promoted qualification work can be
+   an indivisible retry group or bounded cohort, so it is not assigned a misleading
+   single-row rank.
+3. A screen `reject` is explained by the terminal typed stage, grade, and evidence
+   digest in `screens`. A qualification outcome is explained by its persisted
+   `PASS`/`FAIL`/`NO_DECISION`, reason code, report or failure digest, and typed attempt
+   reference when one was retained.
+4. Attribution is derived only from a persisted typed decision. A row whose status is
+   `failed` but which has no persisted `FAIL` remains `unattributed`; status text alone
+   is never used to blame candidate code.
+5. `evidence_limitations` is mandatory support context. In particular,
+   `qualification_failure_retained_by_digest_only` means the current schema retained
+   an infrastructure failure product's digest but not a reopenable artifact reference.
+   Report it as validator `NO_DECISION`, quote the digest, and do not guess at a more
+   specific cause.
+
+The last case is a real current limitation: this command cannot reconstruct bytes that
+were never durably referenced. Private evaluator logs must therefore remain under the
+deployment's log-retention policy until typed failure-artifact retention and archive
+indexing cover every infrastructure path. The command makes that gap visible; it does
+not claim the gap is closed.
+
 The private recovery mirror is also outside the live transaction path:
 
 ```bash

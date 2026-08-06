@@ -48,6 +48,7 @@ class FakeResidentSession:
         candidate_rates: dict[str, float],
         slots: dict[str, tuple[str, ...]] | None = None,
         stock_drift_after: int | None = None,
+        stock_rates: list[float] | None = None,
         fail_on_swap: bool = False,
     ) -> None:
         self.session_id = "5" * 32
@@ -55,6 +56,7 @@ class FakeResidentSession:
         self.candidate_rates = candidate_rates
         self.slots = slots or {digest: (SLOT,) for digest in candidate_rates}
         self.stock_drift_after = stock_drift_after
+        self.stock_rates = stock_rates
         self.fail_on_swap = fail_on_swap
         self.generation = 0
         self.active: str | None = None
@@ -86,7 +88,11 @@ class FakeResidentSession:
         if self.active is None:
             rate = self.stock_rate
             self.stock_reads += 1
-            if (
+            if self.stock_rates is not None and self.stock_reads <= len(
+                self.stock_rates
+            ):
+                rate = self.stock_rates[self.stock_reads - 1]
+            elif (
                 self.stock_drift_after is not None
                 and self.stock_reads > self.stock_drift_after
             ):
@@ -114,6 +120,18 @@ class FakeResidentSession:
     def finish(self) -> object:
         self.finished = True
         return ("session-evidence", self.session_id, self.batch_count)
+
+
+class BlockingResidentSession(FakeResidentSession):
+    def __init__(self, release: threading.Event) -> None:
+        super().__init__(100.0, {DIGEST_A: 112.0})
+        self.release = release
+        self.entered = threading.Event()
+
+    def execute_batch(self, prompts, *, canary: bool = False):
+        self.entered.set()
+        assert self.release.wait(timeout=5.0)
+        return super().execute_batch(prompts, canary=canary)
 
 
 class FakeLifetimeFactory:
@@ -161,7 +179,7 @@ class TestResidentScreenLane:
         assert factory.sessions[0].finished
         assert lane.last_lifetime_evidence is not None
 
-    def test_budget_recycles_transparently(self) -> None:
+    def test_budget_resets_bracket_without_reloading_engine(self) -> None:
         factory = FakeLifetimeFactory(
             lambda _n: FakeResidentSession(100.0, {DIGEST_A: 112.0, DIGEST_B: 112.0})
         )
@@ -174,16 +192,17 @@ class TestResidentScreenLane:
         )
         assert lane.screen(_candidate(DIGEST_A, "a")).passed
         assert lane.screen(_candidate(DIGEST_B, "b")).passed
-        assert factory.calls == 2
-        assert factory.sessions[0].finished
+        assert factory.calls == 1
+        assert not factory.sessions[0].finished
         lane.close()
+        assert factory.sessions[0].finished
 
-    def test_withdrawn_verdict_surfaces_and_recycles(self) -> None:
+    def test_transient_withdrawal_recovers_without_reloading_engine(self) -> None:
         factory = FakeLifetimeFactory(
-            lambda n: FakeResidentSession(
+            lambda _n: FakeResidentSession(
                 100.0,
-                {DIGEST_A: 112.0, DIGEST_B: 112.0},
-                stock_drift_after=1 if n == 1 else None,
+                {DIGEST_A: 130.0, DIGEST_B: 130.0},
+                stock_rates=[100.0, 90.0, 80.0, 95.0, 95.0],
             )
         )
         lane = ResidentScreenLane(
@@ -193,10 +212,28 @@ class TestResidentScreenLane:
         assert first.withdrawn and first.verdict is None
         second = lane.screen(_candidate(DIGEST_A, "a"))
         assert second.passed
-        assert factory.calls == 2
+        assert factory.calls == 1
         lane.close()
 
-    def test_boot_failure_raises_then_recovers(self) -> None:
+    def test_persistent_canary_drift_quarantines_without_unloading(self) -> None:
+        factory = FakeLifetimeFactory(
+            lambda _n: FakeResidentSession(
+                100.0,
+                {DIGEST_A: 112.0},
+                stock_drift_after=1,
+            )
+        )
+        lane = ResidentScreenLane(
+            factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
+        )
+        assert lane.screen(_candidate()).withdrawn
+        with pytest.raises(ResidentScreenLaneError, match="retained in quarantine"):
+            lane.screen(_candidate())
+        assert factory.calls == 1
+        assert not factory.sessions[0].finished
+        lane.close()
+
+    def test_boot_failure_requires_explicit_service_restart(self) -> None:
         def builder(call: int) -> FakeResidentSession:
             if call == 1:
                 raise RuntimeError("no GPUs free")
@@ -205,10 +242,11 @@ class TestResidentScreenLane:
         lane = _lane(builder)
         with pytest.raises(ResidentScreenLaneError, match="died before the verdict"):
             lane.screen(_candidate())
-        assert lane.screen(_candidate()).passed
+        with pytest.raises(ResidentScreenLaneError, match="explicit service restart"):
+            lane.screen(_candidate())
         lane.close()
 
-    def test_screen_error_kills_lifetime_then_recovers(self) -> None:
+    def test_screen_error_does_not_silently_reload_lifetime(self) -> None:
         def builder(call: int) -> FakeResidentSession:
             return FakeResidentSession(
                 100.0, {DIGEST_A: 112.0}, fail_on_swap=call == 1
@@ -217,7 +255,29 @@ class TestResidentScreenLane:
         lane = _lane(builder)
         with pytest.raises(ResidentScreenLaneError, match="lifetime failed"):
             lane.screen(_candidate())
-        assert lane.screen(_candidate()).passed
+        with pytest.raises(ResidentScreenLaneError, match="explicit service restart"):
+            lane.screen(_candidate())
+        lane.close()
+
+    def test_verdict_timeout_latches_fatal_while_driver_is_still_alive(self) -> None:
+        release = threading.Event()
+        session = BlockingResidentSession(release)
+        factory = FakeLifetimeFactory(lambda _n: session)
+        lane = ResidentScreenLane(
+            factory,
+            prompts=("p",),
+            verdict_timeout_s=0.01,
+            close_timeout_s=5.0,
+        )
+
+        with pytest.raises(ResidentScreenLaneError, match="verdict timed out"):
+            lane.screen(_candidate())
+        assert session.entered.is_set()
+        with pytest.raises(ResidentScreenLaneError, match="explicit service restart"):
+            lane.screen(_candidate())
+        assert factory.calls == 1
+
+        release.set()
         lane.close()
 
     def test_closed_lane_rejects_candidates(self) -> None:

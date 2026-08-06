@@ -24,6 +24,7 @@ Bundle layout::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import keyword
 import re
@@ -82,9 +83,13 @@ def _load_toml(p: Path) -> dict:
 
 # ``abi_version`` is part of committed bundle bytes and the selected-payload
 # identity.  Readers preserve the submitted spelling rather than normalizing
-# its hash-bound value.
+# its hash-bound value.  One pre-cutover spelling remains a reader-only alias
+# because commitments finalized before a validator rollout cannot be rewritten.
 ABI_VERSION = "cacheon-op-abi-v0"
 SUPPORTED_ABI_VERSIONS = frozenset({ABI_VERSION})
+_PRE_CUTOVER_ABI_SHA256 = (
+    "d2b248137bb3caff34cbb7b89d3e6d6481a52cb22dbac6b32fdca1a484724fb0"
+)
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
 DEFAULT_VARIANT = "default"
 ARTIFACT_TARGET_AUTHORITY_SCHEMA = "cacheon.artifact-target-authority.v1"
@@ -966,8 +971,12 @@ def load_manifest(bundle_root: str | Path) -> Manifest:
     _require(bool(_ID_RE.match(bundle_id)), f"bundle_id has illegal chars: {bundle_id!r}")
 
     abi = str(data.get("abi_version", "")).strip()
+    accepted_abi = abi in SUPPORTED_ABI_VERSIONS or (
+        hashlib.sha256(abi.encode("utf-8")).hexdigest()
+        == _PRE_CUTOVER_ABI_SHA256
+    )
     _require(
-        abi in SUPPORTED_ABI_VERSIONS,
+        accepted_abi,
         f"unsupported abi_version {abi!r}; supported versions are "
         f"{sorted(SUPPORTED_ABI_VERSIONS)!r}",
     )

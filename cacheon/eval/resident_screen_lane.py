@@ -8,14 +8,12 @@ This is the bridge between two call shapes that cannot meet directly:
   call stack for a WHOLE engine lifetime (one driver callback, one engine
   load, any number of candidates).
 
-:class:`ResidentScreenLane` resolves that: it runs each lifetime on a
+:class:`ResidentScreenLane` resolves that: it runs one lifetime on a
 background thread whose driver serves a work queue, so the engine stays
 loaded between arrivals — the inference-service shape — and each
-``screen`` call simply hands its candidate to whichever lifetime is live,
-lazily booting one when none is.  Lifetimes recycle on the screen loop's own
-stop conditions (candidate budget, canary drift); a budget recycle re-screens
-the candidate on the fresh lifetime automatically, while a canary withdrawal
-is surfaced to the caller because evidence was consumed.
+``screen`` call hands its candidate to that standing lifetime.  Candidate
+budgets and canary withdrawals reset the scoring bracket inside the same
+engine session; they never own or trigger model teardown.
 
 Trust tier: screen/routing only, exactly like the queue module underneath.
 Non-swappable bundles (AOT device artifacts, native rebuild inputs,
@@ -50,12 +48,20 @@ from cacheon.stack_identity import canonical_digest
 
 
 SERVING_SCREEN_STAGE = "abbreviated_serving"
-_STAGE_EVIDENCE_SCHEMA = "cacheon.arena.resident-screen-stage.v1"
+_STAGE_EVIDENCE_SCHEMA = "cacheon.arena.resident-screen-stage.v2"
 _WAIVER_EVIDENCE_SCHEMA = "cacheon.arena.resident-screen-waiver.v1"
 
 
 class ResidentScreenLaneError(RuntimeError):
     """The lane, its lifetime, or a stage input is invalid or failed."""
+
+
+class ResidentScreenLaneQuarantined(ResidentScreenLaneError):
+    """The model remains resident, but stock canaries have not recovered."""
+
+
+class ResidentScreenLifetimeFailed(ResidentScreenLaneError):
+    """The standing engine failed and may not be silently recreated."""
 
 
 def screen_swappability(manifest: Manifest) -> str | None:
@@ -190,6 +196,9 @@ class ResidentScreenLane:
         self._session_id: str | None = None
         self._lifetime_error: BaseException | None = None
         self._last_evidence: object | None = None
+        self._last_canary_recovery: tuple[float, float] | None = None
+        self._last_canary_recovered: bool | None = None
+        self._quarantined_reason: str | None = None
         self._closed = False
 
     @property
@@ -203,12 +212,22 @@ class ResidentScreenLane:
         with self._state:
             return self._last_evidence
 
+    @property
+    def last_canary_recovery(self) -> tuple[tuple[float, float], bool] | None:
+        with self._state:
+            reads = self._last_canary_recovery
+            recovered = self._last_canary_recovered
+        if reads is None or recovered is None:
+            return None
+        return reads, recovered
+
     def screen(self, candidate: ScreenCandidate) -> CandidateScreenVerdict:
         """Screen one candidate on the live lifetime, booting one if needed.
 
-        A budget-exhausted lifetime recycles transparently (the candidate was
-        untouched); a canary-withdrawn verdict is returned as-is because its
-        brackets were spent — the caller's retry machinery re-screens it.
+        A budget-exhausted scoring bracket resets transparently inside the
+        same engine session (the candidate was untouched).  A canary-withdrawn
+        verdict is returned as-is, while the next arrival begins a fresh
+        bracket without reloading the model.
         """
 
         if type(candidate) is not ScreenCandidate:
@@ -216,28 +235,24 @@ class ResidentScreenLane:
         with self._lock:
             if self._closed:
                 raise ResidentScreenLaneError("resident screen lane is closed")
-            for _attempt in range(2):
-                self._ensure_lifetime()
-                item = _Work(candidate)
-                self._work.put(item)
-                self._await(item)
-                if item.error is not None:
-                    self._join_lifetime()
-                    raise ResidentScreenLaneError(
-                        f"resident screen lifetime failed: {item.error}"
-                    ) from item.error
-                if item.verdict is not None:
-                    if item.verdict.withdrawn:
-                        # The driver broke out of its loop; reap the thread so
-                        # the next arrival opens a fresh lifetime.
-                        self._join_lifetime()
-                    return item.verdict
-                # None: the lifetime's candidate budget was exhausted before
-                # this candidate ran.  Recycle and retry once on fresh state.
+            with self._state:
+                quarantined = self._quarantined_reason
+            if quarantined is not None:
+                raise ResidentScreenLaneQuarantined(quarantined)
+            self._ensure_lifetime()
+            item = _Work(candidate)
+            self._work.put(item)
+            self._await(item)
+            if item.error is not None:
                 self._join_lifetime()
-            raise ResidentScreenLaneError(
-                "a fresh resident lifetime refused the candidate"
-            )
+                raise ResidentScreenLifetimeFailed(
+                    f"resident screen lifetime failed: {item.error}"
+                ) from item.error
+            if item.verdict is None:
+                raise ResidentScreenLaneError(
+                    "resident scoring bracket returned no candidate verdict"
+                )
+            return item.verdict
 
     def close(self) -> None:
         """Permanently close the lane, ending any live lifetime."""
@@ -254,11 +269,15 @@ class ResidentScreenLane:
             self._thread = None
 
     def _ensure_lifetime(self) -> None:
+        with self._state:
+            error = self._lifetime_error
+        if error is not None:
+            raise ResidentScreenLifetimeFailed(
+                "resident lifetime failed; explicit service restart required"
+            ) from error
         thread = self._thread
         if thread is not None and thread.is_alive():
             return
-        with self._state:
-            self._lifetime_error = None
         # A fresh queue per lifetime: nothing stale can leak into the new
         # driver, and a sentinel left in a dead queue is simply dropped.
         self._work = queue.Queue()
@@ -282,14 +301,53 @@ class ResidentScreenLane:
                 if item is _CLOSE:
                     break
                 try:
-                    item.verdict = loop.screen(item.candidate)
+                    verdict = loop.screen(item.candidate)
+                    if verdict is None:
+                        if loop.stopped_reason is None:
+                            raise ResidentScreenLaneError(
+                                "resident bracket refused work without a stop reason"
+                            )
+                        loop = ResidentScreenLoop(
+                            session, prompts=self._prompts, policy=self._policy
+                        )
+                        verdict = loop.screen(item.candidate)
+                        if verdict is None:
+                            raise ResidentScreenLaneError(
+                                "fresh resident bracket refused work"
+                            )
+                    item.verdict = verdict
+                    if verdict.withdrawn:
+                        reference = loop.withdrawn_reference
+                        recovery, recovered = self._recover_stock_in_place(
+                            session, reference
+                        )
+                        with self._state:
+                            self._last_canary_recovery = recovery
+                            self._last_canary_recovered = recovered
+                        if recovered:
+                            loop = ResidentScreenLoop(
+                                session,
+                                prompts=self._prompts,
+                                policy=self._policy,
+                            )
+                        else:
+                            with self._state:
+                                self._quarantined_reason = (
+                                    "resident stock canary did not recover; "
+                                    "model retained in quarantine"
+                                )
                 except BaseException as exc:
                     item.error = exc
                     item.done.set()
                     raise
                 item.done.set()
-                if item.verdict is None or loop.stopped_reason is not None:
-                    break
+                if loop.stopped_reason is not None and not item.verdict.withdrawn:
+                    # The engine is already back on stock dispatch.  Drop only
+                    # the scoring window; retaining this driver keeps SGLang,
+                    # model weights, and CUDA graphs resident.
+                    loop = ResidentScreenLoop(
+                        session, prompts=self._prompts, policy=self._policy
+                    )
             # Lifetimes open lazily on the first candidate, and every screened
             # candidate begins with the opening stock read, so a finishing
             # session always has at least one batch behind it.
@@ -305,6 +363,30 @@ class ResidentScreenLane:
             with self._state:
                 self._lifetime_error = exc
 
+    def _recover_stock_in_place(
+        self,
+        session: ScreenSession,
+        reference: float | None,
+    ) -> tuple[tuple[float, float], bool]:
+        """Require two unchanged-threshold stock reads before leaving quarantine."""
+
+        if reference is None or reference <= 0:
+            return (0.0, 0.0), False
+        tolerance = self._policy.canary_tolerance
+        observed: list[float] = []
+        for _ in range(2):
+            row = session.execute_batch(self._prompts, canary=True)
+            if row.elapsed_seconds <= 0:
+                observed.append(0.0)
+            else:
+                observed.append(row.token_numerator / row.elapsed_seconds)
+        reads = (observed[0], observed[1])
+        recovered = all(
+            value > 0 and abs(value - reference) / reference <= tolerance
+            for value in reads
+        )
+        return reads, recovered
+
     def _await(self, item: _Work) -> None:
         deadline = self._clock() + self._verdict_timeout_s
         while not item.done.wait(timeout=0.25):
@@ -312,20 +394,30 @@ class ResidentScreenLane:
             if thread is None or not thread.is_alive():
                 with self._state:
                     error = self._lifetime_error
-                raise ResidentScreenLaneError(
+                raise ResidentScreenLifetimeFailed(
                     f"resident lifetime died before the verdict: {error}"
                 ) from error
             if self._clock() > deadline:
-                raise ResidentScreenLaneError("resident screen verdict timed out")
+                failure = ResidentScreenLifetimeFailed(
+                    "resident screen verdict timed out"
+                )
+                with self._state:
+                    if self._lifetime_error is None:
+                        self._lifetime_error = failure
+                raise failure
 
     def _join_lifetime(self) -> None:
         thread = self._thread
         if thread is not None:
             thread.join(self._close_timeout_s)
             if thread.is_alive():
-                raise ResidentScreenLaneError(
+                failure = ResidentScreenLifetimeFailed(
                     "resident lifetime did not close in time"
                 )
+                with self._state:
+                    if self._lifetime_error is None:
+                        self._lifetime_error = failure
+                raise failure
         self._thread = None
 
 
@@ -385,9 +477,20 @@ class ResidentServingScreenStage:
                 candidate.reservation.reservation_digest, staged_digest, slots
             )
         )
+        recovery = self._lane.last_canary_recovery if verdict.withdrawn else None
         evidence = canonical_digest(
             _STAGE_EVIDENCE_SCHEMA,
             {
+                "canary_recovery": (
+                    None
+                    if recovery is None
+                    else {
+                        "recovered": recovery[1],
+                        "stock_throughputs": [
+                            format(value, ".17g") for value in recovery[0]
+                        ],
+                    }
+                ),
                 "candidate_digest": candidate.digest,
                 "publication_content_hash": publication.content_hash,
                 "session_id": self._lane.session_id,
@@ -420,6 +523,8 @@ __all__ = [
     "ResidentLifetimeFactory",
     "ResidentScreenLane",
     "ResidentScreenLaneError",
+    "ResidentScreenLaneQuarantined",
+    "ResidentScreenLifetimeFailed",
     "ResidentServingScreenStage",
     "SERVING_SCREEN_STAGE",
     "make_backend_lifetime_factory",
