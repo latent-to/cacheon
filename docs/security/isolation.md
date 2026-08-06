@@ -104,14 +104,23 @@ The runtime container receives only:
 | Exact sealed model tree | Read-only at `/cacheon/input/model` |
 | Materialized engine tree | Read-only at `/cacheon/engine-tree` |
 | Reopened native artifact publication | Read-only under `/cacheon/native-artifacts` |
-| Lease-scoped runtime cache | Writable private tmpfs at `/cacheon/runtime-cache` |
+| Controller engine-worker policy file | Read-only bind at its installed interpreter path |
+| Controller `oci_site` bootstrap directory | Read-only bind at its installed interpreter path |
+| Lease-scoped runtime cache | Writable private mount at `/cacheon/runtime-cache` |
 | `/tmp` and shared memory | Bounded private ephemeral storage |
 | GPUs | Only the physical devices bound by trusted launch identity |
 
-Runtime controls include no network, read-only root, private IPC, dropped capabilities,
+Runtime controls include no network, private IPC, dropped capabilities,
 no-new-privileges, reviewed seccomp, non-root UID/GID, CPU/memory/PID/nofile/core limits,
-private noexec `/tmp`, fixed shared-memory size, no healthcheck/log driver, isolated Python
-flags, and offline Hugging Face/Transformers environment.
+fixed shared-memory size, no healthcheck/log driver, isolated Python flags, and an offline
+Hugging Face/Transformers environment. The container root is a disposable writable
+overlay rather than a read-only root: engine libraries whose cache locations are not
+validator-controlled may write inside the discarded container lifetime, while every
+validator-owned input above stays a read-only bind. The engine worker accepts a writable
+root only when the sealed `CACHEON_CONTROLLER_ENGINE_WORKER_SHA256` digest matches its
+own installed bytes, and it verifies ownership, containment, and a write/execute probe
+for every declared runtime cache directory before constructing an engine. `/tmp` is a
+bounded private tmpfs that permits execution for just-in-time kernel compilation.
 
 Mount roots are required to be pairwise disjoint and cannot expose the controller's
 working directory, referee source, wallet, or other ambient host data.
