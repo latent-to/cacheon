@@ -334,6 +334,14 @@ outside the tracked qualification path; wiring it into tracked commissioning is
 part of the qualification-activation work, and the module must not be treated as
 removable in the meantime.
 
+A sealed standing-evaluation config binds one closed, lane-independent controls
+identity through `eval/standing_controls.py`: exactly three SHA-256 identity
+digests plus the integer `maximum_bookend_drift_ppm`, which must equal the
+version-3 resident speed policy's `max_noise` expressed exactly in parts per
+million. Primary and reproduction stages must bind byte-identical controls, and
+a config with a missing key, an extra key, or a drift bound that disagrees with
+the sealed speed policy is rejected before any GPU work is scheduled.
+
 ## Nonclaims
 
 - Passing proves the registered arena/workload and policy, not universal model quality or

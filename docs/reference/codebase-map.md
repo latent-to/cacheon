@@ -90,6 +90,8 @@ reopens evidence but accepts only reviewed integrated source.
 | Remote qualification evidence products | [`chain/remote_qualification_evidence.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_qualification_evidence.py) |
 | Remote qualification adapter | [`eval/b300_remote_qualification_adapter.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_qualification_adapter.py) |
 | Standing resident-pair lifecycle | [`eval/resident_evaluation_pair.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_evaluation_pair.py) |
+| Standing controls contract | [`eval/standing_controls.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/standing_controls.py) |
+| Bundle and committed-source identity | [`bundle_hash.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bundle_hash.py) |
 | Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py) |
 | OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py) |
 | Host-owned resident B/C/B′ and conditional C′/B″ session | [`eval/oci_outer_session.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_outer_session.py) |
