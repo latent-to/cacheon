@@ -291,6 +291,31 @@ Never rerun only the favorable arm, splice evidence from different authorities, 
 a threshold after seeing the outcome. A fresh attempt must be a complete, newly bound
 qualification under the registered policy.
 
+## Standing two-lane composition and remote products
+
+The commissioned deployment surface for standing mainnet qualification lives in
+`eval/b300_qualification_deployment.py` and `eval/b300_registered_qualification.py`.
+Registered per-target profile authorities are sealed ahead of time; at plan time the
+deployment layer independently re-derives the profile authority for the finalized
+reservation and rejects a plan whose authority, marginal arm, secret, pristine
+binding, or resident lane executors differ from the sealed construction inputs. The
+two resident TP4 lanes are carved from the one commissioned eight-B300 pod, and the
+physical lane pair, device identities, and role swap are validated against the READY
+receipt before any engine work.
+
+Remote execution of qualification returns a sealed `RemoteQualificationProduct` under
+remote-evaluation protocol schema version 2: size-bounded evidence artifacts are
+rehashed on capture and on import, and the coordinator's durable
+`commit_remote_qualification_result` pins the incumbent stack and tree identity per
+arena on first commit and rejects any later mismatch atomically. Transport,
+authentication, and identity-check failures release the durable lease as
+infrastructure outcomes; they are never converted into a candidate verdict.
+
+This composition surface is deliberately not yet a production caller: the module
+tracks the missing commissioning authorities explicitly, and production activation
+requires supplying them through a reviewed provider rather than through test
+fixtures.
+
 ## Nonclaims
 
 - Passing proves the registered arena/workload and policy, not universal model quality or
@@ -312,6 +337,9 @@ Next: [Settlement and weights](settlement-and-weights.md).
 - [Qualification evidence model](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py)
 - [Causal qualification runner](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
 - [Resident crossover runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)
+- [Qualification deployment composition](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_qualification_deployment.py)
+- [Registered qualification profiles](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_registered_qualification.py)
+- [Remote qualification adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_qualification_adapter.py)
 - [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 - [Finalized-intake projection](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py)
 - [Pristine reference session](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_reference_session.py)
