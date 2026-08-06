@@ -106,6 +106,14 @@ PyTorch and requires the expected slot × TP-rank/PID coverage, minimum call cou
 absence of retained violations or protocol errors. Live floating-point facts are
 canonicalized into stable decimal strings before they enter the durable witness.
 
+The audit role is deliberately a minimum-cost slot-call integrity check, not a
+semantic or shape-coverage instrument: it deterministically selects the single
+shortest committed prompt (ties broken by prompt digest) and repeats it for the
+required minimum call count. Semantic and prompt-dependent coverage belong to the
+pristine T reference, which the audit role never replaces. This selection policy is
+pinned by a regression test; changing it is a reviewed policy decision, not a
+tuning knob.
+
 T remains untimed and candidate-free. The host owns role assignment, monotonic clocks,
 token numerators, conditioning windows, absolute deadlines, device observations, audit
 grading, selection entropy, and teardown. Candidate wall-clock reports and aggregate
@@ -325,6 +333,14 @@ evidence policy. Deployment composition currently commissions the standing pair
 outside the tracked qualification path; wiring it into tracked commissioning is
 part of the qualification-activation work, and the module must not be treated as
 removable in the meantime.
+
+A sealed standing-evaluation config binds one closed, lane-independent controls
+identity through `eval/standing_controls.py`: exactly three SHA-256 identity
+digests plus the integer `maximum_bookend_drift_ppm`, which must equal the
+version-3 resident speed policy's `max_noise` expressed exactly in parts per
+million. Primary and reproduction stages must bind byte-identical controls, and
+a config with a missing key, an extra key, or a drift bound that disagrees with
+the sealed speed policy is rejected before any GPU work is scheduled.
 
 ## Nonclaims
 

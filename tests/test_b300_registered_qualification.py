@@ -529,3 +529,39 @@ def test_blocker_inventory_names_only_missing_commissioning_authorities() -> Non
         row.donor_coordinate.startswith("experiments/minimax_m3/")
         for row in registered.PRODUCTION_AUTHORITY_BLOCKERS
     )
+
+
+def test_audit_role_pins_minimum_cost_shortest_prompt_selection(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    secret = b"ordinary prefill blockscore selection"[:32]
+    value = harness.factory.plan_builder(harness.cohort, secret)
+
+    session = value.prepared.candidates[0].session_plan
+    prompts = tuple(
+        prompt for batch in session.prompt_batches for prompt in batch
+    )
+    expected = min(
+        prompts,
+        key=lambda prompt: (
+            len(prompt),
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        ),
+    )
+    audit = value.resident_audit_plan
+
+    # Declared policy: the audit role is a minimum-cost slot-call integrity
+    # check, never a semantic or shape-coverage instrument; that coverage is
+    # owned by pristine T. Changing this selection is a reviewed policy
+    # decision.
+    assert audit.prompt_batches == tuple(
+        (expected,) for _ in range(harness.policy.audit_minimum_calls + 1)
+    )
+    assert all(len(expected) <= len(prompt) for prompt in prompts)
+    assert audit.warmup_count == 1
+    assert audit.conditioning_count == 1
+    assert audit.max_new_tokens == harness.policy.audit_max_new_tokens
+
+    repeat = harness.factory.plan_builder(harness.cohort, secret)
+    assert repeat.resident_audit_plan.prompt_batches == audit.prompt_batches

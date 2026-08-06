@@ -17,6 +17,7 @@ from pathlib import Path
 
 _SKIP_DIRS = {"__pycache__", ".git"}
 _SKIP_SUFFIXES = {".pyc", ".pyo"}
+CARRIER_RECEIPT_NAME = ".cacheon-native-artifact.json"
 
 
 def _iter_files(root: Path):
@@ -36,15 +37,14 @@ def _iter_files(root: Path):
         yield p
 
 
-def content_hash(bundle_dir: str | Path) -> str:
-    """Return the SHA-256 content hash of a bundle directory (hex)."""
-    root = Path(bundle_dir).resolve()
-    if not root.is_dir():
-        raise NotADirectoryError(f"bundle dir not found: {root}")
+def _hash_files(root: Path, *, exclude_carrier_receipt: bool) -> str:
     h = hashlib.sha256()
     n = 0
     for p in _iter_files(root):
-        rel = p.relative_to(root).as_posix().encode("utf-8")
+        posix = p.relative_to(root).as_posix()
+        if exclude_carrier_receipt and posix == CARRIER_RECEIPT_NAME:
+            continue
+        rel = posix.encode("utf-8")
         data = p.read_bytes()
         # length-prefix path and contents so boundaries are unambiguous
         h.update(len(rel).to_bytes(4, "big"))
@@ -55,3 +55,27 @@ def content_hash(bundle_dir: str | Path) -> str:
     if n == 0:
         raise ValueError(f"bundle dir has no files to hash: {root}")
     return h.hexdigest()
+
+
+def content_hash(bundle_dir: str | Path) -> str:
+    """Return the SHA-256 content hash of a bundle directory (hex)."""
+    root = Path(bundle_dir).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"bundle dir not found: {root}")
+    return _hash_files(root, exclude_carrier_receipt=False)
+
+
+def committed_content_hash(carrier_dir: str | Path) -> str:
+    """Return the committed-source content hash of a worker carrier (hex).
+
+    The immutable worker carrier places the validator-owned
+    ``.cacheon-native-artifact.json`` receipt at its top level, beside the
+    miner's committed source. Hashing the carrier as a raw bundle would fold
+    that receipt into the identity; the committed identity is over the miner's
+    bytes only, so the top-level receipt — and nothing else — is excluded. A
+    same-named file anywhere deeper is miner content and stays hashed.
+    """
+    root = Path(carrier_dir).resolve()
+    if not root.is_dir():
+        raise NotADirectoryError(f"carrier dir not found: {root}")
+    return _hash_files(root, exclude_carrier_receipt=True)
