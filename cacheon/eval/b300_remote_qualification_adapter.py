@@ -15,7 +15,7 @@ or operator-control field.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -329,6 +329,9 @@ class B300RemoteQualificationAdapter:
     readiness: WorkerReadiness
     publications: B300WorkerBundleResolver
     continuation_store: QualificationContinuationStore
+    worker: B300MainnetWorker | None = None
+    _owns_worker: bool = field(default=False, init=False, repr=False, compare=False)
+    _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if (
@@ -362,6 +365,51 @@ class B300RemoteQualificationAdapter:
             raise B300RemoteQualificationAdapterError(
                 "worker READY authority differs from the qualification deployment"
             )
+        worker = self.worker
+        owns_worker = worker is None
+        if worker is None:
+            # Direct construction is a standalone adapter lifetime.  The served
+            # runtime always supplies its commissioned owner, so request-local
+            # adapters never construct or own a worker.
+            worker = B300MainnetWorker(
+                manifest,
+                self.deployment.authorities,
+                self.readiness,
+            )
+        if (
+            type(worker) is not B300MainnetWorker
+            or worker.service.manifest != manifest
+            or worker.readiness != self.readiness
+            or worker._remote_qualification_lane != self.deployment.screen_lane
+            or worker.service._provider is not worker._provider
+        ):
+            if owns_worker:
+                worker.close()
+            raise B300RemoteQualificationAdapterError(
+                "qualification worker differs from the fixed deployment owner"
+            )
+        object.__setattr__(self, "worker", worker)
+        object.__setattr__(self, "_owns_worker", owns_worker)
+
+    def close(self) -> None:
+        """Close a standalone owner; never close an injected epoch owner."""
+
+        if not self._owns_worker or self._closed:
+            return
+        worker = self.worker
+        assert worker is not None
+        worker.close()
+        object.__setattr__(self, "_closed", True)
+
+    def __enter__(self) -> "B300RemoteQualificationAdapter":
+        if self._closed:
+            raise B300RemoteQualificationAdapterError(
+                "remote qualification adapter is closed"
+            )
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.close()
 
     @property
     def digest(self) -> str:
@@ -379,6 +427,10 @@ class B300RemoteQualificationAdapter:
     def run(self, request: RemoteEvaluationRequest) -> RemoteQualificationProduct:
         """Execute one already-authenticated closed-v2 qualification request."""
 
+        if self._closed:
+            raise B300RemoteQualificationAdapterError(
+                "remote qualification adapter is closed"
+            )
         if type(request) is not RemoteEvaluationRequest or request.stage != "qualification":
             raise B300RemoteQualificationAdapterError(
                 "adapter requires an exact authenticated qualification request"
@@ -478,35 +530,32 @@ class B300RemoteQualificationAdapter:
                 "remote lease differs from the exact promoted singleton"
             )
 
-        with B300MainnetWorker(
-            manifest,
-            self.deployment.authorities,
+        worker = self.worker
+        assert worker is not None
+        result = worker.run_remote_qualification(
+            lease,
+            candidates,
+            receipts,
+            screen_lane=self.deployment.screen_lane,
+            continuation_store=self.continuation_store,
+            request_digest=request.digest,
+        )
+        if (
+            type(result) is not B300RemoteQualificationRun
+            or result.run.lease != lease
+            or result.screen_lane != self.deployment.screen_lane
+            or tuple(result.authority_manifest.reservations)
+            != tuple(row.reservation for row in candidates)
+        ):
+            raise B300RemoteQualificationAdapterError(
+                "qualification worker changed the sealed lease or cohort authority"
+            )
+        result.run.envelope.verify(
+            lease,
             self.readiness,
-        ) as worker:
-            result = worker.run_remote_qualification(
-                lease,
-                candidates,
-                receipts,
-                screen_lane=self.deployment.screen_lane,
-                continuation_store=self.continuation_store,
-                request_digest=request.digest,
-            )
-            if (
-                type(result) is not B300RemoteQualificationRun
-                or result.run.lease != lease
-                or result.screen_lane != self.deployment.screen_lane
-                or tuple(result.authority_manifest.reservations)
-                != tuple(row.reservation for row in candidates)
-            ):
-                raise B300RemoteQualificationAdapterError(
-                    "qualification worker changed the sealed lease or cohort authority"
-                )
-            result.run.envelope.verify(
-                lease,
-                self.readiness,
-                worker.service,
-                result.run.payload,
-            )
+            worker.service,
+            result.run.payload,
+        )
 
         batch = result.run.payload
         if type(batch) is not QualificationIntakeBatch:

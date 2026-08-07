@@ -190,22 +190,61 @@ def _bind_hidden_judge(
 
 @dataclass
 class CommissionedB300QualificationService:
-    """One screen worker and one qualification commission from one replay."""
+    """One full-authority worker and commission from one replay."""
 
     worker: B300MainnetWorker
     commission: B300RemoteQualificationCommission
     _executors: tuple[OCIEngineExecutor, ...]
+    _screen_composition: object
     _closed: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.worker) is not B300MainnetWorker
+            or self.worker.service.manifest != self.commission.deployment.manifest
+            or self.worker.readiness != self.commission.readiness
+            or self.worker._remote_qualification_lane
+            != self.commission.deployment.screen_lane
+            or not callable(getattr(self._screen_composition, "close", None))
+            or type(self._executors) is not tuple
+            or len(self._executors) != 2
+            or any(type(row) is not OCIEngineExecutor for row in self._executors)
+            or len({id(row.manager) for row in self._executors})
+            != len(self._executors)
+        ):
+            raise B300QualificationCommissionError(
+                "commissioned service does not own one full qualification worker"
+            )
+
+    def adapter_for(self, publication, continuation_store):
+        if self._closed:
+            raise B300QualificationCommissionError(
+                "commissioned qualification service is closed"
+            )
+        return self.commission.adapter_for(
+            publication,
+            continuation_store,
+            worker=self.worker,
+        )
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        try:
-            self.worker.close()
-        finally:
-            for executor in self._executors:
-                executor.manager.close()
+        failure: BaseException | None = None
+        closers = (
+            self.worker.close,
+            self._screen_composition.close,
+            *(executor.manager.close for executor in self._executors),
+        )
+        for closer in closers:
+            try:
+                closer()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
 
 
 def _tracked_deadline_provider(
@@ -784,18 +823,31 @@ def build_commissioned_b300_qualification_service(
         )
     )
     executors: tuple[OCIEngineExecutor, ...] = ()
+    worker: B300MainnetWorker | None = None
     try:
         commission, executors = compose_commissioned_qualification(
             inputs, composition, readiness, capabilities
         )
-        worker = screen_deployment.commissioned_screen_worker_from_composition(
-            composition, readiness
+        worker = B300MainnetWorker(
+            commission.deployment.manifest,
+            commission.deployment.authorities,
+            readiness,
+        )
+        service = CommissionedB300QualificationService(
+            worker,
+            commission,
+            executors,
+            composition,
         )
         composition = None
-        return CommissionedB300QualificationService(worker, commission, executors)
+        return service
     except BaseException:
-        for executor in executors:
-            executor.manager.close()
+        try:
+            if worker is not None:
+                worker.close()
+        finally:
+            for executor in executors:
+                executor.manager.close()
         raise
     finally:
         if composition is not None:

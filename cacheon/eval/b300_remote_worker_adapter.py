@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from cacheon.chain.evaluation_coordinator import WorkerReadiness
     from cacheon.chain.publication import WorkerBundlePublication
+    from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
     from cacheon.eval.b300_qualification_deployment import (
         B300QualificationConstructionAuthority,
         B300QualificationDeployment,
@@ -142,6 +143,8 @@ class B300RemoteQualificationCommission:
         self,
         publication: WorkerBundlePublication,
         continuation_store,
+        *,
+        worker: B300MainnetWorker | None = None,
     ) -> B300RemoteQualificationAdapter:
         from cacheon.chain.publication import WorkerBundlePublication
         from cacheon.eval.b300_remote_qualification_adapter import (
@@ -159,13 +162,16 @@ class B300RemoteQualificationCommission:
             raise AdapterError(
                 "qualification publication or continuation store is not exactly typed"
             )
-        return B300RemoteQualificationAdapter(
+        arguments = (
             self.deployment,
             self.construction,
             self.readiness,
             B300WorkerBundleResolver((publication,)),
             continuation_store,
         )
+        if worker is None:
+            return B300RemoteQualificationAdapter(*arguments)
+        return B300RemoteQualificationAdapter(*arguments, worker)
 
 
 def _closed_path(raw: object, root: Path, label: str, *, temporary: bool) -> Path:
@@ -464,13 +470,39 @@ class AdapterRuntime:
             self._commissioned_service = service
             self.worker = service.worker
             self.qualification_commission = service.commission
+        elif qualification_commission is not None:
+            from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
+
+            commission_readiness = qualification_commission.readiness
+            worker_epoch = registration.get("worker_epoch")
+            if (
+                registration.get("worker_readiness")
+                != commission_readiness.to_dict()
+                or registration.get("worker_readiness_digest")
+                != commission_readiness.digest
+                or ready.get("receipt_digest")
+                != commission_readiness.ready_receipt_digest
+                or type(worker_epoch) is not str
+                or len(worker_epoch) != 32
+                or any(char not in "0123456789abcdef" for char in worker_epoch)
+                or int(worker_epoch, 16) != commission_readiness.ready_epoch
+            ):
+                raise AdapterError(
+                    "injected qualification commission differs from registered READY"
+                )
+            self.worker = B300MainnetWorker(
+                qualification_commission.deployment.manifest,
+                qualification_commission.deployment.authorities,
+                qualification_commission.readiness,
+            )
+            self.qualification_commission = qualification_commission
         else:
             from cacheon.eval.b300_screen_deployment import (
                 build_commissioned_b300_screen_worker,
             )
 
             self.worker = build_commissioned_b300_screen_worker(registration, ready)
-            self.qualification_commission = qualification_commission
+            self.qualification_commission = None
         self.qualification_continuation_store = qualification_continuation_store
         self.closed = False
 
@@ -488,6 +520,43 @@ class AdapterRuntime:
             self._commissioned_service.close()
         else:
             self.worker.close()
+
+    def qualification_adapter_for(
+        self,
+        publication: WorkerBundlePublication,
+    ) -> B300RemoteQualificationAdapter:
+        """Bind one request publication to this epoch's sole full owner."""
+
+        commission = self.qualification_commission
+        if commission is None:
+            raise AdapterError(
+                "qualification execution authority is not commissioned"
+            )
+        continuation_store = self.qualification_continuation_store
+        service = self._commissioned_service
+        if service is not None:
+            if continuation_store is None:
+                raise AdapterError(
+                    "qualification continuation store is not commissioned"
+                )
+            return service.adapter_for(
+                publication,
+                continuation_store,
+            )
+        from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
+
+        if type(self.worker) is B300MainnetWorker:
+            return commission.adapter_for(
+                publication,
+                continuation_store,
+                worker=self.worker,
+            )
+        # An explicitly unbound commission is a standalone adapter lifetime;
+        # its caller owns the adapter's idempotent close contract.
+        return commission.adapter_for(
+            publication,
+            continuation_store,
+        )
 
 
 def run_with_runtime(
@@ -556,10 +625,7 @@ def run_with_runtime(
                 candidates[0]["publication"],
                 runtime.paths.publication_root,
             )
-            qualification_adapter = qualification_commission.adapter_for(
-                publication,
-                runtime.qualification_continuation_store,
-            )
+            qualification_adapter = runtime.qualification_adapter_for(publication)
         else:
             lease_value = outer["lease"]
             lease = EvaluationLease(
@@ -608,7 +674,12 @@ def run_with_runtime(
     # NO_DECISION outcomes, complete normally through this path.
     try:
         if stage == "qualification":
-            payload = qualification_adapter.run(wire)
+            try:
+                payload = qualification_adapter.run(wire)
+            finally:
+                close_adapter = getattr(qualification_adapter, "close", None)
+                if callable(close_adapter):
+                    close_adapter()
         else:
             evaluation = runtime.worker.run_remote_screen(lease, candidate)
             payload = evaluation.payload
