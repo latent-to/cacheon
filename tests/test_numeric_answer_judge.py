@@ -13,6 +13,8 @@ from cacheon.eval.numeric_answer_judge import (
     NumericAnswerJudgeError,
     NumericAnswerJudgeInfrastructureError,
     NumericAnswerOccurrence,
+    NumericAnswerPromptOccurrence,
+    derive_numeric_answer_prompt_occurrences,
     hidden_task_policy_digest,
     numeric_hidden_judge_digest,
 )
@@ -391,6 +393,54 @@ def test_deferred_authority_binds_exact_composed_prompt_occurrences() -> None:
             output_ids=output_ids,
             task_digests=(task_digest,),
         ).passed == (True,)
+
+
+def test_prompt_occurrence_derivation_is_shared_ordered_and_target_neutral() -> None:
+    gold = (101,)
+    authority = (((gold,), (gold,)), ((gold,),))
+    binding = _binding(authority)
+    workload = _h("shared-workload")
+    batches = (("first", "second"), ("third",))
+    rows = derive_numeric_answer_prompt_occurrences(
+        binding,
+        prompt_batches=batches,
+        workload_digest=workload,
+        hidden_tasks_per_prompt=1,
+    )
+
+    assert all(type(row) is NumericAnswerPromptOccurrence for row in rows)
+    assert tuple((row.batch_index, row.prompt_index) for row in rows) == (
+        (0, 0),
+        (0, 1),
+        (1, 0),
+    )
+    assert len({row.prompt_digest for row in rows}) == 3
+    assert all(len(row.task_digests) == 1 for row in rows)
+    assert "msa" not in repr(rows).lower()
+    assert "collective" not in repr(rows).lower()
+
+
+@pytest.mark.parametrize(
+    ("batches", "task_count", "message"),
+    (
+        ((), 1, "nonempty tuple"),
+        ((("",),), 1, "malformed"),
+        ((("prompt",),), True, "exactly one hidden task"),
+        ((("prompt",),), 2, "exactly one hidden task"),
+    ),
+)
+def test_prompt_occurrence_derivation_rejects_unsealed_shape(
+    batches: tuple[tuple[str, ...], ...], task_count: int, message: str
+) -> None:
+    gold = (101,)
+    authority = (((gold,),),)
+    with pytest.raises(NumericAnswerJudgeError, match=message):
+        derive_numeric_answer_prompt_occurrences(
+            _binding(authority),
+            prompt_batches=batches,
+            workload_digest=_h("workload"),
+            hidden_tasks_per_prompt=task_count,
+        )
 
 
 @pytest.mark.parametrize(

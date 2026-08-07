@@ -161,6 +161,105 @@ class NumericAnswerOccurrence:
         object.__setattr__(self, "gold_token_ids", gold)
 
 
+@dataclass(frozen=True)
+class NumericAnswerPromptOccurrence:
+    """One composed prompt position and its exact hidden-task identity."""
+
+    batch_index: int
+    prompt_index: int
+    prompt_digest: str
+    task_digests: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for field in ("batch_index", "prompt_index"):
+            value = getattr(self, field)
+            if type(value) is not int or value < 0:
+                raise NumericAnswerJudgeError(
+                    f"numeric {field.replace('_', ' ')} must be a nonnegative integer"
+                )
+        object.__setattr__(
+            self,
+            "prompt_digest",
+            _digest(self.prompt_digest, field="numeric qualification prompt"),
+        )
+        tasks = tuple(self.task_digests)
+        if type(self.task_digests) is not tuple or len(tasks) != 1:
+            raise NumericAnswerJudgeError(
+                "numeric prompt occurrence must contain exactly one hidden task"
+            )
+        canonical = tuple(_digest(row, field="numeric hidden task") for row in tasks)
+        if canonical != tuple(sorted(set(canonical))):
+            raise NumericAnswerJudgeError(
+                "numeric prompt occurrence hidden tasks are not canonical"
+            )
+        object.__setattr__(self, "task_digests", canonical)
+
+
+def derive_numeric_answer_prompt_occurrences(
+    binding: HiddenJudgeBinding,
+    *,
+    prompt_batches: tuple[tuple[str, ...], ...],
+    workload_digest: str,
+    hidden_tasks_per_prompt: int,
+) -> tuple[NumericAnswerPromptOccurrence, ...]:
+    """Derive the one shared prompt/task plan used by execution and judging."""
+
+    if type(binding) is not HiddenJudgeBinding:
+        raise NumericAnswerJudgeError("numeric hidden-judge binding is not exact")
+    workload = _digest(workload_digest, field="numeric workload")
+    if type(hidden_tasks_per_prompt) is not int or hidden_tasks_per_prompt != 1:
+        raise NumericAnswerJudgeError(
+            "numeric answer authority requires exactly one hidden task per prompt"
+        )
+    if type(prompt_batches) is not tuple or not prompt_batches:
+        raise NumericAnswerJudgeError("numeric prompt batches must be a nonempty tuple")
+    rows: list[NumericAnswerPromptOccurrence] = []
+    seen: set[str] = set()
+    for batch_index, prompts in enumerate(prompt_batches):
+        if (
+            type(prompts) is not tuple
+            or not prompts
+            or any(type(prompt) is not str or not prompt for prompt in prompts)
+        ):
+            raise NumericAnswerJudgeError("numeric prompt batch is empty or malformed")
+        for prompt_index, prompt_text in enumerate(prompts):
+            prompt_digest = canonical_digest(
+                "cacheon.qualification.prompt-occurrence",
+                {
+                    "batch_index": batch_index,
+                    "prompt_index": prompt_index,
+                    "prompt_sha256": hashlib.sha256(
+                        prompt_text.encode("utf-8")
+                    ).hexdigest(),
+                    "workload_digest": workload,
+                },
+            )
+            if prompt_digest in seen:
+                raise NumericAnswerJudgeError(
+                    "numeric prompt occurrence identity is ambiguous"
+                )
+            seen.add(prompt_digest)
+            task_digest = canonical_digest(
+                "cacheon.qualification.hidden-task",
+                {
+                    "corpus": binding.hidden_corpus_commitment,
+                    "index": 0,
+                    "judge": binding.hidden_judge_digest,
+                    "policy": binding.hidden_task_policy_digest,
+                    "prompt": prompt_digest,
+                },
+            )
+            rows.append(
+                NumericAnswerPromptOccurrence(
+                    batch_index,
+                    prompt_index,
+                    prompt_digest,
+                    (task_digest,),
+                )
+            )
+    return tuple(rows)
+
+
 # These expressions intentionally preserve the established GSM8K numeric
 # policy.  Broadening them would change grading calibration without changing
 # the already-sealed task-policy digest.
@@ -355,18 +454,20 @@ class NumericAnswerJudgeAuthority:
     ) -> NumericAnswerHiddenJudge:
         """Bind every sealed gold row to its exact composed prompt occurrence."""
 
-        workload = _digest(workload_digest, field="numeric workload")
-        if hidden_tasks_per_prompt != 1:
-            raise NumericAnswerJudgeError(
-                "numeric answer authority requires exactly one hidden task per prompt"
-            )
         if type(prompt_batches) is not tuple or len(prompt_batches) != len(
             self._accepted_token_subsequences
         ):
             raise NumericAnswerJudgeError(
                 "numeric prompt batches differ from the sealed answer authority"
             )
+        plan = derive_numeric_answer_prompt_occurrences(
+            self.binding,
+            prompt_batches=prompt_batches,
+            workload_digest=workload_digest,
+            hidden_tasks_per_prompt=hidden_tasks_per_prompt,
+        )
         occurrences: dict[str, NumericAnswerOccurrence] = {}
+        row_index = 0
         for batch_index, (prompts, answers) in enumerate(
             zip(
                 prompt_batches,
@@ -385,33 +486,22 @@ class NumericAnswerJudgeAuthority:
             for prompt_index, (prompt_text, accepted) in enumerate(
                 zip(prompts, answers, strict=True)
             ):
-                prompt_digest = canonical_digest(
-                    "cacheon.qualification.prompt-occurrence",
-                    {
-                        "batch_index": batch_index,
-                        "prompt_index": prompt_index,
-                        "prompt_sha256": hashlib.sha256(
-                            prompt_text.encode("utf-8")
-                        ).hexdigest(),
-                        "workload_digest": workload,
-                    },
-                )
-                task_digest = canonical_digest(
-                    "cacheon.qualification.hidden-task",
-                    {
-                        "corpus": self.binding.hidden_corpus_commitment,
-                        "index": 0,
-                        "judge": self.binding.hidden_judge_digest,
-                        "policy": self.binding.hidden_task_policy_digest,
-                        "prompt": prompt_digest,
-                    },
-                )
+                planned = plan[row_index]
+                row_index += 1
+                if (
+                    planned.batch_index != batch_index
+                    or planned.prompt_index != prompt_index
+                ):
+                    raise NumericAnswerJudgeError(
+                        "numeric prompt occurrence plan order is inconsistent"
+                    )
+                prompt_digest = planned.prompt_digest
                 if prompt_digest in occurrences:
                     raise NumericAnswerJudgeError(
                         "numeric prompt occurrence identity is ambiguous"
                     )
                 occurrences[prompt_digest] = NumericAnswerOccurrence(
-                    (task_digest,), accepted[0]
+                    planned.task_digests, accepted[0]
                 )
         return NumericAnswerHiddenJudge(
             self.binding,
@@ -432,7 +522,9 @@ __all__ = [
     "NumericAnswerJudgeError",
     "NumericAnswerJudgeInfrastructureError",
     "NumericAnswerOccurrence",
+    "NumericAnswerPromptOccurrence",
     "TokenDecoder",
+    "derive_numeric_answer_prompt_occurrences",
     "hidden_task_policy_digest",
     "numeric_hidden_judge_digest",
 ]
