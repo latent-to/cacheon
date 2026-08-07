@@ -16,11 +16,14 @@ from types import SimpleNamespace
 import pytest
 
 from cacheon.eval import b300_qualification_commission as commission
+from cacheon.eval.b300_qualification_deployment import B300RegisteredProfileAuthority
+from cacheon.eval.b300_registered_qualification import REGISTERED_B300_TARGET_IDS
 from cacheon.eval.b300_sealed_qualification_commission import (
     QUALIFICATION_DEADLINE_MAXIMUM_SECONDS,
 )
 from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
+from cacheon.target_catalog import default_target_catalog
 
 
 def _h(seed: str) -> str:
@@ -133,6 +136,28 @@ def test_tracked_deadline_is_lease_bounded_monotonic() -> None:
     assert deadline(object()) == 1000.0 + QUALIFICATION_DEADLINE_MAXIMUM_SECONDS
     # The policy never depends on the cohort it is asked about.
     assert deadline(None) == deadline(object())
+
+
+def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> None:
+    catalog = default_target_catalog()
+    profiles = tuple(
+        B300RegisteredProfileAuthority(
+            target_id,
+            catalog.target_spec_digest(target_id),
+            _h(f"resolver:{target_id}"),
+            lambda _candidate, _prepared: object(),
+        )
+        for target_id in REGISTERED_B300_TARGET_IDS
+    )
+
+    assert tuple(commission._require_complete_factory_profiles(profiles)) == (
+        REGISTERED_B300_TARGET_IDS
+    )
+    with pytest.raises(
+        commission.B300QualificationCommissionError,
+        match="full catalog",
+    ):
+        commission._require_complete_factory_profiles(profiles[:-1])
 
 
 def _gpu(index: int) -> GPUConfiguration:

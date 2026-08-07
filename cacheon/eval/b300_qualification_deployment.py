@@ -1,24 +1,19 @@
-"""Closed B300 qualification composition for ordinary submitted bundles.
+"""Closed B300 qualification composition for registered submitted bundles.
 
-This module is intentionally a *qualification* composition root, not a second
-screening implementation and not a generic plugin loader.  A remote request can
-name only an exact :class:`ArenaQualificationRequest` and the retained
-``primary``/``reproduction`` stage.  It cannot select a module, command, host
-path, evidence root, profile, secret store, executor, judge, or deadline.
+This is a qualification composition root, not a screening implementation or
+plugin loader.  A remote request names only an exact
+:class:`ArenaQualificationRequest` and retained ``primary``/``reproduction``
+stage; it cannot select code, paths, profiles, executors, judges, or deadlines.
 
-The repository does not yet contain a production registry capable of deriving
-all candidate-specific :class:`CandidateQualificationAuthority` values from a
-target ID alone.  ``B300RegisteredProfileAuthority`` is the smallest honest
-seam for that missing deployment authority: the operator registers one sealed
-resolver per target, and this module independently compares its exact typed
-result with the plan builder's result.  No boolean "profile passed" callback is
-accepted.
+``B300RegisteredProfileAuthority`` binds the candidate-dynamic graph and
+quality authority behind one sealed resolver per registered target.  This
+module independently compares its exact typed result with the plan builder's
+result.  No boolean "profile passed" callback is accepted.
 
-Production qualification is resident speed-policy v3.  The core causal runner
-therefore permits one registered candidate at a time.  This composition rejects
-larger cohorts instead of silently falling back to the legacy single-lane
-estimator.  The CPU coordinator must claim qualification leases with
-``max_members=1`` for this deployment.
+Production resident speed-policy v3 permits one registered candidate at a
+time, so larger cohorts fail closed and leases use ``max_members=1``.  That is
+one marginal candidate, not one semantic member: an atomic target remains one
+indivisible transition while binding every ordered member contract.
 """
 
 from __future__ import annotations
@@ -58,13 +53,38 @@ from cacheon.eval.qualification_runner import (
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_plan import MarginalArmPlan
-from cacheon.target_catalog import TargetCatalog
+from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
-CONSTRUCTION_SCHEMA = "cacheon.eval.b300-qualification-construction.v1"
-POLICY_SCHEMA = "cacheon.eval.b300-qualification-policy.v1"
-REGISTRY_SCHEMA = "cacheon.eval.b300-qualification-profile-registry.v1"
-COHORT_SCHEMA = "cacheon.eval.b300-qualification-cohort.v1"
+def registered_b300_target_ids(catalog: TargetCatalog) -> tuple[str, ...]:
+    """Return the exact canonical registered IDs carried by one catalog."""
+
+    if type(catalog) is not TargetCatalog:
+        raise TypeError("registered B300 catalog is not exact")
+    rows = catalog.snapshot().get("targets")
+    target_ids = (
+        tuple(row.get("target_id") for row in rows)
+        if isinstance(rows, list) and all(type(row) is dict for row in rows)
+        else ()
+    )
+    checked = tuple(row for row in target_ids if isinstance(row, str))
+    if (
+        not checked
+        or checked != target_ids
+        or checked != tuple(sorted(set(checked)))
+    ):
+        raise ValueError("registered B300 catalog target rows are not canonical")
+    return checked
+
+
+REGISTERED_B300_TARGET_IDS = registered_b300_target_ids(default_target_catalog())
+QUALIFICATION_SPEED_EVIDENCE_POLICY = (
+    "resident-v3-one-candidate-registered-target.v2"
+)
+CONSTRUCTION_SCHEMA = "cacheon.eval.b300-qualification-construction.v2"
+POLICY_SCHEMA = "cacheon.eval.b300-qualification-policy.v2"
+REGISTRY_SCHEMA = "cacheon.eval.b300-qualification-profile-registry.v2"
+COHORT_SCHEMA = "cacheon.eval.b300-qualification-cohort.v2"
 SELECTION_REFERENCE_SCHEMA = (
     "cacheon.eval.b300-qualification-selection-secret-reference.v1"
 )
@@ -162,7 +182,7 @@ class B300RegisteredProfileAuthority:
 
 @dataclass(frozen=True)
 class B300QualificationCohort:
-    """Path-free identity for one exact promoted singleton.
+    """Path-free identity for one exact promoted registered candidate.
 
     ``ArenaCandidateBinding`` contains a trusted pod-local immutable publication
     root, but its digest deliberately excludes that root.  No root or other
@@ -181,9 +201,9 @@ class B300QualificationCohort:
             raise B300QualificationDeploymentError(
                 "qualification screen lane is unsupported"
             )
-        # Resident speed-policy v3 is a singleton contract in
-        # CausalQualificationInput.  Do not route a larger cohort into a legacy
-        # estimator or pretend it is a production resident measurement.
+        # Resident speed-policy v3 is a one-candidate contract in
+        # CausalQualificationInput.  An atomic candidate may bind multiple
+        # semantic members, but it is never split into multiple candidates.
         if len(self.request.candidates) != 1:
             raise B300QualificationDeploymentError(
                 "resident v3 qualification requires one submitted bundle"
@@ -235,7 +255,7 @@ QualificationDeadlineProvider = Callable[[B300QualificationCohort], float]
 
 @dataclass(frozen=True)
 class B300QualificationConstructionAuthority:
-    """All non-executor authorities for one ordinary-bundle qualification.
+    """All non-executor authorities for one registered-target qualification.
 
     The identity properties intentionally exclude the host evidence path and
     Python callable representations.  Their deployment identities are supplied
@@ -267,16 +287,47 @@ class B300QualificationConstructionAuthority:
                 "qualification target catalog is not exact"
             )
         rows = tuple(self.profiles)
+        try:
+            catalog_target_ids = registered_b300_target_ids(self.catalog)
+        except (TypeError, ValueError):
+            catalog_target_ids = ()
         if (
             type(self.profiles) is not tuple
-            or not rows
             or any(type(row) is not B300RegisteredProfileAuthority for row in rows)
-            or tuple(row.target_id for row in rows)
-            != tuple(sorted(row.target_id for row in rows))
-            or len({row.target_id for row in rows}) != len(rows)
+            or catalog_target_ids != REGISTERED_B300_TARGET_IDS
+            or tuple(row.target_id for row in rows) != REGISTERED_B300_TARGET_IDS
         ):
             raise B300QualificationDeploymentError(
-                "registered qualification profiles are not canonical"
+                "registered qualification profiles do not exactly cover the catalog"
+            )
+        try:
+            from cacheon.eval.b300_registered_qualification_inputs import (
+                registered_b300_member_contract_projection,
+                registered_b300_profile_resolver_digest,
+            )
+
+            projection = registered_b300_member_contract_projection(self.catalog)
+            expected_profiles = tuple(
+                (
+                    target.target_id,
+                    target.target_spec_digest,
+                    registered_b300_profile_resolver_digest(
+                        target,
+                        builder_source_digest=self.builder_source_digest,
+                    ),
+                )
+                for target in projection
+            )
+        except (RuntimeError, TypeError, ValueError) as exc:
+            raise B300QualificationDeploymentError(
+                f"registered qualification profile authority is invalid: {exc}"
+            ) from None
+        if tuple(
+            (row.target_id, row.target_spec_digest, row.resolver_digest)
+            for row in rows
+        ) != expected_profiles:
+            raise B300QualificationDeploymentError(
+                "registered qualification target or member authority is stale"
             )
         for row in rows:
             try:
@@ -382,7 +433,7 @@ class B300QualificationConstructionAuthority:
                 "evidence_policy_digest": self.evidence_policy_digest,
                 "profile_registry_digest": self.profile_registry_digest,
                 "selection_store_digest": self.selection_store_digest,
-                "speed_evidence_policy": "resident-v3-singleton",
+                "speed_evidence_policy": QUALIFICATION_SPEED_EVIDENCE_POLICY,
             },
         )
 
@@ -398,14 +449,14 @@ class B300QualificationConstructionAuthority:
                 "entropy_provider_digest": self.entropy_provider_digest,
                 "hidden_judge_binding_digest": binding.digest,
                 "profile_registry_digest": self.profile_registry_digest,
-                "speed_evidence_policy": "resident-v3-singleton",
+                "speed_evidence_policy": QUALIFICATION_SPEED_EVIDENCE_POLICY,
             },
         )
 
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.eval.b300-qualification-authority.v1",
+            "cacheon.eval.b300-qualification-authority.v2",
             {
                 "builder_digest": self.qualification_builder_digest,
                 "incumbent_stack_digest": self.incumbent_stack.digest,
@@ -526,6 +577,31 @@ def _validate_profile_binding(
     graph = authority.graph_requirement.binding
     target = construction.catalog.require(reservation.target_id)
     expected_spec = construction.catalog.target_spec_digest(reservation.target_id)
+    expected_members = []
+    for member_id in target.members:
+        member_spec = construction.catalog.require(member_id)
+        contract = member_spec.contract_ref
+        if contract is None or member_spec.members != (member_id,):
+            raise B300QualificationDeploymentError(
+                "registered target member lacks singleton contract authority"
+            )
+        expected_members.append(
+            (
+                member_id,
+                construction.catalog.target_spec_digest(member_id),
+                construction.catalog.contract_digest(member_id),
+                contract.verification_profile_id,
+            )
+        )
+    observed_members = tuple(
+        (
+            row.slot_id,
+            row.target_spec_digest,
+            row.contract_digest,
+            row.verification_profile_id,
+        )
+        for row in graph.members
+    )
     arm = prepared.arm
     if (
         type(arm) is not MarginalArmPlan
@@ -537,7 +613,7 @@ def _validate_profile_binding(
         or graph.marginal_arm_digest != arm.digest
         or graph.candidate_launch_digest != prepared.launch.digest
         or graph.contribution_ref_digest != arm.transition.replacement.digest
-        or tuple(row.slot_id for row in graph.members) != tuple(target.members)
+        or observed_members != tuple(expected_members)
         or tuple(reservation.target_members) != tuple(target.members)
     ):
         raise B300QualificationDeploymentError(
@@ -905,7 +981,10 @@ __all__ = [
     "COHORT_SCHEMA",
     "CONSTRUCTION_SCHEMA",
     "POLICY_SCHEMA",
+    "QUALIFICATION_SPEED_EVIDENCE_POLICY",
+    "REGISTERED_B300_TARGET_IDS",
     "REGISTRY_SCHEMA",
     "SELECTION_REFERENCE_SCHEMA",
     "compose_b300_qualification_deployment",
+    "registered_b300_target_ids",
 ]

@@ -47,6 +47,7 @@ from cacheon.eval.b300_qualification_deployment import (
     compose_b300_qualification_deployment,
 )
 from cacheon.eval.b300_registered_qualification import (
+    REGISTERED_B300_TARGET_IDS,
     B300RegisteredQualificationError,
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
@@ -216,6 +217,22 @@ def _tracked_deadline_provider(
         return float(clock()) + float(QUALIFICATION_DEADLINE_MAXIMUM_SECONDS)
 
     return deadline
+
+
+def _require_complete_factory_profiles(
+    profiles: object,
+) -> dict[str, B300RegisteredProfileAuthority]:
+    """Reject partial/stale factory registries before any candidate can run."""
+
+    if (
+        type(profiles) is not tuple
+        or any(type(row) is not B300RegisteredProfileAuthority for row in profiles)
+        or tuple(row.target_id for row in profiles) != REGISTERED_B300_TARGET_IDS
+    ):
+        raise B300QualificationCommissionError(
+            "registered qualification factory does not cover the full catalog"
+        )
+    return {row.target_id: row for row in profiles}
 
 
 def _private_root(path: Path) -> Path:
@@ -698,7 +715,7 @@ def _compose_locked(
     # factory's own self-derived identity stays internal (it embeds the frozen
     # calibration/reference manifests, which embed the service digest and can
     # therefore never appear inside the manifest's declared digests).
-    factory_rows = {row.target_id: row for row in factory.profiles}
+    factory_rows = _require_complete_factory_profiles(factory.profiles)
     profiles = tuple(
         B300RegisteredProfileAuthority(
             target_id,

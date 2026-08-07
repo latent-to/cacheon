@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,11 +21,14 @@ import pytest
 from cacheon.eval import b300_sealed_qualification_commission as sealed
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
+    B300QualificationDeploymentError,
     B300RegisteredProfileAuthority,
 )
 from cacheon.eval.b300_registered_qualification_inputs import (
     ORDINARY_B300_TARGET_IDS,
+    REGISTERED_B300_TARGET_IDS,
     B300RegisteredQualificationError,
+    registered_b300_member_contract_projection,
 )
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -84,6 +88,16 @@ def test_sealed_commission_block_round_trips() -> None:
     assert sealed.sealed_qualification_commission(block) is block
 
 
+def test_pre_catalog_expansion_commission_schema_is_rejected() -> None:
+    block = _block()
+    block["schema"] = "cacheon-private-b300-qualification-commission-v1"
+    with pytest.raises(
+        B300RegisteredQualificationError,
+        match="commission block is not closed",
+    ):
+        sealed.sealed_qualification_commission(block)
+
+
 def _mutations() -> list[tuple[str, dict[str, object]]]:
     cases: list[tuple[str, dict[str, object]]] = []
 
@@ -138,14 +152,15 @@ def test_sealed_commission_block_fails_closed(name: str, block) -> None:
         sealed.sealed_qualification_commission(widened)
 
 
-def test_profile_rows_cover_every_ordinary_target_and_bind_the_identity() -> None:
+def test_profile_rows_cover_all_registered_targets_and_bind_member_authority() -> None:
     catalog = default_target_catalog()
     rows = sealed.sealed_qualification_profile_rows(
         catalog, builder_source_digest=_h("reviewed-one")
     )
     assert tuple(target for target, _spec, _resolver in rows) == (
-        ORDINARY_B300_TARGET_IDS
+        REGISTERED_B300_TARGET_IDS
     )
+    assert ORDINARY_B300_TARGET_IDS == REGISTERED_B300_TARGET_IDS
     assert all(
         spec == catalog.target_spec_digest(target) for target, spec, _ in rows
     )
@@ -155,6 +170,11 @@ def test_profile_rows_cover_every_ordinary_target_and_bind_the_identity() -> Non
     assert {resolver for _, _, resolver in rows}.isdisjoint(
         {resolver for _, _, resolver in other}
     )
+    projection = registered_b300_member_contract_projection(catalog)
+    atomic = next(row for row in projection if row.kind == "atomic")
+    assert len(atomic.members) == 2
+    assert tuple(row.slot_id for row in atomic.member_contracts) == atomic.members
+    assert "contract_digest" not in atomic.to_dict()
     with pytest.raises(B300RegisteredQualificationError):
         sealed.sealed_qualification_profile_rows(
             catalog, builder_source_digest="not-a-digest"
@@ -230,6 +250,14 @@ def test_predicted_digests_equal_a_real_composed_construction(
             selection_policy_digest=selection_policy_digest,
         )
     )
+    with pytest.raises(B300QualificationDeploymentError, match="exactly cover"):
+        replace(construction, profiles=construction.profiles[:-1])
+    stale_profiles = list(construction.profiles)
+    stale_profiles[0] = replace(
+        stale_profiles[0], resolver_digest=_h("stale-member-authority")
+    )
+    with pytest.raises(B300QualificationDeploymentError, match="authority is stale"):
+        replace(construction, profiles=tuple(stale_profiles))
 
 
 def test_predicted_policy_digest_binds_each_declared_identity() -> None:

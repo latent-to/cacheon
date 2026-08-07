@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
@@ -26,6 +27,8 @@ from cacheon.engine_tree import (
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationCohort,
     B300RegisteredProfileAuthority,
+    REGISTERED_B300_TARGET_IDS,
+    registered_b300_target_ids,
 )
 from cacheon.eval.calibration import (
     CalibrationContext,
@@ -78,20 +81,23 @@ from cacheon.stack_manifest import (
     ProposalContributionRef,
 )
 from cacheon.stack_plan import MarginalArmPlan, plan_candidate_stack, plan_marginal_arm
-from cacheon.target_catalog import SINGLETON_TARGET_IDS, TargetCatalog
+from cacheon.target_catalog import TargetCatalog, TargetKind
 
 
-
-ORDINARY_B300_TARGET_IDS = tuple(sorted(SINGLETON_TARGET_IDS))
-POLICY_SCHEMA = "cacheon.eval.b300-registered-qualification-policy.v1"
-FACTORY_SCHEMA = "cacheon.eval.b300-registered-qualification-factory.v1"
-RESOLVER_SCHEMA = "cacheon.eval.b300-registered-profile-resolver.v1"
+# Compatibility only: this historical public name now denotes the complete
+# registered B300 catalog, including atomic targets.  Product coverage uses the
+# canonical name above.
+ORDINARY_B300_TARGET_IDS = REGISTERED_B300_TARGET_IDS
+POLICY_SCHEMA = "cacheon.eval.b300-registered-qualification-policy.v2"
+FACTORY_SCHEMA = "cacheon.eval.b300-registered-qualification-factory.v2"
+RESOLVER_SCHEMA = "cacheon.eval.b300-registered-profile-resolver.v2"
 ATTRIBUTION_SCHEMA = "cacheon.eval.b300-finalized-proposal-attribution.v1"
 AUDIT_SEED_DOMAIN = b"cacheon-b300-registered-audit-seed-v1\0"
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
 
 
 class B300RegisteredQualificationError(RuntimeError):
-    """A submitted bundle differs from sealed ordinary-target authority."""
+    """A submitted bundle differs from sealed registered-target authority."""
 
 
 def _digest(value: object, field: str) -> str:
@@ -107,6 +113,12 @@ def _positive(value: object, field: str, *, minimum: int = 1) -> int:
         raise B300RegisteredQualificationError(
             f"{field} must be an integer >= {minimum}"
         )
+    return value
+
+
+def _identifier(value: object, field: str) -> str:
+    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+        raise B300RegisteredQualificationError(f"{field} is not canonical")
     return value
 
 
@@ -160,13 +172,13 @@ class B300QualificationBlocker:
 
 # These are deliberately code coordinates, not claims that the private donor is
 # production authority.  They identify the largest existing construction
-# pattern while making the missing ordinary-target commissioning work explicit.
+# pattern while making the missing registered-target commissioning work explicit.
 PRODUCTION_AUTHORITY_BLOCKERS = (
     B300QualificationBlocker(
-        "ordinary-focused-graph-facts",
+        "registered-focused-graph-facts",
         (
-            "reviewed focused graph-observation producers for all eleven ordinary "
-            "targets, including attention.msa_prefill_block_score"
+            "reviewed focused graph-observation producers for every registered "
+            "catalog target, including multi-member atomic targets"
         ),
         (
             "experiments/minimax_m3/frontier_2026-07-13/"
@@ -174,9 +186,9 @@ PRODUCTION_AUTHORITY_BLOCKERS = (
         ),
     ),
     B300QualificationBlocker(
-        "ordinary-runtime-binding",
+        "registered-runtime-binding",
         (
-            "a commissioned ordinary-target B300 runtime case and candidate-tree "
+            "a commissioned registered-target B300 runtime case and candidate-tree "
             "binding factory for each physical qualification orientation"
         ),
         (
@@ -188,7 +200,7 @@ PRODUCTION_AUTHORITY_BLOCKERS = (
         "typed-frozen-reference-calibration",
         (
             "typed pristine-reference, prompt, hidden-judge, and frozen calibration "
-            "authorities that reopen for the exact ordinary workload/lane context"
+            "authorities that reopen for the exact registered workload/lane context"
         ),
         (
             "experiments/minimax_m3/frontier_2026-07-13/"
@@ -199,11 +211,167 @@ PRODUCTION_AUTHORITY_BLOCKERS = (
 
 
 @dataclass(frozen=True)
+class B300MemberContractProjection:
+    """One singleton member's declared-math authority."""
+
+    slot_id: str
+    target_spec_digest: str
+    contract_digest: str
+    verification_profile_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "slot_id", _identifier(self.slot_id, "member slot ID"))
+        for field in ("target_spec_digest", "contract_digest"):
+            object.__setattr__(self, field, _digest(getattr(self, field), field))
+        object.__setattr__(
+            self,
+            "verification_profile_id",
+            _identifier(self.verification_profile_id, "verification profile ID"),
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "contract_digest": self.contract_digest,
+            "slot_id": self.slot_id,
+            "target_spec_digest": self.target_spec_digest,
+            "verification_profile_id": self.verification_profile_id,
+        }
+
+
+@dataclass(frozen=True)
+class B300RegisteredTargetProjection:
+    """Catalog-derived target identity plus exact ordered member contracts."""
+
+    target_id: str
+    target_spec_digest: str
+    kind: str
+    members: tuple[str, ...]
+    member_contracts: tuple[B300MemberContractProjection, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "target_id", _identifier(self.target_id, "target ID"))
+        object.__setattr__(
+            self,
+            "target_spec_digest",
+            _digest(self.target_spec_digest, "target-spec digest"),
+        )
+        if self.kind not in {TargetKind.SLOT.value, TargetKind.ATOMIC.value}:
+            raise B300RegisteredQualificationError("target kind is not registered")
+        members = tuple(self.members)
+        contracts = tuple(self.member_contracts)
+        if (
+            type(self.members) is not tuple
+            or not members
+            or members != tuple(sorted(set(members)))
+            or any(_identifier(row, "target member") != row for row in members)
+            or type(self.member_contracts) is not tuple
+            or any(type(row) is not B300MemberContractProjection for row in contracts)
+            or tuple(row.slot_id for row in contracts) != members
+            or (
+                self.kind == TargetKind.SLOT.value
+                and members != (self.target_id,)
+            )
+            or (self.kind == TargetKind.ATOMIC.value and len(members) < 2)
+        ):
+            raise B300RegisteredQualificationError(
+                "registered target member-contract projection is not canonical"
+            )
+        object.__setattr__(self, "members", members)
+        object.__setattr__(self, "member_contracts", contracts)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "member_contracts": [row.to_dict() for row in self.member_contracts],
+            "members": list(self.members),
+            "target_id": self.target_id,
+            "target_spec_digest": self.target_spec_digest,
+        }
+
+
+def registered_b300_member_contract_projection(
+    catalog: TargetCatalog,
+) -> tuple[B300RegisteredTargetProjection, ...]:
+    """Project the complete registered catalog into ordered graph authorities."""
+
+    if type(catalog) is not TargetCatalog:
+        raise B300RegisteredQualificationError(
+            "qualification target catalog is not exact"
+        )
+    try:
+        observed_ids = registered_b300_target_ids(catalog)
+    except (TypeError, ValueError) as exc:
+        raise B300RegisteredQualificationError(
+            f"registered B300 target catalog is malformed: {exc}"
+        ) from None
+    if observed_ids != REGISTERED_B300_TARGET_IDS:
+        raise B300RegisteredQualificationError(
+            "registered B300 target catalog does not have exact coverage"
+        )
+    projection = []
+    for target_id in REGISTERED_B300_TARGET_IDS:
+        spec = catalog.require(target_id)
+        member_rows = []
+        for member_id in spec.members:
+            member_spec = catalog.require(member_id)
+            contract = member_spec.contract_ref
+            if (
+                member_spec.kind is not TargetKind.SLOT
+                or member_spec.members != (member_id,)
+                or contract is None
+            ):
+                raise B300RegisteredQualificationError(
+                    f"registered member {member_id!r} lacks a singleton contract"
+                )
+            member_rows.append(
+                B300MemberContractProjection(
+                    member_id,
+                    catalog.target_spec_digest(member_id),
+                    catalog.contract_digest(member_id),
+                    contract.verification_profile_id,
+                )
+            )
+        projection.append(
+            B300RegisteredTargetProjection(
+                target_id,
+                catalog.target_spec_digest(target_id),
+                spec.kind.value,
+                spec.members,
+                tuple(member_rows),
+            )
+        )
+    return tuple(projection)
+
+
+def registered_b300_profile_resolver_digest(
+    target: B300RegisteredTargetProjection,
+    *,
+    builder_source_digest: str,
+) -> str:
+    """Bind one resolver to its builder and full target/member projection."""
+
+    if type(target) is not B300RegisteredTargetProjection:
+        raise B300RegisteredQualificationError(
+            "profile resolver target projection is not exact"
+        )
+    return canonical_digest(
+        RESOLVER_SCHEMA,
+        {
+            "builder_source_digest": _digest(
+                builder_source_digest, "builder source digest"
+            ),
+            "target_authority": target.to_dict(),
+        },
+    )
+
+
+@dataclass(frozen=True)
 class B300RegisteredQualificationPolicy:
-    """Candidate-independent policy for the exact ordinary target registry."""
+    """Candidate-independent policy for the exact registered target catalog."""
 
     catalog_digest: str
     target_spec_digests: tuple[tuple[str, str], ...]
+    target_contract_projection: tuple[B300RegisteredTargetProjection, ...]
     verification_policy_digest: str
     nll_tail_threshold: str
     tokens_per_prompt: int
@@ -223,19 +391,26 @@ class B300RegisteredQualificationPolicy:
             self, "catalog_digest", _digest(self.catalog_digest, "catalog digest")
         )
         rows = tuple(self.target_spec_digests)
+        projection = tuple(self.target_contract_projection)
         if (
             type(self.target_spec_digests) is not tuple
-            or tuple(target for target, _ in rows) != ORDINARY_B300_TARGET_IDS
+            or tuple(target for target, _ in rows) != REGISTERED_B300_TARGET_IDS
             or len({target for target, _ in rows}) != len(rows)
+            or type(self.target_contract_projection) is not tuple
+            or any(type(row) is not B300RegisteredTargetProjection for row in projection)
+            or tuple(row.target_id for row in projection) != REGISTERED_B300_TARGET_IDS
+            or tuple((row.target_id, row.target_spec_digest) for row in projection)
+            != rows
         ):
             raise B300RegisteredQualificationError(
-                "registered target-spec rows do not exactly cover the eleven ordinary targets"
+                "registered target authorities do not exactly cover the catalog"
             )
         checked = tuple(
             (target, _digest(digest, f"{target} target-spec digest"))
             for target, digest in rows
         )
         object.__setattr__(self, "target_spec_digests", checked)
+        object.__setattr__(self, "target_contract_projection", projection)
         for field in (
             "verification_policy_digest",
             "support_policy_digest",
@@ -316,17 +491,12 @@ class B300RegisteredQualificationPolicy:
             raise B300RegisteredQualificationError(
                 "qualification target catalog is not exact"
             )
-        rows = []
-        for target_id in ORDINARY_B300_TARGET_IDS:
-            spec = catalog.require(target_id)
-            if spec.members != (target_id,) or spec.contract_ref is None:
-                raise B300RegisteredQualificationError(
-                    f"ordinary target {target_id!r} is not one singleton contract"
-                )
-            rows.append((target_id, catalog.target_spec_digest(target_id)))
+        projection = registered_b300_member_contract_projection(catalog)
+        rows = tuple((row.target_id, row.target_spec_digest) for row in projection)
         return cls(
             catalog.digest,
-            tuple(rows),
+            rows,
+            projection,
             verification_policy_digest,
             nll_tail_threshold,
             tokens_per_prompt,
@@ -349,18 +519,19 @@ class B300RegisteredQualificationPolicy:
             )
         observed = tuple(
             (target, catalog.target_spec_digest(target))
-            for target in ORDINARY_B300_TARGET_IDS
+            for target in REGISTERED_B300_TARGET_IDS
         )
         if observed != self.target_spec_digests:
             raise B300RegisteredQualificationError(
-                "registered ordinary target specifications are stale"
+                "registered target specifications are stale"
             )
-        for target_id in ORDINARY_B300_TARGET_IDS:
-            spec = catalog.require(target_id)
-            if spec.members != (target_id,) or spec.contract_ref is None:
-                raise B300RegisteredQualificationError(
-                    f"ordinary target {target_id!r} lost its singleton declared-math contract"
-                )
+        if (
+            registered_b300_member_contract_projection(catalog)
+            != self.target_contract_projection
+        ):
+            raise B300RegisteredQualificationError(
+                "registered target member-contract authority is stale"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -375,6 +546,9 @@ class B300RegisteredQualificationPolicy:
             "nll_tail_threshold": self.nll_tail_threshold,
             "select_count": self.select_count,
             "support_policy_digest": self.support_policy_digest,
+            "target_contract_projection": [
+                row.to_dict() for row in self.target_contract_projection
+            ],
             "target_spec_digests": [list(row) for row in self.target_spec_digests],
             "tokens_per_prompt": self.tokens_per_prompt,
             "topk_width": self.topk_width,
@@ -406,10 +580,18 @@ class B300FocusedGraphFacts:
             not variants
             or any(type(row) is not GraphVariantRequirement for row in variants)
             or any(type(row) is not GraphVariantObservation for row in observations)
-            or tuple((row.slot_id, row.variant_id) for row in variants)
-            != tuple((row.slot_id, row.variant_id) for row in observations)
-            or tuple((row.slot_id, row.variant_id) for row in variants)
-            != tuple(sorted((row.slot_id, row.variant_id) for row in variants))
+        ):
+            raise B300RegisteredQualificationError(
+                "focused graph facts lack canonical requirement/observation coverage"
+            )
+        variant_keys = tuple((row.slot_id, row.variant_id) for row in variants)
+        observation_keys = tuple(
+            (row.slot_id, row.variant_id) for row in observations
+        )
+        if (
+            variant_keys != observation_keys
+            or variant_keys != tuple(sorted(variant_keys))
+            or len(set(variant_keys)) != len(variant_keys)
         ):
             raise B300RegisteredQualificationError(
                 "focused graph facts lack canonical requirement/observation coverage"
@@ -494,7 +676,7 @@ class B300RegisteredQualificationInputs:
             or self.expected_context.catalog_snapshot != self.catalog.snapshot()
         ):
             raise B300RegisteredQualificationError(
-                "evaluation-stack context differs from the ordinary target catalog"
+                "evaluation-stack context differs from the registered target catalog"
             )
         if type(self.incumbent_stack) is not EvaluationStackManifest:
             raise B300RegisteredQualificationError("incumbent stack is not exact")

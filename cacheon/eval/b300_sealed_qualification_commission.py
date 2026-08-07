@@ -18,20 +18,20 @@ from __future__ import annotations
 from cacheon.eval.b300_qualification_deployment import (
     CONSTRUCTION_SCHEMA as QUALIFICATION_CONSTRUCTION_SCHEMA,
     POLICY_SCHEMA as QUALIFICATION_POLICY_SCHEMA,
+    QUALIFICATION_SPEED_EVIDENCE_POLICY,
     REGISTRY_SCHEMA as QUALIFICATION_REGISTRY_SCHEMA,
 )
 from cacheon.eval.b300_registered_qualification_inputs import (
-    ORDINARY_B300_TARGET_IDS,
-    RESOLVER_SCHEMA,
     B300RegisteredQualificationError,
     _digest,
+    registered_b300_member_contract_projection,
+    registered_b300_profile_resolver_digest,
 )
 from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import TargetCatalog
 
 
-QUALIFICATION_COMMISSION_SCHEMA = "cacheon-private-b300-qualification-commission-v1"
-QUALIFICATION_SPEED_EVIDENCE_POLICY = "resident-v3-singleton"
+QUALIFICATION_COMMISSION_SCHEMA = "cacheon-private-b300-qualification-commission-v2"
 QUALIFICATION_DEADLINE_MAXIMUM_SECONDS = 14_400
 
 QUALIFICATION_EVIDENCE_POLICY_DIGEST = canonical_digest(
@@ -207,25 +207,13 @@ def sealed_qualification_profile_rows(
         )
     reviewed = _digest(builder_source_digest, "reviewed builder source digest")
     rows = []
-    for target_id in ORDINARY_B300_TARGET_IDS:
-        spec = catalog.require(target_id)
-        contract = spec.contract_ref
-        if spec.members != (target_id,) or contract is None:
-            raise B300RegisteredQualificationError(
-                f"ordinary target {target_id!r} is not one singleton contract"
-            )
-        resolver_digest = canonical_digest(
-            RESOLVER_SCHEMA,
-            {
-                "builder_source_digest": reviewed,
-                "contract_digest": catalog.contract_digest(target_id),
-                "target_id": target_id,
-                "target_spec_digest": catalog.target_spec_digest(target_id),
-                "verification_profile_id": contract.verification_profile_id,
-            },
+    for target in registered_b300_member_contract_projection(catalog):
+        resolver_digest = registered_b300_profile_resolver_digest(
+            target,
+            builder_source_digest=reviewed,
         )
         rows.append(
-            (target_id, catalog.target_spec_digest(target_id), resolver_digest)
+            (target.target_id, target.target_spec_digest, resolver_digest)
         )
     return tuple(rows)
 

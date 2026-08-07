@@ -30,7 +30,6 @@ from cacheon.eval.b300_mainnet_worker import B300RemoteQualificationRun
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
     B300QualificationDeployment,
-    B300RegisteredProfileAuthority,
     compose_b300_qualification_deployment,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
@@ -126,22 +125,17 @@ def _construction(
 ) -> B300QualificationConstructionAuthority:
     runtime = deployment_fixtures._runtime()
     catalog, incumbent = deployment_fixtures._incumbent(runtime, _h("arena"))
-    profile = B300RegisteredProfileAuthority(
-        deployment_fixtures.TARGET,
-        catalog.target_spec_digest(deployment_fixtures.TARGET),
-        _h("profile-resolver"),
-        lambda _candidate, _prepared: object(),
-    )
+    builder_source = _h("builder-source")
     return B300QualificationConstructionAuthority(
         catalog=catalog,
-        profiles=(profile,),
+        profiles=deployment_fixtures._profiles(catalog, builder_source),
         incumbent_stack=incumbent,
         incumbent_tree_digest=_h("incumbent-tree"),
         pristine_stack=incumbent,
         pristine_tree_digest=_h("pristine-tree"),
         evidence_root=tmp_path / "evidence",
         evidence_policy_digest=_h("evidence-policy"),
-        builder_source_digest=_h("builder-source"),
+        builder_source_digest=builder_source,
         selection_store_digest=_h("selection-store"),
         secret_loader=lambda _reference: b"s" * 32,
         plan_builder=lambda _cohort, _secret: object(),
