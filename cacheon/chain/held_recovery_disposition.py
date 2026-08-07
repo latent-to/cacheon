@@ -87,6 +87,25 @@ def _plan_matches_recovery(
     )
 
 
+def _has_request_ready_origin(events: tuple[EvaluationRecoveryEvent, ...]) -> bool:
+    """Require REQUEST_READY, then only lease renewals, immediately before HOLD."""
+
+    index = len(events) - 2
+    while index >= 0 and events[index].event_type is RecoveryEventType.RENEWED:
+        if (
+            events[index].phase is not RecoveryPhase.REQUEST_READY
+            or events[index].resolution is not RecoveryResolution.UNRESOLVED
+        ):
+            return False
+        index -= 1
+    return (
+        index >= 0
+        and events[index].event_type is RecoveryEventType.REQUEST_READY
+        and events[index].phase is RecoveryPhase.REQUEST_READY
+        and events[index].resolution is RecoveryResolution.UNRESOLVED
+    )
+
+
 @dataclass(frozen=True)
 class ReviewedLegacyScreenOnlyDisposition:
     """One exact review of a legacy, verified screen-only adapter result.
@@ -342,9 +361,7 @@ class ReviewedLegacyScreenOnlyDisposition:
             or len(events) < 2
             or events[-1].event_type is not RecoveryEventType.HELD
             or events[-1].revision != recovery.revision
-            or events[-2].event_type is not RecoveryEventType.REQUEST_READY
-            or events[-2].phase is not RecoveryPhase.REQUEST_READY
-            or events[-2].resolution is not RecoveryResolution.UNRESOLVED
+            or not _has_request_ready_origin(events)
             or events[-1].reason != recovery.reason
         ):
             raise HeldRecoveryDispositionError(

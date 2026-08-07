@@ -73,7 +73,7 @@ class _Case:
     outbox_names: tuple[str, ...]
 
 
-def _case(tmp_path: Path, profile: str) -> _Case:
+def _case(tmp_path: Path, profile: str, *, renew: bool = True) -> _Case:
     fixtures = _fixtures()
     authority = fixtures._authority(
         tmp_path / profile,
@@ -101,8 +101,16 @@ def _case(tmp_path: Path, profile: str) -> _Case:
             observation.response,
             observation.refusal,
         ) == ("result_ready", "adapter_request_failed", None, None)
+        ready_for_hold = ready
+        if renew:
+            renewal_blocks = ready.lease.expires_block - authority.fixtures.BLOCK + 1
+            ready_for_hold, _renewed_lease = store.renew_recovery_lease(
+                ready,
+                current_block=authority.fixtures.BLOCK,
+                lease_blocks=renewal_blocks,
+            )
         held = store.hold_recovery(
-            ready,
+            ready_for_hold,
             current_block=authority.fixtures.BLOCK,
             reason="transport_hold:adapter_request_failed_screen_only_adapter",
         )
@@ -185,12 +193,16 @@ def _snapshot(store, recovery: EvaluationRecovery) -> tuple[object, ...]:
 
 
 @pytest.mark.parametrize(
-    "profile", ("collective-alpha-norm", "attention-beta-projection")
+    ("profile", "renew"),
+    (
+        ("collective-alpha-norm", True),
+        ("attention-beta-projection", False),
+    ),
 )
 def test_reviewed_legacy_release_is_target_neutral_restart_safe_and_never_reuses_request(
-    tmp_path: Path, profile: str
+    tmp_path: Path, profile: str, renew: bool
 ) -> None:
-    case = _case(tmp_path, profile)
+    case = _case(tmp_path, profile, renew=renew)
     original_plan_bytes = case.held.request_plan
     original_request_id = case.held.request_id
 
@@ -199,12 +211,20 @@ def test_reviewed_legacy_release_is_target_neutral_restart_safe_and_never_reuses
         assert held == case.held
         assert reopened.reopen_recovery_request_plan(held) == case.plan
         held_events = reopened.evaluation_recovery_events(held)
-        assert [event.event_type for event in held_events[-2:]] == [
-            RecoveryEventType.REQUEST_READY,
-            RecoveryEventType.HELD,
-        ]
+        expected_tail = (
+            [
+                RecoveryEventType.REQUEST_READY,
+                RecoveryEventType.RENEWED,
+                RecoveryEventType.HELD,
+            ]
+            if renew
+            else [RecoveryEventType.REQUEST_READY, RecoveryEventType.HELD]
+        )
+        assert [event.event_type for event in held_events[-len(expected_tail) :]] == (
+            expected_tail
+        )
         origin = held_events[-2]
-        forged_event_type = RecoveryEventType.RENEWED
+        forged_event_type = RecoveryEventType.PUBLICATION_COMMITTED
         forged_previous = dataclasses.replace(
             origin,
             event_id=evaluation_recovery_event_id(
