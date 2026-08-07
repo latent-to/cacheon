@@ -476,6 +476,7 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         *,
         expected_batch_count: int,
         expected_swap_count: int,
+        deadline: float | None = None,
     ) -> ResidentRequestResult:
         """Admit one exact request; admissions never overlap across the pair."""
 
@@ -488,13 +489,26 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         )
         self._reject_lane_reentrancy("request admission")
         with self._admission:
+            now = self._clock()
+            if deadline is not None and (
+                isinstance(deadline, bool)
+                or not isinstance(deadline, (int, float))
+                or not math.isfinite(float(deadline))
+            ):
+                raise ResidentEvaluationPairError("request deadline is invalid")
+            request_deadline = min(
+                now + self._timeouts[1],
+                float(deadline) if deadline is not None else math.inf,
+            )
+            if request_deadline <= now:
+                raise ResidentEvaluationPairError("request deadline has expired")
             evaluation_id = uuid.uuid4().hex
             work = _Work(
                 digest,
                 operation,
                 expected_batch_count,
                 expected_swap_count,
-                self._clock() + self._timeouts[1],
+                request_deadline,
                 evaluation_id,
             )
             self._accept(self._lanes[lane_id], work)
