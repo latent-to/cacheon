@@ -17,6 +17,8 @@ from cacheon.chain.evaluation_recovery import (
     RecoveryAction,
     RecoveryPhase,
     RecoveryResolution,
+    reviewed_legacy_screen_only_reason_digests,
+    reviewed_legacy_screen_only_release_reason,
 )
 from cacheon.chain.evaluation_lease_operator import (
     FifoLeaseConfig,
@@ -49,6 +51,23 @@ PROFILES = (
     _Profile("alpha", 14, "collective.alpha_norm", "tp4"),
     _Profile("beta", 29, "attention.beta_projection", "tp8"),
 )
+
+
+def test_reviewed_legacy_release_reason_is_closed_and_digest_bound():
+    held = _h("held-reason")
+    disposition = _h("reviewed-disposition")
+    reason = reviewed_legacy_screen_only_release_reason(
+        held_reason_digest=held,
+        disposition_digest=disposition,
+    )
+    assert reviewed_legacy_screen_only_reason_digests(reason) == (
+        held,
+        disposition,
+    )
+    assert reviewed_legacy_screen_only_reason_digests(reason + ":extra") is None
+    assert reviewed_legacy_screen_only_reason_digests(
+        reason.replace(disposition, disposition.upper())
+    ) is None
 
 
 def _store(

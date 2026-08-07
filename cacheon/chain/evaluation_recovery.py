@@ -11,11 +11,14 @@ from dataclasses import dataclass
 from enum import Enum
 
 from cacheon.chain.evaluation_leases import EvaluationLease
-from cacheon.stack_identity import canonical_digest, require_sha256_hex
+from cacheon.stack_identity import canonical_digest, require_sha256_hex, sha256_hex
 
 
 _RECOVERY_DOMAIN = "cacheon.evaluation-recovery.v1"
 _EVENT_DOMAIN = "cacheon.evaluation-recovery-event.v1"
+REVIEWED_LEGACY_SCREEN_ONLY_REASON_PREFIX = (
+    "operator_reviewed_legacy_screen_only:v1:"
+)
 
 # A post-publication release is legal only for one authenticated, closed,
 # marker-absent pre-resident refusal.  These reasons mirror the pod protocol
@@ -85,6 +88,39 @@ def _require_reason(reason: str, *, required: bool = False) -> str:
     ):
         raise EvaluationRecoveryError("evaluation recovery reason is malformed")
     return reason
+
+
+def reviewed_legacy_screen_only_reason_digests(
+    reason: str,
+) -> tuple[str, str] | None:
+    """Parse the one closed reason for a reviewed legacy HELD release."""
+
+    if not isinstance(reason, str) or not reason.startswith(
+        REVIEWED_LEGACY_SCREEN_ONLY_REASON_PREFIX
+    ):
+        return None
+    fields = reason[len(REVIEWED_LEGACY_SCREEN_ONLY_REASON_PREFIX) :].split(":")
+    if len(fields) != 2 or any(
+        len(value) != 64 or any(char not in "0123456789abcdef" for char in value)
+        for value in fields
+    ):
+        return None
+    return fields[0], fields[1]
+
+
+def reviewed_legacy_screen_only_release_reason(
+    *, held_reason_digest: str, disposition_digest: str
+) -> str:
+    """Bind a release event to the prior HELD reason and reviewed disposition."""
+
+    require_sha256_hex(held_reason_digest, field="held recovery reason digest")
+    require_sha256_hex(disposition_digest, field="reviewed disposition digest")
+    return (
+        REVIEWED_LEGACY_SCREEN_ONLY_REASON_PREFIX
+        + held_reason_digest
+        + ":"
+        + disposition_digest
+    )
 
 
 def evaluation_recovery_id(lease: EvaluationLease) -> str:
@@ -356,6 +392,15 @@ def valid_evaluation_recovery_event_transition(
             and bool(event.reason)
         )
     if event.event_type is RecoveryEventType.PRE_RESIDENT_RELEASED:
+        reviewed = reviewed_legacy_screen_only_reason_digests(event.reason)
+        if reviewed is not None:
+            return (
+                previous.resolution is RecoveryResolution.UNRESOLVED
+                and previous.phase is RecoveryPhase.HELD
+                and event.phase is RecoveryPhase.REQUEST_READY
+                and event.resolution is RecoveryResolution.PRE_RESIDENT_RELEASED
+                and reviewed[0] == sha256_hex(previous.reason.encode("utf-8"))
+            )
         if event.reason in WORKER_PRE_RESIDENT_RELEASE_REASONS:
             phase_permitted = previous.phase is RecoveryPhase.REQUEST_READY
         else:
@@ -390,9 +435,12 @@ __all__ = [
     "RecoveryEventType",
     "RecoveryPhase",
     "RecoveryResolution",
+    "REVIEWED_LEGACY_SCREEN_ONLY_REASON_PREFIX",
     "WORKER_PRE_RESIDENT_REASON_PREFIX",
     "WORKER_PRE_RESIDENT_RELEASE_REASONS",
     "evaluation_recovery_event_id",
     "evaluation_recovery_id",
+    "reviewed_legacy_screen_only_reason_digests",
+    "reviewed_legacy_screen_only_release_reason",
     "valid_evaluation_recovery_event_transition",
 ]
