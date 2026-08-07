@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import hashlib
 import re
 
 from cacheon.eval.qualification_runner import (
@@ -306,11 +307,127 @@ class NumericAnswerHiddenJudge:
         )
 
 
+class NumericAnswerJudgeAuthority:
+    """Sealed answer/tokenizer authority bound to a composed prompt plan later.
+
+    The private factory can construct this object before the B300 session plan
+    exists.  Commissioning then supplies the exact prompt batches and the
+    already-derived workload digest.  This keeps workload identity derivation
+    in the tracked composer and prevents private plumbing from guessing it.
+    """
+
+    def __init__(
+        self,
+        binding: HiddenJudgeBinding,
+        *,
+        tokenizer_digest: str,
+        decoder: TokenDecoder,
+        accepted_token_subsequences: NestedAcceptedTokenSubsequences,
+    ) -> None:
+        if type(binding) is not HiddenJudgeBinding:
+            raise NumericAnswerJudgeError("numeric hidden-judge binding is not exact")
+        if not callable(decoder):
+            raise NumericAnswerJudgeError("numeric token decoder is not callable")
+        tokenizer = _digest(tokenizer_digest, field="numeric tokenizer")
+        authority = _normalize_authority(accepted_token_subsequences)
+        if binding.hidden_task_policy_digest != hidden_task_policy_digest():
+            raise NumericAnswerJudgeError(
+                "numeric hidden-task policy differs from the sealed policy"
+            )
+        if binding.hidden_judge_digest != numeric_hidden_judge_digest(
+            hidden_corpus_commitment=binding.hidden_corpus_commitment,
+            accepted_token_subsequences=authority,
+        ):
+            raise NumericAnswerJudgeError(
+                "numeric answer authority differs from its hidden-judge binding"
+            )
+        self.binding = binding
+        self.tokenizer_digest = tokenizer
+        self._decoder = decoder
+        self._accepted_token_subsequences = authority
+
+    def bind_prompt_plan(
+        self,
+        *,
+        prompt_batches: tuple[tuple[str, ...], ...],
+        workload_digest: str,
+        hidden_tasks_per_prompt: int,
+    ) -> NumericAnswerHiddenJudge:
+        """Bind every sealed gold row to its exact composed prompt occurrence."""
+
+        workload = _digest(workload_digest, field="numeric workload")
+        if hidden_tasks_per_prompt != 1:
+            raise NumericAnswerJudgeError(
+                "numeric answer authority requires exactly one hidden task per prompt"
+            )
+        if type(prompt_batches) is not tuple or len(prompt_batches) != len(
+            self._accepted_token_subsequences
+        ):
+            raise NumericAnswerJudgeError(
+                "numeric prompt batches differ from the sealed answer authority"
+            )
+        occurrences: dict[str, NumericAnswerOccurrence] = {}
+        for batch_index, (prompts, answers) in enumerate(
+            zip(
+                prompt_batches,
+                self._accepted_token_subsequences,
+                strict=True,
+            )
+        ):
+            if (
+                type(prompts) is not tuple
+                or len(prompts) != len(answers)
+                or any(type(prompt) is not str or not prompt for prompt in prompts)
+            ):
+                raise NumericAnswerJudgeError(
+                    "numeric prompt batch differs from the sealed answer authority"
+                )
+            for prompt_index, (prompt_text, accepted) in enumerate(
+                zip(prompts, answers, strict=True)
+            ):
+                prompt_digest = canonical_digest(
+                    "cacheon.qualification.prompt-occurrence",
+                    {
+                        "batch_index": batch_index,
+                        "prompt_index": prompt_index,
+                        "prompt_sha256": hashlib.sha256(
+                            prompt_text.encode("utf-8")
+                        ).hexdigest(),
+                        "workload_digest": workload,
+                    },
+                )
+                task_digest = canonical_digest(
+                    "cacheon.qualification.hidden-task",
+                    {
+                        "corpus": self.binding.hidden_corpus_commitment,
+                        "index": 0,
+                        "judge": self.binding.hidden_judge_digest,
+                        "policy": self.binding.hidden_task_policy_digest,
+                        "prompt": prompt_digest,
+                    },
+                )
+                if prompt_digest in occurrences:
+                    raise NumericAnswerJudgeError(
+                        "numeric prompt occurrence identity is ambiguous"
+                    )
+                occurrences[prompt_digest] = NumericAnswerOccurrence(
+                    (task_digest,), accepted[0]
+                )
+        return NumericAnswerHiddenJudge(
+            self.binding,
+            tokenizer_digest=self.tokenizer_digest,
+            decoder=self._decoder,
+            accepted_token_subsequences=self._accepted_token_subsequences,
+            occurrence_map=occurrences,
+        )
+
+
 __all__ = [
     "HIDDEN_JUDGE_DOMAIN",
     "HIDDEN_TASK_POLICY_DOMAIN",
     "HIDDEN_TASK_POLICY_PAYLOAD",
     "NestedAcceptedTokenSubsequences",
+    "NumericAnswerJudgeAuthority",
     "NumericAnswerHiddenJudge",
     "NumericAnswerJudgeError",
     "NumericAnswerJudgeInfrastructureError",

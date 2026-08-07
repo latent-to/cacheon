@@ -8,6 +8,7 @@ from cacheon.eval.numeric_answer_judge import (
     HIDDEN_JUDGE_DOMAIN,
     HIDDEN_TASK_POLICY_DOMAIN,
     HIDDEN_TASK_POLICY_PAYLOAD,
+    NumericAnswerJudgeAuthority,
     NumericAnswerHiddenJudge,
     NumericAnswerJudgeError,
     NumericAnswerJudgeInfrastructureError,
@@ -336,4 +337,83 @@ def test_malformed_sealed_gold_is_infrastructure_failure() -> None:
             prompt_digest=prompt,
             output_ids=output,
             task_digests=(task,),
+        )
+
+
+def test_deferred_authority_binds_exact_composed_prompt_occurrences() -> None:
+    first_gold, second_gold = (101,), (202,)
+    authority = (((first_gold,), (second_gold,)),)
+    binding = _binding(authority)
+    decoded = {
+        first_gold: "#### 11",
+        second_gold: "#### 22",
+        (1,): "answer is 11",
+        (2,): "answer is 22",
+    }
+    deferred = NumericAnswerJudgeAuthority(
+        binding,
+        tokenizer_digest=_h("tokenizer"),
+        decoder=decoded.__getitem__,
+        accepted_token_subsequences=authority,
+    )
+    workload = _h("composed-workload")
+    prompts = (("first prompt", "second prompt"),)
+    judge = deferred.bind_prompt_plan(
+        prompt_batches=prompts,
+        workload_digest=workload,
+        hidden_tasks_per_prompt=1,
+    )
+
+    for prompt_index, (prompt_text, output_ids) in enumerate(
+        zip(prompts[0], ((1,), (2,)), strict=True)
+    ):
+        prompt_digest = canonical_digest(
+            "cacheon.qualification.prompt-occurrence",
+            {
+                "batch_index": 0,
+                "prompt_index": prompt_index,
+                "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest(),
+                "workload_digest": workload,
+            },
+        )
+        task_digest = canonical_digest(
+            "cacheon.qualification.hidden-task",
+            {
+                "corpus": binding.hidden_corpus_commitment,
+                "index": 0,
+                "judge": binding.hidden_judge_digest,
+                "policy": binding.hidden_task_policy_digest,
+                "prompt": prompt_digest,
+            },
+        )
+        assert judge(
+            prompt_digest=prompt_digest,
+            output_ids=output_ids,
+            task_digests=(task_digest,),
+        ).passed == (True,)
+
+
+@pytest.mark.parametrize(
+    ("prompts", "task_count", "message"),
+    (
+        ((('only one',),), 1, "prompt batch"),
+        ((('first', 'second'),), 2, "exactly one hidden task"),
+    ),
+)
+def test_deferred_authority_rejects_prompt_or_task_policy_drift(
+    prompts: tuple[tuple[str, ...], ...], task_count: int, message: str
+) -> None:
+    gold = (101,)
+    authority = (((gold,), (gold,)),)
+    deferred = NumericAnswerJudgeAuthority(
+        _binding(authority),
+        tokenizer_digest=_h("tokenizer"),
+        decoder=lambda _ids: "1",
+        accepted_token_subsequences=authority,
+    )
+    with pytest.raises(NumericAnswerJudgeError, match=message):
+        deferred.bind_prompt_plan(
+            prompt_batches=prompts,
+            workload_digest=_h("workload"),
+            hidden_tasks_per_prompt=task_count,
         )

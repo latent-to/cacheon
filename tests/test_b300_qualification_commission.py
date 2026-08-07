@@ -45,6 +45,19 @@ class _Resolver:
         raise AssertionError("capability checks must not resolve sources")
 
 
+class _DeferredJudge:
+    def __init__(self, binding: HiddenJudgeBinding, tokenizer_digest: str) -> None:
+        self.binding = binding
+        self.tokenizer_digest = tokenizer_digest
+        self.calls: list[dict[str, object]] = []
+
+    def bind_prompt_plan(self, **kwargs: object) -> _Judge:
+        self.calls.append(dict(kwargs))
+        result = _Judge()
+        result.binding = self.binding
+        return result
+
+
 def _capabilities(**overrides: object) -> commission.B300QualificationCapabilities:
     values: dict[str, object] = {
         "secret_loader": lambda _reference: b"s" * 32,
@@ -73,6 +86,46 @@ def test_capabilities_seal_exact_callables_and_identities() -> None:
         _capabilities(graph_facts_builder_digest="not-a-digest")
     with pytest.raises(commission.B300QualificationCommissionError):
         _capabilities(source_resolver_digest=_h("upper").upper())
+
+
+def test_deferred_hidden_judge_binds_only_the_exact_composed_plan() -> None:
+    binding = HiddenJudgeBinding(
+        _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
+    )
+    tokenizer = _h("tokenizer")
+    deferred = _DeferredJudge(binding, tokenizer)
+    capabilities = _capabilities(hidden_judge=deferred)
+    assert capabilities.hidden_judge is deferred
+
+    bound = commission._bind_hidden_judge(
+        deferred,
+        binding=binding,
+        tokenizer_digest=tokenizer,
+        prompt_batches=(("prompt",),),
+        workload_digest=_h("workload"),
+        hidden_tasks_per_prompt=1,
+    )
+    assert callable(bound)
+    assert deferred.calls == [
+        {
+            "hidden_tasks_per_prompt": 1,
+            "prompt_batches": (("prompt",),),
+            "workload_digest": _h("workload"),
+        }
+    ]
+
+    with pytest.raises(
+        commission.B300QualificationCommissionError,
+        match="tokenizer differs",
+    ):
+        commission._bind_hidden_judge(
+            deferred,
+            binding=binding,
+            tokenizer_digest=_h("other-tokenizer"),
+            prompt_batches=(("prompt",),),
+            workload_digest=_h("workload"),
+            hidden_tasks_per_prompt=1,
+        )
 
 
 def test_tracked_deadline_is_lease_bounded_monotonic() -> None:

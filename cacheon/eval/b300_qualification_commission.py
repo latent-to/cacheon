@@ -125,7 +125,10 @@ class B300QualificationCapabilities:
         if (
             not callable(self.secret_loader)
             or not callable(self.entropy_provider)
-            or not callable(self.hidden_judge)
+            or not (
+                callable(self.hidden_judge)
+                or callable(getattr(self.hidden_judge, "bind_prompt_plan", None))
+            )
             or not callable(self.graph_facts_builder)
             or not callable(getattr(self.source_resolver, "resolve_proposal", None))
             or not callable(getattr(self.source_resolver, "resolve_integrated", None))
@@ -147,6 +150,41 @@ class B300QualificationCapabilities:
                 raise B300QualificationCommissionError(
                     f"capability {field} is not one SHA-256 identity"
                 )
+
+
+def _bind_hidden_judge(
+    capability: object,
+    *,
+    binding: HiddenJudgeBinding,
+    tokenizer_digest: str,
+    prompt_batches: tuple[tuple[str, ...], ...],
+    workload_digest: str,
+    hidden_tasks_per_prompt: int,
+) -> object:
+    """Bind a deferred judge authority to the exact composed prompt plan."""
+
+    judge = capability
+    binder = getattr(capability, "bind_prompt_plan", None)
+    if callable(binder):
+        if getattr(capability, "tokenizer_digest", None) != tokenizer_digest:
+            raise B300QualificationCommissionError(
+                "hidden judge tokenizer differs from the sealed prompt identity"
+            )
+        try:
+            judge = binder(
+                prompt_batches=prompt_batches,
+                workload_digest=workload_digest,
+                hidden_tasks_per_prompt=hidden_tasks_per_prompt,
+            )
+        except Exception as exc:
+            raise B300QualificationCommissionError(
+                f"hidden judge prompt-plan binding failed: {exc}"
+            ) from None
+    if not callable(judge) or getattr(judge, "binding", None) != binding:
+        raise B300QualificationCommissionError(
+            "bound hidden judge differs from the sealed prompt identity"
+        )
+    return judge
 
 
 @dataclass
@@ -511,6 +549,15 @@ def _compose_locked(
         top_logprobs_num=policy.topk_width,
         temperature=float(session_block["temperature"]),
     )
+    workload_digest = marginal_workload_digest(baseline_session_plan)
+    hidden_judge = _bind_hidden_judge(
+        capabilities.hidden_judge,
+        binding=hidden_binding,
+        tokenizer_digest=inputs.prompt_identity["tokenizer_digest"],
+        prompt_batches=inputs.prompt_batches,
+        workload_digest=workload_digest,
+        hidden_tasks_per_prompt=policy.hidden_tasks_per_prompt,
+    )
     model_mount = TrustedArenaModelMountReceipt.capture(
         inputs.model_root,
         arena_digest=manifest.digest,
@@ -522,7 +569,7 @@ def _compose_locked(
         stock,
         incumbent_launch,
         incumbent_binding,
-        workload_digest=marginal_workload_digest(baseline_session_plan),
+        workload_digest=workload_digest,
         tokenizer_digest=inputs.prompt_identity["tokenizer_digest"],
         hidden_corpus_commitment=hidden_binding.hidden_corpus_commitment,
         hidden_judge_digest=hidden_binding.hidden_judge_digest,
@@ -683,7 +730,7 @@ def _compose_locked(
             inputs.prompt_identity["selection_policy_digest"]
         ),
         entropy_provider=capabilities.entropy_provider,
-        hidden_judge=capabilities.hidden_judge,
+        hidden_judge=hidden_judge,
         deadline_policy_digest=declared_qualification_deadline_digest(),
         deadline_provider=_tracked_deadline_provider(),
     )
