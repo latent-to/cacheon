@@ -558,8 +558,17 @@ def _registration(config: DispatcherConfig) -> dict[str, Any]:
     return registration
 
 
-def build_dispatcher(config: DispatcherConfig) -> RemoteEvaluationDispatcher:
-    """Construct the exact CPU coordinator and durable spool adapter."""
+def build_dispatcher(
+    config: DispatcherConfig,
+    *,
+    store_factory: Callable[..., Any] | None = None,
+) -> RemoteEvaluationDispatcher:
+    """Construct the exact CPU coordinator and durable spool adapter.
+
+    ``store_factory`` defaults to the ordinary finalized intake store.  The
+    standing supervisor may pass ``RecoverableFinalizedIntakeStore`` so screen
+    and recoverable qualification share one recovery-capable coordinator.
+    """
 
     registration = _registration(config)
     provider = RemoteOnlyArenaProvider(config.manifest.provider_digest)
@@ -569,20 +578,25 @@ def build_dispatcher(config: DispatcherConfig) -> RemoteEvaluationDispatcher:
     # Do not advertise a reconstructed dispatcher until the independently
     # advancing intake authority has a present, correctly scoped live cursor.
     cursor()
-    coordinator = EvaluationCoordinator(
-        intake_db=config.intake_db,
-        policy=config.policy,
-        scope=config.scope,
-        service=service,
-        readiness=config.readiness,
-        owner=config.owner,
-        advance_finalized_cursor=cursor,
-        lease_blocks=config.lease_blocks,
-        heartbeat_interval_s=config.heartbeat_interval_s,
-        heartbeat_join_timeout_s=config.heartbeat_join_timeout_s,
-        lock_attempts=config.lock_attempts,
-        lock_retry_delay_s=config.lock_retry_delay_s,
-    )
+    coordinator_kwargs: dict[str, Any] = {
+        "intake_db": config.intake_db,
+        "policy": config.policy,
+        "scope": config.scope,
+        "service": service,
+        "readiness": config.readiness,
+        "owner": config.owner,
+        "advance_finalized_cursor": cursor,
+        "lease_blocks": config.lease_blocks,
+        "heartbeat_interval_s": config.heartbeat_interval_s,
+        "heartbeat_join_timeout_s": config.heartbeat_join_timeout_s,
+        "lock_attempts": config.lock_attempts,
+        "lock_retry_delay_s": config.lock_retry_delay_s,
+    }
+    if store_factory is not None:
+        if not callable(store_factory):
+            raise MainnetScreenDispatcherError("store_factory is not callable")
+        coordinator_kwargs["store_factory"] = store_factory
+    coordinator = EvaluationCoordinator(**coordinator_kwargs)
     try:
         transport = DurableSpoolAuthenticatedWorkerTransport(
             registration_path=config.registration_path,

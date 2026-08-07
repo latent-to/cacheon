@@ -21,18 +21,39 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import signal
+import stat
 import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
 
 
 STATUS_SCHEMA = "cacheon-standing-cpu-supervisor-status-v1"
 EVENT_SCHEMA = "cacheon-standing-cpu-supervisor-event-v1"
+CONFIG_SCHEMA = "cacheon-standing-supervisor-config-v1"
+CONFIG_DOMAIN = "cacheon.chain.standing-supervisor-config.v1"
 _TERMINAL_CLAIM_STATUSES = frozenset({"failed", "expired", "qualified"})
+_STANDING_CONFIG_FIELDS = frozenset(
+    {
+        "enable_incentive",
+        "enable_settlement",
+        "enable_weights",
+        "idle_poll_ms",
+        "qualification_evidence_root",
+        "qualification_incumbent_stack_path",
+        "qualification_incumbent_tree_digest",
+        "restart_initial_backoff_ms",
+        "restart_max_backoff_ms",
+        "schema",
+        "screen_dispatcher_config",
+        "stall_timeout_ms",
+    }
+)
 
 
 class StandingCpuSupervisorError(RuntimeError):
@@ -571,14 +592,279 @@ def run_forever(
 
 
 def _emit_status(status: SupervisorStatus) -> None:
-    from cacheon.chain.remote_worker_spool import spool_canonical_json
+    """Emit one operator status line.
+
+    Status is monitoring output, not a sealed digest authority, so integer
+    millisecond fields are used (canonical JSON forbids floats).
+    """
+
+    import json
 
     payload = dict(status.to_dict())
     payload["event"] = "status"
     payload["schema"] = EVENT_SCHEMA
     payload["time_unix"] = int(time.time())
-    sys.stdout.buffer.write(spool_canonical_json(payload) + b"\n")
+    payload["last_progress_unix_ms"] = int(round(float(status.last_progress_unix) * 1000.0))
+    del payload["last_progress_unix"]
+    if status.checkpoint_age_s is not None:
+        payload["checkpoint_age_ms"] = int(round(float(status.checkpoint_age_s) * 1000.0))
+    payload.pop("checkpoint_age_s", None)
+    sys.stdout.buffer.write(
+        (json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+    )
     sys.stdout.buffer.flush()
+
+
+def _closed_config(value: object, fields: frozenset[str], label: str) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != fields:
+        raise StandingCpuSupervisorError(f"{label} fields are not closed")
+    return value
+
+
+def _absolute_path(value: object, label: str) -> Path:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\x00" in value
+        or not Path(value).is_absolute()
+    ):
+        raise StandingCpuSupervisorError(f"{label} must be an absolute path")
+    path = Path(value)
+    if path != Path(os.path.normpath(path)):
+        raise StandingCpuSupervisorError(f"{label} must be canonical")
+    return path
+
+
+def _authority_file(path: Path, label: str, *, secret: bool = False) -> None:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise StandingCpuSupervisorError(f"{label} is unavailable: {exc}") from None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
+        or (secret and stat.S_IMODE(info.st_mode) & 0o077)
+        or (not secret and stat.S_IMODE(info.st_mode) & 0o022)
+    ):
+        qualifier = (
+            "owner-only regular file" if secret else "owner-controlled regular file"
+        )
+        raise StandingCpuSupervisorError(f"{label} must be an {qualifier}")
+
+
+def _private_directory(path: Path, label: str) -> None:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise StandingCpuSupervisorError(f"{label} is unavailable: {exc}") from None
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o700
+        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
+    ):
+        raise StandingCpuSupervisorError(
+            f"{label} must be an owner-controlled mode-0700 directory"
+        )
+
+
+def _positive_int(value: object, label: str, *, maximum: int | None = None) -> int:
+    if type(value) is not int or value <= 0 or (
+        maximum is not None and value > maximum
+    ):
+        raise StandingCpuSupervisorError(f"{label} is outside its integer bounds")
+    return value
+
+
+def _positive_float(value: object, label: str) -> float:
+    if (
+        type(value) is bool
+        or type(value) not in (int, float)
+        or not math.isfinite(float(value))
+        or float(value) <= 0
+    ):
+        raise StandingCpuSupervisorError(f"{label} must be a positive finite duration")
+    return float(value)
+
+
+def _exact_bool(value: object, label: str) -> bool:
+    if type(value) is not bool:
+        raise StandingCpuSupervisorError(f"{label} must be a boolean")
+    return value
+
+
+@dataclass(frozen=True)
+class StandingSupervisorConfig:
+    """Closed standing-supervisor composition authority."""
+
+    raw: dict[str, Any]
+    screen_dispatcher_config: Path
+    qualification_evidence_root: Path
+    qualification_incumbent_stack_path: Path
+    qualification_incumbent_tree_digest: str
+    enable_weights: bool
+    enable_settlement: bool
+    enable_incentive: bool
+    stall_timeout_s: float
+    idle_poll_s: float
+    restart_initial_backoff_s: float
+    restart_max_backoff_s: float
+
+    @property
+    def digest(self) -> str:
+        from cacheon.stack_identity import canonical_digest
+
+        return canonical_digest(CONFIG_DOMAIN, self.raw)
+
+
+def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConfig:
+    """Strictly reopen one immutable standing-supervisor authority file."""
+
+    from cacheon.chain.remote_worker_spool import load_json
+    from cacheon.stack_identity import require_sha256_hex
+
+    config_path = _absolute_path(os.fspath(path), "config path")
+    _authority_file(config_path, "standing config")
+    try:
+        raw = load_json(config_path)
+    except Exception as exc:
+        raise StandingCpuSupervisorError(
+            f"standing config cannot reopen: {exc}"
+        ) from None
+    row = _closed_config(raw, _STANDING_CONFIG_FIELDS, "standing supervisor config")
+    if row["schema"] != CONFIG_SCHEMA:
+        raise StandingCpuSupervisorError("standing supervisor config schema is unsupported")
+
+    screen_path = _absolute_path(
+        row["screen_dispatcher_config"], "screen_dispatcher_config"
+    )
+    _authority_file(screen_path, "screen dispatcher config")
+    evidence_root = _absolute_path(
+        row["qualification_evidence_root"], "qualification_evidence_root"
+    )
+    _private_directory(evidence_root, "qualification_evidence_root")
+    incumbent_path = _absolute_path(
+        row["qualification_incumbent_stack_path"],
+        "qualification_incumbent_stack_path",
+    )
+    _authority_file(incumbent_path, "qualification incumbent stack")
+    try:
+        tree_digest = require_sha256_hex(
+            row["qualification_incumbent_tree_digest"],
+            field="qualification incumbent tree digest",
+        )
+    except (TypeError, ValueError) as exc:
+        raise StandingCpuSupervisorError(str(exc)) from None
+
+    enable_weights = _exact_bool(row["enable_weights"], "enable_weights")
+    enable_settlement = _exact_bool(row["enable_settlement"], "enable_settlement")
+    enable_incentive = _exact_bool(row["enable_incentive"], "enable_incentive")
+    if enable_weights:
+        raise StandingCpuSupervisorError(
+            "enable_weights requires a sealed weights authority composition; "
+            "keep enable_weights false until the weights stage is attached"
+        )
+    if enable_settlement or enable_incentive:
+        raise StandingCpuSupervisorError(
+            "settlement/incentive stages are not sealed in this standing config; "
+            "keep enable_settlement and enable_incentive false until authorities exist"
+        )
+
+    stall_timeout_ms = _positive_int(
+        row["stall_timeout_ms"], "stall_timeout_ms", maximum=86_400_000
+    )
+    idle_poll_ms = _positive_int(row["idle_poll_ms"], "idle_poll_ms", maximum=60_000)
+    restart_initial_backoff_ms = _positive_int(
+        row["restart_initial_backoff_ms"],
+        "restart_initial_backoff_ms",
+        maximum=600_000,
+    )
+    restart_max_backoff_ms = _positive_int(
+        row["restart_max_backoff_ms"],
+        "restart_max_backoff_ms",
+        maximum=600_000,
+    )
+    if restart_initial_backoff_ms > restart_max_backoff_ms:
+        raise StandingCpuSupervisorError(
+            "restart initial backoff exceeds its maximum"
+        )
+
+    return StandingSupervisorConfig(
+        raw=dict(row),
+        screen_dispatcher_config=screen_path,
+        qualification_evidence_root=evidence_root,
+        qualification_incumbent_stack_path=incumbent_path,
+        qualification_incumbent_tree_digest=tree_digest,
+        enable_weights=enable_weights,
+        enable_settlement=enable_settlement,
+        enable_incentive=enable_incentive,
+        stall_timeout_s=stall_timeout_ms / 1000.0,
+        idle_poll_s=idle_poll_ms / 1000.0,
+        restart_initial_backoff_s=restart_initial_backoff_ms / 1000.0,
+        restart_max_backoff_s=restart_max_backoff_ms / 1000.0,
+    )
+
+
+def build_standing_supervisor(
+    config: StandingSupervisorConfig,
+) -> StandingCpuSupervisor:
+    """Compose screen + recoverable qualification from sealed standing config."""
+
+    from cacheon.chain.mainnet_screen_dispatcher import (
+        build_dispatcher,
+        load_config,
+    )
+    from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
+    from cacheon.chain.recoverable_qualification_dispatcher import (
+        RecoverableQualificationDispatcher,
+    )
+    from cacheon.chain.remote_worker_spool import load_json
+    from cacheon.stack_manifest import EvaluationStackManifest
+
+    if type(config) is not StandingSupervisorConfig:
+        raise StandingCpuSupervisorError("standing supervisor config is not typed")
+
+    screen_config = load_config(config.screen_dispatcher_config)
+    screen_dispatcher = build_dispatcher(
+        screen_config,
+        store_factory=RecoverableFinalizedIntakeStore,
+    )
+    try:
+        incumbent_raw = load_json(config.qualification_incumbent_stack_path)
+        incumbent = EvaluationStackManifest.from_dict(incumbent_raw)
+    except Exception as exc:
+        raise StandingCpuSupervisorError(
+            f"qualification incumbent stack cannot reopen: {exc}"
+        ) from None
+
+    qualification_dispatcher = RecoverableQualificationDispatcher(
+        coordinator=screen_dispatcher.coordinator,
+        transport=screen_dispatcher.transport,
+        credential=screen_dispatcher.credential,
+        qualification_evidence_root=config.qualification_evidence_root,
+        qualification_incumbent_stack=incumbent,
+        qualification_incumbent_tree_digest=(
+            config.qualification_incumbent_tree_digest
+        ),
+    )
+
+    weights_once = None
+    if config.enable_weights:
+        # load_standing_config already refuses enable_weights until sealed.
+        raise StandingCpuSupervisorError("weights stage is not sealed")
+
+    return StandingCpuSupervisor(
+        screen_once=screen_dispatcher.dispatch_screen_once,
+        qualification_once=qualification_dispatcher.dispatch_once,
+        settle_once=None,
+        incentive_once=None,
+        weights_once=weights_once,
+        stall_timeout_s=config.stall_timeout_s,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -595,21 +881,42 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry reserved for sealed composition; stages are loaded from config.
-
-    The production config loader lands with private deploy (handoff §7). Until
-    then, tests construct ``StandingCpuSupervisor`` directly with injectable
-    stage callables.
-    """
+    """Load sealed standing config and run the composed forever loop."""
 
     args = build_parser().parse_args(argv)
-    print(
-        "STANDING-CPU-SUPERVISOR-ERROR: sealed config composition is not "
-        f"wired for {args.config!r}; construct StandingCpuSupervisor in-process "
-        "or wait for the private deploy gate",
-        file=sys.stderr,
+    try:
+        config = load_standing_config(args.config)
+        supervisor = build_standing_supervisor(config)
+    except StandingCpuSupervisorError as exc:
+        print(
+            f"STANDING-CPU-SUPERVISOR-ERROR: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            "STANDING-CPU-SUPERVISOR-ERROR: sealed composition failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    stop = threading.Event()
+
+    def _stop(_signum: int, _frame: object | None) -> None:
+        stop.set()
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+    run_forever(
+        supervisor,
+        stop,
+        idle_poll_s=config.idle_poll_s,
+        restart_initial_backoff_s=config.restart_initial_backoff_s,
+        restart_max_backoff_s=config.restart_max_backoff_s,
+        on_status=_emit_status,
     )
-    return 2
+    return 0
 
 
 if __name__ == "__main__":
@@ -617,16 +924,20 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "CONFIG_SCHEMA",
     "EVENT_SCHEMA",
     "STATUS_SCHEMA",
     "FifoQueueTable",
     "StandingCpuSupervisor",
     "StandingCpuSupervisorError",
+    "StandingSupervisorConfig",
     "SupervisorPhase",
     "SupervisorStageResult",
     "SupervisorStatus",
     "build_fifo_queue_table",
+    "build_standing_supervisor",
     "incentive_stage",
+    "load_standing_config",
     "refuse_terminal_reclaim",
     "run_forever",
     "settlement_stage",
