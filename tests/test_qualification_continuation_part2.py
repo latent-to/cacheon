@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import shutil
@@ -10,12 +9,22 @@ from types import SimpleNamespace
 import pytest
 
 from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.marginal_runtime import run_marginal_lifecycle
+from cacheon.eval.qualification import SelectionEntropyReceipt
 from cacheon.eval.qualification_continuation import (
     QualificationContinuation,
     QualificationContinuationError,
     QualificationContinuationStore,
+    QualityContinuation,
     ResidentCountQualityCheckpoint,
 )
+from tests.test_marginal_runtime import _case, _prepared
+from tests.test_qualification_continuation import (
+    _TypedExecutor,
+    _audit_witness,
+    _pristine_reference_execution,
+)
+from tests.test_qualification_runner import _quiescence
 
 
 def _digest(label: str) -> str:
@@ -61,6 +70,10 @@ def _scope(
     )
 
 
+def _resident_count_path(continuation: QualificationContinuation) -> Path:
+    return continuation.directory / "resident_count.json"
+
+
 def _quality_path(continuation: QualificationContinuation) -> Path:
     return continuation.directory / "quality.json"
 
@@ -68,10 +81,42 @@ def _quality_path(continuation: QualificationContinuation) -> Path:
 def _rewrite_payload(
     continuation: QualificationContinuation, payload: object
 ) -> None:
-    path = _quality_path(continuation)
+    path = _resident_count_path(continuation)
     path.chmod(0o600)
-    path.write_bytes(continuation._record_bytes("quality", payload))
+    path.write_bytes(continuation._record_bytes("resident_count", payload))
     path.chmod(0o400)
+
+
+def _pristine_quality(root: Path) -> QualityContinuation:
+    case = _case(root / "runtime")
+    prepared = _prepared(case)
+    lifecycle = run_marginal_lifecycle(
+        prepared,
+        executor=_TypedExecutor(root / "artifacts"),
+        model_mount=case.mount,
+        deadline=999.0,
+    )
+    reference_execution = _pristine_reference_execution(
+        lifecycle.baseline_before
+    )
+    return QualityContinuation(
+        teardown_before=_quiescence(1, 3.0),
+        entropy=SelectionEntropyReceipt(
+            _digest("entropy-source"),
+            _digest("commitment"),
+            _digest("entropy"),
+            _digest("entropy-authority"),
+        ),
+        entropy_observed=3.5,
+        requests=tuple(
+            row.request for row in reference_execution.session.exchanges
+        ),
+        reference_execution=reference_execution,
+        teardown_after=_quiescence(2, 6.0),
+        audit_witnesses=(_audit_witness(),),
+        audit_started=2.1,
+        audit_completed=2.5,
+    )
 
 
 def test_resident_count_checkpoint_round_trip_idempotence_and_conflict(
@@ -82,11 +127,12 @@ def test_resident_count_checkpoint_round_trip_idempotence_and_conflict(
 
     assert continuation.load_resident_count_quality() is None
     continuation.record_resident_count_quality(checkpoint)
-    original = _quality_path(continuation).read_bytes()
+    original = _resident_count_path(continuation).read_bytes()
     continuation.record_resident_count_quality(checkpoint)
 
-    assert _quality_path(continuation).read_bytes() == original
+    assert _resident_count_path(continuation).read_bytes() == original
     assert continuation.load_resident_count_quality() == checkpoint
+    assert continuation.load_quality() is None
     with pytest.raises(QualificationContinuationError, match="other content"):
         continuation.record_resident_count_quality(_checkpoint(plan="other-plan"))
     with pytest.raises(QualificationContinuationError, match="exact checkpoint"):
@@ -127,7 +173,7 @@ def test_actual_record_copy_isolated_by_request_authority_and_source(
 ) -> None:
     source = _scope(tmp_path / "store")
     source.record_resident_count_quality(_checkpoint())
-    source_path = _quality_path(source)
+    source_path = _resident_count_path(source)
 
     for changed in (
         {"request": "other-request"},
@@ -135,36 +181,87 @@ def test_actual_record_copy_isolated_by_request_authority_and_source(
         {"source": "other-source"},
     ):
         target = _scope(tmp_path / "store", **changed)
-        shutil.copyfile(source_path, _quality_path(target))
+        shutil.copyfile(source_path, _resident_count_path(target))
         with pytest.raises(QualificationContinuationError, match="sealed identity"):
             target.load_resident_count_quality()
 
 
-def test_legacy_loader_refuses_resident_count_mode_and_reverse_shape(
+@pytest.mark.parametrize("first", ("quality", "resident_count"))
+def test_pristine_and_resident_count_coexist_and_reopen_in_both_write_orders(
+    tmp_path: Path, first: str
+) -> None:
+    continuation = _scope(tmp_path / "store")
+    pristine = _pristine_quality(tmp_path / "fixture")
+    resident_count = _checkpoint()
+
+    if first == "quality":
+        continuation.record_quality(pristine)
+        preserved_path = _quality_path(continuation)
+        preserved = preserved_path.read_bytes()
+        assert continuation.load_resident_count_quality() is None
+        continuation.record_resident_count_quality(resident_count)
+    else:
+        continuation.record_resident_count_quality(resident_count)
+        preserved_path = _resident_count_path(continuation)
+        preserved = preserved_path.read_bytes()
+        assert continuation.load_quality() is None
+        continuation.record_quality(pristine)
+
+    assert preserved_path.read_bytes() == preserved
+    assert continuation.load_quality() == pristine
+    assert continuation.load_resident_count_quality() == resident_count
+    assert json.loads(_quality_path(continuation).read_text())["stage"] == "quality"
+    assert (
+        json.loads(_resident_count_path(continuation).read_text())["stage"]
+        == "resident_count"
+    )
+
+
+def test_legacy_resident_count_collision_requires_explicit_migration(
     tmp_path: Path,
 ) -> None:
-    resident = _scope(tmp_path / "resident")
-    resident.record_resident_count_quality(_checkpoint())
-    with pytest.raises(QualificationContinuationError, match="not closed"):
-        resident.load_quality()
-
     legacy = _scope(tmp_path / "legacy")
+    pristine = _pristine_quality(tmp_path / "fixture")
     legacy._record(
         "quality",
         {
-            "audit_completed": "2",
-            "audit_started": "1",
-            "audit_witnesses": [],
-            "entropy": {},
-            "entropy_observed": "1",
-            "reference_execution": {},
-            "requests": [],
-            "teardown_after": {},
-            "teardown_before": {},
+            "mode": "resident_count",
+            "checkpoint": legacy._codec.encode(_checkpoint()),
         },
     )
-    with pytest.raises(QualificationContinuationError, match="resident count shape"):
+    original = _quality_path(legacy).read_bytes()
+    error = "legacy quality.json.*explicit migration.*ambiguous"
+    with pytest.raises(QualificationContinuationError, match=error):
         legacy.load_resident_count_quality()
+    with pytest.raises(QualificationContinuationError, match=error):
+        legacy.load_quality()
+    with pytest.raises(QualificationContinuationError, match=error):
+        legacy.record_resident_count_quality(_checkpoint())
+    with pytest.raises(QualificationContinuationError, match=error):
+        legacy.record_quality(pristine)
+
+    assert _quality_path(legacy).read_bytes() == original
+    assert not _resident_count_path(legacy).exists()
+
+
+def test_resident_count_record_rejects_live_and_dangling_symlinks(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _checkpoint()
+    for dangling in (False, True):
+        continuation = _scope(tmp_path / f"store-{dangling}")
+        target = tmp_path / f"target-{dangling}.json"
+        if not dangling:
+            target.write_text("sentinel")
+        path = _resident_count_path(continuation)
+        path.symlink_to(target)
+
+        with pytest.raises(QualificationContinuationError, match="regular file"):
+            continuation.load_resident_count_quality()
+        with pytest.raises(QualificationContinuationError, match="regular file"):
+            continuation.record_resident_count_quality(checkpoint)
+        if not dangling:
+            assert target.read_text() == "sentinel"
 
 
 def test_canonically_resigned_mode_digest_and_reference_tampers_fail(
@@ -172,7 +269,7 @@ def test_canonically_resigned_mode_digest_and_reference_tampers_fail(
 ) -> None:
     mode_case = _scope(tmp_path / "mode")
     mode_case.record_resident_count_quality(_checkpoint())
-    mode_payload = json.loads(_quality_path(mode_case).read_text())["payload"]
+    mode_payload = json.loads(_resident_count_path(mode_case).read_text())["payload"]
     mode_payload["mode"] = "pristine_t"
     _rewrite_payload(mode_case, mode_payload)
     with pytest.raises(QualificationContinuationError, match="resident count shape"):
@@ -180,7 +277,9 @@ def test_canonically_resigned_mode_digest_and_reference_tampers_fail(
 
     digest_case = _scope(tmp_path / "digest")
     digest_case.record_resident_count_quality(_checkpoint())
-    digest_payload = json.loads(_quality_path(digest_case).read_text())["payload"]
+    digest_payload = json.loads(_resident_count_path(digest_case).read_text())[
+        "payload"
+    ]
     digest_payload["checkpoint"]["value"]["execution_plan_digest"] = "F" * 64
     _rewrite_payload(digest_case, digest_payload)
     with pytest.raises(QualificationContinuationError, match="lowercase 64-hex"):
@@ -188,7 +287,9 @@ def test_canonically_resigned_mode_digest_and_reference_tampers_fail(
 
     reference_case = _scope(tmp_path / "reference")
     reference_case.record_resident_count_quality(_checkpoint())
-    reference_payload = json.loads(_quality_path(reference_case).read_text())["payload"]
+    reference_payload = json.loads(_resident_count_path(reference_case).read_text())[
+        "payload"
+    ]
     reference_payload["checkpoint"]["value"]["candidate_observation"]["size"] = -1
     _rewrite_payload(reference_case, reference_payload)
     with pytest.raises(QualificationContinuationError, match="size is invalid"):
@@ -196,11 +297,11 @@ def test_canonically_resigned_mode_digest_and_reference_tampers_fail(
 
     unsigned_case = _scope(tmp_path / "unsigned")
     unsigned_case.record_resident_count_quality(_checkpoint())
-    unsigned_record = json.loads(_quality_path(unsigned_case).read_text())
+    unsigned_record = json.loads(_resident_count_path(unsigned_case).read_text())
     unsigned_record["payload"]["checkpoint"]["value"][
         "fixed_stock_authority_digest"
     ] = _digest("mutated-authority")
-    unsigned_path = _quality_path(unsigned_case)
+    unsigned_path = _resident_count_path(unsigned_case)
     unsigned_path.chmod(0o600)
     unsigned_path.write_text(
         json.dumps(unsigned_record, sort_keys=True, separators=(",", ":"))
@@ -215,7 +316,7 @@ def test_serialized_checkpoint_is_closed_path_free_and_score_free(
 ) -> None:
     continuation = _scope(tmp_path / "store")
     continuation.record_resident_count_quality(_checkpoint())
-    record = json.loads(_quality_path(continuation).read_text())
+    record = json.loads(_resident_count_path(continuation).read_text())
     payload = record["payload"]
     encoded = payload["checkpoint"]
     value = encoded["value"]
@@ -237,7 +338,7 @@ def test_serialized_checkpoint_is_closed_path_free_and_score_free(
         "size",
     }
 
-    text = _quality_path(continuation).read_text().lower()
+    text = _resident_count_path(continuation).read_text().lower()
     for forbidden in ("path", "target", "model", "reservation", "correct", "score"):
         assert forbidden not in text
 

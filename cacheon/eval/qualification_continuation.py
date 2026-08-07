@@ -2,10 +2,12 @@
 
 The exact-request fence prevents duplicate evaluations, but full automation
 still cannot continue after a crash that happens *after* expensive evidence
-exists.  This module adds authenticated durable products at three sealed
+exists.  This module adds authenticated durable products at four sealed
 boundaries of ``run_causal_qualification``:
 
 - immediately after B/C/B-prime, before grading or quality;
+- immediately after resident fixed-stock count quality, when that registered
+  gate is used;
 - immediately after pristine T (quality generation), before downstream
   grading/finalization;
 - immediately after the final qualification product (attempt or stage exit),
@@ -66,7 +68,7 @@ from cacheon.stack_identity import (
 
 
 RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
-_STAGES = ("speed", "quality", "final")
+_STAGES = ("speed", "resident_count", "quality", "final")
 
 
 def _decimal(value: object, where: str) -> str:
@@ -249,6 +251,10 @@ class QualificationContinuation:
             raise QualificationContinuationError(f"unknown continuation stage {stage!r}")
         encoded = self._record_bytes(stage, payload)
         final = self.directory / f"{stage}.json"
+        if final.is_symlink() or (final.exists() and not final.is_file()):
+            raise QualificationContinuationError(
+                f"continuation {stage} record is not a regular file"
+            )
         if final.exists():
             if final.read_bytes() == encoded:
                 return
@@ -279,9 +285,13 @@ class QualificationContinuation:
         if stage not in _STAGES:
             raise QualificationContinuationError(f"unknown continuation stage {stage!r}")
         final = self.directory / f"{stage}.json"
+        if final.is_symlink():
+            raise QualificationContinuationError(
+                f"continuation {stage} record is not a regular file"
+            )
         if not final.exists():
             return None
-        if final.is_symlink():
+        if not final.is_file():
             raise QualificationContinuationError(
                 f"continuation {stage} record is not a regular file"
             )
@@ -505,7 +515,26 @@ class QualificationContinuation:
                 f"speed continuation does not bind the sealed runtime: {exc}"
             ) from None
 
-    # -- quality ---------------------------------------------------------------
+    # -- resident fixed-stock count quality -----------------------------------
+
+    def _load_quality_stage_without_legacy_count(self) -> object | None:
+        """Refuse the old shape that occupied pristine T's ``quality`` stage.
+
+        There is no safe automatic move: the old record is immutable and a
+        blind copy would turn an operator migration into trusted evidence.
+        Callers must HOLD and perform an explicit, authenticated migration.
+        """
+
+        legacy_payload = self._load("quality")
+        if (
+            type(legacy_payload) is dict
+            and legacy_payload.get("mode") == "resident_count"
+        ):
+            raise QualificationContinuationError(
+                "legacy quality.json carries resident_count evidence; explicit "
+                "migration is required because the continuation shape is ambiguous"
+            )
+        return legacy_payload
 
     def record_resident_count_quality(
         self, value: ResidentCountQualityCheckpoint
@@ -514,8 +543,9 @@ class QualificationContinuation:
             raise QualificationContinuationError(
                 "resident count quality continuation requires the exact checkpoint type"
             )
+        self._load_quality_stage_without_legacy_count()
         self._record(
-            "quality",
+            "resident_count",
             {
                 "mode": "resident_count",
                 "checkpoint": self._codec.encode(value),
@@ -525,7 +555,8 @@ class QualificationContinuation:
     def load_resident_count_quality(
         self,
     ) -> ResidentCountQualityCheckpoint | None:
-        payload = self._load("quality")
+        self._load_quality_stage_without_legacy_count()
+        payload = self._load("resident_count")
         if payload is None:
             return None
         if (
@@ -546,11 +577,14 @@ class QualificationContinuation:
             )
         return checkpoint
 
+    # -- pristine T quality ---------------------------------------------------
+
     def record_quality(self, value: QualityContinuation) -> None:
         if type(value) is not QualityContinuation:
             raise QualificationContinuationError(
                 "quality continuation requires the exact checkpoint type"
             )
+        self._load_quality_stage_without_legacy_count()
         encode = self._codec.encode
         self._record(
             "quality",
@@ -575,7 +609,7 @@ class QualificationContinuation:
         )
 
     def load_quality(self) -> QualityContinuation | None:
-        payload = self._load("quality")
+        payload = self._load_quality_stage_without_legacy_count()
         if payload is None:
             return None
         expected_keys = {
