@@ -12,6 +12,7 @@ torch = pytest.importorskip("torch")
 
 from cacheon.slots import get_slot  # noqa: E402
 from cacheon.verify_collective import verify_collective  # noqa: E402
+from cacheon.verification_outcomes import PhaseDisposition  # noqa: E402
 
 
 CUDA2 = torch.cuda.is_available() and torch.cuda.device_count() >= 2
@@ -135,6 +136,11 @@ def test_collective_nccl_cuda_graph_faithful_replays():
     assert result.graph_verified
     assert result.fully_verified
     assert result.shape_results[0].graph_replays == 3
+    outcome = result.shape_results[0].phase_outcome
+    assert outcome.eager_passed and outcome.capture_succeeded
+    assert outcome.replay_passed and outcome.replay_count == 3
+    assert outcome.observation_complete
+    assert not outcome.failure_is_candidate_attributable
 
 
 def test_live_allreduce_binding_captures_and_replays_actual_nccl_group():
@@ -195,6 +201,9 @@ def test_collective_nccl_cuda_graph_replay_adversaries_fail(tmp_path, partial_wr
     assert not result.passed
     assert not result.graph_verified
     assert "cuda graph replay[0]" in result.shape_results[0].detail
+    outcome = result.shape_results[0].phase_outcome
+    assert outcome.replay is PhaseDisposition.CANDIDATE_FAILED
+    assert outcome.failure_is_candidate_attributable
 
 
 def test_collective_nccl_cuda_graph_rejects_cached_correct_output(tmp_path):
