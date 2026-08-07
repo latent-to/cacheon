@@ -107,6 +107,9 @@ suite.
   production owner and callsite. Test-only imports do not prove integration;
   parallel or provisional implementations must be wired into that owner or
   removed before the pull request is ready.
+- A durable fence or state machine must execute transactionally inside, or be
+  called by, the production authority that owns the mutation. A standalone
+  model plus tests is not a production fence.
 - A security-sensitive private or dynamic factory must have a sealed production
   caller that authenticates its authority. Remove factory loaders that exist
   only behind tests or unsealed configuration.
