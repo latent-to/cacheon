@@ -45,6 +45,7 @@ from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationPlanFactory,
 )
+from cacheon.eval.qualification_prebuilt_plan import sealed_prebuilt_qualification_plan_factory
 from cacheon.eval.qualification_runner import (
     CandidateQualificationAuthority,
     CausalQualificationInput,
@@ -803,7 +804,10 @@ def _factory_builder(
             reservations=(candidate.reservation,),
             selection_secret_reference=reference,
         )
-        return QualificationPlanFactory(manifest, load_secret, plan)
+        return sealed_prebuilt_qualification_plan_factory(
+            manifest, selection_secret_reference=reference,
+            selection_secret=secret, plan=first,
+        )
 
     return build
 

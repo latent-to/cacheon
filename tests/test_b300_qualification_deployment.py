@@ -896,3 +896,47 @@ def test_factory_builder_preserves_graph_evidence_hold(tmp_path: Path) -> None:
     with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
         builder(request, None)
     assert caught.value is hold
+
+
+def test_factory_reuses_its_first_sealed_plan_without_reconstruction(
+    tmp_path: Path,
+) -> None:
+    fixtures = _registered_fixtures()
+    harness = fixtures._harness(tmp_path)
+    secret = b"one sealed qualification plan secret"[:32]
+    expected = harness.factory.plan_builder(harness.cohort, secret)
+    construction = _registered_construction(harness, expected, secret)
+    original = construction.plan_builder
+    calls = 0
+    built = []
+
+    def counted(cohort, observed_secret):
+        nonlocal calls
+        calls += 1
+        value = original(cohort, observed_secret)
+        built.append(value)
+        return value
+
+    construction = replace(construction, plan_builder=counted)
+    resident = expected.resident_speed_plan
+    builder = deployment._factory_builder(
+        construction,
+        _executor_mirror(resident.candidate),
+        _executor_mirror(resident.baseline),
+        screen_lane="primary",
+    )
+    receipt = replace(
+        harness.cohort.receipt,
+        service_digest=construction.incumbent_stack.arena_digest,
+    )
+    request = ArenaQualificationRequest(
+        construction.incumbent_stack.arena_digest,
+        construction.qualification_policy_digest,
+        (harness.cohort.candidate,),
+        (receipt,),
+    )
+    factory = builder(request, None)
+    assert calls == 1
+    assert factory.build() is built[0]
+    assert factory.build() is built[0]
+    assert calls == 1
