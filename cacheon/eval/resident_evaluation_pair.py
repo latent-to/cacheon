@@ -47,6 +47,7 @@ class ResidentRequestSlice:
     """Append-only session records produced by exactly one request."""
 
     request_id: str
+    evaluation_id: str
     lane_id: str
     session_id: str
     bundle_digest: str
@@ -62,7 +63,11 @@ class ResidentRequestSlice:
     host_completed_at: float
 
     def __post_init__(self) -> None:
-        if not _hex_id(self.request_id) or not _hex_id(self.session_id):
+        if (
+            not _hex_id(self.request_id)
+            or not _hex_id(self.evaluation_id)
+            or not _hex_id(self.session_id)
+        ):
             raise ResidentEvaluationPairError("request identity is invalid")
         if self.lane_id not in ("A", "B"):
             raise ResidentEvaluationPairError("request lane identity is invalid")
@@ -302,6 +307,16 @@ ResidentLifetimeFactory = Callable[[Callable[[Any], object]], LifetimeEvidenceT]
 _CLOSE = object()
 
 
+@dataclass(frozen=True)
+class ResidentLaneRequest:
+    """One target-neutral request for a lane in :meth:`run_lanes`."""
+
+    bundle_digest: str
+    operation: ResidentOperation
+    expected_batch_count: int
+    expected_swap_count: int
+
+
 @dataclass
 class _Work:
     bundle_digest: str
@@ -309,6 +324,7 @@ class _Work:
     expected_batch_count: int
     expected_swap_count: int
     deadline: float
+    evaluation_id: str
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     done: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -472,15 +488,73 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         )
         self._reject_lane_reentrancy("request admission")
         with self._admission:
+            evaluation_id = uuid.uuid4().hex
             work = _Work(
                 digest,
                 operation,
                 expected_batch_count,
                 expected_swap_count,
                 self._clock() + self._timeouts[1],
+                evaluation_id,
             )
             self._accept(self._lanes[lane_id], work)
             return self._await(work)
+
+    def run_lanes(
+        self,
+        lane_a: ResidentLaneRequest,
+        lane_b: ResidentLaneRequest,
+    ) -> tuple[ResidentRequestResult, ResidentRequestResult]:
+        """Run one A/B evaluation concurrently and publish only a full success."""
+
+        requests = (lane_a, lane_b)
+        if any(type(request) is not ResidentLaneRequest for request in requests):
+            raise ResidentEvaluationPairError("paired lane requests are invalid")
+        digest_a, digest_b = (
+            self._validate_request(
+                lane_id,
+                request.bundle_digest,
+                request.operation,
+                request.expected_batch_count,
+                request.expected_swap_count,
+            )
+            for lane_id, request in zip(("A", "B"), requests)
+        )
+        self._reject_lane_reentrancy("paired request admission")
+        with self._admission:
+            evaluation_id = uuid.uuid4().hex
+            deadline = self._clock() + self._timeouts[1]
+            work_a, work_b = (
+                _Work(
+                    digest,
+                    request.operation,
+                    request.expected_batch_count,
+                    request.expected_swap_count,
+                    deadline,
+                    evaluation_id,
+                )
+                for digest, request in zip((digest_a, digest_b), requests)
+            )
+            works = (work_a, work_b)
+            self._accept_pair(work_a, work_b)
+            try:
+                results = (self._await(work_a), self._await(work_b))
+            except BaseException as exc:
+                failure = self.fatal_error or ResidentEvaluationEpochFatal(
+                    f"paired evaluation {evaluation_id} failed: {_safe(exc)}"
+                )
+                self._cancel_works(works, failure)
+                raise
+            for result in results:
+                if result.error is not None:
+                    failure = self.fatal_error or ResidentEvaluationEpochFatal(
+                        "paired evaluation "
+                        f"{evaluation_id} lane {result.request_slice.lane_id} "
+                        f"failed: {result.error.message}"
+                    )
+                    self._latch(failure)
+                    raise ResidentEvaluationPairFailed(_safe(failure)) from failure
+            return results
 
     def close(
         self,
@@ -535,14 +609,43 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
 
     def _accept(self, lane: _Lane[LifetimeEvidenceT], work: _Work) -> None:
         with self._state:
-            if not self._started or not self._ready or self._closed:
-                state = "closed" if self._closed else "not ready"
-                raise ResidentEvaluationPairError(f"resident pair is {state}")
-            if self._fatal is not None:
-                raise ResidentEvaluationPairFailed(
-                    f"resident epoch failed: {_safe(self._fatal)}"
-                ) from self._fatal
+            self._require_admissible_locked()
             lane.work.put(work)
+
+    def _accept_pair(self, work_a: _Work, work_b: _Work) -> None:
+        accepted: list[_Work] = []
+        admission_error: tuple[
+            ResidentEvaluationEpochFatal, BaseException
+        ] | None = None
+        with self._state:
+            self._require_admissible_locked()
+            try:
+                for lane, work in (
+                    (self._lanes["A"], work_a),
+                    (self._lanes["B"], work_b),
+                ):
+                    lane.work.put(work)
+                    accepted.append(work)
+            except BaseException as exc:
+                failure = ResidentEvaluationEpochFatal(
+                    f"paired evaluation admission failed: {_safe(exc)}"
+                )
+                if self._fatal is None:
+                    self._fatal = failure
+                admission_error = failure, exc
+        if admission_error is not None:
+            failure, cause = admission_error
+            self._cancel_works(tuple(accepted), failure)
+            raise ResidentEvaluationPairFailed(_safe(failure)) from cause
+
+    def _require_admissible_locked(self) -> None:
+        if not self._started or not self._ready or self._closed:
+            state = "closed" if self._closed else "not ready"
+            raise ResidentEvaluationPairError(f"resident pair is {state}")
+        if self._fatal is not None:
+            raise ResidentEvaluationPairFailed(
+                f"resident epoch failed: {_safe(self._fatal)}"
+            ) from self._fatal
 
     def _run_lifetime(self, lane: _Lane[LifetimeEvidenceT]) -> None:
         close_requested = False
@@ -691,6 +794,7 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         epoch_fatal = isinstance(error, ResidentEvaluationEpochFatal) or terminal
         request_slice = ResidentRequestSlice(
             work.request_id,
+            work.evaluation_id,
             lane.lane_id,
             session.session_id,
             work.bundle_digest,
@@ -765,6 +869,21 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         if result is None:
             raise ResidentEvaluationPairFailed("resident request returned no result")
         return result
+
+    def _cancel_works(
+        self, works: tuple[_Work, ...], failure: BaseException
+    ) -> None:
+        if not isinstance(failure, ResidentEvaluationEpochFatal):
+            failure = ResidentEvaluationEpochFatal(_safe(failure))
+        tokens: list[str | None] = []
+        for work in works:
+            with work.lock:
+                if not work.completed:
+                    work.cancellation = failure
+                    tokens.append(work.capability_token)
+        for token in tokens:
+            _revoke_capability(token)
+        self._latch(failure)
 
     def _latch(self, error: BaseException) -> None:
         with self._state:
