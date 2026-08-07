@@ -400,7 +400,8 @@ class _Harness:
                 assert passed == (decision is QualificationDecision.PASS)
                 witness = runner.AuditWitness(
                     authority.selected_delta_digest,
-                    prepared.launch.digest,
+                    getattr(getattr(value, "resident_audit_plan", None), "launch",
+                            prepared.launch).digest,
                     _d(f"audit-execution-{index}"),
                     f"{900 + index:032x}",
                     value.expected_runtime_resource_policy_digest,
@@ -710,7 +711,7 @@ def _install_resident_runner_path(
     assert len(harness.value.candidates) == 1
     harness.value.speed_evidence_policy = runner.SpeedEvidencePolicy.resident()
     harness.value.resident_audit_plan = SimpleNamespace(
-        authority="resident-audit-only"
+        launch=SimpleNamespace(digest=_d("resident-audit-launch"))
     )
     harness.resident_speed_plans = []
     harness.value.resident_speed_plan = SimpleNamespace(
@@ -2320,13 +2321,20 @@ def _typed_resident_qualification_input(
         (requirement.binding.members[0].slot_id,),
         prepared.baseline_session_plan.engine_config.tp_size,
     )
-    resident_audit_plan = replace(
+    audit_prompt = candidate.session_plan.prompt_batches[0][0]
+    resident_audit_plan = runner.ResidentAuditExecutionAuthority.derive(
+        candidate.launch,
+        candidate.binding.launch_binding,
         candidate.session_plan,
-        prompt_batches=(
-            *candidate.session_plan.prompt_batches,
-            candidate.session_plan.prompt_batches[-1],
-        ),
         audit_policy=audit_policy,
+        prompt_batches=tuple(
+            (audit_prompt,) for _ in range(audit_policy.minimum_calls + 1)
+        ),
+        max_new_tokens=2,
+        top_logprobs_num=1,
+        executor_namespace_digest=resident_plan.candidate.executor_namespace_digest,
+        runtime_resource_policy_digest=resident_plan.candidate.runtime_resource_policy_digest,
+        device_configuration_digest=resident_plan.candidate.device_configuration_digest,
     )
     return runner.CausalQualificationInput(
         prepared=prepared,
@@ -2494,39 +2502,6 @@ def test_typed_resident_input_accepts_exact_swapped_lane_authority(
     )
 
 
-def test_resident_audit_plan_is_distinct_and_bound_by_authority(
-    tmp_path: Path,
-) -> None:
-    value = _typed_resident_qualification_input(tmp_path)
-    audit_plan = value.resident_audit_plan
-    assert audit_plan is not None
-    assert audit_plan.audit_policy == value.audit_policies[0]
-    assert runner.marginal_workload_digest(audit_plan) != runner.marginal_workload_digest(
-        value.prepared.candidates[0].session_plan
-    )
-
-    changed_plan = replace(
-        audit_plan,
-        prompt_batches=(*audit_plan.prompt_batches, audit_plan.prompt_batches[-1]),
-    )
-    changed = replace(value, resident_audit_plan=changed_plan)
-    assert runner.qualification_authority_digest(changed) != (
-        runner.qualification_authority_digest(value)
-    )
-
-    with pytest.raises(
-        runner.QualificationRunnerError,
-        match="resident audit plan differs",
-    ):
-        replace(
-            value,
-            resident_audit_plan=replace(
-                value.prepared.candidates[0].session_plan,
-                audit_policy=value.audit_policies[0],
-            ),
-        )
-
-
 def test_calibration_speed_continuation_is_exact_and_authority_bound(
     tmp_path: Path,
 ) -> None:
@@ -2556,8 +2531,8 @@ def test_resident_slot_audit_executes_the_sealed_audit_only_plan(
     tmp_path: Path,
 ) -> None:
     value = _typed_resident_qualification_input(tmp_path)
-    audit_plan = value.resident_audit_plan
-    assert audit_plan is not None
+    audit = value.resident_audit_plan
+    assert audit is not None
     timed_baseline = SimpleNamespace(session=SimpleNamespace(session_id="a" * 32))
     timed_candidate = SimpleNamespace(session=SimpleNamespace(session_id="b" * 32))
     lifecycle = object.__new__(runner.ResidentMarginalLifecycleEvidence)
@@ -2567,21 +2542,45 @@ def test_resident_slot_audit_executes_the_sealed_audit_only_plan(
         SimpleNamespace(
             baseline_execution=timed_baseline,
             candidate_execution=timed_candidate,
+            baseline_quiescence=SimpleNamespace(observed_monotonic_s=7.0),
+            candidate_quiescence=SimpleNamespace(observed_monotonic_s=8.0),
         ),
     )
     execution = SimpleNamespace(
+        launch_digest=audit.launch.digest,
         session=SimpleNamespace(session_id="c" * 32),
         resource_policy_digest=value.expected_runtime_resource_policy_digest,
-        device_receipts=(SimpleNamespace(completed_monotonic_s=9.0),),
+        device_receipts=(
+            SimpleNamespace(started_monotonic_s=8.5, completed_monotonic_s=9.0),
+        ),
     )
 
     class CapturingExecutor:
         def __init__(self) -> None:
             self.plans: list[object] = []
+            self.manager = SimpleNamespace(
+                namespace_digest=audit.executor_namespace_digest
+            )
+            self.config = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    digest=audit.runtime_resource_policy_digest
+                ),
+                prebuild=SimpleNamespace(
+                    policy=SimpleNamespace(
+                        resource_policy_digest=audit.launch.resource_policy_digest
+                    )
+                ),
+            )
+            physical = audit.binding.physical_hardware
+            self.device_policy = SimpleNamespace(
+                physical_gpu_ids=tuple(map(int, physical.physical_gpu_ids)),
+                configuration_sha256=audit.device_configuration_digest,
+                policy_sha256=physical.device_policy_digest,
+            )
 
         def execute(self, launch, binding, mount, plan, *, deadline):
-            assert launch is value.prepared.candidates[0].launch
-            assert binding is value.prepared.candidates[0].binding.launch_binding
+            assert launch is audit.launch
+            assert binding is audit.binding
             assert mount is value.model_mount
             assert deadline == 10.0
             self.plans.append(plan)
@@ -2601,6 +2600,30 @@ def test_resident_slot_audit_executes_the_sealed_audit_only_plan(
         staticmethod(from_execution),
     )
     executor = CapturingExecutor()
+    expected_namespace = executor.manager.namespace_digest
+    executor.manager.namespace_digest = _d("foreign-audit-namespace")
+    with pytest.raises(
+        runner.QualificationRunnerError, match="commissioned authority"
+    ):
+        runner._run_slot_audits(
+            value, lifecycle, executor=executor, deadline=10.0
+        )
+    assert executor.plans == []
+    executor.manager.namespace_digest = expected_namespace
+    execution.device_receipts[0].started_monotonic_s = 7.5
+    with pytest.raises(runner.QualificationRunnerError, match="preceded retirement"):
+        runner._run_slot_audits(
+            value, lifecycle, executor=executor, deadline=10.0
+        )
+    executor.plans.clear()
+    execution.device_receipts[0].started_monotonic_s = 8.5
+    execution.session.session_id = "a" * 32
+    with pytest.raises(runner.QualificationRunnerError, match="reused a pair role"):
+        runner._run_slot_audits(
+            value, lifecycle, executor=executor, deadline=10.0
+        )
+    executor.plans.clear()
+    execution.session.session_id = "c" * 32
     witnesses, completed = runner._run_slot_audits(
         value,
         lifecycle,
@@ -2608,30 +2631,7 @@ def test_resident_slot_audit_executes_the_sealed_audit_only_plan(
         deadline=10.0,
     )
 
-    assert executor.plans == [audit_plan]
+    assert executor.plans == [audit.plan]
     assert executor.plans[0] is not value.prepared.candidates[0].session_plan
     assert witnesses == {value.candidates[0].selected_delta_digest: witness}
     assert completed == 9.0
-
-
-def test_resident_audit_plan_is_not_used_by_speed_or_pristine_t(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
-    audit_plan = harness.value.resident_audit_plan
-
-    _run_resident_harness(harness, baseline)
-
-    assert harness.resident_speed_plans == [harness.value.resident_speed_plan]
-    assert audit_plan not in harness.resident_speed_plans
-    assert len(harness.reference_session_plans) == 1
-    assert harness.reference_session_plans[0] is not audit_plan

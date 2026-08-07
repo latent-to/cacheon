@@ -472,6 +472,11 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.speed_stage_disposition is SpeedStageDisposition.TERMINAL
     assert first.resident_speed_plan is not None
     assert first.resident_audit_plan is not None
+    assert first.resident_audit_plan.plan.engine_config.disable_cuda_graph
+    assert not first.resident_audit_plan.charged_plan.engine_config.disable_cuda_graph
+    assert first.resident_audit_plan.launch.digest != (
+        first.prepared.candidates[0].launch.digest
+    )
     assert first.resident_speed_plan.policy.version == 3
     assert first.resident_speed_plan.selected_delta_digest == (
         harness.candidate.reservation.selected_delta_digest
@@ -544,6 +549,8 @@ def test_atomic_fixture_builds_one_registered_plan_with_partitioned_member_evide
     assert value.speed_evidence_policy.version == 3
     assert value.resident_speed_plan is not None
     assert value.resident_audit_plan is not None
+    assert value.resident_audit_plan.audit_policy.expected_slots == target.members
+    assert value.resident_audit_plan.plan.engine_config.disable_cuda_graph
     assert value.resident_speed_plan.selected_delta_digest == (
         harness.candidate.reservation.selected_delta_digest
     )
@@ -778,13 +785,13 @@ def test_audit_role_pins_minimum_cost_shortest_prompt_selection(
     # check, never a semantic or shape-coverage instrument; that coverage is
     # owned by pristine T. Changing this selection is a reviewed policy
     # decision.
-    assert audit.prompt_batches == tuple(
+    assert audit.plan.prompt_batches == tuple(
         (expected,) for _ in range(harness.policy.audit_minimum_calls + 1)
     )
     assert all(len(expected) <= len(prompt) for prompt in prompts)
-    assert audit.warmup_count == 1
-    assert audit.conditioning_count == 1
-    assert audit.max_new_tokens == harness.policy.audit_max_new_tokens
+    assert audit.plan.warmup_count == 1
+    assert audit.plan.conditioning_count == 1
+    assert audit.plan.max_new_tokens == harness.policy.audit_max_new_tokens
 
     repeat = harness.factory.plan_builder(harness.cohort, secret)
-    assert repeat.resident_audit_plan.prompt_batches == audit.prompt_batches
+    assert repeat.resident_audit_plan.plan.prompt_batches == audit.plan.prompt_batches

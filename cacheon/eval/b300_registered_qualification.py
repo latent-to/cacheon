@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -49,13 +49,12 @@ from cacheon.eval.crossover_runtime import (
     ResidentCrossoverPlan,
     ResidentSpeedPolicy,
 )
-from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
+from cacheon.eval.engine_launch import TrustedLaunchBinding
 from cacheon.eval.marginal_runtime import (
     MaterializedArmBinding,
     PreparedCandidateRuntime,
     prepare_marginal_runtime,
 )
-from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import (
     GraphVerificationBinding,
@@ -76,6 +75,9 @@ from cacheon.eval.qualification_runner import (
     SpeedEvidencePolicy,
     SpeedStageDisposition,
     _planned_prompt_digests,
+)
+from cacheon.eval.resident_audit_authority import (
+    ResidentAuditExecutionAuthority,
 )
 from cacheon.eval.scoring import marginal_workload_digest
 from cacheon.stack_identity import canonical_digest
@@ -549,17 +551,24 @@ class B300RegisteredQualificationFactory:
                 hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
             ),
         )
-        audit_plan = replace(
+        audit_authority = ResidentAuditExecutionAuthority.derive(
+            prepared_candidate.launch,
+            prepared_candidate.binding.launch_binding,
             prepared_candidate.session_plan,
+            audit_policy=audit_policy,
             prompt_batches=tuple(
                 (audit_prompt,)
                 for _ in range(inputs.policy.audit_minimum_calls + 1)
             ),
-            warmup_count=1,
-            conditioning_count=1,
             max_new_tokens=inputs.policy.audit_max_new_tokens,
             top_logprobs_num=inputs.policy.audit_toplogprobs_num,
-            audit_policy=audit_policy,
+            executor_namespace_digest=inputs.candidate_executor_namespace_digest,
+            runtime_resource_policy_digest=(
+                inputs.candidate_runtime_resource_policy_digest
+            ),
+            device_configuration_digest=(
+                inputs.candidate_device_configuration_digest
+            ),
         )
         commitment = SelectionCommitment.seal(
             source_plan_digest=prepared.source.digest,
@@ -597,7 +606,7 @@ class B300RegisteredQualificationFactory:
             audit_policies=(audit_policy,),
             speed_evidence_policy=SpeedEvidencePolicy.resident(),
             resident_speed_plan=resident_plan,
-            resident_audit_plan=audit_plan,
+            resident_audit_plan=audit_authority,
             speed_stage_disposition=SpeedStageDisposition.TERMINAL,
         )
 
