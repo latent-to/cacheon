@@ -217,6 +217,34 @@ removal. `site/` is generated output and is not committed.
 
 See `CONTRIBUTING.md` and `docs/contributing/documentation.md`.
 
+## Code-volume discipline
+
+Introduced after a measured audit found production modules with no importer
+anywhere, files packed to just under the line cap, and tests split into
+numbered files. Deletion is a first-class outcome. These rules bind every
+contributor and subagent:
+
+- Never land a production module without a same-change consumer reachable
+  from a real entrypoint, registered seam, packaging metadata, or the declared
+  capability manifest (`cacheon/capability_manifest.py`). "A future private
+  caller will import this" is not a consumer; a module read only by its own
+  tests is not integrated.
+- `python scripts/check_islands.py` enforces reachability against
+  `scripts/island_baseline.txt`. Shrinking the baseline is cleanup; growing it
+  is a reviewed decision that must be justified in the pull request.
+- Target files under roughly 600 physical lines. The 1,000-line cap is a
+  ceiling, not a budget; packing files to just under it is a design smell.
+  Never split tests into `_partN` files — split by behavior with named scopes.
+- State net line impact in every pull request and handoff summary. Prefer
+  diffs that delete. A single reviewable unit above roughly +1,500 net
+  production lines must be split or explicitly justified.
+- Subagent output is a proposal, not an increment: delete what the task did
+  not need before integrating it. Delegation is not accretion.
+- Configuration flags a loader rejects, wrappers that cannot be enabled, and
+  fences that are not wired are dead on arrival — wire them or drop them.
+- Write the doc or kill the surface: an undocumented new command, flag, or
+  schema is a deletion candidate, not a TODO.
+
 ## Persistence
 
 Committed code, tests, this file, and `docs/` are the portable context. Keep
