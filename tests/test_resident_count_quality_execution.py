@@ -228,7 +228,9 @@ def _fixture(total=64, *, barrier=True):
 
 def test_candidate_only_64_prompts_run_32_32_concurrently_without_finish() -> None:
     plan, judge, pair, factory_a, factory_b = _fixture()
-    observation = execute_candidate_count_quality(plan, pair=pair, judge=judge)
+    observation = execute_candidate_count_quality(
+        plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
+    )
 
     assert observation.role == "candidate"
     assert observation.correct == observation.total == 64
@@ -257,7 +259,9 @@ def test_three_candidates_reuse_same_two_sessions_and_close_once() -> None:
             base.batch_shape,
             base.admission,
         )
-        assert execute_candidate_count_quality(plan, pair=pair, judge=judge).correct == 6
+        assert execute_candidate_count_quality(
+            plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
+        ).correct == 6
         assert pair.identities == sessions
         assert factory_a.sessions[0].finish_calls == factory_b.sessions[0].finish_calls == 0
     retirement = pair.close()
@@ -288,7 +292,9 @@ def test_pair_failure_is_hold_and_never_candidate_fail() -> None:
     plan, judge, pair, factory_a, _, = _fixture(4, barrier=False)
     factory_a.sessions[0].outputs.pop(plan.selected_prompts[0])
     with pytest.raises(ResidentCountQualityExecutionHold) as raised:
-        execute_candidate_count_quality(plan, pair=pair, judge=judge)
+        execute_candidate_count_quality(
+            plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
+        )
     assert raised.value.decision == "HOLD"
     assert pair.fatal_error is not None
     pair.close()
@@ -296,7 +302,9 @@ def test_pair_failure_is_hold_and_never_candidate_fail() -> None:
 
 def test_executor_has_no_stock_callable_or_target_identity() -> None:
     plan, judge, pair, _, _ = _fixture(4, barrier=False)
-    observation = execute_candidate_count_quality(plan, pair=pair, judge=judge)
+    observation = execute_candidate_count_quality(
+        plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
+    )
     assert observation.role == "candidate"
     text = plan.to_dict()
     assert "stock" not in repr(text).lower()
@@ -322,6 +330,8 @@ def test_malformed_lane_batch_is_hold(tamper: str) -> None:
 
     session.execute_batch_with_shape = execute_tampered
     with pytest.raises(ResidentCountQualityExecutionHold) as raised:
-        execute_candidate_count_quality(plan, pair=pair, judge=judge)
+        execute_candidate_count_quality(
+            plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
+        )
     assert raised.value.decision == "HOLD"
     pair.close()

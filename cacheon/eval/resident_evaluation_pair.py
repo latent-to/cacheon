@@ -1,9 +1,6 @@
-"""Service-owned two-lane residency; evaluation policy remains elsewhere.
+"""Service-owned two-lane residency with lane-bound request capabilities.
 
-Each factory starts one resident session and blocks in its driver. Requests
-receive only a lane-thread-bound, revocable capability. The same two sessions
-remain alive until the sole terminal authority,
-:meth:`ResidentEvaluationPair.close`.
+Both sessions remain alive until :meth:`ResidentEvaluationPair.close`.
 """
 
 from __future__ import annotations
@@ -21,6 +18,7 @@ from cacheon.eval.oci_resident_session import (
     ResidentBatchShape,
     SwapReceipt,
 )
+from cacheon.eval.resident_request_deadline import resolve_resident_request_deadline
 from cacheon.stack_identity import require_sha256_hex
 
 
@@ -360,9 +358,7 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         close_timeout_s: float = 1800.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if not all(
-            callable(value) for value in (lane_a_factory, lane_b_factory, clock)
-        ):
+        if not all(callable(value) for value in (lane_a_factory, lane_b_factory, clock)):
             raise ResidentEvaluationPairError("pair authorities are not callable")
         for name, value in (
             ("start", start_timeout_s),
@@ -489,19 +485,10 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         )
         self._reject_lane_reentrancy("request admission")
         with self._admission:
-            now = self._clock()
-            if deadline is not None and (
-                isinstance(deadline, bool)
-                or not isinstance(deadline, (int, float))
-                or not math.isfinite(float(deadline))
-            ):
-                raise ResidentEvaluationPairError("request deadline is invalid")
-            request_deadline = min(
-                now + self._timeouts[1],
-                float(deadline) if deadline is not None else math.inf,
+            request_deadline = resolve_resident_request_deadline(
+                self._clock(), self._timeouts[1], deadline,
+                error_type=ResidentEvaluationPairError,
             )
-            if request_deadline <= now:
-                raise ResidentEvaluationPairError("request deadline has expired")
             evaluation_id = uuid.uuid4().hex
             work = _Work(
                 digest,
@@ -518,6 +505,8 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         self,
         lane_a: ResidentLaneRequest,
         lane_b: ResidentLaneRequest,
+        *,
+        deadline: float | None = None,
     ) -> tuple[ResidentRequestResult, ResidentRequestResult]:
         """Run one A/B evaluation concurrently and publish only a full success."""
 
@@ -537,14 +526,17 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
         self._reject_lane_reentrancy("paired request admission")
         with self._admission:
             evaluation_id = uuid.uuid4().hex
-            deadline = self._clock() + self._timeouts[1]
+            request_deadline = resolve_resident_request_deadline(
+                self._clock(), self._timeouts[1], deadline,
+                error_type=ResidentEvaluationPairError,
+            )
             work_a, work_b = (
                 _Work(
                     digest,
                     request.operation,
                     request.expected_batch_count,
                     request.expected_swap_count,
-                    deadline,
+                    request_deadline,
                     evaluation_id,
                 )
                 for digest, request in zip((digest_a, digest_b), requests)
@@ -884,9 +876,7 @@ class ResidentEvaluationPair(Generic[LifetimeEvidenceT]):
             raise ResidentEvaluationPairFailed("resident request returned no result")
         return result
 
-    def _cancel_works(
-        self, works: tuple[_Work, ...], failure: BaseException
-    ) -> None:
+    def _cancel_works(self, works: tuple[_Work, ...], failure: BaseException) -> None:
         if not isinstance(failure, ResidentEvaluationEpochFatal):
             failure = ResidentEvaluationEpochFatal(_safe(failure))
         tokens: list[str | None] = []

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 
 from cacheon.eval.numeric_answer_judge import (
@@ -28,6 +29,7 @@ from cacheon.eval.resident_evaluation_pair import (
     ResidentRequestResult,
     ResidentRequestSlice,
 )
+from cacheon.eval.resident_request_deadline import require_resident_request_deadline
 from cacheon.stack_identity import StackIdentityError, canonical_digest, require_sha256_hex
 
 
@@ -353,6 +355,7 @@ def execute_candidate_count_quality(
     *,
     pair: ResidentEvaluationPair,
     judge: NumericAnswerHiddenJudge,
+    deadline: float,
 ) -> ResidentCountQualityObservation:
     """Execute one candidate on both lanes; there is deliberately no stock runner."""
 
@@ -362,6 +365,11 @@ def execute_candidate_count_quality(
         raise ResidentCountQualityExecutionError("resident evaluation pair is not exact")
     if type(judge) is not NumericAnswerHiddenJudge:
         raise ResidentCountQualityExecutionError("resident numeric judge is not exact")
+    request_deadline = require_resident_request_deadline(
+        deadline,
+        now=time.monotonic(),
+        error_type=ResidentCountQualityExecutionError,
+    )
     if (
         judge.binding != plan.envelope.judge_binding
         or judge.tokenizer_digest != plan.envelope.reference.tokenizer_digest
@@ -383,6 +391,7 @@ def execute_candidate_count_quality(
         result_a, result_b = pair.run_lanes(
             ResidentLaneRequest(plan.candidate_bundle_digest, operation(prompts_a), 1, 2),
             ResidentLaneRequest(plan.candidate_bundle_digest, operation(prompts_b), 1, 2),
+            deadline=request_deadline,
         )
     except ResidentEvaluationPairError as exc:
         raise ResidentCountQualityExecutionHold(
