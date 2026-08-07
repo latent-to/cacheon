@@ -55,6 +55,10 @@ from cacheon.chain.remote_qualification_evidence import (
     RemoteQualificationProduct,
     import_remote_qualification_evidence,
 )
+from cacheon.chain.remote_qualification_hold import (
+    RemoteQualificationHoldProduct,
+    durable_remote_qualification_hold_reason,
+)
 from cacheon.chain.remote_worker_request_plan import (
     PlannedQualificationObservation,
     QualificationPrepublicationProof,
@@ -645,7 +649,7 @@ class RecoverableQualificationDispatcher:
         self,
         plan: QualificationRequestPlan,
         response: AuthenticatedRemoteEvaluationResponse,
-    ) -> RemoteQualificationProduct:
+    ) -> RemoteQualificationProduct | RemoteQualificationHoldProduct:
         try:
             product = reopen_remote_response(
                 plan.remote_request,
@@ -657,6 +661,8 @@ class RecoverableQualificationDispatcher:
             raise QualificationRecoveryHold(
                 "remote_response_invalid", plan.request_id, str(exc)
             ) from None
+        if type(product) is RemoteQualificationHoldProduct:
+            return product
         if type(product) is not RemoteQualificationProduct:
             raise QualificationRecoveryHold(
                 "remote_payload_changed",
@@ -841,6 +847,11 @@ class RecoverableQualificationDispatcher:
                 else:
                     raise RecoverableQualificationDispatcherError(
                         "recovery entered an unsupported phase"
+                    )
+                if type(product) is RemoteQualificationHoldProduct:
+                    return self._hold(
+                        recovery,
+                        durable_remote_qualification_hold_reason(product),
                     )
                 completed = resolve_completed_result(
                     self._has_no_decision(product.batch)

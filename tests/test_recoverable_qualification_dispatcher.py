@@ -6,11 +6,17 @@ from pathlib import Path
 
 import pytest
 
+import cacheon.chain.recoverable_qualification_dispatcher as dispatcher_module
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.recoverable_qualification_dispatcher import (
     RecoverableQualificationDispatcher,
     RecoverableQualificationDispatcherError,
     RecoverableQualificationHold,
+)
+from cacheon.chain.remote_evaluation_dispatcher import seal_remote_response
+from cacheon.chain.remote_qualification_hold import (
+    RemoteQualificationHoldReason,
+    capture_remote_qualification_hold,
 )
 from cacheon.chain.remote_worker_request_plan import QualificationRequestPlan
 from cacheon.chain import remote_worker_spool as spool
@@ -105,6 +111,35 @@ def _store(authority):
         authority.fixtures._db_path(authority.root),
         authority.fixtures.POLICY,
         scope=authority.fixtures.SCOPE,
+    )
+
+
+def _write_hold_result(authority, plan, carrier) -> None:
+    product = capture_remote_qualification_hold(
+        plan.remote_request,
+        reason=RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
+        diagnostic_digest=authority.fixtures._h("graph-evidence-incomplete"),
+    )
+    response = seal_remote_response(
+        plan.remote_request,
+        product,
+        authority.identity,
+        authority.credential,
+    )
+    result_root = authority.results / plan.request_id
+    result_root.mkdir(parents=True)
+    (result_root / "response.json").write_bytes(
+        spool.spool_canonical_json(response.to_dict()) + b"\n"
+    )
+    spool.finalize_adapter_response(
+        plan.request_dict(),
+        carrier,
+        result_root,
+        identity=authority.identity,
+        credential=authority.credential,
+    )
+    spool.atomic_bytes(
+        result_root / "RESULT_READY", (plan.request_id + "\n").encode(), mode=0o400
     )
 
 
@@ -284,6 +319,133 @@ def test_completed_no_decision_product_is_held_without_retry_or_second_plan(
         assert recovery is not None and recovery.phase.value == "held"
         retained = store.get(recovery.lease.reservation_ids[0])
     assert retained.status == "promoted"
+
+
+@pytest.mark.parametrize("profile", ("collective-hold", "block-hold"))
+def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
+    tmp_path: Path,
+    monkeypatch,
+    profile: str,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(
+        tmp_path,
+        profile=profile,
+        recoverable=True,
+    )
+
+    class HoldTransport(_Transport):
+        def publish_planned_qualification(self, plan):
+            observed = super().publish_planned_qualification(plan)
+            assert observed.carrier_path is not None
+            _write_hold_result(authority, plan, observed.carrier_path)
+            return observed
+
+    counters = {"batch": 0, "claim": 0, "commit": 0, "import": 0}
+    original_claim = RecoverableFinalizedIntakeStore.claim_recoverable_qualification
+
+    def counted_claim(store, **kwargs):
+        counters["claim"] += 1
+        return original_claim(store, **kwargs)
+
+    def forbidden_batch(_batch):
+        counters["batch"] += 1
+        raise AssertionError("remote HOLD reached miner batch classification")
+
+    def forbidden_import(*_args, **_kwargs):
+        counters["import"] += 1
+        raise AssertionError("remote HOLD reached evidence import")
+
+    def forbidden_commit(*_args, **_kwargs):
+        counters["commit"] += 1
+        raise AssertionError("remote HOLD reached intake commit")
+
+    monkeypatch.setattr(
+        RecoverableFinalizedIntakeStore,
+        "claim_recoverable_qualification",
+        counted_claim,
+    )
+    monkeypatch.setattr(
+        dispatcher_module,
+        "import_remote_qualification_evidence",
+        forbidden_import,
+    )
+    monkeypatch.setattr(
+        authority.coordinator,
+        "commit_remote_qualification_result",
+        forbidden_commit,
+    )
+    transport = HoldTransport(authority, fixtures)
+    dispatcher = _dispatcher(authority, transport)
+    monkeypatch.setattr(dispatcher, "_has_no_decision", forbidden_batch)
+    durable_hold = dispatcher._hold
+    interrupted = False
+
+    def interrupt_after_result(recovery, reason):
+        nonlocal interrupted
+        if not reason.startswith("remote_qualification_hold:"):
+            raise AssertionError(f"unexpected hold reason: {reason}")
+        if not interrupted:
+            interrupted = True
+            raise RuntimeError("simulated restart after durable HOLD result")
+        return durable_hold(recovery, reason)
+
+    monkeypatch.setattr(dispatcher, "_hold", interrupt_after_result)
+    with pytest.raises(RuntimeError, match="restart after durable HOLD result"):
+        dispatcher.dispatch_once()
+    assert transport.plan is not None
+    request_id = transport.plan.request_id
+    with _store(authority) as store:
+        result_ready = store.pending_qualification_recovery()
+        assert result_ready is not None
+        assert (result_ready.phase.value, result_ready.request_id) == (
+            "result_ready",
+            request_id,
+        )
+
+    outcome = dispatcher.dispatch_once()
+    repeated = dispatcher.dispatch_once()
+
+    assert type(outcome) is RecoverableQualificationHold
+    assert repeated == outcome
+    assert (
+        outcome.recovery_id,
+        outcome.request_id,
+        outcome.reason,
+    ) == (
+        result_ready.recovery_id,
+        request_id,
+        "remote_qualification_hold:graph_evidence_incomplete",
+    )
+    assert counters == {"batch": 0, "claim": 0, "commit": 0, "import": 0}
+    assert (transport.plans, transport.materializations, transport.publications) == (
+        1,
+        1,
+        1,
+    )
+    carriers = [
+        path
+        for path in authority.outbox.iterdir()
+        if path.is_dir() and path.name.endswith(request_id)
+    ]
+    assert len(carriers) == 1
+    with _store(authority) as store:
+        held = store.pending_qualification_recovery()
+        assert held is not None
+        events = store.evaluation_recovery_events(held)
+        retained = store.get(held.lease.reservation_ids[0])
+    assert (held.recovery_id, held.request_id, held.phase.value) == (
+        result_ready.recovery_id,
+        request_id,
+        "held",
+    )
+    assert [event.event_type.value for event in events].count("result_ready") == 1
+    assert [event.event_type.value for event in events][-2:] == [
+        "result_ready",
+        "held",
+    ]
+    assert retained.status == "promoted"
+    assert not (authority.root / "cpu-evidence").exists()
 
 
 @pytest.mark.parametrize(

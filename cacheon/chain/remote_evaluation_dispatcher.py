@@ -52,6 +52,13 @@ from cacheon.chain.remote_qualification_evidence import (
     qualification_batch_to_dict,
     remote_qualification_product_to_dict,
 )
+from cacheon.chain.remote_qualification_hold import (
+    RemoteEvaluationResponsePayload,
+    RemoteQualificationHoldProduct,
+    remote_qualification_hold_from_dict,
+    remote_qualification_hold_to_dict,
+    verify_remote_qualification_hold_request,
+)
 from cacheon.eval.qualification_intake import (
     QualificationReservation,
 )
@@ -71,9 +78,13 @@ _AUTH_TAG = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_PROTOCOL_BODY_BYTES = 64 << 20
 
 REMOTE_EVALUATION_PROTOCOL_DIGEST = canonical_digest(
-    "cacheon.chain.remote-evaluation-protocol.v2",
+    "cacheon.chain.remote-evaluation-protocol.v3",
     {
         "operations": ["screen", "qualification"],
+        "qualification_payloads": [
+            "remote_qualification_product",
+            "remote_qualification_hold",
+        ],
         "qualification_product": {
             "authority_manifest": True,
             "cpu_evidence_import": True,
@@ -434,11 +445,17 @@ class AuthenticatedRemoteEvaluationResponse:
             type(self.ready_epoch) is not int
             or self.ready_epoch < 0
             or self.stage not in {"screen", "qualification"}
-            or self.payload_kind
-            != (
-                "arena_screen_receipt"
-                if self.stage == "screen"
-                else "remote_qualification_product"
+            or (
+                self.stage == "screen"
+                and self.payload_kind != "arena_screen_receipt"
+            )
+            or (
+                self.stage == "qualification"
+                and self.payload_kind
+                not in {
+                    "remote_qualification_product",
+                    "remote_qualification_hold",
+                }
             )
             or type(self.schema_version) is not int
             or self.schema_version != _SCHEMA_VERSION
@@ -547,6 +564,12 @@ def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
         return (
             "remote_qualification_product",
             canonical_json_bytes(remote_qualification_product_to_dict(payload)),
+            payload.digest,
+        )
+    if type(payload) is RemoteQualificationHoldProduct:
+        return (
+            "remote_qualification_hold",
+            canonical_json_bytes(remote_qualification_hold_to_dict(payload)),
             payload.digest,
         )
     raise RemoteEvaluationDispatcherError("remote response payload is not exactly typed")
@@ -859,7 +882,7 @@ def verify_remote_request(
 
 def seal_remote_response(
     request: RemoteEvaluationRequest,
-    payload: ArenaScreenReceipt | RemoteQualificationProduct,
+    payload: RemoteEvaluationResponsePayload,
     transport_identity: RemoteWorkerTransportIdentity,
     credential: RemoteWorkerCredential,
 ) -> AuthenticatedRemoteEvaluationResponse:
@@ -891,7 +914,7 @@ def reopen_remote_response(
     response: AuthenticatedRemoteEvaluationResponse,
     transport_identity: RemoteWorkerTransportIdentity,
     credential: RemoteWorkerCredential,
-) -> ArenaScreenReceipt | RemoteQualificationProduct:
+) -> RemoteEvaluationResponsePayload:
     """Authenticate bytes, then independently reopen the exact typed result."""
 
     if (
@@ -917,11 +940,11 @@ def reopen_remote_response(
         )
     ):
         raise RemoteEvaluationDispatcherError("remote response authentication failed")
-    payload: ArenaScreenReceipt | RemoteQualificationProduct
+    payload: RemoteEvaluationResponsePayload
     if response.stage == "screen":
         payload = _screen_receipt_from_dict(response.payload)
         observed_digest = payload.digest
-    else:
+    elif response.payload_kind == "remote_qualification_product":
         payload = remote_qualification_product_from_dict(response.payload)
         if (
             payload.service_digest != request.body["service_digest"]
@@ -938,6 +961,10 @@ def reopen_remote_response(
             raise RemoteEvaluationDispatcherError(
                 "remote qualification product differs from its request authority"
             )
+        observed_digest = payload.digest
+    else:
+        payload = remote_qualification_hold_from_dict(response.payload)
+        verify_remote_qualification_hold_request(payload, request)
         observed_digest = payload.digest
     if observed_digest != response.payload_digest:
         raise RemoteEvaluationDispatcherError("remote typed result digest differs")
@@ -1233,7 +1260,9 @@ __all__ = [
     "RemoteEvaluationDispatcher",
     "RemoteEvaluationDispatcherError",
     "RemoteEvaluationRequest",
+    "RemoteEvaluationResponsePayload",
     "RemoteQualificationProduct",
+    "RemoteQualificationHoldProduct",
     "RemoteWorkerCredential",
     "RemoteWorkerTransportIdentity",
     "capture_remote_qualification_product",
@@ -1242,6 +1271,8 @@ __all__ = [
     "qualification_batch_to_dict",
     "remote_qualification_product_from_dict",
     "remote_qualification_product_to_dict",
+    "remote_qualification_hold_from_dict",
+    "remote_qualification_hold_to_dict",
     "reopen_remote_response",
     "seal_remote_request",
     "seal_remote_response",

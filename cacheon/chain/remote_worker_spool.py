@@ -47,6 +47,7 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     reopen_remote_response,
     verify_remote_request,
 )
+from cacheon.chain import remote_qualification_hold as remote_hold
 from cacheon.stack_identity import (
     StackIdentityError,
     canonical_digest,
@@ -785,12 +786,9 @@ def verify_adapter_result(
         payload = reopen_remote_response(typed_request, response, identity, credential)
     except RemoteEvaluationDispatcherError as exc:
         fail(f"authenticated adapter response is invalid: {exc}")
-    expected_payload = (
-        "ArenaScreenReceipt"
-        if request["lease"]["stage"] == "screen"
-        else "RemoteQualificationProduct"
-    )
-    if type(payload).__name__ != expected_payload:
+    if not remote_hold.is_exact_remote_stage_payload(
+        payload, request["lease"]["stage"]
+    ):
         fail("completed response is not the exact stage payload")
     return value
 
