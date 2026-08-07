@@ -28,10 +28,15 @@ from cacheon.eval.resident_count_quality_execution import (
     ResidentCountQualityExecutionError,
     ResidentCountQualityExecutionHold,
     ResidentCountQualityExecutionPlan,
+    ResidentCountQualityExecutionResult,
     execute_candidate_count_quality,
     resident_batch_shape_digest,
 )
 from cacheon.eval.resident_evaluation_pair import ResidentEvaluationPair
+from cacheon.eval.resident_pair_binding import (
+    ResidentPairLaneBinding,
+    ResidentPairRuntimeBinding,
+)
 
 
 def _h(value: str) -> str:
@@ -94,8 +99,8 @@ class _Session:
         completed = max(time.monotonic(), started + 1e-9)
         row = ResidentBatchEvidence(
             len(self.batch_rows),
-            "f" * 32,
-            f"{len(self.batch_rows) + 1:032x}",
+            _h(f"{self.session_id}-request-{len(self.batch_rows)}")[:32],
+            _h(f"{self.session_id}-nonce-{len(self.batch_rows)}")[:32],
             self.active_generation,
             self.active_slots,
             canary,
@@ -135,19 +140,19 @@ class _Factory:
         return driver(session)
 
 
-def _reference(binding, tokenizer, workload):
+def _reference(binding, tokenizer, workload, profile):
     return ReferenceManifest(
-        *(_h(f"reference-{index}") for index in range(13)),
+        *(_h(f"{profile}-reference-{index}") for index in range(13)),
         workload,
         tokenizer,
         binding.hidden_corpus_commitment,
         binding.hidden_judge_digest,
-        _h("selection"),
+        _h(f"{profile}-selection"),
     )
 
 
-def _fixture(total=64, *, barrier=True):
-    prompts = tuple(f"prompt {index}" for index in range(total))
+def _fixture(total=64, *, barrier=True, profile="profile-one"):
+    prompts = tuple(f"{profile} prompt {index}" for index in range(total))
     prompt_batches = (prompts,)
     gold_ids = tuple((1000 + index,) for index in range(total))
     output_ids = tuple(
@@ -155,7 +160,7 @@ def _fixture(total=64, *, barrier=True):
         for index in range(total)
     )
     accepted = (tuple((gold,) for gold in gold_ids),)
-    corpus = _h("corpus")
+    corpus = _h(f"{profile}-corpus")
     binding = HiddenJudgeBinding(
         corpus,
         numeric_hidden_judge_digest(
@@ -168,8 +173,8 @@ def _fixture(total=64, *, barrier=True):
         **{gold: f"#### {index}" for index, gold in enumerate(gold_ids)},
         **{output: f"answer is {index}" for index, output in enumerate(output_ids)},
     }
-    tokenizer = _h("tokenizer")
-    workload = _h("workload")
+    tokenizer = _h(f"{profile}-tokenizer")
+    workload = _h(f"{profile}-workload")
     authority = NumericAnswerJudgeAuthority(
         binding,
         tokenizer_digest=tokenizer,
@@ -187,16 +192,34 @@ def _fixture(total=64, *, barrier=True):
         workload_digest=workload,
         hidden_tasks_per_prompt=1,
     )
+    session_ids = (
+        _h(f"{profile}-session-a")[:32],
+        _h(f"{profile}-session-b")[:32],
+    )
+    lanes = tuple(
+        ResidentPairLaneBinding(
+            lane_id,
+            session_id,
+            _h(f"{profile}-stock-launch-{lane_id}"),
+            _h(f"{profile}-lane-{lane_id}"),
+            _h(f"{profile}-allocation-{lane_id}"),
+            _h(f"{profile}-executor-{lane_id}"),
+        )
+        for lane_id, session_id in zip(("A", "B"), session_ids, strict=True)
+    )
+    pair_binding = ResidentPairRuntimeBinding(
+        _h(f"{profile}-service-epoch"), lanes
+    )
     admission = ResidentCountLaneAdmission(
         total // 2,
         total - total // 2,
         256,
-        _h("allocation-a"),
-        _h("allocation-b"),
+        lanes[0].allocation_digest,
+        lanes[1].allocation_digest,
     )
     shape = ResidentBatchShape(8, 0, 0.0)
     envelope = ResidentCountQualityEnvelope(
-        _reference(binding, tokenizer, workload),
+        _reference(binding, tokenizer, workload, profile),
         binding,
         numeric_answer_prompt_plan_digest(occurrences),
         resident_batch_shape_digest(shape),
@@ -204,17 +227,18 @@ def _fixture(total=64, *, barrier=True):
         total,
     )
     plan = ResidentCountQualityExecutionPlan(
-        _h("candidate"),
+        _h(f"{profile}-candidate"),
         envelope,
         prompt_batches,
         tuple(range(total)),
         shape,
         admission,
+        pair_binding,
     )
     output_by_prompt = dict(zip(prompts, output_ids, strict=True))
     sync = threading.Barrier(2) if barrier else None
-    factory_a = _Factory("a" * 32, output_by_prompt, sync)
-    factory_b = _Factory("b" * 32, output_by_prompt, sync)
+    factory_a = _Factory(session_ids[0], output_by_prompt, sync)
+    factory_b = _Factory(session_ids[1], output_by_prompt, sync)
     pair = ResidentEvaluationPair(
         factory_a,
         factory_b,
@@ -226,12 +250,24 @@ def _fixture(total=64, *, barrier=True):
     return plan, judge, pair, factory_a, factory_b
 
 
-def test_candidate_only_64_prompts_run_32_32_concurrently_without_finish() -> None:
+def test_execution_returns_raw_evidence_and_independently_regraded_observation() -> None:
     plan, judge, pair, factory_a, factory_b = _fixture()
-    observation = execute_candidate_count_quality(
+    execution = execute_candidate_count_quality(
         plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
     )
+    observation = execution.observation
 
+    assert type(execution) is ResidentCountQualityExecutionResult
+    assert execution.evidence.execution_plan_digest == plan.digest
+    assert observation.execution_evidence_digest == execution.evidence.digest
+    assert execution.evidence.regrade(plan, judge) == observation
+    for request in execution.evidence.request_slices:
+        assert (request.expected_batch_count, request.expected_swap_count) == (1, 2)
+        assert [row.bundle_digest for row in request.new_swaps] == [
+            plan.candidate_bundle_digest,
+            None,
+        ]
+        assert request.ending_bundle_digest is None and request.ending_slots == ()
     assert observation.role == "candidate"
     assert observation.correct == observation.total == 64
     assert len(factory_a.sessions[0].prompt_batches[0]) == 32
@@ -241,8 +277,7 @@ def test_candidate_only_64_prompts_run_32_32_concurrently_without_finish() -> No
     assert factory_b.sessions[0].finish_calls == 0
     assert len(pair.request_history) == 2
     assert {row.request_slice.session_id for row in pair.request_history} == {
-        "a" * 32,
-        "b" * 32,
+        identity.session_id for identity in plan.pair_binding.identities
     }
     pair.close()
 
@@ -258,10 +293,11 @@ def test_three_candidates_reuse_same_two_sessions_and_close_once() -> None:
             base.selected_ordinals,
             base.batch_shape,
             base.admission,
+            base.pair_binding,
         )
         assert execute_candidate_count_quality(
             plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
-        ).correct == 6
+        ).observation.correct == 6
         assert pair.identities == sessions
         assert factory_a.sessions[0].finish_calls == factory_b.sessions[0].finish_calls == 0
     retirement = pair.close()
@@ -281,11 +317,65 @@ def test_plan_binds_selection_shape_admission_and_capacity() -> None:
             (0, 1),
             plan.batch_shape,
             plan.admission,
+            plan.pair_binding,
         )
     with pytest.raises(ResidentCountQualityExecutionError, match="admission capacity"):
         ResidentCountLaneAdmission(2, 3, 2, _h("a"), _h("b"))
     with pytest.raises(ResidentCountQualityExecutionError, match="distinct"):
         ResidentCountLaneAdmission(2, 2, 4, _h("same"), _h("same"))
+
+
+def test_runtime_binding_mismatch_fails_before_pair_admission() -> None:
+    plan, judge, pair, _, _ = _fixture(4, barrier=False)
+    foreign_lane = replace(
+        plan.pair_binding.lanes[0], session_id=_h("foreign-session")[:32]
+    )
+    foreign_binding = replace(
+        plan.pair_binding,
+        lanes=(foreign_lane, plan.pair_binding.lanes[1]),
+    )
+    foreign_plan = replace(plan, pair_binding=foreign_binding)
+
+    with pytest.raises(ResidentCountQualityExecutionHold, match="sessions differ"):
+        execute_candidate_count_quality(
+            foreign_plan,
+            pair=pair,
+            judge=judge,
+            deadline=time.monotonic() + 2.0,
+        )
+    assert pair.request_history == ()
+    assert pair.fatal_error is None
+
+    foreign_admission = replace(
+        plan.admission, lane_a_allocation_digest=_h("foreign-allocation")
+    )
+    with pytest.raises(ResidentCountQualityExecutionError, match="allocations differ"):
+        replace(plan, admission=foreign_admission)
+    assert pair.request_history == ()
+    pair.close()
+
+
+def test_two_synthetic_runtime_profiles_share_the_generic_execution_path() -> None:
+    products = []
+    for profile in ("profile-one", "profile-two"):
+        plan, judge, pair, factory_a, factory_b = _fixture(
+            6, barrier=False, profile=profile
+        )
+        execution = execute_candidate_count_quality(
+            plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
+        )
+        products.append((plan, execution))
+        assert execution.observation.correct == 6
+        assert factory_a.calls == factory_b.calls == 1
+        assert tuple(
+            row.session_id for row in execution.evidence.pair_binding.lanes
+        ) == tuple(row.session_id for row in plan.pair_binding.lanes)
+        pair.close()
+
+    first, second = products
+    assert first[0].pair_binding.digest != second[0].pair_binding.digest
+    assert first[0].envelope.digest != second[0].envelope.digest
+    assert first[1].evidence.digest != second[1].evidence.digest
 
 
 def test_pair_failure_is_hold_and_never_candidate_fail() -> None:
@@ -302,9 +392,10 @@ def test_pair_failure_is_hold_and_never_candidate_fail() -> None:
 
 def test_executor_has_no_stock_callable_or_target_identity() -> None:
     plan, judge, pair, _, _ = _fixture(4, barrier=False)
-    observation = execute_candidate_count_quality(
+    execution = execute_candidate_count_quality(
         plan, pair=pair, judge=judge, deadline=time.monotonic() + 2.0
     )
+    observation = execution.observation
     assert observation.role == "candidate"
     text = plan.to_dict()
     assert "stock" not in repr(text).lower()

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
 
@@ -13,8 +12,12 @@ from cacheon.eval.numeric_answer_judge import (
     derive_numeric_answer_prompt_occurrences,
     numeric_answer_prompt_plan_digest,
 )
-from cacheon.eval.oci_resident_session import ResidentBatchEvidence, ResidentBatchShape
-from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
+from cacheon.eval.oci_resident_session import ResidentBatchShape
+from cacheon.eval.resident_count_execution_evidence import (
+    ResidentCountExecutionEvidenceError,
+    ResidentCountQualityExecutionEvidence,
+    require_resident_count_request_slice,
+)
 from cacheon.eval.resident_count_quality import (
     ResidentCountPromptObservation,
     ResidentCountQualityEnvelope,
@@ -27,14 +30,14 @@ from cacheon.eval.resident_evaluation_pair import (
     ResidentEvaluationPairError,
     ResidentLaneRequest,
     ResidentRequestResult,
-    ResidentRequestSlice,
 )
+from cacheon.eval.resident_pair_binding import ResidentPairRuntimeBinding
 from cacheon.eval.resident_request_deadline import require_resident_request_deadline
 from cacheon.stack_identity import StackIdentityError, canonical_digest, require_sha256_hex
 
 
 RESIDENT_COUNT_ADMISSION_SCHEMA = "cacheon.eval.resident-count-lane-admission.v1"
-RESIDENT_COUNT_EXECUTION_PLAN_SCHEMA = "cacheon.eval.resident-count-execution-plan.v1"
+RESIDENT_COUNT_EXECUTION_PLAN_SCHEMA = "cacheon.eval.resident-count-execution-plan.v2"
 
 
 class ResidentCountQualityExecutionError(ResidentCountQualityError):
@@ -131,6 +134,7 @@ class ResidentCountQualityExecutionPlan:
     selected_ordinals: tuple[int, ...]
     batch_shape: ResidentBatchShape
     admission: ResidentCountLaneAdmission
+    pair_binding: ResidentPairRuntimeBinding
     selected_occurrences: tuple[NumericAnswerPromptOccurrence, ...] = field(init=False)
     selected_prompts: tuple[str, ...] = field(init=False, repr=False)
 
@@ -150,6 +154,17 @@ class ResidentCountQualityExecutionPlan:
             )
         if type(self.admission) is not ResidentCountLaneAdmission:
             raise ResidentCountQualityExecutionError("resident lane admission is not exact")
+        if type(self.pair_binding) is not ResidentPairRuntimeBinding:
+            raise ResidentCountQualityExecutionError(
+                "resident pair runtime binding is not exact"
+            )
+        if (
+            self.admission.lane_a_allocation_digest,
+            self.admission.lane_b_allocation_digest,
+        ) != tuple(row.allocation_digest for row in self.pair_binding.lanes):
+            raise ResidentCountQualityExecutionError(
+                "resident lane admission allocations differ from pair binding"
+            )
         try:
             all_occurrences = derive_numeric_answer_prompt_occurrences(
                 self.envelope.judge_binding,
@@ -205,6 +220,7 @@ class ResidentCountQualityExecutionPlan:
             "candidate_bundle_digest": self.candidate_bundle_digest,
             "envelope_digest": self.envelope.digest,
             "generation_shape_digest": resident_batch_shape_digest(self.batch_shape),
+            "pair_binding_digest": self.pair_binding.digest,
             "schema": RESIDENT_COUNT_EXECUTION_PLAN_SCHEMA,
             "selected_ordinals": list(self.selected_ordinals),
         }
@@ -214,162 +230,42 @@ class ResidentCountQualityExecutionPlan:
         return canonical_digest(RESIDENT_COUNT_EXECUTION_PLAN_SCHEMA, self.to_dict())
 
 
-def _batch_identity(row: ResidentBatchEvidence) -> dict[str, object]:
-    return {
-        "active_slots": list(row.active_slots),
-        "batch_index": row.batch_index,
-        "canary": row.canary,
-        "generation": row.generation,
-        "nonce": row.nonce,
-        "output_ids": [list(prompt.output_ids) for prompt in row.evidence.prompts],
-        "request_id": row.request_id,
-        "request_started_at": format(row.request_started_at, ".17g"),
-        "response_completed_at": format(row.response_completed_at, ".17g"),
-        "token_numerator": row.token_numerator,
-    }
+@dataclass(frozen=True)
+class ResidentCountQualityExecutionResult:
+    """Raw resident execution evidence and its independent count observation."""
 
+    evidence: ResidentCountQualityExecutionEvidence
+    observation: ResidentCountQualityObservation
 
-def _slice_identity(row: ResidentRequestSlice) -> dict[str, object]:
-    return {
-        "bundle_digest": row.bundle_digest,
-        "ending_bundle_digest": row.ending_bundle_digest,
-        "ending_generation": row.ending_generation,
-        "ending_slots": list(row.ending_slots),
-        "evaluation_id": row.evaluation_id,
-        "expected_batch_count": row.expected_batch_count,
-        "expected_swap_count": row.expected_swap_count,
-        "host_completed_at": format(row.host_completed_at, ".17g"),
-        "host_started_at": format(row.host_started_at, ".17g"),
-        "lane_id": row.lane_id,
-        "new_batches": [_batch_identity(batch) for batch in row.new_batches],
-        "new_swaps": [swap.to_dict() for swap in row.new_swaps],
-        "request_id": row.request_id,
-        "session_id": row.session_id,
-        "starting_generation": row.starting_generation,
-    }
-
-
-def _validate_lane_result(
-    result: ResidentRequestResult,
-    *,
-    lane_id: str,
-    bundle_digest: str,
-    expected_prompts: int,
-    shape: ResidentBatchShape,
-) -> ResidentBatchEvidence:
-    if type(result) is not ResidentRequestResult or not result.ok:
-        raise ResidentCountQualityExecutionHold(
-            f"resident quality lane {lane_id} did not return exact success"
-        )
-    request = result.request_slice
-    swaps = request.new_swaps if type(request) is ResidentRequestSlice else ()
-    if (
-        type(request) is not ResidentRequestSlice
-        or request.lane_id != lane_id
-        or request.bundle_digest != bundle_digest
-        or request.expected_batch_count != 1
-        or request.expected_swap_count != 2
-        or request.ending_bundle_digest is not None
-        or request.ending_slots
-        or len(request.new_batches) != 1
-        or len(swaps) != 2
-        or swaps[0].bundle_digest != bundle_digest
-        or not swaps[0].slots
-        or swaps[1].bundle_digest is not None
-        or swaps[1].slots
-        or swaps[0].generation != request.starting_generation + 1
-        or swaps[1].generation != swaps[0].generation + 1
-        or request.ending_generation != swaps[1].generation
-    ):
-        raise ResidentCountQualityExecutionHold(
-            f"resident quality lane {lane_id} slice is incomplete or did not restore stock"
-        )
-    batch = request.new_batches[0]
-    if (
-        type(batch) is not ResidentBatchEvidence
-        or type(result.value) is not ResidentBatchEvidence
-        or result.value != batch
-        or type(batch.batch_index) is not int
-        or batch.batch_index < 0
-        or type(batch.request_id) is not str
-        or len(batch.request_id) != 32
-        or any(value not in "0123456789abcdef" for value in batch.request_id)
-        or type(batch.nonce) is not str
-        or len(batch.nonce) != 32
-        or any(value not in "0123456789abcdef" for value in batch.nonce)
-        or batch.request_id == batch.nonce
-        or batch.generation != swaps[0].generation
-        or batch.active_slots != swaps[0].slots
-        or batch.canary
-        or any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            for value in (batch.request_started_at, batch.response_completed_at)
-        )
-        or not (
-            request.host_started_at
-            <= swaps[0].requested_at
-            < swaps[0].completed_at
-            <= batch.request_started_at
-            < batch.response_completed_at
-            <= swaps[1].requested_at
-            < swaps[1].completed_at
-            <= request.host_completed_at
-        )
-        or len(batch.evidence.prompts) != expected_prompts
-    ):
-        raise ResidentCountQualityExecutionHold(
-            f"resident quality lane {lane_id} batch evidence is inexact"
-        )
-    evidence = batch.evidence
-    expected_tokens = expected_prompts * shape.max_new_tokens
-    if (
-        type(evidence) is not BatchEvidence
-        or type(evidence.prompts) is not tuple
-        or type(batch.token_numerator) is not int
-        or batch.token_numerator != expected_tokens
-        or evidence.observed_tokens != expected_tokens
-        or any(
-            type(prompt) is not PromptEvidence
-            or type(prompt.output_ids) is not tuple
-            or len(prompt.output_ids) != shape.max_new_tokens
-            or any(
-                type(token) is not int or not 0 <= token <= 2_147_483_647
-                for token in prompt.output_ids
+    def __post_init__(self) -> None:
+        if (
+            type(self.evidence) is not ResidentCountQualityExecutionEvidence
+            or type(self.observation) is not ResidentCountQualityObservation
+            or self.observation.role != "candidate"
+            or self.observation.envelope.digest != self.evidence.envelope_digest
+            or self.observation.execution_evidence_digest != self.evidence.digest
+        ):
+            raise ResidentCountQualityExecutionError(
+                "resident count execution result is not exactly bound"
             )
-            or type(prompt.top_logprobs) is not tuple
-            or len(prompt.top_logprobs) != shape.max_new_tokens
-            or any(type(position) is not tuple or position for position in prompt.top_logprobs)
-            for prompt in evidence.prompts
-        )
-    ):
-        raise ResidentCountQualityExecutionHold(
-            f"resident quality lane {lane_id} output evidence is malformed"
-        )
-    return batch
+
+    @property
+    def execution_evidence_digest(self) -> str:
+        """Compatibility projection for callers that only compare raw digests."""
+
+        return self.observation.execution_evidence_digest
 
 
-def execute_candidate_count_quality(
+def _require_plan_and_judge(
     plan: ResidentCountQualityExecutionPlan,
-    *,
-    pair: ResidentEvaluationPair,
     judge: NumericAnswerHiddenJudge,
-    deadline: float,
-) -> ResidentCountQualityObservation:
-    """Execute one candidate on both lanes; there is deliberately no stock runner."""
-
+) -> None:
     if type(plan) is not ResidentCountQualityExecutionPlan:
-        raise ResidentCountQualityExecutionError("resident quality execution plan is not exact")
-    if type(pair) is not ResidentEvaluationPair:
-        raise ResidentCountQualityExecutionError("resident evaluation pair is not exact")
+        raise ResidentCountQualityExecutionError(
+            "resident quality execution plan is not exact"
+        )
     if type(judge) is not NumericAnswerHiddenJudge:
         raise ResidentCountQualityExecutionError("resident numeric judge is not exact")
-    request_deadline = require_resident_request_deadline(
-        deadline,
-        now=time.monotonic(),
-        error_type=ResidentCountQualityExecutionError,
-    )
     if (
         judge.binding != plan.envelope.judge_binding
         or judge.tokenizer_digest != plan.envelope.reference.tokenizer_digest
@@ -377,47 +273,57 @@ def execute_candidate_count_quality(
         raise ResidentCountQualityExecutionError(
             "resident numeric judge differs from commissioned quality envelope"
         )
-    split = plan.admission.lane_a_prompt_count
-    prompts_a, prompts_b = plan.selected_prompts[:split], plan.selected_prompts[split:]
 
-    def operation(prompts: tuple[str, ...]):
-        def run(handle):
-            handle.swap(plan.candidate_bundle_digest)
-            return handle.execute_batch_with_shape(prompts, shape=plan.batch_shape)
 
-        return run
+def regrade_candidate_count_quality_execution(
+    evidence: ResidentCountQualityExecutionEvidence,
+    *,
+    plan: ResidentCountQualityExecutionPlan,
+    judge: NumericAnswerHiddenJudge,
+) -> ResidentCountQualityObservation:
+    """Derive candidate count quality only from one closed raw A/B product."""
 
-    try:
-        result_a, result_b = pair.run_lanes(
-            ResidentLaneRequest(plan.candidate_bundle_digest, operation(prompts_a), 1, 2),
-            ResidentLaneRequest(plan.candidate_bundle_digest, operation(prompts_b), 1, 2),
-            deadline=request_deadline,
+    _require_plan_and_judge(plan, judge)
+    if type(evidence) is not ResidentCountQualityExecutionEvidence:
+        raise ResidentCountQualityExecutionError(
+            "resident count execution evidence is not exact"
         )
-    except ResidentEvaluationPairError as exc:
+    if (
+        evidence.execution_plan_digest != plan.digest
+        or evidence.candidate_bundle_digest != plan.candidate_bundle_digest
+        or evidence.envelope_digest != plan.envelope.digest
+        or evidence.pair_binding != plan.pair_binding
+    ):
         raise ResidentCountQualityExecutionHold(
-            f"resident candidate quality execution is on HOLD: {exc}"
-        ) from None
-    batch_a = _validate_lane_result(
-        result_a,
-        lane_id="A",
-        bundle_digest=plan.candidate_bundle_digest,
-        expected_prompts=len(prompts_a),
-        shape=plan.batch_shape,
-    )
-    batch_b = _validate_lane_result(
-        result_b,
-        lane_id="B",
-        bundle_digest=plan.candidate_bundle_digest,
-        expected_prompts=len(prompts_b),
-        shape=plan.batch_shape,
-    )
-    if result_a.request_slice.evaluation_id != result_b.request_slice.evaluation_id:
-        raise ResidentCountQualityExecutionHold(
-            "resident quality lane slices name different evaluations"
+            "resident count raw evidence differs from its commissioned plan"
         )
+    prompt_counts = (
+        plan.admission.lane_a_prompt_count,
+        plan.admission.lane_b_prompt_count,
+    )
+    batches = []
+    for request, binding, prompt_count in zip(
+        evidence.request_slices,
+        plan.pair_binding.lanes,
+        prompt_counts,
+        strict=True,
+    ):
+        try:
+            batch = require_resident_count_request_slice(
+                request,
+                lane_binding=binding,
+                candidate_bundle_digest=plan.candidate_bundle_digest,
+                expected_prompt_count=prompt_count,
+                max_new_tokens=plan.batch_shape.max_new_tokens,
+            )
+        except ResidentCountExecutionEvidenceError as exc:
+            raise ResidentCountQualityExecutionHold(
+                f"resident count raw slice is on HOLD: {exc}"
+            ) from None
+        batches.append(batch)
     outputs = tuple(
         prompt.output_ids
-        for batch in (batch_a, batch_b)
+        for batch in batches
         for prompt in batch.evidence.prompts
     )
     if len(outputs) != len(plan.selected_occurrences):
@@ -434,35 +340,119 @@ def execute_candidate_count_quality(
                 output_ids=output_ids,
                 task_digests=occurrence.task_digests,
             )
-        except NumericAnswerJudgeError as exc:
+            rows.append(
+                ResidentCountPromptObservation(
+                    ordinal,
+                    occurrence.prompt_digest,
+                    occurrence.task_digests,
+                    output_ids,
+                    receipt,
+                )
+            )
+        except (NumericAnswerJudgeError, ResidentCountQualityError) as exc:
             raise ResidentCountQualityExecutionHold(
                 f"resident quality hidden judging is on HOLD: {exc}"
             ) from None
-        rows.append(
-            ResidentCountPromptObservation(
-                ordinal,
-                occurrence.prompt_digest,
-                occurrence.task_digests,
-                output_ids,
-                receipt,
-            )
+    try:
+        return ResidentCountQualityObservation(
+            "candidate", plan.envelope, evidence.digest, tuple(rows)
         )
-    execution_digest = canonical_digest(
-        "cacheon.eval.resident-count-quality-execution-evidence.v1",
-        {
-            "execution_plan_digest": plan.digest,
-            "lane_slices": [
-                _slice_identity(result_a.request_slice),
-                _slice_identity(result_b.request_slice),
-            ],
-        },
+    except ResidentCountQualityError as exc:
+        raise ResidentCountQualityExecutionHold(
+            f"resident quality observation is on HOLD: {exc}"
+        ) from None
+
+
+def execute_candidate_count_quality(
+    plan: ResidentCountQualityExecutionPlan,
+    *,
+    pair: ResidentEvaluationPair,
+    judge: NumericAnswerHiddenJudge,
+    deadline: float,
+) -> ResidentCountQualityExecutionResult:
+    """Execute one candidate on both lanes; there is deliberately no stock runner."""
+
+    _require_plan_and_judge(plan, judge)
+    if type(pair) is not ResidentEvaluationPair:
+        raise ResidentCountQualityExecutionError("resident evaluation pair is not exact")
+    request_deadline = require_resident_request_deadline(
+        deadline,
+        now=time.monotonic(),
+        error_type=ResidentCountQualityExecutionError,
     )
-    return ResidentCountQualityObservation(
-        "candidate",
-        plan.envelope,
-        execution_digest,
-        tuple(rows),
+    if (
+        plan.admission.lane_a_allocation_digest,
+        plan.admission.lane_b_allocation_digest,
+    ) != tuple(row.allocation_digest for row in plan.pair_binding.lanes):
+        raise ResidentCountQualityExecutionError(
+            "resident lane admission allocations differ from pair binding"
+        )
+    try:
+        live_identities = pair.identities
+    except ResidentEvaluationPairError as exc:
+        raise ResidentCountQualityExecutionHold(
+            f"resident candidate quality pair is on HOLD: {exc}"
+        ) from None
+    if live_identities != plan.pair_binding.identities:
+        raise ResidentCountQualityExecutionHold(
+            "resident candidate quality pair sessions differ from binding"
+        )
+    split = plan.admission.lane_a_prompt_count
+    prompts_a, prompts_b = (
+        plan.selected_prompts[:split],
+        plan.selected_prompts[split:],
     )
+
+    def operation(prompts: tuple[str, ...]):
+        def run(handle):
+            handle.swap(plan.candidate_bundle_digest)
+            return handle.execute_batch_with_shape(
+                prompts, shape=plan.batch_shape
+            )
+
+        return run
+
+    try:
+        result_a, result_b = pair.run_lanes(
+            ResidentLaneRequest(
+                plan.candidate_bundle_digest, operation(prompts_a), 1, 2
+            ),
+            ResidentLaneRequest(
+                plan.candidate_bundle_digest, operation(prompts_b), 1, 2
+            ),
+            deadline=request_deadline,
+        )
+    except ResidentEvaluationPairError as exc:
+        raise ResidentCountQualityExecutionHold(
+            f"resident candidate quality execution is on HOLD: {exc}"
+        ) from None
+    results = (result_a, result_b)
+    if any(
+        type(result) is not ResidentRequestResult
+        or not result.ok
+        or len(result.request_slice.new_batches) != 1
+        or result.value != result.request_slice.new_batches[0]
+        for result in results
+    ):
+        raise ResidentCountQualityExecutionHold(
+            "resident candidate quality results are not exact raw slices"
+        )
+    try:
+        evidence = ResidentCountQualityExecutionEvidence(
+            plan.digest,
+            plan.candidate_bundle_digest,
+            plan.envelope.digest,
+            plan.pair_binding,
+            tuple(result.request_slice for result in results),
+        )
+    except ResidentCountExecutionEvidenceError as exc:
+        raise ResidentCountQualityExecutionHold(
+            f"resident candidate raw evidence is on HOLD: {exc}"
+        ) from None
+    observation = regrade_candidate_count_quality_execution(
+        evidence, plan=plan, judge=judge
+    )
+    return ResidentCountQualityExecutionResult(evidence, observation)
 
 
 __all__ = [
@@ -472,6 +462,8 @@ __all__ = [
     "ResidentCountQualityExecutionError",
     "ResidentCountQualityExecutionHold",
     "ResidentCountQualityExecutionPlan",
+    "ResidentCountQualityExecutionResult",
     "execute_candidate_count_quality",
+    "regrade_candidate_count_quality_execution",
     "resident_batch_shape_digest",
 ]
