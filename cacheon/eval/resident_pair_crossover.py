@@ -33,6 +33,10 @@ from cacheon.eval.resident_evaluation_pair import (
     ResidentRequestResult,
     ResidentRequestSlice,
 )
+from cacheon.eval.resident_pair_binding import (
+    ResidentPairBindingError,
+    ResidentPairRuntimeBinding,
+)
 from cacheon.eval.scoring import (
     RawSpeedEvidenceError,
     SpeedupVerdict,
@@ -90,7 +94,7 @@ class ResidentPairCrossoverPlan:
 
     candidate_bundle_digest: str
     crossover_plan: ResidentCrossoverPlan
-    pair_identities: tuple[ResidentLaneIdentity, ResidentLaneIdentity]
+    pair_binding: ResidentPairRuntimeBinding
     baseline_pair_lane: str
     candidate_pair_lane: str
 
@@ -100,27 +104,36 @@ class ResidentPairCrossoverPlan:
             "candidate_bundle_digest",
             _digest(self.candidate_bundle_digest, "candidate bundle digest"),
         )
-        identities = tuple(self.pair_identities)
         if (
             type(self.crossover_plan) is not ResidentCrossoverPlan
-            or type(self.pair_identities) is not tuple
-            or len(identities) != 2
-            or any(type(row) is not ResidentLaneIdentity for row in identities)
-            or tuple(row.lane_id for row in identities) != ("A", "B")
-            or any(not _hex32(row.session_id) for row in identities)
-            or identities[0].session_id == identities[1].session_id
+            or type(self.pair_binding) is not ResidentPairRuntimeBinding
             or (self.baseline_pair_lane, self.candidate_pair_lane)
             not in (("A", "B"), ("B", "A"))
         ):
             raise ResidentPairCrossoverError(
                 "resident pair crossover identity or orientation is invalid"
             )
-        object.__setattr__(self, "pair_identities", identities)
+        baseline = self.pair_binding.lookup(self.baseline_pair_lane)
+        candidate = self.pair_binding.lookup(self.candidate_pair_lane)
+        if (
+            baseline.lane_digest != self.crossover_plan.baseline_lane_digest
+            or candidate.lane_digest != self.crossover_plan.candidate_lane_digest
+        ):
+            raise ResidentPairCrossoverError(
+                "resident pair roles differ from the sealed crossover lanes"
+            )
+
+    @property
+    def pair_identities(self) -> tuple[ResidentLaneIdentity, ResidentLaneIdentity]:
+        """Compatibility projection; full runtime authority is ``pair_binding``."""
+
+        return self.pair_binding.identities
 
     def session_id(self, lane_id: str) -> str:
-        if lane_id not in ("A", "B"):
-            raise ResidentPairCrossoverError("resident pair lane identity is invalid")
-        return self.pair_identities[0 if lane_id == "A" else 1].session_id
+        try:
+            return self.pair_binding.lookup(lane_id).session_id
+        except ResidentPairBindingError as exc:
+            raise ResidentPairCrossoverError(str(exc)) from None
 
     @property
     def workload_digest(self) -> str:
@@ -138,7 +151,7 @@ class ResidentPairCrossoverPlan:
     def digest(self) -> str:
         crossover = self.crossover_plan
         return canonical_digest(
-            "cacheon.eval.resident-pair-crossover-plan.v1",
+            "cacheon.eval.resident-pair-crossover-plan.v2",
             {
                 "baseline_pair_lane": self.baseline_pair_lane,
                 "baseline_physical_lane": crossover.baseline_lane_digest,
@@ -146,9 +159,21 @@ class ResidentPairCrossoverPlan:
                 "candidate_pair_lane": self.candidate_pair_lane,
                 "candidate_physical_lane": crossover.candidate_lane_digest,
                 "crossover_plan": crossover.digest,
-                "pair_sessions": [
-                    [row.lane_id, row.session_id] for row in self.pair_identities
-                ],
+                "pair_binding": {
+                    "digest": self.pair_binding.digest,
+                    "lanes": [
+                        {
+                            "allocation": row.allocation_digest,
+                            "executor_namespace": row.executor_namespace_digest,
+                            "lane": row.lane_id,
+                            "lane_authority": row.lane_digest,
+                            "session": row.session_id,
+                            "stock_launch": row.stock_launch_digest,
+                        }
+                        for row in self.pair_binding.lanes
+                    ],
+                    "service_epoch": self.pair_binding.service_epoch_digest,
+                },
                 "prompt_batches": self.prompt_batches_digest,
                 "selected_delta": crossover.selected_delta_digest,
                 "workload": self.workload_digest,
@@ -166,7 +191,7 @@ class ResidentPairCrossoverEvidence:
     workload_digest: str
     prompt_batches_digest: str
     policy: ResidentSpeedPolicy
-    pair_identities: tuple[ResidentLaneIdentity, ResidentLaneIdentity]
+    pair_binding: ResidentPairRuntimeBinding
     orientation: tuple[str, str]
     physical_lane_digests: tuple[str, str]
     batch_shape: ResidentBatchShape
@@ -196,8 +221,7 @@ class ResidentPairCrossoverEvidence:
         )
         if (
             type(self.policy) is not ResidentSpeedPolicy
-            or type(self.pair_identities) is not tuple
-            or any(type(row) is not ResidentLaneIdentity for row in self.pair_identities)
+            or type(self.pair_binding) is not ResidentPairRuntimeBinding
             or type(self.orientation) is not tuple
             or type(self.physical_lane_digests) is not tuple
             or len(self.physical_lane_digests) != 2
@@ -223,6 +247,12 @@ class ResidentPairCrossoverEvidence:
             raise ResidentPairCrossoverError("resident pair evidence is malformed")
         for value in self.physical_lane_digests:
             _digest(value, "physical lane digest")
+
+    @property
+    def pair_identities(self) -> tuple[ResidentLaneIdentity, ResidentLaneIdentity]:
+        """Session-only projection retained for readers of version-1 evidence."""
+
+        return self.pair_binding.identities
 
     def regrade(self, plan: ResidentPairCrossoverPlan) -> SpeedupVerdict:
         return _regrade(self, plan)
@@ -432,7 +462,7 @@ def _regrade(evidence: ResidentPairCrossoverEvidence, plan: ResidentPairCrossove
         or evidence.workload_digest != plan.workload_digest
         or evidence.prompt_batches_digest != plan.prompt_batches_digest
         or evidence.policy != crossover.policy
-        or evidence.pair_identities != plan.pair_identities
+        or evidence.pair_binding != plan.pair_binding
         or evidence.orientation != (plan.baseline_pair_lane, plan.candidate_pair_lane)
         or evidence.physical_lane_digests
         != (crossover.baseline_lane_digest, crossover.candidate_lane_digest)
@@ -526,7 +556,7 @@ def run_resident_pair_crossover(
     stage_deadline = min(float(deadline), started + plan.crossover_plan.policy.max_stage_seconds)
     if stage_deadline <= started:
         raise ResidentPairCrossoverHold("resident pair speed stage has no wall-clock budget")
-    if pair.identities != plan.pair_identities:
+    if pair.identities != plan.pair_binding.identities:
         raise ResidentPairCrossoverHold("standing pair sessions differ from the sealed plan")
     lock = _pair_lock(pair)
     if not lock.acquire(timeout=max(0.0, stage_deadline - _now(clock))):
@@ -620,7 +650,7 @@ def run_resident_pair_crossover(
             plan.workload_digest,
             plan.prompt_batches_digest,
             policy,
-            plan.pair_identities,
+            plan.pair_binding,
             (plan.baseline_pair_lane, plan.candidate_pair_lane),
             (
                 plan.crossover_plan.baseline_lane_digest,

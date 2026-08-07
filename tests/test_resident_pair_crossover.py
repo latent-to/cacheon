@@ -19,6 +19,10 @@ from cacheon.eval.resident_evaluation_pair import (
     ResidentEvaluationPair,
     ResidentEvaluationPairError,
 )
+from cacheon.eval.resident_pair_binding import (
+    ResidentPairLaneBinding,
+    ResidentPairRuntimeBinding,
+)
 from cacheon.eval.resident_pair_crossover import (
     ResidentPairCrossoverHold,
     ResidentPairCrossoverPlan,
@@ -207,6 +211,7 @@ def _setup(
     candidate=(0.8,),
     policy=None,
     timed_batches=1,
+    baseline_pair_lane="A",
 ):
     crossover, *_ = _rig(
         tmp_path,
@@ -216,8 +221,23 @@ def _setup(
     )
     clock, activity = _Clock(), _Activity()
     template = crossover.baseline.session_plan
-    factory_a = _Factory("a" * 32, template, tuple(baseline), clock, activity)
-    factory_b = _Factory("b" * 32, template, tuple(candidate), clock, activity)
+    if baseline_pair_lane not in ("A", "B"):
+        raise ValueError("baseline pair lane must be A or B")
+    candidate_pair_lane = "B" if baseline_pair_lane == "A" else "A"
+    factory_a = _Factory(
+        "a" * 32,
+        template,
+        tuple(baseline if baseline_pair_lane == "A" else candidate),
+        clock,
+        activity,
+    )
+    factory_b = _Factory(
+        "b" * 32,
+        template,
+        tuple(baseline if baseline_pair_lane == "B" else candidate),
+        clock,
+        activity,
+    )
     pair = ResidentEvaluationPair(
         factory_a,
         factory_b,
@@ -228,8 +248,30 @@ def _setup(
     )
     pair.start()
     cleanup_pairs.append(pair)
+    binding = ResidentPairRuntimeBinding(
+        _h("service-epoch"),
+        tuple(
+            ResidentPairLaneBinding(
+                identity.lane_id,
+                identity.session_id,
+                _h(f"stock-launch-{identity.lane_id}"),
+                (
+                    crossover.baseline_lane_digest
+                    if identity.lane_id == baseline_pair_lane
+                    else crossover.candidate_lane_digest
+                ),
+                _h(f"allocation-{identity.lane_id}"),
+                _h(f"executor-namespace-{identity.lane_id}"),
+            )
+            for identity in pair.identities
+        ),
+    )
     plan = ResidentPairCrossoverPlan(
-        _h("bundle"), crossover, pair.identities, "A", "B"
+        _h("bundle"),
+        crossover,
+        binding,
+        baseline_pair_lane,
+        candidate_pair_lane,
     )
     return plan, pair, clock, activity, factory_a, factory_b
 
