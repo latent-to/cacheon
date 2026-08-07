@@ -53,6 +53,11 @@ from cacheon.eval.oci_backend import (
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.qualification import SelectionEntropyReceipt
 from cacheon.eval.reference_protocol import ReferenceRequest
+from cacheon.eval.resident_pair_crossover import (
+    ResidentPairCrossoverError,
+    ResidentPairCrossoverEvidence,
+    ResidentPairCrossoverPlan,
+)
 from cacheon.stack_identity import (
     canonical_digest,
     canonical_json_bytes,
@@ -147,6 +152,7 @@ def _codec() -> ContinuationCodec:
             AuditWitness,
             EvidenceArtifactRef,
             ResidentCountQualityCheckpoint,
+            ResidentPairCrossoverEvidence,
         )
     )
 
@@ -350,6 +356,53 @@ class QualificationContinuation:
             raise QualificationContinuationError(
                 "speed continuation reopened another evidence type"
             )
+        return crossover
+
+    def record_resident_pair_speed(
+        self, crossover: ResidentPairCrossoverEvidence
+    ) -> None:
+        if type(crossover) is not ResidentPairCrossoverEvidence:
+            raise QualificationContinuationError(
+                "resident pair speed continuation requires exact crossover evidence"
+            )
+        try:
+            encoded = self._codec.encode(crossover)
+        except ContinuationCodecError as exc:
+            raise QualificationContinuationError(str(exc)) from None
+        self._record(
+            "speed",
+            {"mode": "resident_pair", "crossover": encoded},
+        )
+
+    def load_resident_pair_speed(
+        self, plan: ResidentPairCrossoverPlan
+    ) -> ResidentPairCrossoverEvidence | None:
+        if type(plan) is not ResidentPairCrossoverPlan:
+            raise QualificationContinuationError(
+                "resident pair speed continuation requires the exact crossover plan"
+            )
+        payload = self._load("speed")
+        if payload is None:
+            return None
+        if (
+            type(payload) is not dict
+            or set(payload) != {"crossover", "mode"}
+            or payload.get("mode") != "resident_pair"
+        ):
+            raise QualificationContinuationError(
+                "speed continuation record is not the resident pair shape"
+            )
+        try:
+            crossover = self._codec.decode(payload["crossover"])
+            if type(crossover) is not ResidentPairCrossoverEvidence:
+                raise QualificationContinuationError(
+                    "speed continuation reopened another evidence type"
+                )
+            crossover.regrade(plan)
+        except (ContinuationCodecError, ResidentPairCrossoverError) as exc:
+            raise QualificationContinuationError(
+                f"resident pair speed continuation is invalid: {exc}"
+            ) from None
         return crossover
 
     def record_marginal_speed(self, lifecycle: MarginalLifecycleEvidence) -> None:
