@@ -36,6 +36,7 @@ from cacheon.chain.evaluation_coordinator import (
     WorkerReadiness,
     _LeaseHeartbeat,
 )
+from cacheon.chain.guarded_evaluation_run import GuardedEvaluationRun
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.remote_qualification_evidence import (
     _SCHEMA_VERSION,
@@ -92,7 +93,6 @@ def _identifier(value: object, field_name: str) -> str:
         raise RemoteEvaluationDispatcherError(f"{field_name} is malformed")
     return value
 
-
 def _canonical_object(value: bytes, label: str) -> dict[str, object]:
     if type(value) is not bytes or not value or len(value) > _MAX_PROTOCOL_BODY_BYTES:
         raise RemoteEvaluationDispatcherError(f"{label} bytes are outside protocol bounds")
@@ -103,7 +103,6 @@ def _canonical_object(value: bytes, label: str) -> dict[str, object]:
     if type(decoded) is not dict or canonical_json_bytes(decoded) != value:
         raise RemoteEvaluationDispatcherError(f"{label} is not a canonical object")
     return decoded
-
 
 def _mac(secret: bytes, domain: bytes, digest: str) -> str:
     return hmac.new(secret, domain + b"\0" + digest.encode("ascii"), hashlib.sha256).hexdigest()
@@ -132,7 +131,6 @@ class RemoteWorkerCredential:
                 "secret_sha256": sha256_hex(self.secret),
             },
         )
-
 
 @dataclass(frozen=True)
 class RemoteWorkerTransportIdentity:
@@ -209,7 +207,6 @@ class RemoteWorkerTransportIdentity:
         return canonical_digest(
             "cacheon.chain.remote-worker-transport-identity.v1", self.to_dict()
         )
-
 
 @dataclass(frozen=True)
 class RemoteEvaluationRequest:
@@ -404,7 +401,6 @@ class RemoteEvaluationRequest:
             raise RemoteEvaluationDispatcherError("remote request identity differs")
         return request
 
-
 @dataclass(frozen=True)
 class AuthenticatedRemoteEvaluationResponse:
     """Canonical worker response authenticated against its exact request."""
@@ -544,7 +540,6 @@ class AuthenticatedWorkerTransport(Protocol):
         request: RemoteEvaluationRequest,
     ) -> AuthenticatedRemoteEvaluationResponse: ...
 
-
 def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
     if type(payload) is ArenaScreenReceipt:
         return "arena_screen_receipt", canonical_json_bytes(payload.to_dict()), payload.digest
@@ -555,7 +550,6 @@ def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
             payload.digest,
         )
     raise RemoteEvaluationDispatcherError("remote response payload is not exactly typed")
-
 
 def _validate_request_body(stage: str, value: dict[str, object]) -> None:
     if stage == "screen":
@@ -658,7 +652,6 @@ def _validate_request_body(stage: str, value: dict[str, object]) -> None:
             raise RemoteEvaluationDispatcherError("qualification request provenance differs")
         reservations.append(reservation)
 
-
 def _request_body_reservation_ids(
     stage: str,
     value: dict[str, object],
@@ -678,7 +671,6 @@ def _request_body_reservation_ids(
         raise RemoteEvaluationDispatcherError(
             "remote request reservation projection is invalid"
         ) from exc
-
 
 def _publication_wire_digest(value: object) -> str:
     fields = {
@@ -730,7 +722,6 @@ def _publication_wire_digest(value: object) -> str:
         },
     )
 
-
 def _validate_screen_policy(value: object) -> None:
     if type(value) is not dict or set(value) != {"crownable", "stages"}:
         raise RemoteEvaluationDispatcherError("screen request policy is not closed")
@@ -749,7 +740,6 @@ def _validate_screen_policy(value: object) -> None:
         ):
             raise RemoteEvaluationDispatcherError("screen request stage is malformed")
 
-
 def _request_body_for_screen(
     coordinator: EvaluationCoordinator,
     claim: ClaimedScreenEvaluation,
@@ -764,7 +754,6 @@ def _request_body_for_screen(
         "screen_policy": coordinator.service.manifest.screens.to_dict(),
         "service_digest": coordinator.service.identity,
     }
-
 
 def _request_body_for_qualification(
     coordinator: EvaluationCoordinator,
@@ -790,7 +779,6 @@ def _request_body_for_qualification(
         "screen_lane": claim.screen_lane,
         "service_digest": coordinator.service.identity,
     }
-
 
 def seal_remote_request(
     lease: EvaluationLease,
@@ -842,7 +830,6 @@ def seal_remote_request(
         auth_tag=_mac(credential.secret, _REQUEST_AUTH_DOMAIN, request.digest),
     )
 
-
 def verify_remote_request(
     request: RemoteEvaluationRequest,
     transport_identity: RemoteWorkerTransportIdentity,
@@ -869,7 +856,6 @@ def verify_remote_request(
         )
     ):
         raise RemoteEvaluationDispatcherError("remote request authentication failed")
-
 
 def seal_remote_response(
     request: RemoteEvaluationRequest,
@@ -899,7 +885,6 @@ def seal_remote_response(
         response,
         auth_tag=_mac(credential.secret, _RESPONSE_AUTH_DOMAIN, response.digest),
     )
-
 
 def reopen_remote_response(
     request: RemoteEvaluationRequest,
@@ -1067,10 +1052,22 @@ class RemoteEvaluationDispatcher:
         raise RemoteEvaluationDispatcherError(reason) from cause
 
     def dispatch_screen_once(self) -> EvaluationRun | None:
-        """Claim the exact FIFO screen row, invoke remotely, and CAS-commit."""
+        guarded = self._dispatch_screen_once(expected_members=None)
+        return None if guarded is None else guarded.run
 
+    def dispatch_guarded_screen_once(
+        self, *, expected_members: tuple[EvaluationLeaseMember, ...]
+    ) -> GuardedEvaluationRun | None:
+        return self._dispatch_screen_once(expected_members=expected_members)
+
+    def _dispatch_screen_once(
+        self,
+        *,
+        expected_members: tuple[EvaluationLeaseMember, ...] | None,
+    ) -> GuardedEvaluationRun | None:
+        """Claim the exact FIFO screen row, invoke remotely, and CAS-commit."""
         self._validate_live_transport()
-        claim = self.coordinator.claim_screen()
+        claim = self.coordinator.claim_screen(expected_members=expected_members)
         if claim is None:
             return None
         heartbeat = _LeaseHeartbeat(self.coordinator, claim.lease)
@@ -1119,7 +1116,9 @@ class RemoteEvaluationDispatcher:
                 result_digest=envelope.digest,
             )
         self.coordinator.commit_screen_result(claim, receipt, envelope)
-        return EvaluationRun(lease, envelope, receipt, "completed")
+        return GuardedEvaluationRun(
+            request.digest, EvaluationRun(lease, envelope, receipt, "completed")
+        )
 
     def dispatch_qualification_once(self) -> EvaluationRun | None:
         """Claim one FIFO cohort, invoke remotely, and commit or requeue it."""
@@ -1225,10 +1224,10 @@ class RemoteEvaluationDispatcher:
             return self.dispatch_qualification_once()
         raise RemoteEvaluationDispatcherError("remote evaluation stage is unsupported")
 
-
 __all__ = [
     "AuthenticatedRemoteEvaluationResponse",
     "AuthenticatedWorkerTransport",
+    "GuardedEvaluationRun",
     "REMOTE_EVALUATION_PROTOCOL_DIGEST",
     "RemoteEvidenceArtifact",
     "RemoteEvaluationDispatcher",

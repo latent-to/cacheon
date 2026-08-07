@@ -12,7 +12,7 @@ from collections.abc import MutableSet
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Iterator
 
-from cacheon.chain.evaluation_leases import EvaluationLease
+from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.evaluation_recovery import (
     WORKER_PRE_RESIDENT_RELEASE_REASONS,
     EvaluationRecovery,
@@ -480,15 +480,16 @@ class EvaluationRecoveryStoreMixin:
         current_block: int,
         lease_blocks: int = 30,
         max_members: int | None = None,
+        expected_members: tuple[EvaluationLeaseMember, ...] | None = None,
     ) -> EvaluationRecovery | None:
         """Atomically claim the next cohort and retain its recovery intent."""
-
         lease = self.claim_evaluation_lease(
             stage="qualification",
             owner=owner,
             current_block=current_block,
             lease_blocks=lease_blocks,
             max_members=max_members,
+            expected_members=expected_members,
         )
         if lease is None:
             return None
@@ -513,7 +514,6 @@ class EvaluationRecoveryStoreMixin:
         self, recovery: EvaluationRecovery
     ) -> "QualificationRequestPlan":
         """Reopen the one canonical request plan retained by this recovery."""
-
         if type(recovery) is not EvaluationRecovery:
             raise _intake_error("evaluation recovery is not exactly typed")
         current = self._active_qualification_recovery(recovery.lease)
@@ -847,7 +847,6 @@ class EvaluationRecoveryStoreMixin:
         reason: str,
     ) -> EvaluationLease:
         """Atomically resolve and release only before publication is committed."""
-
         if (
             not isinstance(reason, str)
             or not reason
