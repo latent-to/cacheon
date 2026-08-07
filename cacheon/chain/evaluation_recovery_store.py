@@ -914,6 +914,7 @@ class EvaluationRecoveryStoreMixin:
             current_block=current_block,
             reason=reason,
             release_phase=RecoveryPhase.REQUEST_READY,
+            allow_expired=True,
         )
 
     def _release_recovery(
@@ -923,11 +924,12 @@ class EvaluationRecoveryStoreMixin:
         current_block: int,
         reason: str,
         release_phase: RecoveryPhase | None = None,
+        allow_expired: bool = False,
     ) -> EvaluationLease:
         self._require_evaluation_clock(current_block)
         if (
             recovery.resolution is not RecoveryResolution.UNRESOLVED
-            or current_block >= recovery.lease.expires_block
+            or (current_block >= recovery.lease.expires_block and not allow_expired)
         ):
             raise _intake_error("pre-resident recovery release is forbidden")
         with self._transaction():

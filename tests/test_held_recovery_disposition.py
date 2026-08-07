@@ -444,23 +444,30 @@ def test_result_digest_or_blob_drift_rejects_without_mutation(
         assert _snapshot(store, case.held) == before
 
 
-def test_expiry_repeat_and_nonheld_calls_reject_idempotently(tmp_path: Path) -> None:
+def test_expired_review_repeat_and_nonheld_calls_are_closed(tmp_path: Path) -> None:
     expired = _case(tmp_path, "expired")
     with _store(expired) as store:
         expiry = expired.held.lease.expires_block
+        current = expiry + 100
         store.reserve_finalized(
             (),
-            finalized_block=expiry,
-            finalized_block_hash="0x" + f"{expiry:064x}",
+            finalized_block=current,
+            finalized_block_hash="0x" + f"{current:064x}",
         )
-        before = _snapshot(store, expired.held)
-        with pytest.raises(IntakeError, match="release is forbidden"):
-            store.release_reviewed_legacy_screen_only_recovery(
-                expired.held,
-                disposition=expired.disposition,
-                current_block=expiry,
-            )
-        assert _snapshot(store, expired.held) == before
+        released_lease = store.release_reviewed_legacy_screen_only_recovery(
+            expired.held,
+            disposition=expired.disposition,
+            current_block=current,
+        )
+        assert released_lease == expired.held.lease
+        lease_row = store._db.execute(
+            "SELECT state,completed_block FROM evaluation_leases WHERE lease_id=?",
+            (expired.held.lease.lease_id,),
+        ).fetchone()
+        assert (lease_row["state"], lease_row["completed_block"]) == (
+            "released",
+            current,
+        )
 
     released = _case(tmp_path, "repeat")
     with _store(released) as store:
