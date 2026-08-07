@@ -50,7 +50,6 @@ from cacheon.eval.b300_arena_provider import (
     B300ResidentScreenFactory,
     B300ResidentScreenLifetime,
     B300ScreenDeploymentAuthorities,
-    b300_executor_role_policy_digest,
     b300_arena_provider_digest,
 )
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
@@ -89,17 +88,10 @@ from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
 from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.oci_session_protocol import EngineSessionConfig, SlotAuditPolicy
-from cacheon.eval.b300_registered_qualification_inputs import (
-    B300RegisteredQualificationError,
+from cacheon.eval.b300_screen_qualification_bridge import (
+    B300ScreenQualificationBridgeError,
+    derive_b300_screen_qualification,
 )
-from cacheon.eval.b300_sealed_qualification_commission import (
-    declared_qualification_deadline_digest,
-    declared_qualification_entropy_digest,
-    predicted_qualification_builder_digest,
-    predicted_qualification_policy_digest,
-    sealed_qualification_commission,
-)
-from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_queue import ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
@@ -1464,91 +1456,19 @@ def _derive_inputs(
         },
     )
 
-    qualification_builder_digest = _digest(
-        authority.get("qualification_builder_digest"),
-        "qualification builder digest",
-    )
-    hidden_binding = HiddenJudgeBinding(
-        prompt_identity["hidden_corpus_commitment"],
-        prompt_identity["hidden_judge_digest"],
-        prompt_identity["hidden_task_policy_digest"],
-    )
-    qualification_commission = authority.get("qualification")
-    if qualification_commission is not None:
-        # A commissionable deployment declares the exact digests the tracked
-        # qualification construction will later re-derive.  A screen-only
-        # deployment (no sealed commission block) keeps the historical
-        # placeholder identity and can never compose a qualification worker.
-        try:
-            qualification_commission = sealed_qualification_commission(
-                qualification_commission
-            )
-            predicted_builder = predicted_qualification_builder_digest(
-                catalog,
-                builder_source_digest=qualification_commission[
-                    "builder_source_digest"
-                ],
-                selection_store_digest=qualification_commission[
-                    "selection_store_digest"
-                ],
-            )
-            qualification_policy_digest = predicted_qualification_policy_digest(
-                catalog,
-                builder_source_digest=qualification_commission[
-                    "builder_source_digest"
-                ],
-                selection_store_digest=qualification_commission[
-                    "selection_store_digest"
-                ],
-                hidden_judge_binding_digest=hidden_binding.digest,
-                selection_policy_digest=prompt_identity["selection_policy_digest"],
-            )
-        except B300RegisteredQualificationError as exc:
-            raise B300ScreenDeploymentError(
-                f"sealed qualification commission is invalid: {exc}"
-            ) from None
-        if qualification_builder_digest != predicted_builder:
-            raise B300ScreenDeploymentError(
-                "sealed qualification builder digest differs from the tracked"
-                " construction identity"
-            )
-    else:
-        qualification_policy_digest = canonical_digest(
-            "cacheon.eval.b300-declared-qualification-policy.v1",
-            {
-                "builder_digest": qualification_builder_digest,
-                "calibration_package_sha256": authority_refs[
-                    "calibration_package"
-                ]["sha256"],
-                "calibration_projection_sha256": authority_refs[
-                    "calibration_projection_receipt"
-                ]["sha256"],
-                "hidden_judge_binding_digest": hidden_binding.digest,
-                "prompt_authority_sha256": prompt_identity["sha256"],
-            },
+    try:
+        declared, qualification_commission = derive_b300_screen_qualification(
+            authority=authority,
+            authority_refs=authority_refs,
+            prompt_identity=prompt_identity,
+            catalog=catalog,
+            lane_pair=qualification_lane_pair,
+            backend_config_factory=lambda executor_id: _backend_config(
+                root, preflight, executor_id=executor_id
+            ),
         )
-    candidate_config = _backend_config(
-        root, preflight, executor_id="b300-qualification-candidate"
-    )
-    baseline_config = _backend_config(
-        root, preflight, executor_id="b300-qualification-resident"
-    )
-    declared = B300DeclaredQualificationAuthorities(
-        qualification_policy_digest=qualification_policy_digest,
-        qualification_builder_digest=qualification_builder_digest,
-        candidate_executor_policy_digest=b300_executor_role_policy_digest(
-            candidate_config, role="candidate"
-        ),
-        resident_baseline_executor_policy_digest=b300_executor_role_policy_digest(
-            baseline_config, role="resident_baseline"
-        ),
-        lane_pair=qualification_lane_pair,
-        entropy_provider_digest=declared_qualification_entropy_digest(
-            prompt_identity["selection_policy_digest"]
-        ),
-        hidden_judge_binding_digest=hidden_binding.digest,
-        deadline_policy_digest=declared_qualification_deadline_digest(),
-    )
+    except B300ScreenQualificationBridgeError as exc:
+        raise B300ScreenDeploymentError(str(exc)) from None
     return _CommissionedInputs(
         root=root,
         ready=ready,
@@ -1679,10 +1599,6 @@ def _authority_inputs(
     )
 
 
-def _declared_to_dict(value: B300DeclaredQualificationAuthorities) -> dict[str, object]:
-    return value.to_dict()
-
-
 def _deployment_payload(inputs: _CommissionedInputs) -> dict[str, object]:
     ready_lane = _mapping(inputs.ready.get("lane"), "READY lane")
     return {
@@ -1690,9 +1606,7 @@ def _deployment_payload(inputs: _CommissionedInputs) -> dict[str, object]:
             key: dict(value) for key, value in sorted(inputs.authority_refs.items())
         },
         "controller_distribution_digest": inputs.controller_distribution_digest,
-        "declared_qualification": _declared_to_dict(
-            inputs.declared_qualification
-        ),
+        "declared_qualification": inputs.declared_qualification.to_dict(),
         "device_configuration_digest": (
             inputs.device_policy.configuration_sha256
         ),
