@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from cacheon.eval.count_quality import (
     CountQualityEvidence,
     CountQualityPolicy,
     CountQualityVerdict,
     score_count_quality,
+)
+from cacheon.eval.evidence_store import (
+    EvidenceArtifactRef,
+    EvidenceStoreError,
+    publish_evidence,
+    reopen_evidence,
 )
 from cacheon.eval.numeric_answer_judge import (
     NumericAnswerHiddenJudge,
@@ -40,9 +47,14 @@ from cacheon.stack_identity import (
 RESIDENT_COUNT_ENVELOPE_SCHEMA = "cacheon.eval.resident-count-quality-envelope.v1"
 RESIDENT_COUNT_OBSERVATION_SCHEMA = "cacheon.eval.resident-count-quality-observation.v1"
 RESIDENT_COUNT_RESULT_SCHEMA = "cacheon.eval.resident-count-quality-result.v1"
+RESIDENT_COUNT_STOCK_AUTHORITY_SCHEMA = (
+    "cacheon.eval.resident-count-quality-stock-authority.v1"
+)
+RESIDENT_COUNT_OBSERVATION_DOMAIN = "cacheon.resident-count-quality-observation"
 RESIDENT_COUNT_ROLES = frozenset({"stock", "candidate"})
 MAX_QUALITY_PROMPTS = 4096
 MAX_OUTPUT_TOKENS_PER_PROMPT = 4096
+MAX_RESIDENT_COUNT_OBSERVATION_BYTES = 16 << 20
 
 
 class ResidentCountQualityError(ValueError):
@@ -51,6 +63,26 @@ class ResidentCountQualityError(ValueError):
 
 class ResidentCountQualityInfrastructureError(ResidentCountQualityError):
     """Trusted reopening or hidden judging failed; this is never candidate FAIL."""
+
+
+def _observation_reference(reference: object) -> EvidenceArtifactRef:
+    if type(reference) is not EvidenceArtifactRef or (
+        reference.domain,
+        reference.media_type,
+        reference.schema,
+    ) != (
+        RESIDENT_COUNT_OBSERVATION_DOMAIN,
+        "application/json",
+        RESIDENT_COUNT_OBSERVATION_SCHEMA,
+    ):
+        raise ResidentCountQualityError(
+            "resident count observation reference is not exact"
+        )
+    if reference.size > MAX_RESIDENT_COUNT_OBSERVATION_BYTES:
+        raise ResidentCountQualityError(
+            "resident count observation reference exceeds its bound"
+        )
+    return reference
 
 
 def _digest(value: object, field: str) -> str:
@@ -493,6 +525,170 @@ class ResidentCountQualityResult:
         return canonical_digest(RESIDENT_COUNT_RESULT_SCHEMA, self.to_dict())
 
 
+@dataclass(frozen=True)
+class ResidentCountQualityStockAuthority:
+    """Path-free fixed-stock artifact and policy sealed for candidate-only use."""
+
+    artifact: EvidenceArtifactRef
+    observation_digest: str
+    envelope_digest: str
+    policy: CountQualityPolicy
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "artifact", _observation_reference(self.artifact))
+        for field in ("observation_digest", "envelope_digest"):
+            object.__setattr__(self, field, _digest(getattr(self, field), field))
+        if type(self.policy) is not CountQualityPolicy:
+            raise ResidentCountQualityError("stock count quality policy is not exact")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "artifact": self.artifact.to_dict(),
+            "envelope_digest": self.envelope_digest,
+            "observation_digest": self.observation_digest,
+            "policy": self.policy.to_dict(),
+            "schema": RESIDENT_COUNT_STOCK_AUTHORITY_SCHEMA,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ResidentCountQualityStockAuthority":
+        row = _strict(
+            value,
+            frozenset(
+                {
+                    "artifact",
+                    "envelope_digest",
+                    "observation_digest",
+                    "policy",
+                    "schema",
+                }
+            ),
+            "resident count stock authority",
+        )
+        if row["schema"] != RESIDENT_COUNT_STOCK_AUTHORITY_SCHEMA:
+            raise ResidentCountQualityError(
+                "resident count stock authority schema is unsupported"
+            )
+        try:
+            artifact = EvidenceArtifactRef.from_dict(row["artifact"])
+            policy = CountQualityPolicy.from_dict(row["policy"])
+        except (EvidenceStoreError, ValueError, TypeError) as exc:
+            raise ResidentCountQualityError(
+                f"resident count stock authority is invalid: {exc}"
+            ) from None
+        return cls(
+            artifact,
+            row["observation_digest"],  # type: ignore[arg-type]
+            row["envelope_digest"],  # type: ignore[arg-type]
+            policy,
+        )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(RESIDENT_COUNT_STOCK_AUTHORITY_SCHEMA, self.to_dict())
+
+
+def publish_resident_count_observation(
+    evidence_root: str | Path,
+    observation: ResidentCountQualityObservation,
+    *,
+    deadline: float | None = None,
+) -> EvidenceArtifactRef:
+    """Publish one exact retained observation through the shared evidence CAS."""
+
+    if type(observation) is not ResidentCountQualityObservation:
+        raise ResidentCountQualityError("resident count observation is not exact")
+    try:
+        return publish_evidence(
+            evidence_root,
+            observation.canonical_bytes,
+            domain=RESIDENT_COUNT_OBSERVATION_DOMAIN,
+            media_type="application/json",
+            schema=RESIDENT_COUNT_OBSERVATION_SCHEMA,
+            max_bytes=MAX_RESIDENT_COUNT_OBSERVATION_BYTES,
+            deadline=deadline,
+        )
+    except EvidenceStoreError as exc:
+        raise ResidentCountQualityInfrastructureError(
+            f"resident count observation could not be published: {exc}"
+        ) from None
+
+
+def reopen_resident_count_observation(
+    evidence_root: str | Path,
+    reference: EvidenceArtifactRef,
+) -> ResidentCountQualityObservation:
+    """Reopen one exact retained observation; metadata cannot select a codec."""
+
+    exact = _observation_reference(reference)
+    try:
+        payload = reopen_evidence(
+            evidence_root,
+            exact,
+            max_bytes=MAX_RESIDENT_COUNT_OBSERVATION_BYTES,
+        )
+        observation = ResidentCountQualityObservation.from_canonical_bytes(payload)
+    except (EvidenceStoreError, ResidentCountQualityError) as exc:
+        raise ResidentCountQualityInfrastructureError(
+            f"resident count observation could not be reopened: {exc}"
+        ) from None
+    return observation
+
+
+def seal_resident_count_stock_authority(
+    evidence_root: str | Path,
+    reference: EvidenceArtifactRef,
+    *,
+    policy: CountQualityPolicy,
+) -> ResidentCountQualityStockAuthority:
+    """Seal an already-published stock observation; this never executes stock."""
+
+    observation = reopen_resident_count_observation(evidence_root, reference)
+    if observation.role != "stock":
+        raise ResidentCountQualityError(
+            "fixed-stock authority requires a retained stock observation"
+        )
+    return ResidentCountQualityStockAuthority(
+        reference,
+        observation.digest,
+        observation.envelope.digest,
+        policy,
+    )
+
+
+def reopen_resident_count_stock(
+    evidence_root: str | Path,
+    authority: ResidentCountQualityStockAuthority,
+    *,
+    expected_envelope: ResidentCountQualityEnvelope | None = None,
+) -> ResidentCountQualityObservation:
+    """Reopen the sealed stock bytes without trusting a stored aggregate count."""
+
+    if type(authority) is not ResidentCountQualityStockAuthority:
+        raise ResidentCountQualityError("fixed-stock authority is not exact")
+    if expected_envelope is not None and type(expected_envelope) is not (
+        ResidentCountQualityEnvelope
+    ):
+        raise ResidentCountQualityError("expected stock envelope is not exact")
+    observation = reopen_resident_count_observation(
+        evidence_root,
+        authority.artifact,
+    )
+    if (
+        observation.role != "stock"
+        or observation.digest != authority.observation_digest
+        or observation.envelope.digest != authority.envelope_digest
+        or (
+            expected_envelope is not None
+            and observation.envelope != expected_envelope
+        )
+    ):
+        raise ResidentCountQualityInfrastructureError(
+            "fixed-stock observation differs from its sealed authority"
+        )
+    return observation
+
+
 def rejudge_resident_count_observation(
     observation: ResidentCountQualityObservation,
     judge: NumericAnswerHiddenJudge,
@@ -575,17 +771,25 @@ def compare_resident_count_quality(
 
 
 __all__ = [
+    "MAX_RESIDENT_COUNT_OBSERVATION_BYTES",
     "MAX_OUTPUT_TOKENS_PER_PROMPT",
     "MAX_QUALITY_PROMPTS",
     "RESIDENT_COUNT_ENVELOPE_SCHEMA",
     "RESIDENT_COUNT_OBSERVATION_SCHEMA",
     "RESIDENT_COUNT_RESULT_SCHEMA",
+    "RESIDENT_COUNT_OBSERVATION_DOMAIN",
+    "RESIDENT_COUNT_STOCK_AUTHORITY_SCHEMA",
     "ResidentCountPromptObservation",
     "ResidentCountQualityEnvelope",
     "ResidentCountQualityError",
     "ResidentCountQualityInfrastructureError",
     "ResidentCountQualityObservation",
     "ResidentCountQualityResult",
+    "ResidentCountQualityStockAuthority",
     "compare_resident_count_quality",
+    "publish_resident_count_observation",
     "rejudge_resident_count_observation",
+    "reopen_resident_count_observation",
+    "reopen_resident_count_stock",
+    "seal_resident_count_stock_authority",
 ]

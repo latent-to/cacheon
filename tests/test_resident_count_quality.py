@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 from cacheon.eval.count_quality import CountQualityPolicy
+from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.numeric_answer_judge import (
     NumericAnswerHiddenJudge,
     NumericAnswerOccurrence,
@@ -15,13 +17,19 @@ from cacheon.eval.numeric_answer_judge import (
 from cacheon.eval.qualification import ReferenceManifest
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_count_quality import (
+    RESIDENT_COUNT_OBSERVATION_DOMAIN,
     ResidentCountPromptObservation,
     ResidentCountQualityEnvelope,
     ResidentCountQualityError,
     ResidentCountQualityInfrastructureError,
     ResidentCountQualityObservation,
+    ResidentCountQualityStockAuthority,
     compare_resident_count_quality,
+    publish_resident_count_observation,
     rejudge_resident_count_observation,
+    reopen_resident_count_observation,
+    reopen_resident_count_stock,
+    seal_resident_count_stock_authority,
 )
 from cacheon.stack_identity import canonical_digest
 
@@ -267,3 +275,135 @@ def test_prompt_receipt_must_bind_retained_output() -> None:
             outputs[1],
             receipt,
         )
+
+
+def test_fixed_stock_authority_publishes_reopens_and_never_stores_count(
+    tmp_path: Path,
+) -> None:
+    judge, envelope, prompts, tasks, outputs, _ = _quality_fixture()
+    stock = _observation("stock", judge, envelope, prompts, tasks, outputs)
+    root = tmp_path / "evidence"
+
+    reference = publish_resident_count_observation(root, stock)
+    assert publish_resident_count_observation(root, stock) == reference
+    authority = seal_resident_count_stock_authority(
+        root,
+        reference,
+        policy=CountQualityPolicy(10),
+    )
+
+    assert reopen_resident_count_observation(root, reference) == stock
+    assert reopen_resident_count_stock(
+        root,
+        authority,
+        expected_envelope=envelope,
+    ) == stock
+    assert ResidentCountQualityStockAuthority.from_dict(
+        authority.to_dict()
+    ) == authority
+    encoded = json.dumps(authority.to_dict(), sort_keys=True).lower()
+    assert str(root).lower() not in encoded
+    assert '"correct"' not in encoded
+
+
+def test_fixed_stock_authority_rejects_candidate_and_foreign_metadata(
+    tmp_path: Path,
+) -> None:
+    judge, envelope, prompts, tasks, outputs, _ = _quality_fixture()
+    candidate = _observation("candidate", judge, envelope, prompts, tasks, outputs)
+    root = tmp_path / "evidence"
+    reference = publish_resident_count_observation(root, candidate)
+
+    with pytest.raises(ResidentCountQualityError, match="stock observation"):
+        seal_resident_count_stock_authority(
+            root,
+            reference,
+            policy=CountQualityPolicy(10),
+        )
+
+    foreign = EvidenceArtifactRef(
+        "cacheon.some-other-domain",
+        reference.sha256,
+        reference.size,
+        reference.media_type,
+        reference.schema,
+    )
+    with pytest.raises(ResidentCountQualityError, match="reference is not exact"):
+        reopen_resident_count_observation(root, foreign)
+
+
+def test_fixed_stock_authority_rejects_envelope_or_identity_substitution(
+    tmp_path: Path,
+) -> None:
+    judge, envelope, prompts, tasks, outputs, _ = _quality_fixture()
+    stock = _observation("stock", judge, envelope, prompts, tasks, outputs)
+    root = tmp_path / "evidence"
+    reference = publish_resident_count_observation(root, stock)
+    authority = seal_resident_count_stock_authority(
+        root,
+        reference,
+        policy=CountQualityPolicy(10),
+    )
+    foreign_envelope = ResidentCountQualityEnvelope(
+        envelope.reference,
+        envelope.judge_binding,
+        _h("foreign-plan"),
+        envelope.generation_shape_digest,
+        envelope.admission_policy_digest,
+        envelope.expected_prompt_count,
+    )
+    with pytest.raises(
+        ResidentCountQualityInfrastructureError,
+        match="sealed authority",
+    ):
+        reopen_resident_count_stock(
+            root,
+            authority,
+            expected_envelope=foreign_envelope,
+        )
+
+    substituted = ResidentCountQualityStockAuthority(
+        authority.artifact,
+        _h("different-observation"),
+        authority.envelope_digest,
+        authority.policy,
+    )
+    with pytest.raises(
+        ResidentCountQualityInfrastructureError,
+        match="sealed authority",
+    ):
+        reopen_resident_count_stock(root, substituted)
+
+
+def test_fixed_stock_artifact_is_target_neutral_and_reusable_across_candidates(
+    tmp_path: Path,
+) -> None:
+    judge, envelope, prompts, tasks, outputs, _ = _quality_fixture()
+    stock = _observation("stock", judge, envelope, prompts, tasks, outputs)
+    root = tmp_path / "evidence"
+    authority = seal_resident_count_stock_authority(
+        root,
+        publish_resident_count_observation(root, stock),
+        policy=CountQualityPolicy(10),
+    )
+    for suffix in ("first", "second"):
+        candidate = ResidentCountQualityObservation(
+            "candidate",
+            envelope,
+            _h(f"{suffix}-candidate-execution"),
+            stock.prompts,
+        )
+        candidate_ref = publish_resident_count_observation(root, candidate)
+        reopened_candidate = reopen_resident_count_observation(root, candidate_ref)
+        result = compare_resident_count_quality(
+            reopen_resident_count_stock(root, authority),
+            reopened_candidate,
+            judge=judge,
+            policy=authority.policy,
+        )
+        assert result.verdict.decision == "PASS"
+        assert candidate_ref.domain == RESIDENT_COUNT_OBSERVATION_DOMAIN
+
+    text = json.dumps(authority.to_dict(), sort_keys=True).lower()
+    for forbidden in ("msa", "arnorm", "all_reduce", "target_id"):
+        assert forbidden not in text
