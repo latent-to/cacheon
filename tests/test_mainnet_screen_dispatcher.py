@@ -5,6 +5,7 @@ import sqlite3
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,18 +20,29 @@ from cacheon.arena_service import (
     WorkloadMixture,
     WorkloadRegime,
 )
+from cacheon.bundle_hash import content_hash
 from cacheon.chain import mainnet_screen_dispatcher as dispatcher_module
 from cacheon.chain import remote_worker_spool as spool
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
-from cacheon.chain.intake import FinalizedIntakeStore, IntakePolicy, IntakeScope
+from cacheon.chain.intake import (
+    FinalizedArrival,
+    FinalizedIntakeStore,
+    IntakePolicy,
+    IntakeScope,
+)
+from cacheon.chain.publication import publish_worker_bundle
+from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
     REMOTE_EVALUATION_PROTOCOL_DIGEST,
     RemoteEvaluationDispatcher,
+    RemoteEvaluationDispatcherError,
+    RemoteEvaluationRequest,
     RemoteWorkerCredential,
     RemoteWorkerTransportIdentity,
 )
 from cacheon.chain.remote_worker_registration import verify_registration
-from cacheon.stack_identity import sha256_hex
+from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
+from cacheon.stack_identity import canonical_json_bytes, sha256_hex
 
 BLOCK = 10
 SCOPE = IntakeScope("0x" + "0" * 64, 14)
@@ -222,6 +234,7 @@ def test_builds_exact_screen_only_dispatcher_over_live_durable_cursor(
     )
     assert dispatcher.transport.identity.digest == config.transport_identity_digest
     assert dispatcher.credential.digest == config.credential_digest
+    assert callable(dispatcher.transport.qualification_publication_resolver)
     assert dispatcher.dispatch_screen_once() is None
     provider = dispatcher.coordinator.service._provider
     with pytest.raises(
@@ -234,6 +247,180 @@ def test_builds_exact_screen_only_dispatcher_over_live_durable_cursor(
         match="local arena provider execution is disabled",
     ):
         provider.build_qualification(None)
+
+
+def _published_intake_row(tmp_path: Path, intake_db: Path, *, label: str):
+    source = tmp_path / f"source-{label}"
+    source.mkdir(parents=True, mode=0o700)
+    leaf = source / "manifest.toml"
+    leaf.write_text(f"bundle_id = '{label}'\n")
+    leaf.chmod(0o600)
+    committed = content_hash(source)
+    publication = publish_worker_bundle(
+        source,
+        tmp_path / "publications",
+        committed,
+    )
+    with FinalizedIntakeStore(intake_db, POLICY, scope=SCOPE) as store:
+        reserved = store.reserve_finalized(
+            (
+                FinalizedArrival(
+                    f"miner-{label}",
+                    committed,
+                    f"https://example.invalid/{label}",
+                    BLOCK,
+                    _block_hash(BLOCK),
+                    0,
+                ),
+            ),
+            finalized_block=BLOCK,
+            finalized_block_hash=_block_hash(BLOCK),
+        )
+        store.mark_fetching(reserved[0].reservation_id)
+        row = store.mark_published(
+            reserved[0].reservation_id,
+            delta_fingerprint=SubmittedDeltaFingerprint(
+                "component",
+                f"target.{label}",
+                _h(f"base:{label}"),
+                (f"slot.{label}",),
+                _h(f"archive:{label}"),
+                _h(f"selected:{label}"),
+                _h(f"exact:{label}"),
+                (_h(f"source:{label}"),),
+                (_h(f"binary:{label}"),),
+            ),
+            publication_digest=publication.digest,
+            publication_root=publication.root,
+        )
+    return row, publication
+
+
+def _synthetic_qualification_request(
+    reservation_id: str,
+    publication_dict: dict[str, object],
+) -> RemoteEvaluationRequest:
+    body = {
+        "candidates": [
+            {
+                "publication": publication_dict,
+                "reservation": {"reservation_digest": reservation_id},
+            }
+        ]
+    }
+    body_bytes = canonical_json_bytes(body)
+    request = object.__new__(RemoteEvaluationRequest)
+    object.__setattr__(request, "stage", "qualification")
+    object.__setattr__(request, "body_bytes", body_bytes)
+    return request
+
+
+def test_qualification_publication_resolver_reopens_and_rejects_mismatch(
+    tmp_path: Path,
+) -> None:
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    intake_db = private / "intake.sqlite3"
+    row, publication = _published_intake_row(tmp_path, intake_db, label="match")
+    other_source = tmp_path / "source-other"
+    other_source.mkdir(mode=0o700)
+    other_leaf = other_source / "manifest.toml"
+    other_leaf.write_text("bundle_id = 'other'\n")
+    other_leaf.chmod(0o600)
+    other = publish_worker_bundle(
+        other_source,
+        tmp_path / "publications",
+        content_hash(other_source),
+    )
+    resolver = dispatcher_module.make_qualification_publication_resolver(
+        intake_db=intake_db,
+        policy=POLICY,
+        scope=SCOPE,
+        store_factory=FinalizedIntakeStore,
+    )
+
+    resolved = resolver(
+        _synthetic_qualification_request(row.reservation_id, publication.to_dict())
+    )
+    assert len(resolved) == 1
+    assert resolved[0].to_dict() == publication.to_dict()
+
+    with pytest.raises(
+        RemoteEvaluationDispatcherError,
+        match="differs from authenticated work",
+    ):
+        resolver(_synthetic_qualification_request(row.reservation_id, other.to_dict()))
+
+
+def test_qualification_publication_resolver_releases_store_before_tree_reopen(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reservation_digest = _h("resolver-unlock")
+    publication_dict = {
+        "content_hash": _h("content"),
+        "digest": _h("publication"),
+        "root": str(tmp_path / "publication"),
+    }
+    state = {"closed": False}
+
+    class _Store:
+        def get(self, observed: str) -> object:
+            assert observed == reservation_digest
+            return SimpleNamespace(
+                arrival=SimpleNamespace(content_hash=publication_dict["content_hash"]),
+                publication_digest=publication_dict["digest"],
+                publication_root=publication_dict["root"],
+            )
+
+        def close(self) -> None:
+            state["closed"] = True
+
+    class _Publication:
+        def to_dict(self) -> dict[str, object]:
+            return publication_dict
+
+    def reopen(*_args: object, **_kwargs: object) -> object:
+        assert state["closed"] is True
+        return _Publication()
+
+    monkeypatch.setattr(dispatcher_module, "reopen_worker_bundle", reopen)
+    resolver = dispatcher_module.make_qualification_publication_resolver(
+        intake_db=tmp_path / "intake.sqlite3",
+        policy=POLICY,
+        scope=SCOPE,
+        store_factory=lambda *_args, **_kwargs: _Store(),
+    )
+
+    resolved = resolver(
+        _synthetic_qualification_request(reservation_digest, publication_dict)
+    )
+
+    assert len(resolved) == 1
+
+
+def test_default_dispatcher_reopens_recovery_connection_before_screen_claim(
+    tmp_path: Path,
+) -> None:
+    config_path, raw = _setup_authority(tmp_path)
+    intake_db = Path(raw["intake_db"])
+    row, _ = _published_intake_row(tmp_path, intake_db, label="recovery-screen")
+
+    # Persist the recovery triggers, then close the commissioning connection.
+    # Their authorizing SQLite function is connection-local and must be
+    # re-registered by the dispatcher's default store factory.
+    with RecoverableFinalizedIntakeStore(intake_db, POLICY, scope=SCOPE):
+        pass
+
+    dispatcher = dispatcher_module.build_dispatcher(
+        dispatcher_module.load_config(config_path)
+    )
+    claim = dispatcher.coordinator.claim_screen()
+
+    assert claim is not None
+    assert claim.lease.stage == "screen"
+    assert claim.lease.reservation_ids == (row.reservation_id,)
+    assert claim.reservation.reservation_id == row.reservation_id
 
 
 def test_config_and_cli_are_closed_and_digest_pinned(tmp_path: Path) -> None:

@@ -55,6 +55,7 @@ from cacheon.eval.oci_outer_session import (
     OuterSessionProcessError,
     OuterSessionWorkerError,
 )
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.marginal_runtime import CandidateArmWorkerError
 from cacheon.eval.scoring import RawSpeedEvidenceError
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes
@@ -758,11 +759,23 @@ def run_qualification_intake(
     entropy_provider,
     hidden_judge,
     deadline: float,
+    continuation_store: QualificationContinuationStore | None = None,
 ) -> QualificationIntakeBatch:
-    """Run, reopen, and project one finalized cohort without settlement authority."""
+    """Run, reopen, and project one finalized cohort without settlement authority.
+
+    With a ``continuation_store``, durable speed/quality/final products are
+    written and consumed at the runner's sealed boundaries.  A continuation
+    error is a HOLD: it deliberately escapes the NO_DECISION retry mapping
+    below, because retrying could re-execute an already-durable expensive
+    stage.
+    """
 
     if type(factory) is not QualificationPlanFactory:
         raise QualificationIntakeError("qualification factory is not exactly typed")
+    if continuation_store is not None and type(continuation_store) is not (
+        QualificationContinuationStore
+    ):
+        raise QualificationIntakeError("continuation store is not exactly typed")
     manifest = factory.manifest
     try:
         value = factory.build()
@@ -772,6 +785,12 @@ def run_qualification_intake(
             )
     except (QualificationIntakeError, QualificationRunnerError, OSError) as exc:
         return _no_decision_batch(manifest, exc, reason="qualification_plan")
+    continuation = None
+    if continuation_store is not None:
+        continuation = continuation_store.scope(
+            authority_digest=qualification_authority_digest(value),
+            source_digest=value.prepared.source.digest,
+        )
     try:
         reference = run_causal_qualification(
             value,
@@ -780,6 +799,7 @@ def run_qualification_intake(
             entropy_provider=entropy_provider,
             hidden_judge=hidden_judge,
             deadline=deadline,
+            continuation=continuation,
         )
         if type(reference) is not EvidenceArtifactRef:
             raise QualificationIntakeError("qualification runner returned no typed artifact")

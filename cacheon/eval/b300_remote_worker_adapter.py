@@ -9,13 +9,14 @@ independently reopens the typed receipt before committing the durable lease.
 
 Stage authority: screen work executes through
 :func:`cacheon.eval.b300_screen_deployment.build_commissioned_b300_screen_worker`.
-A qualification request is refused as a typed pre-resident
-``AdapterRequestFailed`` — the tracked qualification entrypoint
-(:meth:`cacheon.eval.b300_mainnet_worker.B300MainnetWorker.run_remote_qualification`)
-requires the fuller deployment authorities (qualification lane, evidence
-capture, incumbent identities) that this screen commission does not carry.
-Refusing before any resident call keeps the epoch healthy instead of failing
-it, and keeps the gap visible instead of silently absent.
+Qualification executes only when construction receives one exact
+``B300RemoteQualificationCommission`` carrying the fuller sealed deployment
+authorities.  Each authenticated request safely materializes its own candidate
+publication and derives a singleton ``B300RemoteQualificationAdapter`` from
+that fixed commission.  Without it, qualification is refused as a typed
+pre-resident ``AdapterRequestFailed``.  Refusing before any resident call keeps
+the epoch healthy instead of failing it, and keeps an uncommissioned gap
+visible instead of silently absent.
 
 No request field can select a command, module, executable, environment,
 source, or output path.  All filesystem coordinates come from one closed
@@ -33,6 +34,18 @@ import tarfile
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from cacheon.chain.evaluation_coordinator import WorkerReadiness
+    from cacheon.chain.publication import WorkerBundlePublication
+    from cacheon.eval.b300_qualification_deployment import (
+        B300QualificationConstructionAuthority,
+        B300QualificationDeployment,
+    )
+    from cacheon.eval.b300_remote_qualification_adapter import (
+        B300RemoteQualificationAdapter,
+    )
 
 from cacheon.chain.remote_worker_registration import (
     registration_credential,
@@ -40,6 +53,7 @@ from cacheon.chain.remote_worker_registration import (
     verify_ready_receipt,
     verify_registration,
 )
+from cacheon.chain.remote_worker_execution_marker import publish_resident_entry
 from cacheon.chain.remote_worker_spool import (
     NATIVE_ARTIFACT_MANIFEST,
     SCHEMA_ADAPTER_COMMAND,
@@ -95,6 +109,50 @@ class AdapterPaths:
             value = getattr(self, name)
             if not isinstance(value, Path) or not value.is_absolute():
                 raise AdapterError(f"adapter {name} path must be an absolute Path")
+
+
+@dataclass(frozen=True)
+class B300RemoteQualificationCommission:
+    """Fixed authorities which derive one candidate-local adapter per request."""
+
+    deployment: B300QualificationDeployment
+    construction: B300QualificationConstructionAuthority
+    readiness: WorkerReadiness
+
+    def __post_init__(self) -> None:
+        from cacheon.chain.evaluation_coordinator import WorkerReadiness
+        from cacheon.eval.b300_qualification_deployment import (
+            B300QualificationConstructionAuthority,
+            B300QualificationDeployment,
+        )
+
+        if (
+            type(self.deployment) is not B300QualificationDeployment
+            or type(self.construction)
+            is not B300QualificationConstructionAuthority
+            or type(self.readiness) is not WorkerReadiness
+        ):
+            raise AdapterError(
+                "qualification commission authorities are not exactly typed"
+            )
+
+    def adapter_for(
+        self, publication: WorkerBundlePublication
+    ) -> B300RemoteQualificationAdapter:
+        from cacheon.chain.publication import WorkerBundlePublication
+        from cacheon.eval.b300_remote_qualification_adapter import (
+            B300RemoteQualificationAdapter,
+            B300WorkerBundleResolver,
+        )
+
+        if type(publication) is not WorkerBundlePublication:
+            raise AdapterError("qualification publication is not exactly typed")
+        return B300RemoteQualificationAdapter(
+            self.deployment,
+            self.construction,
+            self.readiness,
+            B300WorkerBundleResolver((publication,)),
+        )
 
 
 def _closed_path(raw: object, root: Path, label: str, *, temporary: bool) -> Path:
@@ -324,24 +382,68 @@ def safe_publication(archive_path: Path, expected_wire: object, publication_root
 class AdapterRuntime:
     """One commissioned worker process retained across sequential requests."""
 
-    def __init__(self, paths: AdapterPaths) -> None:
+    def __init__(
+        self,
+        paths: AdapterPaths,
+        qualification_commission: B300RemoteQualificationCommission | None = None,
+        *,
+        qualification_capabilities: object | None = None,
+    ) -> None:
         if type(paths) is not AdapterPaths:
             raise AdapterError("adapter paths are not exactly typed")
+        if (
+            qualification_commission is not None
+            and type(qualification_commission)
+            is not B300RemoteQualificationCommission
+        ):
+            raise AdapterError("qualification commission is not exactly typed")
+        if (
+            qualification_commission is not None
+            and qualification_capabilities is not None
+        ):
+            raise AdapterError(
+                "qualification commission and capabilities are mutually exclusive"
+            )
+        if qualification_capabilities is not None:
+            from cacheon.eval.b300_qualification_commission import (
+                B300QualificationCapabilities,
+            )
+
+            if type(qualification_capabilities) is not B300QualificationCapabilities:
+                raise AdapterError(
+                    "qualification capabilities are not exactly typed"
+                )
         registration = verify_registration(load_json(paths.registration))
         ready = verify_ready_receipt(load_json(paths.ready_receipt))
         if ready["receipt_digest"] != registration["ready_receipt_digest"]:
             raise AdapterError("READY receipt differs from registration")
-
-        from cacheon.eval.b300_screen_deployment import (
-            build_commissioned_b300_screen_worker,
-        )
 
         self.paths = paths
         self.registration = registration
         self.ready = ready
         self.credential = registration_credential(registration, paths.credential)
         self.identity = registration_transport_identity(registration)
-        self.worker = build_commissioned_b300_screen_worker(registration, ready)
+        self._commissioned_service = None
+        if qualification_capabilities is not None:
+            from cacheon.eval.b300_qualification_commission import (
+                build_commissioned_b300_qualification_service,
+            )
+
+            # One replay yields both the screen worker and the qualification
+            # commission over the same resident model lifetime.
+            service = build_commissioned_b300_qualification_service(
+                registration, ready, qualification_capabilities
+            )
+            self._commissioned_service = service
+            self.worker = service.worker
+            self.qualification_commission = service.commission
+        else:
+            from cacheon.eval.b300_screen_deployment import (
+                build_commissioned_b300_screen_worker,
+            )
+
+            self.worker = build_commissioned_b300_screen_worker(registration, ready)
+            self.qualification_commission = qualification_commission
         self.closed = False
 
     def verify_current(self) -> None:
@@ -353,8 +455,11 @@ class AdapterRuntime:
     def close(self) -> None:
         if self.closed:
             return
-        self.worker.close()
         self.closed = True
+        if self._commissioned_service is not None:
+            self._commissioned_service.close()
+        else:
+            self.worker.close()
 
 
 def run_with_runtime(
@@ -387,77 +492,108 @@ def run_with_runtime(
             identity=runtime.identity,
             credential=runtime.credential,
         )
-        if outer["lease"]["stage"] != "screen":
-            raise AdapterError(
-                "qualification execution authority is not commissioned for this"
-                " adapter; the tracked qualification worker entrypoint awaits its"
-                " deployment authorities"
-            )
         from cacheon.chain.remote_evaluation_dispatcher import (
             RemoteEvaluationRequest,
             verify_remote_request,
         )
 
+        stage = outer["lease"]["stage"]
         wire_value = load_json(
-            artifact_for_role(outer, request_dir, "screen_payload"),
+            artifact_for_role(outer, request_dir, f"{stage}_payload"),
             maximum=64 << 20,
         )
         wire = RemoteEvaluationRequest.from_dict(wire_value)
         verify_remote_request(wire, runtime.identity, runtime.credential)
-        lease_value = outer["lease"]
-        lease = EvaluationLease(
-            lease_value["lease_id"],
-            lease_value["generation"],
-            lease_value["stage"],
-            lease_value["owner"],
-            tuple(EvaluationLeaseMember(**row) for row in lease_value["members"]),
-            lease_value["claimed_block"],
-            lease_value["initial_expires_block"],
-            lease_value["expires_block"],
-        )
-        body = wire.body
-        publication = safe_publication(
-            artifact_for_role(outer, request_dir, "candidate_publication"),
-            body["publication"],
-            runtime.paths.publication_root,
-        )
-        reservation = QualificationReservation.from_dict(body["reservation"])
-        candidate = ArenaCandidateBinding(
-            reservation,
-            publication,
-            body["screen_attempt"],
-        )
-        if (
-            candidate.digest != body["candidate_digest"]
-            or lease.reservation_ids != (reservation.reservation_digest,)
-        ):
-            raise AdapterError(
-                "reconstructed candidate differs from authenticated lease"
+        if stage == "qualification":
+            qualification_commission = runtime.qualification_commission
+            if qualification_commission is None:
+                raise AdapterError(
+                    "qualification execution authority is not commissioned for this"
+                    " adapter; the tracked qualification worker entrypoint awaits its"
+                    " deployment authorities"
+                )
+            body = wire.body
+            candidates = body.get("candidates")
+            if (
+                type(candidates) is not list
+                or len(candidates) != 1
+                or type(candidates[0]) is not dict
+                or "publication" not in candidates[0]
+            ):
+                raise AdapterError(
+                    "qualification request does not contain one closed candidate"
+                )
+            publication = safe_publication(
+                artifact_for_role(outer, request_dir, "candidate_publication"),
+                candidates[0]["publication"],
+                runtime.paths.publication_root,
             )
+            qualification_adapter = qualification_commission.adapter_for(publication)
+        else:
+            lease_value = outer["lease"]
+            lease = EvaluationLease(
+                lease_value["lease_id"],
+                lease_value["generation"],
+                lease_value["stage"],
+                lease_value["owner"],
+                tuple(EvaluationLeaseMember(**row) for row in lease_value["members"]),
+                lease_value["claimed_block"],
+                lease_value["initial_expires_block"],
+                lease_value["expires_block"],
+            )
+            body = wire.body
+            publication = safe_publication(
+                artifact_for_role(outer, request_dir, "candidate_publication"),
+                body["publication"],
+                runtime.paths.publication_root,
+            )
+            reservation = QualificationReservation.from_dict(body["reservation"])
+            candidate = ArenaCandidateBinding(
+                reservation,
+                publication,
+                body["screen_attempt"],
+            )
+            if (
+                candidate.digest != body["candidate_digest"]
+                or lease.reservation_ids != (reservation.reservation_digest,)
+            ):
+                raise AdapterError(
+                    "reconstructed candidate differs from authenticated lease"
+                )
     except Exception as exc:
         raise AdapterRequestFailed(
             "request carrier/authentication/staging failed before resident work"
         ) from exc
 
-    # Once the worker is called, an exception is conservatively epoch-fatal:
-    # it may have followed resident mutation.  Typed NO_DECISION is a normal
-    # ArenaScreenReceipt and therefore completes through this path.
     try:
-        evaluation = runtime.worker.run_remote_screen(lease, candidate)
-        receipt = evaluation.payload
-        if type(receipt) is not ArenaScreenReceipt:
-            raise AdapterError("B300 screen worker returned an untyped receipt")
-        if (
-            evaluation.lease != lease
-            or evaluation.disposition != "completed"
-            or evaluation.envelope.lease_id != lease.lease_id
-            or evaluation.envelope.payload_digest != receipt.digest
-        ):
-            raise AdapterError(
-                "B300 screen worker changed the exact lease/result envelope"
-            )
+        publish_resident_entry(result_dir, outer)
+    except Exception as exc:
+        raise AdapterRequestFailed(
+            "resident-entry marker failed before resident work"
+        ) from exc
+
+    # Once the worker is called, an exception is conservatively epoch-fatal:
+    # it may have followed resident mutation.  Typed result products, including
+    # NO_DECISION outcomes, complete normally through this path.
+    try:
+        if stage == "qualification":
+            payload = qualification_adapter.run(wire)
+        else:
+            evaluation = runtime.worker.run_remote_screen(lease, candidate)
+            payload = evaluation.payload
+            if type(payload) is not ArenaScreenReceipt:
+                raise AdapterError("B300 screen worker returned an untyped receipt")
+            if (
+                evaluation.lease != lease
+                or evaluation.disposition != "completed"
+                or evaluation.envelope.lease_id != lease.lease_id
+                or evaluation.envelope.payload_digest != payload.digest
+            ):
+                raise AdapterError(
+                    "B300 screen worker changed the exact lease/result envelope"
+                )
         response = seal_remote_response(
-            wire, receipt, runtime.identity, runtime.credential
+            wire, payload, runtime.identity, runtime.credential
         )
         output = result_dir / "response.json"
         with output.open("xb") as handle:
@@ -596,13 +732,52 @@ def serve_runtime(
     return 0
 
 
-def _serve(paths: AdapterPaths) -> int:
+def _load_qualification_capabilities(specifier: str):
+    """Resolve one explicitly named tracked capabilities factory.
+
+    The operand names a reviewed module attribute (``MODULE:ATTRIBUTE``); the
+    factory takes no arguments and must return exactly one
+    ``B300QualificationCapabilities``.  Nothing is probed from the environment
+    and nothing digest-bearing enters through this path -- every identity the
+    returned capabilities carry is checked against the sealed commission block
+    before the adapter accepts a request.
+    """
+
+    import importlib
+
+    from cacheon.eval.b300_qualification_commission import (
+        B300QualificationCapabilities,
+    )
+
+    module_name, separator, attribute = specifier.partition(":")
+    if not module_name or separator != ":" or not attribute:
+        raise AdapterError(
+            "qualification capabilities operand must be MODULE:ATTRIBUTE"
+        )
+    try:
+        module = importlib.import_module(module_name)
+        factory = getattr(module, attribute)
+    except (ImportError, AttributeError) as exc:
+        raise AdapterError(
+            f"qualification capabilities factory is unavailable: {exc}"
+        ) from None
+    capabilities = factory()
+    if type(capabilities) is not B300QualificationCapabilities:
+        raise AdapterError(
+            "qualification capabilities factory did not return exact capabilities"
+        )
+    return capabilities
+
+
+def _serve(paths: AdapterPaths, qualification_capabilities=None) -> int:
     # Reserve the original stdout exclusively for the tiny control protocol.
     # Imported controller/runtime code is redirected to stderr so an
     # incidental diagnostic cannot be mistaken for a completed request.
     control_output = sys.stdout.buffer
     sys.stdout = sys.stderr
-    runtime = AdapterRuntime(paths)
+    runtime = AdapterRuntime(
+        paths, qualification_capabilities=qualification_capabilities
+    )
     try:
         return serve_runtime(runtime, paths, sys.stdin.buffer, control_output)
     finally:
@@ -631,12 +806,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results-root", required=True)
     parser.add_argument("--request-dir")
     parser.add_argument("--result-dir")
+    parser.add_argument(
+        "--qualification-capabilities",
+        help=(
+            "MODULE:ATTRIBUTE naming a reviewed zero-argument factory returning"
+            " B300QualificationCapabilities; commissions qualification in this"
+            " same persistent service (requires --serve)"
+        ),
+    )
     args = parser.parse_args(argv)
     paths = _adapter_paths(args)
     if args.serve:
         if args.request_dir is not None or args.result_dir is not None:
             parser.error("--serve does not accept one-shot request paths")
-        return _serve(paths)
+        capabilities = None
+        if args.qualification_capabilities is not None:
+            capabilities = _load_qualification_capabilities(
+                args.qualification_capabilities
+            )
+        return _serve(paths, capabilities)
+    if args.qualification_capabilities is not None:
+        parser.error(
+            "--qualification-capabilities requires the persistent --serve"
+            " service; one-shot mode cannot commission qualification"
+        )
     if args.request_dir is None or args.result_dir is None:
         parser.error("one-shot mode requires --request-dir and --result-dir")
     request_dir = _closed_path(

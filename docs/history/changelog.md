@@ -352,6 +352,16 @@ re-sealed the model provision receipt, republished the launch bundle under the
 new prefix, and sealed a fresh mainnet mission. Nothing had been committed
 on-chain under the retired vocabulary.
 
+## 2026-08-04 — Finalized manifest compatibility restored
+
+Mainnet intake revalidation found finalized bundle commitments carrying the
+pre-cutover `optima-op-abi-v0` manifest spelling. Because rewriting those bytes
+would change their content identity, the manifest reader restored one exact,
+hash-pinned compatibility spelling while continuing to emit
+`cacheon-op-abi-v0` for every new bundle. The exception is reader-only: it does
+not restore legacy environment variables, headers, digest domains, schemas, or
+transport dialects, and it does not normalize or mutate submitted bytes.
+
 ## 2026-07-31 — Cacheon product and package rename
 
 The public product, Python package and module, CLI, environment-variable, and

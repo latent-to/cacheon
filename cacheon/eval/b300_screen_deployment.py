@@ -89,6 +89,16 @@ from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
 from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.oci_session_protocol import EngineSessionConfig, SlotAuditPolicy
+from cacheon.eval.b300_registered_qualification_inputs import (
+    B300RegisteredQualificationError,
+)
+from cacheon.eval.b300_sealed_qualification_commission import (
+    declared_qualification_deadline_digest,
+    declared_qualification_entropy_digest,
+    predicted_qualification_builder_digest,
+    predicted_qualification_policy_digest,
+    sealed_qualification_commission,
+)
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_queue import ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
@@ -583,6 +593,7 @@ class _CommissionedInputs:
     resident_factory_digest: str
     resident_resource_ids: tuple[str, ...]
     declared_qualification: B300DeclaredQualificationAuthorities
+    qualification_commission: dict[str, object] | None
 
 
 class _CommissionedScreenPlanResolver:
@@ -1462,20 +1473,60 @@ def _derive_inputs(
         prompt_identity["hidden_judge_digest"],
         prompt_identity["hidden_task_policy_digest"],
     )
-    qualification_policy_digest = canonical_digest(
-        "cacheon.eval.b300-declared-qualification-policy.v1",
-        {
-            "builder_digest": qualification_builder_digest,
-            "calibration_package_sha256": authority_refs[
-                "calibration_package"
-            ]["sha256"],
-            "calibration_projection_sha256": authority_refs[
-                "calibration_projection_receipt"
-            ]["sha256"],
-            "hidden_judge_binding_digest": hidden_binding.digest,
-            "prompt_authority_sha256": prompt_identity["sha256"],
-        },
-    )
+    qualification_commission = authority.get("qualification")
+    if qualification_commission is not None:
+        # A commissionable deployment declares the exact digests the tracked
+        # qualification construction will later re-derive.  A screen-only
+        # deployment (no sealed commission block) keeps the historical
+        # placeholder identity and can never compose a qualification worker.
+        try:
+            qualification_commission = sealed_qualification_commission(
+                qualification_commission
+            )
+            predicted_builder = predicted_qualification_builder_digest(
+                catalog,
+                builder_source_digest=qualification_commission[
+                    "builder_source_digest"
+                ],
+                selection_store_digest=qualification_commission[
+                    "selection_store_digest"
+                ],
+            )
+            qualification_policy_digest = predicted_qualification_policy_digest(
+                catalog,
+                builder_source_digest=qualification_commission[
+                    "builder_source_digest"
+                ],
+                selection_store_digest=qualification_commission[
+                    "selection_store_digest"
+                ],
+                hidden_judge_binding_digest=hidden_binding.digest,
+                selection_policy_digest=prompt_identity["selection_policy_digest"],
+            )
+        except B300RegisteredQualificationError as exc:
+            raise B300ScreenDeploymentError(
+                f"sealed qualification commission is invalid: {exc}"
+            ) from None
+        if qualification_builder_digest != predicted_builder:
+            raise B300ScreenDeploymentError(
+                "sealed qualification builder digest differs from the tracked"
+                " construction identity"
+            )
+    else:
+        qualification_policy_digest = canonical_digest(
+            "cacheon.eval.b300-declared-qualification-policy.v1",
+            {
+                "builder_digest": qualification_builder_digest,
+                "calibration_package_sha256": authority_refs[
+                    "calibration_package"
+                ]["sha256"],
+                "calibration_projection_sha256": authority_refs[
+                    "calibration_projection_receipt"
+                ]["sha256"],
+                "hidden_judge_binding_digest": hidden_binding.digest,
+                "prompt_authority_sha256": prompt_identity["sha256"],
+            },
+        )
     candidate_config = _backend_config(
         root, preflight, executor_id="b300-qualification-candidate"
     )
@@ -1492,15 +1543,11 @@ def _derive_inputs(
             baseline_config, role="resident_baseline"
         ),
         lane_pair=qualification_lane_pair,
-        entropy_provider_digest=canonical_digest(
-            "cacheon.eval.b300-declared-entropy-provider.v1",
-            {"selection_policy_digest": prompt_identity["selection_policy_digest"]},
+        entropy_provider_digest=declared_qualification_entropy_digest(
+            prompt_identity["selection_policy_digest"]
         ),
         hidden_judge_binding_digest=hidden_binding.digest,
-        deadline_policy_digest=canonical_digest(
-            "cacheon.eval.b300-declared-deadline-policy.v1",
-            {"maximum_seconds": 14_400, "source": "lease-bounded-monotonic"},
-        ),
+        deadline_policy_digest=declared_qualification_deadline_digest(),
     )
     return _CommissionedInputs(
         root=root,
@@ -1523,6 +1570,7 @@ def _derive_inputs(
         resident_factory_digest=resident_factory_digest,
         resident_resource_ids=("b300-resident-screen-lane",),
         declared_qualification=declared,
+        qualification_commission=qualification_commission,
     )
 
 
@@ -1844,16 +1892,17 @@ def _canonical_artifact(path: Path, field: str) -> dict[str, object]:
     return value
 
 
-def build_commissioned_b300_screen_worker(
+def replay_commissioned_screen_composition(
     registration: dict[str, object],
     ready_receipt: dict[str, object],
-) -> B300MainnetWorker:
-    """Reopen the fixed commissioned artifacts and build one screen worker.
+) -> tuple[_CommissionedInputs, _Composition, WorkerReadiness]:
+    """Replay the fixed commissioned artifacts into one live composition.
 
     ``registration`` and ``ready_receipt`` come from the fixed authenticated
     transport codec.  They select no local paths: this function reopens only
     the three fixed commissioned filenames and the SHA-bound authority refs
-    inside the commissioned deployment artifact.
+    inside the commissioned deployment artifact.  The caller owns the returned
+    composition and must close it.
     """
 
     if type(registration) is not dict or type(ready_receipt) is not dict:
@@ -1940,7 +1989,38 @@ def build_commissioned_b300_screen_worker(
             raise B300ScreenDeploymentError(
                 "registration differs from commissioned service, READY, or TP4 lane"
             )
-        worker = _CommissionedB300ScreenWorker(composition, readiness)
+        result = (inputs, composition, readiness)
+        composition = None
+        return result
+    finally:
+        if composition is not None:
+            composition.close()
+
+
+def commissioned_screen_worker_from_composition(
+    composition: _Composition,
+    readiness: WorkerReadiness,
+) -> B300MainnetWorker:
+    """Adopt one replayed composition as the commissioned screen worker."""
+
+    if type(composition) is not _Composition or type(readiness) is not WorkerReadiness:
+        raise B300ScreenDeploymentError(
+            "commissioned worker adoption inputs are not exact"
+        )
+    return _CommissionedB300ScreenWorker(composition, readiness)
+
+
+def build_commissioned_b300_screen_worker(
+    registration: dict[str, object],
+    ready_receipt: dict[str, object],
+) -> B300MainnetWorker:
+    """Reopen the fixed commissioned artifacts and build one screen worker."""
+
+    _inputs, composition, readiness = replay_commissioned_screen_composition(
+        registration, ready_receipt
+    )
+    try:
+        worker = commissioned_screen_worker_from_composition(composition, readiness)
         composition = None
         return worker
     finally:
@@ -1990,8 +2070,10 @@ __all__ = [
     "MATERIALIZATION_SCHEMA",
     "READINESS_FILE",
     "build_commissioned_b300_screen_worker",
+    "commissioned_screen_worker_from_composition",
     "main",
     "materialize_b300_screen_identities",
+    "replay_commissioned_screen_composition",
 ]
 
 
