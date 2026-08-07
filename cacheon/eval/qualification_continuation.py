@@ -101,6 +101,37 @@ class QualificationContinuationError(RuntimeError):
     """
 
 
+@dataclass(frozen=True)
+class ResidentCountQualityCheckpoint:
+    """Durable bindings for one completed resident count observation."""
+
+    candidate_observation: EvidenceArtifactRef
+    candidate_observation_semantic_digest: str
+    execution_plan_digest: str
+    fixed_stock_authority_digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.candidate_observation) is not EvidenceArtifactRef:
+            raise QualificationContinuationError(
+                "resident count candidate observation is not an exact "
+                "evidence reference"
+            )
+        for field, value in (
+            (
+                "candidate observation semantic digest",
+                self.candidate_observation_semantic_digest,
+            ),
+            ("resident count execution-plan digest", self.execution_plan_digest),
+            ("fixed-stock authority digest", self.fixed_stock_authority_digest),
+        ):
+            if type(value) is not str:
+                raise QualificationContinuationError(f"{field} is not exactly str")
+            try:
+                require_sha256_hex(value, field=field)
+            except ValueError as exc:
+                raise QualificationContinuationError(str(exc)) from None
+
+
 def _codec() -> ContinuationCodec:
     # Deferred import breaks the cycle with qualification_runner (AuditWitness).
     from cacheon.eval.qualification_runner import AuditWitness
@@ -115,6 +146,7 @@ def _codec() -> ContinuationCodec:
             ReferenceRequest,
             AuditWitness,
             EvidenceArtifactRef,
+            ResidentCountQualityCheckpoint,
         )
     )
 
@@ -422,6 +454,45 @@ class QualificationContinuation:
 
     # -- quality ---------------------------------------------------------------
 
+    def record_resident_count_quality(
+        self, value: ResidentCountQualityCheckpoint
+    ) -> None:
+        if type(value) is not ResidentCountQualityCheckpoint:
+            raise QualificationContinuationError(
+                "resident count quality continuation requires the exact checkpoint type"
+            )
+        self._record(
+            "quality",
+            {
+                "mode": "resident_count",
+                "checkpoint": self._codec.encode(value),
+            },
+        )
+
+    def load_resident_count_quality(
+        self,
+    ) -> ResidentCountQualityCheckpoint | None:
+        payload = self._load("quality")
+        if payload is None:
+            return None
+        if (
+            type(payload) is not dict
+            or set(payload) != {"checkpoint", "mode"}
+            or payload.get("mode") != "resident_count"
+        ):
+            raise QualificationContinuationError(
+                "quality continuation record is not the resident count shape"
+            )
+        try:
+            checkpoint = self._codec.decode(payload["checkpoint"])
+        except ContinuationCodecError as exc:
+            raise QualificationContinuationError(str(exc)) from None
+        if type(checkpoint) is not ResidentCountQualityCheckpoint:
+            raise QualificationContinuationError(
+                "quality continuation reopened another checkpoint type"
+            )
+        return checkpoint
+
     def record_quality(self, value: QualityContinuation) -> None:
         if type(value) is not QualityContinuation:
             raise QualificationContinuationError(
@@ -549,4 +620,5 @@ __all__ = [
     "QualificationContinuationStore",
     "QualityContinuation",
     "RECORD_SCHEMA",
+    "ResidentCountQualityCheckpoint",
 ]
