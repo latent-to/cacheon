@@ -46,8 +46,12 @@ from cacheon.chain.evaluation_coordinator import (
     WorkerReadiness,
 )
 from cacheon.chain.intake import IntakePolicy, IntakeScope
+from cacheon.chain.publication import reopen_worker_bundle
+from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteEvaluationDispatcher,
+    RemoteEvaluationDispatcherError,
+    RemoteEvaluationRequest,
 )
 from cacheon.chain.remote_worker_registration import verify_registration
 from cacheon.chain.remote_worker_spool import (
@@ -558,6 +562,97 @@ def _registration(config: DispatcherConfig) -> dict[str, Any]:
     return registration
 
 
+def make_qualification_publication_resolver(
+    *,
+    intake_db: Path,
+    policy: IntakePolicy,
+    scope: IntakeScope,
+    store_factory: Callable[..., Any],
+) -> Callable[[object], tuple[Any, ...]]:
+    """Reopen intake-backed publications for one sealed qualification request.
+
+    Mirrors recoverable qualification claim reopen: briefly open the same store
+    factory/policy/scope, reopen each candidate publication from the durable
+    intake row, and require an exact match against the authenticated wire
+    publication. Never invents a publication.
+    """
+
+    if not callable(store_factory):
+        raise MainnetScreenDispatcherError("store_factory is not callable")
+
+    def resolve(request: object) -> tuple[Any, ...]:
+        if type(request) is not RemoteEvaluationRequest or request.stage != "qualification":
+            raise RemoteEvaluationDispatcherError(
+                "qualification publication resolver requires an exact qualification request"
+            )
+        candidates = request.body.get("candidates")
+        if type(candidates) is not list or not candidates:
+            raise RemoteEvaluationDispatcherError(
+                "qualification publication resolver candidates are malformed"
+            )
+        snapshots: list[tuple[object, str, str, dict[str, object]]] = []
+        store = store_factory(intake_db, policy, scope=scope)
+        try:
+            for candidate in candidates:
+                if type(candidate) is not dict:
+                    raise RemoteEvaluationDispatcherError(
+                        "qualification publication resolver candidate is malformed"
+                    )
+                reservation_value = candidate.get("reservation")
+                wire_publication = candidate.get("publication")
+                if (
+                    type(reservation_value) is not dict
+                    or "reservation_digest" not in reservation_value
+                    or type(wire_publication) is not dict
+                ):
+                    raise RemoteEvaluationDispatcherError(
+                        "qualification publication resolver candidate authority is malformed"
+                    )
+                try:
+                    reservation_digest = require_sha256_hex(
+                        reservation_value["reservation_digest"],
+                        field="reservation_digest",
+                    )
+                    row = store.get(reservation_digest)
+                    snapshots.append(
+                        (
+                            row.publication_root,
+                            row.arrival.content_hash,
+                            row.publication_digest,
+                            wire_publication,
+                        )
+                    )
+                except RemoteEvaluationDispatcherError:
+                    raise
+                except Exception as exc:
+                    raise RemoteEvaluationDispatcherError(
+                        "qualification publication authority could not be read from intake"
+                    ) from exc
+        finally:
+            store.close()
+
+        publications = []
+        for root, content_hash, publication_digest, wire_publication in snapshots:
+            try:
+                publication = reopen_worker_bundle(
+                    root,
+                    content_hash,
+                    expected_receipt_digest=publication_digest,
+                )
+            except Exception as exc:
+                raise RemoteEvaluationDispatcherError(
+                    "qualification publication could not be reopened from intake"
+                ) from exc
+            if publication.to_dict() != wire_publication:
+                raise RemoteEvaluationDispatcherError(
+                    "resolved qualification publication differs from authenticated work"
+                )
+            publications.append(publication)
+        return tuple(publications)
+
+    return resolve
+
+
 def build_dispatcher(
     config: DispatcherConfig,
     *,
@@ -565,9 +660,11 @@ def build_dispatcher(
 ) -> RemoteEvaluationDispatcher:
     """Construct the exact CPU coordinator and durable spool adapter.
 
-    ``store_factory`` defaults to the ordinary finalized intake store.  The
-    standing supervisor may pass ``RecoverableFinalizedIntakeStore`` so screen
-    and recoverable qualification share one recovery-capable coordinator.
+    The default is the recovery-capable finalized intake store because recovery
+    triggers are durable while their authorizing SQLite function is
+    connection-local. Reopening a commissioned database with the base store can
+    therefore fail even during a screen-only lease mutation. Tests may inject
+    another exact factory explicitly.
     """
 
     registration = _registration(config)
@@ -578,6 +675,13 @@ def build_dispatcher(
     # Do not advertise a reconstructed dispatcher until the independently
     # advancing intake authority has a present, correctly scoped live cursor.
     cursor()
+    resolved_store_factory: Callable[..., Any] = (
+        RecoverableFinalizedIntakeStore
+        if store_factory is None
+        else store_factory
+    )
+    if not callable(resolved_store_factory):
+        raise MainnetScreenDispatcherError("store_factory is not callable")
     coordinator_kwargs: dict[str, Any] = {
         "intake_db": config.intake_db,
         "policy": config.policy,
@@ -591,17 +695,21 @@ def build_dispatcher(
         "heartbeat_join_timeout_s": config.heartbeat_join_timeout_s,
         "lock_attempts": config.lock_attempts,
         "lock_retry_delay_s": config.lock_retry_delay_s,
+        "store_factory": resolved_store_factory,
     }
-    if store_factory is not None:
-        if not callable(store_factory):
-            raise MainnetScreenDispatcherError("store_factory is not callable")
-        coordinator_kwargs["store_factory"] = store_factory
     coordinator = EvaluationCoordinator(**coordinator_kwargs)
+    qualification_publication_resolver = make_qualification_publication_resolver(
+        intake_db=config.intake_db,
+        policy=config.policy,
+        scope=config.scope,
+        store_factory=resolved_store_factory,
+    )
     try:
         transport = DurableSpoolAuthenticatedWorkerTransport(
             registration_path=config.registration_path,
             spool_root=config.spool_root,
             credential_path=config.credential_path,
+            qualification_publication_resolver=qualification_publication_resolver,
             response_timeout_seconds=config.response_timeout_seconds,
             poll_seconds=config.transport_poll_seconds,
         )

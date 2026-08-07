@@ -153,6 +153,15 @@ class _PreResidentRefusalObserved(Exception):
         self.outcome = outcome
 
 
+class _RecoveryLeaseRenewalDenied(Exception):
+    """Internal control flow: the retained recovery can no longer renew."""
+
+    def __init__(self, recovery: EvaluationRecovery, reason: str) -> None:
+        super().__init__(reason)
+        self.recovery = recovery
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class _RecoveryClaim:
     recovery: EvaluationRecovery
@@ -431,6 +440,26 @@ class RecoverableQualificationDispatcher:
         finally:
             store.close()
 
+    def _renew_before_transition(
+        self, recovery: EvaluationRecovery
+    ) -> EvaluationRecovery:
+        store, point, current = self._current_recovery(recovery.recovery_id)
+        store.close()
+        if current.phase is RecoveryPhase.CLAIMED:
+            if point[0] >= current.lease.expires_block:
+                raise _RecoveryLeaseRenewalDenied(
+                    current,
+                    "lease_expired_before_request_plan",
+                )
+            return current
+        try:
+            return self._renew_if_due(current)
+        except IntakeError as exc:
+            raise _RecoveryLeaseRenewalDenied(
+                current,
+                "lease_renewal_not_authorized",
+            ) from exc
+
     def _expected_request(
         self, claim: ClaimedQualificationEvaluation
     ) -> RemoteEvaluationRequest:
@@ -486,6 +515,7 @@ class RecoverableQualificationDispatcher:
     def _commit_publication(
         self, recovery: EvaluationRecovery
     ) -> EvaluationRecovery:
+        recovery = self._renew_before_transition(recovery)
         store, point, current = self._current_recovery(recovery.recovery_id)
         try:
             return store.commit_recovery_publication(
@@ -497,6 +527,7 @@ class RecoverableQualificationDispatcher:
     def _observe_request_ready(
         self, recovery: EvaluationRecovery
     ) -> EvaluationRecovery:
+        recovery = self._renew_before_transition(recovery)
         store, point, current = self._current_recovery(recovery.recovery_id)
         try:
             return store.observe_recovery_request_ready(
@@ -506,6 +537,7 @@ class RecoverableQualificationDispatcher:
             store.close()
 
     def _record_result(self, recovery: EvaluationRecovery) -> EvaluationRecovery:
+        recovery = self._renew_before_transition(recovery)
         store, point, current = self._current_recovery(recovery.recovery_id)
         try:
             return store.record_recovery_result(current, current_block=point[0])
@@ -513,6 +545,7 @@ class RecoverableQualificationDispatcher:
             store.close()
 
     def _record_import(self, recovery: EvaluationRecovery) -> EvaluationRecovery:
+        recovery = self._renew_before_transition(recovery)
         store, point, current = self._current_recovery(recovery.recovery_id)
         try:
             return store.record_recovery_import(current, current_block=point[0])
@@ -616,7 +649,7 @@ class RecoverableQualificationDispatcher:
         claim: ClaimedQualificationEvaluation,
         product: RemoteQualificationProduct,
     ) -> EvaluationRun:
-        current = self._renew_if_due(recovery)
+        current = self._renew_before_transition(recovery)
         claim = replace(claim, lease=current.lease)
         envelope = EvaluationResultEnvelope.seal(
             current.lease,
@@ -661,6 +694,8 @@ class RecoverableQualificationDispatcher:
         assert claim is not None
         try:
             while True:
+                recovery = self._renew_before_transition(recovery)
+                claim = replace(claim, lease=recovery.lease)
                 if recovery.phase is RecoveryPhase.CLAIMED:
                     recovery = self._prepare(recovery, claim)
                     continue
@@ -734,6 +769,11 @@ class RecoverableQualificationDispatcher:
                     return self._commit_product(recovery, claim, product)
         except _PreResidentRefusalObserved as signal:
             return self._requeue(recovery, signal.refusal, signal.outcome)
+        except _RecoveryLeaseRenewalDenied as signal:
+            return self._hold(
+                signal.recovery,
+                signal.reason,
+            )
         except QualificationRecoveryHold as exc:
             return self._hold(recovery, f"transport_hold:{exc.code}")
         except (EvaluationRecoveryHoldError, IntakeError) as exc:

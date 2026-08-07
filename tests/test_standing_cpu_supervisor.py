@@ -256,6 +256,69 @@ def test_run_forever_idle_poll_and_stop() -> None:
     assert seen == [SupervisorPhase.IDLE]
 
 
+@pytest.mark.parametrize("disposition", ["hold", "requeue"])
+def test_run_forever_backs_off_typed_no_progress_without_screening(
+    disposition: str,
+) -> None:
+    clock = _Clock()
+    stop = threading.Event()
+    calls = {"qualification": 0, "screen": 0}
+    waits: list[float] = []
+    products = {
+        "hold": RecoverableQualificationHold(
+            recovery_id=_d("held-recovery"),
+            phase=RecoveryPhase.HELD,
+            request_id=_d("held-request"),
+            reason="operator_hold",
+        ),
+        "requeue": RecoverableQualificationRequeue(
+            recovery_id=_d("requeued-recovery"),
+            request_id=_d("requeued-request"),
+            outcome=ExecutionOutcome(
+                disposition=ExecutionDisposition.REQUEUE,
+                decision="NO_DECISION",
+                failure_code="adapter_start_failed",
+            ),
+        ),
+    }
+
+    def qualification():
+        calls["qualification"] += 1
+        return products[disposition]
+
+    def screen():
+        calls["screen"] += 1
+        raise AssertionError("screen must not run ahead of protected qualification")
+
+    def wait(seconds: float) -> bool:
+        waits.append(seconds)
+        clock.advance(seconds)
+        if len(waits) == 2:
+            stop.set()
+            return True
+        return False
+
+    supervisor = StandingCpuSupervisor(
+        screen_once=screen,
+        qualification_once=qualification,
+        clock=clock,
+    )
+    initial_progress = supervisor.status().last_progress_unix
+    run_forever(
+        supervisor,
+        stop,
+        idle_poll_s=0.25,
+        wait=wait,
+        restart_initial_backoff_s=2.0,
+        restart_max_backoff_s=8.0,
+    )
+
+    assert calls == {"qualification": 2, "screen": 0}
+    assert waits == [2.0, 4.0]
+    assert supervisor.status().last_progress_unix == initial_progress
+    assert supervisor.status().last_disposition == disposition
+
+
 def test_optional_settlement_stage_runs_only_when_upstream_idle() -> None:
     order: list[str] = []
 

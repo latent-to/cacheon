@@ -185,6 +185,7 @@ class StandingCpuSupervisor:
     clock: Callable[[], float] = time.time
     stall_timeout_s: float = 3_600.0
     _status: SupervisorStatus = field(init=False, repr=False)
+    _last_tick_progressed: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not callable(self.screen_once) or not callable(self.qualification_once):
@@ -207,12 +208,14 @@ class StandingCpuSupervisor:
             phase=SupervisorPhase.IDLE,
             last_progress_unix=float(self.clock()),
         )
+        self._last_tick_progressed = False
 
     def status(self) -> SupervisorStatus:
         return self._status
 
     def _observe(self, result: SupervisorStageResult) -> SupervisorStatus:
         now = float(self.clock())
+        self._last_tick_progressed = result.progressed
         phase = result.phase
         if phase is None:
             if result.hold_reason:
@@ -263,7 +266,7 @@ class StandingCpuSupervisor:
         if type(raw) is RecoverableQualificationHold:
             return SupervisorStageResult(
                 stage=stage,
-                progressed=True,
+                progressed=False,
                 disposition="hold",
                 request_id=raw.request_id or None,
                 lease_id=None,
@@ -273,7 +276,7 @@ class StandingCpuSupervisor:
         if type(raw) is RecoverableQualificationRequeue:
             return SupervisorStageResult(
                 stage=stage,
-                progressed=True,
+                progressed=False,
                 disposition="requeue",
                 request_id=raw.request_id,
                 lease_id=None,
@@ -308,6 +311,7 @@ class StandingCpuSupervisor:
             raise
         except Exception as exc:
             # Never invent COMPLETE/REQUEUE/HOLD from exception class alone.
+            self._last_tick_progressed = False
             self._status = SupervisorStatus(
                 phase=SupervisorPhase.FAILED,
                 last_progress_unix=self._status.last_progress_unix,
@@ -350,6 +354,7 @@ class StandingCpuSupervisor:
                 return self._observe(result)
 
         now = float(self.clock())
+        self._last_tick_progressed = False
         stalled = now - self._status.last_progress_unix
         if stalled >= self.stall_timeout_s:
             self._status = replace(
@@ -583,12 +588,18 @@ def run_forever(
             # Surface the failure without inventing a reclaim/retry disposition.
             del exc
             continue
-        backoff = float(restart_initial_backoff_s)
         if on_status is not None:
             on_status(status)
         if status.phase is SupervisorPhase.IDLE:
+            backoff = float(restart_initial_backoff_s)
             if waiter(float(idle_poll_s)):
                 break
+        elif not supervisor._last_tick_progressed:
+            if waiter(backoff):
+                break
+            backoff = min(float(restart_max_backoff_s), backoff * 2.0)
+        else:
+            backoff = float(restart_initial_backoff_s)
 
 
 def _emit_status(status: SupervisorStatus) -> None:

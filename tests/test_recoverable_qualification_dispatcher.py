@@ -108,6 +108,18 @@ def _store(authority):
     )
 
 
+def _advance_finalized(authority, block: int) -> None:
+    cursor = authority.coordinator.advance_finalized_cursor
+    assert hasattr(cursor, "set")
+    with _store(authority) as store:
+        store.reserve_finalized(
+            (),
+            finalized_block=block,
+            finalized_block_hash=authority.fixtures._block_hash(block),
+        )
+    cursor.set(block)
+
+
 def test_dispatcher_commits_one_authenticated_result_without_legacy_enqueue(
     tmp_path: Path,
 ) -> None:
@@ -272,3 +284,271 @@ def test_completed_no_decision_product_is_held_without_retry_or_second_plan(
         assert recovery is not None and recovery.phase.value == "held"
         retained = store.get(recovery.lease.reservation_ids[0])
     assert retained.status == "promoted"
+
+
+@pytest.mark.parametrize(
+    ("after_expiry", "profile"),
+    ((0, "collective-expiry"), (3, "block-expiry")),
+)
+def test_claimed_restart_at_or_after_expiry_holds_without_creating_request(
+    tmp_path: Path,
+    after_expiry: int,
+    profile: str,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(
+        tmp_path / profile,
+        profile=profile,
+        recoverable=True,
+    )
+    with _store(authority) as store:
+        original = store.pending_qualification_recovery()
+        assert original is not None and original.phase.value == "claimed"
+        assert original.request_id == ""
+    restart_block = original.lease.expires_block + after_expiry
+    _advance_finalized(authority, restart_block)
+    transport = _Transport(authority, fixtures)
+    dispatcher = _dispatcher(authority, transport)
+
+    outcome = dispatcher.dispatch_once()
+    repeated = dispatcher.dispatch_once()
+
+    assert type(outcome) is RecoverableQualificationHold
+    assert repeated == outcome
+    assert (
+        outcome.recovery_id,
+        outcome.request_id,
+        outcome.reason,
+    ) == (
+        original.recovery_id,
+        "",
+        "lease_expired_before_request_plan",
+    )
+    assert (
+        transport.plans,
+        transport.materializations,
+        transport.publications,
+        transport.resumes,
+    ) == (0, 0, 0, 0)
+    with _store(authority) as store:
+        held = store.pending_qualification_recovery()
+        assert held is not None
+        events = store.evaluation_recovery_events(held)
+        leases = store.active_evaluation_leases()
+    assert (
+        held.recovery_id,
+        held.lease.lease_id,
+        held.lease.generation,
+        held.lease.expires_block,
+        held.request_id,
+        held.phase.value,
+        held.reason,
+    ) == (
+        original.recovery_id,
+        original.lease.lease_id,
+        original.lease.generation,
+        original.lease.expires_block,
+        "",
+        "held",
+        "lease_expired_before_request_plan",
+    )
+    assert leases == (held.lease,)
+    assert [event.event_type.value for event in events] == ["claimed", "held"]
+    assert not tuple(authority.outbox.iterdir())
+
+
+def test_prepared_restart_after_expiry_reuses_request_without_second_plan(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(
+        tmp_path,
+        profile="prepared-restart",
+        recoverable=True,
+    )
+
+    class InterruptedMaterialization(_Transport):
+        def materialize_planned_qualification(self, plan, request):
+            self.materializations += 1
+            raise RuntimeError("simulated restart after durable prepare")
+
+    first_transport = InterruptedMaterialization(authority, fixtures)
+    with pytest.raises(RuntimeError, match="restart after durable prepare"):
+        _dispatcher(authority, first_transport).dispatch_once()
+    assert first_transport.plan is not None
+    request_id = first_transport.plan.request_id
+    with _store(authority) as store:
+        prepared = store.pending_qualification_recovery()
+        assert prepared is not None and prepared.phase.value == "prepared"
+        assert prepared.request_id == request_id
+    restart_block = prepared.lease.expires_block + 2
+    _advance_finalized(authority, restart_block)
+
+    restarted_transport = _Transport(
+        authority,
+        fixtures,
+        complete_on_publish=True,
+    )
+    result = _dispatcher(authority, restarted_transport).dispatch_once()
+
+    assert result is not None and result.disposition == "completed"
+    assert (
+        result.lease.lease_id,
+        result.lease.generation,
+        result.lease.reservation_ids,
+    ) == (
+        prepared.lease.lease_id,
+        prepared.lease.generation,
+        prepared.lease.reservation_ids,
+    )
+    assert result.lease.expires_block > restart_block
+    assert first_transport.plans == 1
+    assert restarted_transport.plans == 0
+    assert restarted_transport.materializations == 1
+    carriers = [
+        path
+        for path in authority.outbox.iterdir()
+        if path.is_dir() and path.name.endswith(request_id)
+    ]
+    assert len(carriers) == 1
+    with _store(authority) as store:
+        assert store.pending_qualification_recovery() is None
+        assert store.active_evaluation_leases() == ()
+
+
+def test_publication_restart_at_expiry_renews_before_reusing_request(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(
+        tmp_path,
+        profile="publication-restart",
+        recoverable=True,
+    )
+
+    class InterruptedPublication(_Transport):
+        def publish_planned_qualification(self, plan):
+            self.publications += 1
+            raise RuntimeError("simulated restart before request publication")
+
+    first_transport = InterruptedPublication(authority, fixtures)
+    with pytest.raises(RuntimeError, match="restart before request publication"):
+        _dispatcher(authority, first_transport).dispatch_once()
+    assert first_transport.plan is not None
+    request_id = first_transport.plan.request_id
+    with _store(authority) as store:
+        committed = store.pending_qualification_recovery()
+        assert committed is not None
+        assert (committed.phase.value, committed.request_id) == (
+            "publication_committed",
+            request_id,
+        )
+    restart_block = committed.lease.expires_block
+    _advance_finalized(authority, restart_block)
+
+    restarted_transport = _Transport(
+        authority,
+        fixtures,
+        complete_on_publish=True,
+    )
+    result = _dispatcher(authority, restarted_transport).dispatch_once()
+
+    assert result is not None and result.disposition == "completed"
+    assert (
+        result.lease.lease_id,
+        result.lease.generation,
+        result.lease.reservation_ids,
+    ) == (
+        committed.lease.lease_id,
+        committed.lease.generation,
+        committed.lease.reservation_ids,
+    )
+    assert result.lease.expires_block > restart_block
+    assert (
+        first_transport.plans,
+        restarted_transport.plans,
+        restarted_transport.materializations,
+        restarted_transport.publications,
+    ) == (1, 0, 0, 1)
+    carriers = [
+        path
+        for path in authority.outbox.iterdir()
+        if path.is_dir() and path.name.endswith(request_id)
+    ]
+    assert len(carriers) == 1
+    with _store(authority) as store:
+        assert store.pending_qualification_recovery() is None
+        assert store.active_evaluation_leases() == ()
+
+
+def test_expired_prepared_recovery_holds_before_transport_when_renewal_denied(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(
+        tmp_path,
+        profile="renewal-denied",
+        recoverable=True,
+    )
+
+    class InterruptedMaterialization(_Transport):
+        def materialize_planned_qualification(self, plan, request):
+            self.materializations += 1
+            raise RuntimeError("simulated restart after durable prepare")
+
+    first_transport = InterruptedMaterialization(authority, fixtures)
+    with pytest.raises(RuntimeError, match="restart after durable prepare"):
+        _dispatcher(authority, first_transport).dispatch_once()
+    assert first_transport.plan is not None
+    request_id = first_transport.plan.request_id
+    with _store(authority) as store:
+        prepared = store.pending_qualification_recovery()
+        assert prepared is not None and prepared.phase.value == "prepared"
+    _advance_finalized(authority, prepared.lease.expires_block)
+    authority.coordinator.lease_blocks = authority.fixtures.POLICY.expiry_blocks + 1
+    restarted_transport = _Transport(authority, fixtures)
+
+    outcome = _dispatcher(authority, restarted_transport).dispatch_once()
+
+    assert type(outcome) is RecoverableQualificationHold
+    assert (
+        outcome.recovery_id,
+        outcome.request_id,
+        outcome.reason,
+    ) == (
+        prepared.recovery_id,
+        request_id,
+        "lease_renewal_not_authorized",
+    )
+    assert (
+        restarted_transport.plans,
+        restarted_transport.materializations,
+        restarted_transport.publications,
+        restarted_transport.resumes,
+    ) == (0, 0, 0, 0)
+    with _store(authority) as store:
+        held = store.pending_qualification_recovery()
+        assert held is not None
+        events = store.evaluation_recovery_events(held)
+        leases = store.active_evaluation_leases()
+    assert (
+        held.recovery_id,
+        held.lease.lease_id,
+        held.lease.generation,
+        held.request_id,
+        held.phase.value,
+        held.reason,
+    ) == (
+        prepared.recovery_id,
+        prepared.lease.lease_id,
+        prepared.lease.generation,
+        request_id,
+        "held",
+        "lease_renewal_not_authorized",
+    )
+    assert leases == (held.lease,)
+    assert [event.event_type.value for event in events] == [
+        "claimed",
+        "prepared",
+        "held",
+    ]

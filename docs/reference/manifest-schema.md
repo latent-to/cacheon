@@ -52,14 +52,16 @@ Paths are relative to the bundle and must resolve to regular contained files.
 | Field | Required | Meaning |
 |---|---:|---|
 | `bundle_id` | yes | Human-readable bundle identifier; not the content identity |
-| `abi_version` | yes | Must equal `cacheon-op-abi-v0` |
+| `abi_version` | yes | New bundles must emit `cacheon-op-abi-v0`; the reader also accepts the exact hash-bound pre-cutover spelling described below |
 | `[competition]` | recommended | Explicit requested target and `slot`/`atomic` mode |
 | `[[ops]]` | yes | One or more implementation rows |
 | `[[dep_patches]]` | no | Declared text patches for a validator-approved dependency lane |
 
-There is no reader alias: `cacheon-op-abi-v0` is the single accepted
-spelling, and the pre-rename `optima-op-abi-v0` spelling is refused. The
-submitted spelling participates in the committed bundle identity.
+New bundles must use `cacheon-op-abi-v0`. Validators also retain one narrowly
+scoped reader-only compatibility spelling, `optima-op-abi-v0`, for finalized
+bundles committed before the rename. Readers preserve the submitted spelling
+and bytes; they do not rewrite a publication because the spelling participates
+in the committed bundle identity. Every other ABI spelling is refused.
 
 The canonical bundle hash, not `bundle_id`, is the proposal's content identity.
 

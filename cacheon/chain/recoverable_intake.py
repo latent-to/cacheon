@@ -1,9 +1,10 @@
 """Opt-in durable qualification recovery over the finalized intake store.
 
-The base :class:`FinalizedIntakeStore` remains the version-1 authority used by
-existing readers and screen-only services.  Mainnet qualification dispatchers
-must inject this exact store type so recovery schema, connection-local SQL
-capabilities, and the recovery mixin are commissioned together.
+The base :class:`FinalizedIntakeStore` remains the version-1 authority for
+databases without recovery schema. Once recovery triggers are commissioned,
+every mutating evaluator connection—including screen dispatch—must use this
+exact store type so the connection-local SQL capabilities and recovery mixin
+reopen together.
 """
 
 from __future__ import annotations

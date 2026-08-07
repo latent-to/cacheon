@@ -1,13 +1,10 @@
 """Append-only count-quality policy and causal regrade (handoff aug6-2-1 §6).
 
 Generic first-failing-drop arithmetic over sealed stock/candidate observation
-counts.  No target, reservation, MSA identity, or score is hardcoded.
-
-The MSA mainnet receipt under
-``chainops/private/mainnet-eval/regrades/20260806T161900Z/`` is the wire
-authority for schema and digests.  A regrade preserves the old quality
-product as history; it never reruns GSM8K and never awards or publishes
-settlement/incentive/weight authority by itself.
+counts.  No target, reservation, mission path, or score is hardcoded.  A
+regrade preserves the old quality product as history; it never reruns the
+observation workload
+and never awards or publishes settlement/incentive/weight authority by itself.
 """
 
 from __future__ import annotations
@@ -199,7 +196,7 @@ class CountQualityRegrade:
 
     @property
     def digest(self) -> str:
-        # Wire authority omits schema from the digest body (see MSA receipt).
+        # The registered wire authority omits schema from the digest body.
         return canonical_digest(
             _REGRADE_DOMAIN,
             {
@@ -217,7 +214,7 @@ class CountQualityRegrade:
 def grade_count_quality(
     evidence: CountQualityEvidence, policy: CountQualityPolicy
 ) -> CountQualityVerdict:
-    """Grade sealed counts under the drop-threshold policy; no GSM8K rerun."""
+    """Grade sealed counts under the supplied drop-threshold policy."""
 
     if type(evidence) is not CountQualityEvidence:
         raise CountQualityError("evidence is not exactly typed")
@@ -303,12 +300,6 @@ def reopen_count_quality_regrade(payload: object) -> CountQualityRegrade:
     return regrade
 
 
-def drop10_policy() -> CountQualityPolicy:
-    """The corrected drop-10 policy named by the MSA append-only regrade."""
-
-    return CountQualityPolicy(regression_threshold_drop=10)
-
-
 __all__ = [
     "CountQualityError",
     "CountQualityEvidence",
@@ -316,7 +307,6 @@ __all__ = [
     "CountQualityRegrade",
     "CountQualityVerdict",
     "REGRADE_SCHEMA",
-    "drop10_policy",
     "grade_count_quality",
     "regrade_count_quality",
     "reopen_count_quality_regrade",
