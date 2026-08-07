@@ -260,6 +260,39 @@ def derive_numeric_answer_prompt_occurrences(
     return tuple(rows)
 
 
+def numeric_answer_prompt_plan_digest(
+    occurrences: tuple[NumericAnswerPromptOccurrence, ...],
+) -> str:
+    """Bind the exact ordered prompt/task positions without retaining prompt text."""
+
+    rows = tuple(occurrences)
+    if (
+        type(occurrences) is not tuple
+        or not rows
+        or any(type(row) is not NumericAnswerPromptOccurrence for row in rows)
+        or tuple((row.batch_index, row.prompt_index) for row in rows)
+        != tuple(sorted((row.batch_index, row.prompt_index) for row in rows))
+        or len({row.prompt_digest for row in rows}) != len(rows)
+    ):
+        raise NumericAnswerJudgeError(
+            "numeric prompt occurrence plan is not exact, ordered, and unique"
+        )
+    return canonical_digest(
+        "cacheon.eval.numeric-answer-prompt-plan.v1",
+        {
+            "occurrences": [
+                {
+                    "batch_index": row.batch_index,
+                    "prompt_digest": row.prompt_digest,
+                    "prompt_index": row.prompt_index,
+                    "task_digests": list(row.task_digests),
+                }
+                for row in rows
+            ]
+        },
+    )
+
+
 # These expressions intentionally preserve the established GSM8K numeric
 # policy.  Broadening them would change grading calibration without changing
 # the already-sealed task-policy digest.
@@ -526,5 +559,6 @@ __all__ = [
     "TokenDecoder",
     "derive_numeric_answer_prompt_occurrences",
     "hidden_task_policy_digest",
+    "numeric_answer_prompt_plan_digest",
     "numeric_hidden_judge_digest",
 ]

@@ -16,6 +16,7 @@ from cacheon.eval.numeric_answer_judge import (
     NumericAnswerPromptOccurrence,
     derive_numeric_answer_prompt_occurrences,
     hidden_task_policy_digest,
+    numeric_answer_prompt_plan_digest,
     numeric_hidden_judge_digest,
 )
 from cacheon.eval.qualification_runner import (
@@ -416,6 +417,7 @@ def test_prompt_occurrence_derivation_is_shared_ordered_and_target_neutral() -> 
     )
     assert len({row.prompt_digest for row in rows}) == 3
     assert all(len(row.task_digests) == 1 for row in rows)
+    assert numeric_answer_prompt_plan_digest(rows) == numeric_answer_prompt_plan_digest(rows)
     assert "msa" not in repr(rows).lower()
     assert "collective" not in repr(rows).lower()
 
