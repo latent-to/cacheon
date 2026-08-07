@@ -103,6 +103,13 @@ suite.
   stale state, partial failure, restart/idempotency, concurrency, time bounds,
   and untested assumptions. The primary agent must inspect the diff and
   independently rerun the acceptance tests before accepting it.
+- Before adding a production module, search for and name its authoritative
+  production owner and callsite. Test-only imports do not prove integration;
+  parallel or provisional implementations must be wired into that owner or
+  removed before the pull request is ready.
+- A security-sensitive private or dynamic factory must have a sealed production
+  caller that authenticates its authority. Remove factory loaders that exist
+  only behind tests or unsealed configuration.
 - Never use destructive synchronization such as `rsync --delete` for recovery,
   handoff, snapshot, or deployment work. Use a new destination and verify the
   copied manifest before considering any separately authorized cleanup.
