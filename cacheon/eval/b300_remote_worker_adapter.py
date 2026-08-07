@@ -763,41 +763,18 @@ def serve_runtime(
     return 0
 
 
-def _load_qualification_capabilities(specifier: str):
-    """Resolve one explicitly named tracked capabilities factory.
+def _load_qualification_capabilities(specifier: str, source_sha256: str):
+    """Load one private factory only after its exact source bytes verify."""
 
-    The operand names a reviewed module attribute (``MODULE:ATTRIBUTE``); the
-    factory takes no arguments and must return exactly one
-    ``B300QualificationCapabilities``.  Nothing is probed from the environment
-    and nothing digest-bearing enters through this path -- every identity the
-    returned capabilities carry is checked against the sealed commission block
-    before the adapter accepts a request.
-    """
-
-    import importlib
-
-    from cacheon.eval.b300_qualification_commission import (
-        B300QualificationCapabilities,
+    from cacheon.eval.qualification_capability_loader import (
+        QualificationCapabilityLoadError,
+        load_qualification_capabilities,
     )
 
-    module_name, separator, attribute = specifier.partition(":")
-    if not module_name or separator != ":" or not attribute:
-        raise AdapterError(
-            "qualification capabilities operand must be MODULE:ATTRIBUTE"
-        )
     try:
-        module = importlib.import_module(module_name)
-        factory = getattr(module, attribute)
-    except (ImportError, AttributeError) as exc:
-        raise AdapterError(
-            f"qualification capabilities factory is unavailable: {exc}"
-        ) from None
-    capabilities = factory()
-    if type(capabilities) is not B300QualificationCapabilities:
-        raise AdapterError(
-            "qualification capabilities factory did not return exact capabilities"
-        )
-    return capabilities
+        return load_qualification_capabilities(specifier, source_sha256)
+    except QualificationCapabilityLoadError as exc:
+        raise AdapterError(str(exc)) from None
 
 
 def _serve(paths: AdapterPaths, qualification_capabilities=None) -> int:
@@ -842,21 +819,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--qualification-capabilities",
         help=(
-            "MODULE:ATTRIBUTE naming a reviewed zero-argument factory returning"
-            " B300QualificationCapabilities; commissions qualification in this"
-            " same persistent service (requires --serve)"
+            "top-level MODULE:ATTRIBUTE naming a reviewed zero-argument factory"
+            " returning B300QualificationCapabilities; requires the exact source"
+            " digest and --serve"
         ),
     )
+    parser.add_argument(
+        "--qualification-capabilities-sha256",
+        help="exact lowercase SHA-256 of the named qualification factory source",
+    )
     args = parser.parse_args(argv)
+    if (args.qualification_capabilities is None) != (
+        args.qualification_capabilities_sha256 is None
+    ):
+        parser.error(
+            "--qualification-capabilities and"
+            " --qualification-capabilities-sha256 must be provided together"
+        )
     paths = _adapter_paths(args)
     if args.serve:
         if args.request_dir is not None or args.result_dir is not None:
             parser.error("--serve does not accept one-shot request paths")
         capabilities = None
         if args.qualification_capabilities is not None:
-            capabilities = _load_qualification_capabilities(
-                args.qualification_capabilities
+            load_receipt = _load_qualification_capabilities(
+                args.qualification_capabilities,
+                args.qualification_capabilities_sha256,
             )
+            capabilities = load_receipt.capabilities
         return _serve(paths, capabilities)
     if args.qualification_capabilities is not None:
         parser.error(

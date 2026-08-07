@@ -867,35 +867,28 @@ def test_screen_only_runtime_still_closes_its_worker(
 def test_load_qualification_capabilities_names_one_reviewed_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from types import ModuleType
+    from cacheon.eval import qualification_capability_loader as capability_loader
 
-    for specifier in ("", "module-only", ":attribute-only", "module:"):
-        with pytest.raises(adapter.AdapterError, match="MODULE:ATTRIBUTE"):
-            adapter._load_qualification_capabilities(specifier)
+    receipt = object()
+    observed: list[tuple[str, str]] = []
 
-    with pytest.raises(adapter.AdapterError, match="unavailable"):
-        adapter._load_qualification_capabilities(
-            "cacheon.eval.b300_remote_worker_adapter:no_such_factory"
-        )
-    with pytest.raises(adapter.AdapterError, match="unavailable"):
-        adapter._load_qualification_capabilities(
-            "cacheon_no_such_module_exists:factory"
-        )
+    def load(specifier: str, source_sha256: str):
+        observed.append((specifier, source_sha256))
+        return receipt
 
-    module = ModuleType("cacheon_test_qualification_capabilities")
-    module.wrong = lambda: object()
-    module.right = _qualification_capabilities
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    with pytest.raises(adapter.AdapterError, match="exact capabilities"):
-        adapter._load_qualification_capabilities(f"{module.__name__}:wrong")
-    capabilities = adapter._load_qualification_capabilities(
-        f"{module.__name__}:right"
+    monkeypatch.setattr(capability_loader, "load_qualification_capabilities", load)
+    assert (
+        adapter._load_qualification_capabilities("private_factory:build", "a" * 64)
+        is receipt
     )
-    from cacheon.eval.b300_qualification_commission import (
-        B300QualificationCapabilities,
-    )
+    assert observed == [("private_factory:build", "a" * 64)]
 
-    assert type(capabilities) is B300QualificationCapabilities
+    def refuse(_specifier: str, _source_sha256: str):
+        raise capability_loader.QualificationCapabilityLoadError("source differs")
+
+    monkeypatch.setattr(capability_loader, "load_qualification_capabilities", refuse)
+    with pytest.raises(adapter.AdapterError, match="source differs"):
+        adapter._load_qualification_capabilities("private_factory:build", "b" * 64)
 
 
 def test_one_shot_mode_cannot_commission_qualification(tmp_path: Path) -> None:
@@ -920,7 +913,9 @@ def test_one_shot_mode_cannot_commission_qualification(tmp_path: Path) -> None:
         "--result-dir",
         str(paths.results_root / ("5" * 64)),
         "--qualification-capabilities",
-        "some.module:factory",
+        "private_factory:build",
+        "--qualification-capabilities-sha256",
+        "a" * 64,
     ]
     with pytest.raises(SystemExit) as captured:
         adapter.main(argv)
