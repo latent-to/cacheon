@@ -42,6 +42,9 @@ from cacheon.eval.b300_arena_provider import (
     b300_arena_provider_digest,
     compose_b300_arena_service,
 )
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
@@ -842,3 +845,26 @@ def test_factory_exception_stays_a_provider_error(
 
     with pytest.raises(B300ArenaProviderError, match="factory construction"):
         service.plan_qualification((candidate,), (receipt,))
+
+
+def test_graph_evidence_hold_survives_arena_provider(
+    tmp_path: Path, executor_factory
+) -> None:
+    hold = B300QualificationGraphEvidenceHold("graph attempt remains armed")
+
+    class HoldBuilder:
+        def __call__(self, _request, _state):
+            raise hold
+
+    authorities, _runner, _resident, _builder = _authorities(
+        tmp_path,
+        executor_factory,
+        builder=HoldBuilder(),  # type: ignore[arg-type]
+    )
+    service = compose_b300_arena_service(_manifest(authorities), authorities)
+    candidate = _binding(tmp_path / "candidate")
+    receipt = service.screen(candidate)
+
+    with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
+        service.plan_qualification((candidate,), (receipt,))
+    assert caught.value is hold

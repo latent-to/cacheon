@@ -44,6 +44,9 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     registered_b300_member_contract_projection,
     registered_b300_profile_resolver_digest,
 )
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
@@ -857,3 +860,39 @@ def test_deployment_accepts_atomic_registered_plan_on_both_retained_stages(
                 accepted.prepared.candidates[0],
                 construction,
             )
+
+
+def test_factory_builder_preserves_graph_evidence_hold(tmp_path: Path) -> None:
+    fixtures = _registered_fixtures()
+    harness = fixtures._harness(tmp_path)
+    secret = b"held graph factory selection secret"[:32]
+    value = harness.factory.plan_builder(harness.cohort, secret)
+    hold = B300QualificationGraphEvidenceHold("graph attempt remains armed")
+
+    def unavailable(_cohort, _secret):
+        raise hold
+
+    construction = replace(
+        _registered_construction(harness, value, secret),
+        plan_builder=unavailable,
+    )
+    resident = value.resident_speed_plan
+    builder = deployment._factory_builder(
+        construction,
+        _executor_mirror(resident.candidate),
+        _executor_mirror(resident.baseline),
+        screen_lane="primary",
+    )
+    receipt = replace(
+        harness.cohort.receipt,
+        service_digest=construction.incumbent_stack.arena_digest,
+    )
+    request = ArenaQualificationRequest(
+        construction.incumbent_stack.arena_digest,
+        construction.qualification_policy_digest,
+        (harness.cohort.candidate,),
+        (receipt,),
+    )
+    with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
+        builder(request, None)
+    assert caught.value is hold

@@ -29,6 +29,9 @@ from cacheon.eval.b300_qualification_deployment import B300QualificationCohort
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationDeploymentError,
 )
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.calibration import (
     CalibrationContext,
     CalibrationEvidenceSet,
@@ -747,6 +750,26 @@ def test_graph_facts_reject_duplicate_or_reordered_variants() -> None:
             tuple(reversed(facts.variants)),
             tuple(reversed(facts.observations)),
         )
+
+
+def test_graph_evidence_hold_survives_registered_profile_resolution(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+    hold = B300QualificationGraphEvidenceHold("graph attempt is still armed")
+
+    def unavailable(_candidate, _prepared):
+        raise hold
+
+    inputs = replace(
+        harness.inputs,
+        graph_facts_builder_digest=_h("held-graph-builder"),
+        graph_facts_builder=unavailable,
+    )
+    factory = registered.build_b300_registered_qualification_factory(inputs)
+    with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
+        factory.plan_builder(harness.cohort, b"h" * 32)
+    assert caught.value is hold
 
 
 def test_blocker_inventory_names_only_missing_commissioning_authorities() -> None:

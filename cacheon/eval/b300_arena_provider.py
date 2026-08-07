@@ -47,6 +47,9 @@ from cacheon.eval.b300_qualification_lanes import (
     _digest,
 )
 from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.qualification_intake import QualificationPlanFactory
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_screen_lane import (
@@ -721,6 +724,8 @@ class B300ArenaServiceProvider:
             self._release_resident()
             try:
                 factory = capabilities.qualification_factory_builder(request, state)
+            except B300QualificationGraphEvidenceHold:
+                raise
             except Exception as exc:
                 raise B300ArenaProviderError(
                     "qualification factory construction failed"

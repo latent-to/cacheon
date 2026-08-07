@@ -38,6 +38,7 @@ from cacheon.eval.b300_arena_provider import (
     B300ScreenDeploymentAuthorities,
     b300_arena_provider_digest,
 )
+from cacheon.eval.b300_qualification_graph_store_io import B300QualificationGraphEvidenceHold
 from cacheon.eval.marginal_runtime import PreparedCandidateRuntime
 from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.qualification_intake import (
@@ -169,6 +170,8 @@ class B300RegisteredProfileAuthority:
     ) -> CandidateQualificationAuthority:
         try:
             value = self.resolver(candidate, prepared)
+        except B300QualificationGraphEvidenceHold:
+            raise
         except Exception as exc:
             raise B300QualificationDeploymentError(
                 "registered profile authority failed"
@@ -774,6 +777,8 @@ def _factory_builder(
         def plan(secret: bytes) -> CausalQualificationInput:
             try:
                 value = construction.plan_builder(cohort, secret)
+            except B300QualificationGraphEvidenceHold:
+                raise
             except Exception as exc:
                 raise B300QualificationDeploymentError(
                     "sealed qualification plan construction failed"

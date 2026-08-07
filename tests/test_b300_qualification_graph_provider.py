@@ -28,6 +28,9 @@ from cacheon.eval.b300_qualification_graph_provider import (
     B300QualificationGraphFactsBuilder,
     B300QualificationGraphProviderError,
 )
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.marginal_runtime import PreparedCandidateRuntime
 from cacheon.eval.qualification_intake import QualificationReservation
@@ -58,7 +61,11 @@ def _profile(root: Path, source: Path, label: str) -> _Profile:
     prepared = _prepared(case).candidates[0]
 
     private_source = root / "private-source"
-    shutil.copytree(source, private_source)
+    shutil.copytree(
+        source,
+        private_source,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
     for path in sorted(private_source.rglob("*")):
         path.chmod(0o700 if path.is_dir() else 0o600)
     private_source.chmod(0o700)
@@ -686,3 +693,28 @@ def test_distinct_candidates_can_be_commissioned_concurrently(
     assert [tuple(row.slot_id for row in value.variants) for value in facts] == [
         profile.candidate.reservation.target_members for profile in profiles
     ]
+
+
+@pytest.mark.parametrize("phase", ("probe", "reopen"))
+def test_graph_evidence_hold_survives_the_facts_builder(
+    profiles: tuple[_Profile, _Profile],
+    phase: str,
+) -> None:
+    profile = profiles[0]
+    authority = _CommissionedAuthority()
+    authority.commission(profile)
+    hold = B300QualificationGraphEvidenceHold(f"{phase} remains armed")
+
+    def raise_hold(*_args):
+        raise hold
+
+    builder = B300QualificationGraphFactsBuilder(
+        POLICY,
+        PROBE_AUTHORITY,
+        REOPENER_AUTHORITY,
+        raise_hold if phase == "probe" else authority.probe,
+        raise_hold if phase == "reopen" else authority.reopen,
+    )
+    with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
+        builder(profile.candidate, profile.prepared)
+    assert caught.value is hold

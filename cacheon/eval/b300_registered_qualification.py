@@ -44,6 +44,9 @@ from cacheon.eval.b300_qualification_deployment import (
     B300QualificationCohort,
     B300RegisteredProfileAuthority,
 )
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.crossover_runtime import (
     ResidentArmPlan,
     ResidentCrossoverPlan,
@@ -383,6 +386,8 @@ class B300RegisteredQualificationFactory:
             )
         try:
             facts = inputs.graph_facts_builder(candidate, prepared)
+        except B300QualificationGraphEvidenceHold:
+            raise
         except Exception as exc:
             raise B300RegisteredQualificationError(
                 "validator focused graph authority failed"

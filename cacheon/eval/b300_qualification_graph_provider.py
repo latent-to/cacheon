@@ -34,6 +34,9 @@ from cacheon.eval.b300_qualification_capabilities import (
     structured_focused_graph_facts,
 )
 from cacheon.eval.b300_registered_qualification_inputs import B300FocusedGraphFacts
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     NativeBuildSpec,
@@ -725,6 +728,8 @@ class B300QualificationGraphFactsBuilder:
                 reference = self._require_reference(
                     self.commissioned_probe(binding, candidate, prepared)
                 )
+            except B300QualificationGraphEvidenceHold:
+                raise
             except B300QualificationGraphProviderError:
                 raise
             except Exception as exc:
@@ -737,6 +742,8 @@ class B300QualificationGraphFactsBuilder:
                 )
             try:
                 payload = self.evidence_reopener(reference)
+            except B300QualificationGraphEvidenceHold:
+                raise
             except B300QualificationGraphProviderError:
                 raise
             except Exception as exc:
