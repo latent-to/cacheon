@@ -760,6 +760,7 @@ def run_qualification_intake(
     hidden_judge,
     deadline: float,
     continuation_store: QualificationContinuationStore | None = None,
+    request_digest: str | None = None,
 ) -> QualificationIntakeBatch:
     """Run, reopen, and project one finalized cohort without settlement authority.
 
@@ -776,6 +777,12 @@ def run_qualification_intake(
         QualificationContinuationStore
     ):
         raise QualificationIntakeError("continuation store is not exactly typed")
+    if (continuation_store is None) != (request_digest is None):
+        raise QualificationIntakeError(
+            "continuation store requires one exact authenticated request digest"
+        )
+    if request_digest is not None:
+        request_digest = _digest(request_digest, "authenticated request digest")
     manifest = factory.manifest
     try:
         value = factory.build()
@@ -788,6 +795,7 @@ def run_qualification_intake(
     continuation = None
     if continuation_store is not None:
         continuation = continuation_store.scope(
+            request_digest=request_digest,
             authority_digest=qualification_authority_digest(value),
             source_digest=value.prepared.source.digest,
         )

@@ -38,6 +38,7 @@ from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
@@ -204,6 +205,7 @@ def configured(tmp_path: Path):
         construction,
         readiness,
         resolver,
+        QualificationContinuationStore(tmp_path / "continuation"),
     )
     result = _Configured(
         deployment,
@@ -320,9 +322,21 @@ def _patch_worker_result(
     reference: EvidenceArtifactRef,
     *,
     drift_lease: bool = False,
-) -> None:
-    def run(self, lease, candidates, receipts, *, screen_lane):
+) -> list[tuple[object, str]]:
+    calls: list[tuple[object, str]] = []
+
+    def run(
+        self,
+        lease,
+        candidates,
+        receipts,
+        *,
+        screen_lane,
+        continuation_store,
+        request_digest,
+    ):
         del receipts
+        calls.append((continuation_store, request_digest))
         candidate = candidates[0]
         manifest = _authority(candidate)
         outcome = QualificationIntakeOutcome(
@@ -360,6 +374,7 @@ def _patch_worker_result(
         "run_remote_qualification",
         run,
     )
+    return calls
 
 
 def test_success_captures_every_typed_batch_reference_without_paths(
@@ -374,9 +389,10 @@ def test_success_captures_every_typed_batch_reference_without_paths(
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
     )
-    _patch_worker_result(monkeypatch, configured, reference)
+    calls = _patch_worker_result(monkeypatch, configured, reference)
 
-    product = configured.adapter.run(_request(configured))
+    request = _request(configured)
+    product = configured.adapter.run(request)
 
     assert product.evidence_inventory == (reference,)
     assert product.evidence[0].payload == payload
@@ -385,6 +401,7 @@ def test_success_captures_every_typed_batch_reference_without_paths(
     assert product.incumbent_stack == configured.construction.incumbent_stack
     assert str(configured.candidate.publication.root) not in str(product.to_dict())
     assert str(configured.construction.evidence_root) not in str(product.to_dict())
+    assert calls == [(configured.adapter.continuation_store, request.digest)]
 
 
 def test_publication_identity_and_configured_root_substitution_fail_closed(
@@ -421,6 +438,7 @@ def test_publication_identity_and_configured_root_substitution_fail_closed(
         configured.construction,
         configured.readiness,
         resolver,
+        configured.adapter.continuation_store,
     )
     with pytest.raises(
         adapter_module.B300RemoteQualificationAdapterError,
@@ -552,6 +570,7 @@ def test_adapter_rejects_construction_and_ready_authority_drift(
             ),
             configured.readiness,
             configured.adapter.publications,
+            configured.adapter.continuation_store,
         )
     with pytest.raises(
         adapter_module.B300RemoteQualificationAdapterError,
@@ -562,6 +581,7 @@ def test_adapter_rejects_construction_and_ready_authority_drift(
             configured.construction,
             replace(configured.readiness, workload_digest=_h("drifted-workload")),
             configured.adapter.publications,
+            configured.adapter.continuation_store,
         )
 
 

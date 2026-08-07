@@ -41,13 +41,14 @@ from cacheon.eval.b300_arena_provider import (
 )
 from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
     QualificationPlanFactory,
     run_qualification_intake,
 )
-from cacheon.stack_identity import canonical_digest
+from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
 WORKER_SCHEMA = "cacheon.eval.b300-mainnet-worker.v1"
@@ -201,6 +202,8 @@ class B300MainnetWorker:
         screen_receipts: tuple[ArenaScreenReceipt, ...],
         *,
         screen_lane: str,
+        continuation_store: QualificationContinuationStore,
+        request_digest: str,
     ) -> B300RemoteQualificationRun:
         """Run one path-free, lane-bound remote qualification cohort.
 
@@ -211,6 +214,16 @@ class B300MainnetWorker:
         before constructing private qualification work.
         """
 
+        if type(continuation_store) is not QualificationContinuationStore:
+            raise B300MainnetWorkerError(
+                "remote qualification continuation store is not exact"
+            )
+        try:
+            request_digest = require_sha256_hex(
+                request_digest, field="authenticated request digest"
+            )
+        except ValueError as exc:
+            raise B300MainnetWorkerError(str(exc)) from None
         candidate_rows = tuple(candidates) if type(candidates) is tuple else ()
         receipt_rows = (
             tuple(screen_receipts) if type(screen_receipts) is tuple else ()
@@ -245,6 +258,8 @@ class B300MainnetWorker:
             payload, authority_manifest = self._execute_qualification(
                 candidate_rows,
                 receipt_rows,
+                continuation_store=continuation_store,
+                request_digest=request_digest,
             )
             disposition = "released" if self._systemic(payload) else "completed"
             envelope = EvaluationResultEnvelope.seal(
@@ -311,6 +326,9 @@ class B300MainnetWorker:
         self,
         candidates: tuple[ArenaCandidateBinding, ...],
         screen_receipts: tuple[ArenaScreenReceipt, ...],
+        *,
+        continuation_store: QualificationContinuationStore | None = None,
+        request_digest: str | None = None,
     ) -> tuple[QualificationIntakeBatch, QualificationAuthorityManifest]:
         work = self.service.plan_qualification(
             candidates,
@@ -325,6 +343,8 @@ class B300MainnetWorker:
             entropy_provider=work.entropy_provider,
             hidden_judge=work.hidden_judge,
             deadline=float(work.deadline),
+            continuation_store=continuation_store,
+            request_digest=request_digest,
         )
         self._validate_batch(batch, work, candidates)
         return batch, work.factory.manifest

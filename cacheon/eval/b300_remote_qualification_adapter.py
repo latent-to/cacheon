@@ -48,6 +48,7 @@ from cacheon.eval.b300_qualification_deployment import (
     B300QualificationDeployment,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationIntakeBatch,
     QualificationReservation,
@@ -327,6 +328,7 @@ class B300RemoteQualificationAdapter:
     construction: B300QualificationConstructionAuthority
     readiness: WorkerReadiness
     publications: B300WorkerBundleResolver
+    continuation_store: QualificationContinuationStore
 
     def __post_init__(self) -> None:
         if (
@@ -335,6 +337,7 @@ class B300RemoteQualificationAdapter:
             is not B300QualificationConstructionAuthority
             or type(self.readiness) is not WorkerReadiness
             or type(self.publications) is not B300WorkerBundleResolver
+            or type(self.continuation_store) is not QualificationContinuationStore
         ):
             raise B300RemoteQualificationAdapterError(
                 "remote qualification adapter authority is not exactly typed"
@@ -485,6 +488,8 @@ class B300RemoteQualificationAdapter:
                 candidates,
                 receipts,
                 screen_lane=self.deployment.screen_lane,
+                continuation_store=self.continuation_store,
+                request_digest=request.digest,
             )
             if (
                 type(result) is not B300RemoteQualificationRun

@@ -35,7 +35,25 @@ def _adapter_paths(tmp_path: Path) -> adapter.AdapterPaths:
         publication_root=tmp_path / "publications",
         processing_root=tmp_path / "processing",
         results_root=tmp_path / "results",
+        continuation_root=tmp_path / "continuation",
     )
+
+
+def test_continuation_root_is_an_explicit_absolute_adapter_path(
+    tmp_path: Path,
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    assert paths.continuation_root == tmp_path / "continuation"
+    with pytest.raises(adapter.AdapterError, match="continuation_root.*absolute"):
+        adapter.AdapterPaths(
+            paths.registration,
+            paths.ready_receipt,
+            paths.credential,
+            paths.publication_root,
+            paths.processing_root,
+            paths.results_root,
+            Path("relative-continuation"),
+        )
 
 
 def test_publication_transport_reconstructs_reopenable_immutable_tree(
@@ -155,6 +173,7 @@ def _runtime_shell(
     runtime.identity = object()
     runtime.worker = _FakeWorker()
     runtime.qualification_commission = qualification_commission
+    runtime.qualification_continuation_store = None
     runtime._commissioned_service = None
     runtime.closed = False
     runtime.verify_current = lambda: None
@@ -273,6 +292,7 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
     from cacheon.chain import remote_evaluation_dispatcher as dispatcher
     from cacheon.chain.publication import publish_worker_bundle
     from cacheon.eval import b300_remote_qualification_adapter as qualification_adapter
+    from cacheon.eval.qualification_continuation import QualificationContinuationStore
 
     fixtures = _spool_fixtures()
     authorities = []
@@ -302,11 +322,17 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
     object.__setattr__(commission, "construction", fixed_authorities[1])
     object.__setattr__(commission, "readiness", fixed_authorities[2])
     runtime = _runtime_shell(paths, qualification_commission=commission)
+    runtime.qualification_continuation_store = QualificationContinuationStore(
+        paths.continuation_root
+    )
     run_calls: list[tuple[object, object]] = []
 
     class PerRequestAdapter:
-        def __init__(self, deployment, construction, readiness, resolver) -> None:
+        def __init__(
+            self, deployment, construction, readiness, resolver, continuation_store
+        ) -> None:
             assert (deployment, construction, readiness) == fixed_authorities
+            assert continuation_store is runtime.qualification_continuation_store
             assert len(resolver.publications) == 1
             self.publication = resolver.publications[0]
             assert resolver.resolve(self.publication.to_dict()) == self.publication
@@ -421,7 +447,7 @@ def test_qualification_archive_mismatch_never_builds_or_runs_adapter(
     monkeypatch.setattr(
         adapter.B300RemoteQualificationCommission,
         "adapter_for",
-        lambda _self, publication: factory_calls.append(publication),
+        lambda _self, publication, _store: factory_calls.append(publication),
     )
     monkeypatch.setattr(
         B300RemoteQualificationAdapter,
@@ -445,6 +471,9 @@ def test_qualification_execution_failure_is_epoch_fatal(
     from cacheon.eval.b300_remote_qualification_adapter import (
         B300RemoteQualificationAdapter,
     )
+    from cacheon.eval.qualification_continuation import (
+        QualificationContinuationError,
+    )
 
     commission = object.__new__(adapter.B300RemoteQualificationCommission)
     commissioned = object.__new__(B300RemoteQualificationAdapter)
@@ -461,19 +490,19 @@ def test_qualification_execution_failure_is_epoch_fatal(
     monkeypatch.setattr(
         adapter.B300RemoteQualificationCommission,
         "adapter_for",
-        lambda _self, _publication: commissioned,
+        lambda _self, _publication, _store: commissioned,
     )
 
     def fail_after_entry(_self, observed):
         assert observed is wire
-        raise RuntimeError("resident qualification failed")
+        raise QualificationContinuationError("continuation identity changed")
 
     monkeypatch.setattr(B300RemoteQualificationAdapter, "run", fail_after_entry)
     result_dir = tmp_path / "result"
     result_dir.mkdir(mode=0o700)
     with pytest.raises(adapter.AdapterEpochFailed) as captured:
         adapter.run_with_runtime(tmp_path / "request", result_dir, runtime)
-    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert isinstance(captured.value.__cause__, QualificationContinuationError)
     assert (result_dir / "RESIDENT_ENTRY_ARMED.json").is_file()
 
 
@@ -790,6 +819,7 @@ def test_capabilities_commission_one_service_for_screen_and_qualification(
     assert observed == [(registration, ready, capabilities)]
     assert runtime.worker is worker
     assert runtime.qualification_commission is commission
+    assert runtime.qualification_continuation_store.root == paths.continuation_root
 
     runtime.close()
     runtime.close()
@@ -828,6 +858,8 @@ def test_screen_only_runtime_still_closes_its_worker(
     runtime = adapter.AdapterRuntime(paths)
     assert runtime.worker is worker
     assert runtime.qualification_commission is None
+    assert runtime.qualification_continuation_store is None
+    assert not paths.continuation_root.exists()
     runtime.close()
     assert closed == ["worker"]
 
@@ -881,12 +913,36 @@ def test_one_shot_mode_cannot_commission_qualification(tmp_path: Path) -> None:
         str(paths.processing_root),
         "--results-root",
         str(paths.results_root),
+        "--continuation-root",
+        str(paths.continuation_root),
         "--request-dir",
         str(paths.processing_root / ("5" * 64)),
         "--result-dir",
         str(paths.results_root / ("5" * 64)),
         "--qualification-capabilities",
         "some.module:factory",
+    ]
+    with pytest.raises(SystemExit) as captured:
+        adapter.main(argv)
+    assert captured.value.code == 2
+
+
+def test_cli_requires_explicit_continuation_root(tmp_path: Path) -> None:
+    paths = _adapter_paths(tmp_path)
+    argv = [
+        "--serve",
+        "--registration",
+        str(paths.registration),
+        "--ready-receipt",
+        str(paths.ready_receipt),
+        "--credential",
+        str(paths.credential),
+        "--publication-root",
+        str(paths.publication_root),
+        "--processing-root",
+        str(paths.processing_root),
+        "--results-root",
+        str(paths.results_root),
     ]
     with pytest.raises(SystemExit) as captured:
         adapter.main(argv)

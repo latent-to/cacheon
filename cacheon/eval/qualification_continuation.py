@@ -18,12 +18,13 @@ Recovery rules (enforced by the runner seams that consume this store):
 - final product exists -> import/commit only;
 - any identity mismatch -> fail closed (HOLD); nothing is silently rerun.
 
-Each record is one closed JSON file bound to the cohort's qualification
-authority digest and sealed source digest, carrying a canonical record digest
-over its own payload.  Payload evidence round-trips through the exact-typed
-continuation codec, so every reconstructed object re-runs its own fail-closed
-constructor validation, and the speed evidence additionally re-grades itself
-against the sealed plan before it is trusted.
+Each record is one closed JSON file bound to the authenticated remote request,
+the cohort's qualification authority digest, and its sealed source digest,
+carrying a canonical record digest over its own payload.  Payload evidence
+round-trips through the exact-typed continuation codec, so every reconstructed
+object re-runs its own fail-closed constructor validation, and the speed
+evidence additionally re-grades itself against the sealed plan before it is
+trusted.
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ from cacheon.stack_identity import (
 )
 
 
-RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v1"
+RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
 _STAGES = ("speed", "quality", "final")
 
 
@@ -146,9 +147,15 @@ class QualificationContinuationStore:
         self.root = root
 
     def scope(
-        self, *, authority_digest: str, source_digest: str
+        self,
+        *,
+        request_digest: str | None = None,
+        authority_digest: str,
+        source_digest: str,
     ) -> "QualificationContinuation":
-        return QualificationContinuation(self, authority_digest, source_digest)
+        return QualificationContinuation(
+            self, request_digest, authority_digest, source_digest
+        )
 
 
 class QualificationContinuation:
@@ -157,6 +164,7 @@ class QualificationContinuation:
     def __init__(
         self,
         store: QualificationContinuationStore,
+        request_digest: str | None,
         authority_digest: str,
         source_digest: str,
     ) -> None:
@@ -165,6 +173,9 @@ class QualificationContinuation:
                 "continuation scope requires an exact store"
             )
         try:
+            self.request_digest = require_sha256_hex(
+                request_digest, field="authenticated request digest"
+            )
             self.authority_digest = require_sha256_hex(
                 authority_digest, field="qualification authority digest"
             )
@@ -173,7 +184,9 @@ class QualificationContinuation:
             )
         except ValueError as exc:
             raise QualificationContinuationError(str(exc)) from None
-        self.directory = store.root / f"{self.authority_digest}-{self.source_digest}"
+        self.directory = store.root / (
+            f"{self.request_digest}-{self.authority_digest}-{self.source_digest}"
+        )
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
         self._codec = _codec()
@@ -184,6 +197,7 @@ class QualificationContinuation:
         body = {
             "authority_digest": self.authority_digest,
             "payload": payload,
+            "request_digest": self.request_digest,
             "schema": RECORD_SCHEMA,
             "source_digest": self.source_digest,
             "stage": stage,
@@ -246,6 +260,7 @@ class QualificationContinuation:
             "authority_digest",
             "payload",
             "record_digest",
+            "request_digest",
             "schema",
             "source_digest",
             "stage",
@@ -258,6 +273,7 @@ class QualificationContinuation:
         if (
             record["schema"] != RECORD_SCHEMA
             or record["stage"] != stage
+            or record["request_digest"] != self.request_digest
             or record["authority_digest"] != self.authority_digest
             or record["source_digest"] != self.source_digest
             or record["record_digest"] != canonical_digest(RECORD_SCHEMA, body)

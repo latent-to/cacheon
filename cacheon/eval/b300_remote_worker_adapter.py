@@ -96,6 +96,7 @@ class AdapterPaths:
     publication_root: Path
     processing_root: Path
     results_root: Path
+    continuation_root: Path
 
     def __post_init__(self) -> None:
         for name in (
@@ -105,6 +106,7 @@ class AdapterPaths:
             "publication_root",
             "processing_root",
             "results_root",
+            "continuation_root",
         ):
             value = getattr(self, name)
             if not isinstance(value, Path) or not value.is_absolute():
@@ -137,21 +139,32 @@ class B300RemoteQualificationCommission:
             )
 
     def adapter_for(
-        self, publication: WorkerBundlePublication
+        self,
+        publication: WorkerBundlePublication,
+        continuation_store,
     ) -> B300RemoteQualificationAdapter:
         from cacheon.chain.publication import WorkerBundlePublication
         from cacheon.eval.b300_remote_qualification_adapter import (
             B300RemoteQualificationAdapter,
             B300WorkerBundleResolver,
         )
+        from cacheon.eval.qualification_continuation import (
+            QualificationContinuationStore,
+        )
 
-        if type(publication) is not WorkerBundlePublication:
-            raise AdapterError("qualification publication is not exactly typed")
+        if (
+            type(publication) is not WorkerBundlePublication
+            or type(continuation_store) is not QualificationContinuationStore
+        ):
+            raise AdapterError(
+                "qualification publication or continuation store is not exactly typed"
+            )
         return B300RemoteQualificationAdapter(
             self.deployment,
             self.construction,
             self.readiness,
             B300WorkerBundleResolver((publication,)),
+            continuation_store,
         )
 
 
@@ -413,6 +426,20 @@ class AdapterRuntime:
                 raise AdapterError(
                     "qualification capabilities are not exactly typed"
                 )
+        qualification_enabled = (
+            qualification_commission is not None
+            or qualification_capabilities is not None
+        )
+        if qualification_enabled:
+            from cacheon.eval.qualification_continuation import (
+                QualificationContinuationStore,
+            )
+
+            qualification_continuation_store = QualificationContinuationStore(
+                paths.continuation_root
+            )
+        else:
+            qualification_continuation_store = None
         registration = verify_registration(load_json(paths.registration))
         ready = verify_ready_receipt(load_json(paths.ready_receipt))
         if ready["receipt_digest"] != registration["ready_receipt_digest"]:
@@ -444,6 +471,7 @@ class AdapterRuntime:
 
             self.worker = build_commissioned_b300_screen_worker(registration, ready)
             self.qualification_commission = qualification_commission
+        self.qualification_continuation_store = qualification_continuation_store
         self.closed = False
 
     def verify_current(self) -> None:
@@ -528,7 +556,10 @@ def run_with_runtime(
                 candidates[0]["publication"],
                 runtime.paths.publication_root,
             )
-            qualification_adapter = qualification_commission.adapter_for(publication)
+            qualification_adapter = qualification_commission.adapter_for(
+                publication,
+                runtime.qualification_continuation_store,
+            )
         else:
             lease_value = outer["lease"]
             lease = EvaluationLease(
@@ -792,6 +823,7 @@ def _adapter_paths(args: argparse.Namespace) -> AdapterPaths:
         publication_root=Path(args.publication_root),
         processing_root=Path(args.processing_root),
         results_root=Path(args.results_root),
+        continuation_root=Path(args.continuation_root),
     )
 
 
@@ -804,6 +836,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publication-root", required=True)
     parser.add_argument("--processing-root", required=True)
     parser.add_argument("--results-root", required=True)
+    parser.add_argument("--continuation-root", required=True)
     parser.add_argument("--request-dir")
     parser.add_argument("--result-dir")
     parser.add_argument(

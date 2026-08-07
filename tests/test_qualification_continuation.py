@@ -295,9 +295,12 @@ class _TypedExecutor:
         )
 
 
-def _scope(tmp_path: Path, *, source: str = "source"):
+def _scope(
+    tmp_path: Path, *, request: str = "request", source: str = "source"
+):
     store = QualificationContinuationStore(tmp_path / "continuation")
     return store.scope(
+        request_digest=_d(request),
         authority_digest=_d("qualification-authority"), source_digest=_d(source)
     )
 
@@ -354,7 +357,7 @@ def test_record_files_reject_tamper_symlink_and_foreign_identity(
     forged["source_digest"] = _d("another-source")
     body = {key: forged[key] for key in forged if key != "record_digest"}
     forged["record_digest"] = canonical_digest(
-        "cacheon.eval.qualification-continuation-record.v1", body
+        "cacheon.eval.qualification-continuation-record.v2", body
     )
     record_path.write_bytes(canonical_json_bytes(forged))
     with pytest.raises(
@@ -375,6 +378,38 @@ def test_record_files_reject_tamper_symlink_and_foreign_identity(
     record_path.symlink_to(continuation.directory / "target.json")
     with pytest.raises(QualificationContinuationError, match="regular file"):
         continuation.load_final()
+
+
+def test_request_binding_reopens_exact_checkpoint_and_isolates_other_request(
+    tmp_path: Path,
+) -> None:
+    first = _scope(tmp_path, request="request-one")
+    reference = _final_ref("request-one-final")
+    first.record_final(reference)
+
+    reopened = _scope(tmp_path, request="request-one")
+    second = _scope(tmp_path, request="request-two")
+    assert reopened.directory == first.directory
+    assert reopened.load_final() == reference
+    assert second.directory != first.directory
+    assert second.load_final() is None
+
+    (second.directory / "final.json").write_bytes(
+        (first.directory / "final.json").read_bytes()
+    )
+    with pytest.raises(
+        QualificationContinuationError, match="names another sealed identity"
+    ):
+        second.load_final()
+
+    store = QualificationContinuationStore(tmp_path / "missing-request")
+    with pytest.raises(
+        QualificationContinuationError, match="authenticated request digest"
+    ):
+        store.scope(
+            authority_digest=_d("qualification-authority"),
+            source_digest=_d("source"),
+        )
 
 
 def test_marginal_speed_record_reopens_only_against_its_sealed_runtime(
@@ -409,7 +444,7 @@ def test_marginal_speed_record_reopens_only_against_its_sealed_runtime(
     forged["payload"]["candidates"][0] = forged["payload"]["baseline_before"]
     body = {key: forged[key] for key in forged if key != "record_digest"}
     forged["record_digest"] = canonical_digest(
-        "cacheon.eval.qualification-continuation-record.v1", body
+            "cacheon.eval.qualification-continuation-record.v2", body
     )
     record_path.chmod(0o600)
     record_path.write_bytes(canonical_json_bytes(forged))
