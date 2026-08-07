@@ -76,6 +76,8 @@ def test_derivation_changes_only_graph_config_launch_and_preflight(tmp_path) -> 
 
     assert not charged.engine_config.disable_cuda_graph
     assert eager.engine_config.disable_cuda_graph
+    assert eager.engine_config.digest != charged.engine_config.digest
+    assert eager.expected_preflight.digest != charged.expected_preflight.digest
     assert authority.launch.digest != authority.charged_launch.digest
     assert authority.binding == authority.charged_binding
     assert authority.binding.materialized_tree_root == (
