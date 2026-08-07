@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,6 +69,12 @@ from cacheon.stack_identity import (
 
 
 RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
+RESIDENT_COUNT_QUALITY_CHECKPOINT_SCHEMA = (
+    "cacheon.eval.resident-count-quality-checkpoint.v2"
+)
+RESIDENT_COUNT_QUALITY_PAYLOAD_SCHEMA = (
+    "cacheon.eval.resident-count-quality-continuation-payload.v2"
+)
 _STAGES = ("speed", "resident_count", "quality", "final")
 
 
@@ -110,26 +117,42 @@ class QualificationContinuationError(RuntimeError):
 
 @dataclass(frozen=True)
 class ResidentCountQualityCheckpoint:
-    """Durable bindings for one completed resident count observation."""
+    """Artifact and authority bindings for one completed resident count run."""
 
+    raw_execution_evidence: EvidenceArtifactRef
+    raw_execution_evidence_semantic_digest: str
     candidate_observation: EvidenceArtifactRef
     candidate_observation_semantic_digest: str
     execution_plan_digest: str
     fixed_stock_authority_digest: str
+    pair_binding_digest: str
+    schema: str = RESIDENT_COUNT_QUALITY_CHECKPOINT_SCHEMA
 
     def __post_init__(self) -> None:
-        if type(self.candidate_observation) is not EvidenceArtifactRef:
+        if self.schema != RESIDENT_COUNT_QUALITY_CHECKPOINT_SCHEMA:
             raise QualificationContinuationError(
-                "resident count candidate observation is not an exact "
-                "evidence reference"
+                "resident count quality checkpoint schema is unsupported"
             )
         for field, value in (
+            ("raw execution evidence", self.raw_execution_evidence),
+            ("candidate observation", self.candidate_observation),
+        ):
+            if type(value) is not EvidenceArtifactRef:
+                raise QualificationContinuationError(
+                    f"resident count {field} is not an exact evidence reference"
+                )
+        for field, value in (
+            (
+                "raw execution evidence semantic digest",
+                self.raw_execution_evidence_semantic_digest,
+            ),
             (
                 "candidate observation semantic digest",
                 self.candidate_observation_semantic_digest,
             ),
             ("resident count execution-plan digest", self.execution_plan_digest),
             ("fixed-stock authority digest", self.fixed_stock_authority_digest),
+            ("resident pair binding digest", self.pair_binding_digest),
         ):
             if type(value) is not str:
                 raise QualificationContinuationError(f"{field} is not exactly str")
@@ -261,7 +284,9 @@ class QualificationContinuation:
             raise QualificationContinuationError(
                 f"continuation {stage} record already exists with other content"
             )
-        temporary = self.directory / f".{stage}.tmp"
+        temporary = self.directory / (
+            f".{stage}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        )
         descriptor = os.open(
             temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
         )
@@ -271,7 +296,17 @@ class QualificationContinuation:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.chmod(temporary, 0o400)
-            os.replace(temporary, final)
+            try:
+                os.link(temporary, final, follow_symlinks=False)
+            except FileExistsError:
+                if final.is_symlink() or not final.is_file():
+                    raise QualificationContinuationError(
+                        f"continuation {stage} record is not a regular file"
+                    ) from None
+                if final.read_bytes() != encoded:
+                    raise QualificationContinuationError(
+                        f"continuation {stage} record already exists with other content"
+                    ) from None
             directory_fd = os.open(self.directory, os.O_RDONLY)
             try:
                 os.fsync(directory_fd)
@@ -548,6 +583,7 @@ class QualificationContinuation:
             "resident_count",
             {
                 "mode": "resident_count",
+                "schema": RESIDENT_COUNT_QUALITY_PAYLOAD_SCHEMA,
                 "checkpoint": self._codec.encode(value),
             },
         )
@@ -561,8 +597,9 @@ class QualificationContinuation:
             return None
         if (
             type(payload) is not dict
-            or set(payload) != {"checkpoint", "mode"}
+            or set(payload) != {"checkpoint", "mode", "schema"}
             or payload.get("mode") != "resident_count"
+            or payload.get("schema") != RESIDENT_COUNT_QUALITY_PAYLOAD_SCHEMA
         ):
             raise QualificationContinuationError(
                 "quality continuation record is not the resident count shape"
@@ -707,5 +744,7 @@ __all__ = [
     "QualificationContinuationStore",
     "QualityContinuation",
     "RECORD_SCHEMA",
+    "RESIDENT_COUNT_QUALITY_CHECKPOINT_SCHEMA",
+    "RESIDENT_COUNT_QUALITY_PAYLOAD_SCHEMA",
     "ResidentCountQualityCheckpoint",
 ]

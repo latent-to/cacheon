@@ -31,13 +31,18 @@ def _digest(label: str) -> str:
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
 
 
-def _reference(label: str = "candidate-observation") -> EvidenceArtifactRef:
+def _reference(
+    label: str = "candidate-observation",
+    *,
+    domain: str = "cacheon.resident-count-observation",
+    schema: str = "cacheon.resident-count-observation.v1",
+) -> EvidenceArtifactRef:
     return EvidenceArtifactRef(
-        domain="cacheon.resident-count-observation",
+        domain=domain,
         sha256=_digest(label),
         size=17,
         media_type="application/json",
-        schema="cacheon.resident-count-observation.v1",
+        schema=schema,
     )
 
 
@@ -45,14 +50,24 @@ def _checkpoint(
     *,
     observation: str = "candidate-observation",
     semantic: str = "candidate-observation-semantic",
+    raw: str = "raw-execution-evidence",
+    raw_semantic: str = "raw-execution-evidence-semantic",
     plan: str = "resident-count-execution-plan",
     stock: str = "fixed-stock-authority",
+    pair: str = "resident-pair-binding",
 ) -> ResidentCountQualityCheckpoint:
     return ResidentCountQualityCheckpoint(
+        raw_execution_evidence=_reference(
+            raw,
+            domain="cacheon.resident-count-execution",
+            schema="cacheon.resident-count-execution.v1",
+        ),
+        raw_execution_evidence_semantic_digest=_digest(raw_semantic),
         candidate_observation=_reference(observation),
         candidate_observation_semantic_digest=_digest(semantic),
         execution_plan_digest=_digest(plan),
         fixed_stock_authority_digest=_digest(stock),
+        pair_binding_digest=_digest(pair),
     )
 
 
@@ -147,24 +162,33 @@ def test_checkpoint_constructor_rejects_untyped_and_noncanonical_fields() -> Non
 
     with pytest.raises(QualificationContinuationError, match="evidence reference"):
         ResidentCountQualityCheckpoint(  # type: ignore[arg-type]
+            raw_execution_evidence=reference,
+            raw_execution_evidence_semantic_digest=digest,
             candidate_observation=reference.to_dict(),
             candidate_observation_semantic_digest=digest,
             execution_plan_digest=digest,
             fixed_stock_authority_digest=digest,
+            pair_binding_digest=digest,
         )
     with pytest.raises(QualificationContinuationError, match="exactly str"):
         ResidentCountQualityCheckpoint(  # type: ignore[arg-type]
+            raw_execution_evidence=reference,
+            raw_execution_evidence_semantic_digest=digest,
             candidate_observation=reference,
             candidate_observation_semantic_digest=1,
             execution_plan_digest=digest,
             fixed_stock_authority_digest=digest,
+            pair_binding_digest=digest,
         )
     with pytest.raises(QualificationContinuationError, match="lowercase 64-hex"):
         ResidentCountQualityCheckpoint(
+            raw_execution_evidence=reference,
+            raw_execution_evidence_semantic_digest=digest,
             candidate_observation=reference,
             candidate_observation_semantic_digest=digest,
             execution_plan_digest="F" * 64,
             fixed_stock_authority_digest=digest,
+            pair_binding_digest=digest,
         )
 
 
@@ -321,22 +345,27 @@ def test_serialized_checkpoint_is_closed_path_free_and_score_free(
     encoded = payload["checkpoint"]
     value = encoded["value"]
 
-    assert set(payload) == {"checkpoint", "mode"}
+    assert set(payload) == {"checkpoint", "mode", "schema"}
     assert payload["mode"] == "resident_count"
     assert set(encoded) == {"type", "value"}
     assert set(value) == {
+        "raw_execution_evidence",
+        "raw_execution_evidence_semantic_digest",
         "candidate_observation",
         "candidate_observation_semantic_digest",
         "execution_plan_digest",
         "fixed_stock_authority_digest",
-    }
-    assert set(value["candidate_observation"]) == {
-        "domain",
-        "media_type",
+        "pair_binding_digest",
         "schema",
-        "sha256",
-        "size",
     }
+    for field in ("raw_execution_evidence", "candidate_observation"):
+        assert set(value[field]) == {
+            "domain",
+            "media_type",
+            "schema",
+            "sha256",
+            "size",
+        }
 
     text = _resident_count_path(continuation).read_text().lower()
     for forbidden in ("path", "target", "model", "reservation", "correct", "score"):
@@ -351,4 +380,4 @@ def test_serialized_checkpoint_is_closed_path_free_and_score_free(
             return [number for child in item for number in integers(child)]
         return []
 
-    assert integers(record) == [17]
+    assert integers(record) == [17, 17]
