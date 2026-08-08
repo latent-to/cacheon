@@ -39,13 +39,21 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteQualificationProduct,
     capture_remote_qualification_product,
 )
+from cacheon.chain.remote_qualification_hold import (
+    RemoteQualificationHoldProduct,
+    capture_remote_qualification_hold,
+)
 from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorker,
+    B300MainnetWorkerError,
     B300RemoteQualificationRun,
 )
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
     B300QualificationDeployment,
+)
+from cacheon.eval.b300_qualification_graph_gate import (
+    B300QualificationGraphGateHold,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
@@ -320,6 +328,43 @@ def _qualification_evidence_references(
     return ordered
 
 
+def _merge_evidence_references(
+    batch_references: tuple[EvidenceArtifactRef, ...],
+    supporting_references: tuple[EvidenceArtifactRef, ...],
+) -> tuple[EvidenceArtifactRef, ...]:
+    """Merge worker-retained graph refs with the typed batch inventory."""
+
+    if (
+        type(batch_references) is not tuple
+        or type(supporting_references) is not tuple
+        or any(
+            type(row) is not EvidenceArtifactRef
+            for row in (*batch_references, *supporting_references)
+        )
+    ):
+        raise B300RemoteQualificationAdapterError(
+            "qualification supporting evidence references are not exactly typed"
+        )
+    unique = {row: row for row in (*batch_references, *supporting_references)}
+    ordered = tuple(
+        sorted(
+            unique,
+            key=lambda row: (
+                row.domain,
+                row.sha256,
+                row.media_type,
+                row.schema,
+                row.size,
+            ),
+        )
+    )
+    if len({row.sha256 for row in ordered}) != len(ordered):
+        raise B300RemoteQualificationAdapterError(
+            "qualification evidence reused one digest with conflicting metadata"
+        )
+    return ordered
+
+
 @dataclass(frozen=True)
 class B300RemoteQualificationAdapter:
     """One fixed path-free adapter for a sealed B300 qualification deployment."""
@@ -388,6 +433,16 @@ class B300RemoteQualificationAdapter:
             raise B300RemoteQualificationAdapterError(
                 "qualification worker differs from the fixed deployment owner"
             )
+        try:
+            worker._bind_remote_qualification_graph_gate_root(
+                self.construction.evidence_root
+            )
+        except B300MainnetWorkerError as exc:
+            if owns_worker:
+                worker.close()
+            raise B300RemoteQualificationAdapterError(
+                "qualification graph gate differs from the fixed deployment"
+            ) from exc
         object.__setattr__(self, "worker", worker)
         object.__setattr__(self, "_owns_worker", owns_worker)
 
@@ -424,7 +479,10 @@ class B300RemoteQualificationAdapter:
             },
         )
 
-    def run(self, request: RemoteEvaluationRequest) -> RemoteQualificationProduct:
+    def run(
+        self,
+        request: RemoteEvaluationRequest,
+    ) -> RemoteQualificationProduct | RemoteQualificationHoldProduct:
         """Execute one already-authenticated closed-v2 qualification request."""
 
         if self._closed:
@@ -540,6 +598,22 @@ class B300RemoteQualificationAdapter:
             continuation_store=self.continuation_store,
             request_digest=request.digest,
         )
+        if type(result) is B300QualificationGraphGateHold:
+            try:
+                hold = capture_remote_qualification_hold(
+                    request,
+                    reason=result.reason,
+                    diagnostic_digest=result.diagnostic_digest,
+                )
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise B300RemoteQualificationAdapterError(
+                    f"qualification graph HOLD could not be captured: {exc}"
+                ) from exc
+            if type(hold) is not RemoteQualificationHoldProduct:
+                raise B300RemoteQualificationAdapterError(
+                    "qualification graph HOLD capture returned an untyped product"
+                )
+            return hold
         if (
             type(result) is not B300RemoteQualificationRun
             or result.run.lease != lease
@@ -562,7 +636,10 @@ class B300RemoteQualificationAdapter:
             raise B300RemoteQualificationAdapterError(
                 "qualification worker returned an untyped batch"
             )
-        evidence_references = _qualification_evidence_references(batch)
+        evidence_references = _merge_evidence_references(
+            _qualification_evidence_references(batch),
+            result.supporting_evidence_refs,
+        )
         try:
             product = capture_remote_qualification_product(
                 batch=batch,
