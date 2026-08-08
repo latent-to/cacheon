@@ -12,6 +12,7 @@ from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.resident_evaluation_pair import (
     ResidentEvaluationEpochFatal,
+    ResidentLaneRequest,
     ResidentEvaluationPair,
     ResidentEvaluationPairError,
     ResidentEvaluationPairFailed,
@@ -233,6 +234,216 @@ def test_lane_admissions_are_pair_global_and_never_overlap() -> None:
     assert entered_b.is_set()
     assert len(outcomes) == 2 and all(result.ok for result in outcomes)
     pair.close()
+
+
+def test_run_lanes_overlaps_owners_enqueues_both_then_returns_a_b(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pair, _, _ = _pair()
+    barrier = threading.Barrier(2)
+    b_completed = threading.Event()
+    observations: list[tuple[str, str, object, object]] = []
+    observation_lock = threading.Lock()
+
+    for lane_id in ("A", "B"):
+        lane_queue = pair._lanes[lane_id].work  # type: ignore[attr-defined]
+        original_put = lane_queue.put
+
+        def observed_put(
+            item, block=True, timeout=None, *, lane_id=lane_id, original=original_put
+        ):
+            if hasattr(item, "evaluation_id"):
+                with observation_lock:
+                    observations.append(
+                        ("enqueue", lane_id, item.evaluation_id, item.deadline)
+                    )
+            return original(item, block=block, timeout=timeout)
+
+        monkeypatch.setattr(lane_queue, "put", observed_put)
+
+    original_await = pair._await  # type: ignore[attr-defined]
+
+    def observed_await(work):
+        with observation_lock:
+            observations.append(
+                ("await", "?", work.evaluation_id, work.deadline)
+            )
+        return original_await(work)
+
+    monkeypatch.setattr(pair, "_await", observed_await)
+    original_complete = pair._complete_result  # type: ignore[attr-defined]
+
+    def observed_complete(work, result):
+        original_complete(work, result)
+        if result.request_slice.lane_id == "B":
+            b_completed.set()
+
+    monkeypatch.setattr(pair, "_complete_result", observed_complete)
+
+    def operation_a(handle):
+        barrier.wait(2.0)
+        assert b_completed.wait(2.0)
+        return "A", handle.identity
+
+    def operation_b(handle):
+        barrier.wait(2.0)
+        return "B", handle.identity
+
+    result_a, result_b = pair.run_lanes(
+        ResidentLaneRequest(DIGEST_A, operation_a, 0, 0),
+        ResidentLaneRequest(DIGEST_B, operation_b, 0, 0),
+    )
+
+    assert result_a.ok and result_b.ok
+    assert result_a.value == ("A", pair.identities[0])
+    assert result_b.value == ("B", pair.identities[1])
+    assert [item[:2] for item in observations[:4]] == [
+        ("enqueue", "A"),
+        ("enqueue", "B"),
+        ("await", "?"),
+        ("await", "?"),
+    ]
+    enqueued = observations[:2]
+    assert enqueued[0][2:] == enqueued[1][2:]
+    assert (
+        result_a.request_slice.evaluation_id
+        == result_b.request_slice.evaluation_id
+        == enqueued[0][2]
+    )
+    assert result_a.request_slice.request_id != result_b.request_slice.request_id
+    pair.close()
+
+
+def test_run_lanes_validates_both_before_admitting_either() -> None:
+    pair, _, _ = _pair()
+    invoked = threading.Event()
+
+    with pytest.raises(ResidentEvaluationPairError, match="count is invalid"):
+        pair.run_lanes(
+            ResidentLaneRequest(DIGEST_A, lambda _handle: invoked.set(), 0, 0),
+            ResidentLaneRequest(DIGEST_B, lambda _handle: None, -1, 0),
+        )
+
+    assert not invoked.is_set()
+    assert pair.request_history == ()
+    assert pair.fatal_error is None
+    pair.close()
+
+
+def test_run_lanes_one_half_failure_latches_without_half_success() -> None:
+    pair, _, _ = _pair()
+
+    def fail(_handle):
+        raise ValueError("lane B failed")
+
+    with pytest.raises(ResidentEvaluationPairFailed, match="lane B failed"):
+        pair.run_lanes(
+            ResidentLaneRequest(DIGEST_A, lambda _handle: "unpublished", 0, 0),
+            ResidentLaneRequest(DIGEST_B, fail, 0, 0),
+        )
+
+    assert pair.fatal_error is not None
+    assert len(pair.request_history) == 2
+    assert sum(result.ok for result in pair.request_history) == 1
+    with pytest.raises(ResidentEvaluationPairFailed, match="lane B failed"):
+        pair.run_lane(
+            "A",
+            DIGEST_A,
+            lambda _handle: None,
+            expected_batch_count=0,
+            expected_swap_count=0,
+        )
+    pair.close()
+
+
+def test_run_lanes_partial_enqueue_latches_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pair, _, _ = _pair()
+    invoked = threading.Event()
+    lane_b_queue = pair._lanes["B"].work  # type: ignore[attr-defined]
+    original_put = lane_b_queue.put
+
+    def fail_work_put(item, block=True, timeout=None):
+        if hasattr(item, "evaluation_id"):
+            raise RuntimeError("lane B queue rejected work")
+        return original_put(item, block=block, timeout=timeout)
+
+    monkeypatch.setattr(lane_b_queue, "put", fail_work_put)
+    with pytest.raises(ResidentEvaluationPairFailed, match="admission failed"):
+        pair.run_lanes(
+            ResidentLaneRequest(DIGEST_A, lambda _handle: invoked.set(), 0, 0),
+            ResidentLaneRequest(DIGEST_B, lambda _handle: None, 0, 0),
+        )
+
+    assert pair.fatal_error is not None
+    assert not invoked.is_set()
+    with pytest.raises(ResidentEvaluationPairFailed, match="queue rejected work"):
+        pair.run_lane(
+            "B",
+            DIGEST_B,
+            lambda _handle: None,
+            expected_batch_count=0,
+            expected_swap_count=0,
+        )
+    pair.close()
+
+
+def test_run_lanes_timeout_uses_one_shared_wall_and_revokes_both() -> None:
+    factory_a, factory_b = FakeFactory("a" * 32), FakeFactory("b" * 32)
+    pair = ResidentEvaluationPair(
+        factory_a,
+        factory_b,
+        start_timeout_s=5.0,
+        request_timeout_s=0.2,
+        close_timeout_s=5.0,
+    )
+    pair.start()
+    release = threading.Event()
+    barrier = threading.Barrier(2)
+    handles = []
+
+    def blocked(handle):
+        handles.append(handle)
+        barrier.wait(2.0)
+        assert release.wait(5.0)
+
+    started = time.monotonic()
+    with pytest.raises(ResidentEvaluationPairFailed, match="timed out"):
+        pair.run_lanes(
+            ResidentLaneRequest(DIGEST_A, blocked, 0, 0),
+            ResidentLaneRequest(DIGEST_B, blocked, 0, 0),
+        )
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.35
+    assert len(handles) == 2
+    assert pair.fatal_error is not None
+    for handle in handles:
+        with pytest.raises(ResidentEvaluationPairError, match="revoked"):
+            handle.identity
+    release.set()
+    pair.close()
+
+
+def test_three_run_lanes_calls_reuse_lifetimes_until_idempotent_close() -> None:
+    pair, factory_a, factory_b = _pair()
+    identities = pair.identities
+
+    for _ in range(3):
+        result_a, result_b = pair.run_lanes(
+            ResidentLaneRequest(DIGEST_A, lambda handle: handle.identity, 0, 0),
+            ResidentLaneRequest(DIGEST_B, lambda handle: handle.identity, 0, 0),
+        )
+        assert (result_a.value, result_b.value) == identities
+
+    assert factory_a.calls == factory_b.calls == 1
+    assert factory_a.sessions[0].finish_calls == 0
+    assert factory_b.sessions[0].finish_calls == 0
+    retirement = pair.close()
+    assert retirement is not None and pair.close() is retirement
+    assert factory_a.sessions[0].finish_calls == 1
+    assert factory_b.sessions[0].finish_calls == 1
 
 
 def test_local_operation_failure_is_returned_without_reload() -> None:

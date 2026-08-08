@@ -21,11 +21,13 @@ from cacheon.chain.evaluation_leases import (
     require_evaluation_owner,
 )
 from cacheon.chain.intake import (
-    FinalizedIntakeStore,
     IntakeError,
     IntakePolicy,
     IntakeScope,
     is_lock_collision,
+)
+from cacheon.chain.recoverable_intake import (
+    RecoverableFinalizedIntakeStore as FinalizedIntakeStore,
 )
 from cacheon.stack_identity import require_sha256_hex
 

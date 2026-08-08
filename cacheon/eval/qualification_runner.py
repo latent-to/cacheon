@@ -41,6 +41,12 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
+from cacheon.eval.qualification_continuation import (
+    QualificationContinuation, QualificationContinuationError, QualityContinuation,
+)
+from cacheon.eval.qualification_continuation_runner import (
+    QualificationContinuationRunnerSeams, run_continuation_quality_stage,
+)
 from cacheon.eval.oci_reference_session import ReferenceSessionPlan
 from cacheon.eval.oci_session_protocol import (
     AuditReceiptFacts, EngineSessionConfig, RuntimePreflightFacts, SlotAuditPolicy,
@@ -68,6 +74,9 @@ from cacheon.eval.reference_quality import (
     ReferenceQualityRawArtifact, ReferenceQualityRawBinding, ReferenceQualityVerdict,
     distribution_from_f32_logprobs, reopen_reference_quality_evidence,
     score_reference_quality, target_nll_from_f32,
+)
+from cacheon.eval.resident_audit_authority import (
+    ResidentAuditAuthorityError, ResidentAuditExecutionAuthority,
 )
 from cacheon.eval.scoring import (
     ChargedExecutionRate, MarginalSpeedProjection, _projection_digest,
@@ -371,7 +380,7 @@ class CausalQualificationInput:
         default_factory=DEFAULT_SPEED_EVIDENCE_POLICY
     )
     resident_speed_plan: ResidentCrossoverPlan | None = None
-    resident_audit_plan: SessionExecutionPlan | None = None
+    resident_audit_plan: ResidentAuditExecutionAuthority | None = None
     speed_stage_disposition: SpeedStageDisposition = SpeedStageDisposition.TERMINAL
 
     def __post_init__(self) -> None:
@@ -445,7 +454,7 @@ class CausalQualificationInput:
             )
         resident_audit = self.resident_audit_plan
         if (self.speed_evidence_policy.version == 3) != (
-            type(resident_audit) is SessionExecutionPlan
+            type(resident_audit) is ResidentAuditExecutionAuthority
         ):
             raise QualificationRunnerError(
                 "resident audit plan coverage differs from speed policy"
@@ -554,18 +563,16 @@ class CausalQualificationInput:
                     "resident speed plan differs from qualification authority"
                 )
             if (
-                resident_audit.launch_digest != prepared_candidate.launch.digest
-                or resident_audit.expected_engine_config_digest
-                != prepared_candidate.session_plan.expected_engine_config_digest
-                or resident_audit.engine_config
-                != prepared_candidate.session_plan.engine_config
-                or resident_audit.expected_preflight
-                != prepared_candidate.session_plan.expected_preflight
-                or resident_audit.expected_discovery_overlay_identity_digest
-                != prepared_candidate.session_plan.expected_discovery_overlay_identity_digest
+                resident_audit.charged_launch != prepared_candidate.launch
+                or resident_audit.charged_binding != prepared_candidate.binding.launch_binding
+                or resident_audit.charged_plan != prepared_candidate.session_plan
                 or resident_audit.audit_policy != audit_policies[0]
-                or marginal_workload_digest(resident_audit)
-                == marginal_workload_digest(prepared_candidate.session_plan)
+                or resident_audit.executor_namespace_digest
+                != resident.candidate.executor_namespace_digest
+                or resident_audit.runtime_resource_policy_digest
+                != resident.candidate.runtime_resource_policy_digest
+                or resident_audit.device_configuration_digest
+                != resident.candidate.device_configuration_digest
             ):
                 raise QualificationRunnerError(
                     "resident audit plan differs from qualification authority"
@@ -1647,20 +1654,21 @@ class CandidateQualificationReport:
         ):
             raise QualificationRunnerError("candidate evidence witness is not typed")
         if _speed_has_repeat(self.speed_witness) != (
-            type(self.repeat_quality) is RepeatQualityWitness
-        ):
+            type(self.repeat_quality) is RepeatQualityWitness):
             raise QualificationRunnerError(
                 "candidate repeat quality coverage differs from speed policy"
             )
         expected = _aggregate_decision(
-            self.graph_decision, self.speed_decision, self.quality_decision,
-            self.audit_decision,
+            self.graph_decision, self.speed_decision, self.quality_decision, self.audit_decision,
         )
         if (
             self.audit_witness.digest != self.audit_evidence_digest
             or self.audit_witness.decision is not self.audit_decision
             or self.audit_witness.selected_delta_digest != self.selected_delta_digest
-            or self.audit_witness.candidate_launch_digest != self.candidate_launch_digest
+            or not ResidentAuditExecutionAuthority.audit_launch_matches_role(
+                self.audit_witness.candidate_launch_digest, self.candidate_launch_digest,
+                resident=type(self.speed_witness) is ResidentSpeedWitness,
+            )
             or self.audit_witness.runtime_resource_policy_digest
             != _candidate_runtime_resource_policy_digest(self.speed_witness)
             or self.decision is not expected
@@ -2579,13 +2587,18 @@ def _run_slot_audits(
 ) -> tuple[dict[str, AuditWitness], float]:
     """Run one independent eager, untimed candidate role per sealed C arm."""
 
+    resident_authority: ResidentAuditExecutionAuthority | None = None
+    retirement_cutoff: float | None = None
     if type(lifecycle) is ResidentMarginalLifecycleEvidence:
         timed_session_ids = set(lifecycle.timed_session_ids)
-        if type(value.resident_audit_plan) is not SessionExecutionPlan:
-            raise QualificationRunnerError(
-                "resident audit session lacks its sealed audit-only plan"
-            )
-        audit_plans = (value.resident_audit_plan,)
+        if type(value.resident_audit_plan) is not ResidentAuditExecutionAuthority:
+            raise QualificationRunnerError("resident audit lacks its sealed eager authority")
+        resident_authority = value.resident_audit_plan
+        audit_plans = (resident_authority.plan,)
+        retirement_cutoff = max(
+            lifecycle.crossover.baseline_quiescence.observed_monotonic_s,
+            lifecycle.crossover.candidate_quiescence.observed_monotonic_s,
+        )
     else:
         timed_session_ids = {
             lifecycle.baseline_before.session.session_id,
@@ -2622,20 +2635,35 @@ def _run_slot_audits(
             raise QualificationRunnerError(
                 "slot audit execution plan differs from its sealed policy"
             )
+        launch = prepared.launch
+        binding = prepared.binding.launch_binding
+        if resident_authority is not None:
+            try:
+                resident_authority.require_executor(executor)
+            except ResidentAuditAuthorityError as exc:
+                raise QualificationRunnerError(str(exc)) from None
+            launch = resident_authority.launch
+            binding = resident_authority.binding
         execution = executor.execute(
-            prepared.launch,
-            prepared.binding.launch_binding,
+            launch,
+            binding,
             value.model_mount,
             audit_plan,
             deadline=deadline,
         )
         if (
-            execution.session.session_id in timed_session_ids
+            execution.launch_digest != launch.digest
+            or execution.session.session_id in timed_session_ids
             or execution.resource_policy_digest
             != value.expected_runtime_resource_policy_digest
+            or (
+                retirement_cutoff is not None
+                and execution.device_receipts[0].started_monotonic_s
+                < retirement_cutoff
+            )
         ):
             raise QualificationRunnerError(
-                "slot audit execution reused a timed role or changed runtime policy"
+                "slot audit reused a pair role, preceded retirement, or changed authority"
             )
         witness = AuditWitness.from_execution(
             execution,
@@ -2703,31 +2731,6 @@ def _discovery_report_reason(
     return "qualified"
 
 
-def _audit_session_plan_digest(plan: SessionExecutionPlan) -> str:
-    """Bind every host-owned input of one fresh, untimed audit session."""
-
-    if type(plan) is not SessionExecutionPlan or plan.audit_policy is None:
-        raise QualificationRunnerError("resident audit plan is not exact and armed")
-    return canonical_digest(
-        "cacheon.qualification.audit-session-plan.v1",
-        {
-            "audit_policy": plan.audit_policy.digest,
-            "conditioning_count": plan.conditioning_count,
-            "discovery_overlay_identity": (
-                plan.expected_discovery_overlay_identity_digest
-            ),
-            "engine_config": plan.expected_engine_config_digest,
-            "launch": plan.launch_digest,
-            "max_new_tokens": plan.max_new_tokens,
-            "preflight": plan.expected_preflight.digest,
-            "prompt_batches": plan.prompt_batches,
-            "temperature": format(plan.temperature, ".17g"),
-            "top_logprobs_num": plan.top_logprobs_num,
-            "warmup_count": plan.warmup_count,
-        },
-    )
-
-
 def qualification_authority_digest(value: CausalQualificationInput) -> str:
     """Bind the durable attempt to all validator-owned inputs available before B."""
 
@@ -2766,9 +2769,7 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
             assert value.resident_speed_plan is not None
             assert value.resident_audit_plan is not None
             payload["resident_speed_plan"] = value.resident_speed_plan.digest
-            payload["resident_audit_plan"] = _audit_session_plan_digest(
-                value.resident_audit_plan
-            )
+            payload["resident_audit_authority"] = value.resident_audit_plan.digest
             if (
                 value.speed_stage_disposition
                 is SpeedStageDisposition.CALIBRATION_OBSERVATION
@@ -2777,13 +2778,13 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
                     value.speed_stage_disposition.value
                 )
                 return canonical_digest(
-                    "cacheon.qualification.causal-authority.v3.audit-v1."
+                    "cacheon.qualification.causal-authority.v3.eager-audit-v2."
                     "calibration-observation-v1",
                     payload,
                 )
         return canonical_digest(
             (
-                "cacheon.qualification.causal-authority.v3.audit-v1"
+                "cacheon.qualification.causal-authority.v3.eager-audit-v2"
                 if value.speed_evidence_policy.version == 3
                 else "cacheon.qualification.causal-authority.v2.audit-v1"
             ),
@@ -2923,6 +2924,7 @@ def reopen_qualification_stage_exit(
         if (
             expected.speed_evidence_policy != SpeedEvidencePolicy.resident()
             or type(expected.resident_speed_plan) is not ResidentCrossoverPlan
+            or type(expected.resident_audit_plan) is not ResidentAuditExecutionAuthority
             or len(expected.candidates) != 1
             or type(reference) is not EvidenceArtifactRef
             or (
@@ -3001,7 +3003,7 @@ def reopen_qualification_stage_exit(
                 or type(audit) is not AuditWitness
                 or audit.policy != policy
                 or audit.selected_delta_digest != result.selected_delta_digest
-                or audit.candidate_launch_digest != plan.candidate.launch.digest
+                or audit.candidate_launch_digest != expected.resident_audit_plan.launch.digest
                 or audit.runtime_resource_policy_digest
                 != expected.expected_runtime_resource_policy_digest
                 or audit.session_id
@@ -3234,7 +3236,11 @@ def reopen_causal_qualification(
                 audit_witness.policy != audit_policy
                 or audit_witness.selected_delta_digest
                 != authority.selected_delta_digest
-                or audit_witness.candidate_launch_digest != prepared.launch.digest
+                or audit_witness.candidate_launch_digest != (
+                    expected.resident_audit_plan.launch.digest
+                    if expected.speed_evidence_policy.version == 3
+                    else prepared.launch.digest
+                )
                 or audit_witness.runtime_resource_policy_digest
                 != expected.expected_runtime_resource_policy_digest
                 or audit_witness.session_id in {row.session_id for row in rates}
@@ -3487,11 +3493,17 @@ def run_causal_qualification(
     hidden_judge: HiddenJudge,
     deadline: float,
     id_factory: Callable[[], str] | None = None,
+    continuation: QualificationContinuation | None = None,
 ) -> EvidenceArtifactRef:
     """Run one complete causal cohort or raise without a partial PASS.
 
     The speed read shape comes only from ``value.speed_evidence_policy`` so an
     operator cannot silently change the estimator after sealing intake authority.
+
+    With a ``continuation`` scope, authenticated durable products are written
+    after B/C/B-prime, after pristine T, and after the final product; on a
+    later call with the same sealed identity only the missing downstream work
+    runs — never the already-durable expensive stage.
     """
 
     resident_mode = value.speed_evidence_policy.version == 3
@@ -3509,6 +3521,18 @@ def run_causal_qualification(
         or (not resident_mode and resident_baseline_executor is not None)
     ):
         raise QualificationRunnerError("runner authorities are not exact and callable")
+    if continuation is not None:
+        if type(continuation) is not QualificationContinuation:
+            raise QualificationRunnerError(
+                "continuation authority is not exactly typed"
+            )
+        if (
+            continuation.authority_digest != qualification_authority_digest(value)
+            or continuation.source_digest != value.prepared.source.digest
+        ):
+            raise QualificationContinuationError(
+                "continuation identity differs from the sealed cohort"
+            )
     if isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline) or deadline <= 0:
         raise QualificationRunnerError("deadline must be finite and positive")
     make_id = id_factory or (lambda: secrets.token_hex(16))
@@ -3538,6 +3562,22 @@ def run_causal_qualification(
                 "resident qualification has no wall-clock budget"
             )
     calibration, graph_grades = _validate_pre_execution(value)
+    if continuation is not None:
+        durable_final = continuation.load_final()
+        if durable_final is not None:
+            if durable_final.domain == STAGE_EXIT_DOMAIN:
+                reopen_qualification_stage_exit(
+                    value.evidence_root, durable_final, expected=value
+                )
+            elif durable_final.domain in (ATTEMPT_DOMAIN, DISCOVERY_ATTEMPT_DOMAIN):
+                reopen_causal_qualification(
+                    value.evidence_root, durable_final, expected=value
+                )
+            else:
+                raise QualificationContinuationError(
+                    "final continuation names an unknown product domain"
+                )
+            return durable_final
     judge_cache: dict[tuple[object, ...], HiddenJudgeReceipt] = {}
 
     def judge_once(*, prompt_digest: str, output_ids: tuple[int, ...],
@@ -3549,18 +3589,32 @@ def run_causal_qualification(
                                             task_digests=task_digests)
         return judge_cache[key]
 
+    quality_state: QualityContinuation | None = (
+        None if continuation is None else continuation.load_quality()
+    )
     resident_speed_witness: ResidentSpeedWitness | None = None
     if resident_mode:
         assert resident_baseline_executor is not None
         assert value.resident_speed_plan is not None
-        try:
-            crossover = run_resident_crossover_speed(
-                value.resident_speed_plan,
-                baseline_executor=resident_baseline_executor,
-                candidate_executor=executor,
-                model_mount=value.model_mount,
-                deadline=float(deadline),
+        crossover = (
+            None if continuation is None else continuation.load_resident_speed()
+        )
+        if quality_state is not None and crossover is None:
+            raise QualificationContinuationError(
+                "quality continuation exists without its speed continuation"
             )
+        durable_speed = crossover is not None
+        try:
+            if crossover is None:
+                crossover = run_resident_crossover_speed(
+                    value.resident_speed_plan,
+                    baseline_executor=resident_baseline_executor,
+                    candidate_executor=executor,
+                    model_mount=value.model_mount,
+                    deadline=float(deadline),
+                )
+                if continuation is not None:
+                    continuation.record_resident_speed(crossover)
             lifecycle: MarginalLifecycleEvidence | ResidentMarginalLifecycleEvidence = (
                 ResidentMarginalLifecycleEvidence(
                     value.prepared,
@@ -3572,6 +3626,10 @@ def run_causal_qualification(
                 crossover, value.resident_speed_plan
             )
         except CrossoverRuntimeError as exc:
+            if durable_speed:
+                raise QualificationContinuationError(
+                    f"speed continuation does not bind the sealed plan: {exc}"
+                ) from None
             raise QualificationRunnerError(str(exc)) from None
         speed_grade, _speedup = resident_speed_witness.regrade(
             calibration,
@@ -3605,155 +3663,65 @@ def run_causal_qualification(
             reopen_qualification_stage_exit(
                 value.evidence_root, reference, expected=value
             )
+            if continuation is not None:
+                continuation.record_final(reference)
             return reference
         quality_reads = 2 if crossover.escalated else 1
     else:
         quality_reads = value.speed_evidence_policy.candidate_reads
 
-    with executor.exclusive_transaction():
-        if not resident_mode:
-            lifecycle = run_marginal_lifecycle(
-                value.prepared,
-                executor=executor,
-                model_mount=value.model_mount,
-                deadline=float(deadline),
-                candidate_reads=value.speed_evidence_policy.candidate_reads,
-            )
-        audit_started = float(executor.manager.clock())
-        audit_witnesses, audit_last_completed = _run_slot_audits(
-            value,
-            lifecycle,
-            executor=executor,
-            deadline=float(deadline),
-        )
-        audit_completed = float(executor.manager.clock())
-        if resident_mode and any(
-            row.decision is not QualificationDecision.PASS
-            for row in audit_witnesses.values()
-        ):
-            teardown = executor.prove_quiescent()
-            if teardown.observed_monotonic_s < audit_last_completed:
-                raise QualificationRunnerError(
-                    "audit-exit quiescence predates candidate teardown"
-                )
-            assert resident_speed_witness is not None
-            audit = audit_witnesses[value.candidates[0].selected_delta_digest]
-            terminal = QualificationStageExit(
-                qualification_authority_digest(value),
-                value.prepared.source.digest,
-                value.candidates[0].selected_delta_digest,
-                "audit",
-                QualificationDecision.FAIL,
-                "slot_audit_failed",
-                resident_speed_witness,
-                audit,
-                audit_started,
-                audit_completed,
-                teardown.digest,
-            )
-            reference = publish_qualification_stage_exit(
-                value.evidence_root, terminal
-            )
-            reopen_qualification_stage_exit(
-                value.evidence_root, reference, expected=value
-            )
-            return reference
-        discovery_grades: dict[str, DiscoveryExecutionGrade] = {}
-        for authority in value.candidates:
-            if type(authority) is DiscoveryCandidateQualificationAuthority:
-                discovery_grades[authority.selected_delta_digest] = (
-                    grade_discovery_execution(
-                        authority.execution_requirement, lifecycle
-                    )
-                )
-        teardown_before = executor.prove_quiescent()
-        # Bind quiescence to the FINAL executed baseline (B'' under repeat reads,
-        # B-prime otherwise) — baseline_after is mid-run in the 5-leg shape.
-        last_post = max(
-            lifecycle.final_baseline.device_receipts[-1].completed_monotonic_s,
-            audit_last_completed,
-        )
-        if teardown_before.observed_monotonic_s < last_post:
-            raise QualificationRunnerError("pre-T quiescence predates the final baseline teardown")
-        entropy = entropy_provider(value.commitment, teardown_before)
-        if type(entropy) is not SelectionEntropyReceipt:
-            raise QualificationRunnerError("entropy provider returned an untyped receipt")
-        entropy_observed = float(executor.manager.clock())
-        if not math.isfinite(entropy_observed) or entropy_observed < teardown_before.observed_monotonic_s:
-            raise QualificationRunnerError("entropy observation predates teardown")
-        selection = SelectionReceipt.reveal(
-            value.commitment,
-            secret=value.selection_secret,
-            entropy=entropy,
-            sealed_cohort_trajectory_digest=cohort_trajectory_digest(lifecycle),
-        )
-        request_plan_payload = {
-                "candidate_deltas": [row.selected_delta_digest for row in value.candidates],
-                "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
-                "reference_manifest_digest": value.candidates[0].profile.reference.digest,
-                "selection_digest": selection.digest,
-        }
-        if value.speed_evidence_policy.version != 1:
-            request_plan_payload["speed_evidence_policy"] = (
-                value.speed_evidence_policy.to_dict()
-            )
-        if resident_speed_witness is not None:
-            request_plan_payload["resident_speed_evidence"] = (
-                resident_speed_witness.evidence_digest
-            )
-        request_plan_digest = canonical_digest(
-            "cacheon.qualification.reference-request-plan",
-            request_plan_payload,
-        )
-        session_id = make_id()
-        request_rows: list[ReferenceRequest] = []
-        for authority in value.candidates:
-            for candidate_read in range(1, quality_reads + 1):
-                kwargs = {
-                    "session_id": session_id,
-                    "plan_digest": request_plan_digest,
-                    "request_id": make_id(),
-                    "nonce": make_id(),
-                    "index": len(request_rows),
-                }
-                if candidate_read == 1:
-                    # Preserve historical call/serialization behavior exactly.
-                    request = _reference_request(
-                        lifecycle, authority, selection, **kwargs
-                    )
-                else:
-                    request = _reference_request(
-                        lifecycle,
-                        authority,
-                        selection,
-                        candidate_read=candidate_read,
-                        **kwargs,
-                    )
-                request_rows.append(request)
-        requests = tuple(request_rows)
-        plan = ReferenceSessionPlan(
-            value.candidates[0].profile.reference,
-            value.pristine_stack,
-            value.reference_engine_config.digest,
-            value.reference_engine_config,
-            value.reference_preflight,
-            request_plan_digest,
-            requests,
-        )
-        reference_execution = executor.execute_reference(
-            value.pristine_launch,
-            value.pristine_binding,
-            value.model_mount,
-            plan,
-            deadline=float(deadline),
-        )
-        teardown_after = executor.prove_quiescent()
-        t_pre, t_post = reference_execution.device_receipts
-        if (
-            t_pre.started_monotonic_s < entropy_observed
-            or t_post.completed_monotonic_s > teardown_after.observed_monotonic_s
-        ):
-            raise QualificationRunnerError("pristine T does not lie between causal boundaries")
+    continuation_stage = run_continuation_quality_stage(
+        value=value,
+        executor=executor,
+        entropy_provider=entropy_provider,
+        deadline=deadline,
+        make_id=make_id,
+        continuation=continuation,
+        quality_state=quality_state,
+        resident_mode=resident_mode,
+        quality_reads=quality_reads,
+        resident_lifecycle=lifecycle if resident_mode else None,
+        resident_speed_witness=resident_speed_witness,
+        seams=QualificationContinuationRunnerSeams(
+            qualification_decision=QualificationDecision,
+            discovery_candidate_authority_type=(
+                DiscoveryCandidateQualificationAuthority
+            ),
+            qualification_stage_exit_type=QualificationStageExit,
+            quality_continuation_type=QualityContinuation,
+            selection_entropy_receipt_type=SelectionEntropyReceipt,
+            qualification_runner_error=QualificationRunnerError,
+            qualification_continuation_error=QualificationContinuationError,
+            qualification_authority_digest=qualification_authority_digest,
+            run_marginal_lifecycle=run_marginal_lifecycle,
+            run_slot_audits=_run_slot_audits,
+            grade_discovery_execution=grade_discovery_execution,
+            selection_receipt_type=SelectionReceipt,
+            cohort_trajectory_digest=cohort_trajectory_digest,
+            canonical_digest=canonical_digest,
+            reference_request=_reference_request,
+            reference_session_plan_type=ReferenceSessionPlan,
+            publish_qualification_stage_exit=publish_qualification_stage_exit,
+            reopen_qualification_stage_exit=reopen_qualification_stage_exit,
+        ),
+    )
+    if continuation_stage.terminal:
+        return continuation_stage.terminal_reference
+    lifecycle = continuation_stage.lifecycle
+    audit_witnesses = continuation_stage.audit_witnesses
+    audit_started = continuation_stage.audit_started
+    audit_completed = continuation_stage.audit_completed
+    teardown_before = continuation_stage.teardown_before
+    entropy = continuation_stage.entropy
+    entropy_observed = continuation_stage.entropy_observed
+    selection = continuation_stage.selection
+    requests = continuation_stage.requests
+    plan = continuation_stage.plan
+    reference_execution = continuation_stage.reference_execution
+    teardown_after = continuation_stage.teardown_after
+    t_pre = continuation_stage.t_pre
+    t_post = continuation_stage.t_post
+    discovery_grades = continuation_stage.discovery_grades
 
     reports = []
     exchanges = reference_execution.session.exchanges
@@ -4013,6 +3981,8 @@ def run_causal_qualification(
         attempt = attempt_type(*attempt_args)
     reference = publish_causal_qualification(value.evidence_root, attempt)
     reopen_causal_qualification(value.evidence_root, reference, expected=value)
+    if continuation is not None:
+        continuation.record_final(reference)
     return reference
 
 __all__ = [

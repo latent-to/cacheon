@@ -1,0 +1,956 @@
+"""Standing CPU supervisor: compose public FIFO stages into one forever loop.
+
+Handoff (aug6-2-1 §5) requires one continuously running CPU service that
+advances finalized work through screen and same-request qualification without
+inventing retry policy, reclaiming terminal rows, or requiring a per-bundle
+operator command.
+
+This module owns only the public composition state machine and status surface.
+Stage work is delegated to the existing dispatchers:
+
+- screen FIFO → ``RemoteEvaluationDispatcher.dispatch_screen_once``
+- qualification FIFO + same-request recovery →
+  ``RecoverableQualificationDispatcher.dispatch_once``
+- later gates attach settlement / incentives / weights as injectable stages
+
+``chainops`` may launch this process and bind sealed paths; it must not
+duplicate recovery or evidence semantics.
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import signal
+import stat
+import sys
+import threading
+import time
+from dataclasses import dataclass, field, replace
+from enum import Enum
+from pathlib import Path
+from typing import Any, Callable
+
+
+STATUS_SCHEMA = "cacheon-standing-cpu-supervisor-status-v1"
+EVENT_SCHEMA = "cacheon-standing-cpu-supervisor-event-v1"
+CONFIG_SCHEMA = "cacheon-standing-supervisor-config-v1"
+CONFIG_DOMAIN = "cacheon.chain.standing-supervisor-config.v1"
+_TERMINAL_CLAIM_STATUSES = frozenset({"failed", "expired", "qualified"})
+_STANDING_CONFIG_FIELDS = frozenset(
+    {
+        "enable_incentive",
+        "enable_settlement",
+        "enable_weights",
+        "idle_poll_ms",
+        "qualification_evidence_root",
+        "qualification_incumbent_stack_path",
+        "qualification_incumbent_tree_digest",
+        "restart_initial_backoff_ms",
+        "restart_max_backoff_ms",
+        "schema",
+        "screen_dispatcher_config",
+        "stall_timeout_ms",
+    }
+)
+
+
+class StandingCpuSupervisorError(RuntimeError):
+    """Supervisor authority or stage composition failed closed."""
+
+
+class SupervisorPhase(str, Enum):
+    """Coarse public phase for monitoring (not a second recovery authority)."""
+
+    IDLE = "idle"
+    SCREEN = "screen"
+    QUALIFICATION = "qualification"
+    SETTLEMENT = "settlement"
+    INCENTIVE = "incentive"
+    WEIGHTS = "weights"
+    HOLD = "hold"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class SupervisorStatus:
+    """One closed status snapshot for operator visibility."""
+
+    phase: SupervisorPhase
+    last_progress_unix: float
+    request_id: str | None = None
+    lease_id: str | None = None
+    checkpoint_age_s: float | None = None
+    worker_epoch: str | None = None
+    lane_assignment: str | None = None
+    hold_reason: str | None = None
+    last_stage: str | None = None
+    last_disposition: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.phase) is not SupervisorPhase:
+            raise StandingCpuSupervisorError("supervisor phase is not exactly typed")
+        if (
+            type(self.last_progress_unix) is bool
+            or type(self.last_progress_unix) not in (int, float)
+            or not math.isfinite(float(self.last_progress_unix))
+            or float(self.last_progress_unix) < 0
+        ):
+            raise StandingCpuSupervisorError("last progress time is malformed")
+        object.__setattr__(self, "last_progress_unix", float(self.last_progress_unix))
+        for name in (
+            "request_id",
+            "lease_id",
+            "worker_epoch",
+            "lane_assignment",
+            "hold_reason",
+            "last_stage",
+            "last_disposition",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, str) or not value or value.strip() != value
+            ):
+                raise StandingCpuSupervisorError(f"supervisor status {name} is malformed")
+        if self.checkpoint_age_s is not None and (
+            type(self.checkpoint_age_s) is bool
+            or type(self.checkpoint_age_s) not in (int, float)
+            or not math.isfinite(float(self.checkpoint_age_s))
+            or float(self.checkpoint_age_s) < 0
+        ):
+            raise StandingCpuSupervisorError("checkpoint age is malformed")
+        if self.checkpoint_age_s is not None:
+            object.__setattr__(self, "checkpoint_age_s", float(self.checkpoint_age_s))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "checkpoint_age_s": self.checkpoint_age_s,
+            "hold_reason": self.hold_reason,
+            "lane_assignment": self.lane_assignment,
+            "last_disposition": self.last_disposition,
+            "last_progress_unix": self.last_progress_unix,
+            "last_stage": self.last_stage,
+            "lease_id": self.lease_id,
+            "phase": self.phase.value,
+            "request_id": self.request_id,
+            "schema": STATUS_SCHEMA,
+            "worker_epoch": self.worker_epoch,
+        }
+
+
+@dataclass(frozen=True)
+class SupervisorStageResult:
+    """Normalized result from one injectable public stage."""
+
+    stage: str
+    progressed: bool
+    disposition: str | None = None
+    request_id: str | None = None
+    lease_id: str | None = None
+    lane_assignment: str | None = None
+    worker_epoch: str | None = None
+    checkpoint_age_s: float | None = None
+    hold_reason: str | None = None
+    phase: SupervisorPhase | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.stage, str)
+            or not self.stage
+            or self.stage.strip() != self.stage
+            or type(self.progressed) is not bool
+        ):
+            raise StandingCpuSupervisorError("supervisor stage result is malformed")
+        if self.phase is not None and type(self.phase) is not SupervisorPhase:
+            raise StandingCpuSupervisorError("supervisor stage phase is not typed")
+
+
+# Stage callables: zero-arg, return None (idle), SupervisorStageResult, or a
+# legacy EvaluationRun / recoverable Hold|Requeue which the supervisor normalizes.
+ScreenOnce = Callable[[], Any]
+QualificationOnce = Callable[[], Any]
+OptionalStage = Callable[[], Any]
+
+
+@dataclass
+class StandingCpuSupervisor:
+    """Compose screen + recoverable qualification (+ later stages) with status."""
+
+    screen_once: ScreenOnce
+    qualification_once: QualificationOnce
+    settle_once: OptionalStage | None = None
+    incentive_once: OptionalStage | None = None
+    weights_once: OptionalStage | None = None
+    clock: Callable[[], float] = time.time
+    stall_timeout_s: float = 3_600.0
+    _status: SupervisorStatus = field(init=False, repr=False)
+    _last_tick_progressed: bool = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not callable(self.screen_once) or not callable(self.qualification_once):
+            raise StandingCpuSupervisorError("screen and qualification stages are required")
+        for name in ("settle_once", "incentive_once", "weights_once"):
+            value = getattr(self, name)
+            if value is not None and not callable(value):
+                raise StandingCpuSupervisorError(f"{name} is not callable")
+        if (
+            type(self.stall_timeout_s) is bool
+            or type(self.stall_timeout_s) not in (int, float)
+            or not math.isfinite(float(self.stall_timeout_s))
+            or float(self.stall_timeout_s) <= 0
+        ):
+            raise StandingCpuSupervisorError("stall timeout must be a positive finite duration")
+        object.__setattr__(self, "stall_timeout_s", float(self.stall_timeout_s))
+        if not callable(self.clock):
+            raise StandingCpuSupervisorError("clock is not callable")
+        self._status = SupervisorStatus(
+            phase=SupervisorPhase.IDLE,
+            last_progress_unix=float(self.clock()),
+        )
+        self._last_tick_progressed = False
+
+    def status(self) -> SupervisorStatus:
+        return self._status
+
+    def _observe(self, result: SupervisorStageResult) -> SupervisorStatus:
+        now = float(self.clock())
+        self._last_tick_progressed = result.progressed
+        phase = result.phase
+        if phase is None:
+            if result.hold_reason:
+                phase = SupervisorPhase.HOLD
+            elif result.stage == "screen":
+                phase = SupervisorPhase.SCREEN
+            elif result.stage == "qualification":
+                phase = SupervisorPhase.QUALIFICATION
+            elif result.stage == "settlement":
+                phase = SupervisorPhase.SETTLEMENT
+            elif result.stage == "incentive":
+                phase = SupervisorPhase.INCENTIVE
+            elif result.stage == "weights":
+                phase = SupervisorPhase.WEIGHTS
+            else:
+                phase = SupervisorPhase.IDLE
+        progress = now if result.progressed else self._status.last_progress_unix
+        self._status = SupervisorStatus(
+            phase=phase,
+            last_progress_unix=progress,
+            request_id=result.request_id,
+            lease_id=result.lease_id,
+            checkpoint_age_s=result.checkpoint_age_s,
+            worker_epoch=result.worker_epoch,
+            lane_assignment=result.lane_assignment,
+            hold_reason=result.hold_reason,
+            last_stage=result.stage,
+            last_disposition=result.disposition,
+        )
+        return self._status
+
+    def _normalize(self, stage: str, raw: Any) -> SupervisorStageResult | None:
+        if raw is None:
+            return None
+        if type(raw) is SupervisorStageResult:
+            if raw.stage != stage:
+                raise StandingCpuSupervisorError(
+                    "stage result names a different stage than the caller"
+                )
+            return raw
+
+        # Recoverable qualification HOLD / REQUEUE are first-class public products.
+        from cacheon.chain.recoverable_qualification_dispatcher import (
+            RecoverableQualificationHold,
+            RecoverableQualificationRequeue,
+        )
+
+        if type(raw) is RecoverableQualificationHold:
+            return SupervisorStageResult(
+                stage=stage,
+                progressed=False,
+                disposition="hold",
+                request_id=raw.request_id or None,
+                lease_id=None,
+                hold_reason=raw.reason,
+                phase=SupervisorPhase.HOLD,
+            )
+        if type(raw) is RecoverableQualificationRequeue:
+            return SupervisorStageResult(
+                stage=stage,
+                progressed=False,
+                disposition="requeue",
+                request_id=raw.request_id,
+                lease_id=None,
+                phase=SupervisorPhase.QUALIFICATION,
+            )
+
+        from cacheon.chain.evaluation_coordinator import EvaluationRun
+
+        if type(raw) is EvaluationRun:
+            lane = None
+            try:
+                lane = raw.lease.screen_lane  # type: ignore[attr-defined]
+            except Exception:
+                lane = None
+            return SupervisorStageResult(
+                stage=stage,
+                progressed=True,
+                disposition=raw.disposition,
+                request_id=None,
+                lease_id=raw.lease.lease_id,
+                lane_assignment=lane if isinstance(lane, str) else None,
+            )
+
+        raise StandingCpuSupervisorError(
+            f"stage {stage!r} returned an untyped product {type(raw).__name__}"
+        )
+
+    def _run_stage(self, stage: str, callback: Callable[[], Any]) -> SupervisorStageResult | None:
+        try:
+            raw = callback()
+        except StandingCpuSupervisorError:
+            raise
+        except Exception as exc:
+            # Never invent COMPLETE/REQUEUE/HOLD from exception class alone.
+            self._last_tick_progressed = False
+            self._status = SupervisorStatus(
+                phase=SupervisorPhase.FAILED,
+                last_progress_unix=self._status.last_progress_unix,
+                request_id=self._status.request_id,
+                lease_id=self._status.lease_id,
+                checkpoint_age_s=self._status.checkpoint_age_s,
+                worker_epoch=self._status.worker_epoch,
+                lane_assignment=self._status.lane_assignment,
+                hold_reason=None,
+                last_stage=stage,
+                last_disposition="stage_error",
+            )
+            raise StandingCpuSupervisorError(
+                f"stage {stage!r} failed closed without a typed disposition: "
+                f"{type(exc).__name__}: {exc}"
+            ) from None
+        return self._normalize(stage, raw)
+
+    def tick(self) -> SupervisorStatus:
+        """Advance at most one unit of work, preferring protected qualification resume.
+
+        Order:
+        1. qualification (resume same-request recovery before claiming new screen work)
+        2. screen FIFO
+        3. optional settlement / incentive / weights stages (later handoff gates)
+        """
+
+        # Qualification first: recover active protected leases after restart.
+        for stage, callback in (
+            ("qualification", self.qualification_once),
+            ("screen", self.screen_once),
+            ("settlement", self.settle_once),
+            ("incentive", self.incentive_once),
+            ("weights", self.weights_once),
+        ):
+            if callback is None:
+                continue
+            result = self._run_stage(stage, callback)
+            if result is not None:
+                return self._observe(result)
+
+        now = float(self.clock())
+        self._last_tick_progressed = False
+        stalled = now - self._status.last_progress_unix
+        if stalled >= self.stall_timeout_s:
+            self._status = replace(
+                self._status,
+                phase=SupervisorPhase.HOLD,
+                hold_reason="supervisor_progress_stalled",
+                last_stage="idle",
+                last_disposition="hold",
+            )
+            return self._status
+        self._status = replace(
+            self._status,
+            phase=SupervisorPhase.IDLE,
+            hold_reason=None,
+            last_stage="idle",
+            last_disposition=None,
+        )
+        return self._status
+
+
+@dataclass(frozen=True)
+class FifoQueueTable:
+    """Running table for fresh resubmissions only (handoff §10).
+
+    Historical ``expired`` / ``failed`` terminal rows are reported separately and
+    are never counted as pending/screening/qualifying work.
+    """
+
+    pending: int
+    screening: int
+    qualifying: int
+    hold: int
+    miner_pass: int
+    miner_fail: int
+    settled: int
+    incentivized: int
+    weight_published: int
+    historical_terminal: int = 0
+
+    def __post_init__(self) -> None:
+        for name in self.__dataclass_fields__:
+            value = getattr(self, name)
+            if type(value) is not int or isinstance(value, bool) or value < 0:
+                raise StandingCpuSupervisorError(f"fifo table field {name} is malformed")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "historical_terminal": self.historical_terminal,
+            "hold": self.hold,
+            "incentivized": self.incentivized,
+            "miner_fail": self.miner_fail,
+            "miner_pass": self.miner_pass,
+            "pending": self.pending,
+            "qualifying": self.qualifying,
+            "schema": "cacheon-standing-fifo-queue-table-v1",
+            "screening": self.screening,
+            "settled": self.settled,
+            "weight_published": self.weight_published,
+        }
+
+
+def build_fifo_queue_table(
+    *,
+    status_counts: dict[str, int],
+    hold: int = 0,
+    settled: int = 0,
+    incentivized: int = 0,
+    weight_published: int = 0,
+) -> FifoQueueTable:
+    """Project intake status counts into the handoff running table.
+
+    Terminal historical rows (``expired``, ``failed``) contribute only to
+    ``historical_terminal`` — never to the active FIFO columns.
+    """
+
+    if type(status_counts) is not dict:
+        raise StandingCpuSupervisorError("status_counts must be a dict")
+    pending = int(status_counts.get("reserved", 0)) + int(
+        status_counts.get("published", 0)
+    ) + int(status_counts.get("deferred", 0))
+    screening = int(status_counts.get("screening", 0))
+    qualifying = int(status_counts.get("qualifying", 0)) + int(
+        status_counts.get("promoted", 0)
+    )
+    miner_pass = int(status_counts.get("qualified", 0))
+    miner_fail = 0  # fresh FAIL only; historical failed rows stay historical
+    historical = int(status_counts.get("expired", 0)) + int(
+        status_counts.get("failed", 0)
+    )
+    return FifoQueueTable(
+        pending=pending,
+        screening=screening,
+        qualifying=qualifying,
+        hold=hold,
+        miner_pass=miner_pass,
+        miner_fail=miner_fail,
+        settled=settled,
+        incentivized=incentivized,
+        weight_published=weight_published,
+        historical_terminal=historical,
+    )
+
+
+def refuse_terminal_reclaim(status: str) -> None:
+    """Fail closed if a caller attempts to treat a terminal row as claimable work."""
+
+    if status in _TERMINAL_CLAIM_STATUSES:
+        raise StandingCpuSupervisorError(
+            f"standing supervisor refuses to reclaim terminal status {status!r}"
+        )
+
+
+def settlement_stage(
+    *,
+    store_factory: Callable[[], Any],
+    current_block: Callable[[], int],
+    finalized_block_provider: Callable[[], int | tuple[int, str]],
+) -> Callable[[], SupervisorStageResult | None]:
+    """Wrap ``validator_loop._settle_pending`` as one injectable supervisor stage."""
+
+    def once() -> SupervisorStageResult | None:
+        from cacheon.chain.validator_loop import _settle_pending
+
+        with store_factory() as store:
+            if not store.has_pending_settlement():
+                return None
+            committed = _settle_pending(
+                store,
+                current_block=int(current_block()),
+                finalized_block_provider=finalized_block_provider,
+            )
+        if not committed:
+            return None
+        lease_id = next(iter(committed))
+        return SupervisorStageResult(
+            stage="settlement",
+            progressed=True,
+            disposition="committed",
+            lease_id=lease_id,
+            phase=SupervisorPhase.SETTLEMENT,
+        )
+
+    return once
+
+
+def incentive_stage(
+    activate: Callable[[], Any],
+) -> Callable[[], SupervisorStageResult | None]:
+    """Wrap one-shot incentive activation; idle when the boundary is not ready.
+
+    ``activate`` should call ``execute_selected_incentive_activation`` (or a test
+    double).  Boundary-not-ready errors become idle ``None``; other failures
+    fail closed through the supervisor without inventing a disposition.
+    """
+
+    def once() -> SupervisorStageResult | None:
+        from cacheon.chain.incentive_activation import IncentiveActivationError
+
+        try:
+            result = activate()
+        except IncentiveActivationError:
+            return None
+        campaign = getattr(result, "campaign_id", None)
+        return SupervisorStageResult(
+            stage="incentive",
+            progressed=True,
+            disposition="activated",
+            request_id=campaign if isinstance(campaign, str) and campaign else None,
+            phase=SupervisorPhase.INCENTIVE,
+        )
+
+    return once
+
+
+def weights_stage(
+    publish: Callable[[], Any],
+) -> Callable[[], SupervisorStageResult | None]:
+    """Wrap weight project/publish/readback; idle when nothing is due."""
+
+    def once() -> SupervisorStageResult | None:
+        result = publish()
+        if result is None:
+            return None
+        digest = getattr(result, "projection_digest", None)
+        status = getattr(result, "status", None)
+        return SupervisorStageResult(
+            stage="weights",
+            progressed=True,
+            disposition=status if isinstance(status, str) and status else "published",
+            request_id=digest if isinstance(digest, str) and digest else None,
+            phase=SupervisorPhase.WEIGHTS,
+        )
+
+    return once
+
+
+def run_forever(
+    supervisor: StandingCpuSupervisor,
+    stop: threading.Event,
+    *,
+    idle_poll_s: float = 1.0,
+    wait: Callable[[float], bool] | None = None,
+    on_status: Callable[[SupervisorStatus], None] | None = None,
+    restart_initial_backoff_s: float = 1.0,
+    restart_max_backoff_s: float = 60.0,
+) -> None:
+    """Run supervisor ticks until ``stop`` is set; rebuild after stage failures."""
+
+    if type(supervisor) is not StandingCpuSupervisor or not isinstance(
+        stop, threading.Event
+    ):
+        raise StandingCpuSupervisorError("run_forever authorities are not exactly typed")
+    if (
+        type(idle_poll_s) is bool
+        or type(idle_poll_s) not in (int, float)
+        or not math.isfinite(float(idle_poll_s))
+        or float(idle_poll_s) < 0
+    ):
+        raise StandingCpuSupervisorError("idle poll duration is malformed")
+    waiter = stop.wait if wait is None else wait
+    backoff = float(restart_initial_backoff_s)
+    while not stop.is_set():
+        try:
+            status = supervisor.tick()
+        except StandingCpuSupervisorError as exc:
+            if on_status is not None:
+                on_status(supervisor.status())
+            if waiter(backoff):
+                break
+            backoff = min(float(restart_max_backoff_s), backoff * 2.0)
+            # Surface the failure without inventing a reclaim/retry disposition.
+            del exc
+            continue
+        if on_status is not None:
+            on_status(status)
+        if status.phase is SupervisorPhase.IDLE:
+            backoff = float(restart_initial_backoff_s)
+            if waiter(float(idle_poll_s)):
+                break
+        elif not supervisor._last_tick_progressed:
+            if waiter(backoff):
+                break
+            backoff = min(float(restart_max_backoff_s), backoff * 2.0)
+        else:
+            backoff = float(restart_initial_backoff_s)
+
+
+def _emit_status(status: SupervisorStatus) -> None:
+    """Emit one operator status line.
+
+    Status is monitoring output, not a sealed digest authority, so integer
+    millisecond fields are used (canonical JSON forbids floats).
+    """
+
+    import json
+
+    payload = dict(status.to_dict())
+    payload["event"] = "status"
+    payload["schema"] = EVENT_SCHEMA
+    payload["time_unix"] = int(time.time())
+    payload["last_progress_unix_ms"] = int(round(float(status.last_progress_unix) * 1000.0))
+    del payload["last_progress_unix"]
+    if status.checkpoint_age_s is not None:
+        payload["checkpoint_age_ms"] = int(round(float(status.checkpoint_age_s) * 1000.0))
+    payload.pop("checkpoint_age_s", None)
+    sys.stdout.buffer.write(
+        (json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+    )
+    sys.stdout.buffer.flush()
+
+
+def _closed_config(value: object, fields: frozenset[str], label: str) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != fields:
+        raise StandingCpuSupervisorError(f"{label} fields are not closed")
+    return value
+
+
+def _absolute_path(value: object, label: str) -> Path:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\x00" in value
+        or not Path(value).is_absolute()
+    ):
+        raise StandingCpuSupervisorError(f"{label} must be an absolute path")
+    path = Path(value)
+    if path != Path(os.path.normpath(path)):
+        raise StandingCpuSupervisorError(f"{label} must be canonical")
+    return path
+
+
+def _authority_file(path: Path, label: str, *, secret: bool = False) -> None:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise StandingCpuSupervisorError(f"{label} is unavailable: {exc}") from None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
+        or (secret and stat.S_IMODE(info.st_mode) & 0o077)
+        or (not secret and stat.S_IMODE(info.st_mode) & 0o022)
+    ):
+        qualifier = (
+            "owner-only regular file" if secret else "owner-controlled regular file"
+        )
+        raise StandingCpuSupervisorError(f"{label} must be an {qualifier}")
+
+
+def _private_directory(path: Path, label: str) -> None:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise StandingCpuSupervisorError(f"{label} is unavailable: {exc}") from None
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o700
+        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
+    ):
+        raise StandingCpuSupervisorError(
+            f"{label} must be an owner-controlled mode-0700 directory"
+        )
+
+
+def _positive_int(value: object, label: str, *, maximum: int | None = None) -> int:
+    if type(value) is not int or value <= 0 or (
+        maximum is not None and value > maximum
+    ):
+        raise StandingCpuSupervisorError(f"{label} is outside its integer bounds")
+    return value
+
+
+def _positive_float(value: object, label: str) -> float:
+    if (
+        type(value) is bool
+        or type(value) not in (int, float)
+        or not math.isfinite(float(value))
+        or float(value) <= 0
+    ):
+        raise StandingCpuSupervisorError(f"{label} must be a positive finite duration")
+    return float(value)
+
+
+def _exact_bool(value: object, label: str) -> bool:
+    if type(value) is not bool:
+        raise StandingCpuSupervisorError(f"{label} must be a boolean")
+    return value
+
+
+@dataclass(frozen=True)
+class StandingSupervisorConfig:
+    """Closed standing-supervisor composition authority."""
+
+    raw: dict[str, Any]
+    screen_dispatcher_config: Path
+    qualification_evidence_root: Path
+    qualification_incumbent_stack_path: Path
+    qualification_incumbent_tree_digest: str
+    enable_weights: bool
+    enable_settlement: bool
+    enable_incentive: bool
+    stall_timeout_s: float
+    idle_poll_s: float
+    restart_initial_backoff_s: float
+    restart_max_backoff_s: float
+
+    @property
+    def digest(self) -> str:
+        from cacheon.stack_identity import canonical_digest
+
+        return canonical_digest(CONFIG_DOMAIN, self.raw)
+
+
+def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConfig:
+    """Strictly reopen one immutable standing-supervisor authority file."""
+
+    from cacheon.chain.remote_worker_spool import load_json
+    from cacheon.stack_identity import require_sha256_hex
+
+    config_path = _absolute_path(os.fspath(path), "config path")
+    _authority_file(config_path, "standing config")
+    try:
+        raw = load_json(config_path)
+    except Exception as exc:
+        raise StandingCpuSupervisorError(
+            f"standing config cannot reopen: {exc}"
+        ) from None
+    row = _closed_config(raw, _STANDING_CONFIG_FIELDS, "standing supervisor config")
+    if row["schema"] != CONFIG_SCHEMA:
+        raise StandingCpuSupervisorError("standing supervisor config schema is unsupported")
+
+    screen_path = _absolute_path(
+        row["screen_dispatcher_config"], "screen_dispatcher_config"
+    )
+    _authority_file(screen_path, "screen dispatcher config")
+    evidence_root = _absolute_path(
+        row["qualification_evidence_root"], "qualification_evidence_root"
+    )
+    _private_directory(evidence_root, "qualification_evidence_root")
+    incumbent_path = _absolute_path(
+        row["qualification_incumbent_stack_path"],
+        "qualification_incumbent_stack_path",
+    )
+    _authority_file(incumbent_path, "qualification incumbent stack")
+    try:
+        tree_digest = require_sha256_hex(
+            row["qualification_incumbent_tree_digest"],
+            field="qualification incumbent tree digest",
+        )
+    except (TypeError, ValueError) as exc:
+        raise StandingCpuSupervisorError(str(exc)) from None
+
+    enable_weights = _exact_bool(row["enable_weights"], "enable_weights")
+    enable_settlement = _exact_bool(row["enable_settlement"], "enable_settlement")
+    enable_incentive = _exact_bool(row["enable_incentive"], "enable_incentive")
+    if enable_weights:
+        raise StandingCpuSupervisorError(
+            "enable_weights requires a sealed weights authority composition; "
+            "keep enable_weights false until the weights stage is attached"
+        )
+    if enable_settlement or enable_incentive:
+        raise StandingCpuSupervisorError(
+            "settlement/incentive stages are not sealed in this standing config; "
+            "keep enable_settlement and enable_incentive false until authorities exist"
+        )
+
+    stall_timeout_ms = _positive_int(
+        row["stall_timeout_ms"], "stall_timeout_ms", maximum=86_400_000
+    )
+    idle_poll_ms = _positive_int(row["idle_poll_ms"], "idle_poll_ms", maximum=60_000)
+    restart_initial_backoff_ms = _positive_int(
+        row["restart_initial_backoff_ms"],
+        "restart_initial_backoff_ms",
+        maximum=600_000,
+    )
+    restart_max_backoff_ms = _positive_int(
+        row["restart_max_backoff_ms"],
+        "restart_max_backoff_ms",
+        maximum=600_000,
+    )
+    if restart_initial_backoff_ms > restart_max_backoff_ms:
+        raise StandingCpuSupervisorError(
+            "restart initial backoff exceeds its maximum"
+        )
+
+    return StandingSupervisorConfig(
+        raw=dict(row),
+        screen_dispatcher_config=screen_path,
+        qualification_evidence_root=evidence_root,
+        qualification_incumbent_stack_path=incumbent_path,
+        qualification_incumbent_tree_digest=tree_digest,
+        enable_weights=enable_weights,
+        enable_settlement=enable_settlement,
+        enable_incentive=enable_incentive,
+        stall_timeout_s=stall_timeout_ms / 1000.0,
+        idle_poll_s=idle_poll_ms / 1000.0,
+        restart_initial_backoff_s=restart_initial_backoff_ms / 1000.0,
+        restart_max_backoff_s=restart_max_backoff_ms / 1000.0,
+    )
+
+
+def build_standing_supervisor(
+    config: StandingSupervisorConfig,
+) -> StandingCpuSupervisor:
+    """Compose screen + recoverable qualification from sealed standing config."""
+
+    from cacheon.chain.mainnet_screen_dispatcher import (
+        build_dispatcher,
+        load_config,
+    )
+    from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
+    from cacheon.chain.recoverable_qualification_dispatcher import (
+        RecoverableQualificationDispatcher,
+    )
+    from cacheon.chain.remote_worker_spool import load_json
+    from cacheon.stack_manifest import EvaluationStackManifest
+
+    if type(config) is not StandingSupervisorConfig:
+        raise StandingCpuSupervisorError("standing supervisor config is not typed")
+
+    screen_config = load_config(config.screen_dispatcher_config)
+    screen_dispatcher = build_dispatcher(
+        screen_config,
+        store_factory=RecoverableFinalizedIntakeStore,
+    )
+    try:
+        incumbent_raw = load_json(config.qualification_incumbent_stack_path)
+        incumbent = EvaluationStackManifest.from_dict(incumbent_raw)
+    except Exception as exc:
+        raise StandingCpuSupervisorError(
+            f"qualification incumbent stack cannot reopen: {exc}"
+        ) from None
+
+    qualification_dispatcher = RecoverableQualificationDispatcher(
+        coordinator=screen_dispatcher.coordinator,
+        transport=screen_dispatcher.transport,
+        credential=screen_dispatcher.credential,
+        qualification_evidence_root=config.qualification_evidence_root,
+        qualification_incumbent_stack=incumbent,
+        qualification_incumbent_tree_digest=(
+            config.qualification_incumbent_tree_digest
+        ),
+    )
+
+    weights_once = None
+    if config.enable_weights:
+        # load_standing_config already refuses enable_weights until sealed.
+        raise StandingCpuSupervisorError("weights stage is not sealed")
+
+    return StandingCpuSupervisor(
+        screen_once=screen_dispatcher.dispatch_screen_once,
+        qualification_once=qualification_dispatcher.dispatch_once,
+        settle_once=None,
+        incentive_once=None,
+        weights_once=weights_once,
+        stall_timeout_s=config.stall_timeout_s,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        required=True,
+        help=(
+            "absolute path to a closed standing-supervisor config that names "
+            "the screen and recoverable-qualification authorities to compose"
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Load sealed standing config and run the composed forever loop."""
+
+    args = build_parser().parse_args(argv)
+    try:
+        config = load_standing_config(args.config)
+        supervisor = build_standing_supervisor(config)
+    except StandingCpuSupervisorError as exc:
+        print(
+            f"STANDING-CPU-SUPERVISOR-ERROR: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:
+        print(
+            "STANDING-CPU-SUPERVISOR-ERROR: sealed composition failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    stop = threading.Event()
+
+    def _stop(_signum: int, _frame: object | None) -> None:
+        stop.set()
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+    run_forever(
+        supervisor,
+        stop,
+        idle_poll_s=config.idle_poll_s,
+        restart_initial_backoff_s=config.restart_initial_backoff_s,
+        restart_max_backoff_s=config.restart_max_backoff_s,
+        on_status=_emit_status,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+__all__ = [
+    "CONFIG_SCHEMA",
+    "EVENT_SCHEMA",
+    "STATUS_SCHEMA",
+    "FifoQueueTable",
+    "StandingCpuSupervisor",
+    "StandingCpuSupervisorError",
+    "StandingSupervisorConfig",
+    "SupervisorPhase",
+    "SupervisorStageResult",
+    "SupervisorStatus",
+    "build_fifo_queue_table",
+    "build_standing_supervisor",
+    "incentive_stage",
+    "load_standing_config",
+    "refuse_terminal_reclaim",
+    "run_forever",
+    "settlement_stage",
+    "weights_stage",
+]

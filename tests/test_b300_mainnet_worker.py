@@ -63,6 +63,7 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
@@ -676,12 +677,16 @@ def test_remote_qualification_is_path_free_lane_bound_and_returns_authority(
 
     monkeypatch.setattr(worker_module, "run_qualification_intake", run)
     worker = B300MainnetWorker(manifest, authorities, readiness)
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
     try:
         result = worker.run_remote_qualification(
             claim.lease,
             claim.candidates,
             claim.screen_receipts,
             screen_lane="primary",
+            continuation_store=continuation,
+            request_digest=request_digest,
         )
 
         assert type(result) is B300RemoteQualificationRun
@@ -696,6 +701,8 @@ def test_remote_qualification_is_path_free_lane_bound_and_returns_authority(
         )
         assert builder.calls[0][1] is None
         assert len(calls) == 1
+        assert calls[0][1]["continuation_store"] is continuation
+        assert calls[0][1]["request_digest"] == request_digest
         assert resident.created == 0
         result.run.envelope.verify(
             claim.lease,
@@ -716,13 +723,28 @@ def test_remote_qualification_refuses_lane_or_cohort_drift(
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
     worker = B300MainnetWorker(manifest, authorities, readiness)
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
     try:
+        with pytest.raises(
+            B300MainnetWorkerError, match="authenticated request digest"
+        ):
+            worker.run_remote_qualification(
+                claim.lease,
+                claim.candidates,
+                claim.screen_receipts,
+                screen_lane="primary",
+                continuation_store=continuation,
+                request_digest=None,
+            )
         with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
             worker.run_remote_qualification(
                 claim.lease,
                 claim.candidates,
                 claim.screen_receipts,
                 screen_lane="reproduction",
+                continuation_store=continuation,
+                request_digest=request_digest,
             )
         with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
             worker.run_remote_qualification(
@@ -730,6 +752,8 @@ def test_remote_qualification_refuses_lane_or_cohort_drift(
                 tuple(reversed(claim.candidates)),
                 claim.screen_receipts,
                 screen_lane="primary",
+                continuation_store=continuation,
+                request_digest=request_digest,
             )
     finally:
         worker.close()
@@ -758,6 +782,8 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
         qualification_stage="reproduction",
     )
     assert b300_arena_provider_digest(reproduction) == manifest.provider_digest
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
 
     monkeypatch.setattr(
         worker_module,
@@ -773,12 +799,16 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
                 claim.candidates,
                 claim.screen_receipts,
                 screen_lane="primary",
+                continuation_store=continuation,
+                request_digest=request_digest,
             )
         result = worker.run_remote_qualification(
             claim.lease,
             claim.candidates,
             claim.screen_receipts,
             screen_lane="reproduction",
+            continuation_store=continuation,
+            request_digest=request_digest,
         )
         assert result.screen_lane == "reproduction"
         assert result.run.disposition == "released"

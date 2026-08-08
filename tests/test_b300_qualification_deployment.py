@@ -1,4 +1,4 @@
-"""CPU-only contracts for ordinary-bundle B300 qualification composition."""
+"""CPU-only contracts for registered-target B300 qualification composition."""
 
 from __future__ import annotations
 
@@ -39,6 +39,13 @@ from cacheon.eval.b300_arena_provider import (
     B300ScreenStageHandler,
     b300_arena_provider_digest,
     b300_executor_role_policy_digest,
+)
+from cacheon.eval.b300_registered_qualification_inputs import (
+    registered_b300_member_contract_projection,
+    registered_b300_profile_resolver_digest,
+)
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
 )
 from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
 from cacheon.eval.oci_backend import (
@@ -200,24 +207,35 @@ def _incumbent(runtime: ArenaRuntimeIdentity, arena_digest: str):
     )
 
 
+def _profiles(catalog, builder_source: str, resolvers=None):
+    by_target = {} if resolvers is None else resolvers
+    return tuple(
+        deployment.B300RegisteredProfileAuthority(
+            target.target_id,
+            target.target_spec_digest,
+            registered_b300_profile_resolver_digest(
+                target,
+                builder_source_digest=builder_source,
+            ),
+            by_target.get(target.target_id, lambda _candidate, _prepared: object()),
+        )
+        for target in registered_b300_member_contract_projection(catalog)
+    )
+
+
 def _construction(tmp_path: Path, runtime: ArenaRuntimeIdentity):
     catalog, incumbent = _incumbent(runtime, _h("arena"))
-    profile = deployment.B300RegisteredProfileAuthority(
-        TARGET,
-        catalog.target_spec_digest(TARGET),
-        _h("profile-resolver"),
-        lambda _candidate, _prepared: object(),
-    )
+    builder_source = _h("builder-source")
     return deployment.B300QualificationConstructionAuthority(
         catalog=catalog,
-        profiles=(profile,),
+        profiles=_profiles(catalog, builder_source),
         incumbent_stack=incumbent,
         incumbent_tree_digest=_h("incumbent-tree"),
         pristine_stack=incumbent,
         pristine_tree_digest=_h("pristine-tree"),
         evidence_root=tmp_path / "evidence",
         evidence_policy_digest=_h("evidence-policy"),
-        builder_source_digest=_h("builder-source"),
+        builder_source_digest=builder_source,
         selection_store_digest=_h("selection-store"),
         secret_loader=lambda _reference: b"s" * 32,
         plan_builder=lambda _cohort, _secret: object(),
@@ -547,7 +565,7 @@ def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
         )
 
 
-def test_path_free_cohort_is_singleton_and_rejects_control_state(
+def test_path_free_cohort_is_one_candidate_and_rejects_control_state(
     tmp_path: Path,
     executor_factory,
 ) -> None:
@@ -598,11 +616,18 @@ def test_registered_target_and_canonical_evidence_root_are_fail_closed(
 ) -> None:
     construction = _construction(tmp_path, _runtime())
 
+    assert construction.profile_for("attention.decode").target_id == "attention.decode"
+    assert (
+        construction.profile_for("collective.moe_epilogue.v1").target_id
+        == "collective.moe_epilogue.v1"
+    )
+    with pytest.raises(deployment.B300QualificationDeploymentError, match="unsupported"):
+        construction.profile_for("unknown.registered.target")
     with pytest.raises(
         deployment.B300QualificationDeploymentError,
-        match="unsupported",
+        match="exactly cover",
     ):
-        construction.profile_for("attention.decode")
+        replace(construction, profiles=construction.profiles[:-1])
     with pytest.raises(
         deployment.B300QualificationDeploymentError,
         match="absolute authority",
@@ -649,6 +674,42 @@ def _executor_mirror(arm):
     )
 
 
+class _RegisteredJudge:
+    def __init__(self) -> None:
+        self.binding = HiddenJudgeBinding(
+            _h("hidden-corpus"),
+            _h("hidden-judge"),
+            _h("ordinary-hidden-task-policy"),
+        )
+
+    def __call__(self, **_kwargs):
+        raise AssertionError("plan validation must not execute the judge")
+
+
+def _registered_construction(harness, value, secret: bytes):
+    builder_source = _h("builder-source")
+    resolvers = {row.target_id: row.resolver for row in harness.factory.profiles}
+    return deployment.B300QualificationConstructionAuthority(
+        catalog=harness.inputs.catalog,
+        profiles=_profiles(harness.inputs.catalog, builder_source, resolvers),
+        incumbent_stack=harness.inputs.incumbent_stack,
+        incumbent_tree_digest=value.prepared.incumbent_binding.tree.tree_digest,
+        pristine_stack=harness.inputs.pristine_stack,
+        pristine_tree_digest=value.pristine_launch.tree_digest,
+        evidence_root=harness.inputs.evidence_root,
+        evidence_policy_digest=_h("evidence-policy"),
+        builder_source_digest=builder_source,
+        selection_store_digest=_h("selection-store"),
+        secret_loader=lambda _reference: secret,
+        plan_builder=harness.factory.plan_builder,
+        entropy_provider_digest=_h("entropy-provider"),
+        entropy_provider=lambda *_args: None,
+        hidden_judge=_RegisteredJudge(),
+        deadline_policy_digest=_h("deadline-policy"),
+        deadline_provider=lambda _cohort: time.monotonic() + 600.0,
+    )
+
+
 def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
     tmp_path: Path,
 ) -> None:
@@ -659,36 +720,7 @@ def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
     incumbent_tree = value.prepared.incumbent_binding.tree.tree_digest
     assert incumbent_tree == harness.inputs.incumbent_binding.tree.tree_digest
 
-    class _RegisteredJudge:
-        def __init__(self) -> None:
-            self.binding = HiddenJudgeBinding(
-                _h("hidden-corpus"),
-                _h("hidden-judge"),
-                _h("ordinary-hidden-task-policy"),
-            )
-
-        def __call__(self, **_kwargs):
-            raise AssertionError("plan validation must not execute the judge")
-
-    construction = deployment.B300QualificationConstructionAuthority(
-        catalog=harness.inputs.catalog,
-        profiles=harness.factory.profiles,
-        incumbent_stack=harness.inputs.incumbent_stack,
-        incumbent_tree_digest=incumbent_tree,
-        pristine_stack=harness.inputs.pristine_stack,
-        pristine_tree_digest=value.pristine_launch.tree_digest,
-        evidence_root=harness.inputs.evidence_root,
-        evidence_policy_digest=_h("evidence-policy"),
-        builder_source_digest=_h("builder-source"),
-        selection_store_digest=_h("selection-store"),
-        secret_loader=lambda _reference: secret,
-        plan_builder=harness.factory.plan_builder,
-        entropy_provider_digest=_h("entropy-provider"),
-        entropy_provider=lambda *_args: None,
-        hidden_judge=_RegisteredJudge(),
-        deadline_policy_digest=_h("deadline-policy"),
-        deadline_provider=lambda _cohort: time.monotonic() + 600.0,
-    )
+    construction = _registered_construction(harness, value, secret)
     resident = value.resident_speed_plan
     candidate_executor = _executor_mirror(resident.candidate)
     baseline_executor = _executor_mirror(resident.baseline)
@@ -768,3 +800,143 @@ def test_validate_plan_accepts_real_registered_plan_and_rejects_tampering(
             candidate_executor,
             baseline_executor,
         )
+
+
+@pytest.mark.parametrize("stage", ("primary", "reproduction"))
+def test_deployment_accepts_atomic_registered_plan_on_both_retained_stages(
+    tmp_path: Path,
+    stage: str,
+) -> None:
+    fixtures = _registered_fixtures()
+    harness = fixtures._harness(tmp_path, fixtures.FUSED)
+    cohort = deployment.B300QualificationCohort(harness.cohort.request, stage)
+    secret = b"atomic fused epilogue selection!!"[:32]
+    value = harness.factory.plan_builder(cohort, secret)
+    construction = _registered_construction(harness, value, secret)
+    resident = value.resident_speed_plan
+
+    accepted = deployment._validate_plan(
+        value,
+        cohort,
+        secret,
+        construction,
+        _executor_mirror(resident.candidate),
+        _executor_mirror(resident.baseline),
+    )
+
+    assert accepted is value
+    assert cohort.candidate.reservation.target_id == "collective.moe_epilogue.v1"
+    assert tuple(
+        row.slot_id for row in accepted.candidates[0].graph_requirement.binding.members
+    ) == cohort.candidate.reservation.target_members
+
+    authority = accepted.candidates[0]
+    for field, stale in (
+        ("contract_digest", _h("stale-atomic-member-contract")),
+        ("verification_profile_id", "stale.atomic.member.verify.v1"),
+    ):
+        members = list(authority.graph_requirement.binding.members)
+        members[0] = replace(members[0], **{field: stale})
+        binding = replace(
+            authority.graph_requirement.binding,
+            members=tuple(members),
+        )
+        requirement = replace(authority.graph_requirement, binding=binding)
+        tampered = replace(
+            authority,
+            graph_requirement=requirement,
+            profile=replace(
+                authority.profile,
+                graph_requirement_digest=requirement.digest,
+            ),
+        )
+        with pytest.raises(
+            deployment.B300QualificationDeploymentError,
+            match="profile/graph authority differs",
+        ):
+            deployment._validate_profile_binding(
+                tampered,
+                cohort.candidate,
+                accepted.prepared.candidates[0],
+                construction,
+            )
+
+
+def test_factory_builder_preserves_graph_evidence_hold(tmp_path: Path) -> None:
+    fixtures = _registered_fixtures()
+    harness = fixtures._harness(tmp_path)
+    secret = b"held graph factory selection secret"[:32]
+    value = harness.factory.plan_builder(harness.cohort, secret)
+    hold = B300QualificationGraphEvidenceHold("graph attempt remains armed")
+
+    def unavailable(_cohort, _secret):
+        raise hold
+
+    construction = replace(
+        _registered_construction(harness, value, secret),
+        plan_builder=unavailable,
+    )
+    resident = value.resident_speed_plan
+    builder = deployment._factory_builder(
+        construction,
+        _executor_mirror(resident.candidate),
+        _executor_mirror(resident.baseline),
+        screen_lane="primary",
+    )
+    receipt = replace(
+        harness.cohort.receipt,
+        service_digest=construction.incumbent_stack.arena_digest,
+    )
+    request = ArenaQualificationRequest(
+        construction.incumbent_stack.arena_digest,
+        construction.qualification_policy_digest,
+        (harness.cohort.candidate,),
+        (receipt,),
+    )
+    with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
+        builder(request, None)
+    assert caught.value is hold
+
+
+def test_factory_reuses_its_first_sealed_plan_without_reconstruction(
+    tmp_path: Path,
+) -> None:
+    fixtures = _registered_fixtures()
+    harness = fixtures._harness(tmp_path)
+    secret = b"one sealed qualification plan secret"[:32]
+    expected = harness.factory.plan_builder(harness.cohort, secret)
+    construction = _registered_construction(harness, expected, secret)
+    original = construction.plan_builder
+    calls = 0
+    built = []
+
+    def counted(cohort, observed_secret):
+        nonlocal calls
+        calls += 1
+        value = original(cohort, observed_secret)
+        built.append(value)
+        return value
+
+    construction = replace(construction, plan_builder=counted)
+    resident = expected.resident_speed_plan
+    builder = deployment._factory_builder(
+        construction,
+        _executor_mirror(resident.candidate),
+        _executor_mirror(resident.baseline),
+        screen_lane="primary",
+    )
+    receipt = replace(
+        harness.cohort.receipt,
+        service_digest=construction.incumbent_stack.arena_digest,
+    )
+    request = ArenaQualificationRequest(
+        construction.incumbent_stack.arena_digest,
+        construction.qualification_policy_digest,
+        (harness.cohort.candidate,),
+        (receipt,),
+    )
+    factory = builder(request, None)
+    assert calls == 1
+    assert factory.build() is built[0]
+    assert factory.build() is built[0]
+    assert calls == 1

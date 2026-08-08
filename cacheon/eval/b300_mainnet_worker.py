@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from cacheon.arena_service import (
     ArenaCandidateBinding,
@@ -34,20 +35,35 @@ from cacheon.chain.evaluation_coordinator import (
     EvaluationRun,
     WorkerReadiness,
 )
+from cacheon.chain.remote_qualification_hold import RemoteQualificationHoldReason
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
     B300DeploymentAuthorities,
     B300ScreenDeploymentAuthorities,
 )
+from cacheon.eval.b300_qualification_graph_gate import (
+    B300QualificationGraphGateFail,
+    B300QualificationGraphGateHold,
+    B300QualificationGraphGatePass,
+    B300QualificationGraphHoldCode,
+    qualification_graph_gate_hold,
+    run_b300_qualification_graph_gate,
+)
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
+from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
+    QualificationIntakeError,
     QualificationPlanFactory,
     run_qualification_intake,
 )
-from cacheon.stack_identity import canonical_digest
+from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
 WORKER_SCHEMA = "cacheon.eval.b300-mainnet-worker.v1"
@@ -71,8 +87,14 @@ class B300RemoteQualificationRun:
     run: EvaluationRun
     authority_manifest: QualificationAuthorityManifest
     screen_lane: str
+    supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
 
     def __post_init__(self) -> None:
+        references = (
+            tuple(self.supporting_evidence_refs)
+            if type(self.supporting_evidence_refs) is tuple
+            else ()
+        )
         if (
             type(self.run) is not EvaluationRun
             or type(self.authority_manifest) is not QualificationAuthorityManifest
@@ -81,10 +103,28 @@ class B300RemoteQualificationRun:
             or self.run.payload.authority_manifest_digest
             != self.authority_manifest.digest
             or self.screen_lane not in {"primary", "reproduction"}
+            or type(self.supporting_evidence_refs) is not tuple
+            or any(type(row) is not EvidenceArtifactRef for row in references)
+            or references
+            != tuple(
+                sorted(
+                    references,
+                    key=lambda row: (
+                        row.domain,
+                        row.sha256,
+                        row.media_type,
+                        row.schema,
+                        row.size,
+                    ),
+                )
+            )
+            or len(set(references)) != len(references)
+            or len({row.sha256 for row in references}) != len(references)
         ):
             raise B300MainnetWorkerError(
                 "remote qualification result changed its sealed authority"
             )
+        object.__setattr__(self, "supporting_evidence_refs", references)
 
 
 class B300MainnetWorker:
@@ -116,6 +156,7 @@ class B300MainnetWorker:
             if type(authorities) is B300DeploymentAuthorities
             else None
         )
+        self._remote_qualification_graph_root: Path | None = None
         self._closed = False
         self._lock = threading.RLock()
         self.worker_digest = canonical_digest(
@@ -201,7 +242,9 @@ class B300MainnetWorker:
         screen_receipts: tuple[ArenaScreenReceipt, ...],
         *,
         screen_lane: str,
-    ) -> B300RemoteQualificationRun:
+        continuation_store: QualificationContinuationStore,
+        request_digest: str,
+    ) -> B300RemoteQualificationRun | B300QualificationGraphGateHold:
         """Run one path-free, lane-bound remote qualification cohort.
 
         The CPU transport sends immutable publications, reservations, promoted
@@ -211,6 +254,16 @@ class B300MainnetWorker:
         before constructing private qualification work.
         """
 
+        if type(continuation_store) is not QualificationContinuationStore:
+            raise B300MainnetWorkerError(
+                "remote qualification continuation store is not exact"
+            )
+        try:
+            request_digest = require_sha256_hex(
+                request_digest, field="authenticated request digest"
+            )
+        except ValueError as exc:
+            raise B300MainnetWorkerError(str(exc)) from None
         candidate_rows = tuple(candidates) if type(candidates) is tuple else ()
         receipt_rows = (
             tuple(screen_receipts) if type(screen_receipts) is tuple else ()
@@ -242,10 +295,15 @@ class B300MainnetWorker:
             if self._closed:
                 raise B300MainnetWorkerError("B300 mainnet worker is closed")
             self._validate_readiness(self.readiness, self.service)
-            payload, authority_manifest = self._execute_qualification(
+            execution = self._execute_qualification(
                 candidate_rows,
                 receipt_rows,
+                continuation_store=continuation_store,
+                request_digest=request_digest,
             )
+            if type(execution) is B300QualificationGraphGateHold:
+                return execution
+            payload, authority_manifest, supporting_evidence_refs = execution
             disposition = "released" if self._systemic(payload) else "completed"
             envelope = EvaluationResultEnvelope.seal(
                 lease,
@@ -258,6 +316,7 @@ class B300MainnetWorker:
                 run,
                 authority_manifest,
                 screen_lane,
+                supporting_evidence_refs,
             )
 
     def close(self) -> None:
@@ -268,6 +327,25 @@ class B300MainnetWorker:
                 return
             self._provider.close()
             self._closed = True
+
+    def _bind_remote_qualification_graph_gate_root(self, root: Path) -> None:
+        """Bind the adapter-owned CAS root once for this resident worker epoch."""
+
+        if not isinstance(root, Path) or not root.is_absolute() or root != Path(
+            root.as_posix()
+        ):
+            raise B300MainnetWorkerError(
+                "remote qualification graph root is not canonical and absolute"
+            )
+        with self._lock:
+            if self._closed:
+                raise B300MainnetWorkerError("B300 mainnet worker is closed")
+            current = self._remote_qualification_graph_root
+            if current is not None and current != root:
+                raise B300MainnetWorkerError(
+                    "remote qualification graph root changed within the worker epoch"
+                )
+            self._remote_qualification_graph_root = root
 
     def __enter__(self) -> "B300MainnetWorker":
         with self._lock:
@@ -301,23 +379,101 @@ class B300MainnetWorker:
         self,
         job: ClaimedQualificationEvaluation,
     ) -> QualificationIntakeBatch:
-        batch, _manifest = self._execute_qualification(
+        execution = self._execute_qualification(
             job.candidates,
             job.screen_receipts,
         )
+        if type(execution) is B300QualificationGraphGateHold:
+            raise B300MainnetWorkerError(
+                "local qualification unexpectedly returned a remote graph HOLD"
+            )
+        batch, _manifest, _references = execution
         return batch
 
     def _execute_qualification(
         self,
         candidates: tuple[ArenaCandidateBinding, ...],
         screen_receipts: tuple[ArenaScreenReceipt, ...],
-    ) -> tuple[QualificationIntakeBatch, QualificationAuthorityManifest]:
-        work = self.service.plan_qualification(
-            candidates,
-            screen_receipts,
-            state=None,
-        )
+        *,
+        continuation_store: QualificationContinuationStore | None = None,
+        request_digest: str | None = None,
+    ) -> (
+        tuple[
+            QualificationIntakeBatch,
+            QualificationAuthorityManifest,
+            tuple[EvidenceArtifactRef, ...],
+        ]
+        | B300QualificationGraphGateHold
+    ):
+        try:
+            work = self.service.plan_qualification(
+                candidates,
+                screen_receipts,
+                state=None,
+            )
+        except B300QualificationGraphEvidenceHold:
+            if request_digest is None:
+                raise
+            return qualification_graph_gate_hold(
+                RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+                authenticated_request_digest=request_digest,
+                authority_context_digest=canonical_digest(
+                    "cacheon.eval.b300-qualification-graph-provider-context.v1",
+                    {
+                        "candidate_digests": [row.digest for row in candidates],
+                        "reservation_digests": [
+                            row.reservation.reservation_digest for row in candidates
+                        ],
+                    },
+                ),
+                code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+            )
         self._validate_work(work, candidates)
+        supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
+        graph_root = self._remote_qualification_graph_root
+        if request_digest is not None and graph_root is not None:
+            try:
+                plan = work.factory.build()
+            except B300QualificationGraphEvidenceHold:
+                return qualification_graph_gate_hold(
+                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+                    authenticated_request_digest=request_digest,
+                    authority_context_digest=work.factory.manifest.digest,
+                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+                )
+            except QualificationIntakeError as exc:
+                raise B300MainnetWorkerError(
+                    "remote graph gate could not reopen the prebuilt qualification plan"
+                ) from exc
+            graph = run_b300_qualification_graph_gate(
+                work.factory,
+                plan,
+                evidence_root=graph_root,
+                candidates=candidates,
+                authenticated_request_digest=request_digest,
+            )
+            if type(graph) is B300QualificationGraphGateHold:
+                return graph
+            if (
+                graph.plan is not plan
+                or graph.factory is not work.factory
+                or type(graph)
+                not in {
+                    B300QualificationGraphGatePass,
+                    B300QualificationGraphGateFail,
+                }
+            ):
+                raise B300MainnetWorkerError(
+                    "graph gate changed the exact prebuilt qualification plan"
+                )
+            supporting_evidence_refs = graph.supporting_evidence_refs
+            if type(graph) is B300QualificationGraphGateFail:
+                self._validate_batch(graph.batch, work, candidates)
+                return (
+                    graph.batch,
+                    work.factory.manifest,
+                    supporting_evidence_refs,
+                )
         batch = run_qualification_intake(
             work.factory,
             executor=work.executor,
@@ -325,9 +481,11 @@ class B300MainnetWorker:
             entropy_provider=work.entropy_provider,
             hidden_judge=work.hidden_judge,
             deadline=float(work.deadline),
+            continuation_store=continuation_store,
+            request_digest=request_digest,
         )
         self._validate_batch(batch, work, candidates)
-        return batch, work.factory.manifest
+        return batch, work.factory.manifest, supporting_evidence_refs
 
     @staticmethod
     def _validate_work(

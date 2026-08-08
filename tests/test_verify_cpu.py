@@ -13,11 +13,17 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from cacheon.registry import eligibility_from_metadata  # noqa: E402
+from cacheon.registry import Eligibility, eligibility_from_metadata  # noqa: E402
 from cacheon.sandbox import load_entry  # noqa: E402
 from cacheon.slots import get_slot  # noqa: E402
 from cacheon.tensor_spec import OutputSpec, TensorSpec  # noqa: E402
 from cacheon.verify import format_verify, verify_entry  # noqa: E402
+from cacheon.verification_outcomes import (  # noqa: E402
+    GraphPhaseOutcome,
+    PhaseDisposition,
+    VerificationCaseDescriptor,
+    VerificationCaseKind,
+)
 
 from pathlib import Path  # noqa: E402
 
@@ -92,6 +98,12 @@ def test_wrong_kernel_fails_correctness_cpu():
     slot = get_slot("activation.silu_and_mul")
     result = verify_entry(slot, broken, dtype=torch.float32, device="cpu", seed=0)
     assert not result.passed
+    assert all(
+        row.phase_outcome.eager is PhaseDisposition.CANDIDATE_FAILED
+        and row.phase_outcome.observation_complete
+        and row.phase_outcome.failure_is_candidate_attributable
+        for row in result.shape_results
+    )
 
 
 def test_rmsnorm_catalog_exercises_exact_6144_hidden_domain():
@@ -135,6 +147,11 @@ def test_cpu_verify_reports_graph_proof_not_obtained():
     assert not result.graph_verified
     assert not result.fully_verified
     assert result.shape_results[0].graph_replays == 0
+    outcome = result.shape_results[0].phase_outcome
+    assert outcome.eager_passed and not outcome.capture_succeeded
+    assert outcome.capture is PhaseDisposition.INFRASTRUCTURE_FAILED
+    assert not outcome.observation_complete
+    assert not outcome.failure_is_candidate_attributable
     assert format_verify(result).startswith("[NUMERICAL_PASS]")
 
 
@@ -149,6 +166,108 @@ def test_graph_replay_orchestration_passes_all_replays_with_cpu_backend():
     assert result.passed
     assert result.graph_verified
     assert result.shape_results[0].graph_replays == 3
+    outcome = result.shape_results[0].phase_outcome
+    assert outcome.eager_passed and outcome.capture_succeeded
+    assert outcome.replay_passed and outcome.replay_count == 3
+    assert outcome.observation_complete
+    assert not outcome.failure_is_candidate_attributable
+
+
+def test_typed_not_applicable_outcome_never_claims_candidate_execution():
+    result = verify_entry(
+        get_slot("activation.silu_and_mul"),
+        _faithful_silu,
+        dtype=torch.float32,
+        device="cpu",
+        shapes=[{"num_tokens": 2, "d": 8}],
+        graph_safe=False,
+        eligibility=Eligibility(min_num_tokens=100),
+    )
+
+    assert not result.passed and result.num_not_applicable == 1
+    row = result.shape_results[0]
+    assert not row.applicable
+    assert row.phase_outcome.eager is PhaseDisposition.NOT_RUN
+    assert row.phase_outcome.observation_complete
+    assert not row.phase_outcome.failure_is_candidate_attributable
+    assert row.case_descriptor is not None
+
+
+def test_phase_outcome_rejects_causal_and_attribution_contradictions():
+    with pytest.raises(ValueError, match="capture/replay cannot precede"):
+        GraphPhaseOutcome(
+            PhaseDisposition.CANDIDATE_FAILED,
+            PhaseDisposition.PASSED,
+            PhaseDisposition.NOT_RUN,
+            0,
+            True,
+        )
+    with pytest.raises(ValueError, match="infrastructure failure cannot be a complete"):
+        GraphPhaseOutcome(
+            PhaseDisposition.PASSED,
+            PhaseDisposition.INFRASTRUCTURE_FAILED,
+            PhaseDisposition.NOT_RUN,
+            0,
+            True,
+        )
+
+
+def test_candidate_capture_exception_is_typed_without_parsing_detail():
+    slot = get_slot("activation.silu_and_mul")
+    backend = _FakeGraphBackend()
+
+    def fails_during_capture(x, out):
+        if backend.phase == "capture":
+            raise RuntimeError("candidate capture path")
+        _faithful_silu(x, out)
+
+    result = verify_entry(
+        slot,
+        fails_during_capture,
+        dtype=torch.float32,
+        device="cpu",
+        shapes=[{"num_tokens": 2, "d": 8}],
+        graph_safe=True,
+        graph_replays=3,
+        _graph_backend=backend,
+    )
+
+    outcome = result.shape_results[0].phase_outcome
+    assert not result.passed
+    assert outcome.eager_passed
+    assert outcome.capture is PhaseDisposition.CANDIDATE_FAILED
+    assert outcome.replay is PhaseDisposition.NOT_RUN
+    assert outcome.observation_complete
+    assert outcome.failure_is_candidate_attributable
+
+
+def test_candidate_first_replay_exception_is_typed_at_zero_completed_replays():
+    slot = get_slot("activation.silu_and_mul")
+    backend = _FakeGraphBackend()
+
+    def fails_during_first_replay(x, out):
+        if backend.phase == "replay" and backend.replay_index == 0:
+            raise RuntimeError("candidate replay path")
+        _faithful_silu(x, out)
+
+    result = verify_entry(
+        slot,
+        fails_during_first_replay,
+        dtype=torch.float32,
+        device="cpu",
+        shapes=[{"num_tokens": 2, "d": 8}],
+        graph_safe=True,
+        graph_replays=3,
+        _graph_backend=backend,
+    )
+
+    outcome = result.shape_results[0].phase_outcome
+    assert not result.passed
+    assert outcome.capture_succeeded
+    assert outcome.replay is PhaseDisposition.CANDIDATE_FAILED
+    assert outcome.replay_count == 0
+    assert outcome.observation_complete
+    assert outcome.failure_is_candidate_attributable
 
 
 @pytest.mark.parametrize(
@@ -455,6 +574,11 @@ def test_later_graph_replay_corruption_is_not_hidden_by_first_replay():
     assert not result.passed
     assert result.shape_results[0].graph_replays == 2
     assert "cuda graph replay[1]" in result.shape_results[0].detail
+    outcome = result.shape_results[0].phase_outcome
+    assert outcome.replay is PhaseDisposition.CANDIDATE_FAILED
+    assert outcome.replay_count == 2
+    assert outcome.observation_complete
+    assert outcome.failure_is_candidate_attributable
 
 
 def test_explicit_non_graph_safe_skips_graph_gate():
@@ -469,6 +593,69 @@ def test_explicit_non_graph_safe_skips_graph_gate():
     assert not result.graph_required
     assert not result.graph_verified
     assert backend.replay_index == -1
+
+
+def test_ordinary_case_descriptor_binds_full_context_and_digest():
+    result = verify_entry(
+        get_slot("activation.silu_and_mul"),
+        _faithful_silu,
+        dtype=torch.float32,
+        device="cpu",
+        architecture="sm999",
+        tp_size=2,
+        world_size=2,
+        variant_name="variant-a",
+        shapes=[{"num_tokens": 2, "d": 8}],
+        graph_safe=True,
+        graph_replays=3,
+        _graph_backend=_FakeGraphBackend(),
+    )
+    case = result.shape_results[0].case_descriptor
+    assert case is not None
+    assert case.slot_id == "activation.silu_and_mul"
+    assert case.variant_id == "variant-a"
+    assert case.case_kind is VerificationCaseKind.ORDINARY_SINGLE
+    call = dict(case.calls[0])
+    assert {
+        "dtype": call["dtype"],
+        "architecture": call["architecture"],
+        "tp_size": call["tp_size"],
+        "world_size": call["world_size"],
+        "graph_mode": call["graph_mode"],
+    } == {
+        "dtype": "float32",
+        "architecture": "sm999",
+        "tp_size": 2,
+        "world_size": 2,
+        "graph_mode": "cuda_graph",
+    }
+
+    for field, value in (
+        ("dtype", "bfloat16"),
+        ("architecture", "sm998"),
+        ("tp_size", 4),
+        ("world_size", 4),
+        ("graph_mode", "eager"),
+    ):
+        changed = dict(call)
+        changed[field] = value
+        rebound = VerificationCaseDescriptor.from_call_dicts(
+            slot_id=case.slot_id,
+            variant_id=case.variant_id,
+            case_kind=case.case_kind,
+            calls=(changed,),
+        )
+        assert rebound.digest != case.digest
+
+    missing = dict(call)
+    missing.pop("architecture")
+    with pytest.raises(ValueError, match="missing sealed execution context"):
+        VerificationCaseDescriptor.from_call_dicts(
+            slot_id=case.slot_id,
+            variant_id=case.variant_id,
+            case_kind=case.case_kind,
+            calls=(missing,),
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a CUDA GPU")

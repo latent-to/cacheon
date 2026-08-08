@@ -6,6 +6,7 @@ import json
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,7 +35,25 @@ def _adapter_paths(tmp_path: Path) -> adapter.AdapterPaths:
         publication_root=tmp_path / "publications",
         processing_root=tmp_path / "processing",
         results_root=tmp_path / "results",
+        continuation_root=tmp_path / "continuation",
     )
+
+
+def test_continuation_root_is_an_explicit_absolute_adapter_path(
+    tmp_path: Path,
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    assert paths.continuation_root == tmp_path / "continuation"
+    with pytest.raises(adapter.AdapterError, match="continuation_root.*absolute"):
+        adapter.AdapterPaths(
+            paths.registration,
+            paths.ready_receipt,
+            paths.credential,
+            paths.publication_root,
+            paths.processing_root,
+            paths.results_root,
+            Path("relative-continuation"),
+        )
 
 
 def test_publication_transport_reconstructs_reopenable_immutable_tree(
@@ -143,7 +162,9 @@ class _FakeWorker:
         raise AssertionError("pre-resident failure must not call worker")
 
 
-def _runtime_shell(paths: adapter.AdapterPaths) -> adapter.AdapterRuntime:
+def _runtime_shell(
+    paths: adapter.AdapterPaths, *, qualification_commission=None
+) -> adapter.AdapterRuntime:
     runtime = object.__new__(adapter.AdapterRuntime)
     runtime.paths = paths
     runtime.registration = {}
@@ -151,9 +172,74 @@ def _runtime_shell(paths: adapter.AdapterPaths) -> adapter.AdapterRuntime:
     runtime.credential = object()
     runtime.identity = object()
     runtime.worker = _FakeWorker()
+    runtime.qualification_commission = qualification_commission
+    runtime.qualification_continuation_store = None
+    runtime._commissioned_service = None
     runtime.closed = False
     runtime.verify_current = lambda: None
     return runtime
+
+
+def _patch_authenticated_carrier(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stage: str,
+    wire: object,
+    lease: dict[str, object] | None = None,
+) -> None:
+    from cacheon.chain import remote_evaluation_dispatcher as dispatcher
+
+    if lease is None:
+        lease = {
+            "claimed_block": 10,
+            "expires_block": 20,
+            "generation": 1,
+            "initial_expires_block": 20,
+            "lease_id": "1" * 64,
+            "members": [
+                {
+                    "prior_status": "promoted" if stage == "qualification" else "published",
+                    "reservation_id": "2" * 64,
+                }
+            ],
+            "owner": "operator-a",
+            "stage": stage,
+        }
+    outer = {
+        "artifacts": [
+            {"role": f"{stage}_payload", "sha256": "3" * 64, "size": 1}
+        ],
+        "lease": lease,
+        "ready_receipt_digest": "4" * 64,
+        "request_id": "5" * 64,
+        "schema": spool.SCHEMA_REQUEST,
+        "service_identity": "6" * 64,
+        "worker_epoch": "7" * 32,
+        "worker_readiness_digest": "8" * 64,
+    }
+    monkeypatch.setattr(adapter, "load_json", lambda _path, **_kwargs: {})
+    monkeypatch.setattr(
+        adapter,
+        "verify_request",
+        lambda _value, _root, _registration, *, identity, credential: outer,
+    )
+    monkeypatch.setattr(
+        adapter,
+        "artifact_for_role",
+        lambda _outer, root, role: root / role,
+    )
+    monkeypatch.setattr(
+        dispatcher.RemoteEvaluationRequest,
+        "from_dict",
+        classmethod(lambda _cls, _value: wire),
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "verify_remote_request",
+        lambda observed, _identity, _credential: (
+            None if observed is wire else pytest.fail("decoded wrong request")
+        ),
+    )
 
 
 def test_adapter_pre_resident_carrier_failure_never_calls_worker(
@@ -179,18 +265,342 @@ def test_qualification_requests_are_refused_before_resident_work(
 ) -> None:
     paths = _adapter_paths(tmp_path)
     runtime = _runtime_shell(paths)
-    monkeypatch.setattr(adapter, "load_json", lambda _path: {})
-    monkeypatch.setattr(
-        adapter,
-        "verify_request",
-        lambda _value, _root, _registration, *, identity, credential: {
-            "lease": {"stage": "qualification"}
-        },
+    _patch_authenticated_carrier(
+        monkeypatch, stage="qualification", wire=object()
     )
     with pytest.raises(adapter.AdapterRequestFailed) as captured:
         adapter.run_with_runtime(tmp_path / "request", tmp_path / "result", runtime)
     assert "qualification execution authority" in str(captured.value.__cause__)
     assert runtime.worker.calls == 0
+
+
+def test_adapter_runtime_rejects_untyped_qualification_commission(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(adapter.AdapterError, match="authorities.*typed"):
+        adapter.B300RemoteQualificationCommission(object(), object(), object())
+    with pytest.raises(adapter.AdapterError, match="qualification commission.*typed"):
+        adapter.AdapterRuntime(
+            _adapter_paths(tmp_path), qualification_commission=object()
+        )
+
+
+def test_commission_materializes_and_resolves_each_fifo_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cacheon.bundle_hash import content_hash
+    from cacheon.chain import remote_evaluation_dispatcher as dispatcher
+    from cacheon.chain.publication import publish_worker_bundle
+    from cacheon.eval import b300_remote_qualification_adapter as qualification_adapter
+    from cacheon.eval.qualification_continuation import QualificationContinuationStore
+
+    fixtures = _spool_fixtures()
+    authorities = []
+    for name in ("first", "second"):
+        source = tmp_path / name
+        source.mkdir()
+        authorities.append(fixtures._screen_authority(source))
+    distinct_source = tmp_path / "distinct-source"
+    distinct_source.mkdir()
+    distinct_manifest = distinct_source / "manifest.toml"
+    distinct_manifest.write_text(
+        "bundle_id = 'second-fifo-publication'\n", encoding="utf-8"
+    )
+    distinct_source.chmod(0o700)
+    distinct_manifest.chmod(0o600)
+    distinct_publication = publish_worker_bundle(
+        distinct_source,
+        tmp_path / "distinct-publications",
+        content_hash(distinct_source),
+    )
+    distinct_archive = tmp_path / "distinct-publication.tar"
+    fixtures._publication_tar(distinct_publication, distinct_archive)
+    paths = _adapter_paths(tmp_path)
+    commission = object.__new__(adapter.B300RemoteQualificationCommission)
+    fixed_authorities = (object(), object(), object())
+    object.__setattr__(commission, "deployment", fixed_authorities[0])
+    object.__setattr__(commission, "construction", fixed_authorities[1])
+    object.__setattr__(commission, "readiness", fixed_authorities[2])
+    runtime = _runtime_shell(paths, qualification_commission=commission)
+    runtime.qualification_continuation_store = QualificationContinuationStore(
+        paths.continuation_root
+    )
+    run_calls: list[tuple[object, object]] = []
+
+    class PerRequestAdapter:
+        def __init__(
+            self, deployment, construction, readiness, resolver, continuation_store
+        ) -> None:
+            assert (deployment, construction, readiness) == fixed_authorities
+            assert continuation_store is runtime.qualification_continuation_store
+            assert len(resolver.publications) == 1
+            self.publication = resolver.publications[0]
+            assert resolver.resolve(self.publication.to_dict()) == self.publication
+
+        def run(self, observed_wire):
+            run_calls.append((self.publication, observed_wire))
+            return object()
+
+    monkeypatch.setattr(
+        qualification_adapter, "B300RemoteQualificationAdapter", PerRequestAdapter
+    )
+    monkeypatch.setattr(
+        dispatcher,
+        "seal_remote_response",
+        lambda _wire, _payload, identity, credential: (
+            SimpleNamespace(
+                to_dict=lambda: {
+                    "schema": "sealed-response",
+                    "stage": "qualification",
+                }
+            )
+            if identity is runtime.identity and credential is runtime.credential
+            else pytest.fail("sealed response used changed authority")
+        ),
+    )
+    try:
+        expected = []
+        wires = []
+        for index, authority in enumerate(authorities):
+            coordinator, claim, *_prefix, job_dir = authority
+            if index == 0:
+                expected_publication = claim.publication
+                outer = spool.load_json(job_dir / "request.json")
+                archive = spool.artifact_for_role(
+                    outer, job_dir, "candidate_publication"
+                )
+            else:
+                expected_publication = distinct_publication
+                archive = distinct_archive
+            wire = SimpleNamespace(
+                body={
+                    "candidates": [
+                        {"publication": expected_publication.to_dict()}
+                    ]
+                }
+            )
+            wires.append(wire)
+            _patch_authenticated_carrier(
+                monkeypatch, stage="qualification", wire=wire
+            )
+            monkeypatch.setattr(
+                adapter,
+                "artifact_for_role",
+                lambda _outer, root, role, archive=archive: (
+                    archive if role == "candidate_publication" else root / role
+                ),
+            )
+            result_dir = tmp_path / f"result-{index}"
+            result_dir.mkdir(mode=0o700)
+
+            adapter.run_with_runtime(job_dir, result_dir, runtime)
+
+            materialized = run_calls[-1][0]
+            expected.append(materialized)
+            assert materialized.to_dict() == expected_publication.to_dict()
+            assert materialized.root != expected_publication.root
+            response = result_dir / "response.json"
+            assert response.is_file()
+            assert stat.S_IMODE(response.stat().st_mode) == 0o400
+
+        assert len(expected) == 2
+        assert expected[0].digest != expected[1].digest
+        assert run_calls == list(zip(expected, wires))
+    finally:
+        for coordinator, claim, *_rest in authorities:
+            coordinator._release(claim.lease, reason="test_cleanup")
+
+
+def test_qualification_archive_mismatch_never_builds_or_runs_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cacheon.eval.b300_remote_qualification_adapter import (
+        B300RemoteQualificationAdapter,
+    )
+
+    fixtures = _spool_fixtures()
+    source = tmp_path / "source"
+    source.mkdir()
+    authority = fixtures._screen_authority(source)
+    coordinator, claim, *_prefix, job_dir = authority
+    commission = object.__new__(adapter.B300RemoteQualificationCommission)
+    runtime = _runtime_shell(
+        _adapter_paths(tmp_path), qualification_commission=commission
+    )
+    outer = spool.load_json(job_dir / "request.json")
+    archive = spool.artifact_for_role(outer, job_dir, "candidate_publication")
+    wire = SimpleNamespace(
+        body={"candidates": [{"publication": {"changed": "wire"}}]}
+    )
+    _patch_authenticated_carrier(
+        monkeypatch, stage="qualification", wire=wire
+    )
+    monkeypatch.setattr(
+        adapter,
+        "artifact_for_role",
+        lambda _outer, root, role: (
+            archive if role == "candidate_publication" else root / role
+        ),
+    )
+    factory_calls: list[object] = []
+    resident_calls: list[object] = []
+    monkeypatch.setattr(
+        adapter.B300RemoteQualificationCommission,
+        "adapter_for",
+        lambda _self, publication, _store: factory_calls.append(publication),
+    )
+    monkeypatch.setattr(
+        B300RemoteQualificationAdapter,
+        "run",
+        lambda _self, request: resident_calls.append(request),
+    )
+    try:
+        with pytest.raises(adapter.AdapterRequestFailed) as captured:
+            adapter.run_with_runtime(job_dir, tmp_path / "result", runtime)
+        assert "changed wire authority" in str(captured.value.__cause__)
+        assert factory_calls == []
+        assert resident_calls == []
+        assert runtime.worker.calls == 0
+    finally:
+        coordinator._release(claim.lease, reason="test_cleanup")
+
+
+def test_qualification_execution_failure_is_epoch_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cacheon.eval.b300_remote_qualification_adapter import (
+        B300RemoteQualificationAdapter,
+    )
+    from cacheon.eval.qualification_continuation import (
+        QualificationContinuationError,
+    )
+
+    commission = object.__new__(adapter.B300RemoteQualificationCommission)
+    commissioned = object.__new__(B300RemoteQualificationAdapter)
+    runtime = _runtime_shell(
+        _adapter_paths(tmp_path), qualification_commission=commission
+    )
+    wire = SimpleNamespace(
+        body={"candidates": [{"publication": {"candidate": "one"}}]}
+    )
+    _patch_authenticated_carrier(
+        monkeypatch, stage="qualification", wire=wire
+    )
+    monkeypatch.setattr(adapter, "safe_publication", lambda *_args: object())
+    monkeypatch.setattr(
+        adapter.B300RemoteQualificationCommission,
+        "adapter_for",
+        lambda _self, _publication, _store: commissioned,
+    )
+
+    def fail_after_entry(_self, observed):
+        assert observed is wire
+        raise QualificationContinuationError("continuation identity changed")
+
+    monkeypatch.setattr(B300RemoteQualificationAdapter, "run", fail_after_entry)
+    result_dir = tmp_path / "result"
+    result_dir.mkdir(mode=0o700)
+    with pytest.raises(adapter.AdapterEpochFailed) as captured:
+        adapter.run_with_runtime(tmp_path / "request", result_dir, runtime)
+    assert isinstance(captured.value.__cause__, QualificationContinuationError)
+    assert (result_dir / "RESIDENT_ENTRY_ARMED.json").is_file()
+
+
+def test_screen_requests_still_use_only_screen_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cacheon import arena_service
+    from cacheon.chain import evaluation_leases
+    from cacheon.chain import remote_evaluation_dispatcher as dispatcher
+    from cacheon.eval import qualification_intake
+
+    paths = _adapter_paths(tmp_path)
+    runtime = _runtime_shell(paths)
+    reservation_id = "1" * 64
+    lease_value = {
+        "claimed_block": 10,
+        "expires_block": 20,
+        "generation": 1,
+        "initial_expires_block": 20,
+        "lease_id": "2" * 64,
+        "members": [
+            {"prior_status": "published", "reservation_id": reservation_id}
+        ],
+        "owner": "operator-a",
+        "stage": "screen",
+    }
+    wire = SimpleNamespace(
+        body={
+            "candidate_digest": "3" * 64,
+            "publication": {},
+            "reservation": {},
+            "screen_attempt": 1,
+        }
+    )
+    _patch_authenticated_carrier(
+        monkeypatch, stage="screen", wire=wire, lease=lease_value
+    )
+    lease = SimpleNamespace(
+        lease_id=lease_value["lease_id"], reservation_ids=(reservation_id,)
+    )
+    reservation = SimpleNamespace(reservation_digest=reservation_id)
+    candidate = SimpleNamespace(digest=wire.body["candidate_digest"])
+    receipt = arena_service.ArenaScreenReceipt(
+        "4" * 64,
+        candidate.digest,
+        1,
+        (
+            arena_service.ScreenStageResult(
+                arena_service.SCREEN_STAGES[0],
+                arena_service.ScreenGrade.NO_DECISION,
+                "5" * 64,
+                1,
+            ),
+        ),
+        arena_service.PromotionDecision.RETRY,
+    )
+    evaluation = SimpleNamespace(
+        lease=lease,
+        disposition="completed",
+        envelope=SimpleNamespace(
+            lease_id=lease.lease_id, payload_digest=receipt.digest
+        ),
+        payload=receipt,
+    )
+    screen_calls: list[tuple[object, object]] = []
+    runtime.worker.run_remote_screen = lambda observed_lease, observed_candidate: (
+        screen_calls.append((observed_lease, observed_candidate)) or evaluation
+        if observed_lease is lease and observed_candidate is candidate
+        else pytest.fail("screen worker received changed inputs")
+    )
+    monkeypatch.setattr(
+        evaluation_leases, "EvaluationLeaseMember", lambda **_row: object()
+    )
+    monkeypatch.setattr(evaluation_leases, "EvaluationLease", lambda *_args: lease)
+    monkeypatch.setattr(
+        qualification_intake.QualificationReservation,
+        "from_dict",
+        classmethod(lambda _cls, _value: reservation),
+    )
+    monkeypatch.setattr(
+        arena_service, "ArenaCandidateBinding", lambda *_args: candidate
+    )
+    monkeypatch.setattr(adapter, "safe_publication", lambda *_args: object())
+    monkeypatch.setattr(
+        dispatcher,
+        "seal_remote_response",
+        lambda *_args: SimpleNamespace(
+            to_dict=lambda: {"schema": "sealed-response", "stage": "screen"}
+        ),
+    )
+    monkeypatch.setattr(adapter, "publish_resident_entry", lambda *_args: {})
+    result_dir = tmp_path / "result"
+    result_dir.mkdir(mode=0o700)
+
+    adapter.run_with_runtime(tmp_path / "request", result_dir, runtime)
+
+    assert (result_dir / "response.json").is_file()
+    assert screen_calls == [(lease, candidate)]
 
 
 def test_adapter_request_failure_continues_on_same_runtime(
@@ -292,3 +702,243 @@ def test_adapter_epoch_failure_exits_before_next_command(
             "state": "epoch_failed",
         },
     )
+
+
+def _qualification_capabilities():
+    import hashlib
+
+    from cacheon.eval.b300_qualification_commission import (
+        B300QualificationCapabilities,
+    )
+    from cacheon.eval.qualification_runner import HiddenJudgeBinding
+
+    def _h(seed: str) -> str:
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+    class _Judge:
+        binding = HiddenJudgeBinding(
+            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
+        )
+
+        def __call__(self, **_kwargs):
+            raise AssertionError("wiring tests must not execute the hidden judge")
+
+    class _Resolver:
+        def resolve_proposal(self, *_args, **_kwargs):
+            raise AssertionError("wiring tests must not resolve sources")
+
+        def resolve_integrated(self, *_args, **_kwargs):
+            raise AssertionError("wiring tests must not resolve sources")
+
+    return B300QualificationCapabilities(
+        secret_loader=lambda _reference: b"s" * 32,
+        entropy_provider=lambda *_args: None,
+        hidden_judge=_Judge(),
+        source_resolver=_Resolver(),
+        source_resolver_digest=_h("source-resolver"),
+        graph_facts_builder=lambda *_args: None,
+        graph_facts_builder_digest=_h("graph-facts"),
+    )
+
+
+def test_adapter_runtime_rejects_untyped_or_doubled_qualification_authority(
+    tmp_path: Path,
+) -> None:
+    paths = _adapter_paths(tmp_path)
+    # Both checks fail closed before any sealed file is read.
+    with pytest.raises(adapter.AdapterError, match="capabilities.*typed"):
+        adapter.AdapterRuntime(paths, qualification_capabilities=object())
+    commission = object.__new__(adapter.B300RemoteQualificationCommission)
+    with pytest.raises(adapter.AdapterError, match="mutually exclusive"):
+        adapter.AdapterRuntime(
+            paths,
+            qualification_commission=commission,
+            qualification_capabilities=_qualification_capabilities(),
+        )
+
+
+def test_capabilities_commission_one_service_for_screen_and_qualification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cacheon.eval.b300_qualification_commission as commission_module
+
+    paths = _adapter_paths(tmp_path)
+    registration = {"ready_receipt_digest": "d" * 64}
+    ready = {"receipt_digest": "d" * 64}
+    monkeypatch.setattr(
+        adapter,
+        "load_json",
+        lambda path: registration if path == paths.registration else ready,
+    )
+    monkeypatch.setattr(adapter, "verify_registration", lambda value: value)
+    monkeypatch.setattr(adapter, "verify_ready_receipt", lambda value: value)
+    monkeypatch.setattr(
+        adapter, "registration_credential", lambda _registration, _path: object()
+    )
+    monkeypatch.setattr(
+        adapter, "registration_transport_identity", lambda _registration: object()
+    )
+
+    worker = _FakeWorker()
+    commission = object.__new__(adapter.B300RemoteQualificationCommission)
+    closed: list[str] = []
+    service = SimpleNamespace(
+        worker=worker,
+        commission=commission,
+        close=lambda: closed.append("service"),
+    )
+    observed: list[tuple[object, object, object]] = []
+
+    def build(observed_registration, observed_ready, observed_capabilities):
+        observed.append(
+            (observed_registration, observed_ready, observed_capabilities)
+        )
+        return service
+
+    monkeypatch.setattr(
+        commission_module,
+        "build_commissioned_b300_qualification_service",
+        build,
+    )
+
+    def forbidden_screen_only(_registration, _ready):
+        raise AssertionError(
+            "capabilities path must not build a second screen-only worker"
+        )
+
+    import cacheon.eval.b300_screen_deployment as screen_deployment
+
+    monkeypatch.setattr(
+        screen_deployment,
+        "build_commissioned_b300_screen_worker",
+        forbidden_screen_only,
+    )
+
+    capabilities = _qualification_capabilities()
+    runtime = adapter.AdapterRuntime(paths, qualification_capabilities=capabilities)
+    assert observed == [(registration, ready, capabilities)]
+    assert runtime.worker is worker
+    assert runtime.qualification_commission is commission
+    assert runtime.qualification_continuation_store.root == paths.continuation_root
+
+    runtime.close()
+    runtime.close()
+    assert closed == ["service"]
+    assert worker.calls == 0
+
+
+def test_screen_only_runtime_still_closes_its_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import cacheon.eval.b300_screen_deployment as screen_deployment
+
+    paths = _adapter_paths(tmp_path)
+    registration = {"ready_receipt_digest": "d" * 64}
+    ready = {"receipt_digest": "d" * 64}
+    monkeypatch.setattr(
+        adapter,
+        "load_json",
+        lambda path: registration if path == paths.registration else ready,
+    )
+    monkeypatch.setattr(adapter, "verify_registration", lambda value: value)
+    monkeypatch.setattr(adapter, "verify_ready_receipt", lambda value: value)
+    monkeypatch.setattr(
+        adapter, "registration_credential", lambda _registration, _path: object()
+    )
+    monkeypatch.setattr(
+        adapter, "registration_transport_identity", lambda _registration: object()
+    )
+    closed: list[str] = []
+    worker = SimpleNamespace(close=lambda: closed.append("worker"))
+    monkeypatch.setattr(
+        screen_deployment,
+        "build_commissioned_b300_screen_worker",
+        lambda _registration, _ready: worker,
+    )
+    runtime = adapter.AdapterRuntime(paths)
+    assert runtime.worker is worker
+    assert runtime.qualification_commission is None
+    assert runtime.qualification_continuation_store is None
+    assert not paths.continuation_root.exists()
+    runtime.close()
+    assert closed == ["worker"]
+
+
+def test_load_qualification_capabilities_names_one_reviewed_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cacheon.eval import qualification_capability_loader as capability_loader
+
+    receipt = object()
+    observed: list[tuple[str, str]] = []
+
+    def load(specifier: str, source_sha256: str):
+        observed.append((specifier, source_sha256))
+        return receipt
+
+    monkeypatch.setattr(capability_loader, "load_qualification_capabilities", load)
+    assert (
+        adapter._load_qualification_capabilities("private_factory:build", "a" * 64)
+        is receipt
+    )
+    assert observed == [("private_factory:build", "a" * 64)]
+
+    def refuse(_specifier: str, _source_sha256: str):
+        raise capability_loader.QualificationCapabilityLoadError("source differs")
+
+    monkeypatch.setattr(capability_loader, "load_qualification_capabilities", refuse)
+    with pytest.raises(adapter.AdapterError, match="source differs"):
+        adapter._load_qualification_capabilities("private_factory:build", "b" * 64)
+
+
+def test_one_shot_mode_cannot_commission_qualification(tmp_path: Path) -> None:
+    paths = _adapter_paths(tmp_path)
+    argv = [
+        "--registration",
+        str(paths.registration),
+        "--ready-receipt",
+        str(paths.ready_receipt),
+        "--credential",
+        str(paths.credential),
+        "--publication-root",
+        str(paths.publication_root),
+        "--processing-root",
+        str(paths.processing_root),
+        "--results-root",
+        str(paths.results_root),
+        "--continuation-root",
+        str(paths.continuation_root),
+        "--request-dir",
+        str(paths.processing_root / ("5" * 64)),
+        "--result-dir",
+        str(paths.results_root / ("5" * 64)),
+        "--qualification-capabilities",
+        "private_factory:build",
+        "--qualification-capabilities-sha256",
+        "a" * 64,
+    ]
+    with pytest.raises(SystemExit) as captured:
+        adapter.main(argv)
+    assert captured.value.code == 2
+
+
+def test_cli_requires_explicit_continuation_root(tmp_path: Path) -> None:
+    paths = _adapter_paths(tmp_path)
+    argv = [
+        "--serve",
+        "--registration",
+        str(paths.registration),
+        "--ready-receipt",
+        str(paths.ready_receipt),
+        "--credential",
+        str(paths.credential),
+        "--publication-root",
+        str(paths.publication_root),
+        "--processing-root",
+        str(paths.processing_root),
+        "--results-root",
+        str(paths.results_root),
+    ]
+    with pytest.raises(SystemExit) as captured:
+        adapter.main(argv)
+    assert captured.value.code == 2

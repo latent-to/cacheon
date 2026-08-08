@@ -1,4 +1,4 @@
-"""Validator-owned qualification construction for ordinary registered targets.
+"""Validator-owned qualification construction for all registered targets.
 
 This module closes the target-independent part of the B300 qualification
 builder.  A finalized candidate supplies only an
@@ -11,7 +11,7 @@ deployment facts rather than data that can be inferred from a target ID:
 
 * a source resolver for already-active incumbent contributions;
 * a reviewed binding factory for a newly materialized candidate tree; and
-* focused graph observations from the validator's target-specific verifier.
+* focused graph observations from the validator's commissioned verifier.
 
 All three capabilities have explicit source digests and are supplied in
 process.  The generic layer independently inspects the immutable publication,
@@ -22,15 +22,15 @@ resident-v3 authorities, and returns the exact ``CausalQualificationInput``
 consumed by :mod:`cacheon.eval.b300_qualification_deployment`.
 
 There is no FE campaign/profile identity and no expected-submission allowlist
-in this module.  The supported registry is exactly the eleven live singleton
-targets in ``target_catalog.SINGLETON_TARGET_IDS``.
+in this module.  The supported registry is exactly the complete registered
+catalog: singleton and atomic targets share this one target-neutral path.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -44,18 +44,20 @@ from cacheon.eval.b300_qualification_deployment import (
     B300QualificationCohort,
     B300RegisteredProfileAuthority,
 )
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.crossover_runtime import (
     ResidentArmPlan,
     ResidentCrossoverPlan,
     ResidentSpeedPolicy,
 )
-from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
+from cacheon.eval.engine_launch import TrustedLaunchBinding
 from cacheon.eval.marginal_runtime import (
     MaterializedArmBinding,
     PreparedCandidateRuntime,
     prepare_marginal_runtime,
 )
-from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import (
     GraphVerificationBinding,
@@ -77,6 +79,9 @@ from cacheon.eval.qualification_runner import (
     SpeedStageDisposition,
     _planned_prompt_digests,
 )
+from cacheon.eval.resident_audit_authority import (
+    ResidentAuditExecutionAuthority,
+)
 from cacheon.eval.scoring import marginal_workload_digest
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import (
@@ -84,8 +89,6 @@ from cacheon.stack_manifest import (
     ProposalContributionRef,
 )
 from cacheon.stack_plan import MarginalArmPlan, plan_candidate_stack, plan_marginal_arm
-from cacheon.target_catalog import SINGLETON_TARGET_IDS, TargetCatalog
-
 
 from cacheon.eval.b300_registered_qualification_inputs import (
     ATTRIBUTION_SCHEMA,
@@ -95,12 +98,17 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     POLICY_SCHEMA,
     PRODUCTION_AUTHORITY_BLOCKERS,
     RESOLVER_SCHEMA,
+    REGISTERED_B300_TARGET_IDS,
     B300FocusedGraphFacts,
+    B300MemberContractProjection,
     B300QualificationBlocker,
     B300RegisteredQualificationError,
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
+    B300RegisteredTargetProjection,
     _digest,
+    registered_b300_member_contract_projection,
+    registered_b300_profile_resolver_digest,
 )
 
 
@@ -116,7 +124,7 @@ class B300RegisteredQualificationComponents:
         if (
             type(self.profiles) is not tuple
             or tuple(row.target_id for row in self.profiles)
-            != ORDINARY_B300_TARGET_IDS
+            != REGISTERED_B300_TARGET_IDS
             or any(type(row) is not B300RegisteredProfileAuthority for row in self.profiles)
             or not callable(self.plan_builder)
         ):
@@ -152,7 +160,7 @@ class _CandidateSourceResolver:
 
 
 class B300RegisteredQualificationFactory:
-    """Closed ordinary-target registry plus deterministic candidate plan builder."""
+    """Closed registered-target registry plus deterministic candidate plan builder."""
 
     def __init__(self, inputs: B300RegisteredQualificationInputs) -> None:
         if type(inputs) is not B300RegisteredQualificationInputs:
@@ -160,8 +168,9 @@ class B300RegisteredQualificationFactory:
                 "registered qualification inputs are not exact"
             )
         self._inputs = inputs
+        self._projection = registered_b300_member_contract_projection(inputs.catalog)
         self._profiles = tuple(
-            self._profile_row(target_id) for target_id in ORDINARY_B300_TARGET_IDS
+            self._profile_row(row) for row in self._projection
         )
 
     @property
@@ -185,23 +194,17 @@ class B300RegisteredQualificationFactory:
             if row.target_id == target_id:
                 return row
         raise B300RegisteredQualificationError(
-            f"ordinary qualification target {target_id!r} is unsupported"
+            f"registered qualification target {target_id!r} is unsupported"
         )
 
-    def _profile_row(self, target_id: str) -> B300RegisteredProfileAuthority:
+    def _profile_row(
+        self, target: B300RegisteredTargetProjection
+    ) -> B300RegisteredProfileAuthority:
         inputs = self._inputs
-        spec = inputs.catalog.require(target_id)
-        contract = spec.contract_ref
-        assert contract is not None
-        resolver_digest = canonical_digest(
-            RESOLVER_SCHEMA,
-            {
-                "builder_source_digest": inputs.builder_source_digest,
-                "contract_digest": inputs.catalog.contract_digest(target_id),
-                "target_id": target_id,
-                "target_spec_digest": inputs.catalog.target_spec_digest(target_id),
-                "verification_profile_id": contract.verification_profile_id,
-            },
+        target_id = target.target_id
+        resolver_digest = registered_b300_profile_resolver_digest(
+            target,
+            builder_source_digest=inputs.builder_source_digest,
         )
 
         def resolve(
@@ -218,7 +221,7 @@ class B300RegisteredQualificationFactory:
 
         return B300RegisteredProfileAuthority(
             target_id,
-            inputs.catalog.target_spec_digest(target_id),
+            target.target_spec_digest,
             resolver_digest,
             resolve,
         )
@@ -367,28 +370,51 @@ class B300RegisteredQualificationFactory:
                 "prepared candidate differs from finalized publication authority"
             )
         spec = inputs.catalog.require(target_id)
-        contract = spec.contract_ref
-        if contract is None or spec.members != (target_id,):
+        target_projection = next(
+            (row for row in self._projection if row.target_id == target_id),
+            None,
+        )
+        if (
+            target_projection is None
+            or target_projection.target_spec_digest
+            != arm.transition.target_spec_digest
+            or target_projection.members != tuple(reservation.target_members)
+            or target_projection.members != tuple(spec.members)
+        ):
             raise B300RegisteredQualificationError(
-                "ordinary target lacks one independent singleton math contract"
+                "registered target differs from its ordered member authority"
             )
         try:
             facts = inputs.graph_facts_builder(candidate, prepared)
+        except B300QualificationGraphEvidenceHold:
+            raise
         except Exception as exc:
             raise B300RegisteredQualificationError(
                 "validator focused graph authority failed"
             ) from exc
-        if type(facts) is not B300FocusedGraphFacts or any(
-            row.slot_id != target_id for row in facts.variants
+        if type(facts) is not B300FocusedGraphFacts:
+            raise B300RegisteredQualificationError(
+                "focused graph authority returned untyped facts"
+            )
+        fact_members = tuple(sorted({row.slot_id for row in facts.variants}))
+        observation_members = tuple(
+            sorted({row.slot_id for row in facts.observations})
+        )
+        if (
+            fact_members != target_projection.members
+            or observation_members != target_projection.members
         ):
             raise B300RegisteredQualificationError(
-                "focused graph authority returned another target or untyped facts"
+                "focused graph authority returned another or incomplete member domain"
             )
-        member = GraphVerificationMemberBinding(
-            target_id,
-            inputs.catalog.target_spec_digest(target_id),
-            inputs.catalog.contract_digest(target_id),
-            contract.verification_profile_id,
+        members = tuple(
+            GraphVerificationMemberBinding(
+                row.slot_id,
+                row.target_spec_digest,
+                row.contract_digest,
+                row.verification_profile_id,
+            )
+            for row in target_projection.member_contracts
         )
         binding = GraphVerificationBinding(
             arm.digest,
@@ -398,7 +424,7 @@ class B300RegisteredQualificationFactory:
             target_id,
             arm.transition.target_spec_digest,
             inputs.catalog.digest,
-            (member,),
+            members,
             inputs.policy.verification_policy_digest,
         )
         requirement = GraphVerificationRequirement(
@@ -408,7 +434,17 @@ class B300RegisteredQualificationFactory:
         )
         observation = GraphVerificationObservation(
             requirement.digest,
-            (GraphMemberObservation(target_id, facts.observations),),
+            tuple(
+                GraphMemberObservation(
+                    member_id,
+                    tuple(
+                        row
+                        for row in facts.observations
+                        if row.slot_id == member_id
+                    ),
+                )
+                for member_id in target_projection.members
+            ),
         )
         try:
             product = publish_graph_observation(
@@ -452,11 +488,11 @@ class B300RegisteredQualificationFactory:
         inputs = self._inputs
         if type(cohort) is not B300QualificationCohort:
             raise B300RegisteredQualificationError(
-                "ordinary plan builder requires an exact singleton cohort"
+                "registered plan builder requires an exact one-candidate cohort"
             )
         if type(secret) is not bytes or len(secret) < 32:
             raise B300RegisteredQualificationError(
-                "ordinary plan builder requires a 256-bit private secret"
+                "registered plan builder requires a 256-bit private secret"
             )
         candidate = cohort.candidate
         contribution = self._contribution(candidate)
@@ -477,7 +513,7 @@ class B300RegisteredQualificationFactory:
             ) from None
         if len(prepared.candidates) != 1:
             raise B300RegisteredQualificationError(
-                "resident-v3 plan did not prepare exactly one ordinary candidate"
+                "resident-v3 plan did not prepare exactly one registered candidate"
             )
         prepared_candidate = prepared.candidates[0]
         authority = self.profile_for(
@@ -520,17 +556,24 @@ class B300RegisteredQualificationFactory:
                 hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
             ),
         )
-        audit_plan = replace(
+        audit_authority = ResidentAuditExecutionAuthority.derive(
+            prepared_candidate.launch,
+            prepared_candidate.binding.launch_binding,
             prepared_candidate.session_plan,
+            audit_policy=audit_policy,
             prompt_batches=tuple(
                 (audit_prompt,)
                 for _ in range(inputs.policy.audit_minimum_calls + 1)
             ),
-            warmup_count=1,
-            conditioning_count=1,
             max_new_tokens=inputs.policy.audit_max_new_tokens,
             top_logprobs_num=inputs.policy.audit_toplogprobs_num,
-            audit_policy=audit_policy,
+            executor_namespace_digest=inputs.candidate_executor_namespace_digest,
+            runtime_resource_policy_digest=(
+                inputs.candidate_runtime_resource_policy_digest
+            ),
+            device_configuration_digest=(
+                inputs.candidate_device_configuration_digest
+            ),
         )
         commitment = SelectionCommitment.seal(
             source_plan_digest=prepared.source.digest,
@@ -568,7 +611,7 @@ class B300RegisteredQualificationFactory:
             audit_policies=(audit_policy,),
             speed_evidence_policy=SpeedEvidencePolicy.resident(),
             resident_speed_plan=resident_plan,
-            resident_audit_plan=audit_plan,
+            resident_audit_plan=audit_authority,
             speed_stage_disposition=SpeedStageDisposition.TERMINAL,
         )
 
@@ -576,23 +619,28 @@ class B300RegisteredQualificationFactory:
 def build_b300_registered_qualification_factory(
     inputs: B300RegisteredQualificationInputs,
 ) -> B300RegisteredQualificationFactory:
-    """Return the closed eleven-target registry and resident-v3 plan builder."""
+    """Return the complete registered catalog and resident-v3 plan builder."""
 
     return B300RegisteredQualificationFactory(inputs)
 
 
 __all__ = [
     "B300FocusedGraphFacts",
+    "B300MemberContractProjection",
     "B300QualificationBlocker",
     "B300RegisteredQualificationComponents",
     "B300RegisteredQualificationError",
     "B300RegisteredQualificationFactory",
     "B300RegisteredQualificationInputs",
     "B300RegisteredQualificationPolicy",
+    "B300RegisteredTargetProjection",
     "FACTORY_SCHEMA",
     "ORDINARY_B300_TARGET_IDS",
     "POLICY_SCHEMA",
     "PRODUCTION_AUTHORITY_BLOCKERS",
     "RESOLVER_SCHEMA",
+    "REGISTERED_B300_TARGET_IDS",
     "build_b300_registered_qualification_factory",
+    "registered_b300_member_contract_projection",
+    "registered_b300_profile_resolver_digest",
 ]

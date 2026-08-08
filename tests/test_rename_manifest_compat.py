@@ -14,7 +14,13 @@ from cacheon.manifest import (
 )
 
 
-def _bundle(root: Path, abi_version: str) -> Path:
+_TARGET_PROFILES = (
+    "activation.silu_and_mul",
+    "collective.ar_residual_rmsnorm",
+)
+
+
+def _bundle(root: Path, abi_version: str, *, slot: str) -> Path:
     root.mkdir()
     kernels = root / "kernels"
     kernels.mkdir()
@@ -27,7 +33,7 @@ def _bundle(root: Path, abi_version: str) -> Path:
         f"abi_version = \"{abi_version}\"\n"
         "\n"
         "[[ops]]\n"
-        "slot = \"activation.silu_and_mul\"\n"
+        f"slot = \"{slot}\"\n"
         "source = \"kernels/candidate.py\"\n"
         "entry = \"candidate\"\n",
         encoding="utf-8",
@@ -35,8 +41,11 @@ def _bundle(root: Path, abi_version: str) -> Path:
     return root
 
 
-def test_cacheon_abi_spelling_loads_without_normalizing(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path / "bundle", ABI_VERSION)
+@pytest.mark.parametrize("slot", _TARGET_PROFILES)
+def test_cacheon_abi_spelling_loads_without_normalizing(
+    tmp_path: Path, slot: str
+) -> None:
+    bundle = _bundle(tmp_path / "bundle", ABI_VERSION, slot=slot)
     manifest_bytes = (bundle / "manifest.toml").read_bytes()
     committed_digest = content_hash(bundle)
 
@@ -48,9 +57,12 @@ def test_cacheon_abi_spelling_loads_without_normalizing(tmp_path: Path) -> None:
     assert content_hash(bundle) == committed_digest
 
 
-def test_pre_cutover_abi_spelling_loads_without_normalizing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("slot", _TARGET_PROFILES)
+def test_pre_cutover_abi_spelling_loads_without_normalizing(
+    tmp_path: Path, slot: str
+) -> None:
     pre_cutover = "optima-op-abi-v0"
-    bundle = _bundle(tmp_path / "bundle", pre_cutover)
+    bundle = _bundle(tmp_path / "bundle", pre_cutover, slot=slot)
     manifest_bytes = (bundle / "manifest.toml").read_bytes()
     committed_digest = content_hash(bundle)
 
@@ -63,6 +75,17 @@ def test_pre_cutover_abi_spelling_loads_without_normalizing(tmp_path: Path) -> N
 
 
 def test_unknown_abi_spelling_is_refused(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path / "bundle", "unknown-op-abi-v0")
+    bundle = _bundle(
+        tmp_path / "bundle",
+        "unknown-op-abi-v0",
+        slot="activation.silu_and_mul",
+    )
     with pytest.raises(ManifestError, match="unsupported abi_version"):
         load_manifest(bundle)
+
+
+def test_screen_consumers_use_the_single_compatibility_reader() -> None:
+    from cacheon.eval import b300_screen_stages, resident_screen_lane
+
+    assert b300_screen_stages.load_manifest is load_manifest
+    assert resident_screen_lane.load_manifest is load_manifest

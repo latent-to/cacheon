@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import MutableSet
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Iterator
+
+from cacheon.chain.evaluation_lease_schema import (
+    EvaluationLeaseStoreError,
+    configure_evaluation_lease_connection,
+    ensure_evaluation_lease_schema,
+)
 
 from cacheon.chain.evaluation_leases import (
     EVALUATION_LEASE_EVENTS as _EVALUATION_LEASE_EVENTS,
@@ -36,153 +41,26 @@ if TYPE_CHECKING:
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 
 
-class EvaluationLeaseStoreError(RuntimeError):
-    """The additive lease schema or its connection fence cannot be opened."""
+class EvaluationClaimConflict(RuntimeError):
+    """An exact guarded claim differs from the authority selected in SQLite."""
 
-
-def configure_evaluation_lease_connection(
-    db: sqlite3.Connection, mutation_authority: MutableSet[str]
-) -> None:
-    """Install connection-local functions used by the reservation SQL fence."""
-
-    db.create_function(
-        "cacheon_evaluation_mutation_authorized",
-        1,
-        lambda reservation_id: int(reservation_id in mutation_authority),
-    )
-    db.create_function(
-        "cacheon_evaluation_mutation_context_active",
-        0,
-        lambda: int(bool(mutation_authority)),
-    )
-
-
-def ensure_evaluation_lease_schema(db: sqlite3.Connection) -> None:
-    """Create or verify the additive version-1 evaluation lease authority."""
-
-    try:
-        db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS evaluation_leases (
-                lease_id TEXT PRIMARY KEY,
-                generation INTEGER NOT NULL CHECK(generation>0),
-                stage TEXT NOT NULL CHECK(stage IN ('screen','qualification')),
-                owner TEXT NOT NULL,
-                claimed_block INTEGER NOT NULL CHECK(claimed_block>=0),
-                initial_expires_block INTEGER NOT NULL CHECK(initial_expires_block>claimed_block),
-                expires_block INTEGER NOT NULL CHECK(expires_block>=initial_expires_block),
-                state TEXT NOT NULL CHECK(
-                    state IN ('active','expired','released','completed')
-                ),
-                completed_block INTEGER NOT NULL DEFAULT 0 CHECK(completed_block>=0),
-                result_digest TEXT NOT NULL DEFAULT '',
-                reason TEXT NOT NULL DEFAULT ''
-            ) STRICT;
-            CREATE INDEX IF NOT EXISTS evaluation_leases_active_expiry
-                ON evaluation_leases(state, expires_block, lease_id);
-            CREATE UNIQUE INDEX IF NOT EXISTS evaluation_leases_one_active_qualification
-                ON evaluation_leases(stage) WHERE state='active' AND stage='qualification';
-            CREATE TABLE IF NOT EXISTS evaluation_lease_members (
-                lease_id TEXT NOT NULL REFERENCES evaluation_leases(lease_id),
-                position INTEGER NOT NULL CHECK(position>=0),
-                reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
-                prior_status TEXT NOT NULL CHECK(
-                    prior_status IN ('published','reproduction_pending','promoted')
-                ),
-                active INTEGER NOT NULL CHECK(active IN (0,1)),
-                PRIMARY KEY(lease_id, position),
-                UNIQUE(lease_id, reservation_id)
-            ) STRICT;
-            CREATE UNIQUE INDEX IF NOT EXISTS evaluation_lease_members_one_active
-                ON evaluation_lease_members(reservation_id) WHERE active=1;
-            CREATE INDEX IF NOT EXISTS evaluation_lease_members_reservation
-                ON evaluation_lease_members(reservation_id, lease_id);
-            CREATE TABLE IF NOT EXISTS evaluation_lease_events (
-                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id TEXT NOT NULL UNIQUE,
-                lease_id TEXT NOT NULL REFERENCES evaluation_leases(lease_id),
-                generation INTEGER NOT NULL CHECK(generation>0),
-                event_index INTEGER NOT NULL CHECK(event_index>=0),
-                event_type TEXT NOT NULL CHECK(
-                    event_type IN ('claimed','heartbeat','expired','released','completed')
-                ),
-                stage TEXT NOT NULL CHECK(stage IN ('screen','qualification')),
-                owner TEXT NOT NULL,
-                members_json TEXT NOT NULL,
-                finalized_block INTEGER NOT NULL CHECK(finalized_block>=0),
-                expires_block INTEGER NOT NULL CHECK(expires_block>0),
-                result_digest TEXT NOT NULL DEFAULT '',
-                reason TEXT NOT NULL DEFAULT '',
-                UNIQUE(lease_id, event_index)
-            ) STRICT;
-            CREATE TRIGGER IF NOT EXISTS evaluation_lease_events_reject_update
-                BEFORE UPDATE ON evaluation_lease_events
-                BEGIN SELECT RAISE(ABORT,'evaluation lease events are immutable'); END;
-            CREATE TRIGGER IF NOT EXISTS evaluation_lease_events_reject_delete
-                BEFORE DELETE ON evaluation_lease_events
-                BEGIN SELECT RAISE(ABORT,'evaluation lease events are immutable'); END;
-
-            -- Recreate the connection-aware fence on every open so an additive
-            -- migration cannot retain an older, weaker trigger body.
-            DROP TRIGGER IF EXISTS reservations_fence_active_evaluation;
-            CREATE TRIGGER reservations_fence_active_evaluation
-                BEFORE UPDATE ON reservations
-                WHEN (
-                    EXISTS (
-                        SELECT 1 FROM evaluation_lease_members AS em
-                        WHERE em.reservation_id=OLD.reservation_id AND em.active=1
-                    ) OR cacheon_evaluation_mutation_context_active()=1
-                ) AND cacheon_evaluation_mutation_authorized(OLD.reservation_id)=0
-                BEGIN SELECT RAISE(ABORT,'active evaluation lease fences reservation'); END;
-            """
-        )
-    except sqlite3.Error as exc:
-        raise EvaluationLeaseStoreError(
-            f"evaluation lease schema creation failed: {exc}"
-        ) from None
-
-    required = {
-        "evaluation_leases": {
-            "lease_id", "generation", "stage", "owner", "claimed_block",
-            "initial_expires_block", "expires_block", "state", "completed_block",
-            "result_digest", "reason",
-        },
-        "evaluation_lease_members": {
-            "lease_id", "position", "reservation_id", "prior_status", "active",
-        },
-        "evaluation_lease_events": {
-            "sequence", "event_id", "lease_id", "generation", "event_index",
-            "event_type", "stage", "owner", "members_json", "finalized_block",
-            "expires_block", "result_digest", "reason",
-        },
-    }
-    if any(
-        not columns.issubset(
-            {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
-        )
-        for table, columns in required.items()
-    ):
-        raise EvaluationLeaseStoreError("evaluation lease schema is incomplete")
-    triggers = {
-        row["name"]
-        for row in db.execute("SELECT name FROM sqlite_master WHERE type='trigger'")
-    }
-    if not {
-        "evaluation_lease_events_reject_update",
-        "evaluation_lease_events_reject_delete",
-        "reservations_fence_active_evaluation",
-    }.issubset(triggers):
-        raise EvaluationLeaseStoreError("evaluation lease schema triggers are incomplete")
-
-    schema = db.execute(
-        "SELECT value FROM metadata WHERE key='evaluation_lease_schema'"
-    ).fetchone()
-    if schema is None:
-        db.execute(
-            "INSERT INTO metadata(key,value) VALUES('evaluation_lease_schema','1')"
-        )
-    elif schema["value"] != "1":
-        raise EvaluationLeaseStoreError("evaluation lease schema is unsupported")
+    def __init__(
+        self,
+        expected_members: tuple[EvaluationLeaseMember, ...] | None,
+        observed_members: tuple[EvaluationLeaseMember, ...],
+        *,
+        expected_lease_id: str | None = None,
+        observed_lease_id: str | None = None,
+        expected_request_id: str | None = None,
+        observed_request_id: str | None = None,
+    ) -> None:
+        super().__init__("evaluation claim differs from exact expected authority")
+        self.expected_members = expected_members
+        self.observed_members = observed_members
+        self.expected_lease_id = expected_lease_id
+        self.observed_lease_id = observed_lease_id
+        self.expected_request_id = expected_request_id
+        self.observed_request_id = observed_request_id
 
 
 def _intake_error(message: str) -> RuntimeError:
@@ -193,7 +71,26 @@ def _intake_error(message: str) -> RuntimeError:
     return IntakeError(message)
 
 
+def _closed_expected_members(
+    value: object,
+) -> tuple[EvaluationLeaseMember, ...] | None:
+    if value is None:
+        return None
+    if (
+        type(value) is not tuple
+        or any(type(row) is not EvaluationLeaseMember for row in value)
+        or len({row.reservation_id for row in value}) != len(value)
+    ):
+        raise _intake_error("expected evaluation lease members are malformed")
+    return value
+
+
 class EvaluationLeaseStoreMixin:
+    # Recovery is opt-in through RecoverableFinalizedIntakeStore.  The ordinary
+    # intake store keeps the version-1 lease behavior and never depends on
+    # recovery-only methods or SQLite functions.
+    _evaluation_recovery_enabled = False
+
     def _require_evaluation_clock(self, current_block: int) -> None:
         cursor = self._cursor()
         if (
@@ -429,13 +326,21 @@ class EvaluationLeaseStoreMixin:
     def _expire_evaluation_leases(
         self, current_block: int
     ) -> tuple[EvaluationLease, ...]:
+        if self._evaluation_recovery_enabled:
+            self._require_no_orphan_active_qualification()
+        stage_filter = (
+            " AND el.stage!='qualification'"
+            if self._evaluation_recovery_enabled
+            else ""
+        )
         expired: list[EvaluationLease] = []
         rows = tuple(
             self._db.execute(
                 "SELECT el.* FROM evaluation_leases AS el JOIN "
                 "evaluation_lease_members AS em ON em.lease_id=el.lease_id "
                 "AND em.position=0 JOIN reservations AS r USING(reservation_id) "
-                "WHERE el.state='active' AND el.expires_block<=? ORDER BY "
+                f"WHERE el.state='active'{stage_filter} "
+                "AND el.expires_block<=? ORDER BY "
                 "r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash,"
                 "el.lease_id",
                 (current_block,),
@@ -569,6 +474,7 @@ class EvaluationLeaseStoreMixin:
         current_block: int,
         lease_blocks: int = 30,
         max_members: int | None = None,
+        expected_members: tuple[EvaluationLeaseMember, ...] | None = None,
     ) -> EvaluationLease | None:
         """Atomically claim one oldest eligible screen or qualification cohort.
 
@@ -582,6 +488,7 @@ class EvaluationLeaseStoreMixin:
         completion, release, or finalized-block expiry.
         """
 
+        expected_members = _closed_expected_members(expected_members)
         try:
             owner = require_evaluation_owner(owner)
         except EvaluationLeaseError as exc:
@@ -605,13 +512,15 @@ class EvaluationLeaseStoreMixin:
             self._expire_evaluation_leases(current_block)
             self._expire_stale_rows(current_block)
             selected = self._select_evaluation_rows(stage, bound)
-            if not selected:
-                return None
             reservations = tuple(self._row(row) for row in selected)
             members = tuple(
                 EvaluationLeaseMember(row.reservation_id, row.status)
                 for row in reservations
             )
+            if expected_members is not None and members != expected_members:
+                raise EvaluationClaimConflict(expected_members, members)
+            if not selected:
+                return None
             ids = tuple(row.reservation_id for row in reservations)
             marks = ",".join("?" for _ in ids)
             generation = self._db.execute(
@@ -630,37 +539,48 @@ class EvaluationLeaseStoreMixin:
                 claimed_block=current_block,
                 initial_expires_block=expires,
             )
-            self._db.execute(
-                "INSERT INTO evaluation_leases(lease_id,generation,stage,owner,"
-                "claimed_block,initial_expires_block,expires_block,state) "
-                "VALUES(?,?,?,?,?,?,?,'active')",
-                (
-                    lease_id,
-                    generation,
-                    stage,
-                    owner,
-                    current_block,
-                    expires,
-                    expires,
-                ),
+            recovery_enabled = (
+                self._evaluation_recovery_enabled and stage == "qualification"
             )
-            self._db.executemany(
-                "INSERT INTO evaluation_lease_members(lease_id,position,"
-                "reservation_id,prior_status,active) VALUES(?,?,?,?,1)",
-                (
-                    (lease_id, position, member.reservation_id, member.prior_status)
-                    for position, member in enumerate(members)
-                ),
+            authority = (
+                self._evaluation_recovery_mutation(lease_id)
+                if recovery_enabled
+                else nullcontext()
             )
-            retained = self._db.execute(
-                "SELECT * FROM evaluation_leases WHERE lease_id=?", (lease_id,)
-            ).fetchone()
-            if retained is None:
-                raise _intake_error("evaluation lease was not retained")
-            lease = self._evaluation_lease(retained)
-            self._append_evaluation_lease_event(
-                lease, "claimed", finalized_block=current_block
-            )
+            with authority:
+                self._db.execute(
+                    "INSERT INTO evaluation_leases(lease_id,generation,stage,owner,"
+                    "claimed_block,initial_expires_block,expires_block,state) "
+                    "VALUES(?,?,?,?,?,?,?,'active')",
+                    (
+                        lease_id,
+                        generation,
+                        stage,
+                        owner,
+                        current_block,
+                        expires,
+                        expires,
+                    ),
+                )
+                self._db.executemany(
+                    "INSERT INTO evaluation_lease_members(lease_id,position,"
+                    "reservation_id,prior_status,active) VALUES(?,?,?,?,1)",
+                    (
+                        (lease_id, position, member.reservation_id, member.prior_status)
+                        for position, member in enumerate(members)
+                    ),
+                )
+                retained = self._db.execute(
+                    "SELECT * FROM evaluation_leases WHERE lease_id=?", (lease_id,)
+                ).fetchone()
+                if retained is None:
+                    raise _intake_error("evaluation lease was not retained")
+                lease = self._evaluation_lease(retained)
+                self._append_evaluation_lease_event(
+                    lease, "claimed", finalized_block=current_block
+                )
+                if recovery_enabled:
+                    self._create_evaluation_recovery_locked(lease)
         return lease
 
     def active_evaluation_leases(self) -> tuple[EvaluationLease, ...]:
@@ -777,6 +697,8 @@ class EvaluationLeaseStoreMixin:
             or lease_blocks > self.policy.expiry_blocks
         ):
             raise _intake_error("evaluation lease heartbeat bounds are malformed")
+        if self._evaluation_recovery_enabled:
+            self._generic_lease_operation_allowed(lease, "heartbeat")
         self._require_evaluation_clock(current_block)
         if self._durably_expire_exact_evaluation_lease_if_due(
             lease, current_block
@@ -819,6 +741,8 @@ class EvaluationLeaseStoreMixin:
     ) -> bool:
         """Commit a due exact lease before its caller raises a stale-result error."""
 
+        if self._evaluation_recovery_enabled:
+            self._generic_lease_operation_allowed(lease, "expiry")
         if current_block < lease.expires_block:
             return False
         with self._transaction():
@@ -848,6 +772,8 @@ class EvaluationLeaseStoreMixin:
             or (result_digest and _HASH.fullmatch(result_digest) is None)
         ):
             raise _intake_error("evaluation lease release is malformed")
+        if self._evaluation_recovery_enabled:
+            self._generic_lease_operation_allowed(lease, "release")
         self._require_evaluation_clock(current_block)
         if self._durably_expire_exact_evaluation_lease_if_due(
             lease, current_block
@@ -914,12 +840,30 @@ class EvaluationLeaseStoreMixin:
             raise _intake_error("evaluation result lease is not exactly typed")
         require_sha256_hex(result_digest, field="evaluation result digest")
         self._require_evaluation_clock(current_block)
-        if self._durably_expire_exact_evaluation_lease_if_due(
+        recovery_enabled = (
+            self._evaluation_recovery_enabled and lease.stage == "qualification"
+        )
+        if recovery_enabled:
+            recovery = self._active_qualification_recovery(lease)
+            if recovery.phase.value != "evidence_imported":
+                raise _intake_error(
+                    "protected evaluation result requires imported evidence"
+                )
+            if current_block >= lease.expires_block:
+                raise _intake_error(
+                    "protected evaluation result requires recovery renewal"
+                )
+        elif self._durably_expire_exact_evaluation_lease_if_due(
             lease, current_block
         ):
             raise _intake_error("evaluation result arrived after lease expiry")
         with self._transaction():
             self._active_evaluation_lease_row(lease)
+            recovery = (
+                self._active_qualification_recovery(lease)
+                if recovery_enabled
+                else None
+            )
             reservations = tuple(
                 self.get(member.reservation_id) for member in lease.members
             )
@@ -968,36 +912,49 @@ class EvaluationLeaseStoreMixin:
                 raise _intake_error(
                     "evaluation result did not retain the exact cohort dispositions"
                 )
-            cursor = self._db.execute(
-                "UPDATE evaluation_leases SET state='completed',completed_block=?,"
-                "result_digest=?,reason='' WHERE lease_id=? AND state='active' "
-                "AND expires_block=?",
-                (
-                    current_block,
-                    result_digest,
-                    lease.lease_id,
-                    lease.expires_block,
-                ),
+            authority = (
+                self._evaluation_recovery_mutation(lease.lease_id)
+                if recovery is not None
+                else nullcontext()
             )
-            if cursor.rowcount != 1:
-                raise _intake_error("evaluation lease changed during completion")
-            members = self._db.execute(
-                "UPDATE evaluation_lease_members SET active=0 WHERE lease_id=? "
-                "AND active=1",
-                (lease.lease_id,),
-            )
-            if members.rowcount != len(lease.members):
-                raise _intake_error("evaluation lease members changed during completion")
-            self._append_evaluation_lease_event(
-                lease,
-                "completed",
-                finalized_block=current_block,
-                result_digest=result_digest,
-            )
+            with authority:
+                cursor = self._db.execute(
+                    "UPDATE evaluation_leases SET state='completed',completed_block=?,"
+                    "result_digest=?,reason='' WHERE lease_id=? AND state='active' "
+                    "AND expires_block=?",
+                    (
+                        current_block,
+                        result_digest,
+                        lease.lease_id,
+                        lease.expires_block,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise _intake_error("evaluation lease changed during completion")
+                members = self._db.execute(
+                    "UPDATE evaluation_lease_members SET active=0 WHERE lease_id=? "
+                    "AND active=1",
+                    (lease.lease_id,),
+                )
+                if members.rowcount != len(lease.members):
+                    raise _intake_error(
+                        "evaluation lease members changed during completion"
+                    )
+                self._append_evaluation_lease_event(
+                    lease,
+                    "completed",
+                    finalized_block=current_block,
+                    result_digest=result_digest,
+                )
+                if recovery is not None:
+                    self._complete_evaluation_recovery_locked(
+                        recovery, current_block=current_block
+                    )
 
 
 
 __all__ = [
+    "EvaluationClaimConflict",
     "EvaluationLeaseStoreError",
     "EvaluationLeaseStoreMixin",
     "configure_evaluation_lease_connection",
