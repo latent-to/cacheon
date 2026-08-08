@@ -480,7 +480,7 @@ class OCIBackendConfig:
             )
 
 
-def _copy_seccomp(source: Path, destination: Path, *, expected_digest: str) -> None:
+def stage_seccomp_profile(source: Path, destination: Path, *, expected_digest: str) -> None:
     expected = _digest(expected_digest, field="seccomp_policy_digest")
     try:
         if source.is_symlink():
@@ -520,7 +520,7 @@ def _copy_seccomp(source: Path, destination: Path, *, expected_digest: str) -> N
         raise OCIBackendError(f"cannot stage seccomp profile: {exc}") from None
 
 
-def _mount(source: Path, destination: str, *, readonly: bool) -> str:
+def build_bind_mount_arg(source: Path, destination: str, *, readonly: bool) -> str:
     root, _ = _reopen_directory(source, field="OCI mount source")
     suffix = ",readonly" if readonly else ""
     return (
@@ -721,13 +721,13 @@ def build_runtime_argv(
         # installed bootstrap directory read-only so the worker's existing
         # fail-closed mount check remains true without making the rest of the
         # image filesystem read-only.
-        _mount(site_bootstrap, CONTAINER_SITE_BOOTSTRAP, readonly=True),
-        _mount(model_root, CONTAINER_MODEL, readonly=True),
-        _mount(resolved.materialized_tree_root, CONTAINER_TREE, readonly=True),
-        _mount(publication.root, artifact_destination, readonly=True),
-        _mount(cache_root, CONTAINER_CACHE, readonly=False),
+        build_bind_mount_arg(site_bootstrap, CONTAINER_SITE_BOOTSTRAP, readonly=True),
+        build_bind_mount_arg(model_root, CONTAINER_MODEL, readonly=True),
+        build_bind_mount_arg(resolved.materialized_tree_root, CONTAINER_TREE, readonly=True),
+        build_bind_mount_arg(publication.root, artifact_destination, readonly=True),
+        build_bind_mount_arg(cache_root, CONTAINER_CACHE, readonly=False),
         *(
-            (_mount(swap_intake_root, CONTAINER_SWAP_INTAKE_PATH, readonly=True),)
+            (build_bind_mount_arg(swap_intake_root, CONTAINER_SWAP_INTAKE_PATH, readonly=True),)
             if swap_intake_root is not None
             else ()
         ),
@@ -1226,7 +1226,7 @@ class OCIEngineExecutor:
             )
             cache_root = lease.mount_paths[0]
             seccomp_copy = lease.stage_paths[0]
-            _copy_seccomp(
+            stage_seccomp_profile(
                 self.config.prebuild.seccomp_profile,
                 seccomp_copy,
                 expected_digest=launch.seccomp_policy_digest,
@@ -1883,8 +1883,10 @@ __all__ = [
     "ResidentEngineExecutionEvidence",
     "ResidentSessionDriver",
     "TrustedArenaModelMountReceipt",
+    "build_bind_mount_arg",
     "build_runtime_argv",
     "expected_runtime_preflight",
     "runtime_identity_from_preflight",
+    "stage_seccomp_profile",
     "stage_swap_bundle",
 ]

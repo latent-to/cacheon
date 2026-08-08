@@ -40,7 +40,6 @@ class B300ScreenQualificationBridgeError(RuntimeError):
 def derive_b300_screen_qualification(
     *,
     authority: dict[str, object],
-    authority_refs: dict[str, dict[str, str]],
     prompt_identity: dict[str, str],
     catalog: TargetCatalog,
     lane_pair: B300QualificationLanePair,
@@ -108,15 +107,9 @@ def derive_b300_screen_qualification(
     else:
         qualification_commission = None
         qualification_policy_digest = canonical_digest(
-            "cacheon.eval.b300-declared-qualification-policy.v1",
+            "cacheon.eval.b300-declared-qualification-policy.v2",
             {
                 "builder_digest": qualification_builder_digest,
-                "calibration_package_sha256": authority_refs[
-                    "calibration_package"
-                ]["sha256"],
-                "calibration_projection_sha256": authority_refs[
-                    "calibration_projection_receipt"
-                ]["sha256"],
                 "hidden_judge_binding_digest": hidden_binding.digest,
                 "prompt_authority_sha256": prompt_identity["sha256"],
             },

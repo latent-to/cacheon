@@ -464,7 +464,7 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
-def _bounded_argv_runner(
+def bounded_argv_runner(
     argv: tuple[str, ...],
     *,
     timeout_s: float,
@@ -527,6 +527,9 @@ def _bounded_argv_runner(
         stdout=bytes(buffers["stdout"]),
         stderr=bytes(buffers["stderr"]),
     )
+
+
+_bounded_argv_runner = bounded_argv_runner
 
 
 def _strict_json(raw: bytes, *, max_bytes: int, label: str) -> object:
@@ -763,7 +766,7 @@ def _platform_digest(
 def _run_runtime_preflight(
     config: RuntimePreflightConfig,
     *,
-    runner: Runner = _bounded_argv_runner,
+    runner: Runner = bounded_argv_runner,
     clock: Callable[[], float] = time.monotonic,
     process_manager: OCIProcessManager | None = None,
 ) -> RuntimePreflightReceipt:
@@ -1046,7 +1049,7 @@ def run_runtime_preflight(
     config: RuntimePreflightConfig,
     *,
     process_manager: OCIProcessManager | None = None,
-    runner: Runner = _bounded_argv_runner,
+    runner: Runner = bounded_argv_runner,
     clock: Callable[[], float] = time.monotonic,
 ) -> RuntimePreflightReceipt:
     """Run the production preflight under a durable OCI process lease."""
@@ -1069,7 +1072,7 @@ def _run_runtime_preflight_unleased_for_test(
     clock: Callable[[], float] = time.monotonic,
 ) -> RuntimePreflightReceipt:
     """Exercise receipt validation with a scripted runner; never a production API."""
-    if runner is _bounded_argv_runner:
+    if runner is bounded_argv_runner:
         raise RuntimePreflightError("unleased test preflight requires a scripted runner")
     return _run_runtime_preflight(config, runner=runner, clock=clock)
 
@@ -1084,5 +1087,6 @@ __all__ = [
     "RuntimePreflightReceipt",
     "WORKER_DIGEST_SCHEMA",
     "WORKER_DISTRIBUTION",
+    "bounded_argv_runner",
     "run_runtime_preflight",
 ]

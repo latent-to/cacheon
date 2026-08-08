@@ -792,3 +792,7 @@ __all__ = [
     "PreparedGraphVariantAuthority",
     "execute_prepared_graph_probe",
 ]
+
+from cacheon.eval.b300_prepared_graph_oci import B300PreparedGraphOCIExecutor  # noqa: E402
+
+__all__.append("B300PreparedGraphOCIExecutor")

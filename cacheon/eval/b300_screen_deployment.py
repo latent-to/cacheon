@@ -1415,11 +1415,10 @@ def _derive_inputs(
     )
     batches = _prompt_batches(prompt)
     catalog = default_target_catalog()
+    # Calibration is qualification evidence bound by the sealed deployment
+    # payload.  It cannot be part of the screen resolver identity: its context
+    # names the arena manifest, whose provider identity names this resolver.
     policy_facts = {
-        "calibration_package_sha256": authority_refs["calibration_package"]["sha256"],
-        "calibration_projection_sha256": authority_refs[
-            "calibration_projection_receipt"
-        ]["sha256"],
         "catalog_digest": catalog.digest,
         "controller_distribution_digest": controller_distribution_digest,
         "device_execution_sha256": authority_refs["device_execution"]["sha256"],
@@ -1434,7 +1433,7 @@ def _derive_inputs(
         "worker_distribution_digest": runtime.worker_distribution_digest,
     }
     plan_resolver_digest = canonical_digest(
-        "cacheon.eval.b300-screen-plan-resolver.v1", policy_facts
+        "cacheon.eval.b300-screen-plan-resolver.v2", policy_facts
     )
     evidence_policy_digest = canonical_digest(
         "cacheon.eval.b300-screen-evidence-policy.v1",
@@ -1459,7 +1458,6 @@ def _derive_inputs(
     try:
         declared, qualification_commission = derive_b300_screen_qualification(
             authority=authority,
-            authority_refs=authority_refs,
             prompt_identity=prompt_identity,
             catalog=catalog,
             lane_pair=qualification_lane_pair,
