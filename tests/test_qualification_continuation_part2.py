@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,7 +22,6 @@ from cacheon.eval.qualification_continuation import (
 from tests.test_marginal_runtime import _case, _prepared
 from tests.test_qualification_continuation import (
     _TypedExecutor,
-    _audit_witness,
     _pristine_reference_execution,
 )
 from tests.test_qualification_runner import _quiescence
@@ -128,9 +128,8 @@ def _pristine_quality(root: Path) -> QualityContinuation:
         ),
         reference_execution=reference_execution,
         teardown_after=_quiescence(2, 6.0),
-        audit_witnesses=(_audit_witness(),),
-        audit_started=2.1,
-        audit_completed=2.5,
+        t_nonce="pending",
+        t_operation_digest=_digest("t-operation"),
     )
 
 
@@ -216,6 +215,10 @@ def test_pristine_and_resident_count_coexist_and_reopen_in_both_write_orders(
 ) -> None:
     continuation = _scope(tmp_path / "store")
     pristine = _pristine_quality(tmp_path / "fixture")
+    pristine = replace(
+        pristine,
+        t_nonce=continuation.arm_evaluator("t", pristine.t_operation_digest),
+    )
     resident_count = _checkpoint()
 
     if first == "quality":

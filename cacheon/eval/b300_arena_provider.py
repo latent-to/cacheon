@@ -318,8 +318,17 @@ class B300DeploymentAuthorities:
     deadline_provider: DeadlineProvider
     qualification_lane_pair: B300QualificationLanePair
     qualification_stage: str
+    resident_pair_factory: object
+    resident_count_quality: object
 
     def __post_init__(self) -> None:
+        from cacheon.eval.b300_resident_pair_factory import (
+            B300CommissionedResidentPairFactory,
+        )
+        from cacheon.eval.registered_resident_count_quality import (
+            B300ResidentCountQualityCapability,
+        )
+
         handlers = _validate_screen_authorities(
             self.runtime_identity,
             self.screen_handlers,
@@ -337,6 +346,14 @@ class B300DeploymentAuthorities:
             raise B300ArenaProviderError("qualification factory builder is not callable")
         if type(self.qualification_lane_pair) is not B300QualificationLanePair:
             raise B300ArenaProviderError("qualification lane pair is not exact")
+        if (
+            type(self.resident_pair_factory) is not B300CommissionedResidentPairFactory
+            or type(self.resident_count_quality)
+            is not B300ResidentCountQualityCapability
+        ):
+            raise B300ArenaProviderError(
+                "resident pair or count authority is not exactly commissioned"
+            )
         orientation = self.qualification_lane_pair.orientation(
             self.qualification_stage
         )

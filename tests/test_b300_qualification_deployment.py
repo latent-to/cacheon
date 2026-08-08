@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.b300_qualification_deployment as deployment
+import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCandidateBinding,
@@ -183,16 +184,8 @@ def executor_factory(tmp_path: Path):
         executor.manager.close()
 
 
-class _Judge:
-    def __init__(self) -> None:
-        self.binding = HiddenJudgeBinding(
-            _h("hidden-corpus"),
-            _h("hidden-judge"),
-            _h("hidden-policy"),
-        )
-
-    def __call__(self, **_kwargs):
-        raise AssertionError("composition must not execute the hidden judge")
+resident_pair_authority = authority_fixtures.resident_pair_authority
+_Judge = authority_fixtures._Judge
 
 
 def _incumbent(runtime: ArenaRuntimeIdentity, arena_digest: str):
@@ -226,6 +219,8 @@ def _profiles(catalog, builder_source: str, resolvers=None):
 def _construction(tmp_path: Path, runtime: ArenaRuntimeIdentity):
     catalog, incumbent = _incumbent(runtime, _h("arena"))
     builder_source = _h("builder-source")
+    evidence_root = tmp_path / "evidence"
+    count_quality = authority_fixtures._resident_count_quality(catalog, evidence_root)
     return deployment.B300QualificationConstructionAuthority(
         catalog=catalog,
         profiles=_profiles(catalog, builder_source),
@@ -233,10 +228,12 @@ def _construction(tmp_path: Path, runtime: ArenaRuntimeIdentity):
         incumbent_tree_digest=_h("incumbent-tree"),
         pristine_stack=incumbent,
         pristine_tree_digest=_h("pristine-tree"),
-        evidence_root=tmp_path / "evidence",
+        evidence_root=evidence_root,
         evidence_policy_digest=_h("evidence-policy"),
         builder_source_digest=builder_source,
         selection_store_digest=_h("selection-store"),
+        resident_count_quality_builder_digest=_h("resident-count-quality-builder"),
+        resident_count_quality=count_quality,
         secret_loader=lambda _reference: b"s" * 32,
         plan_builder=lambda _cohort, _secret: object(),
         entropy_provider_digest=_h("entropy-provider"),
@@ -469,6 +466,7 @@ def _receipt(service_digest: str, candidate: ArenaCandidateBinding):
 def test_composition_preserves_one_service_across_exact_role_swap(
     tmp_path: Path,
     executor_factory,
+    resident_pair_authority,
     stage: str,
     candidate_lane: str,
     baseline_lane: str,
@@ -502,6 +500,7 @@ def test_composition_preserves_one_service_across_exact_role_swap(
         construction=construction,
         candidate_executor=candidate,
         resident_baseline_executor=baseline,
+        resident_pair_factory=resident_pair_authority(manifest.digest),
         screen_lane=stage,
     )
 
@@ -523,6 +522,7 @@ def test_composition_preserves_one_service_across_exact_role_swap(
 def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
     tmp_path: Path,
     executor_factory,
+    resident_pair_authority,
 ) -> None:
     construction = _construction(tmp_path, _runtime())
     candidate_a = executor_factory("candidate", "A")
@@ -547,6 +547,7 @@ def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
             construction=construction,
             candidate_executor=executor_factory("candidate", "B"),
             resident_baseline_executor=baseline_b,
+            resident_pair_factory=resident_pair_authority(manifest.digest),
             screen_lane="primary",
         )
 
@@ -561,6 +562,7 @@ def test_composition_refuses_overlap_wrong_orientation_and_manifest_drift(
             construction=construction,
             candidate_executor=candidate_a,
             resident_baseline_executor=baseline_b,
+            resident_pair_factory=resident_pair_authority(manifest.digest),
             screen_lane="primary",
         )
 
@@ -689,6 +691,9 @@ class _RegisteredJudge:
 def _registered_construction(harness, value, secret: bytes):
     builder_source = _h("builder-source")
     resolvers = {row.target_id: row.resolver for row in harness.factory.profiles}
+    count_quality = authority_fixtures._resident_count_quality(
+        harness.inputs.catalog, harness.inputs.evidence_root
+    )
     return deployment.B300QualificationConstructionAuthority(
         catalog=harness.inputs.catalog,
         profiles=_profiles(harness.inputs.catalog, builder_source, resolvers),
@@ -700,6 +705,8 @@ def _registered_construction(harness, value, secret: bytes):
         evidence_policy_digest=_h("evidence-policy"),
         builder_source_digest=builder_source,
         selection_store_digest=_h("selection-store"),
+        resident_count_quality_builder_digest=_h("resident-count-quality-builder"),
+        resident_count_quality=count_quality,
         secret_loader=lambda _reference: secret,
         plan_builder=harness.factory.plan_builder,
         entropy_provider_digest=_h("entropy-provider"),

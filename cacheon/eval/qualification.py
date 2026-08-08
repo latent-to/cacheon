@@ -1464,15 +1464,22 @@ def _trajectory_rows(lifecycle: object):
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
     from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
     from cacheon.eval.oci_session_protocol import PromptEvidence
+    from cacheon.eval.resident_pair_quality_lifecycle import (
+        ResidentPairMarginalLifecycleEvidence,
+    )
     from cacheon.eval.scoring import marginal_workload_digest
 
     if type(lifecycle) not in {
         MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
     }:
         raise QualificationError("trajectory lifecycle is not typed")
     plan = lifecycle.prepared.baseline_session_plan
-    if type(lifecycle) is ResidentMarginalLifecycleEvidence:
+    if type(lifecycle) in {
+        ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
+    }:
         batch_sets = tuple(
             lifecycle.role_batches(role) for role in lifecycle.role_names
         )
@@ -1530,15 +1537,22 @@ def _quality_leg_lifecycle(lifecycle: object, candidate_read: int):
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
     from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
+    from cacheon.eval.resident_pair_quality_lifecycle import (
+        ResidentPairMarginalLifecycleEvidence,
+    )
 
     if type(lifecycle) not in {
         MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
     }:
         raise QualificationError("quality lifecycle is not typed")
     if type(candidate_read) is not int or candidate_read not in (1, 2):
         raise QualificationError("candidate read must be exactly 1 or 2")
-    if type(lifecycle) is ResidentMarginalLifecycleEvidence:
+    if type(lifecycle) in {
+        ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
+    }:
         try:
             return lifecycle.quality_leg(candidate_read)
         except (TypeError, ValueError, RuntimeError) as exc:
@@ -1599,10 +1613,14 @@ def candidate_lifecycle_digest(
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
     from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
+    from cacheon.eval.resident_pair_quality_lifecycle import (
+        ResidentPairMarginalLifecycleEvidence,
+    )
 
     if type(lifecycle) not in {
         MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
     }:
         raise QualificationError("candidate lifecycle is not typed")
     candidates = tuple(
@@ -1613,6 +1631,26 @@ def candidate_lifecycle_digest(
     if len(candidates) != 1:
         raise QualificationError("candidate lifecycle is absent or ambiguous")
     candidate = candidates[0]
+    if type(lifecycle) is ResidentPairMarginalLifecycleEvidence:
+        return canonical_digest(
+            "cacheon.qualification.candidate-lifecycle.resident-pair-v1",
+            {
+                "arm_digest": candidate.arm.digest,
+                "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
+                "count_result_digest": (
+                    None
+                    if lifecycle.count_result is None
+                    else lifecycle.count_result.digest
+                ),
+                "crossover_evidence_digest": lifecycle.crossover.digest,
+                "crossover_plan_digest": lifecycle.plan.digest,
+                "retirement_digest": lifecycle.retirement.digest,
+                "selected_delta_digest": _digest(
+                    selected_delta_digest, "selected delta"
+                ),
+                "source_digest": lifecycle.source.digest,
+            },
+        )
     if type(lifecycle) is ResidentMarginalLifecycleEvidence:
         return canonical_digest(
             "cacheon.qualification.candidate-lifecycle.resident-v1",

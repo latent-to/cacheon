@@ -30,6 +30,7 @@ class RemoteQualificationHoldReason(str, Enum):
     GRAPH_EVIDENCE_INCOMPLETE = "graph_evidence_incomplete"
     GRAPH_EVIDENCE_UNAVAILABLE = "graph_evidence_unavailable"
     GRAPH_EXIT_PUBLICATION_AMBIGUOUS = "graph_exit_publication_ambiguous"
+    RESIDENT_EVIDENCE_UNAVAILABLE = "resident_evidence_unavailable"
 
 
 def _digest(value: object, field: str) -> str:

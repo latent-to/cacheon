@@ -20,6 +20,7 @@ class QualificationContinuationRunnerSeams:
     discovery_candidate_authority_type: type[Any]
     qualification_stage_exit_type: type[Any]
     quality_continuation_type: type[Any]
+    audit_continuation_type: type[Any]
     selection_entropy_receipt_type: type[Any]
     qualification_runner_error: type[Exception]
     qualification_continuation_error: type[Exception]
@@ -29,6 +30,7 @@ class QualificationContinuationRunnerSeams:
     grade_discovery_execution: Callable[..., Any]
     selection_receipt_type: type[Any]
     cohort_trajectory_digest: Callable[[Any], str]
+    lifecycle_causal_completion: Callable[[Any], float]
     canonical_digest: Callable[[str, Any], str]
     reference_request: Callable[..., Any]
     reference_session_plan_type: type[Any]
@@ -59,6 +61,31 @@ class QualificationContinuationStageResult:
     discovery_grades: dict[str, Any] | None = None
 
 
+def _audit_operation_digest(value: Any, lifecycle: Any, seams: Any) -> str:
+    return seams.canonical_digest(
+        "cacheon.qualification.audit-operation.v1",
+        {
+            "authority": seams.qualification_authority_digest(value),
+            "source": value.prepared.source.digest,
+            "trajectory": seams.cohort_trajectory_digest(lifecycle),
+        },
+    )
+
+
+def _t_operation_digest(value: Any, plan: Any, seams: Any) -> str:
+    return seams.canonical_digest(
+        "cacheon.qualification.pristine-t-operation.v1",
+        {
+            "authority": seams.qualification_authority_digest(value),
+            "native_build": value.pristine_binding.native_build_spec.digest,
+            "preflight": value.pristine_binding.runtime_preflight_receipt.sha256,
+            "controller": value.pristine_binding.controller_distribution_digest,
+            "launch": value.pristine_launch.digest,
+            "plan": plan.digest,
+        },
+    )
+
+
 def run_continuation_quality_stage(
     *,
     value: Any,
@@ -69,6 +96,7 @@ def run_continuation_quality_stage(
     continuation: Any | None,
     quality_state: Any | None,
     resident_mode: bool,
+    resident_pair_mode: bool,
     quality_reads: int,
     resident_lifecycle: Any | None,
     resident_speed_witness: Any | None,
@@ -85,7 +113,13 @@ def run_continuation_quality_stage(
                 raise seams.qualification_continuation_error(
                     "quality continuation exists without its speed continuation"
                 )
-        audit_witnesses = dict(quality_state.audit_witnesses)
+        audit_operation = _audit_operation_digest(value, lifecycle, seams)
+        audit_state = continuation.load_audit(audit_operation)
+        if audit_state is None:
+            raise seams.qualification_continuation_error(
+                "quality continuation exists without durable audit completion"
+            )
+        audit_witnesses = dict(audit_state.audit_witnesses)
         if tuple(audit_witnesses) != tuple(
             row.selected_delta_digest for row in value.candidates
         ):
@@ -99,8 +133,8 @@ def run_continuation_quality_stage(
             raise seams.qualification_continuation_error(
                 "quality continuation carries a failed resident audit"
             )
-        audit_started = float(quality_state.audit_started)
-        audit_completed = float(quality_state.audit_completed)
+        audit_started = float(audit_state.audit_started)
+        audit_completed = float(audit_state.audit_completed)
         teardown_before = quality_state.teardown_before
         entropy = quality_state.entropy
         entropy_observed = float(quality_state.entropy_observed)
@@ -145,6 +179,12 @@ def run_continuation_quality_stage(
             request_plan_digest,
             requests,
         )
+        if quality_state.t_operation_digest != _t_operation_digest(
+            value, plan, seams
+        ):
+            raise seams.qualification_continuation_error(
+                "quality continuation differs from its pristine-T claim"
+            )
         t_pre, t_post = reference_execution.device_receipts
     else:
         with executor.exclusive_transaction():
@@ -164,14 +204,32 @@ def run_continuation_quality_stage(
                     )
                     if continuation is not None:
                         continuation.record_marginal_speed(lifecycle)
-            audit_started = float(executor.manager.clock())
-            audit_witnesses, audit_last_completed = seams.run_slot_audits(
-                value,
-                lifecycle,
-                executor=executor,
-                deadline=float(deadline),
+            audit_operation = _audit_operation_digest(value, lifecycle, seams)
+            audit_state = (
+                None if continuation is None
+                else continuation.load_audit(audit_operation)
             )
-            audit_completed = float(executor.manager.clock())
+            if audit_state is None:
+                audit_nonce = (
+                    "" if continuation is None
+                    else continuation.arm_evaluator("audit", audit_operation)
+                )
+                audit_started = float(executor.manager.clock())
+                audit_witnesses, audit_last_completed = seams.run_slot_audits(
+                    value, lifecycle, executor=executor, deadline=float(deadline)
+                )
+                audit_completed = float(executor.manager.clock())
+                if continuation is not None:
+                    continuation.record_audit(seams.audit_continuation_type(
+                        audit_nonce, audit_operation,
+                        tuple(audit_witnesses.items()), audit_started,
+                        audit_completed, audit_last_completed,
+                    ))
+            else:
+                audit_witnesses = dict(audit_state.audit_witnesses)
+                audit_started = audit_state.audit_started
+                audit_completed = audit_state.audit_completed
+                audit_last_completed = audit_state.audit_last_completed
             if resident_mode and any(
                 row.decision is not seams.qualification_decision.PASS
                 for row in audit_witnesses.values()
@@ -201,8 +259,13 @@ def run_continuation_quality_stage(
                 reference = seams.publish_qualification_stage_exit(
                     value.evidence_root, terminal
                 )
+                reopen_kwargs = (
+                    {"resident_pair_lifecycle": resident_lifecycle}
+                    if resident_pair_mode
+                    else {}
+                )
                 seams.reopen_qualification_stage_exit(
-                    value.evidence_root, reference, expected=value
+                    value.evidence_root, reference, expected=value, **reopen_kwargs
                 )
                 if continuation is not None:
                     continuation.record_final(reference)
@@ -220,8 +283,7 @@ def run_continuation_quality_stage(
             # reads, B-prime otherwise) — baseline_after is mid-run in the
             # 5-leg shape.
             last_post = max(
-                lifecycle.final_baseline.device_receipts[-1].completed_monotonic_s,
-                audit_last_completed,
+                seams.lifecycle_causal_completion(lifecycle), audit_last_completed
             )
             if teardown_before.observed_monotonic_s < last_post:
                 raise seams.qualification_runner_error(
@@ -290,6 +352,11 @@ def run_continuation_quality_stage(
                 request_plan_digest,
                 requests,
             )
+            t_operation = _t_operation_digest(value, plan, seams)
+            t_nonce = (
+                "" if continuation is None
+                else continuation.arm_evaluator("t", t_operation)
+            )
             reference_execution = executor.execute_reference(
                 value.pristine_launch,
                 value.pristine_binding,
@@ -316,9 +383,8 @@ def run_continuation_quality_stage(
                         requests=requests,
                         reference_execution=reference_execution,
                         teardown_after=teardown_after,
-                        audit_witnesses=tuple(audit_witnesses.items()),
-                        audit_started=audit_started,
-                        audit_completed=audit_completed,
+                        t_nonce=t_nonce,
+                        t_operation_digest=t_operation,
                     )
                 )
 

@@ -23,6 +23,7 @@ from cacheon.eval.crossover_runtime import (
     SpeedStageDecision,
     TimedWindow,
 )
+from cacheon.eval.continuation_codec import ContinuationCodec, ContinuationCodecError
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, ResidentBatchShape
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.resident_evaluation_pair import (
@@ -256,6 +257,20 @@ class ResidentPairCrossoverEvidence:
 
     def regrade(self, plan: ResidentPairCrossoverPlan) -> SpeedupVerdict:
         return _regrade(self, plan)
+
+    @property
+    def digest(self) -> str:
+        """Canonical digest of every retained request slice and headline."""
+
+        try:
+            payload = ContinuationCodec((ResidentPairCrossoverEvidence,)).encode(self)
+        except ContinuationCodecError as exc:
+            raise ResidentPairCrossoverError(
+                f"resident pair evidence is not canonically encodable: {exc}"
+            ) from None
+        return canonical_digest(
+            "cacheon.eval.resident-pair-crossover-evidence.v1", payload
+        )
 
 
 _LOCKS_GUARD = threading.Lock()

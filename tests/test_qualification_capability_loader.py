@@ -49,6 +49,8 @@ def _capabilities() -> B300QualificationCapabilities:
         source_resolver_digest=_sha256("source-resolver"),
         graph_facts_builder=lambda *_args: None,
         graph_facts_builder_digest=_sha256("graph-facts"),
+        resident_count_quality_builder=lambda *_args: None,
+        resident_count_quality_builder_digest=_sha256("resident-count-builder"),
     )
 
 

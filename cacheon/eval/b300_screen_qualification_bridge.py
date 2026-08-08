@@ -78,6 +78,9 @@ def derive_b300_screen_qualification(
                 selection_store_digest=qualification_commission[
                     "selection_store_digest"
                 ],
+                resident_count_quality_builder_digest=qualification_commission[
+                    "resident_count_quality_builder_digest"
+                ],
             )
             qualification_policy_digest = predicted_qualification_policy_digest(
                 catalog,
@@ -89,6 +92,9 @@ def derive_b300_screen_qualification(
                 ],
                 hidden_judge_binding_digest=hidden_binding.digest,
                 selection_policy_digest=prompt_identity["selection_policy_digest"],
+                resident_count_quality_builder_digest=qualification_commission[
+                    "resident_count_quality_builder_digest"
+                ],
             )
         except B300RegisteredQualificationError as exc:
             raise B300ScreenQualificationBridgeError(

@@ -31,6 +31,7 @@ from cacheon.eval.b300_qualification_deployment import (
 )
 from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
+    B300QualificationGraphEvidenceStoreError,
 )
 from cacheon.eval.calibration import (
     CalibrationContext,
@@ -242,10 +243,19 @@ class _Harness:
     inputs: registered.B300RegisteredQualificationInputs
 
 
-def _harness(tmp_path: Path, source_fixture: Path | None = None) -> _Harness:
+def _harness(
+    tmp_path: Path,
+    source_fixture: Path | None = None,
+    *,
+    evidence_root: Path | None = None,
+) -> _Harness:
     case = _case(tmp_path / "runtime")
     catalog = case.catalog
-    evidence_root = _private_directory(tmp_path / "evidence")
+    evidence_root = (
+        _private_directory(tmp_path / "evidence")
+        if evidence_root is None
+        else evidence_root
+    )
     materialization_root = _private_directory(tmp_path / "materialized")
     verification_policy = _h("ordinary-focused-graph-policy")
     hidden_policy = _h("ordinary-hidden-task-policy")
@@ -770,6 +780,24 @@ def test_graph_evidence_hold_survives_registered_profile_resolution(
     with pytest.raises(B300QualificationGraphEvidenceHold) as caught:
         factory.plan_builder(harness.cohort, b"h" * 32)
     assert caught.value is hold
+
+
+def test_corrupt_graph_store_state_becomes_typed_hold(
+    tmp_path: Path,
+) -> None:
+    harness = _harness(tmp_path)
+
+    def corrupt(_candidate, _prepared):
+        raise B300QualificationGraphEvidenceStoreError("corrupt graph bytes")
+
+    inputs = replace(
+        harness.inputs,
+        graph_facts_builder_digest=_h("corrupt-graph-builder"),
+        graph_facts_builder=corrupt,
+    )
+    factory = registered.build_b300_registered_qualification_factory(inputs)
+    with pytest.raises(B300QualificationGraphEvidenceHold, match="unauthenticated"):
+        factory.plan_builder(harness.cohort, b"h" * 32)
 
 
 def test_blocker_inventory_names_only_missing_commissioning_authorities() -> None:

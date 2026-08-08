@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.b300_mainnet_worker as worker_module
+import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCandidateBinding,
@@ -39,6 +40,7 @@ from cacheon.chain.evaluation_coordinator import (
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.intake import FinalizedArrival, IntakeReservation
 from cacheon.chain.publication import publish_worker_bundle
+from cacheon.chain.remote_qualification_hold import RemoteQualificationHoldReason
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
@@ -53,7 +55,9 @@ from cacheon.eval.b300_arena_provider import (
 from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorker,
     B300MainnetWorkerError,
-    B300RemoteQualificationRun,
+)
+from cacheon.eval.b300_qualification_graph_gate import (
+    B300QualificationGraphGateHold,
 )
 from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
 from cacheon.eval.oci_backend import (
@@ -162,7 +166,7 @@ def _gpu(index: int) -> GPUConfiguration:
 
 
 @pytest.fixture
-def executor_factory(tmp_path: Path):
+def executor_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     executors: list[OCIEngineExecutor] = []
     sequence = 0
 
@@ -203,6 +207,8 @@ def executor_factory(tmp_path: Path):
         executors.append(executor)
         return executor
 
+    create.managed_executors = executors
+    create.monkeypatch = monkeypatch
     yield create
     for executor in executors:
         executor.manager.close()
@@ -301,6 +307,19 @@ def _authorities(tmp_path: Path, executor_factory):
             "B", baseline_executor.device_policy
         ),
     )
+    authority_index = len(executor_factory.managed_executors)
+    resident_pair_factory, pair_executors = (
+        authority_fixtures._resident_pair_factory(
+            tmp_path / f"resident-pair-{authority_index}",
+            executor_factory.monkeypatch,
+            _h(f"resident-pair-placeholder-{authority_index}"),
+        )
+    )
+    executor_factory.managed_executors.extend(pair_executors)
+    resident_count_quality = authority_fixtures._resident_count_quality(
+        authority_fixtures.default_target_catalog(),
+        tmp_path / f"count-evidence-{authority_index}",
+    )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
         screen_handlers=handlers,
@@ -321,6 +340,16 @@ def _authorities(tmp_path: Path, executor_factory):
         deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
         qualification_lane_pair=lane_pair,
         qualification_stage="primary",
+        resident_pair_factory=resident_pair_factory,
+        resident_count_quality=resident_count_quality,
+    )
+    manifest = _manifest(authorities)
+    authorities = dataclasses.replace(
+        authorities,
+        resident_pair_factory=authority_fixtures._rebind_resident_pair_factory(
+            resident_pair_factory,
+            manifest.digest,
+        ),
     )
     return authorities, resident, builder
 
@@ -660,7 +689,7 @@ def test_qualification_uses_only_sealed_work_and_releases_systemic_batch(
         worker.close()
 
 
-def test_remote_qualification_is_path_free_lane_bound_and_returns_authority(
+def test_remote_qualification_without_graph_root_returns_authenticated_hold(
     tmp_path: Path,
     executor_factory,
     monkeypatch,
@@ -689,27 +718,11 @@ def test_remote_qualification_is_path_free_lane_bound_and_returns_authority(
             request_digest=request_digest,
         )
 
-        assert type(result) is B300RemoteQualificationRun
-        assert result.screen_lane == "primary"
-        assert result.run.lease is claim.lease
-        assert result.run.disposition == "released"
-        assert result.run.payload.authority_manifest_digest == (
-            result.authority_manifest.digest
-        )
-        assert result.authority_manifest.reservations == tuple(
-            row.reservation for row in claim.candidates
-        )
+        assert type(result) is B300QualificationGraphGateHold
+        assert result.reason is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
         assert builder.calls[0][1] is None
-        assert len(calls) == 1
-        assert calls[0][1]["continuation_store"] is continuation
-        assert calls[0][1]["request_digest"] == request_digest
+        assert calls == []
         assert resident.created == 0
-        result.run.envelope.verify(
-            claim.lease,
-            readiness,
-            worker.service,
-            result.run.payload,
-        )
     finally:
         worker.close()
 
@@ -785,10 +798,11 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
     continuation = QualificationContinuationStore(tmp_path / "continuation")
     request_digest = _h("remote-request")
 
+    intake_calls = []
     monkeypatch.setattr(
         worker_module,
         "run_qualification_intake",
-        lambda factory, **_kwargs: _systemic_batch(factory),
+        lambda *args, **kwargs: intake_calls.append((args, kwargs)),
     )
     worker = B300MainnetWorker(manifest, reproduction, readiness)
     try:
@@ -810,8 +824,9 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
             continuation_store=continuation,
             request_digest=request_digest,
         )
-        assert result.screen_lane == "reproduction"
-        assert result.run.disposition == "released"
+        assert type(result) is B300QualificationGraphGateHold
+        assert result.reason is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
+        assert intake_calls == []
     finally:
         worker.close()
 

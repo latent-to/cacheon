@@ -95,8 +95,11 @@ def _plan(
     *,
     source_fixture: Path | None = None,
     failure: bool,
+    evidence_root: Path | None = None,
 ):
-    harness = _harness(tmp_path, source_fixture)
+    harness = _harness(
+        tmp_path, source_fixture, evidence_root=evidence_root
+    )
     factory = harness.factory
     if failure:
         facts = _failure_facts(harness.candidate.reservation.target_members)

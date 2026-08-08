@@ -30,7 +30,7 @@ resolver callables remain exactly the registered factory's.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -52,6 +52,10 @@ from cacheon.eval.b300_registered_qualification import (
     B300RegisteredQualificationInputs,
     B300RegisteredQualificationPolicy,
     build_b300_registered_qualification_factory,
+)
+from cacheon.eval.b300_resident_pair_factory import (
+    B300CommissionedResidentPairFactory,
+    B300ResidentStockLanePlan,
 )
 from cacheon.eval.b300_sealed_qualification_commission import (
     QUALIFICATION_DEADLINE_MAXIMUM_SECONDS,
@@ -85,8 +89,14 @@ from cacheon.eval.oci_backend import (
     expected_runtime_preflight,
 )
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
+from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.qualification import ReferenceManifest
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
+from cacheon.eval.registered_resident_count_quality import (
+    B300ResidentCountQualityBuilderContext,
+    B300ResidentCountQualityCapability,
+    RegisteredResidentCountQualityError,
+)
 from cacheon.eval.scoring import marginal_workload_digest
 from cacheon.stack_manifest import (
     EvaluationStackContext,
@@ -121,6 +131,8 @@ class B300QualificationCapabilities:
     source_resolver_digest: str
     graph_facts_builder: object
     graph_facts_builder_digest: str
+    resident_count_quality_builder: object
+    resident_count_quality_builder_digest: str
 
     def __post_init__(self) -> None:
         if (
@@ -131,6 +143,7 @@ class B300QualificationCapabilities:
                 or callable(getattr(self.hidden_judge, "bind_prompt_plan", None))
             )
             or not callable(self.graph_facts_builder)
+            or not callable(self.resident_count_quality_builder)
             or not callable(getattr(self.source_resolver, "resolve_proposal", None))
             or not callable(getattr(self.source_resolver, "resolve_integrated", None))
         ):
@@ -141,7 +154,11 @@ class B300QualificationCapabilities:
             raise B300QualificationCommissionError(
                 "hidden judge capability lacks an exact sealed binding"
             )
-        for field in ("source_resolver_digest", "graph_facts_builder_digest"):
+        for field in (
+            "source_resolver_digest",
+            "graph_facts_builder_digest",
+            "resident_count_quality_builder_digest",
+        ):
             value = getattr(self, field)
             if (
                 type(value) is not str
@@ -280,6 +297,26 @@ def _private_root(path: Path) -> Path:
     return path
 
 
+def _resident_plan(
+    launch: EngineLaunchSpec,
+    binding: TrustedLaunchBinding,
+    workload: SessionExecutionPlan,
+) -> ResidentSessionPlan:
+    """Bound one lifetime for worst-case 5-read speed plus one count request."""
+
+    return ResidentSessionPlan(
+        launch.digest,
+        workload.expected_engine_config_digest,
+        workload.engine_config,
+        expected_runtime_preflight(launch, binding.runtime_preflight_receipt),
+        6,
+        3 * len(workload.prompt_batches) + 1,
+        workload.max_new_tokens,
+        workload.top_logprobs_num,
+        workload.temperature,
+    )
+
+
 def _sealed_calibration(
     inputs: "screen_deployment._CommissionedInputs",
 ) -> tuple[CalibrationThresholdPolicy, tuple[CalibrationObservation, ...]]:
@@ -372,6 +409,8 @@ def compose_commissioned_qualification(
         capabilities.source_resolver_digest != block["source_resolver_digest"]
         or capabilities.graph_facts_builder_digest
         != block["graph_facts_builder_digest"]
+        or capabilities.resident_count_quality_builder_digest
+        != block["resident_count_quality_builder_digest"]
     ):
         raise B300QualificationCommissionError(
             "capability identities differ from the sealed commission block"
@@ -703,6 +742,82 @@ def _compose_locked(
             physical_hardware=candidate_physical,
         )
 
+    candidate_stock_binding = bind_candidate(tree)
+    candidate_stock_launch = replace(
+        incumbent_launch,
+        hardware=replace(
+            baseline_hardware,
+            device_policy_digest=candidate_executor.device_policy.policy_sha256,
+        ),
+        native_build_spec_digest=candidate_stock_binding.native_build_spec.digest,
+        resource_policy_digest=(
+            candidate_executor.config.prebuild.policy.resource_policy_digest
+        ),
+        seccomp_policy_digest=screen_deployment._file_sha256(
+            candidate_executor.config.prebuild.seccomp_profile
+        ),
+    )
+    candidate_stock_workload = replace(
+        baseline_session_plan,
+        launch_digest=candidate_stock_launch.digest,
+        expected_preflight=expected_runtime_preflight(
+            candidate_stock_launch, inputs.preflight
+        ),
+    )
+    orientation = lane_pair.orientation(screen_lane)
+    baseline_lane_plan = B300ResidentStockLanePlan(
+        orientation.resident_baseline,
+        tree,
+        incumbent_launch,
+        trusted_baseline,
+        _resident_plan(incumbent_launch, trusted_baseline, baseline_session_plan),
+        baseline_session_plan,
+        baseline_executor,
+    )
+    candidate_lane_plan = B300ResidentStockLanePlan(
+        orientation.candidate,
+        tree,
+        candidate_stock_launch,
+        candidate_stock_binding,
+        _resident_plan(
+            candidate_stock_launch,
+            candidate_stock_binding,
+            candidate_stock_workload,
+        ),
+        candidate_stock_workload,
+        candidate_executor,
+    )
+    resident_pair_factory = B300CommissionedResidentPairFactory(
+        service_digest=manifest.digest,
+        readiness=readiness,
+        lane_pair=lane_pair,
+        lane_plans=(baseline_lane_plan, candidate_lane_plan),
+        model_mount=model_mount,
+        swap_intake_root=_private_root(inputs.root / "resident-intake"),
+    )
+    try:
+        count_context = B300ResidentCountQualityBuilderContext(
+            catalog,
+            stock,
+            incumbent_launch,
+            incumbent_binding,
+            evidence_root,
+            lane_pair,
+            engine_config.max_running_requests,
+        )
+        resident_count_quality = capabilities.resident_count_quality_builder(
+            count_context
+        )
+        if type(resident_count_quality) is not B300ResidentCountQualityCapability:
+            raise RegisteredResidentCountQualityError(
+                "resident count builder returned another capability type"
+            )
+        resident_count_quality.validate(count_context)
+    except (RegisteredResidentCountQualityError, TypeError, ValueError) as exc:
+        raise B300QualificationCommissionError(
+            f"resident count capability failed to compose: {exc}"
+        ) from None
+
     try:
         factory_inputs = B300RegisteredQualificationInputs(
             catalog=catalog,
@@ -780,6 +895,10 @@ def _compose_locked(
         evidence_policy_digest=QUALIFICATION_EVIDENCE_POLICY_DIGEST,
         builder_source_digest=block["builder_source_digest"],
         selection_store_digest=block["selection_store_digest"],
+        resident_count_quality_builder_digest=(
+            block["resident_count_quality_builder_digest"]
+        ),
+        resident_count_quality=resident_count_quality,
         secret_loader=capabilities.secret_loader,
         plan_builder=factory.plan_builder,
         entropy_provider_digest=declared_qualification_entropy_digest(
@@ -805,6 +924,7 @@ def _compose_locked(
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
+        resident_pair_factory=resident_pair_factory,
         screen_lane=screen_lane,
     )
     return B300RemoteQualificationCommission(deployment, construction, readiness)

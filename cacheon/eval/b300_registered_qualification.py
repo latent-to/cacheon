@@ -46,6 +46,7 @@ from cacheon.eval.b300_qualification_deployment import (
 )
 from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
+    B300QualificationGraphEvidenceStoreError,
 )
 from cacheon.eval.crossover_runtime import (
     ResidentArmPlan,
@@ -388,6 +389,10 @@ class B300RegisteredQualificationFactory:
             facts = inputs.graph_facts_builder(candidate, prepared)
         except B300QualificationGraphEvidenceHold:
             raise
+        except B300QualificationGraphEvidenceStoreError:
+            raise B300QualificationGraphEvidenceHold(
+                "commissioned graph evidence is unavailable or unauthenticated"
+            ) from None
         except Exception as exc:
             raise B300RegisteredQualificationError(
                 "validator focused graph authority failed"

@@ -39,6 +39,7 @@ from cacheon.eval.oci_reference_session import (
 )
 from cacheon.eval.qualification import QualificationDecision, SelectionEntropyReceipt
 from cacheon.eval.qualification_continuation import (
+    AuditContinuation,
     QualificationContinuationError,
     QualificationContinuationStore,
     QualityContinuation,
@@ -556,13 +557,16 @@ def test_quality_record_round_trips_real_evidence(tmp_path: Path) -> None:
         ),
         reference_execution=reference_execution,
         teardown_after=_quiescence(2, 6.0),
-        audit_witnesses=(_audit_witness(),),
-        audit_started=2.1,
-        audit_completed=2.5,
+        t_nonce="pending",
+        t_operation_digest=_d("t-operation"),
     )
 
     continuation = _scope(tmp_path)
     assert continuation.load_quality() is None
+    value = replace(
+        value,
+        t_nonce=continuation.arm_evaluator("t", value.t_operation_digest),
+    )
     continuation.record_quality(value)
     reopened = continuation.load_quality()
     assert reopened == value
@@ -573,6 +577,25 @@ def test_quality_record_round_trips_real_evidence(tmp_path: Path) -> None:
 
     with pytest.raises(QualificationContinuationError, match="exact checkpoint"):
         continuation.record_quality(SimpleNamespace())
+
+
+def test_evaluator_claim_is_unique_and_audit_completion_reopens(
+    tmp_path: Path,
+) -> None:
+    operation = _d("audit-operation")
+    continuation = _scope(tmp_path / "complete")
+    nonce = continuation.arm_evaluator("audit", operation)
+    audit = AuditContinuation(
+        nonce, operation, (_audit_witness(),), 2.1, 2.5, 2.4
+    )
+    continuation.record_audit(audit)
+    assert continuation.load_audit(operation) == audit
+
+    ambiguous = _scope(tmp_path / "ambiguous")
+    ambiguous.arm_evaluator("audit", operation)
+    assert ambiguous.load_audit(operation) is None
+    with pytest.raises(QualificationContinuationError, match="other content"):
+        ambiguous.arm_evaluator("audit", operation)
 
 
 # --------------------------------------------------------------------------
@@ -602,6 +625,26 @@ class _MemoryContinuation:
     def load_resident_speed(self):
         return self.records.get("speed")
 
+    def arm_evaluator(self, stage, operation_digest):
+        key = f"{stage}_armed"
+        if key in self.records:
+            raise QualificationContinuationError(
+                f"continuation {key} record already exists with other content"
+            )
+        nonce = f"{stage}-nonce"
+        self.records[key] = (nonce, operation_digest)
+        return nonce
+
+    def load_audit(self, operation_digest):
+        value = self.records.get("audit")
+        if value is not None and value.operation_digest != operation_digest:
+            raise QualificationContinuationError("audit operation differs")
+        return value
+
+    def record_audit(self, value):
+        assert self.records["audit_armed"] == (value.nonce, value.operation_digest)
+        self.records["audit"] = value
+
     def load_marginal_speed(self, prepared):
         del prepared
         return self.records.get("speed")
@@ -613,6 +656,7 @@ class _MemoryContinuation:
         self.records["speed"] = lifecycle
 
     def record_quality(self, value):
+        assert self.records["t_armed"] == (value.t_nonce, value.t_operation_digest)
         self.records["quality"] = value
 
     def record_final(self, reference):
@@ -656,44 +700,40 @@ def _pass_harness(monkeypatch) -> _Harness:
     return harness
 
 
-def test_marginal_speed_executes_at_most_once_across_a_pristine_t_crash(
+def test_completed_pristine_t_crash_holds_without_duplicate_evaluator_entry(
     monkeypatch,
 ) -> None:
     harness = _pass_harness(monkeypatch)
     reset_quiescence = _fresh_quiescence(monkeypatch)
     continuation = _MemoryContinuation()
 
-    executed = OCIEngineExecutor.execute_reference
     state = {"crashes": 1}
+    record_quality = continuation.record_quality
 
-    def crashing_reference(self, *args, **kwargs):
+    def crashing_record(value):
         if state["crashes"]:
             state["crashes"] -= 1
-            raise RuntimeError("simulated crash while pristine T was running")
-        return executed(self, *args, **kwargs)
+            raise RuntimeError("simulated crash after pristine T completed")
+        record_quality(value)
 
-    monkeypatch.setattr(OCIEngineExecutor, "execute_reference", crashing_reference)
+    continuation.record_quality = crashing_record
 
-    with pytest.raises(RuntimeError, match="simulated crash"):
+    with pytest.raises(RuntimeError, match="after pristine T completed"):
         _run(harness, continuation)
     assert harness.calls.count("lifecycle") == 1
+    assert harness.calls.count("audit") == 1
+    assert harness.reference_calls == 1
     assert "speed" in continuation.records
     assert "quality" not in continuation.records
+    assert "t_armed" in continuation.records
 
     reset_quiescence()
-    reference = _run(harness, continuation)
-    assert reference == harness.attempt_reference
-    # B/C/B-prime ran exactly once across both attempts; T completed once.
+    with pytest.raises(QualificationContinuationError, match="t_armed"):
+        _run(harness, continuation)
     assert harness.calls.count("lifecycle") == 1
     assert harness.reference_calls == 1
-    assert continuation.records["final"] == harness.attempt_reference
-
-    # Third call: final product exists, so this is import/commit only.
-    transactions = harness.calls.count("transaction.enter")
-    assert _run(harness, continuation) == harness.attempt_reference
-    assert harness.calls.count("transaction.enter") == transactions
-    assert harness.calls.count("lifecycle") == 1
-    assert harness.reference_calls == 1
+    assert harness.calls.count("audit") == 1
+    assert "final" not in continuation.records
 
 
 def test_quality_executes_at_most_once_across_a_finalization_crash(
@@ -755,7 +795,7 @@ def test_quality_executes_at_most_once_across_a_finalization_crash(
     assert continuation.records["final"] == harness.attempt_reference
 
 
-def test_resident_speed_executes_at_most_once_across_an_audit_crash(
+def test_completed_resident_audit_crash_holds_without_duplicate_evaluator_entry(
     monkeypatch,
 ) -> None:
     harness = _Harness(
@@ -775,16 +815,16 @@ def test_resident_speed_executes_at_most_once_across_an_audit_crash(
     harness.executor.manager.clock = lambda: next(clock)
     continuation = _MemoryContinuation()
 
-    audits = runner._run_slot_audits
     state = {"crashes": 1}
+    record_audit = continuation.record_audit
 
-    def crashing_audits(*args, **kwargs):
+    def crashing_record(value):
         if state["crashes"]:
             state["crashes"] -= 1
-            raise RuntimeError("simulated crash while the audit session was live")
-        return audits(*args, **kwargs)
+            raise RuntimeError("simulated crash after audit completed")
+        record_audit(value)
 
-    monkeypatch.setattr(runner, "_run_slot_audits", crashing_audits)
+    continuation.record_audit = crashing_record
 
     def run_resident():
         ids = iter(f"{index + 1:032x}" for index in range(16))
@@ -799,22 +839,20 @@ def test_resident_speed_executes_at_most_once_across_an_audit_crash(
             continuation=continuation,
         )
 
-    with pytest.raises(RuntimeError, match="simulated crash"):
+    with pytest.raises(RuntimeError, match="after audit completed"):
         run_resident()
     assert harness.calls.count("resident.speed") == 1
+    assert harness.calls.count("audit") == 1
     assert "speed" in continuation.records
+    assert "audit_armed" in continuation.records
 
-    reference = run_resident()
-    assert reference == harness.attempt_reference
+    with pytest.raises(QualificationContinuationError, match="audit_armed"):
+        run_resident()
     assert exits == []
-    # B/C/B-prime never ran a second time; audits and T resumed downstream.
     assert harness.calls.count("resident.speed") == 1
-    assert harness.reference_calls == 1
-    assert continuation.records["final"] == harness.attempt_reference
-
-    assert run_resident() == harness.attempt_reference
-    assert harness.calls.count("resident.speed") == 1
-    assert harness.reference_calls == 1
+    assert harness.calls.count("audit") == 1
+    assert harness.reference_calls == 0
+    assert "final" not in continuation.records
 
 
 def test_continuation_identity_mismatch_holds_before_any_execution(

@@ -31,7 +31,7 @@ from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import TargetCatalog
 
 
-QUALIFICATION_COMMISSION_SCHEMA = "cacheon-private-b300-qualification-commission-v2"
+QUALIFICATION_COMMISSION_SCHEMA = "cacheon-private-b300-qualification-commission-v3"
 QUALIFICATION_DEADLINE_MAXIMUM_SECONDS = 14_400
 
 QUALIFICATION_EVIDENCE_POLICY_DIGEST = canonical_digest(
@@ -50,6 +50,7 @@ _COMMISSION_FIELDS = frozenset(
         "graph_facts_builder_digest",
         "policy",
         "resident_speed",
+        "resident_count_quality_builder_digest",
         "schema",
         "selection_store_digest",
         "session",
@@ -119,6 +120,7 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         "builder_source_digest",
         "candidate_binding_builder_digest",
         "graph_facts_builder_digest",
+        "resident_count_quality_builder_digest",
         "selection_store_digest",
         "source_resolver_digest",
         "support_policy_digest",
@@ -247,6 +249,7 @@ def predicted_qualification_builder_digest(
     *,
     builder_source_digest: str,
     selection_store_digest: str,
+    resident_count_quality_builder_digest: str,
 ) -> str:
     return canonical_digest(
         QUALIFICATION_CONSTRUCTION_SCHEMA,
@@ -257,6 +260,10 @@ def predicted_qualification_builder_digest(
             "evidence_policy_digest": QUALIFICATION_EVIDENCE_POLICY_DIGEST,
             "profile_registry_digest": predicted_qualification_registry_digest(
                 catalog, builder_source_digest=builder_source_digest
+            ),
+            "resident_count_quality_builder_digest": _digest(
+                resident_count_quality_builder_digest,
+                "resident count quality builder digest",
             ),
             "selection_store_digest": _digest(
                 selection_store_digest, "selection store digest"
@@ -273,6 +280,7 @@ def predicted_qualification_policy_digest(
     selection_store_digest: str,
     hidden_judge_binding_digest: str,
     selection_policy_digest: str,
+    resident_count_quality_builder_digest: str,
 ) -> str:
     return canonical_digest(
         QUALIFICATION_POLICY_SCHEMA,
@@ -281,6 +289,9 @@ def predicted_qualification_policy_digest(
                 catalog,
                 builder_source_digest=builder_source_digest,
                 selection_store_digest=selection_store_digest,
+                resident_count_quality_builder_digest=(
+                    resident_count_quality_builder_digest
+                ),
             ),
             "deadline_policy_digest": declared_qualification_deadline_digest(),
             "entropy_provider_digest": declared_qualification_entropy_digest(

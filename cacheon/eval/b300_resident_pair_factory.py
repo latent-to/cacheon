@@ -33,9 +33,11 @@ from cacheon.eval.engine_launch import (
 )
 from cacheon.eval.oci_backend import (
     OCIEngineExecutor,
+    ResidentEngineExecutionEvidence,
     TrustedArenaModelMountReceipt,
     expected_runtime_preflight,
 )
+from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
 from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.resident_evaluation_pair import (
@@ -371,6 +373,10 @@ class B300ResidentPairRequestOwner:
         self._lock = threading.RLock()
         self._borrow: B300ResidentRequestPair | None = None
         self._retirement: ResidentEvaluationRetirementEvidence | None = None
+        self._quiescence: tuple[
+            tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]
+        ] | None = None
+        self._quiescence_attempted = False
         self._start_attempted = False
         self._close_attempted = False
         self._failure: BaseException | None = None
@@ -389,6 +395,15 @@ class B300ResidentPairRequestOwner:
     def retirement(self) -> ResidentEvaluationRetirementEvidence | None:
         with self._lock:
             return self._retirement
+
+    @property
+    def quiescence(
+        self,
+    ) -> tuple[
+        tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]
+    ] | None:
+        with self._lock:
+            return self._quiescence
 
     def _require_authority(
         self, authority: B300ResidentPairRequestAuthority
@@ -615,6 +630,70 @@ class B300ResidentPairRequestOwner:
                     "qualification request cannot complete while its pair is live"
                 )
             return self._retirement
+
+    def retire_and_quiesce(
+        self,
+        authority: B300ResidentPairRequestAuthority,
+        binding: ResidentPairRuntimeBinding,
+    ) -> tuple[
+        ResidentEvaluationRetirementEvidence[ResidentEngineExecutionEvidence],
+        tuple[tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]],
+    ]:
+        """Close both lifetimes once, then prove both exact namespaces empty."""
+
+        with self._lock:
+            self.require_binding(authority, binding)
+            if self._quiescence is not None:
+                assert self._retirement is not None
+                return self._retirement, self._quiescence
+            if self._quiescence_attempted:
+                raise B300ResidentPairFactoryError(
+                    "resident pair quiescence previously failed"
+                ) from self._failure
+            retirement = self.close()
+            if retirement is None:
+                raise B300ResidentPairFactoryError(
+                    "resident pair quiescence requires a started pair"
+                )
+            lifetimes = (
+                retirement.lane_a.lifetime_evidence,
+                retirement.lane_b.lifetime_evidence,
+            )
+            if any(type(row) is not ResidentEngineExecutionEvidence for row in lifetimes):
+                raise B300ResidentPairFactoryError(
+                    "resident pair retirement lacks exact engine lifetime evidence"
+                )
+            cutoff = max(
+                row.device_receipts[1].completed_monotonic_s for row in lifetimes
+            )
+            self._quiescence_attempted = True
+            try:
+                proofs = tuple(
+                    (plan.lane_policy.lane_id, plan.executor.prove_quiescent())
+                    for plan in self._plans
+                )
+            except BaseException as exc:
+                self._failure = exc
+                raise B300ResidentPairFactoryError(
+                    "resident pair post-close quiescence failed"
+                ) from exc
+            for plan, (lane_id, proof) in zip(self._plans, proofs, strict=True):
+                manager = plan.executor.manager
+                if (
+                    type(proof) is not OCIQuiescenceReceipt
+                    or lane_id != plan.lane_policy.lane_id
+                    or proof.executor_id != manager.executor_id
+                    or proof.manager_instance_id != manager.manager_instance_id
+                    or proof.namespace_digest != manager.namespace_digest
+                    or proof.observed_monotonic_s < cutoff
+                ):
+                    failure = B300ResidentPairFactoryError(
+                        "resident pair post-close quiescence changed lane authority"
+                    )
+                    self._failure = failure
+                    raise failure
+            self._quiescence = proofs
+            return retirement, proofs
 
 
 class B300CommissionedResidentPairFactory:

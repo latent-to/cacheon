@@ -70,6 +70,8 @@ def _capabilities(**overrides: object) -> commission.B300QualificationCapabiliti
         "source_resolver_digest": _h("source-resolver"),
         "graph_facts_builder": lambda *_args: None,
         "graph_facts_builder_digest": _h("graph-facts"),
+        "resident_count_quality_builder": lambda *_args: None,
+        "resident_count_quality_builder_digest": _h("resident-count-builder"),
     }
     values.update(overrides)
     return commission.B300QualificationCapabilities(**values)

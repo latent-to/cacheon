@@ -44,6 +44,7 @@ from cacheon.eval.qualification_runner import (
     QualificationStageExit,
     QualificationRunnerError,
     STAGE_EXIT_SCHEMA,
+    STAGE_EXIT_SCHEMA_V2,
     SpeedStageDisposition,
     qualification_authority_digest,
     reopen_causal_qualification,
@@ -57,6 +58,9 @@ from cacheon.eval.oci_outer_session import (
 )
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.marginal_runtime import CandidateArmWorkerError
+from cacheon.eval.resident_pair_quality_lifecycle import (
+    ResidentPairMarginalLifecycleEvidence,
+)
 from cacheon.eval.scoring import RawSpeedEvidenceError
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
@@ -761,6 +765,8 @@ def run_qualification_intake(
     deadline: float,
     continuation_store: QualificationContinuationStore | None = None,
     request_digest: str | None = None,
+    prebuilt_plan: CausalQualificationInput | None = None,
+    resident_pair_lifecycle: ResidentPairMarginalLifecycleEvidence | None = None,
 ) -> QualificationIntakeBatch:
     """Run, reopen, and project one finalized cohort without settlement authority.
 
@@ -783,9 +789,33 @@ def run_qualification_intake(
         )
     if request_digest is not None:
         request_digest = _digest(request_digest, "authenticated request digest")
+    if (
+        (prebuilt_plan is None) != (resident_pair_lifecycle is None)
+        or (
+            prebuilt_plan is not None
+            and (
+                type(prebuilt_plan) is not CausalQualificationInput
+                or type(resident_pair_lifecycle)
+                is not ResidentPairMarginalLifecycleEvidence
+            )
+        )
+    ):
+        raise QualificationIntakeError(
+            "resident pair intake requires one exact prebuilt plan and lifecycle"
+        )
     manifest = factory.manifest
     try:
-        value = factory.build()
+        value = prebuilt_plan if prebuilt_plan is not None else factory.build()
+        if prebuilt_plan is not None:
+            observed = QualificationAuthorityManifest.seal(
+                value,
+                reservations=manifest.reservations,
+                selection_secret_reference=manifest.selection_secret_reference,
+            )
+            if observed != manifest:
+                raise QualificationIntakeError(
+                    "prebuilt qualification authority differs"
+                )
         if value.speed_stage_disposition is not SpeedStageDisposition.TERMINAL:
             raise QualificationIntakeError(
                 "economic qualification cannot use calibration speed continuation"
@@ -800,20 +830,36 @@ def run_qualification_intake(
             source_digest=value.prepared.source.digest,
         )
     try:
-        reference = run_causal_qualification(
-            value,
-            executor=executor,
-            resident_baseline_executor=resident_baseline_executor,
-            entropy_provider=entropy_provider,
-            hidden_judge=hidden_judge,
-            deadline=deadline,
-            continuation=continuation,
-        )
+        runner_kwargs = {
+            "executor": executor,
+            "resident_baseline_executor": resident_baseline_executor,
+            "entropy_provider": entropy_provider,
+            "hidden_judge": hidden_judge,
+            "deadline": deadline,
+            "continuation": continuation,
+        }
+        if resident_pair_lifecycle is not None:
+            runner_kwargs.update(
+                {
+                    "resident_baseline_executor": None,
+                    "resident_pair_lifecycle": resident_pair_lifecycle,
+                }
+            )
+        reference = run_causal_qualification(value, **runner_kwargs)
         if type(reference) is not EvidenceArtifactRef:
             raise QualificationIntakeError("qualification runner returned no typed artifact")
-        if reference.schema == STAGE_EXIT_SCHEMA:
-            terminal = reopen_qualification_stage_exit(
-                value.evidence_root, reference, expected=value
+        if reference.schema in {STAGE_EXIT_SCHEMA, STAGE_EXIT_SCHEMA_V2}:
+            terminal = (
+                reopen_qualification_stage_exit(
+                    value.evidence_root,
+                    reference,
+                    expected=value,
+                    resident_pair_lifecycle=resident_pair_lifecycle,
+                )
+                if resident_pair_lifecycle is not None
+                else reopen_qualification_stage_exit(
+                    value.evidence_root, reference, expected=value
+                )
             )
             if (
                 type(terminal) is not QualificationStageExit
@@ -853,8 +899,17 @@ def run_qualification_intake(
             return QualificationIntakeBatch(
                 manifest.digest, (outcome,), reference, retry_plan
             )
-        attempt = reopen_causal_qualification(
-            value.evidence_root, reference, expected=value
+        attempt = (
+            reopen_causal_qualification(
+                value.evidence_root,
+                reference,
+                expected=value,
+                resident_pair_lifecycle=resident_pair_lifecycle,
+            )
+            if resident_pair_lifecycle is not None
+            else reopen_causal_qualification(
+                value.evidence_root, reference, expected=value
+            )
         )
     except RawSpeedEvidenceError as exc:
         return _no_decision_batch(manifest, exc, reason="raw_speed_evidence")

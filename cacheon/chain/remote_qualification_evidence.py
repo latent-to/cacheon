@@ -35,6 +35,11 @@ from cacheon.eval.qualification_intake import (
     QualificationIntakeOutcome,
     QualificationRetryPlan,
 )
+from cacheon.eval.qualification_runner import ATTEMPT_SCHEMA_V4
+from cacheon.eval.resident_pair_quality_lifecycle import (
+    ResidentPairQualityLifecycleError,
+    reopen_resident_pair_qualification_attempt,
+)
 from cacheon.settlement import SettlementQualification
 from cacheon.stack_identity import canonical_digest, require_sha256_hex, sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -422,6 +427,24 @@ def import_remote_qualification_evidence(
         raise RemoteEvaluationDispatcherError(
             "CPU evidence import differs from the authenticated inventory"
         )
+    attempt_ref = product.batch.attempt_ref
+    if attempt_ref is not None and attempt_ref.schema == ATTEMPT_SCHEMA_V4:
+        try:
+            reopen_resident_pair_qualification_attempt(
+                reopen_evidence(
+                    evidence_root, attempt_ref,
+                    max_bytes=_MAX_REMOTE_EVIDENCE_ARTIFACT_BYTES,
+                ),
+                authority_digest=product.authority_manifest.authority_digest,
+                report_digests=tuple(
+                    row.report_digest for row in product.batch.outcomes
+                ),
+                evidence_inventory=result,
+            )
+        except ResidentPairQualityLifecycleError as exc:
+            raise RemoteEvaluationDispatcherError(
+                str(exc)
+            ) from None
     return result
 
 

@@ -39,12 +39,145 @@ def _h(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
+def _resident_count_quality(catalog, evidence_root: Path):
+    """Build one exact, reopenable count authority for composition tests."""
+
+    from cacheon.eval.registered_resident_count_quality import (
+        B300ResidentCountQualityCapability,
+    )
+    from cacheon.eval.resident_count_quality import (
+        publish_resident_count_observation,
+        reopen_resident_count_stock,
+        seal_resident_count_stock_authority,
+    )
+    from tests.test_registered_resident_count_quality import _product
+
+    evidence_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    evidence_root.chmod(0o700)
+    product = _product(
+        evidence_root.parent,
+        catalog,
+        REGISTERED_B300_TARGET_IDS[0],
+        f"{evidence_root.name}-authority",
+    )
+    stock_observation = reopen_resident_count_stock(
+        product.root,
+        product.stock,
+    )
+    stock = seal_resident_count_stock_authority(
+        evidence_root,
+        publish_resident_count_observation(evidence_root, stock_observation),
+        policy=product.stock.policy,
+    )
+    return B300ResidentCountQualityCapability(
+        catalog,
+        product.plan.envelope,
+        product.plan.prompt_batches,
+        product.plan.selected_ordinals,
+        product.plan.batch_shape,
+        product.plan.admission,
+        stock,
+        product.judge,
+    )
+
+
+def _resident_pair_factory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    service_digest: str,
+):
+    """Commission a service-bound pair authority and return its executors."""
+
+    import tests.test_b300_resident_pair_factory as pair_fixtures
+
+    harness = pair_fixtures._LifetimeHarness(monkeypatch)
+    executors = []
+    commissioned = pair_fixtures._commissioned(
+        tmp_path / "resident-pair-authority",
+        harness,
+        executors,
+        identity="qualification",
+    )
+    factory = _rebind_resident_pair_factory(
+        commissioned.factory,
+        service_digest,
+    )
+    return factory, tuple(executors)
+
+
+@pytest.fixture
+def resident_pair_authority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    executors = []
+    sequence = 0
+
+    def commission(service_digest: str):
+        nonlocal sequence
+        sequence += 1
+        factory, created = _resident_pair_factory(
+            tmp_path / f"pair-{sequence}",
+            monkeypatch,
+            service_digest,
+        )
+        executors.extend(created)
+        return factory
+
+    yield commission
+    for executor in executors:
+        executor.manager.close()
+
+
+def _rebind_resident_pair_factory(factory, service_digest: str):
+    from cacheon.eval.b300_resident_pair_factory import (
+        B300CommissionedResidentPairFactory,
+    )
+    from cacheon.eval.oci_backend import expected_runtime_preflight
+
+    model_mount = replace(factory.model_mount, arena_digest=service_digest)
+    plans = []
+    for row in factory.lane_plans:
+        launch = replace(row.stock_launch, arena_digest=service_digest)
+        expected = expected_runtime_preflight(
+            launch,
+            row.stock_binding.runtime_preflight_receipt,
+        )
+        plans.append(
+            replace(
+                row,
+                stock_launch=launch,
+                resident_plan=replace(
+                    row.resident_plan,
+                    launch_digest=launch.digest,
+                    expected_preflight=expected,
+                ),
+                speed_workload=replace(
+                    row.speed_workload,
+                    launch_digest=launch.digest,
+                    expected_preflight=expected,
+                ),
+            )
+        )
+    readiness = replace(factory.readiness, service_digest=service_digest)
+    return B300CommissionedResidentPairFactory(
+        service_digest=service_digest,
+        readiness=readiness,
+        lane_pair=factory.lane_pair,
+        lane_plans=tuple(plans),
+        model_mount=model_mount,
+        swap_intake_root=factory.swap_intake_root,
+        start_timeout_s=2.0,
+        request_timeout_s=2.0,
+        close_timeout_s=2.0,
+        clock=factory.clock,
+    )
+
+
 def _block() -> dict[str, object]:
     return {
         "schema": sealed.QUALIFICATION_COMMISSION_SCHEMA,
         "builder_source_digest": _h("builder-source"),
         "candidate_binding_builder_digest": _h("binding-builder"),
         "graph_facts_builder_digest": _h("graph-facts"),
+        "resident_count_quality_builder_digest": _h("resident-count-builder"),
         "selection_store_digest": _h("selection-store"),
         "source_resolver_digest": _h("source-resolver"),
         "support_policy_digest": _h("support-policy"),
@@ -208,6 +341,10 @@ def test_predicted_digests_equal_a_real_composed_construction(
         catalog_digest=catalog.digest,
         entries={},
     )
+    count_quality = _resident_count_quality(
+        catalog,
+        tmp_path / "evidence",
+    )
     construction = B300QualificationConstructionAuthority(
         catalog=catalog,
         profiles=profiles,
@@ -219,6 +356,10 @@ def test_predicted_digests_equal_a_real_composed_construction(
         evidence_policy_digest=sealed.QUALIFICATION_EVIDENCE_POLICY_DIGEST,
         builder_source_digest=block["builder_source_digest"],
         selection_store_digest=block["selection_store_digest"],
+        resident_count_quality_builder_digest=block[
+            "resident_count_quality_builder_digest"
+        ],
+        resident_count_quality=count_quality,
         secret_loader=lambda _reference: b"s" * 32,
         plan_builder=lambda _cohort, _secret: object(),
         entropy_provider_digest=sealed.declared_qualification_entropy_digest(
@@ -239,6 +380,9 @@ def test_predicted_digests_equal_a_real_composed_construction(
             catalog,
             builder_source_digest=block["builder_source_digest"],
             selection_store_digest=block["selection_store_digest"],
+            resident_count_quality_builder_digest=block[
+                "resident_count_quality_builder_digest"
+            ],
         )
     )
     assert construction.qualification_policy_digest == (
@@ -248,6 +392,9 @@ def test_predicted_digests_equal_a_real_composed_construction(
             selection_store_digest=block["selection_store_digest"],
             hidden_judge_binding_digest=judge.binding.digest,
             selection_policy_digest=selection_policy_digest,
+            resident_count_quality_builder_digest=block[
+                "resident_count_quality_builder_digest"
+            ],
         )
     )
     with pytest.raises(B300QualificationDeploymentError, match="exactly cover"):
@@ -269,10 +416,14 @@ def test_predicted_policy_digest_binds_each_declared_identity() -> None:
         selection_store_digest=block["selection_store_digest"],
         hidden_judge_binding_digest=_h("binding-one"),
         selection_policy_digest=_h("selection-one"),
+        resident_count_quality_builder_digest=block[
+            "resident_count_quality_builder_digest"
+        ],
     )
     for overrides in (
         {"builder_source_digest": _h("other-builder")},
         {"selection_store_digest": _h("other-store")},
+        {"resident_count_quality_builder_digest": _h("other-count-builder")},
         {"hidden_judge_binding_digest": _h("binding-two")},
         {"selection_policy_digest": _h("selection-two")},
     ):
@@ -283,6 +434,9 @@ def test_predicted_policy_digest_binds_each_declared_identity() -> None:
                 "selection_store_digest": block["selection_store_digest"],
                 "hidden_judge_binding_digest": _h("binding-one"),
                 "selection_policy_digest": _h("selection-one"),
+                "resident_count_quality_builder_digest": block[
+                    "resident_count_quality_builder_digest"
+                ],
                 **overrides,
             },
         )
