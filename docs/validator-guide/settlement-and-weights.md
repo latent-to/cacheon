@@ -8,8 +8,8 @@ Miners looking for the participant-facing lifecycle should start with
 operator runbook for settlement, signing, publication, and recovery.
 
 `chain-validate` may perform settlement when a trusted arena service is injected, but it
-never opens a wallet or calls a chain weight API. Legacy V1 uses `cacheon set-weights`;
-activated finite-debt V2 uses `cacheon set-debt-weights`.
+never opens a wallet or calls a chain weight API. Legacy V1 publication uses
+`cacheon set-weights`.
 
 The separation prevents a long-running evaluator from becoming a signer and prevents a
 chain SDK return value from mutating evaluation-stack authority. Both operations use the
@@ -351,18 +351,16 @@ deliberate one-shot operation.
 
 Roles are split so the **eval host never publishes weights on-chain**:
 
-1. **Eval** builds a `CurrentWeightOffer` — legacy V1 `WeightProjection`, or a
-   full V2 `DebtWeightPublicationBinding` (economic vector + signer-facing
-   `weights_ppm`) when incentive composition is active — and **PUTs** it to
-   `serve-weights` with rotatable HMAC credentials (`push-weight-offer`).
+1. **Eval** builds a `CurrentWeightOffer` around the legacy V1
+   `WeightProjection` and **PUTs** it to `serve-weights` with rotatable HMAC
+   credentials (`push-weight-offer`).
 2. **Cheap `serve-weights`** persists the offer (object store or local file),
    accepts authenticated push, verifies the persisted push envelope, and serves
    permit-gated `GET /v1/current-weights`.
 3. **Follower validators** fetch the offer, rebind the signer hotkey, and
-   publish via the same commit-reveal reconciler (`follow-weights`). Debt-lane
-   offers carry the binding followers need so on-chain `weights_ppm` match the
-   debt/composition projection; the signer-only journal does not require a
-   replica of evaluator economic state.
+   publish via the same commit-reveal reconciler (`follow-weights`). The
+   signer-only journal does not require a replica of evaluator economic
+   state.
 
 ```bash
 # one-time on the gateway host: dedicated HTTP authority (not a chain signer)
@@ -460,31 +458,11 @@ path.
 
 ## Finite-debt V2
 
-V2 is an explicit one-way activation, not a reinterpretation of legacy claims. Before
-activation, operators can run the signer-free core and composition shadows:
-
-```bash
-cacheon chain-incentive-shadow <CORE_ARGUMENTS>
-cacheon chain-incentive-composition-shadow <COMPOSITION_ARGUMENTS>
-```
-
-`chain-activate-incentives` constructs no wallet. It atomically reopens the exact core
-and composition policies, independent approval, finalized cursor, retained arena/stack,
-target catalog, complete campaign/family roster, finalized membership and reserve, and
-audit-control/canary/risk authority. It rejects non-quiescent intake, incompatible V1
-publication state, or any digest mismatch.
-
-After activation, `set-debt-weights` processes the earliest gapless policy boundary. It
-binds the economic projection to the signer vector, journals submission, grades exact
-finalized readback, waits for intake-cursor catch-up, and only then debits claims. A
-restart, SDK success response, dry run, or projection build never reduces debt.
-
-Registered-CROWN and reviewed-discovery debt are separate classes. The durable reviewed
-path supports bounded `bounty_only`; `registered_promotion` remains fail closed until its
-typed cross-lane authority can be transported and reopened.
-
-See the [emissions policy](../reference/emissions-policy.md) for formulas, campaign
-constraints, activation invariants, and current evidence limits.
+The V2 finite-debt publication surface (signer-free shadows, wallet-free
+activation, and `set-debt-weights`) was extracted from the tree on 2026-08-09
+without ever being activated. Legacy V1 is the only publication lane. The
+retained design intent and the reserved durable schema are described in
+[Emissions policy](../reference/emissions-policy.md#finite-debt-v2).
 
 ## Failure and recovery matrix
 
@@ -534,6 +512,3 @@ constructing replacement evidence from summaries.
 - [Emissions projection](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py)
 - [Weight reconciler](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
 - [Emissions policy contract](../reference/emissions-policy.md)
-- [Finite-debt arithmetic](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py)
-- [Incentive activation](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py)
-- [Debt publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)

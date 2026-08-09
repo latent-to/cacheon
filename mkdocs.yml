@@ -18,7 +18,6 @@ not_in_nav: |
   GPU_SETUP.md
   HOW_CACHEON_WORKS.md
   INCENTIVES.md
-  INCENTIVE_LOAD_VALIDATION.md
   MINER_GUIDE.md
   PRODUCT_CONTRACT.md
   REFEREE_HARDENING_AUDIT.md
@@ -187,7 +186,6 @@ nav:
       - Glossary: reference/glossary.md
   - Results and development:
       - MiniMax-M3 case study: results/minimax-m3.md
-      - Incentive load validation: results/incentive-load-validation.md
       - Design evolution: history/changelog.md
       - GPU setup: dev/gpu-setup.md
       - Development environment: dev/environment.md

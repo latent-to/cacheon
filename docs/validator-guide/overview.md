@@ -103,7 +103,7 @@ One reservation therefore crosses three different kinds of state:
 | Screening | `screening` → `promoted`, retry lane, `failed`, or `held` | Registered arena service through the controller |
 | Qualification | `qualifying` → `reproduction_pending`, `qualified`, `failed`, or `no_decision` | Qualification authority plus transactional store projection |
 | Settlement | Leased candidate, event journal, stack generation, active claims | Pure planner plus SQLite transaction |
-| Emissions | V1 standing or V2 finite-debt projection and append-only publication journal | Separate weight reconciler |
+| Emissions | Legacy V1 standing projection and append-only publication journal | Separate weight reconciler |
 | Shipping | Integration record and signed release | Release authority, never the settlement loop |
 
 `FAIL` and `NO_DECISION` are intentionally different. `FAIL` is an attributable terminal
@@ -142,9 +142,6 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 | Reconcile legacy V1 rewards | `cacheon set-weights`, optionally `--watch`, in a separate control-plane process |
 | Project an all-uncrowned V1 bootstrap | `cacheon set-weights --burn-hotkey <REGISTERED_HOTKEY>` |
 | Burn continuously to the subnet owner | `cacheon set-weights --burn-to-subnet-owner --watch` (journaled bootstrap; stops at the first CROWN; `--dry-run` to stop before signing) |
-| Inspect V2 activation authority | `cacheon chain-incentive-shadow`, `cacheon chain-incentive-composition-shadow` |
-| Activate V2 locally | `cacheon chain-activate-incentives` after independent approval |
-| Publish confirmed V2 debt | `cacheon set-debt-weights` after activation |
 | Seal model bytes | `cacheon model-provision` |
 | Verify a signed release | `cacheon release-verify` |
 | Materialize a release build context | `cacheon release-context` |
@@ -260,7 +257,8 @@ replace any durable intake, qualification, settlement, or weight-publication pro
   service, or release-key operational risk.
 - It does not automatically ship a crowned proposal.
 - It does not treat resident-screen measurements as crown authority.
-- It does not provide a retained live V2 activation or debt-publication receipt.
+- It does not implement V2 finite-debt economics; that surface was extracted
+  from the tree on 2026-08-09 and only its reserved durable schema remains.
 - It does not implement durable registered discovery promotion.
 - It does not claim a completed production Engine release, authorized registry image,
   or complete all-rank serving receipt set for this revision.

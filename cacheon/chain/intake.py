@@ -12,14 +12,14 @@ import fcntl
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Mapping, NoReturn
+from typing import TYPE_CHECKING, Iterable, Mapping
 
-from cacheon.chain.finite_debt_store import (
-    FiniteDebtStore, FiniteDebtStoreError, migrate_schema3_to4,
-)
-from cacheon.chain.incentive_composition_store import (
-    IncentiveCompositionStore,
+from cacheon.chain.reserved_schema import (
+    DebtPublicationError,
+    FiniteDebtStoreError,
     IncentiveCompositionStoreError,
+    ensure_debt_publication_schema,
+    migrate_schema3_to4,
     migrate_schema4_to5,
 )
 from cacheon.chain.evaluation_lease_store import (
@@ -38,33 +38,7 @@ from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 if TYPE_CHECKING:
-    from cacheon.chain.finite_debt_store import (
-        FiniteDebtFamilyClock, FiniteDebtPolicyActivation, FiniteDebtRewardEpoch,
-        SeededFamilyClock,
-    )
-    from cacheon.chain.incentive_composition_store import (
-        ComposedLifecycleChanges,
-        IncentiveCompositionActivation,
-        IncentiveCompositionRewardEpoch,
-        ReviewPendingDiscoveryWin,
-        ReviewedDiscoveryDispositionRecord,
-        SelectedIncentiveActivationApproval,
-    )
     from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
-    from cacheon.chain.debt_publication import (
-        ConfirmedDebtWeightPublication,
-        DebtWeightPublicationBinding,
-        SQLiteDebtWeightPublicationJournal,
-    )
-    from cacheon.finite_debt import (
-        DebtClaimState, DebtEpochProjection, FiniteDebtPolicyManifest,
-    )
-    from cacheon.incentive_composition import (
-        ComposedEpochProjection,
-        DiscoveryClaimState,
-        IncentiveCompositionPolicyManifest,
-        ReviewedDiscoveryDisposition,
-    )
     from cacheon.settlement import (
         SettlementCandidate, SettlementEvidence, SettlementEvent, SettlementPlan,
     )
@@ -488,23 +462,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             self._db.execute("PRAGMA foreign_keys=ON")
             self._create_schema()
             self._bind_scope()
-            try:
-                self._finite_debt = FiniteDebtStore(
-                    self._db,
-                    chain_scope_digest=self.scope.digest,
-                    transaction=self._transaction,
-                    finalized_cursor=self._cursor,
-                )
-                self._incentive_composition = IncentiveCompositionStore(
-                    self._db,
-                    chain_scope_digest=self.scope.digest,
-                    transaction=self._transaction,
-                    finalized_cursor=self._cursor,
-                    core_store=self._finite_debt,
-                    reopen_settlement_evidence=self.reopen_settlement_evidence,
-                )
-            except (FiniteDebtStoreError, IncentiveCompositionStoreError) as exc:
-                raise IntakeError(f"reward store cannot open: {exc}") from None
         except Exception:
             if hasattr(self, "_db"):
                 self._db.close()
@@ -753,11 +710,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         except IncentiveCompositionStoreError as exc:
             raise IntakeError(f"intake schema-5 migration failed: {exc}") from None
         try:
-            from cacheon.chain.debt_publication import (
-                DebtPublicationError,
-                ensure_debt_publication_schema,
-            )
-
             ensure_debt_publication_schema(self._db)
         except DebtPublicationError as exc:
             raise IntakeError(
@@ -800,12 +752,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
 
         class Transaction:
             def __enter__(self):
-                # Incentive activation deliberately composes the core and the
-                # composition stores under one outer transaction.  The stores
-                # retain their own transactional helpers for all other call
-                # sites, so nested use is a SAVEPOINT rather than a second
-                # BEGIN (which SQLite rejects).  Releasing the savepoint does
-                # not commit the outer transaction.
+                # Nested use composes under one outer transaction as a
+                # SAVEPOINT rather than a second BEGIN (which SQLite
+                # rejects).  Releasing the savepoint does not commit the
+                # outer transaction.
                 self._nested = store._db.in_transaction
                 if self._nested:
                     self._savepoint = f"cacheon_nested_{id(self):x}"
@@ -2180,9 +2130,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         """Return whether retained settlement work may currently be leased."""
 
         if (
-            self.unclosed_debt_publication_bindings()
-            or self.due_debt_publication_boundary() is not None
-            or self._db.execute(
+            self._db.execute(
                 "SELECT 1 FROM evaluation_leases WHERE state='active' "
                 "AND stage='qualification' LIMIT 1"
             ).fetchone() is not None
@@ -2209,14 +2157,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("settlement lease bounds are malformed")
         with self._transaction():
-            # Once publication starts, its immutable projection is the only
-            # economic state the signer may put on chain.  Do not create a new
-            # lease (or run the incidental SLA transitions below) until that
-            # exact projection has been atomically closed.
+            # Do not lease settlement work while a qualification
+            # evaluation lease is active.
             if (
-                self.unclosed_debt_publication_bindings()
-                or self.due_debt_publication_boundary() is not None
-                or self._db.execute(
+                self._db.execute(
                     "SELECT 1 FROM evaluation_leases WHERE state='active' "
                     "AND stage='qualification' LIMIT 1"
                 ).fetchone() is not None
@@ -2311,7 +2255,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         evidence,
         *,
         current_block: int,
-        current_block_hash: str | None = None,
     ) -> EvaluationStackState:
         """Atomically commit one independently planned retained-evidence disposition."""
 
@@ -2336,11 +2279,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             != {row.digest for row in lease.candidates}
         ):
             raise IntakeError("settlement evidence or lease deadline is invalid")
-        if current_block_hash is not None and (
-            not isinstance(current_block_hash, str)
-            or _BLOCK_HASH.fullmatch(current_block_hash) is None
-        ):
-            raise IntakeError("settlement block hash is malformed")
         expected = plan_settlement(
             lease.candidates,
             current_manifest=lease.stack.manifest,
@@ -2353,10 +2291,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         by_digest = {row.digest: row for row in lease.candidates}
         evidence_by_candidate = {row.candidate_digest: row for row in receipts}
         with self._transaction():
-            # A lease may have been opened immediately before a publication
-            # intent was retained.  Recheck under the write transaction so the
-            # stale lease cannot create a CROWN or discovery lifecycle state.
-            self._require_no_unclosed_debt_publication("settlement commit")
             if self._db.execute(
                 "SELECT 1 FROM evaluation_leases WHERE state='active' "
                 "AND stage='qualification' LIMIT 1"
@@ -2467,63 +2401,34 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 if event.event_type is SettlementEventType.HOLD:
                     disposition[candidate.digest] = "held"
                 elif event.event_type is SettlementEventType.DISCOVERY_BOUNTY:
-                    if self._finite_debt.composition_active_at(current_block):
-                        if current_block_hash is None:
-                            raise IntakeError(
-                                "active incentive composition requires discovery "
-                                "settlement block-hash authority"
-                            )
-                        composition = (
-                            self._incentive_composition.active_policy_activation(
-                                at_block=current_block
-                            )
+                    speedup_ppm = int(
+                        (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
+                            rounding=ROUND_FLOOR
                         )
-                        assert composition is not None
-                        if candidate.finalized_block < composition.activation_block:
-                            disposition[candidate.digest] = "review_ineligible"
-                        else:
-                            try:
-                                self._incentive_composition.retain_review_pending_win_in_transaction(
-                                    candidate,
-                                    evidence_by_candidate[candidate.digest],
-                                    settlement_block=current_block,
-                                    settlement_block_hash=current_block_hash,
-                                    settlement_event_digest=event.digest,
-                                )
-                            except IncentiveCompositionStoreError as exc:
-                                raise IntakeError(
-                                    f"review-pending discovery win failed: {exc}"
-                                ) from None
-                            disposition[candidate.digest] = "review_pending"
-                    else:
-                        speedup_ppm = int(
-                            (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
-                                rounding=ROUND_FLOOR
-                            )
-                        )
-                        claim = DiscoveryBountyClaim(
-                            candidate.proposal_digest,
-                            evidence_by_candidate[candidate.digest].digest,
-                            candidate.hotkey,
-                            max(1, speedup_ppm - WEIGHT_PPM),
-                            candidate.finalized_block,
-                        )
-                        self._db.execute(
-                            "INSERT INTO discovery_bounty_claims(claim_digest,proposal_digest,"
-                            "claim_json,status,event_id) VALUES(?,?,?,?,?)",
-                            (
-                                claim.digest,
-                                claim.proposal_digest,
-                                json.dumps(
-                                    claim.to_dict(),
-                                    separators=(",", ":"),
-                                    sort_keys=True,
-                                ),
-                                "active",
-                                event.digest,
+                    )
+                    claim = DiscoveryBountyClaim(
+                        candidate.proposal_digest,
+                        evidence_by_candidate[candidate.digest].digest,
+                        candidate.hotkey,
+                        max(1, speedup_ppm - WEIGHT_PPM),
+                        candidate.finalized_block,
+                    )
+                    self._db.execute(
+                        "INSERT INTO discovery_bounty_claims(claim_digest,proposal_digest,"
+                        "claim_json,status,event_id) VALUES(?,?,?,?,?)",
+                        (
+                            claim.digest,
+                            claim.proposal_digest,
+                            json.dumps(
+                                claim.to_dict(),
+                                separators=(",", ":"),
+                                sort_keys=True,
                             ),
-                        )
-                        disposition[candidate.digest] = "discovery_bounty"
+                            "active",
+                            event.digest,
+                        ),
+                    )
+                    disposition[candidate.digest] = "discovery_bounty"
                 elif event.event_type is SettlementEventType.CROWN:
                     assert candidate.candidate_manifest is not None
                     contribution = candidate.candidate_manifest.entries[candidate.target_id]
@@ -2571,30 +2476,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         raise IntakeError(
                             "CROWN candidate differs from finalized arrival authority"
                         )
-                    try:
-                        self._finite_debt.issue_crown_in_transaction(
-                            arena_digest=candidate.arena_digest,
-                            target_id=candidate.target_id,
-                            target_spec_digest=contribution.target_spec_digest,
-                            candidate_digest=candidate.digest,
-                            retained_evidence_digest=(
-                                evidence_by_candidate[candidate.digest].digest
-                            ),
-                            hotkey=candidate.hotkey,
-                            settled_speedup=candidate.speedup,
-                            accepted_crown_block=candidate.finalized_block,
-                            accepted_crown_block_hash=arrival["block_hash"],
-                            event_index=candidate.event_index,
-                            event_subindex=candidate.event_subindex,
-                            reservation_digest=candidate.reservation_digest,
-                            settlement_block=current_block,
-                            settlement_block_hash=current_block_hash,
-                            settlement_event_digest=event.digest,
-                        )
-                    except FiniteDebtStoreError as exc:
-                        raise IntakeError(
-                            f"finite-debt CROWN failed: {exc}"
-                        ) from None
                     disposition[candidate.digest] = "crowned"
 
             if set(disposition) != set(by_digest):
@@ -2639,616 +2520,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 if cursor.rowcount != 1:
                     raise IntakeError("evaluation stack changed during settlement commit")
         return self.evaluation_stack(lease.stack.arena_digest)
-
-    # ---- additive finite-debt authority (inactive until explicit activation) ----
-
-    @staticmethod
-    def _raise_finite_debt_error(exc: FiniteDebtStoreError) -> NoReturn:
-        raise IntakeError(f"finite-debt authority failed: {exc}") from None
-
-    def activate_finite_debt_policy(
-        self,
-        policy: FiniteDebtPolicyManifest,
-        *,
-        activation_block: int,
-        activation_block_hash: str,
-        seeded_family_clocks: Iterable[SeededFamilyClock] = (),
-    ) -> FiniteDebtPolicyActivation:
-        """Reject the removed core-only half of the incentive cutover."""
-
-        try:
-            return self._finite_debt.activate_policy(
-                policy,
-                activation_block=activation_block,
-                activation_block_hash=activation_block_hash,
-                seeded_family_clocks=seeded_family_clocks,
-            )
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-
-    def active_finite_debt_policy(
-        self,
-        *,
-        at_block: int,
-    ) -> FiniteDebtPolicyActivation | None:
-        try:
-            return self._finite_debt.active_policy_activation(at_block=at_block)
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-
-    def finite_debt_family_clocks(
-        self,
-        *,
-        policy_digest: str | None = None,
-        family_id: str | None = None,
-    ) -> tuple[FiniteDebtFamilyClock, ...]:
-        try:
-            return self._finite_debt.family_clocks(
-                policy_digest=policy_digest,
-                family_id=family_id,
-            )
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-
-    def finite_debt_claim_states(
-        self,
-        *,
-        policy_digest: str | None = None,
-    ) -> tuple[DebtClaimState, ...]:
-        try:
-            return self._finite_debt.claim_states(policy_digest=policy_digest)
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-
-    def finite_debt_reward_events(self) -> tuple[dict[str, object], ...]:
-        try:
-            return self._finite_debt.reward_events()
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-
-    def reconcile_finite_debt_lifecycle(
-        self,
-        *,
-        current_block: int,
-        current_block_hash: str,
-        eligible_hotkeys: Iterable[str],
-    ) -> tuple[DebtClaimState, ...]:
-        with self._transaction():
-            self._require_no_unclosed_debt_publication(
-                "finite-debt lifecycle reconciliation"
-            )
-            try:
-                return self._finite_debt.reconcile_lifecycle(
-                    current_block=current_block,
-                    current_block_hash=current_block_hash,
-                    eligible_hotkeys=eligible_hotkeys,
-                )
-            except FiniteDebtStoreError as exc:
-                self._raise_finite_debt_error(exc)
-
-    def invalidate_finite_debt_family(
-        self,
-        *,
-        policy_digest: str,
-        family_id: str,
-        invalidation_digest: str,
-        current_block: int,
-        current_block_hash: str,
-    ) -> tuple[DebtClaimState, ...]:
-        """Cancel one runtime-invalid family's debt and reset its crown clock."""
-
-        with self._transaction():
-            self._require_no_unclosed_debt_publication(
-                "finite-debt family invalidation"
-            )
-            try:
-                return self._finite_debt.invalidate_family(
-                    policy_digest=policy_digest,
-                    family_id=family_id,
-                    invalidation_digest=invalidation_digest,
-                    current_block=current_block,
-                    current_block_hash=current_block_hash,
-                )
-            except FiniteDebtStoreError as exc:
-                self._raise_finite_debt_error(exc)
-
-    def project_finite_debt_epoch(
-        self,
-        *,
-        effective_block: int,
-        eligible_hotkeys: Iterable[str],
-    ) -> DebtEpochProjection:
-        try:
-            return self._finite_debt.project_epoch(
-                effective_block=effective_block,
-                eligible_hotkeys=eligible_hotkeys,
-            )
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-
-    def close_confirmed_debt_epoch(
-        self,
-        projection: DebtEpochProjection,
-        *,
-        confirmation: ConfirmedDebtWeightPublication,
-        eligible_hotkeys: Iterable[str],
-    ) -> FiniteDebtRewardEpoch:
-        try:
-            return self._finite_debt.close_confirmed_epoch(
-                projection,
-                confirmation=confirmation,
-                eligible_hotkeys=eligible_hotkeys,
-            )
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-
-    def finite_debt_reward_epochs(self) -> tuple[FiniteDebtRewardEpoch, ...]:
-        try:
-            return self._finite_debt.reward_epochs()
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-
-    # ---- reviewed discovery/core composition (inactive until activation) ----
-
-    @staticmethod
-    def _raise_composition_error(exc: IncentiveCompositionStoreError) -> NoReturn:
-        raise IntakeError(f"incentive composition authority failed: {exc}") from None
-
-    def activate_incentive_composition(
-        self,
-        policy: IncentiveCompositionPolicyManifest,
-        *,
-        activation_block: int,
-        activation_block_hash: str,
-    ) -> IncentiveCompositionActivation:
-        try:
-            return self._incentive_composition.activate_policy(
-                policy,
-                activation_block=activation_block,
-                activation_block_hash=activation_block_hash,
-            )
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def activate_selected_incentives(
-        self,
-        core_policy: FiniteDebtPolicyManifest,
-        policy: IncentiveCompositionPolicyManifest,
-        approval: SelectedIncentiveActivationApproval,
-        *,
-        expected_approval_digest: str,
-    ) -> IncentiveCompositionActivation:
-        """Atomically cut over to one pinned MiniMax incentive campaign.
-
-        Existing, fully settled standing CROWNs seed their family clocks without
-        receiving retroactive debt.  Any unresolved pre-cutover intake is a
-        hard blocker, so a later settlement can never cross the economic
-        boundary ambiguously.
-        """
-
-        from cacheon.chain.finite_debt_store import SeededFamilyClock
-        from cacheon.chain.incentive_composition_store import (
-            SelectedIncentiveActivationApproval,
-        )
-        from cacheon.economics import StandingRewardClaim
-        from cacheon.finite_debt import FiniteDebtPolicyManifest
-        from cacheon.incentive_composition import IncentiveCompositionPolicyManifest
-
-        if (
-            type(core_policy) is not FiniteDebtPolicyManifest
-            or type(policy) is not IncentiveCompositionPolicyManifest
-            or type(approval) is not SelectedIncentiveActivationApproval
-        ):
-            raise IntakeError("selected incentive cutover authority is not exactly typed")
-
-        approved_families = frozenset(approval.reward_family_ids)
-        standing, _legacy_discovery = self.active_reward_claims()
-        seeds: list[SeededFamilyClock] = []
-        seeded: set[str] = set()
-        for untyped_claim in standing:
-            if type(untyped_claim) is not StandingRewardClaim:
-                raise IntakeError("standing reward claim is not exactly typed")
-            claim = untyped_claim
-            if claim.family_id not in approved_families:
-                continue
-            if claim.family_id in seeded:
-                raise IntakeError("approved reward family has multiple standing CROWNs")
-            crown = self.reopen_active_crown(claim.arena_digest, claim.target_id)
-            candidate = crown.candidate
-            retained = self.get(candidate.reservation_digest)
-            if (
-                candidate.finalized_block != claim.crowned_block
-                or retained.arrival.block != candidate.finalized_block
-                or retained.arrival.event_index != candidate.event_index
-                or retained.arrival.event_subindex != candidate.event_subindex
-            ):
-                raise IntakeError(
-                    "standing CROWN differs from its finalized family-clock authority"
-                )
-            seeds.append(
-                SeededFamilyClock(
-                    claim.family_id,
-                    candidate.finalized_block,
-                    retained.arrival.block_hash,
-                    candidate.event_index,
-                    candidate.event_subindex,
-                    candidate.reservation_digest,
-                )
-            )
-            seeded.add(claim.family_id)
-        try:
-            return self._incentive_composition.activate_selected_policy(
-                core_policy,
-                policy,
-                approval,
-                expected_approval_digest=expected_approval_digest,
-                seeded_family_clocks=tuple(sorted(seeds, key=lambda row: row.family_id)),
-            )
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def active_incentive_composition(
-        self, *, at_block: int
-    ) -> IncentiveCompositionActivation | None:
-        try:
-            return self._incentive_composition.active_policy_activation(
-                at_block=at_block
-            )
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def record_reviewed_discovery_disposition(
-        self,
-        disposition: ReviewedDiscoveryDisposition,
-        *,
-        authority_block_hash: str,
-    ) -> ReviewedDiscoveryDispositionRecord:
-        with self._transaction():
-            self._require_no_unclosed_debt_publication(
-                "reviewed discovery disposition"
-            )
-            try:
-                return self._incentive_composition.record_disposition(
-                    disposition,
-                    authority_block_hash=authority_block_hash,
-                )
-            except IncentiveCompositionStoreError as exc:
-                self._raise_composition_error(exc)
-
-    def reviewed_discovery_dispositions(
-        self,
-    ) -> tuple[ReviewedDiscoveryDispositionRecord, ...]:
-        try:
-            return self._incentive_composition.disposition_records()
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def review_pending_discovery_wins(
-        self,
-    ) -> tuple[ReviewPendingDiscoveryWin, ...]:
-        try:
-            return self._incentive_composition.review_pending_wins()
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def expire_review_pending_discovery_wins(
-        self,
-        *,
-        current_block: int,
-        current_block_hash: str,
-    ) -> tuple[ReviewPendingDiscoveryWin, ...]:
-        with self._transaction():
-            self._require_no_unclosed_debt_publication(
-                "discovery review expiry"
-            )
-            try:
-                return self._incentive_composition.expire_review_pending_wins(
-                    current_block=current_block,
-                    current_block_hash=current_block_hash,
-                )
-            except IncentiveCompositionStoreError as exc:
-                self._raise_composition_error(exc)
-
-    def discovery_debt_claim_states(
-        self, *, policy_digest: str | None = None
-    ) -> tuple[DiscoveryClaimState, ...]:
-        try:
-            return self._incentive_composition.discovery_claim_states(
-                policy_digest=policy_digest
-            )
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def reconcile_incentive_composition_lifecycle(
-        self,
-        *,
-        current_block: int,
-        current_block_hash: str,
-        eligible_hotkeys: Iterable[str],
-    ) -> ComposedLifecycleChanges:
-        with self._transaction():
-            self._require_no_unclosed_debt_publication(
-                "incentive composition lifecycle reconciliation"
-            )
-            try:
-                return self._incentive_composition.reconcile_lifecycle(
-                    current_block=current_block,
-                    current_block_hash=current_block_hash,
-                    eligible_hotkeys=eligible_hotkeys,
-                )
-            except IncentiveCompositionStoreError as exc:
-                self._raise_composition_error(exc)
-
-    def project_incentive_composition_epoch(
-        self,
-        *,
-        effective_block: int,
-        eligible_hotkeys: Iterable[str],
-    ) -> ComposedEpochProjection:
-        try:
-            return self._incentive_composition.project_epoch(
-                effective_block=effective_block,
-                eligible_hotkeys=eligible_hotkeys,
-            )
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def close_confirmed_composed_epoch(
-        self,
-        projection: ComposedEpochProjection,
-        *,
-        confirmation: ConfirmedDebtWeightPublication,
-        eligible_hotkeys: Iterable[str],
-    ) -> IncentiveCompositionRewardEpoch:
-        try:
-            return self._incentive_composition.close_confirmed_epoch(
-                projection,
-                confirmation=confirmation,
-                eligible_hotkeys=eligible_hotkeys,
-            )
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def incentive_composition_reward_epochs(
-        self,
-    ) -> tuple[IncentiveCompositionRewardEpoch, ...]:
-        try:
-            return self._incentive_composition.reward_epochs()
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-    def unclosed_debt_publication_bindings(
-        self,
-    ) -> tuple[DebtWeightPublicationBinding, ...]:
-        """Return every retained V2 binding whose exact epoch is not closed.
-
-        Constructing a journal for a dry-run writes no immutable record, so it
-        intentionally creates no fence.  Once any publication status is
-        retained, however, the economic projection stays fenced across restart
-        until an epoch close retaining that exact projection digest commits.
-        """
-
-        from cacheon.chain.debt_publication import (
-            DebtPublicationError,
-            SQLiteDebtWeightPublicationJournal,
-        )
-
-        if self._db.execute(
-            "SELECT 1 FROM debt_weight_publication_journal LIMIT 1"
-        ).fetchone() is None:
-            return ()
-        try:
-            journal = SQLiteDebtWeightPublicationJournal.reopen_from_head(
-                self._db, transaction=self._transaction
-            )
-            authorities = journal.retained_authorities()
-            closed = {
-                epoch.projection.digest
-                for epoch in self._finite_debt.reward_epochs()
-            }
-            closed.update(
-                epoch.projection.digest
-                for epoch in self._incentive_composition.reward_epochs()
-            )
-        except DebtPublicationError as exc:
-            raise IntakeError(
-                f"debt publication fence cannot reopen: {exc}"
-            ) from None
-        except FiniteDebtStoreError as exc:
-            self._raise_finite_debt_error(exc)
-        except IncentiveCompositionStoreError as exc:
-            self._raise_composition_error(exc)
-
-        unclosed: dict[str, DebtWeightPublicationBinding] = {}
-        for _record, binding in authorities:
-            economic_digest = binding.economic_projection_digest
-            if economic_digest in closed:
-                continue
-            prior = unclosed.get(economic_digest)
-            if prior is not None and prior.to_dict() != binding.to_dict():
-                raise IntakeError(
-                    "one unclosed V2 projection has conflicting retained bindings"
-                )
-            unclosed[economic_digest] = binding
-        return tuple(
-            sorted(
-                unclosed.values(),
-                key=lambda row: (
-                    row.economic_projection.effective_block,
-                    row.economic_projection_digest,
-                ),
-            )
-        )
-
-    def due_debt_publication_boundary(self) -> int | None:
-        """Return the oldest finalized V2 boundary still awaiting exact close."""
-
-        cursor = self._cursor()
-        if cursor is None:
-            return None
-        composition = self.active_incentive_composition(at_block=cursor[0])
-        # The only selectable V2 cutover atomically activates composition.
-        # Raw core-only activation remains an internal schema-4 test surface
-        # and has no production publisher to freeze for.
-        if composition is None:
-            return None
-        epochs = self.incentive_composition_reward_epochs()
-        if any(
-            epoch.activation_digest != composition.digest
-            or epoch.composition_policy_digest != composition.policy.digest
-            for epoch in epochs
-        ):
-            raise IntakeError("closed V2 epochs differ from active composition")
-        next_index = len(epochs) + 1
-        boundary = (
-            composition.activation_block
-            + next_index * composition.policy.epoch_blocks
-        )
-        return boundary if cursor[0] >= boundary else None
-
-    def _require_no_unclosed_debt_publication(self, action: str) -> None:
-        bindings = self.unclosed_debt_publication_bindings()
-        if bindings:
-            first = bindings[0]
-            raise IntakeError(
-                f"{action} is fenced by unclosed V2 debt publication "
-                f"{first.economic_projection_digest}"
-            )
-        boundary = self.due_debt_publication_boundary()
-        if boundary is not None:
-            raise IntakeError(
-                f"{action} is fenced by due V2 debt boundary {boundary}"
-            )
-
-    def _validate_new_debt_publication_binding(
-        self, binding: DebtWeightPublicationBinding
-    ) -> None:
-        """Reproject one new binding under the journal's write transaction."""
-
-        from cacheon.chain.debt_publication import (
-            PUBLICATION_KIND_COMPOSED,
-            PUBLICATION_KIND_CORE,
-            DebtWeightPublicationBinding,
-        )
-
-        if (
-            not self._db.in_transaction
-            or type(binding) is not DebtWeightPublicationBinding
-        ):
-            raise IntakeError(
-                "new debt publication validation requires the owning transaction"
-            )
-        if self.unclosed_debt_publication_bindings():
-            raise IntakeError(
-                "a new V2 binding cannot supersede an unclosed debt publication"
-            )
-        if (
-            binding.weight_projection.chain_scope_digest != self.scope.digest
-            or binding.weight_projection.netuid != self.scope.netuid
-        ):
-            raise IntakeError(
-                "new V2 binding differs from the retained chain scope"
-            )
-        effective_block = binding.economic_projection.effective_block
-        cursor = self._cursor()
-        if (
-            cursor is None
-            or cursor[0] < effective_block
-            or (
-                cursor[0] == effective_block
-                and cursor[1] != binding.effective_block_hash
-            )
-        ):
-            raise IntakeError(
-                "new V2 binding is newer than retained finalized intake"
-            )
-        eligible = tuple(row.hotkey for row in binding.weights)
-        try:
-            if binding.publication_kind == PUBLICATION_KIND_CORE:
-                activation = self.active_finite_debt_policy(
-                    at_block=effective_block
-                )
-                authoritative = self.project_finite_debt_epoch(
-                    effective_block=effective_block,
-                    eligible_hotkeys=eligible,
-                )
-            elif binding.publication_kind == PUBLICATION_KIND_COMPOSED:
-                activation = self.active_incentive_composition(
-                    at_block=effective_block
-                )
-                authoritative = self.project_incentive_composition_epoch(
-                    effective_block=effective_block,
-                    eligible_hotkeys=eligible,
-                )
-            else:  # Exactly typed bindings reject this; stay fail-closed.
-                raise IntakeError(
-                    "new V2 binding has an unsupported publication kind"
-                )
-        except IntakeError as exc:
-            raise IntakeError(
-                "economic state changed before V2 publication intent: "
-                f"{exc}"
-            ) from None
-        if (
-            activation is None
-            or activation.digest != binding.activation_digest
-            or authoritative.to_dict()
-            != binding.economic_projection.to_dict()
-        ):
-            raise IntakeError(
-                "economic state changed before V2 publication intent"
-            )
-
-    def debt_weight_publication_journal(
-        self,
-        binding: DebtWeightPublicationBinding | None = None,
-    ) -> SQLiteDebtWeightPublicationJournal:
-        """Open the V2 journal for a new binding or reopen its retained head."""
-
-        from cacheon.chain.debt_publication import (
-            DebtPublicationError,
-            DebtWeightPublicationBinding,
-            SQLiteDebtWeightPublicationJournal,
-        )
-
-        try:
-            if binding is None:
-                return SQLiteDebtWeightPublicationJournal.reopen_from_head(
-                    self._db,
-                    transaction=self._transaction,
-                    validate_new_binding=(
-                        self._validate_new_debt_publication_binding
-                    ),
-                )
-            if type(binding) is not DebtWeightPublicationBinding:
-                raise DebtPublicationError(
-                    "debt publication binding is not exactly typed"
-                )
-            return SQLiteDebtWeightPublicationJournal(
-                self._db,
-                transaction=self._transaction,
-                binding=binding,
-                validate_new_binding=self._validate_new_debt_publication_binding,
-            )
-        except DebtPublicationError as exc:
-            raise IntakeError(f"debt publication journal failed: {exc}") from None
-
-    def confirmed_debt_weight_publication(
-        self, record_digest: str
-    ) -> ConfirmedDebtWeightPublication:
-        """Reopen one immutable V2 confirmation retained by an epoch close."""
-
-        from cacheon.chain.debt_publication import (
-            DebtPublicationError,
-            reopen_confirmed_debt_publication,
-        )
-
-        try:
-            return reopen_confirmed_debt_publication(self._db, record_digest)
-        except DebtPublicationError as exc:
-            raise IntakeError(
-                f"confirmed debt publication cannot reopen: {exc}"
-            ) from None
 
     def active_reward_claims(self) -> tuple[tuple[object, ...], tuple[object, ...]]:
         """Reopen all active standing and discovery claims, or fail as one unit."""
@@ -3414,10 +2685,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             or netuid < 0
         ):
             raise IntakeError("weight projection authority is malformed")
-        if self._finite_debt.composition_activated():
-            raise IntakeError(
-                "legacy V1 weight projection is disabled after incentive composition activation"
-            )
         standing, discovery = self.active_reward_claims()
         by_arena: dict[str, list[object]] = {}
         for claim in standing:
@@ -3520,10 +2787,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             or len(burn_hotkey) > 256
         ):
             raise IntakeError("burn weight projection authority is malformed")
-        if self._finite_debt.composition_activated():
-            raise IntakeError(
-                "legacy V1 weight projection is disabled after incentive composition activation"
-            )
         if burn_hotkey not in context.eligible_hotkeys:
             raise IntakeError(
                 "burn hotkey is not registered in the projection metagraph"
@@ -3623,10 +2886,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             or candidate_uids != tuple(sorted(set(candidate_uids)))
         ):
             raise IntakeError("subnet-owner burn weight projection authority is malformed")
-        if self._finite_debt.composition_activated():
-            raise IntakeError(
-                "legacy V1 weight projection is disabled after incentive composition activation"
-            )
         if burn_hotkey not in context.eligible_hotkeys:
             raise IntakeError(
                 "subnet-owner burn hotkey is not registered in the projection metagraph"
@@ -4017,12 +3276,9 @@ class SQLiteWeightPublicationJournal:
 
     @staticmethod
     def _require_legacy_v1_allowed(store: FinalizedIntakeStore) -> None:
-        if (
-            type(store) is not FinalizedIntakeStore
-            or store._finite_debt.composition_activated()
-        ):
+        if type(store) is not FinalizedIntakeStore:
             raise IntakeError(
-                "legacy V1 weight publication is disabled after incentive composition activation"
+                "weight publication journal store is not exactly typed"
             )
 
     @staticmethod
@@ -4231,10 +3487,10 @@ class SQLiteWeightPublicationJournal:
 class SQLiteFollowerWeightPublicationJournal:
     """Signer-only journal for authenticated shared weight offers.
 
-    This journal is deliberately separate from both the legacy V1 publication
-    journal and the V2 economic-debt journal. A follower owns chain signing and
-    readback, but it does not need a replica of the evaluator's settlement or
-    incentive-composition state merely to retain publication intent.
+    This journal is deliberately separate from the legacy V1 publication
+    journal. A follower owns chain signing and readback, but it does not need
+    a replica of the evaluator's settlement state merely to retain
+    publication intent.
     """
 
     _HEAD_KEY = "followed_weight_publication_head"

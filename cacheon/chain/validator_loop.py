@@ -318,40 +318,10 @@ def _settle_pending(
             raise IntakeControllerError("finalized settlement point is malformed")
         return value[0], value[1]
 
-    def settlement_authority(
-        observed: tuple[int, str | None],
-    ) -> tuple[int, str | None]:
-        active_lookup = getattr(store, "active_finite_debt_policy", None)
-        if not callable(active_lookup) or active_lookup(at_block=observed[0]) is None:
-            return observed
-        cursor_lookup = getattr(store, "finalized_cursor", None)
-        cursor = cursor_lookup() if callable(cursor_lookup) else None
-        if (
-            type(cursor) is not tuple
-            or len(cursor) != 2
-            or type(cursor[0]) is not int
-            or not isinstance(cursor[1], str)
-            or cursor[0] > observed[0]
-            or (
-                cursor[0] == observed[0]
-                and observed[1] is not None
-                and cursor[1] != observed[1]
-            )
-        ):
-            raise IntakeControllerError(
-                "active incentive settlement lacks exact finalized cursor authority"
-            )
-        # Do not advance the durable reveal cursor from a head-only read.  A later
-        # pass must reserve the complete intervening reveal history first.  The
-        # already-retained cursor is finalized and causally complete, so it is the
-        # exact authority under which active debt settlement may commit.
-        return cursor
-
     committed: dict[str, str] = {}
     while store.has_pending_settlement():
         observed = finalized_point()
-        authority = settlement_authority(observed)
-        lease_block = authority[0]
+        lease_block = observed[0]
         if lease_block < current_block:
             raise IntakeControllerError("finalized settlement clock regressed")
         current_block = lease_block
@@ -369,17 +339,10 @@ def _settle_pending(
             store.reopen_settlement_evidence(candidate)
             for candidate in lease.candidates
         )
-        refreshed_observed = finalized_point()
-        refreshed_authority = settlement_authority(refreshed_observed)
-        refreshed_block, refreshed_hash = refreshed_authority
+        refreshed_block = finalized_point()[0]
         if refreshed_block < current_block:
             raise IntakeControllerError("finalized settlement clock regressed")
-        commit_keywords: dict[str, object] = {"current_block": refreshed_block}
-        if refreshed_hash is not None and callable(
-            getattr(store, "active_finite_debt_policy", None)
-        ) and store.active_finite_debt_policy(at_block=refreshed_block) is not None:
-            commit_keywords["current_block_hash"] = refreshed_hash
-        store.commit_settlement(lease, plan, evidence, **commit_keywords)
+        store.commit_settlement(lease, plan, evidence, current_block=refreshed_block)
         current_block = refreshed_block
         committed[lease.lease_id] = plan.digest
     return committed

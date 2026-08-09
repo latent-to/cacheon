@@ -1,8 +1,8 @@
-"""Permit-gated sharing of current publishable weights (V1 or debt/composition).
+"""Permit-gated sharing of current publishable legacy V1 weights.
 
-Eval builds a :class:`CurrentWeightOffer` — legacy V1 projection or a full
-:class:`DebtWeightPublicationBinding` — and pushes it to ``serve-weights`` with
-rotatable HMAC credentials. Eval never opens a chain-signing weight path.
+Eval builds a :class:`CurrentWeightOffer` around a legacy V1
+:class:`WeightProjection` and pushes it to ``serve-weights`` with rotatable
+HMAC credentials. Eval never opens a chain-signing weight path.
 
 Cheap ``serve-weights`` hosts persist the offer (object store or local file),
 accept authenticated PUT from eval, and serve permit-gated GET to validators.
@@ -32,12 +32,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from cacheon import chain
-from cacheon.chain.debt_publication import (
-    PUBLICATION_KIND_COMPOSED,
-    PUBLICATION_KIND_CORE,
-    DebtPublicationError,
-    DebtWeightPublicationBinding,
-)
 from cacheon.chain.weight_push_auth import (
     PushCredential,
     PushCredentialSet,
@@ -73,9 +67,7 @@ OFFER_SCHEMA = "cacheon.current-weight-offer.v2"
 STORED_OFFER_SCHEMA = "cacheon.authenticated-weight-offer.v1"
 OFFER_DOMAIN = "cacheon.current-weight-offer"
 LANE_LEGACY_V1 = "legacy_v1"
-LANE_COMPOSED = "incentive_composition"
-LANE_CORE = "finite_debt"
-OFFER_LANES = frozenset({LANE_LEGACY_V1, LANE_COMPOSED, LANE_CORE})
+OFFER_LANES = frozenset({LANE_LEGACY_V1})
 REQUEST_DOMAIN = "cacheon.weight-share.request.v1"
 RESPONSE_DOMAIN = "cacheon.weight-share.response.v1"
 STORAGE_AUTH_DOMAIN = "cacheon.weight-share.storage.v1"
@@ -119,47 +111,23 @@ class HotkeySigner(Protocol):
 class CurrentWeightOffer:
     """Exact publishable weights for peer validators.
 
-    V2 debt / composition offers carry the full
-    :class:`DebtWeightPublicationBinding` so followers can rebind the signer
-    hotkey and publish the same economic vector through the debt reconciler.
-    Legacy V1 offers carry only a :class:`WeightProjection`.
+    Offers carry only a :class:`WeightProjection` on the legacy V1 lane.  The
+    ``lane`` and ``debt_binding`` wire fields are retained so historical
+    stored offers keep reopening byte-identically; the extracted V2 economics
+    lanes are rejected.
     """
 
     lane: str
     projection: WeightProjection
-    debt_binding: DebtWeightPublicationBinding | None = None
+    debt_binding: None = None
 
     def __post_init__(self) -> None:
         if self.lane not in OFFER_LANES:
             raise WeightShareError("current weight offer lane is unsupported")
         if type(self.projection) is not WeightProjection:
             raise WeightShareError("current weight offer projection is untyped")
-        if self.lane == LANE_LEGACY_V1:
-            if self.debt_binding is not None:
-                raise WeightShareError("legacy V1 offer cannot carry a debt binding")
-            return
-        if type(self.debt_binding) is not DebtWeightPublicationBinding:
-            raise WeightShareError("debt-lane offer requires an exact debt binding")
-        expected_kind = (
-            PUBLICATION_KIND_COMPOSED
-            if self.lane == LANE_COMPOSED
-            else PUBLICATION_KIND_CORE
-        )
-        if (
-            self.debt_binding.publication_kind != expected_kind
-            or self.debt_binding.weight_projection != self.projection
-            or self.debt_binding.weight_projection.digest != self.projection.digest
-        ):
-            raise WeightShareError(
-                "debt-lane offer projection differs from its economic binding"
-            )
-        economic_weights = tuple(
-            (row.hotkey, row.units) for row in self.debt_binding.weights
-        )
-        if self.projection.weights_ppm != economic_weights:
-            raise WeightShareError(
-                "offer weights_ppm differ from the debt economic projection"
-            )
+        if self.debt_binding is not None:
+            raise WeightShareError("legacy V1 offer cannot carry a debt binding")
 
     @property
     def digest(self) -> str:
@@ -172,12 +140,8 @@ class CurrentWeightOffer:
             "projection_digest": self.projection.digest,
             "schema": OFFER_SCHEMA,
         }
-        if self.debt_binding is not None:
-            row["debt_binding"] = self.debt_binding.to_dict()
-            row["debt_binding_digest"] = self.debt_binding.digest
-        else:
-            row["debt_binding"] = None
-            row["debt_binding_digest"] = None
+        row["debt_binding"] = None
+        row["debt_binding_digest"] = None
         return row
 
     def to_bytes(self) -> bytes:
@@ -186,21 +150,6 @@ class CurrentWeightOffer:
     @classmethod
     def from_legacy_projection(cls, projection: WeightProjection) -> "CurrentWeightOffer":
         return cls(LANE_LEGACY_V1, projection, None)
-
-    @classmethod
-    def from_debt_binding(cls, binding: DebtWeightPublicationBinding) -> "CurrentWeightOffer":
-        if type(binding) is not DebtWeightPublicationBinding:
-            raise WeightShareError("debt offer requires an exact binding")
-        lane = (
-            LANE_COMPOSED
-            if binding.publication_kind == PUBLICATION_KIND_COMPOSED
-            else LANE_CORE
-            if binding.publication_kind == PUBLICATION_KIND_CORE
-            else ""
-        )
-        if not lane:
-            raise WeightShareError("debt offer publication kind is unsupported")
-        return cls(lane, binding.weight_projection, binding)
 
     @classmethod
     def from_dict(cls, value: object) -> "CurrentWeightOffer":
@@ -251,24 +200,11 @@ class CurrentWeightOffer:
             raise WeightShareError(
                 "current weight offer projection digest does not match"
             )
-        binding = None
-        if value["debt_binding"] is not None:
-            try:
-                binding = DebtWeightPublicationBinding.from_dict(value["debt_binding"])
-            except DebtPublicationError as exc:
-                raise WeightShareError(
-                    f"current weight offer debt binding is malformed: {exc}"
-                ) from None
-            binding_digest = require_sha256_hex(
-                value["debt_binding_digest"], field="debt_binding_digest"
+        if value["debt_binding"] is not None or value["debt_binding_digest"] is not None:
+            raise WeightShareError(
+                "debt-lane weight offers were retired with the V2 economics extraction"
             )
-            if binding.digest != binding_digest:
-                raise WeightShareError(
-                    "current weight offer debt binding digest does not match"
-                )
-        elif value["debt_binding_digest"] is not None:
-            raise WeightShareError("debt binding digest present without binding")
-        return cls(str(lane), projection, binding)
+        return cls(str(lane), projection, None)
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> "CurrentWeightOffer":
@@ -484,10 +420,6 @@ def assert_monotonic_offer_update(
         and proposed != current
     ):
         raise WeightShareError("weight offer conflicts at the current effective block")
-    if current.lane != LANE_LEGACY_V1 and proposed.lane == LANE_LEGACY_V1:
-        raise WeightShareError("weight offer lane regressed to legacy V1")
-
-
 def _remote_offer_lock(store: ObjectStore, key: str) -> threading.Lock:
     identity = (id(store), key)
     with _REMOTE_OFFER_LOCKS_GUARD:
@@ -818,21 +750,12 @@ def rebind_projection_signer(
 def rebind_offer_signer(
     offer: CurrentWeightOffer, signer_hotkey: str
 ) -> CurrentWeightOffer:
-    """Rebind the signer-facing projection (and debt binding, when present)."""
+    """Rebind the signer-facing projection of a fetched offer."""
 
     if type(offer) is not CurrentWeightOffer:
         raise WeightShareError("rebind requires an exact CurrentWeightOffer")
     projection = rebind_projection_signer(offer.projection, signer_hotkey)
-    if offer.debt_binding is None:
-        return CurrentWeightOffer(LANE_LEGACY_V1, projection, None)
-    binding = DebtWeightPublicationBinding(
-        offer.debt_binding.publication_kind,
-        offer.debt_binding.activation_digest,
-        offer.debt_binding.effective_block_hash,
-        offer.debt_binding.economic_projection,
-        projection,
-    )
-    return CurrentWeightOffer.from_debt_binding(binding)
+    return CurrentWeightOffer(LANE_LEGACY_V1, projection, None)
 
 
 def request_auth_digest(
@@ -1466,9 +1389,7 @@ def publish_followed_weights(
     except AttributeError as exc:
         raise WeightShareError("follower publish requires a signer wallet") from exc
     rebound = rebind_offer_signer(offer, follower_hotkey)
-    # Debt / composition epochs are crownless by construction relative to the
-    # legacy V1 require_current_crown gate; match set-debt-weights.
-    require_crown = rebound.lane == LANE_LEGACY_V1 and rebound.projection.crown_count > 0
+    require_crown = rebound.projection.crown_count > 0
     return reconcile_weight_publication(
         subtensor,
         None if dry_run else signer_wallet,
@@ -1568,8 +1489,6 @@ __all__ = [
     "CurrentWeightOffer",
     "DEFAULT_MAX_SKEW_SECONDS",
     "DEFAULT_REMOTE_OFFER_KEY",
-    "LANE_COMPOSED",
-    "LANE_CORE",
     "LANE_LEGACY_V1",
     "WeightShareError",
     "WeightShareRetryableError",

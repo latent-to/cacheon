@@ -95,9 +95,8 @@ The remaining empirical gates include:
   reproduction path;
 - accepted residual-risk authority for in-process tampering, audit-role
   fingerprinting, and timed-workload fingerprinting;
-- a production engine image served end to end through the reviewed release path;
-- exact campaign, family, membership, and reserve manifests; and
-- a live V2 activation and confirmed debt-publication receipt.
+- a production engine image served end to end through the reviewed release path; and
+- exact campaign, family, membership, and reserve manifests.
 
 See [Current status](../reference/state-of-record.md) for the maintained evidence
 ledger, [Authoritative qualification](../validator-guide/qualification.md) for the

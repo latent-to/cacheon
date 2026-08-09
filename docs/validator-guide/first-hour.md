@@ -295,12 +295,10 @@ journal intent. A real run must persist intent before signing and is not confirm
 the exact recipient set, normalized values within the fixed verifier tolerance,
 and a sufficiently new `last_update` are read back from chain.
 
-V2 commissioning is a separate migration. Run both signer-free shadows, independently
-approve the exact policy/arena/campaign/membership/audit bundle, execute the wallet-free
-`chain-activate-incentives` cutover, and only then commission `set-debt-weights`. Claims
-must remain unchanged until an exact finalized readback is confirmed. Follow
-[Emissions policy](../reference/emissions-policy.md); the repository currently retains
-no live V2 activation or publication receipt.
+Legacy V1 is the only implemented emission lane. The V2 finite-debt surface
+was extracted from the tree on 2026-08-09; see
+[Emissions policy](../reference/emissions-policy.md) for the retained design
+intent and the reserved durable schema.
 
 ## 10. Commission release operations independently
 
