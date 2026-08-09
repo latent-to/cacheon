@@ -95,6 +95,11 @@ def test_runtime_directories_may_not_escape_the_cache(
     assert not (tmp_path / "outside").exists()
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason="a root euid overrides mode-bit write denial, so the probe cannot "
+    "be made to fail this way; covered by non-root runs",
+)
 def test_unwritable_runtime_directory_fails_the_probe(
     cache_root: Path,
 ) -> None:
