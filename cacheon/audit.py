@@ -45,7 +45,7 @@ from typing import Optional, Sequence
 import torch
 
 from cacheon import receipts
-from cacheon.audit_gate import gate
+from cacheon.audit_gate import gate as gate
 
 logger = logging.getLogger("cacheon.audit")
 

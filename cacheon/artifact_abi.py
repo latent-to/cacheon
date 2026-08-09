@@ -19,7 +19,7 @@ import math
 import re
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 
 class ArtifactABIError(ValueError):

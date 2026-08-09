@@ -20,8 +20,8 @@ Choose the smallest relevant path:
 7. `docs/engine/overview.md` — chain-independent serving releases.
 8. `docs/security/threat-model.md` — implemented controls and residual risk.
 
-If a task continues earlier Codex or Claude work, follow the cross-harness
-continuity instructions supplied by the environment. Historical logs route an
+If a task continues earlier automated-contributor work, follow the
+cross-harness continuity instructions supplied by the environment. Historical logs route an
 investigation; current code, tests, Git state, and external state remain
 authoritative.
 

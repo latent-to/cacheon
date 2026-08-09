@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Iterator, Protocol
+from typing import Iterator, Protocol
 
 from cacheon import dsl_jit_policy
 from cacheon.artifact_provider import (

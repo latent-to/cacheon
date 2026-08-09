@@ -13,11 +13,9 @@ from __future__ import annotations
 import hashlib
 import os
 import signal
-import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path, PurePosixPath

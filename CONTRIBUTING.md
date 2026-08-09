@@ -66,6 +66,23 @@ watermark and `_part<N>` test files. Prefer diffs that delete, state the net
 line impact in the pull request description, and split any change above
 roughly +1,500 net production lines.
 
+Two further repository gates run in the same hygiene job:
+
+```bash
+python -m ruff check .
+python scripts/check_lanes.py --base origin/main
+```
+
+`ruff` enforces a correctness-only lint floor (pyflakes and runtime-syntax
+rules); formatting and import-sorting are deliberately not enforced yet, and
+the temporary per-file ignores in `pyproject.toml` cover live-lane files
+whose cleanup is deferred past the mainnet merge. `check_lanes.py` fails a
+pull request that modifies a path listed in `scripts/live_lane_paths.txt` —
+the live operations lane's active surface — unless the branch matches one of
+that file's declared live-lane namespaces. Transfer a path out of the lane
+by deleting its entry in the same pull request, so the ownership change is a
+reviewable line in the diff.
+
 ## Documentation
 
 Documentation lives in this repository so behavior and its engineering contract
