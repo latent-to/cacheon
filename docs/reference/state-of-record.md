@@ -594,15 +594,32 @@ itself, which is the designed refusal for a non-pinned runtime.
 Chokepoint presence and signature agreement are the compatibility gate's
 own error boundary, not behavioral equivalence.
 
+A live activation demonstration then ran three serving boots of a small
+instruct model inside that image on one device, beside the resident TP2
+server, all with this tree on the interpreter path: a null-armed
+baseline, an armed run carrying the exact-math example bundle for
+`activation.silu_and_mul`, and an armed run carrying its deliberately
+broken variant. The image preloads `cacheon.bootstrap` in every
+interpreter through its installed `.pth`, and the arming chain engaged
+end to end: the exact-math bundle produced byte-identical temperature-0
+output against the baseline, while the broken bundle visibly corrupted
+the generated text — direct evidence that the armed kernel executes
+inside the scheduler's serving path under CUDA graph capture. Seam
+activation emits no server log lines in this image, so behavioral
+probes, not log inspection, are the working detector; and in this
+image's SGLang build the plugin-framework loader has no call site in
+the serving path, so activation rides the `.pth` bootstrap alone.
+
 These behaviors are retained as standing tests
 (`tests/test_cli_examples_e2e.py`, `tests/test_oci_live_container.py`)
 that activate by capability probe — CUDA device count and a usable
 container daemon — and skip cleanly elsewhere, so hosted CI keeps the CPU
 and containment tiers while the GPU tiers re-arm on any future validator
 host. This establishes suite health, the tested verify/containment
-behaviors, and the seam-table currency of this tree against that staging
-image, for that exact host and stack. It does not establish serving
-performance, qualification or settlement evidence, or any crown claim.
+behaviors, the seam-table currency of this tree against that staging
+image, and the live single-device seam activation path on it. It does
+not establish serving performance, multi-device activation, qualification
+or settlement evidence, or any crown claim.
 
 ### Incentive evidence
 
