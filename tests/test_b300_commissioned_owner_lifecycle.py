@@ -19,6 +19,7 @@ import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaQualificationWork,
+    PromotionDecision,
     ScreenGrade,
     ScreenStageResult,
 )
@@ -47,6 +48,7 @@ from cacheon.eval.b300_qualification_deployment import (
     B300QualificationDeployment,
     compose_b300_qualification_deployment,
 )
+from cacheon.eval.b300_screen_qualification_bridge import QUALIFICATION_EXECUTOR_ID
 from cacheon.eval.b300_registered_qualification_inputs import (
     registered_b300_member_contract_projection,
 )
@@ -93,12 +95,12 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     construction = remote_fixtures._construction(tmp_path)
     candidate_executor = remote_fixtures._executor(
         tmp_path,
-        role="candidate",
+        role=QUALIFICATION_EXECUTOR_ID,
         lane="A",
     )
     baseline_executor = remote_fixtures._executor(
         tmp_path,
-        role="resident-baseline",
+        role=QUALIFICATION_EXECUTOR_ID,
         lane="B",
     )
     lane_pair = deployment_fixtures._lane_pair(
@@ -138,9 +140,23 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         resident_pair_factory=resident_pair_factory,
         screen_lane="primary",
     )
+    reproduction_deployment = compose_b300_qualification_deployment(
+        manifest=manifest,
+        screen_authorities=screen,
+        construction=construction,
+        candidate_executor=baseline_executor,
+        resident_baseline_executor=candidate_executor,
+        resident_pair_factory=resident_pair_factory,
+        screen_lane="reproduction",
+    )
     readiness = remote_fixtures._readiness(deployment)
     commission = worker_module.B300RemoteQualificationCommission(
         deployment,
+        construction,
+        readiness,
+    )
+    reproduction_commission = worker_module.B300RemoteQualificationCommission(
+        reproduction_deployment,
         construction,
         readiness,
     )
@@ -149,6 +165,7 @@ def _deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         construction,
         readiness,
         commission,
+        reproduction_commission,
         (candidate_executor, baseline_executor),
         pair_executors,
         resident,
@@ -165,6 +182,7 @@ def owner(
         construction,
         readiness,
         commission,
+        reproduction_commission,
         executors,
         pair_executors,
         resident,
@@ -196,9 +214,9 @@ def owner(
     )
     monkeypatch.setattr(
         commission_module,
-        "compose_commissioned_qualification",
+        "compose_commissioned_qualifications",
         lambda _inputs, observed_composition, observed_readiness, _capabilities: (
-            (commission, executors)
+            ((commission, reproduction_commission), executors)
             if observed_composition is composition
             and observed_readiness is readiness
             else pytest.fail("builder changed replayed commissioning authority")
@@ -310,6 +328,7 @@ def _configured(
     adapter = owner.service.adapter_for(
         candidate.publication,
         QualificationContinuationStore(continuation_root),
+        "primary",
     )
     return remote_fixtures._Configured(
         owner.deployment,
@@ -335,6 +354,37 @@ def _passing_resident_screen(
             1,
         ),
     )
+
+
+def test_service_routes_reproduction_to_swapped_lane_owner(
+    owner: _OwnerHarness,
+    tmp_path: Path,
+) -> None:
+    candidate = _target_candidate(
+        tmp_path / "reproduction-candidate",
+        index=99,
+        target_id=MSA_PREFILL,
+    )
+    store = QualificationContinuationStore(tmp_path / "reproduction-continuation")
+    adapter = owner.service.adapter_for(
+        candidate.publication,
+        store,
+        "reproduction",
+    )
+    worker = adapter.worker
+    assert worker is owner.service._reproduction_worker
+    assert worker is not owner.service.worker
+    assert worker._remote_qualification_lane == "reproduction"
+    authorities = worker._provider._authorities
+    assert tuple(authorities.executor.device_policy.physical_gpu_ids) == (4, 5, 6, 7)
+    assert tuple(
+        authorities.resident_baseline_executor.device_policy.physical_gpu_ids
+    ) == (0, 1, 2, 3)
+    assert owner.service.adapter_for(
+        candidate.publication,
+        store,
+        "reproduction",
+    ).worker is worker
 
 
 def test_full_owner_releases_its_screen_resident_and_closes_once(
@@ -390,8 +440,11 @@ def test_full_owner_releases_its_screen_resident_and_closes_once(
 
     monkeypatch.setattr(worker, "close", close_worker)
     manager_calls: dict[int, int] = {}
-    for executor in owner.service._executors:
-        manager = executor.manager
+    managers = {
+        id(executor.manager): executor.manager
+        for executor in owner.service._executors
+    }.values()
+    for manager in managers:
         original_close = manager.close
         manager_calls[id(manager)] = 0
 
@@ -569,8 +622,15 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
         index=30,
         target_id=ALL_REDUCE,
     )
+    _passing_resident_screen(monkeypatch)
+    receipt = runtime.worker.service.screen(candidate)
+    assert receipt.decision is PromotionDecision.PROMOTE
+    assert owner.resident.closed == 0
     wire = SimpleNamespace(
-        body={"candidates": [{"publication": candidate.publication.to_dict()}]}
+        body={
+            "candidates": [{"publication": candidate.publication.to_dict()}],
+            "screen_lane": "reproduction",
+        }
     )
     worker_fixtures._patch_authenticated_carrier(
         monkeypatch,
@@ -586,7 +646,8 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
 
     def fail_after_entry(self, observed_wire):
         assert observed_wire is wire
-        assert self.worker is owner.service.worker
+        assert self.worker is owner.service._reproduction_worker
+        assert owner.resident.closed == 1
         delegated.append(self.worker)
         raise QualificationContinuationError("durable continuation is ambiguous")
 
@@ -604,10 +665,11 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
             runtime,
         )
     assert isinstance(captured.value.__cause__, QualificationContinuationError)
-    assert delegated == [owner.service.worker]
-    assert len(owner.worker_init_calls) == 1
+    assert delegated == [owner.service._reproduction_worker]
+    assert len(owner.worker_init_calls) == 2
     assert runtime.worker is owner.service.worker
     assert not owner.service.worker._closed
+    assert not owner.service.worker._provider.resident_screen_active
     assert (result_dir / "RESIDENT_ENTRY_ARMED.json").is_file()
 
     hold = resolve_infrastructure_result(
@@ -721,7 +783,10 @@ def test_injected_commission_runtime_owns_one_full_worker_and_closes_once(
         index=41,
         target_id=ALL_REDUCE,
     )
-    request_adapter = runtime.qualification_adapter_for(candidate.publication)
+    request_adapter = runtime.qualification_adapter_for(
+        candidate.publication,
+        "primary",
+    )
     assert request_adapter.worker is runtime.worker
     assert not request_adapter._owns_worker
     request_adapter.close()

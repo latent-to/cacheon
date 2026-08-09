@@ -28,6 +28,7 @@ from cacheon.eval.b300_qualification_graph_gate import (
 from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
 )
+from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_backend import OCIEngineExecutor
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import (
@@ -44,6 +45,12 @@ executor_factory = mainnet_fixtures.executor_factory
 
 def _h(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
+
+
+def _ref(label: str) -> EvidenceArtifactRef:
+    return EvidenceArtifactRef(
+        "qualification.supporting", _h(label), 1, "application/json", label
+    )
 
 
 @dataclass
@@ -147,14 +154,25 @@ def _run(case: _Case):
 
 def _install_resident_bridge(monkeypatch):
     calls = []
+    count_refs = (
+        _ref("resident-count-raw"),
+        _ref("resident-count-candidate"),
+        _ref("resident-count-stock"),
+    )
     prefix = SimpleNamespace(
         speed_plan=object(),
         speed=object(),
         retirement=object(),
-        count_result=None,
-        count_checkpoint=None,
+        count_result=SimpleNamespace(decision="FAIL"),
+        count_checkpoint=SimpleNamespace(
+            raw_execution_evidence=count_refs[0],
+            candidate_observation=count_refs[1],
+        ),
     )
-    lifecycle = SimpleNamespace(closure=None)
+    lifecycle = SimpleNamespace(
+        count_checkpoint=prefix.count_checkpoint,
+        stock_authority=SimpleNamespace(artifact=count_refs[2]),
+    )
 
     def resident_prefix(**kwargs):
         calls.append(kwargs)
@@ -170,7 +188,7 @@ def _install_resident_bridge(monkeypatch):
         "ResidentPairMarginalLifecycleEvidence",
         lambda *args: (calls.append(args), lifecycle)[1],
     )
-    return calls, lifecycle
+    return calls, lifecycle, count_refs
 
 
 def test_graph_pass_reuses_one_plan_callback_and_exact_factory(
@@ -193,7 +211,7 @@ def test_graph_pass_reuses_one_plan_callback_and_exact_factory(
         return mainnet_fixtures._systemic_batch(factory)
 
     monkeypatch.setattr(worker_module, "run_b300_qualification_graph_gate", gate)
-    resident_calls, lifecycle = _install_resident_bridge(monkeypatch)
+    resident_calls, lifecycle, count_refs = _install_resident_bridge(monkeypatch)
     monkeypatch.setattr(worker_module, "run_qualification_intake", intake)
     try:
         result = _run(case)
@@ -210,11 +228,13 @@ def test_graph_pass_reuses_one_plan_callback_and_exact_factory(
     assert len(resident_calls) == 2
     assert resident_calls[0]["plan"] is case.plan
     assert resident_calls[1][0] is case.plan.prepared
+    assert resident_calls[1][4].decision == "FAIL"
     assert intake_calls[0][1]["prebuilt_plan"] is case.plan
     assert intake_calls[0][1]["resident_pair_lifecycle"] is lifecycle
-    assert result.supporting_evidence_refs == (
+    assert set(result.supporting_evidence_refs) == {
         case.authority.graph_artifact_ref,
-    )
+        *count_refs,
+    }
     assert case.resident.created == 0
 
 
@@ -225,7 +245,7 @@ def test_durable_resident_ambiguity_returns_authenticated_hold(
 ) -> None:
     case = _case(tmp_path, executor_factory, failure=False)
     _install_plan(case, monkeypatch)
-    resident_calls, _lifecycle = _install_resident_bridge(monkeypatch)
+    resident_calls, _lifecycle, _count_refs = _install_resident_bridge(monkeypatch)
 
     def interrupted(*_args, **_kwargs):
         raise QualificationContinuationError("durable resident state is partial")

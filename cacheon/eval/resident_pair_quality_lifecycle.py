@@ -27,6 +27,36 @@ class ResidentPairQualityLifecycleError(RuntimeError):
     """Pair evidence cannot support downstream audit and pristine T."""
 
 
+def _count_retirement_matches(
+    result: RegisteredResidentCountQualityResult,
+    checkpoint: ResidentCountQualityCheckpoint,
+    stock: ResidentCountQualityStockAuthority,
+    retirement: ResidentPairRetirementCheckpoint,
+) -> bool:
+    return (
+        type(result) is RegisteredResidentCountQualityResult
+        and type(checkpoint) is ResidentCountQualityCheckpoint
+        and type(stock) is ResidentCountQualityStockAuthority
+        and type(retirement) is ResidentPairRetirementCheckpoint
+        and result.execution_plan_digest == checkpoint.execution_plan_digest
+        and result.raw_execution_evidence_digest
+        == checkpoint.raw_execution_evidence_semantic_digest
+        and result.candidate_observation_digest
+        == checkpoint.candidate_observation_semantic_digest
+        and result.fixed_stock_authority_digest
+        == checkpoint.fixed_stock_authority_digest
+        and result.pair_binding_digest == checkpoint.pair_binding_digest
+        and result.fixed_stock_authority_digest == stock.digest
+        and result.stock_observation_digest == stock.observation_digest
+        and result.execution_envelope_digest == stock.envelope_digest
+        and result.policy_digest == stock.policy.digest
+        and retirement.count_plan_digest == result.execution_plan_digest
+        and retirement.count_evidence_digest
+        == result.raw_execution_evidence_digest
+        and retirement.pair_binding.digest == result.pair_binding_digest
+    )
+
+
 @dataclass(frozen=True)
 class ResidentPairQualificationClosure:
     """Self-contained count and retirement authority carried by a final report."""
@@ -41,27 +71,9 @@ class ResidentPairQualificationClosure:
             self.count_result, self.count_checkpoint,
             self.stock_authority, self.retirement,
         )
-        if (
-            type(result) is not RegisteredResidentCountQualityResult
-            or type(checkpoint) is not ResidentCountQualityCheckpoint
-            or type(stock) is not ResidentCountQualityStockAuthority
-            or type(retirement) is not ResidentPairRetirementCheckpoint
-            or result.decision != "PASS"
-            or result.execution_plan_digest != checkpoint.execution_plan_digest
-            or result.raw_execution_evidence_digest
-            != checkpoint.raw_execution_evidence_semantic_digest
-            or result.candidate_observation_digest
-            != checkpoint.candidate_observation_semantic_digest
-            or result.fixed_stock_authority_digest != checkpoint.fixed_stock_authority_digest
-            or result.pair_binding_digest != checkpoint.pair_binding_digest
-            or result.fixed_stock_authority_digest != stock.digest
-            or result.stock_observation_digest != stock.observation_digest
-            or result.execution_envelope_digest != stock.envelope_digest
-            or result.policy_digest != stock.policy.digest
-            or retirement.count_plan_digest != result.execution_plan_digest
-            or retirement.count_evidence_digest != result.raw_execution_evidence_digest
-            or retirement.pair_binding.digest != result.pair_binding_digest
-        ):
+        if not _count_retirement_matches(
+            result, checkpoint, stock, retirement
+        ) or result.decision != "PASS":
             raise ResidentPairQualityLifecycleError(
                 "resident pair qualification closure does not recompute"
             )
@@ -145,17 +157,24 @@ class ResidentPairMarginalLifecycleEvidence:
                     "resident count retirement lacks its registered result"
                 )
         else:
-            closure = ResidentPairQualificationClosure(
-                self.count_result, self.count_checkpoint,
-                self.stock_authority, self.retirement,
-            )
+            result = self.count_result
+            checkpoint = self.count_checkpoint
+            stock = self.stock_authority
+            assert checkpoint is not None and stock is not None
             if (
                 self.crossover.decision is not SpeedStageDecision.PASS
-                or closure.count_result.candidate_bundle_digest
+                or result.candidate_bundle_digest
                 != self.plan.candidate_bundle_digest
+                or not _count_retirement_matches(
+                    result, checkpoint, stock, self.retirement
+                )
             ):
                 raise ResidentPairQualityLifecycleError(
                     "registered count result differs from retired pair evidence"
+                )
+            if result.decision == "PASS":
+                ResidentPairQualificationClosure(
+                    result, checkpoint, stock, self.retirement
                 )
         for binding, lane in zip(
             self.plan.pair_binding.lanes, self.retirement.lanes, strict=True
@@ -220,7 +239,7 @@ class ResidentPairMarginalLifecycleEvidence:
 
     @property
     def closure(self) -> ResidentPairQualificationClosure | None:
-        if self.count_result is None:
+        if self.count_result is None or self.count_result.decision != "PASS":
             return None
         return ResidentPairQualificationClosure(
             self.count_result, self.count_checkpoint,

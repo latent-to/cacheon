@@ -645,6 +645,15 @@ class B300ArenaServiceProvider:
         with self._lock:
             return self._resident_lifetime is not None and not self._resident_failed
 
+    def retire_resident_screen(self) -> None:
+        """Release the retained screen lifetime before qualification owns its lane."""
+
+        with self._lock:
+            if not self._closed and self._resident_teardown_failed:
+                self._release_resident()
+            self._require_open_and_current()
+            self._release_resident()
+
     def run_screen(
         self,
         manifest: ArenaServiceManifest,
@@ -735,10 +744,7 @@ class B300ArenaServiceProvider:
                 raise B300ArenaProviderError(
                     "qualification capabilities are unavailable on this screen worker"
                 )
-            if not self._closed and self._resident_teardown_failed:
-                self._release_resident()
-            self._require_open_and_current()
-            self._release_resident()
+            self.retire_resident_screen()
             try:
                 factory = capabilities.qualification_factory_builder(request, state)
             except B300QualificationGraphEvidenceHold:

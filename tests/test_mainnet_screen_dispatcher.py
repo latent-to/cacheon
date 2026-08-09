@@ -13,9 +13,13 @@ from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCapacityPolicy,
     ArenaRuntimeIdentity,
+    ArenaScreenReceipt,
     ArenaServiceManifest,
     NonCrownScreenPolicy,
+    PromotionDecision,
+    ScreenGrade,
     ScreenStagePolicy,
+    ScreenStageResult,
     ServingShape,
     WorkloadMixture,
     WorkloadRegime,
@@ -23,7 +27,7 @@ from cacheon.arena_service import (
 from cacheon.bundle_hash import content_hash
 from cacheon.chain import mainnet_screen_dispatcher as dispatcher_module
 from cacheon.chain import remote_worker_spool as spool
-from cacheon.chain.evaluation_coordinator import WorkerReadiness
+from cacheon.chain.evaluation_coordinator import EvaluationResultEnvelope, WorkerReadiness
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
@@ -247,6 +251,37 @@ def test_builds_exact_screen_only_dispatcher_over_live_durable_cursor(
         match="local arena provider execution is disabled",
     ):
         provider.build_qualification(None)
+
+
+def test_composed_qualification_claim_is_singleton_with_deeper_fifo(tmp_path: Path) -> None:
+    config_path, raw = _setup_authority(tmp_path)
+    intake_db = Path(raw["intake_db"])
+    rows = tuple(
+        _published_intake_row(tmp_path, intake_db, label=label)[0]
+        for label in ("first", "second")
+    )
+    dispatcher = dispatcher_module.build_dispatcher(dispatcher_module.load_config(config_path))
+    coordinator = dispatcher.coordinator
+    passing = tuple(
+        ScreenStageResult(stage, ScreenGrade.PASS, _h(stage), 1) for stage in SCREEN_STAGES
+    )
+    for row in rows:
+        claim = coordinator.claim_screen()
+        assert claim is not None and claim.reservation == row
+        receipt = ArenaScreenReceipt(
+            coordinator.service.identity,
+            claim.candidate.digest,
+            claim.candidate.screen_attempt,
+            passing,
+            PromotionDecision.PROMOTE,
+        )
+        envelope = EvaluationResultEnvelope.seal(
+            claim.lease, coordinator.readiness, coordinator.service, receipt
+        )
+        coordinator.commit_screen_result(claim, receipt, envelope)
+    qualification = coordinator.claim_qualification()
+    assert qualification is not None
+    assert qualification.lease.reservation_ids == (rows[0].reservation_id,)
 
 
 def _published_intake_row(tmp_path: Path, intake_db: Path, *, label: str):

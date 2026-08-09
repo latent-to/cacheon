@@ -31,10 +31,16 @@ from cacheon.eval.oci_backend import (
 from cacheon.eval.oci_prebuild import run_oci_prebuild
 from cacheon.eval.oci_process import CaptureRunner, OCIProcessManager
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt, bounded_argv_runner
+from cacheon.stack_identity import require_sha256_hex
 from cacheon.stack_plan import MarginalArmPlan
 
 CONTAINER_REQUEST = "/cacheon/input/graph-request/request.json"
 _REQUEST_DIR = "/cacheon/input/graph-request"
+_CONTROLLER_ROOT = "/cacheon/controller"
+_CONTROLLER_BOOTSTRAP = (
+    "import runpy,sys;sys.path.insert(0,'/cacheon/controller');"
+    "runpy.run_module('cacheon.eval.b300_prepared_graph_oci',run_name='__main__')"
+)
 _MAX_REQUEST_BYTES = 256 << 10
 _MAX_ARTIFACT_BYTES = 8 << 20
 _MAX_STDERR_BYTES = 64 << 10
@@ -45,6 +51,42 @@ class B300PreparedGraphOCIError(RuntimeError):
 
     decision = "HOLD"
     validator_fault = True
+
+
+def _reopen_controller_source(value: str | Path) -> Path:
+    try:
+        root = Path(value).expanduser()
+        modules = (
+            root / "cacheon" / "__init__.py",
+            root / "cacheon" / "eval" / "b300_prepared_graph_oci.py",
+        )
+        carriers = (root, modules[0].parent, modules[1].parent)
+        if not root.is_absolute() or root.resolve(strict=True) != root:
+            raise B300PreparedGraphOCIError("controller source root is noncanonical")
+        if any(
+            path.is_symlink()
+            or not path.is_dir()
+            or path.stat().st_mode & 0o222
+            or path.stat().st_mode & 0o055 != 0o055
+            for path in carriers
+        ):
+            raise B300PreparedGraphOCIError(
+                "controller source carrier is not immutable and container-readable"
+            )
+        if any(
+            module.is_symlink()
+            or not module.is_file()
+            or module.stat().st_nlink != 1
+            or module.stat().st_mode & 0o222
+            or module.stat().st_mode & 0o044 != 0o044
+            for module in modules
+        ):
+            raise B300PreparedGraphOCIError(
+                "controller graph module is not immutable and container-readable"
+            )
+    except (OSError, RuntimeError, TypeError) as exc:
+        raise B300PreparedGraphOCIError(f"controller source is unavailable: {exc}") from None
+    return root
 
 
 def _remaining(deadline: float, manager: OCIProcessManager, stage: str) -> float:
@@ -89,6 +131,7 @@ def _graph_argv(
     seccomp,
     request,
     policy,
+    controller_source,
 ):
     runtime = resolved.spec
     resources = lease.resource_root  # exact lease containment already manager-owned
@@ -174,6 +217,7 @@ def _graph_argv(
         build_bind_mount_arg(publication.root, artifact_root, readonly=True),
         build_bind_mount_arg(cache, CONTAINER_CACHE, readonly=False),
         build_bind_mount_arg(request.parent, _REQUEST_DIR, readonly=True),
+        build_bind_mount_arg(controller_source, _CONTROLLER_ROOT, readonly=True),
     ]
     argv.extend(f"--env={key}={env[key]}" for key in sorted(env))
     argv.extend(
@@ -181,8 +225,8 @@ def _graph_argv(
             f"--entrypoint={policy.container_python}",
             preflight.local_image_id,
             "-I",
-            "-m",
-            "cacheon.eval.b300_prepared_graph_oci",
+            "-c",
+            _CONTROLLER_BOOTSTRAP,
             "worker",
         )
     )
@@ -197,6 +241,8 @@ class B300PreparedGraphOCIExecutor:
         config: OCIBackendConfig,
         device_policy: DeviceStatePolicy,
         *,
+        controller_source_root: str | Path,
+        controller_distribution_digest: str,
         manager: OCIProcessManager,
         capture_runner: CaptureRunner = bounded_argv_runner,
     ) -> None:
@@ -211,6 +257,13 @@ class B300PreparedGraphOCIExecutor:
             config.prebuild.docker_binary, config.prebuild.executor_id
         ):
             raise B300PreparedGraphOCIError("graph manager differs from backend config")
+        try:
+            self.controller_distribution_digest = require_sha256_hex(
+                controller_distribution_digest, field="controller_distribution_digest"
+            )
+        except (TypeError, ValueError) as exc:
+            raise B300PreparedGraphOCIError(str(exc)) from None
+        self.controller_source_root = _reopen_controller_source(controller_source_root)
         self.config = config
         self.device_policy = device_policy
         self.manager = manager
@@ -238,6 +291,8 @@ class B300PreparedGraphOCIExecutor:
             request.binding.prepared_arm_digest,
             request.binding.native_build_spec_digest,
         )
+        if request.launch.controller_distribution_digest != self.controller_distribution_digest:
+            raise B300PreparedGraphOCIError("graph controller distribution differs from executor authority")
         if (
             request_binding != expected_binding
             or request.policy.tp_size != 4
@@ -353,6 +408,7 @@ class B300PreparedGraphOCIExecutor:
                 seccomp,
                 request_path,
                 policy,
+                _reopen_controller_source(self.controller_source_root),
             )
             timeout = _remaining(deadline, self.manager, "worker") - float(
                 self.device_policy.drain_timeout_s

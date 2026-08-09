@@ -10,17 +10,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import tests.test_calibration as calibration_fixtures
 
 from cacheon.eval import b300_qualification_commission as commission
 from cacheon.eval.b300_qualification_deployment import B300RegisteredProfileAuthority
+from cacheon.eval.b300_qualification_lanes import (
+    B300QualificationLanePair,
+    B300QualificationLanePolicy,
+)
 from cacheon.eval.b300_registered_qualification import REGISTERED_B300_TARGET_IDS
 from cacheon.eval.b300_sealed_qualification_commission import (
     QUALIFICATION_DEADLINE_MAXIMUM_SECONDS,
 )
+from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_manifest
 from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
@@ -180,17 +188,28 @@ def _gpu(index: int) -> GPUConfiguration:
     )
 
 
-def test_lane_gpus_require_one_disjoint_tp4_complement() -> None:
+def test_lane_policies_reopen_exact_canonical_pair() -> None:
     eight = tuple(_gpu(index) for index in range(8))
-    screen = eight[:4]
-    inputs = SimpleNamespace(gpus=screen, qualification_gpus=eight)
-    baseline, candidate = commission._lane_gpus(inputs)
-    assert baseline == screen
-    assert tuple(gpu.physical_id for gpu in candidate) == (4, 5, 6, 7)
+    policy_a = commission.screen_deployment._device_policy(eight[:4])
+    policy_b = commission.screen_deployment._device_policy(eight[4:])
+    lanes = B300QualificationLanePair(
+        B300QualificationLanePolicy.from_device_policy("A", policy_a),
+        B300QualificationLanePolicy.from_device_policy("B", policy_b),
+    )
+    inputs = SimpleNamespace(
+        qualification_gpus=eight,
+        qualification_lane_pair=lanes,
+    )
+    observed_a, observed_b = commission._lane_policies(inputs)
+    assert observed_a == policy_a
+    assert observed_b == policy_b
 
-    overlapping = SimpleNamespace(gpus=screen, qualification_gpus=eight[:7])
+    missing = SimpleNamespace(
+        qualification_gpus=eight[:7],
+        qualification_lane_pair=lanes,
+    )
     with pytest.raises(commission.B300QualificationCommissionError):
-        commission._lane_gpus(overlapping)
+        commission._lane_policies(missing)
 
 
 def _calibration_inputs(tmp_path: Path, payload: object) -> SimpleNamespace:
@@ -207,18 +226,70 @@ def _calibration_inputs(tmp_path: Path, payload: object) -> SimpleNamespace:
     )
 
 
+def _calibration_context(stage: str):
+    return replace(
+        calibration_fixtures._context(
+            {"primary": "a", "reproduction": "b"}[stage]
+        ),
+        logical_hardware_digest=_h(f"{stage}:hardware"),
+    )
+
+
+def _calibration_record(stage: str) -> dict[str, object]:
+    context = _calibration_context(stage)
+    threshold = replace(
+        calibration_fixtures._threshold_policy(),
+        context=context,
+    )
+    observations = calibration_fixtures._observations()
+    if stage == "reproduction":
+        observations = (
+            replace(observations[0], seed_digest=_h("reproduction:negative")),
+            *observations[1:],
+        )
+    manifest = derive_calibration_manifest(threshold, observations)
+    evidence = CalibrationEvidenceSet.create(threshold, observations)
+    return {
+        "evidence": evidence.to_dict(),
+        "manifest": manifest.to_dict(),
+        "measurement_authority": {
+            "context_digest": context.digest,
+            "logical_hardware_digest": context.logical_hardware_digest,
+            "projection_sha256": _h(f"{stage}:projection"),
+            "raw_quality_artifact_sha256": _h(f"{stage}:raw-quality"),
+            "raw_quality_binding_digest": _h(f"{stage}:raw-binding"),
+            "report_digest": _h(f"{stage}:report"),
+            "source_attempt_digest": _h(f"{stage}:attempt"),
+            "source_attempt_ref_sha256": _h(f"{stage}:attempt-ref"),
+            "transform": "validator-owned-teacher-nll-fail.v1",
+        },
+        "threshold_policy": threshold.to_dict(),
+    }
+
+
+def _calibration_package() -> dict[str, object]:
+    return {
+        "schema": commission.CALIBRATION_PACKAGE_SCHEMA,
+        "stages": {
+            stage: _calibration_record(stage)
+            for stage in ("primary", "reproduction")
+        },
+    }
+
+
 def test_sealed_calibration_rejects_reference_drift(tmp_path: Path) -> None:
     inputs = _calibration_inputs(
         tmp_path,
         {
             "schema": commission.CALIBRATION_PACKAGE_SCHEMA,
-            "threshold_policy": {},
-            "observations": [],
+            "stages": {},
         },
     )
     inputs.authority_refs["calibration_package"]["sha256"] = _h("other-bytes")
     with pytest.raises(commission.B300QualificationCommissionError) as captured:
-        commission._sealed_calibration(inputs)
+        commission._sealed_calibration(
+            inputs, calibration_fixtures._context(), "primary"
+        )
     assert "deployment reference" in str(captured.value)
 
 
@@ -230,47 +301,112 @@ def test_sealed_calibration_rejects_open_or_foreign_packages(
         {"schema": "cacheon-private-b300-calibration-package-v0"},
         {
             "schema": commission.CALIBRATION_PACKAGE_SCHEMA,
-            "threshold_policy": {},
-            "observations": [],
+            "stages": {},
             "operator_note": "no",
         },
         {
             "schema": commission.CALIBRATION_PACKAGE_SCHEMA,
-            "threshold_policy": {},
-            "observations": {},
+            "stages": [],
         },
     ):
         inputs = _calibration_inputs(tmp_path, payload)
         with pytest.raises(commission.B300QualificationCommissionError):
-            commission._sealed_calibration(inputs)
+            commission._sealed_calibration(
+                inputs, calibration_fixtures._context(), "primary"
+            )
         (tmp_path / "calibration-package.json").unlink()
 
 
 def test_sealed_calibration_rejects_invalid_frozen_authorities(
     tmp_path: Path,
 ) -> None:
+    package = _calibration_package()
+    package["stages"]["primary"]["threshold_policy"] = {"not": "a policy"}
     inputs = _calibration_inputs(
         tmp_path,
-        {
-            "schema": commission.CALIBRATION_PACKAGE_SCHEMA,
-            "threshold_policy": {"not": "a policy"},
-            "observations": [],
-        },
+        package,
     )
     with pytest.raises(commission.B300QualificationCommissionError) as captured:
-        commission._sealed_calibration(inputs)
-    assert "invalid" in str(captured.value)
+        commission._sealed_calibration(
+            inputs, calibration_fixtures._context(), "primary"
+        )
+    assert "package is invalid" in str(captured.value)
+
+
+def test_sealed_calibration_reopens_each_exact_lane_context(
+    tmp_path: Path,
+) -> None:
+    inputs = _calibration_inputs(tmp_path, _calibration_package())
+    primary, primary_manifest, primary_evidence = commission._sealed_calibration(
+        inputs, _calibration_context("primary"), "primary"
+    )
+    reproduction, reproduction_manifest, reproduction_evidence = (
+        commission._sealed_calibration(
+            inputs,
+            _calibration_context("reproduction"),
+            "reproduction",
+        )
+    )
+
+    assert primary_evidence.observations != reproduction_evidence.observations
+    assert primary.context != reproduction.context
+    primary_template = primary.to_dict()
+    reproduction_template = reproduction.to_dict()
+    del primary_template["context"]
+    del reproduction_template["context"]
+    assert primary_template == reproduction_template
+    assert primary_manifest == derive_calibration_manifest(
+        primary, primary_evidence.observations
+    )
+    assert reproduction_manifest == derive_calibration_manifest(
+        reproduction, reproduction_evidence.observations
+    )
+    assert primary_manifest.raw_evidence_digest != (
+        reproduction_manifest.raw_evidence_digest
+    )
+
+
+def test_sealed_calibration_rejects_context_rebinding(tmp_path: Path) -> None:
+    inputs = _calibration_inputs(tmp_path, _calibration_package())
+
+    with pytest.raises(
+        commission.B300QualificationCommissionError,
+        match="differs from the commissioned lane",
+    ):
+        commission._sealed_calibration(
+            inputs,
+            _calibration_context("reproduction"),
+            "primary",
+        )
+
+
+def test_sealed_calibration_rejects_recycled_lane_observations(
+    tmp_path: Path,
+) -> None:
+    package = _calibration_package()
+    package["stages"]["reproduction"] = deepcopy(
+        package["stages"]["primary"]
+    )
+    inputs = _calibration_inputs(tmp_path, package)
+
+    with pytest.raises(
+        commission.B300QualificationCommissionError,
+        match="not independent",
+    ):
+        commission._sealed_calibration(
+            inputs, calibration_fixtures._context(), "primary"
+        )
 
 
 def test_compose_requires_a_sealed_commission_block() -> None:
     inputs = SimpleNamespace(qualification_commission=None)
     with pytest.raises(commission.B300QualificationCommissionError) as captured:
-        commission.compose_commissioned_qualification(
+        commission.compose_commissioned_qualifications(
             inputs, object(), object(), _capabilities()
         )
     assert "declares no qualification commission" in str(captured.value)
 
     with pytest.raises(commission.B300QualificationCommissionError):
-        commission.compose_commissioned_qualification(
+        commission.compose_commissioned_qualifications(
             inputs, object(), object(), object()
         )

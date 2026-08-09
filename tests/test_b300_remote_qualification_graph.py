@@ -207,7 +207,9 @@ def test_full_pass_keeps_existing_product_and_adds_raw_graph_inventory(
         count_result=None,
         count_checkpoint=None,
     )
-    lifecycle = SimpleNamespace(closure=None)
+    lifecycle = SimpleNamespace(
+        count_checkpoint=None, stock_authority=None
+    )
     monkeypatch.setattr(worker_module, "run_qualification_intake", intake)
     monkeypatch.setattr(
         worker_module,

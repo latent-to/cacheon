@@ -31,6 +31,7 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     registered_b300_member_contract_projection,
 )
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
+from cacheon.stack_identity import canonical_json_bytes
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
 
@@ -193,14 +194,14 @@ def _block() -> dict[str, object]:
         },
         "session": {
             "conditioning_count": 2,
-            "temperature": 0.0,
+            "temperature": "0",
             "warmup_count": 1,
         },
         "resident_speed": {
-            "max_conditioning_slowdown": 1.35,
+            "max_conditioning_slowdown": "1.35",
             "max_qualification_seconds": 7200,
             "max_stage_seconds": 900,
-            "max_window_scatter": 0.25,
+            "max_window_scatter": "0.25",
             "min_windows": 3,
         },
     }
@@ -219,6 +220,7 @@ class _Judge:
 def test_sealed_commission_block_round_trips() -> None:
     block = _block()
     assert sealed.sealed_qualification_commission(block) is block
+    assert canonical_json_bytes(block)
 
 
 def test_pre_catalog_expansion_commission_schema_is_rejected() -> None:
@@ -263,11 +265,11 @@ def _mutations() -> list[tuple[str, dict[str, object]]]:
     case("non-bool hidden requirement", policy__hidden_tasks_required=1)
     case("open session block", session__extra=0)
     case("negative warmup", session__warmup_count=-1)
-    case("infinite temperature", session__temperature=float("inf"))
-    case("negative temperature", session__temperature=-0.5)
+    case("non-string temperature", session__temperature=0.0)
+    case("negative temperature", session__temperature="-0.5")
     case("open speed block", resident_speed__extra=0)
     case("zero stage budget", resident_speed__max_stage_seconds=0)
-    case("nan scatter", resident_speed__max_window_scatter=float("nan"))
+    case("noncanonical scatter", resident_speed__max_window_scatter="0.050")
     return cases
 
 

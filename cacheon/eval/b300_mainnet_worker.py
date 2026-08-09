@@ -372,6 +372,15 @@ class B300MainnetWorker:
             self._provider.close()
             self._closed = True
 
+    def retire_resident_screen(self) -> None:
+        """Fence the standing screen lifetime before either TP4 orientation runs."""
+
+        with self._lock:
+            if self._closed:
+                raise B300MainnetWorkerError("B300 mainnet worker is closed")
+            self._validate_readiness(self.readiness, self.service)
+            self._provider.retire_resident_screen()
+
     def _bind_remote_qualification_graph_gate_root(self, root: Path) -> None:
         """Bind the adapter-owned CAS root once for this resident worker epoch."""
 
@@ -592,12 +601,13 @@ class B300MainnetWorker:
                 plan.prepared.source.digest,
             )
         if request_digest is not None:
-            closure = resident_pair_lifecycle.closure
-            if closure is not None:
+            count_checkpoint = resident_pair_lifecycle.count_checkpoint
+            if count_checkpoint is not None:
+                assert resident_pair_lifecycle.stock_authority is not None
                 supporting_evidence_refs += (
-                    closure.count_checkpoint.raw_execution_evidence,
-                    closure.count_checkpoint.candidate_observation,
-                    closure.stock_authority.artifact,
+                    count_checkpoint.raw_execution_evidence,
+                    count_checkpoint.candidate_observation,
+                    resident_pair_lifecycle.stock_authority.artifact,
                 )
             if batch.attempt_ref is not None and batch.attempt_ref.schema == ATTEMPT_SCHEMA_V4:
                 attempt = reopen_causal_qualification(

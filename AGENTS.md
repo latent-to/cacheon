@@ -94,6 +94,16 @@ suite.
   outcome, exact file ownership, explicit forbidden actions, applicable
   product invariants, and exact acceptance tests. Review its output or diff
   before accepting it; delegation is not approval.
+- No change merges without naming its consumer and its casualty. The consumer
+  is the real entrypoint that exercises the new code in the same diff. The
+  casualty is the implementation or operator action it supersedes, which must
+  be deleted in the same diff or have a named retirement trigger. Use the
+  explicit phrase "supersedes nothing" only when that is genuinely true. A
+  change or subagent output that can name neither is a proposal, not an
+  increment.
+- Every delegation and handoff must state its consumer, casualty, and net-LOC
+  budget or accounting. Delegation is not accretion: the primary agent deletes
+  down to budget or rejects the proposal before integration.
 - A writing agent may own multiple explicitly listed files when they form one
   bounded implementation unit. It must state its implementation hypotheses
   before editing and name the evidence that would falsify each one. Its handoff

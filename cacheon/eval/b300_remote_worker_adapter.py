@@ -524,8 +524,9 @@ class AdapterRuntime:
     def qualification_adapter_for(
         self,
         publication: WorkerBundlePublication,
+        screen_lane: str,
     ) -> B300RemoteQualificationAdapter:
-        """Bind one request publication to this epoch's sole full owner."""
+        """Bind one request to its exact commissioned lane orientation."""
 
         commission = self.qualification_commission
         if commission is None:
@@ -542,10 +543,15 @@ class AdapterRuntime:
             return service.adapter_for(
                 publication,
                 continuation_store,
+                screen_lane,
             )
         from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 
         if type(self.worker) is B300MainnetWorker:
+            if commission.deployment.screen_lane != screen_lane:
+                raise AdapterError(
+                    "qualification request differs from injected commission stage"
+                )
             return commission.adapter_for(
                 publication,
                 continuation_store,
@@ -625,7 +631,15 @@ def run_with_runtime(
                 candidates[0]["publication"],
                 runtime.paths.publication_root,
             )
-            qualification_adapter = runtime.qualification_adapter_for(publication)
+            screen_lane = body.get("screen_lane")
+            if screen_lane not in {"primary", "reproduction"}:
+                raise AdapterError(
+                    "qualification request lacks an exact commissioned stage"
+                )
+            qualification_adapter = runtime.qualification_adapter_for(
+                publication,
+                screen_lane,
+            )
         else:
             lease_value = outer["lease"]
             lease = EvaluationLease(
@@ -675,6 +689,7 @@ def run_with_runtime(
     try:
         if stage == "qualification":
             try:
+                runtime.worker.retire_resident_screen()
                 payload = qualification_adapter.run(wire)
             finally:
                 close_adapter = getattr(qualification_adapter, "close", None)

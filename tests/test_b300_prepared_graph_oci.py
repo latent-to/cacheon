@@ -116,7 +116,17 @@ def commissioned(tmp_path: Path):
         rows.append(_tp4(_profile(tmp_path / label, copied, label), backend, policy))
     publication = tmp_path / "native-publication"
     publication.mkdir(mode=0o700)
-    return backend, policy, tuple(rows), publication
+    source = tmp_path / "controller-source"
+    module = source / "cacheon" / "eval" / "b300_prepared_graph_oci.py"
+    module.parent.mkdir(parents=True)
+    module.write_bytes(Path(graph_oci.__file__).read_bytes())
+    initializer = module.parents[1] / "__init__.py"
+    initializer.write_bytes(b"")
+    for file in (initializer, module):
+        file.chmod(0o444)
+    for directory in (module.parent, module.parent.parent, source):
+        directory.chmod(0o555)
+    return backend, policy, tuple(rows), publication, source
 
 
 class _Guard:
@@ -135,10 +145,10 @@ def _control(_argv, *, timeout_s, max_output_bytes):
     return CommandResult(0, b"", b"")
 
 
-def _executor(monkeypatch, backend, policy, publication, capture):
+def _executor(monkeypatch, backend, policy, publication, source, capture, *, digest=None):
     manager = OCIProcessManager(
         docker_binary=backend.config.prebuild.docker_binary,
-        recovery_root=backend.config.prebuild.recovery_root,
+        recovery_root=backend.config.prebuild.recovery_root / _h(str(source))[:12],
         executor_id=backend.config.prebuild.executor_id,
         runner=_control,
     )
@@ -164,7 +174,12 @@ def _executor(monkeypatch, backend, policy, publication, capture):
     monkeypatch.setattr(graph_oci, "run_oci_prebuild", prebuild)
     monkeypatch.setattr(graph_oci, "reopen_native_artifact", lambda *_a, **_k: published)
     executor = graph_oci.B300PreparedGraphOCIExecutor(
-        backend.config, policy, manager=manager, capture_runner=capture
+        backend.config,
+        policy,
+        controller_source_root=source,
+        controller_distribution_digest=digest or backend.launch.controller_distribution_digest,
+        manager=manager,
+        capture_runner=capture,
     )
     executor.device_guard = _Guard()
     return executor
@@ -173,7 +188,7 @@ def _executor(monkeypatch, backend, policy, publication, capture):
 def test_fixed_argv_round_trips_two_registered_targets_without_model(
     commissioned, monkeypatch
 ):
-    backend, policy, rows, publication = commissioned
+    backend, policy, rows, publication, source = commissioned
     artifacts = [_artifact(request.binding, request.policy.verification_policy_digest) for _, request in rows]
     calls = []
 
@@ -182,7 +197,7 @@ def test_fixed_argv_round_trips_two_registered_targets_without_model(
         calls.append((argv, limits))
         return CommandResult(0, artifact.canonical_bytes, b"candidate diagnostic")
 
-    executor = _executor(monkeypatch, backend, policy, publication, capture)
+    executor = _executor(monkeypatch, backend, policy, publication, source, capture)
     observed = [
         executor.execute(request, row.prepared, deadline=time.monotonic() + 30)
         for row, request in rows
@@ -198,10 +213,11 @@ def test_fixed_argv_round_trips_two_registered_targets_without_model(
         assert argv[-6:] == (
             f"--entrypoint={backend.runtime.container_python}",
             backend.preflight.local_image_id,
-            "-I", "-m", "cacheon.eval.b300_prepared_graph_oci", "worker",
+            "-I", "-c", graph_oci._CONTROLLER_BOOTSTRAP, "worker",
         )
         mounts = tuple(value for value in argv if value.startswith("--mount="))
-        assert len(mounts) == 4 and not any("/cacheon/input/model" in value for value in mounts)
+        assert len(mounts) == 5 and not any("/cacheon/input/model" in value for value in mounts)
+        assert any(f"src={source},dst=/cacheon/controller" in value and value.endswith(",readonly") for value in mounts)
         assert not any(rows[0][1].binding.target_id in value for value in argv)
         assert set(limits) == {"timeout_s", "max_stdout_bytes", "max_stderr_bytes"}
         assert 0 < limits["timeout_s"] < 30
@@ -213,7 +229,7 @@ def test_fixed_argv_round_trips_two_registered_targets_without_model(
 
 @pytest.mark.parametrize("outcome", ("timeout", "nonzero", "oversize", "foreign"))
 def test_failures_hold_and_prove_cleanup(commissioned, monkeypatch, outcome):
-    backend, policy, rows, publication = commissioned
+    backend, policy, rows, publication, source = commissioned
     row, request = rows[0]
     foreign = _artifact(rows[1][1].binding, request.policy.verification_policy_digest)
 
@@ -226,7 +242,7 @@ def test_failures_hold_and_prove_cleanup(commissioned, monkeypatch, outcome):
             return CommandResult(0, b"x" * ((8 << 20) + 1), b"")
         return CommandResult(0, foreign.canonical_bytes, b"")
 
-    executor = _executor(monkeypatch, backend, policy, publication, capture)
+    executor = _executor(monkeypatch, backend, policy, publication, source, capture)
     with pytest.raises(graph_oci.B300PreparedGraphOCIError) as raised:
         executor.execute(request, row.prepared, deadline=time.monotonic() + 30)
     assert raised.value.decision == "HOLD"
@@ -235,7 +251,7 @@ def test_failures_hold_and_prove_cleanup(commissioned, monkeypatch, outcome):
 
 
 def test_tp4_and_device_policy_mismatch_reject_before_container(commissioned, monkeypatch):
-    backend, policy, rows, publication = commissioned
+    backend, policy, rows, publication, source = commissioned
     row, request = rows[0]
     changed = replace(
         policy.expected_gpus[0],
@@ -245,7 +261,7 @@ def test_tp4_and_device_policy_mismatch_reject_before_container(commissioned, mo
         policy, expected_gpus=(changed, *policy.expected_gpus[1:])
     )
     mismatch = _executor(
-        monkeypatch, backend, mismatched, publication,
+        monkeypatch, backend, mismatched, publication, source,
         lambda *_a, **_k: pytest.fail("device mismatch reached the container"),
     )
     with pytest.raises(graph_oci.B300PreparedGraphOCIError) as raised:
@@ -262,16 +278,69 @@ def test_tp4_and_device_policy_mismatch_reject_before_container(commissioned, mo
         runner=_control,
     )
     executor = graph_oci.B300PreparedGraphOCIExecutor(
-        backend.config, policy, manager=manager, capture_runner=lambda *_a, **_k: None
+        backend.config,
+        policy,
+        controller_source_root=source,
+        controller_distribution_digest=backend.launch.controller_distribution_digest,
+        manager=manager,
+        capture_runner=lambda *_a, **_k: None,
     )
     with pytest.raises(graph_oci.B300PreparedGraphOCIError, match="TP4"):
         executor.execute(tp1_request, original.prepared, deadline=time.monotonic() + 30)
 
 
+def test_controller_source_authority_is_fixed_and_reopened(commissioned, monkeypatch):
+    backend, policy, rows, publication, source = commissioned
+    row, request = rows[0]
+    unreachable = lambda *_a, **_k: pytest.fail("invalid source reached container")
+    foreign = _executor(
+        monkeypatch, backend, policy, publication, source, unreachable,
+        digest=_h("foreign-controller"),
+    )
+    with pytest.raises(graph_oci.B300PreparedGraphOCIError, match="executor authority"):
+        foreign.execute(request, row.prepared, deadline=time.monotonic() + 30)
+    foreign.manager.close()
+
+    linked = publication.parent / "linked-controller"
+    linked.symlink_to(source, target_is_directory=True)
+    writable = publication.parent / "writable-controller"
+    shutil.copytree(source, writable)
+    writable.chmod(0o755)
+    missing_module = publication.parent / "controller-without-module"
+    shutil.copytree(source, missing_module)
+    missing_module_eval = missing_module / "cacheon" / "eval"
+    missing_module_eval.chmod(0o755)
+    (missing_module_eval / "b300_prepared_graph_oci.py").unlink()
+    missing_module_eval.chmod(0o555)
+    missing_initializer = publication.parent / "controller-without-init"
+    shutil.copytree(source, missing_initializer)
+    missing_initializer_package = missing_initializer / "cacheon"
+    missing_initializer_package.chmod(0o755)
+    (missing_initializer_package / "__init__.py").unlink()
+    missing_initializer_package.chmod(0o555)
+    unreadable = publication.parent / "unreadable-controller"
+    shutil.copytree(source, unreadable)
+    unreadable.chmod(0o500)
+    missing = publication.parent / "missing-controller"
+    invalid_sources = (
+        linked, writable, missing_module, missing_initializer, unreadable, missing,
+        source / "cacheon" / "..",
+    )
+    for invalid in invalid_sources:
+        with pytest.raises(graph_oci.B300PreparedGraphOCIError, match="controller source"):
+            _executor(monkeypatch, backend, policy, publication, invalid, unreachable)
+
+    reopened = _executor(monkeypatch, backend, policy, publication, source, unreachable)
+    module = source / "cacheon" / "eval" / "b300_prepared_graph_oci.py"
+    module.chmod(0o644)
+    with pytest.raises(graph_oci.B300PreparedGraphOCIError, match="immutable"):
+        reopened.execute(request, row.prepared, deadline=time.monotonic() + 30)
+
+
 def test_fixed_worker_emits_only_reopened_canonical_artifact(
     commissioned, monkeypatch, capfd, tmp_path
 ):
-    _, _, rows, _ = commissioned
+    _, _, rows, _, _ = commissioned
     row, request = rows[0]
     artifact = _artifact(request.binding, request.policy.verification_policy_digest)
     request_path = tmp_path / "request.json"

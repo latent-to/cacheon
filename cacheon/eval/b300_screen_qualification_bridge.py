@@ -9,7 +9,10 @@ reservation.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from cacheon._strict import require_digest
 from cacheon.eval.b300_arena_provider import (
@@ -17,24 +20,121 @@ from cacheon.eval.b300_arena_provider import (
     B300QualificationLanePair,
     b300_executor_role_policy_digest,
 )
+from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_registered_qualification_inputs import (
     B300RegisteredQualificationError,
 )
 from cacheon.eval.b300_sealed_qualification_commission import (
+    B300QualificationCommissionError,
     declared_qualification_deadline_digest,
     declared_qualification_entropy_digest,
     predicted_qualification_builder_digest,
     predicted_qualification_policy_digest,
     sealed_qualification_commission,
 )
-from cacheon.eval.oci_backend import OCIBackendConfig
+from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import TargetCatalog
 
+if TYPE_CHECKING:
+    from cacheon.eval.b300_remote_worker_adapter import (
+        B300RemoteQualificationCommission,
+    )
+
+
+QUALIFICATION_EXECUTOR_ID = "b300-qualification-lane"
+
 
 class B300ScreenQualificationBridgeError(RuntimeError):
     """The optional sealed qualification block is invalid or inconsistent."""
+
+
+@dataclass
+class CommissionedB300QualificationService:
+    """One screen owner plus both sealed qualification orientations."""
+
+    worker: B300MainnetWorker
+    commission: "B300RemoteQualificationCommission"
+    reproduction_commission: "B300RemoteQualificationCommission"
+    _executors: tuple[OCIEngineExecutor, ...]
+    _screen_composition: object
+    _reproduction_worker: B300MainnetWorker | None = None
+    _lock: object = field(default_factory=threading.RLock)
+    _closed: bool = False
+
+    def __post_init__(self) -> None:
+        commissions = (self.commission, self.reproduction_commission)
+        if (
+            not callable(getattr(self._screen_composition, "close", None))
+            or type(self._executors) is not tuple
+            or len(self._executors) != 2
+            or any(type(row) is not OCIEngineExecutor for row in self._executors)
+            or len({id(row.manager) for row in self._executors}) != 2
+            or tuple(row.deployment.screen_lane for row in commissions)
+            != ("primary", "reproduction")
+            or commissions[0].deployment.manifest != commissions[1].deployment.manifest
+            or commissions[0].readiness != commissions[1].readiness
+            or type(self.worker) is not B300MainnetWorker
+            or self.worker.service.manifest != self.commission.deployment.manifest
+            or self.worker.readiness != self.commission.readiness
+            or self.worker._remote_qualification_lane != "primary"
+        ):
+            raise B300QualificationCommissionError(
+                "commissioned service does not own both qualification orientations"
+            )
+
+    def adapter_for(self, publication, continuation_store, screen_lane: str):
+        with self._lock:
+            if self._closed:
+                raise B300QualificationCommissionError(
+                    "commissioned qualification service is closed"
+                )
+            if screen_lane == "primary":
+                commission, worker = self.commission, self.worker
+            elif screen_lane == "reproduction":
+                commission = self.reproduction_commission
+                worker = self._reproduction_worker
+                if worker is None:
+                    worker = B300MainnetWorker(
+                        commission.deployment.manifest,
+                        commission.deployment.authorities,
+                        commission.readiness,
+                    )
+                    self._reproduction_worker = worker
+            else:
+                raise B300QualificationCommissionError(
+                    "qualification stage must be primary or reproduction"
+                )
+            return commission.adapter_for(
+                publication,
+                continuation_store,
+                worker=worker,
+            )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        failure: BaseException | None = None
+        closers = (
+            self.worker.close,
+            *(
+                ()
+                if self._reproduction_worker is None
+                else (self._reproduction_worker.close,)
+            ),
+            self._screen_composition.close,
+            *(executor.manager.close for executor in self._executors),
+        )
+        for closer in closers:
+            try:
+                closer()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
 
 
 def derive_b300_screen_qualification(
@@ -115,16 +215,15 @@ def derive_b300_screen_qualification(
             },
         )
 
-    candidate_config = backend_config_factory("b300-qualification-candidate")
-    baseline_config = backend_config_factory("b300-qualification-resident")
+    lane_config = backend_config_factory(QUALIFICATION_EXECUTOR_ID)
     declared = B300DeclaredQualificationAuthorities(
         qualification_policy_digest=qualification_policy_digest,
         qualification_builder_digest=qualification_builder_digest,
         candidate_executor_policy_digest=b300_executor_role_policy_digest(
-            candidate_config, role="candidate"
+            lane_config, role="candidate"
         ),
         resident_baseline_executor_policy_digest=b300_executor_role_policy_digest(
-            baseline_config, role="resident_baseline"
+            lane_config, role="resident_baseline"
         ),
         lane_pair=lane_pair,
         entropy_provider_digest=declared_qualification_entropy_digest(
@@ -138,5 +237,7 @@ def derive_b300_screen_qualification(
 
 __all__ = [
     "B300ScreenQualificationBridgeError",
+    "CommissionedB300QualificationService",
+    "QUALIFICATION_EXECUTOR_ID",
     "derive_b300_screen_qualification",
 ]

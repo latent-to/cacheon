@@ -1,45 +1,15 @@
-"""Tracked qualification commissioning for the one existing pod service.
-
-``B300RemoteQualificationCommission`` (the adapter's sealed authority bundle)
-previously had no production constructor: the served adapter always started
-screen-only and refused qualification as a typed pre-resident failure.  This
-module is the tracked construction path.  It replays the same sealed screen
-deployment artifacts the commissioned screen worker replays, reads one sealed
-``qualification`` commission block from the same authority config, composes
-the full :class:`B300QualificationConstructionAuthority` in tracked code, and
-returns one commission alongside the same screen worker -- one process, one
-resident model lifetime, screen and qualification in the same service.
-
-No request field, environment variable, or file-existence probe selects any
-of this.  Everything digest-bearing comes from the sealed authority config,
-the sealed prompt identity, the sealed calibration package, and the exact
-target catalog.  The only in-process inputs are the validator-private
-capabilities (selection secret loader, entropy provider, hidden judge, source
-resolver, focused-graph verifier) whose reviewed identities must equal the
-digests sealed in the commission block; any drift fails closed before the
-adapter accepts a single request.
-
-Identity note: the registered factory's own ``builder_source_digest`` binds
-the frozen calibration and reference manifests, which embed the service
-digest.  Declaring that self-referential identity inside the manifest would
-be circular, so the sealed block carries one *reviewed* builder source
-identity and the construction's profile rows are re-bound to it.  The
-resolver callables remain exactly the registered factory's.
-"""
+"""Tracked primary/reproduction qualification commissioning for one pod."""
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
 import cacheon.eval.b300_screen_deployment as screen_deployment
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
-from cacheon.engine_tree import (
-    materialize_engine_tree,
-    reopen_materialized_engine_tree,
-)
+from cacheon.engine_tree import materialize_engine_tree, reopen_materialized_engine_tree
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
@@ -58,24 +28,31 @@ from cacheon.eval.b300_resident_pair_factory import (
     B300ResidentStockLanePlan,
 )
 from cacheon.eval.b300_sealed_qualification_commission import (
+    B300QualificationCapabilities,
+    B300QualificationCommissionError,
+    CALIBRATION_PACKAGE_SCHEMA,
     QUALIFICATION_DEADLINE_MAXIMUM_SECONDS,
     QUALIFICATION_EVIDENCE_POLICY_DIGEST,
+    QUALIFICATION_STAGES,
     declared_qualification_deadline_digest,
     declared_qualification_entropy_digest,
+    parse_sealed_calibration_package,
     sealed_qualification_profile_rows,
 )
-from cacheon.eval.b300_remote_worker_adapter import (
-    B300RemoteQualificationCommission,
+from cacheon.eval.b300_screen_qualification_bridge import (
+    QUALIFICATION_EXECUTOR_ID,
+    CommissionedB300QualificationService,
 )
+from cacheon.eval.b300_remote_worker_adapter import B300RemoteQualificationCommission
 from cacheon.eval.calibration import (
     CalibrationContext,
     CalibrationEvidenceSet,
-    CalibrationObservation,
+    CalibrationManifest,
     CalibrationThresholdPolicy,
-    derive_calibration_manifest,
     publish_calibration_evidence,
 )
 from cacheon.eval.crossover_runtime import ResidentArmPlan, ResidentSpeedPolicy
+from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     LogicalHardwareSpec,
@@ -98,76 +75,11 @@ from cacheon.eval.registered_resident_count_quality import (
     RegisteredResidentCountQualityError,
 )
 from cacheon.eval.scoring import marginal_workload_digest
-from cacheon.stack_manifest import (
-    EvaluationStackContext,
-    EvaluationStackManifest,
-)
+from cacheon.stack_manifest import EvaluationStackContext, EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
 
 
-CALIBRATION_PACKAGE_SCHEMA = "cacheon-private-b300-calibration-package-v1"
-
-_STAGES = frozenset({"primary", "reproduction"})
-
-
-class B300QualificationCommissionError(RuntimeError):
-    """Sealed qualification commissioning failed closed."""
-
-
-@dataclass(frozen=True)
-class B300QualificationCapabilities:
-    """Validator-private callables plus their reviewed sealed identities.
-
-    The callables never enter any digest.  Each reviewed digest must equal the
-    matching field of the sealed commission block; the composer refuses any
-    substitution.  ``hidden_judge`` must carry the exact sealed
-    :class:`HiddenJudgeBinding` from the sealed prompt identity.
-    """
-
-    secret_loader: Callable[[str], bytes]
-    entropy_provider: object
-    hidden_judge: object
-    source_resolver: object
-    source_resolver_digest: str
-    graph_facts_builder: object
-    graph_facts_builder_digest: str
-    resident_count_quality_builder: object
-    resident_count_quality_builder_digest: str
-
-    def __post_init__(self) -> None:
-        if (
-            not callable(self.secret_loader)
-            or not callable(self.entropy_provider)
-            or not (
-                callable(self.hidden_judge)
-                or callable(getattr(self.hidden_judge, "bind_prompt_plan", None))
-            )
-            or not callable(self.graph_facts_builder)
-            or not callable(self.resident_count_quality_builder)
-            or not callable(getattr(self.source_resolver, "resolve_proposal", None))
-            or not callable(getattr(self.source_resolver, "resolve_integrated", None))
-        ):
-            raise B300QualificationCommissionError(
-                "qualification capabilities are not callable"
-            )
-        if type(getattr(self.hidden_judge, "binding", None)) is not HiddenJudgeBinding:
-            raise B300QualificationCommissionError(
-                "hidden judge capability lacks an exact sealed binding"
-            )
-        for field in (
-            "source_resolver_digest",
-            "graph_facts_builder_digest",
-            "resident_count_quality_builder_digest",
-        ):
-            value = getattr(self, field)
-            if (
-                type(value) is not str
-                or len(value) != 64
-                or any(char not in "0123456789abcdef" for char in value)
-            ):
-                raise B300QualificationCommissionError(
-                    f"capability {field} is not one SHA-256 identity"
-                )
+_STAGES = QUALIFICATION_STAGES
 
 
 def _bind_hidden_judge(
@@ -179,8 +91,6 @@ def _bind_hidden_judge(
     workload_digest: str,
     hidden_tasks_per_prompt: int,
 ) -> object:
-    """Bind a deferred judge authority to the exact composed prompt plan."""
-
     judge = capability
     binder = getattr(capability, "bind_prompt_plan", None)
     if callable(binder):
@@ -205,70 +115,9 @@ def _bind_hidden_judge(
     return judge
 
 
-@dataclass
-class CommissionedB300QualificationService:
-    """One full-authority worker and commission from one replay."""
-
-    worker: B300MainnetWorker
-    commission: B300RemoteQualificationCommission
-    _executors: tuple[OCIEngineExecutor, ...]
-    _screen_composition: object
-    _closed: bool = False
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.worker) is not B300MainnetWorker
-            or self.worker.service.manifest != self.commission.deployment.manifest
-            or self.worker.readiness != self.commission.readiness
-            or self.worker._remote_qualification_lane
-            != self.commission.deployment.screen_lane
-            or not callable(getattr(self._screen_composition, "close", None))
-            or type(self._executors) is not tuple
-            or len(self._executors) != 2
-            or any(type(row) is not OCIEngineExecutor for row in self._executors)
-            or len({id(row.manager) for row in self._executors})
-            != len(self._executors)
-        ):
-            raise B300QualificationCommissionError(
-                "commissioned service does not own one full qualification worker"
-            )
-
-    def adapter_for(self, publication, continuation_store):
-        if self._closed:
-            raise B300QualificationCommissionError(
-                "commissioned qualification service is closed"
-            )
-        return self.commission.adapter_for(
-            publication,
-            continuation_store,
-            worker=self.worker,
-        )
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        failure: BaseException | None = None
-        closers = (
-            self.worker.close,
-            self._screen_composition.close,
-            *(executor.manager.close for executor in self._executors),
-        )
-        for closer in closers:
-            try:
-                closer()
-            except BaseException as exc:
-                if failure is None:
-                    failure = exc
-        if failure is not None:
-            raise failure
-
-
 def _tracked_deadline_provider(
     clock: Callable[[], float] = time.monotonic,
 ) -> Callable[[object], float]:
-    """Lease-bounded monotonic deadline; the sealed declared policy."""
-
     def deadline(_cohort: object) -> float:
         return float(clock()) + float(QUALIFICATION_DEADLINE_MAXIMUM_SECONDS)
 
@@ -278,8 +127,6 @@ def _tracked_deadline_provider(
 def _require_complete_factory_profiles(
     profiles: object,
 ) -> dict[str, B300RegisteredProfileAuthority]:
-    """Reject partial/stale factory registries before any candidate can run."""
-
     if (
         type(profiles) is not tuple
         or any(type(row) is not B300RegisteredProfileAuthority for row in profiles)
@@ -302,8 +149,6 @@ def _resident_plan(
     binding: TrustedLaunchBinding,
     workload: SessionExecutionPlan,
 ) -> ResidentSessionPlan:
-    """Bound one lifetime for worst-case 5-read speed plus one count request."""
-
     return ResidentSessionPlan(
         launch.digest,
         workload.expected_engine_config_digest,
@@ -319,7 +164,13 @@ def _resident_plan(
 
 def _sealed_calibration(
     inputs: "screen_deployment._CommissionedInputs",
-) -> tuple[CalibrationThresholdPolicy, tuple[CalibrationObservation, ...]]:
+    context: CalibrationContext,
+    stage: str,
+) -> tuple[
+    CalibrationThresholdPolicy,
+    CalibrationManifest,
+    CalibrationEvidenceSet,
+]:
     reference = inputs.authority_refs["calibration_package"]
     try:
         path, value, sha = screen_deployment._stable_json(
@@ -333,58 +184,47 @@ def _sealed_calibration(
         raise B300QualificationCommissionError(
             "sealed calibration package differs from its deployment reference"
         )
-    if (
-        type(value) is not dict
-        or set(value) != {"observations", "schema", "threshold_policy"}
-        or value.get("schema") != CALIBRATION_PACKAGE_SCHEMA
-        or type(value.get("observations")) is not list
-    ):
-        raise B300QualificationCommissionError(
-            "sealed calibration package is not one closed frozen authority"
-        )
-    try:
-        threshold = CalibrationThresholdPolicy.from_dict(value["threshold_policy"])
-        observations = tuple(
-            CalibrationObservation.from_dict(row) for row in value["observations"]
-        )
-    except (TypeError, ValueError) as exc:
-        raise B300QualificationCommissionError(
-            f"sealed calibration package is invalid: {exc}"
-        ) from None
-    return threshold, observations
+    return parse_sealed_calibration_package(value, context, stage)
 
 
-def _lane_gpus(
+def _lane_policies(
     inputs: "screen_deployment._CommissionedInputs",
-) -> tuple[tuple, tuple]:
-    """(baseline lane, candidate lane) — baseline shares the screen lane."""
+) -> tuple[DeviceStatePolicy, DeviceStatePolicy]:
+    by_id = {gpu.physical_id: gpu for gpu in inputs.qualification_gpus}
+    policies = []
+    for lane in (
+        inputs.qualification_lane_pair.lane_a,
+        inputs.qualification_lane_pair.lane_b,
+    ):
+        try:
+            gpus = tuple(by_id[physical_id] for physical_id in lane.physical_gpu_ids)
+        except KeyError:
+            raise B300QualificationCommissionError(
+                "sealed qualification lane is absent from READY inventory"
+            ) from None
+        policy = screen_deployment._device_policy(gpus)
+        if (
+            policy.policy_sha256 != lane.device_policy_digest
+            or policy.configuration_sha256 != lane.device_configuration_digest
+        ):
+            raise B300QualificationCommissionError(
+                "READY device policy differs from the sealed qualification lane"
+            )
+        policies.append(policy)
+    return policies[0], policies[1]
 
-    selected = {gpu.physical_id for gpu in inputs.gpus}
-    complement = tuple(
-        sorted(
-            (
-                gpu
-                for gpu in inputs.qualification_gpus
-                if gpu.physical_id not in selected
-            ),
-            key=lambda gpu: gpu.physical_id,
-        )
-    )
-    if len(complement) != len(inputs.gpus):
-        raise B300QualificationCommissionError(
-            "commissioned lanes do not form one disjoint TP4 pair"
-        )
-    return inputs.gpus, complement
 
-
-def compose_commissioned_qualification(
+def compose_commissioned_qualifications(
     inputs: "screen_deployment._CommissionedInputs",
     composition: "screen_deployment._Composition",
     readiness: WorkerReadiness,
     capabilities: B300QualificationCapabilities,
-) -> tuple[B300RemoteQualificationCommission, tuple[OCIEngineExecutor, ...]]:
-    """Compose one exact qualification commission from replayed sealed inputs."""
-
+    *,
+    calibration_loader: Callable[
+        [object, CalibrationContext, str],
+        tuple[CalibrationThresholdPolicy, CalibrationManifest, CalibrationEvidenceSet],
+    ] = _sealed_calibration,
+) -> tuple[tuple[B300RemoteQualificationCommission, ...], tuple[OCIEngineExecutor, ...]]:
     if type(capabilities) is not B300QualificationCapabilities:
         raise B300QualificationCommissionError(
             "qualification capabilities are not exactly typed"
@@ -415,8 +255,7 @@ def compose_commissioned_qualification(
         raise B300QualificationCommissionError(
             "capability identities differ from the sealed commission block"
         )
-    screen_lane = inputs.authority.get("authority_role")
-    if screen_lane not in _STAGES:
+    if inputs.authority.get("authority_role") not in _STAGES:
         raise B300QualificationCommissionError(
             "sealed authority role is not one retained qualification stage"
         )
@@ -444,53 +283,52 @@ def compose_commissioned_qualification(
             f"sealed qualification policy failed to seal: {exc}"
         ) from None
 
-    _baseline_gpus, candidate_gpus = _lane_gpus(inputs)
-    baseline_policy = inputs.device_policy
-    candidate_policy = screen_deployment._device_policy(candidate_gpus)
-    lane_pair = inputs.qualification_lane_pair
-    if {baseline_policy.policy_sha256, candidate_policy.policy_sha256} != {
-        lane_pair.lane_a.device_policy_digest,
-        lane_pair.lane_b.device_policy_digest,
-    }:
-        raise B300QualificationCommissionError(
-            "commissioned lanes differ from the sealed qualification lane pair"
-        )
-    candidate_executor = screen_deployment._build_executor(
-        inputs.root,
+    lane_a_policy, lane_b_policy = _lane_policies(inputs)
+    lane_a_executor = screen_deployment._build_executor(
+        inputs.root / "qualification-lane-a",
         inputs.preflight,
-        candidate_policy,
-        executor_id="b300-qualification-candidate",
+        lane_a_policy,
+        executor_id=QUALIFICATION_EXECUTOR_ID,
     )
-    baseline_executor = screen_deployment._build_executor(
-        inputs.root,
+    lane_b_executor = screen_deployment._build_executor(
+        inputs.root / "qualification-lane-b",
         inputs.preflight,
-        baseline_policy,
-        executor_id="b300-qualification-resident",
+        lane_b_policy,
+        executor_id=QUALIFICATION_EXECUTOR_ID,
     )
-    executors = (candidate_executor, baseline_executor)
+    executors = (lane_a_executor, lane_b_executor)
     try:
-        commission = _compose_locked(
-            inputs,
-            manifest,
-            composition,
-            readiness,
-            capabilities,
-            block,
-            policy,
-            catalog,
-            hidden_binding,
-            candidate_executor,
-            baseline_executor,
-            screen_lane,
-            declared,
-            session_block,
-            speed_block,
+        commissions = tuple(
+            _compose_locked(
+                inputs,
+                manifest,
+                composition,
+                readiness,
+                capabilities,
+                block,
+                policy,
+                catalog,
+                hidden_binding,
+                candidate_executor,
+                baseline_executor,
+                screen_lane,
+                declared,
+                session_block,
+                speed_block,
+                calibration_loader,
+            )
+            for screen_lane, candidate_executor, baseline_executor in (
+                ("primary", lane_a_executor, lane_b_executor),
+                ("reproduction", lane_b_executor, lane_a_executor),
+            )
         )
     except BaseException:
         for executor in executors:
             executor.manager.close()
         raise
-    return commission, executors
+    if len(commissions) != 2:  # pragma: no cover - fixed tuple invariant
+        raise AssertionError("commissioned stage set changed")
+    return (commissions[0], commissions[1]), executors
 
 
 def _compose_locked(
@@ -509,12 +347,10 @@ def _compose_locked(
     declared,
     session_block,
     speed_block,
+    calibration_loader,
 ) -> B300RemoteQualificationCommission:
-    # Stock incumbent identity: mainnet cold start has no accepted incumbent
-    # contribution, so B and pristine T are the same sealed empty stack.  The
-    # engine tree location matches the resident screen factory's stock tree so
-    # both lifetimes share one immutable materialization.
     snapshot = catalog.snapshot()
+    lane_pair = inputs.qualification_lane_pair
     context = EvaluationStackContext(
         runtime_digest=inputs.runtime.runtime_digest,
         base_engine_digest=inputs.runtime.base_engine_digest,
@@ -578,12 +414,12 @@ def _compose_locked(
         tp_size=screen_deployment.TP_SIZE,
         ep_size=1,
         dp_size=1,
-        device_policy_digest=baseline_executor.device_policy.policy_sha256,
+        device_policy_digest=candidate_executor.device_policy.policy_sha256,
     )
     baseline_physical = PhysicalHardwareBinding(
         physical_gpu_ids=tuple(
             str(gpu.physical_id)
-            for gpu in baseline_executor.device_policy.expected_gpus
+            for gpu in candidate_executor.device_policy.expected_gpus
         ),
         architecture=screen_deployment.ARCHITECTURE,
         topology_class=inputs.runtime.topology_class,
@@ -591,12 +427,12 @@ def _compose_locked(
         tp_size=screen_deployment.TP_SIZE,
         ep_size=1,
         dp_size=1,
-        device_policy_digest=baseline_executor.device_policy.policy_sha256,
+        device_policy_digest=candidate_executor.device_policy.policy_sha256,
     )
-    native = screen_deployment._native_build(
+    stock_native = screen_deployment._native_build(
         tree.tree_digest,
         inputs.preflight,
-        baseline_executor.config.prebuild.policy,
+        candidate_executor.config.prebuild.policy,
     )
     incumbent_launch = EngineLaunchSpec(
         runtime_digest=inputs.runtime.runtime_digest,
@@ -614,18 +450,18 @@ def _compose_locked(
         validator_overlay_digest=inputs.runtime.validator_overlay_digest,
         engine_config_digest=engine_config.digest,
         seccomp_policy_digest=screen_deployment._file_sha256(
-            baseline_executor.config.prebuild.seccomp_profile
+            candidate_executor.config.prebuild.seccomp_profile
         ),
         resource_policy_digest=(
-            baseline_executor.config.prebuild.policy.resource_policy_digest
+            candidate_executor.config.prebuild.policy.resource_policy_digest
         ),
-        native_build_spec_digest=native.digest,
+        native_build_spec_digest=stock_native.digest,
         hardware=baseline_hardware,
     )
     trusted_baseline = TrustedLaunchBinding(
         materialized_tree_root=tree.root,
         controller_distribution_digest=inputs.controller_distribution_digest,
-        native_build_spec=native,
+        native_build_spec=stock_native,
         runtime_preflight_receipt=inputs.preflight,
         physical_hardware=baseline_physical,
     )
@@ -683,22 +519,61 @@ def _compose_locked(
         policy.verification_policy_digest,
         reference.controller_distribution_digest,
     )
-    threshold, observations = _sealed_calibration(inputs)
-    if threshold.context != calibration_context:
-        raise B300QualificationCommissionError(
-            "sealed calibration context differs from the commissioned reference"
-        )
+    threshold, calibration_manifest, calibration_evidence = calibration_loader(
+        inputs, calibration_context, screen_lane
+    )
     evidence_root = _private_root(inputs.root / "qualification-evidence")
     materialization_root = _private_root(inputs.root / "qualification-candidates")
-    calibration_manifest = derive_calibration_manifest(threshold, observations)
     calibration_ref = publish_calibration_evidence(
         evidence_root,
-        CalibrationEvidenceSet.create(threshold, observations),
+        calibration_evidence,
+    )
+    resident_hardware = replace(
+        baseline_hardware,
+        device_policy_digest=baseline_executor.device_policy.policy_sha256,
+    )
+    resident_physical = replace(
+        baseline_physical,
+        physical_gpu_ids=tuple(
+            str(gpu.physical_id)
+            for gpu in baseline_executor.device_policy.expected_gpus
+        ),
+        device_policy_digest=baseline_executor.device_policy.policy_sha256,
+    )
+    resident_native = screen_deployment._native_build(
+        tree.tree_digest,
+        inputs.preflight,
+        baseline_executor.config.prebuild.policy,
+    )
+    resident_launch = replace(
+        incumbent_launch,
+        hardware=resident_hardware,
+        native_build_spec_digest=resident_native.digest,
+        resource_policy_digest=(
+            baseline_executor.config.prebuild.policy.resource_policy_digest
+        ),
+        seccomp_policy_digest=screen_deployment._file_sha256(
+            baseline_executor.config.prebuild.seccomp_profile
+        ),
+    )
+    resident_binding = TrustedLaunchBinding(
+        materialized_tree_root=tree.root,
+        controller_distribution_digest=inputs.controller_distribution_digest,
+        native_build_spec=resident_native,
+        runtime_preflight_receipt=inputs.preflight,
+        physical_hardware=resident_physical,
+    )
+    resident_session_plan = replace(
+        baseline_session_plan,
+        launch_digest=resident_launch.digest,
+        expected_preflight=expected_runtime_preflight(
+            resident_launch, inputs.preflight
+        ),
     )
     resident_baseline_arm = ResidentArmPlan(
-        incumbent_launch,
-        trusted_baseline,
-        baseline_session_plan,
+        resident_launch,
+        resident_binding,
+        resident_session_plan,
         baseline_executor.manager.namespace_digest,
         baseline_executor.config.runtime.digest,
         baseline_executor.device_policy.configuration_sha256,
@@ -714,20 +589,6 @@ def _compose_locked(
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),
     )
 
-    candidate_physical = PhysicalHardwareBinding(
-        physical_gpu_ids=tuple(
-            str(gpu.physical_id)
-            for gpu in candidate_executor.device_policy.expected_gpus
-        ),
-        architecture=screen_deployment.ARCHITECTURE,
-        topology_class=inputs.runtime.topology_class,
-        topology_digest=inputs.topology_digest,
-        tp_size=screen_deployment.TP_SIZE,
-        ep_size=1,
-        dp_size=1,
-        device_policy_digest=candidate_executor.device_policy.policy_sha256,
-    )
-
     def bind_candidate(candidate_tree) -> TrustedLaunchBinding:
         candidate_native = screen_deployment._native_build(
             candidate_tree.tree_digest,
@@ -739,52 +600,30 @@ def _compose_locked(
             controller_distribution_digest=inputs.controller_distribution_digest,
             native_build_spec=candidate_native,
             runtime_preflight_receipt=inputs.preflight,
-            physical_hardware=candidate_physical,
+            physical_hardware=baseline_physical,
         )
 
-    candidate_stock_binding = bind_candidate(tree)
-    candidate_stock_launch = replace(
-        incumbent_launch,
-        hardware=replace(
-            baseline_hardware,
-            device_policy_digest=candidate_executor.device_policy.policy_sha256,
-        ),
-        native_build_spec_digest=candidate_stock_binding.native_build_spec.digest,
-        resource_policy_digest=(
-            candidate_executor.config.prebuild.policy.resource_policy_digest
-        ),
-        seccomp_policy_digest=screen_deployment._file_sha256(
-            candidate_executor.config.prebuild.seccomp_profile
-        ),
-    )
-    candidate_stock_workload = replace(
-        baseline_session_plan,
-        launch_digest=candidate_stock_launch.digest,
-        expected_preflight=expected_runtime_preflight(
-            candidate_stock_launch, inputs.preflight
-        ),
-    )
     orientation = lane_pair.orientation(screen_lane)
     baseline_lane_plan = B300ResidentStockLanePlan(
         orientation.resident_baseline,
         tree,
-        incumbent_launch,
-        trusted_baseline,
-        _resident_plan(incumbent_launch, trusted_baseline, baseline_session_plan),
-        baseline_session_plan,
+        resident_launch,
+        resident_binding,
+        _resident_plan(resident_launch, resident_binding, resident_session_plan),
+        resident_session_plan,
         baseline_executor,
     )
     candidate_lane_plan = B300ResidentStockLanePlan(
         orientation.candidate,
         tree,
-        candidate_stock_launch,
-        candidate_stock_binding,
+        incumbent_launch,
+        incumbent_binding.launch_binding,
         _resident_plan(
-            candidate_stock_launch,
-            candidate_stock_binding,
-            candidate_stock_workload,
+            incumbent_launch,
+            incumbent_binding.launch_binding,
+            baseline_session_plan,
         ),
-        candidate_stock_workload,
+        baseline_session_plan,
         candidate_executor,
     )
     resident_pair_factory = B300CommissionedResidentPairFactory(
@@ -793,7 +632,9 @@ def _compose_locked(
         lane_pair=lane_pair,
         lane_plans=(baseline_lane_plan, candidate_lane_plan),
         model_mount=model_mount,
-        swap_intake_root=_private_root(inputs.root / "resident-intake"),
+        swap_intake_root=_private_root(
+            inputs.root / "resident-intake" / screen_lane
+        ),
     )
     try:
         count_context = B300ResidentCountQualityBuilderContext(
@@ -865,10 +706,6 @@ def _compose_locked(
             f"registered qualification factory failed to compose: {exc}"
         ) from None
 
-    # Re-bind the profile rows to the sealed reviewed builder identity.  The
-    # factory's own self-derived identity stays internal (it embeds the frozen
-    # calibration/reference manifests, which embed the service digest and can
-    # therefore never appear inside the manifest's declared digests).
     factory_rows = _require_complete_factory_profiles(factory.profiles)
     profiles = tuple(
         B300RegisteredProfileAuthority(
@@ -935,8 +772,6 @@ def build_commissioned_b300_qualification_service(
     ready_receipt: dict[str, object],
     capabilities: B300QualificationCapabilities,
 ) -> CommissionedB300QualificationService:
-    """Replay the sealed deployment once into screen worker plus commission."""
-
     inputs, composition, readiness = (
         screen_deployment.replay_commissioned_screen_composition(
             registration, ready_receipt
@@ -945,9 +780,10 @@ def build_commissioned_b300_qualification_service(
     executors: tuple[OCIEngineExecutor, ...] = ()
     worker: B300MainnetWorker | None = None
     try:
-        commission, executors = compose_commissioned_qualification(
+        commissions, executors = compose_commissioned_qualifications(
             inputs, composition, readiness, capabilities
         )
+        commission, reproduction_commission = commissions
         worker = B300MainnetWorker(
             commission.deployment.manifest,
             commission.deployment.authorities,
@@ -956,6 +792,7 @@ def build_commissioned_b300_qualification_service(
         service = CommissionedB300QualificationService(
             worker,
             commission,
+            reproduction_commission,
             executors,
             composition,
         )
@@ -980,5 +817,5 @@ __all__ = [
     "CALIBRATION_PACKAGE_SCHEMA",
     "CommissionedB300QualificationService",
     "build_commissioned_b300_qualification_service",
-    "compose_commissioned_qualification",
+    "compose_commissioned_qualifications",
 ]

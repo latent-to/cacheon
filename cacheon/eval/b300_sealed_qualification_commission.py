@@ -15,6 +15,9 @@ construction authority; any drift fails closed.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Callable
+
 from cacheon.eval.b300_qualification_deployment import (
     CONSTRUCTION_SCHEMA as QUALIFICATION_CONSTRUCTION_SCHEMA,
     POLICY_SCHEMA as QUALIFICATION_POLICY_SCHEMA,
@@ -27,12 +30,24 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     registered_b300_member_contract_projection,
     registered_b300_profile_resolver_digest,
 )
+from cacheon.eval.calibration import (
+    CalibrationContext,
+    CalibrationEvidenceSet,
+    CalibrationError,
+    CalibrationManifest,
+    CalibrationThresholdPolicy,
+    decimal_value,
+    derive_calibration_manifest,
+)
+from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import TargetCatalog
 
 
 QUALIFICATION_COMMISSION_SCHEMA = "cacheon-private-b300-qualification-commission-v3"
 QUALIFICATION_DEADLINE_MAXIMUM_SECONDS = 14_400
+CALIBRATION_PACKAGE_SCHEMA = "cacheon-private-b300-calibration-pair-v1"
+QUALIFICATION_STAGES = frozenset({"primary", "reproduction"})
 
 QUALIFICATION_EVIDENCE_POLICY_DIGEST = canonical_digest(
     "cacheon.eval.b300-qualification-evidence-policy.v1",
@@ -82,6 +97,186 @@ _COMMISSION_SPEED_FIELDS = frozenset(
         "min_windows",
     }
 )
+_CALIBRATION_RECORD_FIELDS = frozenset(
+    {
+        "evidence",
+        "manifest",
+        "measurement_authority",
+        "threshold_policy",
+    }
+)
+_CALIBRATION_MEASUREMENT_FIELDS = frozenset(
+    {
+        "context_digest",
+        "logical_hardware_digest",
+        "projection_sha256",
+        "raw_quality_artifact_sha256",
+        "raw_quality_binding_digest",
+        "report_digest",
+        "source_attempt_digest",
+        "source_attempt_ref_sha256",
+        "transform",
+    }
+)
+_CALIBRATION_TRANSFORMS = frozenset(
+    {
+        "validator-owned-hidden-task-fail.v1",
+        "validator-owned-teacher-nll-fail.v1",
+    }
+)
+
+
+class B300QualificationCommissionError(RuntimeError):
+    """Sealed qualification commissioning failed closed."""
+
+
+@dataclass(frozen=True)
+class B300QualificationCapabilities:
+    """Validator-private callables plus their sealed reviewed identities."""
+
+    secret_loader: Callable[[str], bytes]
+    entropy_provider: object
+    hidden_judge: object
+    source_resolver: object
+    source_resolver_digest: str
+    graph_facts_builder: object
+    graph_facts_builder_digest: str
+    resident_count_quality_builder: object
+    resident_count_quality_builder_digest: str
+
+    def __post_init__(self) -> None:
+        if (
+            not callable(self.secret_loader)
+            or not callable(self.entropy_provider)
+            or not (
+                callable(self.hidden_judge)
+                or callable(getattr(self.hidden_judge, "bind_prompt_plan", None))
+            )
+            or not callable(self.graph_facts_builder)
+            or not callable(self.resident_count_quality_builder)
+            or not callable(getattr(self.source_resolver, "resolve_proposal", None))
+            or not callable(getattr(self.source_resolver, "resolve_integrated", None))
+        ):
+            raise B300QualificationCommissionError(
+                "qualification capabilities are not callable"
+            )
+        if type(getattr(self.hidden_judge, "binding", None)) is not HiddenJudgeBinding:
+            raise B300QualificationCommissionError(
+                "hidden judge capability lacks an exact sealed binding"
+            )
+        for field in (
+            "source_resolver_digest",
+            "graph_facts_builder_digest",
+            "resident_count_quality_builder_digest",
+        ):
+            value = getattr(self, field)
+            if (
+                type(value) is not str
+                or len(value) != 64
+                or any(char not in "0123456789abcdef" for char in value)
+            ):
+                raise B300QualificationCommissionError(
+                    f"capability {field} is not one SHA-256 identity"
+                )
+
+
+def parse_sealed_calibration_package(
+    value: object,
+    context: CalibrationContext,
+    stage: str,
+) -> tuple[
+    CalibrationThresholdPolicy,
+    CalibrationManifest,
+    CalibrationEvidenceSet,
+]:
+    """Reopen one closed two-orientation calibration package."""
+
+    stages = value.get("stages") if type(value) is dict else None
+    if (
+        type(value) is not dict
+        or set(value) != {"schema", "stages"}
+        or value.get("schema") != CALIBRATION_PACKAGE_SCHEMA
+        or type(stages) is not dict
+        or set(stages) != QUALIFICATION_STAGES
+        or any(
+            type(stages[name]) is not dict
+            or set(stages[name]) != _CALIBRATION_RECORD_FIELDS
+            for name in QUALIFICATION_STAGES
+        )
+        or type(context) is not CalibrationContext
+        or stage not in QUALIFICATION_STAGES
+    ):
+        raise B300QualificationCommissionError(
+            "sealed calibration package is not one closed frozen authority"
+        )
+    try:
+        parsed = {}
+        templates = {}
+        source_digests = {}
+        for name in QUALIFICATION_STAGES:
+            record = stages[name]
+            threshold = CalibrationThresholdPolicy.from_dict(
+                record["threshold_policy"]
+            )
+            manifest = CalibrationManifest.from_dict(record["manifest"])
+            evidence = CalibrationEvidenceSet.from_dict(record["evidence"])
+            source = record["measurement_authority"]
+            if (
+                threshold.status != "frozen"
+                or type(source) is not dict
+                or set(source) != _CALIBRATION_MEASUREMENT_FIELDS
+                or source["context_digest"] != threshold.context.digest
+                or source["logical_hardware_digest"]
+                != threshold.context.logical_hardware_digest
+                or source["transform"] not in _CALIBRATION_TRANSFORMS
+            ):
+                raise ValueError(
+                    f"{name} calibration measurement authority is not exact"
+                )
+            for field in _CALIBRATION_MEASUREMENT_FIELDS - {"transform"}:
+                _digest(source[field], f"{name} calibration {field}")
+            derived = derive_calibration_manifest(
+                threshold, evidence.observations
+            )
+            if (
+                evidence.threshold_policy_digest != threshold.digest
+                or evidence.configured_manifest_digest != manifest.digest
+                or derived != manifest
+                or manifest.context != threshold.context
+            ):
+                raise ValueError(f"{name} calibration evidence was relabeled")
+            template = threshold.to_dict()
+            del template["context"]
+            parsed[name] = (threshold, manifest, evidence)
+            templates[name] = template
+            source_digests[name] = canonical_digest(
+                "cacheon.private.b300-calibration-measurement-authority.v1",
+                source,
+            )
+        primary = parsed["primary"]
+        reproduction = parsed["reproduction"]
+        if (
+            templates["primary"] != templates["reproduction"]
+            or primary[0].context == reproduction[0].context
+            or primary[1].raw_evidence_digest
+            == reproduction[1].raw_evidence_digest
+            or source_digests["primary"] == source_digests["reproduction"]
+        ):
+            raise ValueError("lane calibration authorities are not independent")
+        if parsed[stage][0].context != context:
+            raise ValueError(
+                f"{stage} calibration context differs from the commissioned lane"
+            )
+    except (
+        B300RegisteredQualificationError,
+        CalibrationError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise B300QualificationCommissionError(
+            f"sealed calibration package is invalid: {exc}"
+        ) from None
+    return parsed[stage]
 
 
 def _commission_int(value: object, field: str, *, minimum: int) -> int:
@@ -92,17 +287,18 @@ def _commission_int(value: object, field: str, *, minimum: int) -> int:
     return value
 
 
-def _commission_number(value: object, field: str) -> float:
-    if type(value) is bool or type(value) not in (int, float):
+def _commission_decimal(value: object, field: str) -> str:
+    if type(value) is not str:
         raise B300RegisteredQualificationError(
-            f"sealed qualification {field} must be a finite number"
+            f"sealed qualification {field} must be a canonical decimal string"
         )
-    number = float(value)
-    if number != number or number in (float("inf"), float("-inf")) or number < 0:
+    try:
+        decimal_value(value)
+    except CalibrationError:
         raise B300RegisteredQualificationError(
-            f"sealed qualification {field} must be a finite non-negative number"
-        )
-    return number
+            f"sealed qualification {field} must be a canonical decimal string"
+        ) from None
+    return value
 
 
 def sealed_qualification_commission(value: object) -> dict[str, object]:
@@ -151,7 +347,7 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         )
     _commission_int(session.get("warmup_count"), "warmup_count", minimum=0)
     _commission_int(session.get("conditioning_count"), "conditioning_count", minimum=0)
-    _commission_number(session.get("temperature"), "temperature")
+    _commission_decimal(session.get("temperature"), "temperature")
     speed = value.get("resident_speed")
     if type(speed) is not dict or set(speed) != _COMMISSION_SPEED_FIELDS:
         raise B300RegisteredQualificationError(
@@ -164,8 +360,8 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         minimum=1,
     )
     _commission_int(speed.get("min_windows"), "min_windows", minimum=0)
-    _commission_number(speed.get("max_window_scatter"), "max_window_scatter")
-    _commission_number(
+    _commission_decimal(speed.get("max_window_scatter"), "max_window_scatter")
+    _commission_decimal(
         speed.get("max_conditioning_slowdown"), "max_conditioning_slowdown"
     )
     return value
@@ -309,15 +505,20 @@ def predicted_qualification_policy_digest(
 
 
 __all__ = [
+    "B300QualificationCapabilities",
+    "B300QualificationCommissionError",
+    "CALIBRATION_PACKAGE_SCHEMA",
     "QUALIFICATION_COMMISSION_SCHEMA",
     "QUALIFICATION_DEADLINE_MAXIMUM_SECONDS",
     "QUALIFICATION_EVIDENCE_POLICY_DIGEST",
+    "QUALIFICATION_STAGES",
     "QUALIFICATION_SPEED_EVIDENCE_POLICY",
     "declared_qualification_deadline_digest",
     "declared_qualification_entropy_digest",
     "predicted_qualification_builder_digest",
     "predicted_qualification_policy_digest",
     "predicted_qualification_registry_digest",
+    "parse_sealed_calibration_package",
     "sealed_qualification_commission",
     "sealed_qualification_profile_rows",
 ]

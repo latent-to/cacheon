@@ -156,6 +156,10 @@ def test_adapter_runtime_refuses_changed_commission_authority(
 class _FakeWorker:
     def __init__(self) -> None:
         self.calls = 0
+        self.retire_calls = 0
+
+    def retire_resident_screen(self) -> None:
+        self.retire_calls += 1
 
     def run_remote_screen(self, _lease, _candidate):
         self.calls += 1
@@ -376,7 +380,8 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
                 body={
                     "candidates": [
                         {"publication": expected_publication.to_dict()}
-                    ]
+                    ],
+                    "screen_lane": "primary",
                 }
             )
             wires.append(wire)
@@ -406,6 +411,7 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
         assert len(expected) == 2
         assert expected[0].digest != expected[1].digest
         assert run_calls == list(zip(expected, wires))
+        assert runtime.worker.retire_calls == 2
     finally:
         for coordinator, claim, *_rest in authorities:
             coordinator._release(claim.lease, reason="test_cleanup")
@@ -481,7 +487,10 @@ def test_qualification_execution_failure_is_epoch_fatal(
         _adapter_paths(tmp_path), qualification_commission=commission
     )
     wire = SimpleNamespace(
-        body={"candidates": [{"publication": {"candidate": "one"}}]}
+        body={
+            "candidates": [{"publication": {"candidate": "one"}}],
+            "screen_lane": "primary",
+        }
     )
     _patch_authenticated_carrier(
         monkeypatch, stage="qualification", wire=wire
@@ -503,6 +512,7 @@ def test_qualification_execution_failure_is_epoch_fatal(
     with pytest.raises(adapter.AdapterEpochFailed) as captured:
         adapter.run_with_runtime(tmp_path / "request", result_dir, runtime)
     assert isinstance(captured.value.__cause__, QualificationContinuationError)
+    assert runtime.worker.retire_calls == 1
     assert (result_dir / "RESIDENT_ENTRY_ARMED.json").is_file()
 
 
