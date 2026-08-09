@@ -31,7 +31,6 @@ from cacheon.eval.resident_count_quality import (
     reopen_resident_count_stock,
     seal_resident_count_stock_authority,
 )
-from cacheon.stack_identity import canonical_digest
 
 
 def _h(value: str) -> str:

@@ -273,7 +273,6 @@ class _Harness:
         self.executor.manager = SimpleNamespace(clock=lambda: 3.5)
         before, after = _quiescence(1, 3.0), _quiescence(2, 6.0)
         quiescence_count = 0
-
         @contextmanager
         def transaction(_executor):
             self.calls.append("transaction.enter")
@@ -281,7 +280,6 @@ class _Harness:
                 yield _executor
             finally:
                 self.calls.append("transaction.exit")
-
         def prove_quiescent(_executor):
             nonlocal quiescence_count
             quiescence_count += 1
@@ -289,8 +287,9 @@ class _Harness:
             if fail_pre_t_quiescence and quiescence_count == 1:
                 raise runner.QualificationRunnerError("pre-T quiescence failed")
             return before if quiescence_count == 1 else after
-
-        def execute_reference(_executor, _launch, _binding, _mount, plan, *, deadline):
+        def execute_reference(
+            _executor, _launch, _binding, _mount, plan, *, deadline, completion_sink=None
+        ):
             del deadline
             assert plan is not getattr(self.value, "resident_audit_plan", None)
             self.calls.append("reference")
@@ -327,7 +326,7 @@ class _Harness:
                     4.2, 5.0, 1, (sample,),
                 ),
             )
-            return SimpleNamespace(
+            evidence = SimpleNamespace(
                 launch_digest=reference.pristine_launch_digest,
                 runtime_identity=SimpleNamespace(
                     runtime_digest=_d("reference-runtime"),
@@ -344,23 +343,22 @@ class _Harness:
                 session=session,
                 device_receipts=receipts,
             )
-
+            if completion_sink is not None:
+                completion_sink(evidence)
+            return evidence
         monkeypatch.setattr(OCIEngineExecutor, "exclusive_transaction", transaction)
         monkeypatch.setattr(OCIEngineExecutor, "prove_quiescent", prove_quiescent)
         monkeypatch.setattr(OCIEngineExecutor, "execute_reference", execute_reference)
-
         def prevalidate(_value, *_args, **_kwargs):
             self.calls.append("prevalidate")
             return self.calibration, self.grades
-
         monkeypatch.setattr(runner, "_validate_pre_execution", prevalidate)
         monkeypatch.setattr(
             runner,
             "run_marginal_lifecycle",
             lambda *_args, **_kwargs: self.calls.append("lifecycle") or self.lifecycle,
         )
-
-        def run_audits(value, _lifecycle, **_kwargs):
+        def run_audits(value, _lifecycle, *, completion_sink=None, **_kwargs):
             self.calls.append("audit")
             witnesses = {}
             for index, (authority, prepared, policy, decision) in enumerate(
@@ -411,6 +409,8 @@ class _Harness:
                     detail,
                 )
                 witnesses[authority.selected_delta_digest] = witness
+            if completion_sink is not None:
+                completion_sink(witnesses, 2.5)
             return witnesses, 2.5
 
         monkeypatch.setattr(runner, "_run_slot_audits", run_audits)

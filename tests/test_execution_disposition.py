@@ -15,7 +15,6 @@ from cacheon.chain.evaluation_recovery import (
     RecoveryResolution,
 )
 from cacheon.chain.execution_disposition import (
-    AuthenticatedPreResidentRefusal,
     ExecutionDisposition,
     ExecutionDispositionError,
     ExecutionOutcome,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 from dataclasses import replace
@@ -11,7 +10,6 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.b300_registered_qualification as registered
-from cacheon.arena_service import ArenaCandidateBinding
 from cacheon.eval.evidence_store import (
     EvidenceArtifactRef,
     publish_evidence,

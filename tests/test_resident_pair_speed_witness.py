@@ -8,7 +8,10 @@ from cacheon.eval.resident_pair_speed_witness import (
     ResidentPairSpeedWitnessError,
     project_resident_pair_speed_witness,
 )
-from tests.test_resident_pair_crossover import _setup, cleanup_pairs
+from tests.test_resident_pair_crossover import _setup, cleanup_pairs as _cleanup_pairs
+
+
+resident_pairs = _cleanup_pairs
 
 
 def _quiescence(plan, completed):
@@ -35,11 +38,11 @@ def _quiescence(plan, completed):
     ("baseline_lane", "candidate_lane"), (("A", "B"), ("B", "A"))
 )
 def test_pair_speed_projects_one_report_witness_for_both_orientations(
-    tmp_path, cleanup_pairs, baseline_lane, candidate_lane
+    tmp_path, resident_pairs, baseline_lane, candidate_lane
 ):
     plan, pair, clock, *_ = _setup(
         tmp_path,
-        cleanup_pairs,
+        resident_pairs,
         baseline_pair_lane=baseline_lane,
     )
     evidence = run_resident_pair_crossover(
@@ -61,9 +64,9 @@ def test_pair_speed_projects_one_report_witness_for_both_orientations(
 
 
 def test_pair_speed_projection_rejects_foreign_or_premature_quiescence(
-    tmp_path, cleanup_pairs
+    tmp_path, resident_pairs
 ):
-    plan, pair, clock, *_ = _setup(tmp_path, cleanup_pairs)
+    plan, pair, clock, *_ = _setup(tmp_path, resident_pairs)
     evidence = run_resident_pair_crossover(
         plan, pair=pair, deadline=clock() + 120.0, clock=clock
     )
@@ -90,9 +93,9 @@ def test_pair_speed_projection_rejects_foreign_or_premature_quiescence(
 
 
 def test_pair_speed_projection_rejects_noncanonical_lane_order(
-    tmp_path, cleanup_pairs
+    tmp_path, resident_pairs
 ):
-    plan, pair, clock, *_ = _setup(tmp_path, cleanup_pairs)
+    plan, pair, clock, *_ = _setup(tmp_path, resident_pairs)
     evidence = run_resident_pair_crossover(
         plan, pair=pair, deadline=clock() + 120.0, clock=clock
     )

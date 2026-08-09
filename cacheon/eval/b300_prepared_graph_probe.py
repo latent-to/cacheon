@@ -793,6 +793,8 @@ __all__ = [
     "execute_prepared_graph_probe",
 ]
 
-from cacheon.eval.b300_prepared_graph_oci import B300PreparedGraphOCIExecutor  # noqa: E402
+from cacheon.eval.b300_prepared_graph_oci import (  # noqa: E402
+    B300PreparedGraphOCIExecutor as B300PreparedGraphOCIExecutor,
+)
 
 __all__.append("B300PreparedGraphOCIExecutor")

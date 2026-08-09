@@ -43,7 +43,6 @@ from cacheon.eval.resident_count_execution_evidence import (
 from cacheon.eval.resident_count_quality import (
     ResidentCountQualityError,
     ResidentCountQualityInfrastructureError,
-    ResidentCountQualityObservation,
     publish_resident_count_observation,
     reopen_resident_count_observation,
 )

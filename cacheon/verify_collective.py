@@ -50,7 +50,7 @@ from cacheon.verify import (
 )
 from cacheon.verification_outcomes import (
     _MAX_ERROR_CHARS,
-    _MAX_VERDICT_BYTES,
+    _MAX_VERDICT_BYTES as _MAX_VERDICT_BYTES,
     _CandidateCollectivePhaseError,
     _match_detail,
     _RankVerdict,

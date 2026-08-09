@@ -342,7 +342,7 @@ def run_b300_resident_qualification_prefix(
                 raise B300ResidentQualificationHold(
                     "resident speed disappeared after durable publication"
                 )
-            count_plan = count = count_result = None
+            count_plan = count = None
             if speed.decision is SpeedStageDecision.PASS:
                 count_plan = _count_plan(capability, speed_plan)
                 count = execute_candidate_count_quality(
@@ -373,7 +373,7 @@ def run_b300_resident_qualification_prefix(
                     raise B300ResidentQualificationHold(
                         "resident count disappeared after durable publication"
                     )
-                count_result = _registered_count(
+                _registered_count(
                     capability,
                     candidate,
                     count_plan,

@@ -9,10 +9,12 @@ island and fails repository validation.
 
 Keep this list exact. Declaring a module here asserts that a currently
 deployed private capability imports it; remove entries when that stops being
-true. An empty tuple means no public module depends on private callers for
-its reachability.
+true.
 """
 
 from __future__ import annotations
 
-CAPABILITY_MODULES: tuple[str, ...] = ()
+CAPABILITY_MODULES: tuple[str, ...] = (
+    "cacheon.eval.b300_qualification_graph_evidence_store",
+    "cacheon.eval.tokenizer_identity",
+)

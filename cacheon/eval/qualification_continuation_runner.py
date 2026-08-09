@@ -210,21 +210,32 @@ def run_continuation_quality_stage(
                 else continuation.load_audit(audit_operation)
             )
             if audit_state is None:
+                audit_completion: list[float] = []
                 audit_nonce = (
                     "" if continuation is None
                     else continuation.arm_evaluator("audit", audit_operation)
                 )
                 audit_started = float(executor.manager.clock())
-                audit_witnesses, audit_last_completed = seams.run_slot_audits(
-                    value, lifecycle, executor=executor, deadline=float(deadline)
-                )
-                audit_completed = float(executor.manager.clock())
-                if continuation is not None:
+                def commit_audit(witnesses: Any, last_completed: float) -> None:
+                    if audit_completion:
+                        raise seams.qualification_runner_error("audit sink called twice")
+                    completed = float(executor.manager.clock())
                     continuation.record_audit(seams.audit_continuation_type(
-                        audit_nonce, audit_operation,
-                        tuple(audit_witnesses.items()), audit_started,
-                        audit_completed, audit_last_completed,
+                        audit_nonce, audit_operation, tuple(witnesses.items()),
+                        audit_started, completed, last_completed,
                     ))
+                    audit_completion.append(completed)
+
+                audit_witnesses, audit_last_completed = seams.run_slot_audits(
+                    value, lifecycle, executor=executor, deadline=float(deadline),
+                    completion_sink=commit_audit if continuation is not None else None,
+                )
+                if continuation is None:
+                    audit_completed = float(executor.manager.clock())
+                elif len(audit_completion) != 1:
+                    raise seams.qualification_runner_error("audit sink was not called once")
+                else:
+                    audit_completed = audit_completion[0]
             else:
                 audit_witnesses = dict(audit_state.audit_witnesses)
                 audit_started = audit_state.audit_started
@@ -357,36 +368,61 @@ def run_continuation_quality_stage(
                 "" if continuation is None
                 else continuation.arm_evaluator("t", t_operation)
             )
+            quality_completion: list[tuple[Any, Any]] = []
+
+            def close_reference(execution: Any) -> Any:
+                completed = executor.prove_quiescent()
+                t_before, t_after = execution.device_receipts
+                if (
+                    t_before.started_monotonic_s < entropy_observed
+                    or t_after.completed_monotonic_s
+                    > completed.observed_monotonic_s
+                ):
+                    raise seams.qualification_runner_error(
+                        "pristine T does not lie between causal boundaries"
+                    )
+                return completed
+
+            def commit_quality(execution: Any) -> None:
+                if quality_completion:
+                    raise seams.qualification_runner_error(
+                        "pristine T invoked its completion sink more than once"
+                    )
+                completed = close_reference(execution)
+                continuation.record_quality(seams.quality_continuation_type(
+                    teardown_before=teardown_before,
+                    entropy=entropy,
+                    entropy_observed=entropy_observed,
+                    requests=requests,
+                    reference_execution=execution,
+                    teardown_after=completed,
+                    t_nonce=t_nonce,
+                    t_operation_digest=t_operation,
+                ))
+                quality_completion.append((execution, completed))
+
             reference_execution = executor.execute_reference(
                 value.pristine_launch,
                 value.pristine_binding,
                 value.model_mount,
                 plan,
                 deadline=float(deadline),
+                completion_sink=(
+                    commit_quality if continuation is not None else None
+                ),
             )
-            teardown_after = executor.prove_quiescent()
-            t_pre, t_post = reference_execution.device_receipts
-            if (
-                t_pre.started_monotonic_s < entropy_observed
-                or t_post.completed_monotonic_s
-                > teardown_after.observed_monotonic_s
+            if continuation is not None and (
+                len(quality_completion) != 1
+                or quality_completion[0][0] is not reference_execution
             ):
                 raise seams.qualification_runner_error(
-                    "pristine T does not lie between causal boundaries"
-                )
-            if continuation is not None:
-                continuation.record_quality(
-                    seams.quality_continuation_type(
-                        teardown_before=teardown_before,
-                        entropy=entropy,
-                        entropy_observed=entropy_observed,
-                        requests=requests,
-                        reference_execution=reference_execution,
-                        teardown_after=teardown_after,
-                        t_nonce=t_nonce,
-                        t_operation_digest=t_operation,
-                    )
-                )
+                    "pristine T returned without its exact durable completion"
+            )
+            if continuation is None:
+                teardown_after = close_reference(reference_execution)
+            else:
+                teardown_after = quality_completion[0][1]
+            t_pre, t_post = reference_execution.device_receipts
 
     return QualificationContinuationStageResult(
         False,

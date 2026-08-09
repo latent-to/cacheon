@@ -23,7 +23,7 @@ from cacheon.eval.b300_qualification_graph_provider import (
     B300QualificationGraphArtifact,
     B300QualificationGraphBinding,
 )
-from cacheon.manifest import AOTExport, Manifest, OpEntry, load_manifest
+from cacheon.manifest import AOTExport, OpEntry, load_manifest
 from cacheon.verification_outcomes import (
     GraphPhaseOutcome,
     ShapeResult,
@@ -583,7 +583,7 @@ def test_wrong_descriptor_replay_count_tree_and_binding_fail_closed(singleton, m
     with pytest.raises(PreparedGraphProbeError, match="graph_replays"):
         execute_prepared_graph_probe(request, singleton.prepared.binding.tree.root)
 
-    foreign = tmp_path = singleton.prepared.binding.tree.root.parent / "foreign"
+    foreign = singleton.prepared.binding.tree.root.parent / "foreign"
     shutil.copytree(singleton.prepared.binding.tree.root, foreign)
     foreign_source = foreign / load_manifest(foreign).ops[0].source
     foreign_source.chmod(0o644)

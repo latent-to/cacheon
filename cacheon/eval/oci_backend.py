@@ -1509,6 +1509,9 @@ class OCIEngineExecutor:
         plan: ReferenceSessionPlan,
         *,
         deadline: float,
+        completion_sink: (
+            Callable[[PristineReferenceExecutionEvidence], None] | None
+        ) = None,
     ) -> PristineReferenceExecutionEvidence:
         """Launch a separate empty-stack T and return only its raw transcript."""
 
@@ -1561,7 +1564,7 @@ class OCIEngineExecutor:
                 raise OCIBackendError("reference runtime returned malformed raw evidence")
             receipts = (raw.pre_receipt, raw.post_receipt)
             _validate_reference_device_receipts(receipts, launch_id=raw.launch_id)
-            return PristineReferenceExecutionEvidence(
+            evidence = PristineReferenceExecutionEvidence(
                 "cacheon.oci-pristine-reference-execution.v1",
                 launch.digest,
                 identity,
@@ -1575,6 +1578,9 @@ class OCIEngineExecutor:
                 receipts,
                 raw.value,
             )
+            if completion_sink is not None:
+                completion_sink(evidence)
+            return evidence
         finally:
             self._lock.release()
 

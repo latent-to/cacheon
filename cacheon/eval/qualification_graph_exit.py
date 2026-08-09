@@ -16,7 +16,7 @@ from cacheon.eval.evidence_store import (
 )
 from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_DOMAIN, GRAPH_EVIDENCE_MEDIA_TYPE, GRAPH_EVIDENCE_SCHEMA,
-    GraphVariantRequirement, GraphVerificationBinding, GraphVerificationEvidenceRef,
+    GraphVariantRequirement, GraphVerificationBinding,
     GraphVerificationGrade, GraphVerificationMemberBinding,
     GraphVerificationRequirement, QualificationDecision, QualificationError,
     reopen_graph_verification,

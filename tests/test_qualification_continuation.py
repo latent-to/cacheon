@@ -700,40 +700,51 @@ def _pass_harness(monkeypatch) -> _Harness:
     return harness
 
 
-def test_completed_pristine_t_crash_holds_without_duplicate_evaluator_entry(
+def _crash_after_completion(producer, message):
+    def wrapped(*args, completion_sink=None, **kwargs):
+        assert completion_sink is not None
+
+        def crash(*values):
+            completion_sink(*values)
+            raise RuntimeError(message)
+
+        return producer(*args, completion_sink=crash, **kwargs)
+
+    return wrapped
+
+
+def _without_completion(producer):
+    def wrapped(*args, completion_sink=None, **kwargs):
+        assert completion_sink is not None
+        return producer(*args, completion_sink=None, **kwargs)
+
+    return wrapped
+
+
+def test_pristine_t_completion_survives_a_crash_before_producer_return(
     monkeypatch,
 ) -> None:
     harness = _pass_harness(monkeypatch)
-    reset_quiescence = _fresh_quiescence(monkeypatch)
     continuation = _MemoryContinuation()
+    producer = OCIEngineExecutor.execute_reference
+    monkeypatch.setattr(
+        OCIEngineExecutor,
+        "execute_reference",
+        _crash_after_completion(producer, "crash after durable pristine T"),
+    )
 
-    state = {"crashes": 1}
-    record_quality = continuation.record_quality
-
-    def crashing_record(value):
-        if state["crashes"]:
-            state["crashes"] -= 1
-            raise RuntimeError("simulated crash after pristine T completed")
-        record_quality(value)
-
-    continuation.record_quality = crashing_record
-
-    with pytest.raises(RuntimeError, match="after pristine T completed"):
+    with pytest.raises(RuntimeError, match="after durable pristine T"):
         _run(harness, continuation)
     assert harness.calls.count("lifecycle") == 1
     assert harness.calls.count("audit") == 1
     assert harness.reference_calls == 1
-    assert "speed" in continuation.records
-    assert "quality" not in continuation.records
-    assert "t_armed" in continuation.records
+    assert "quality" in continuation.records
 
-    reset_quiescence()
-    with pytest.raises(QualificationContinuationError, match="t_armed"):
-        _run(harness, continuation)
+    assert _run(harness, continuation) == harness.attempt_reference
     assert harness.calls.count("lifecycle") == 1
     assert harness.reference_calls == 1
     assert harness.calls.count("audit") == 1
-    assert "final" not in continuation.records
+    assert continuation.records["final"] == harness.attempt_reference
 
 
 def test_quality_executes_at_most_once_across_a_finalization_crash(
@@ -795,7 +806,7 @@ def test_quality_executes_at_most_once_across_a_finalization_crash(
     assert continuation.records["final"] == harness.attempt_reference
 
 
-def test_completed_resident_audit_crash_holds_without_duplicate_evaluator_entry(
+def test_resident_audit_completion_survives_a_crash_before_producer_return(
     monkeypatch,
 ) -> None:
     harness = _Harness(
@@ -814,17 +825,12 @@ def test_completed_resident_audit_crash_holds_without_duplicate_evaluator_entry(
     clock = iter(3.05 + index * 0.05 for index in range(16))
     harness.executor.manager.clock = lambda: next(clock)
     continuation = _MemoryContinuation()
-
-    state = {"crashes": 1}
-    record_audit = continuation.record_audit
-
-    def crashing_record(value):
-        if state["crashes"]:
-            state["crashes"] -= 1
-            raise RuntimeError("simulated crash after audit completed")
-        record_audit(value)
-
-    continuation.record_audit = crashing_record
+    producer = runner._run_slot_audits
+    monkeypatch.setattr(
+        runner,
+        "_run_slot_audits",
+        _crash_after_completion(producer, "crash after durable audit"),
+    )
 
     def run_resident():
         ids = iter(f"{index + 1:032x}" for index in range(16))
@@ -839,20 +845,42 @@ def test_completed_resident_audit_crash_holds_without_duplicate_evaluator_entry(
             continuation=continuation,
         )
 
-    with pytest.raises(RuntimeError, match="after audit completed"):
+    with pytest.raises(RuntimeError, match="after durable audit"):
         run_resident()
     assert harness.calls.count("resident.speed") == 1
     assert harness.calls.count("audit") == 1
-    assert "speed" in continuation.records
-    assert "audit_armed" in continuation.records
+    assert "audit" in continuation.records
+    assert harness.reference_calls == 0
 
-    with pytest.raises(QualificationContinuationError, match="audit_armed"):
-        run_resident()
+    assert run_resident() == harness.attempt_reference
     assert exits == []
     assert harness.calls.count("resident.speed") == 1
     assert harness.calls.count("audit") == 1
-    assert harness.reference_calls == 0
-    assert "final" not in continuation.records
+    assert harness.reference_calls == 1
+    assert continuation.records["final"] == harness.attempt_reference
+
+
+def test_continuation_rejects_producers_that_skip_the_completion_sink(
+    monkeypatch,
+) -> None:
+    audit_harness = _pass_harness(monkeypatch)
+    producer = runner._run_slot_audits
+    monkeypatch.setattr(runner, "_run_slot_audits", _without_completion(producer))
+    with pytest.raises(runner.QualificationRunnerError, match="audit sink"):
+        _run(audit_harness, _MemoryContinuation())
+    assert audit_harness.calls.count("audit") == 1
+    assert audit_harness.reference_calls == 0
+
+    t_harness = _pass_harness(monkeypatch)
+    producer = OCIEngineExecutor.execute_reference
+    monkeypatch.setattr(
+        OCIEngineExecutor, "execute_reference", _without_completion(producer)
+    )
+    continuation = _MemoryContinuation()
+    with pytest.raises(runner.QualificationRunnerError, match="pristine T returned"):
+        _run(t_harness, continuation)
+    assert t_harness.reference_calls == 1
+    assert "quality" not in continuation.records
 
 
 def test_continuation_identity_mismatch_holds_before_any_execution(

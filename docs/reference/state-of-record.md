@@ -108,6 +108,15 @@ The evidence classes are intentionally non-substitutable:
   structure. The object store is neither the live database nor the live evidence
   filesystem, and restore never overwrites live state.
 
+### Qualification continuation recovery (2026-08-09)
+
+Resident qualification now commits completed eager-audit and pristine-T evidence
+to the existing fsynced continuation records before the producer returns. A crash
+after that commit reopens the durable result without entering the evaluator again.
+An armed evaluator with no completion record still holds fail closed; the CPU
+contracts do not establish recovery before any host byte becomes durable or prove
+the behavior on B300 hardware.
+
 ### Slots, targets, and direct artifacts
 
 The executable catalog contains 11 slots and one registered atomic target:

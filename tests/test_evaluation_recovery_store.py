@@ -102,7 +102,7 @@ def _advance(store: RecoverableFinalizedIntakeStore, block: int) -> None:
         )
 
 
-def _promoted(store: FinalizedIntakeStore, profile: _Profile, index: int = 0):
+def _promoted(store: RecoverableFinalizedIntakeStore, profile: _Profile, index: int = 0):
     row = store.reserve_finalized(
         (_arrival(profile, index),),
         finalized_block=10,

@@ -2740,6 +2740,7 @@ def _run_slot_audits(
     *,
     executor: OCIEngineExecutor,
     deadline: float,
+    completion_sink: Callable[[dict[str, AuditWitness], float], None] | None = None,
 ) -> tuple[dict[str, AuditWitness], float]:
     """Run one independent eager, untimed candidate role per sealed C arm."""
 
@@ -2844,6 +2845,8 @@ def _run_slot_audits(
         )
     if len(witnesses) != len(value.candidates):
         raise QualificationRunnerError("slot audit cohort coverage is incomplete")
+    if completion_sink is not None:
+        completion_sink(witnesses, last_completed)
     return witnesses, last_completed
 
 
