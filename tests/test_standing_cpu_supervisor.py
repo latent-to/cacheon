@@ -20,7 +20,6 @@ from cacheon.chain.standing_cpu_supervisor import (
     SupervisorPhase,
     SupervisorStageResult,
     build_fifo_queue_table,
-    incentive_stage,
     refuse_terminal_reclaim,
     run_forever,
     settlement_stage,
@@ -350,7 +349,7 @@ def test_untyped_stage_product_is_rejected() -> None:
         ).tick()
 
 
-def test_settlement_incentive_weights_stages_wire_into_supervisor() -> None:
+def test_settlement_and_weights_stages_wire_into_supervisor() -> None:
     class _Store:
         def __enter__(self):
             return self
@@ -383,19 +382,6 @@ def test_settlement_incentive_weights_stages_wire_into_supervisor() -> None:
         validator_loop._settle_pending = original
     assert status.phase is SupervisorPhase.SETTLEMENT
     assert status.lease_id == "lease"
-
-    import cacheon.chain.incentive_activation as activation
-
-    class _NotReady(activation.IncentiveActivationError):
-        pass
-
-    idle = incentive_stage(activate=lambda: (_ for _ in ()).throw(_NotReady("early")))
-    assert idle() is None
-
-    activated = incentive_stage(
-        activate=lambda: SimpleNamespace(campaign_id="campaign-1")
-    )
-    assert activated().disposition == "activated"
 
     published = weights_stage(
         publish=lambda: SimpleNamespace(

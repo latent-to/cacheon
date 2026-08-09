@@ -117,6 +117,13 @@ An armed evaluator with no completion record still holds fail closed; the CPU
 contracts do not establish recovery before any host byte becomes durable or prove
 the behavior on B300 hardware.
 
+### Fresh-pod model reopening (2026-08-09)
+
+Deployment commissioning can require a provisioned model tree to be publicly
+readable and read-only while it reopens the canonical receipt, complete file
+inventory, and actual file bytes. This is a local fail-closed input check; it
+does not establish that a paid OCI lifetime has mounted or executed that model.
+
 ### Slots, targets, and direct artifacts
 
 The executable catalog contains 11 slots and one registered atomic target:

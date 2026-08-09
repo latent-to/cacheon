@@ -11,7 +11,7 @@ Stage work is delegated to the existing dispatchers:
 - screen FIFO → ``RemoteEvaluationDispatcher.dispatch_screen_once``
 - qualification FIFO + same-request recovery →
   ``RecoverableQualificationDispatcher.dispatch_once``
-- later gates attach settlement / incentives / weights as injectable stages
+- later gates attach settlement / weights as injectable stages
 
 ``chainops`` may launch this process and bind sealed paths; it must not
 duplicate recovery or evidence semantics.
@@ -40,7 +40,6 @@ CONFIG_DOMAIN = "cacheon.chain.standing-supervisor-config.v1"
 _TERMINAL_CLAIM_STATUSES = frozenset({"failed", "expired", "qualified"})
 _STANDING_CONFIG_FIELDS = frozenset(
     {
-        "enable_incentive",
         "enable_settlement",
         "enable_weights",
         "idle_poll_ms",
@@ -67,7 +66,6 @@ class SupervisorPhase(str, Enum):
     SCREEN = "screen"
     QUALIFICATION = "qualification"
     SETTLEMENT = "settlement"
-    INCENTIVE = "incentive"
     WEIGHTS = "weights"
     HOLD = "hold"
     FAILED = "failed"
@@ -180,7 +178,6 @@ class StandingCpuSupervisor:
     screen_once: ScreenOnce
     qualification_once: QualificationOnce
     settle_once: OptionalStage | None = None
-    incentive_once: OptionalStage | None = None
     weights_once: OptionalStage | None = None
     clock: Callable[[], float] = time.time
     stall_timeout_s: float = 3_600.0
@@ -190,7 +187,7 @@ class StandingCpuSupervisor:
     def __post_init__(self) -> None:
         if not callable(self.screen_once) or not callable(self.qualification_once):
             raise StandingCpuSupervisorError("screen and qualification stages are required")
-        for name in ("settle_once", "incentive_once", "weights_once"):
+        for name in ("settle_once", "weights_once"):
             value = getattr(self, name)
             if value is not None and not callable(value):
                 raise StandingCpuSupervisorError(f"{name} is not callable")
@@ -226,8 +223,6 @@ class StandingCpuSupervisor:
                 phase = SupervisorPhase.QUALIFICATION
             elif result.stage == "settlement":
                 phase = SupervisorPhase.SETTLEMENT
-            elif result.stage == "incentive":
-                phase = SupervisorPhase.INCENTIVE
             elif result.stage == "weights":
                 phase = SupervisorPhase.WEIGHTS
             else:
@@ -336,7 +331,7 @@ class StandingCpuSupervisor:
         Order:
         1. qualification (resume same-request recovery before claiming new screen work)
         2. screen FIFO
-        3. optional settlement / incentive / weights stages (later handoff gates)
+        3. optional settlement / weights stages (later handoff gates)
         """
 
         # Qualification first: recover active protected leases after restart.
@@ -344,7 +339,6 @@ class StandingCpuSupervisor:
             ("qualification", self.qualification_once),
             ("screen", self.screen_once),
             ("settlement", self.settle_once),
-            ("incentive", self.incentive_once),
             ("weights", self.weights_once),
         ):
             if callback is None:
@@ -495,35 +489,6 @@ def settlement_stage(
             disposition="committed",
             lease_id=lease_id,
             phase=SupervisorPhase.SETTLEMENT,
-        )
-
-    return once
-
-
-def incentive_stage(
-    activate: Callable[[], Any],
-) -> Callable[[], SupervisorStageResult | None]:
-    """Wrap one-shot incentive activation; idle when the boundary is not ready.
-
-    ``activate`` should call ``execute_selected_incentive_activation`` (or a test
-    double).  Boundary-not-ready errors become idle ``None``; other failures
-    fail closed through the supervisor without inventing a disposition.
-    """
-
-    def once() -> SupervisorStageResult | None:
-        from cacheon.chain.incentive_activation import IncentiveActivationError
-
-        try:
-            result = activate()
-        except IncentiveActivationError:
-            return None
-        campaign = getattr(result, "campaign_id", None)
-        return SupervisorStageResult(
-            stage="incentive",
-            progressed=True,
-            disposition="activated",
-            request_id=campaign if isinstance(campaign, str) and campaign else None,
-            phase=SupervisorPhase.INCENTIVE,
         )
 
     return once
@@ -719,7 +684,6 @@ class StandingSupervisorConfig:
     qualification_incumbent_tree_digest: str
     enable_weights: bool
     enable_settlement: bool
-    enable_incentive: bool
     stall_timeout_s: float
     idle_poll_s: float
     restart_initial_backoff_s: float
@@ -773,16 +737,15 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
 
     enable_weights = _exact_bool(row["enable_weights"], "enable_weights")
     enable_settlement = _exact_bool(row["enable_settlement"], "enable_settlement")
-    enable_incentive = _exact_bool(row["enable_incentive"], "enable_incentive")
     if enable_weights:
         raise StandingCpuSupervisorError(
             "enable_weights requires a sealed weights authority composition; "
             "keep enable_weights false until the weights stage is attached"
         )
-    if enable_settlement or enable_incentive:
+    if enable_settlement:
         raise StandingCpuSupervisorError(
-            "settlement/incentive stages are not sealed in this standing config; "
-            "keep enable_settlement and enable_incentive false until authorities exist"
+            "settlement stage is not sealed in this standing config; "
+            "keep enable_settlement false until its authority exists"
         )
 
     stall_timeout_ms = _positive_int(
@@ -812,7 +775,6 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         qualification_incumbent_tree_digest=tree_digest,
         enable_weights=enable_weights,
         enable_settlement=enable_settlement,
-        enable_incentive=enable_incentive,
         stall_timeout_s=stall_timeout_ms / 1000.0,
         idle_poll_s=idle_poll_ms / 1000.0,
         restart_initial_backoff_s=restart_initial_backoff_ms / 1000.0,
@@ -872,7 +834,6 @@ def build_standing_supervisor(
         screen_once=screen_dispatcher.dispatch_screen_once,
         qualification_once=qualification_dispatcher.dispatch_once,
         settle_once=None,
-        incentive_once=None,
         weights_once=weights_once,
         stall_timeout_s=config.stall_timeout_s,
     )
@@ -947,7 +908,6 @@ __all__ = [
     "SupervisorStatus",
     "build_fifo_queue_table",
     "build_standing_supervisor",
-    "incentive_stage",
     "load_standing_config",
     "refuse_terminal_reclaim",
     "run_forever",

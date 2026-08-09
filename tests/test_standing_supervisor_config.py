@@ -83,7 +83,6 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     )
 
     standing: dict[str, object] = {
-        "enable_incentive": False,
         "enable_settlement": False,
         "enable_weights": False,
         "idle_poll_ms": 25,
@@ -142,7 +141,6 @@ def test_build_standing_supervisor_omits_weights(tmp_path: Path) -> None:
     assert type(supervisor) is StandingCpuSupervisor
     assert supervisor.weights_once is None
     assert supervisor.settle_once is None
-    assert supervisor.incentive_once is None
     assert callable(supervisor.screen_once)
     assert callable(supervisor.qualification_once)
 
