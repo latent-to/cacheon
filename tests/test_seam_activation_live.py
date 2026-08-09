@@ -20,7 +20,13 @@ explicitly:
                                       the checkout sits on a FUSE mount
                                       docker cannot bind from)
     CACHEON_SERVE_GPU=0               GPU index for --gpus device=N
+                                      (tp=2: comma pair, default 0,1)
+    CACHEON_SERVE_TP=1                tensor-parallel width: 1 or 2
     CACHEON_SERVE_BOOT_TIMEOUT_S=320  per-boot readiness budget
+
+CACHEON_SERVE_TP=2 boots every arm with --tp-size 2, which proves the
+spawn-safe .pth seam arms each tensor-parallel rank process, not just
+rank 0 — a regression the single-device mode cannot see.
 
 With the master switch set, a missing or broken prerequisite is a loud
 failure, never a silent skip. Runtime is roughly ten minutes for the three
@@ -91,11 +97,34 @@ def _serve_repo() -> Path:
     return repo
 
 
-def _boot(name: str, image: str, model: str, repo: Path, gpu: str,
+def _tp_mode() -> tuple[str, str]:
+    tp = os.environ.get("CACHEON_SERVE_TP", "1")
+    if tp not in ("1", "2"):
+        pytest.fail(f"CACHEON_SERVE_TP={tp} is not supported; use 1 or 2")
+    gpu = os.environ.get("CACHEON_SERVE_GPU", "0" if tp == "1" else "0,1")
+    if tp == "2" and len([d for d in gpu.split(",") if d]) != 2:
+        pytest.fail(
+            f"CACHEON_SERVE_TP=2 needs two comma-separated GPU indices; "
+            f"got CACHEON_SERVE_GPU={gpu!r}"
+        )
+    return tp, gpu
+
+
+def _boot(name: str, image: str, model: str, repo: Path, gpu: str, tp: str,
           arming: dict[str, str]) -> None:
+    if tp == "1":
+        device_args = ["--gpus", f"device={gpu}", "--network", "none"]
+    else:
+        # docker's --gpus value is CSV-parsed, so a comma pair cannot ride
+        # device=; expose all devices and pin the pair via CUDA_VISIBLE_DEVICES.
+        # NCCL's shared-memory transport needs --ipc=host; its loopback
+        # bootstrap works inside --network none.
+        device_args = [
+            "--gpus", "all", "--ipc=host", "--network", "none",
+            "-e", f"CUDA_VISIBLE_DEVICES={gpu}",
+        ]
     args = [
-        "docker", "run", "-d", "--name", name,
-        "--gpus", f"device={gpu}", "--network", "none",
+        "docker", "run", "-d", "--name", name, *device_args,
         "-v", f"{model}:/model:ro", "-v", f"{repo}:/repo:ro",
         "-e", "PYTHONPATH=/repo",
     ]
@@ -109,6 +138,8 @@ def _boot(name: str, image: str, model: str, repo: Path, gpu: str,
         "--chunked-prefill-size", "2048", "--max-prefill-tokens", "2048",
         "--cuda-graph-max-bs", "2", "--max-running-requests", "4",
     ]
+    if tp == "2":
+        args += ["--tp-size", "2", "--disable-custom-all-reduce"]
     started = _run(args)
     if started.returncode != 0:
         pytest.fail(f"docker run failed for {name}: {started.stderr.strip()}")
@@ -158,7 +189,7 @@ def test_bundle_kernel_executes_in_the_serving_path() -> None:
         pytest.fail("live serving tier is armed but docker is not on PATH")
     image = _required_env("CACHEON_SERVE_IMAGE")
     model = _required_env("CACHEON_SERVE_MODEL")
-    gpu = os.environ.get("CACHEON_SERVE_GPU", "0")
+    tp, gpu = _tp_mode()
     repo = _serve_repo()
 
     modes = (
@@ -174,9 +205,9 @@ def test_bundle_kernel_executes_in_the_serving_path() -> None:
     )
     outputs: dict[str, str] = {}
     for mode, arming in modes:
-        name = f"cacheon-seam-live-{mode}-{uuid.uuid4().hex[:8]}"
+        name = f"cacheon-seam-live-tp{tp}-{mode}-{uuid.uuid4().hex[:8]}"
         try:
-            _boot(name, image, model, repo, gpu, arming)
+            _boot(name, image, model, repo, gpu, tp, arming)
             outputs[mode] = _probe(name)
         finally:
             _run(["docker", "rm", "-f", name])

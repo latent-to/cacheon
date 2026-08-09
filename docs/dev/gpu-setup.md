@@ -182,10 +182,13 @@ python -m pytest tests/test_seam_activation_live.py
 Optional variables: `CACHEON_SERVE_REPO` (a docker-mountable copy of this
 repository when the checkout itself cannot be bind-mounted; the test verifies
 the copy's source identity against the running checkout before trusting it),
-`CACHEON_SERVE_GPU` (device index, default 0), and
-`CACHEON_SERVE_BOOT_TIMEOUT_S` (per-boot readiness budget, default 320). Once
-armed, a missing prerequisite is a loud failure, never a skip. Expect roughly
-ten minutes for the three boots.
+`CACHEON_SERVE_GPU` (device index, default 0; a comma pair under tp=2,
+default 0,1), `CACHEON_SERVE_TP` (tensor-parallel width, 1 or 2, default 1),
+and `CACHEON_SERVE_BOOT_TIMEOUT_S` (per-boot readiness budget, default 320).
+`CACHEON_SERVE_TP=2` boots every arm with `--tp-size 2`, proving the
+spawn-safe seam arms each tensor-parallel rank process rather than only
+rank 0. Once armed, a missing prerequisite is a loud failure, never a skip.
+Expect roughly ten minutes for the three boots.
 
 ## Native toolchain tier (opt-in)
 
