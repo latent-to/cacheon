@@ -33,7 +33,6 @@ from cacheon.chain.weight_share import (
     push_current_weights,
     read_offer_storage,
     read_current_weight_offer,
-    rebind_offer_signer,
     rebind_projection_signer,
     request_auth_digest,
     serve_current_weights,
@@ -41,7 +40,7 @@ from cacheon.chain.weight_share import (
     verify_authenticated_weight_offer,
     write_current_weight_offer,
 )
-from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
+from cacheon.chain.weights import WeightProjection
 from cacheon.object_store import MemoryObjectStore
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
 

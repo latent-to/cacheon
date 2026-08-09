@@ -23,7 +23,7 @@ dependencies = [
 # CUDA libs (heavier download); for a lean CPU-only install do
 # `pip install torch --index-url https://download.pytorch.org/whl/cpu` first.
 cpu = ["torch"]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "ruff==0.12.7"]
 release = ["cryptography>=41"]
 # S3-compatible object stores (Hippius / AWS / MinIO). boto3 is Apache-2.0.
 object-store = ["boto3>=1.34"]
@@ -49,3 +49,40 @@ cacheon = "cacheon.integrations.sglang_plugin:register"
 [tool.setuptools.packages.find]
 include = ["cacheon*"]
 exclude = ["sglang*", "examples*", "tests*"]
+
+[tool.ruff]
+# Vendored upstream patch bodies and miner-shaped bundle content are data for
+# the bundle policy scanner, not a style surface.
+extend-exclude = ["cacheon/arena_assets", "examples"]
+
+[tool.ruff.lint]
+# Correctness-only floor (pyflakes + runtime syntax): violations of these
+# rules are always defects. Formatting and import-sorting are deliberately
+# deferred until after the mainnet launch merge so the gate never forces
+# churn onto live-lane files.
+select = ["F", "E9"]
+
+[tool.ruff.lint.per-file-ignores]
+# Live-lane files under active modification on the codex/* launch branches
+# (snapshot 2026-08-09). Enforcement here is deferred to the post-merge
+# cleanup so the gate does not push churn into the mainnet merge window.
+# The b300 input/stage aggregators additionally re-export their imports for
+# digest-bound private consumers and need explicit `__all__` declarations,
+# not import deletion. Shrinking this list is cleanup; growing it is a
+# reviewed decision.
+"cacheon/chain/evaluation_lease_store.py" = ["F401"]
+"cacheon/chain/intake.py" = ["F401"]
+"cacheon/chain/remote_evaluation_dispatcher.py" = ["F401"]
+"cacheon/chain/remote_worker_spool.py" = ["F401"]
+"cacheon/cli.py" = ["F401"]
+"cacheon/eval/b300_registered_qualification.py" = ["F401"]
+"cacheon/eval/b300_registered_qualification_inputs.py" = ["F401"]
+"cacheon/eval/b300_screen_deployment.py" = ["F401"]
+"cacheon/eval/b300_screen_stages.py" = ["F401"]
+"cacheon/eval/qualification_runner.py" = ["F401", "F402"]
+"cacheon/manifest.py" = ["F402"]
+"tests/test_b300_registered_qualification.py" = ["F401"]
+"tests/test_b300_remote_qualification_adapter.py" = ["F401"]
+"tests/test_evaluation_coordinator.py" = ["F401"]
+"tests/test_evaluation_lease_operator.py" = ["F841"]
+"tests/test_remote_evaluation_dispatcher.py" = ["F401"]

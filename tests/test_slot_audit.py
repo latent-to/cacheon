@@ -6,7 +6,6 @@ captured stock baseline on pre-call clones and compare under the slot's verify
 tolerances; per-rank rolling receipts feed the eval driver's gate.
 """
 
-import os
 from types import SimpleNamespace
 
 import pytest

@@ -42,8 +42,6 @@ from cacheon._strict import duplicate_key_pairs, require_digest
 if TYPE_CHECKING:
     from cacheon.artifact_abi import (
         ArtifactResourcePlan,
-        ProviderCapabilityRequirement,
-        SpecializationCapabilityRequirement,
     )
     from cacheon.manifest import ArtifactTargetAuthority
 

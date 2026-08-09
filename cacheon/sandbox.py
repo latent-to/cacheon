@@ -28,7 +28,6 @@ What this module DOES provide:
 from __future__ import annotations
 
 import ast
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -319,7 +318,6 @@ def load_module(source_path: str | Path):
         raise PermissionError("kernel source failed policy scan:\n  " + "\n  ".join(scan.violations))
 
     import importlib.util
-    import sys
 
     mod_name = f"cacheon_kernel_{p.stem}"
     spec = importlib.util.spec_from_file_location(mod_name, p)
