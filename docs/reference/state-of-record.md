@@ -560,6 +560,50 @@ This establishes the live test-chain shared-weight path and its journal/readback
 controls for those exact identities. It does not establish independent hosts or
 failure domains, mainnet economics, V2 activation, or unattended operation.
 
+### Hardware suite validation and containment tiers (2026-08-09)
+
+The complete test suite ran twice on a two-B200 staging validator host
+(driver 580.126.20, Python 3.12.3, torch 2.12.0+cu130, triton 3.7.0): once
+beside a resident TP2 serving container holding roughly 168 GiB per device,
+and once on empty devices. Both runs reported identical results — 2,496
+passed, one failed, five environment skips, in roughly five minutes —
+including the families hosted CI cannot execute: the two-device collective
+and CUDA-graph contracts and the Linux `renameat2` publication cases. The
+single failure was a test defect, not a product defect: an
+unwritable-directory probe simulated with permission bits, which a root
+euid overrides; that test now skips under root with the reason recorded.
+
+The public CLI was exercised end to end on the same host as subprocesses:
+`verify` accepted the pure-torch and Triton example bundles on CUDA with
+graph capture and replay engaged, refused both deliberately broken bundles
+with the verdict exit code, kept the infrastructure-error exit distinct
+from the verdict exit for a Triton bundle on a CPU-only environment, and
+verified the collective allreduce example across both devices. The OCI
+containment flag vocabulary was exercised against the host's real
+container daemon: network egress refused, read-only binds refused writes
+with `EROFS`, a representative module-loading syscall refused, the
+packaged seccomp profile accepted at container create, and the non-root
+user identity enforced.
+
+A seam-currency audit ran this repository's compatibility doctor inside
+the launch-lineage staging worker image, against that image's SGLang
+source build `0.0.0.dev1+g56e290315`: every registered seam-table
+chokepoint bound, and every signature, engine-API, and server-argument
+check passed. The single failure was the version pin `0.5.13.post1`
+itself, which is the designed refusal for a non-pinned runtime.
+Chokepoint presence and signature agreement are the compatibility gate's
+own error boundary, not behavioral equivalence.
+
+These behaviors are retained as standing tests
+(`tests/test_cli_examples_e2e.py`, `tests/test_oci_live_container.py`)
+that activate by capability probe — CUDA device count and a usable
+container daemon — and skip cleanly elsewhere, so hosted CI keeps the CPU
+and containment tiers while the GPU tiers re-arm on any future validator
+host. This establishes suite health, the tested verify/containment
+behaviors, and the seam-table currency of this tree against that staging
+image, for that exact host and stack. It does not establish serving
+performance, qualification or settlement evidence, or any crown claim.
+
 ### Incentive evidence
 
 Historical V2 evidence — the deterministic one-campaign load study (semantic
