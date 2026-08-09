@@ -410,3 +410,12 @@ def test_compose_requires_a_sealed_commission_block() -> None:
         commission.compose_commissioned_qualifications(
             inputs, object(), object(), object()
         )
+
+
+def test_qualification_swap_root_is_runtime_traversable(tmp_path: Path) -> None:
+    root = commission._swap_intake_root(tmp_path / "resident-intake" / "A")
+    assert root.stat().st_mode & 0o777 == 0o711
+
+    root.chmod(0o700)
+    assert commission._swap_intake_root(root) == root
+    assert root.stat().st_mode & 0o777 == 0o711

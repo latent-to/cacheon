@@ -144,6 +144,12 @@ def _private_root(path: Path) -> Path:
     return path
 
 
+def _swap_intake_root(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True, mode=0o711)
+    path.chmod(0o711)
+    return path
+
+
 def _resident_plan(
     launch: EngineLaunchSpec,
     binding: TrustedLaunchBinding,
@@ -632,7 +638,7 @@ def _compose_locked(
         lane_pair=lane_pair,
         lane_plans=(baseline_lane_plan, candidate_lane_plan),
         model_mount=model_mount,
-        swap_intake_root=_private_root(
+        swap_intake_root=_swap_intake_root(
             inputs.root / "resident-intake" / screen_lane
         ),
     )
