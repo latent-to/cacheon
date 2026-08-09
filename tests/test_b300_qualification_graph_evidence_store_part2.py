@@ -221,14 +221,24 @@ def test_late_arm_publication_returns_hold_not_success(
     policy = _h("late-arm-policy")
     binding = _binding("late-arm")
 
+    fired = False
+
     def late_boundary(kind: str, phase: str) -> None:
+        nonlocal fired
         if (kind, phase) == ("arm", "parents_fsynced"):
-            time.sleep(0.05)
+            fired = True
+            time.sleep(1.0)
 
     monkeypatch.setattr(store_module, "_publication_boundary", late_boundary)
     store = B300QualificationGraphEvidenceStore(tmp_path / "store", policy)
+    # The deadline must expire after the armed record is linked and its
+    # parents are fsynced (the injected boundary), never before the arm
+    # reaches that point: a budget below real-filesystem publication latency
+    # expires pre-durability, leaves no record, and a later probe then
+    # legitimately succeeds fresh instead of returning the armed hold.
     with pytest.raises(B300QualificationGraphEvidenceHold, match="deadline expired"):
-        store.arm(binding, deadline=_deadline(0.02))
+        store.arm(binding, deadline=_deadline(0.5))
+    assert fired  # the armed record was durable before the deadline expired
     with pytest.raises(B300QualificationGraphEvidenceHold, match="armed"):
         store.probe_once(binding, _producer(policy), deadline=_deadline())
 
