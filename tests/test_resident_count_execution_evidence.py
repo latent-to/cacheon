@@ -8,7 +8,7 @@ import pytest
 
 from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.oci_session_protocol import BatchEvidence
-from cacheon.eval.resident_count_execution_evidence import (
+from cacheon.eval.resident_count_quality_execution import (
     ResidentCountExecutionEvidenceError,
     ResidentCountQualityExecutionEvidence,
 )

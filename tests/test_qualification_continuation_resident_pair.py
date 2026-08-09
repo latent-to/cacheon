@@ -1,3 +1,5 @@
+"""Resident-pair speed continuation contracts."""
+
 from __future__ import annotations
 
 import copy

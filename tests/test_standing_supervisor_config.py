@@ -134,6 +134,47 @@ def test_enable_weights_refused_until_sealed(tmp_path: Path) -> None:
         load_standing_config(standing_path)
 
 
+def test_enable_settlement_refused_until_sealed(tmp_path: Path) -> None:
+    standing_path, raw = _setup(tmp_path)
+    bad = dict(raw)
+    bad["enable_settlement"] = True
+    standing_path.chmod(0o600)
+    standing_path.write_bytes(spool.spool_canonical_json(bad) + b"\n")
+    standing_path.chmod(0o400)
+    with pytest.raises(StandingCpuSupervisorError, match="settlement"):
+        load_standing_config(standing_path)
+
+
+def test_backoff_ordering_fail_closed(tmp_path: Path) -> None:
+    standing_path, raw = _setup(tmp_path)
+    bad = dict(raw)
+    bad["restart_initial_backoff_ms"] = 80
+    standing_path.chmod(0o600)
+    standing_path.write_bytes(spool.spool_canonical_json(bad) + b"\n")
+    standing_path.chmod(0o400)
+    with pytest.raises(StandingCpuSupervisorError, match="exceeds its maximum"):
+        load_standing_config(standing_path)
+
+
+def test_group_writable_config_fail_closed(tmp_path: Path) -> None:
+    standing_path, _ = _setup(tmp_path)
+    standing_path.chmod(0o664)
+    with pytest.raises(
+        StandingCpuSupervisorError, match="owner-controlled regular file"
+    ):
+        load_standing_config(standing_path)
+
+
+def test_symlinked_config_fail_closed(tmp_path: Path) -> None:
+    standing_path, _ = _setup(tmp_path)
+    link = standing_path.parent / "standing-link.json"
+    link.symlink_to(standing_path)
+    with pytest.raises(
+        StandingCpuSupervisorError, match="owner-controlled regular file"
+    ):
+        load_standing_config(link)
+
+
 def test_build_standing_supervisor_omits_weights(tmp_path: Path) -> None:
     standing_path, _ = _setup(tmp_path)
     config = load_standing_config(standing_path)

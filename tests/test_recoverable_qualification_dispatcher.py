@@ -714,3 +714,24 @@ def test_expired_prepared_recovery_holds_before_transport_when_renewal_denied(
         "prepared",
         "held",
     ]
+
+
+def test_dispatcher_holds_when_product_incumbent_differs_from_cpu_owned(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, complete_on_publish=True)
+    dispatcher = RecoverableQualificationDispatcher(
+        coordinator=authority.coordinator,
+        transport=transport,
+        credential=authority.credential,
+        qualification_evidence_root=authority.root / "cpu-evidence",
+        qualification_incumbent_stack=authority.fixtures._incumbent(
+            authority.service
+        ),
+        qualification_incumbent_tree_digest=authority.fixtures._h("other-tree"),
+    )
+    outcome = dispatcher.dispatch_once()
+    assert type(outcome) is RecoverableQualificationHold
+    assert "incumbent_changed" in outcome.reason

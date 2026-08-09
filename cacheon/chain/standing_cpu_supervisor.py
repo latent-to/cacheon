@@ -23,7 +23,6 @@ import argparse
 import math
 import os
 import signal
-import stat
 import sys
 import threading
 import time
@@ -31,6 +30,8 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
+from functools import partial
+from cacheon.chain import sealed_config
 
 
 STATUS_SCHEMA = "cacheon-standing-cpu-supervisor-status-v1"
@@ -599,61 +600,10 @@ def _closed_config(value: object, fields: frozenset[str], label: str) -> dict[st
     return value
 
 
-def _absolute_path(value: object, label: str) -> Path:
-    if (
-        not isinstance(value, str)
-        or not value
-        or "\x00" in value
-        or not Path(value).is_absolute()
-    ):
-        raise StandingCpuSupervisorError(f"{label} must be an absolute path")
-    path = Path(value)
-    if path != Path(os.path.normpath(path)):
-        raise StandingCpuSupervisorError(f"{label} must be canonical")
-    return path
-
-
-def _authority_file(path: Path, label: str, *, secret: bool = False) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise StandingCpuSupervisorError(f"{label} is unavailable: {exc}") from None
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or stat.S_ISLNK(info.st_mode)
-        or info.st_nlink != 1
-        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
-        or (secret and stat.S_IMODE(info.st_mode) & 0o077)
-        or (not secret and stat.S_IMODE(info.st_mode) & 0o022)
-    ):
-        qualifier = (
-            "owner-only regular file" if secret else "owner-controlled regular file"
-        )
-        raise StandingCpuSupervisorError(f"{label} must be an {qualifier}")
-
-
-def _private_directory(path: Path, label: str) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise StandingCpuSupervisorError(f"{label} is unavailable: {exc}") from None
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or stat.S_ISLNK(info.st_mode)
-        or stat.S_IMODE(info.st_mode) != 0o700
-        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
-    ):
-        raise StandingCpuSupervisorError(
-            f"{label} must be an owner-controlled mode-0700 directory"
-        )
-
-
-def _positive_int(value: object, label: str, *, maximum: int | None = None) -> int:
-    if type(value) is not int or value <= 0 or (
-        maximum is not None and value > maximum
-    ):
-        raise StandingCpuSupervisorError(f"{label} is outside its integer bounds")
-    return value
+_absolute_path = partial(sealed_config.absolute_path, error=StandingCpuSupervisorError)
+_authority_file = partial(sealed_config.authority_file, error=StandingCpuSupervisorError)
+_private_directory = partial(sealed_config.private_directory, error=StandingCpuSupervisorError)
+_positive_int = partial(sealed_config.positive_int, error=StandingCpuSupervisorError)
 
 
 def _positive_float(value: object, label: str) -> float:

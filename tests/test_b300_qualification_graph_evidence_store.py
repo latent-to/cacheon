@@ -430,12 +430,18 @@ def test_callback_result_returned_after_deadline_remains_hold(
     ) -> B300QualificationGraphGenerationOutput:
         nonlocal calls
         calls += 1
-        time.sleep(0.04)
+        time.sleep(1.5)
         return _output(exact, policy, token)
 
     store = B300QualificationGraphEvidenceStore(tmp_path / "store", policy)
+    # The arm must land durably well inside the deadline while the producer
+    # still overruns it. A 10 ms budget encodes fast-filesystem latency: on an
+    # overlayfs validator host, locking plus a durable arm alone exceeds it,
+    # the deadline expires before any record exists, and a later probe then
+    # legitimately runs fresh — the late-producer scenario never happens.
     with pytest.raises(B300QualificationGraphEvidenceHold, match="deadline expired"):
-        store.probe_once(binding, late, deadline=_deadline(0.01))
+        store.probe_once(binding, late, deadline=_deadline(0.75))
+    assert calls == 1  # the producer ran here and returned after the deadline
     with pytest.raises(B300QualificationGraphEvidenceHold, match="armed"):
         store.probe_once(binding, late, deadline=_deadline())
     assert calls == 1

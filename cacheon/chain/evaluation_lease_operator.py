@@ -30,6 +30,8 @@ from cacheon.chain.recoverable_intake import (
     RecoverableFinalizedIntakeStore as FinalizedIntakeStore,
 )
 from cacheon.stack_identity import require_sha256_hex
+from functools import partial
+from cacheon.chain import sealed_config
 
 
 CONFIG_SCHEMA = "cacheon-fifo-evaluation-lease-config-v1"
@@ -78,30 +80,8 @@ def _closed(value: object, fields: frozenset[str], label: str) -> dict[str, Any]
     return value
 
 
-def _positive_int(
-    value: object,
-    label: str,
-    *,
-    maximum: int | None = None,
-    allow_zero: bool = False,
-) -> int:
-    minimum = 0 if allow_zero else 1
-    if type(value) is not int or value < minimum or (
-        maximum is not None and value > maximum
-    ):
-        raise FifoLeaseError(f"{label} is outside its integer bounds")
-    return value
-
-
-def _absolute_path(value: object, label: str) -> Path:
-    if (
-        not isinstance(value, str)
-        or not value
-        or "\x00" in value
-        or not Path(value).is_absolute()
-    ):
-        raise FifoLeaseError(f"{label} must be an absolute path")
-    return Path(value)
+_absolute_path = partial(sealed_config.absolute_path, error=FifoLeaseError)
+_positive_int = partial(sealed_config.positive_int, error=FifoLeaseError)
 
 
 def _reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:

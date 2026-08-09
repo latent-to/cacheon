@@ -123,7 +123,6 @@ ARCHITECTURE = "sm103"
 GPU_COUNT = 4
 TP_SIZE = 4
 DEFAULT_OUTPUT_ROOT = Path("/data/cacheon-b300/remote-worker/commissioned")
-DEFAULT_DOCKER = "/usr/bin/docker"
 
 
 class B300ScreenDeploymentError(RuntimeError):

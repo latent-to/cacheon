@@ -20,7 +20,6 @@ import os
 import re
 import signal
 import sqlite3
-import stat
 import sys
 import threading
 import time
@@ -63,6 +62,8 @@ from cacheon.chain.ssh_worker_transport import (
     DurableSpoolAuthenticatedWorkerTransport,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
+from functools import partial
+from cacheon.chain import sealed_config
 
 CONFIG_SCHEMA = "cacheon-mainnet-screen-dispatcher-config-v1"
 CONFIG_DOMAIN = "cacheon.chain.mainnet-screen-dispatcher-config.v1"
@@ -121,17 +122,10 @@ def _closed(value: object, fields: frozenset[str], label: str) -> dict[str, Any]
     return value
 
 
-def _positive_int(
-    value: object,
-    label: str,
-    *,
-    maximum: int | None = None,
-) -> int:
-    if type(value) is not int or value <= 0 or (
-        maximum is not None and value > maximum
-    ):
-        raise MainnetScreenDispatcherError(f"{label} is outside its integer bounds")
-    return value
+_absolute_path = partial(sealed_config.absolute_path, error=MainnetScreenDispatcherError)
+_authority_file = partial(sealed_config.authority_file, error=MainnetScreenDispatcherError)
+_private_directory = partial(sealed_config.private_directory, error=MainnetScreenDispatcherError)
+_positive_int = partial(sealed_config.positive_int, error=MainnetScreenDispatcherError)
 
 
 def _digest(value: object, label: str) -> str:
@@ -139,50 +133,6 @@ def _digest(value: object, label: str) -> str:
         return require_sha256_hex(value, field=label)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise MainnetScreenDispatcherError(str(exc)) from None
-
-
-def _absolute_path(value: object, label: str) -> Path:
-    if (
-        not isinstance(value, str)
-        or not value
-        or "\x00" in value
-        or not Path(value).is_absolute()
-    ):
-        raise MainnetScreenDispatcherError(f"{label} must be an absolute path")
-    return Path(value)
-
-
-def _authority_file(path: Path, label: str, *, secret: bool = False) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise MainnetScreenDispatcherError(f"{label} is unavailable: {exc}") from None
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or stat.S_ISLNK(info.st_mode)
-        or info.st_nlink != 1
-        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
-        or (secret and stat.S_IMODE(info.st_mode) & 0o077)
-        or (not secret and stat.S_IMODE(info.st_mode) & 0o022)
-    ):
-        qualifier = "owner-only regular file" if secret else "owner-controlled regular file"
-        raise MainnetScreenDispatcherError(f"{label} must be an {qualifier}")
-
-
-def _private_directory(path: Path, label: str) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise MainnetScreenDispatcherError(f"{label} is unavailable: {exc}") from None
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or stat.S_ISLNK(info.st_mode)
-        or stat.S_IMODE(info.st_mode) != 0o700
-        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
-    ):
-        raise MainnetScreenDispatcherError(
-            f"{label} must be an owner-controlled mode-0700 directory"
-        )
 
 
 def _manifest_from_dict(value: object) -> ArenaServiceManifest:

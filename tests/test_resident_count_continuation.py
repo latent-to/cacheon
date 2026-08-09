@@ -26,7 +26,7 @@ from cacheon.eval.resident_count_continuation import (
     publish_resident_count_quality_continuation,
     reopen_resident_count_quality_continuation,
 )
-from cacheon.eval.resident_count_execution_evidence import (
+from cacheon.eval.resident_count_quality_execution import (
     ResidentCountQualityExecutionEvidence,
 )
 from cacheon.eval.resident_count_quality import (

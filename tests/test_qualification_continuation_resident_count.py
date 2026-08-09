@@ -1,3 +1,5 @@
+"""Resident-count checkpoint continuation contracts."""
+
 from __future__ import annotations
 
 import hashlib
