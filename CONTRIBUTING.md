@@ -47,6 +47,25 @@ Changes to slot or target contracts, candidate execution, evidence authority,
 chain publication, economics, or release construction deserve an especially
 small diff and an explicit statement of the invariant being preserved.
 
+## Code volume and reachability
+
+Every production module must ship with a consumer reachable from a real entry
+point, a registered seam, packaging metadata, repository tooling, or the
+declared capability manifest (`cacheon/capability_manifest.py`). Scaffolding
+does not merge ahead of its consumer, and a module whose only reader is its
+own test file is not integrated. Repository validation enforces this:
+
+```bash
+python scripts/check_islands.py
+```
+
+A module without a consumer must be wired into its production owner, declared
+in the capability manifest, or deleted; growing `scripts/island_baseline.txt`
+is a reviewed last resort. The checker also reports files above the 900-line
+watermark and `_part<N>` test files. Prefer diffs that delete, state the net
+line impact in the pull request description, and split any change above
+roughly +1,500 net production lines.
+
 ## Documentation
 
 Documentation lives in this repository so behavior and its engineering contract
