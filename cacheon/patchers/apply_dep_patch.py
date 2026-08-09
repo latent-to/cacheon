@@ -11,7 +11,6 @@ This reviewed patcher parses bundle files as data.  It never imports bundle Pyth
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import os
 import shutil

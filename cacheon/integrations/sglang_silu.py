@@ -19,7 +19,6 @@ method. ``uninstall()`` restores the originals.
 
 from __future__ import annotations
 
-from typing import Optional
 
 from cacheon.dispatch import make_silu_and_mul_dispatcher
 from cacheon.registry import REGISTRY, KernelRegistry

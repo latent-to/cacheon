@@ -22,7 +22,7 @@ Snapshot date: **2026-07-31**
 | Test command | `python3 -m pytest -q tests` with Python 3.10.4 in an unrestricted local environment |
 | SGLang pin | `0.5.13.post1` in `cacheon/compat.py` |
 | Bittensor raw-reveal storage ABI | `10.3.2` in `cacheon/chain_canary.py` |
-| Public CLI | 27 commands |
+| Public CLI | 25 commands after the 2026-08-09 V2 economics extraction |
 
 The public product, Python package, CLI, environment-variable, HTTP-header,
 and protocol-identity names formerly branded Optima are now Cacheon
@@ -204,14 +204,15 @@ empty support rows through the reference protocol and worker, explicit
 null distribution/KL evidence with uniformity enforced at every layer,
 and typed refusal of any threshold policy that names a distribution
 metric against it. Distribution-level numerics coverage remains with the
-in-engine slot audit stage. The
-supporting instrument authority, `cacheon/eval/box_certificate.py`, seals
-per-session stock-vs-stock null floors, a resolved known-magnitude effect,
-double-bounded expiry, and typed instrument-invalidation records. Overnight
-2026-07-24/25 measurement context: two version-2 joined primaries passed
-clearly while the timed noise floor of the box deteriorated 0.72% to 3.09%
-across the night and the final calibration honestly refused; version 3 is
-the structural response.
+in-engine slot audit stage. The earlier standalone instrument authority
+(`box_certificate`, sealed per-session stock-vs-stock null floors with
+double-bounded expiry) was retired 2026-08-08 without ever gaining a
+production caller; instrument validity is owned by the version-3
+resident-pair speed policy and calibration path. Overnight 2026-07-24/25
+measurement context: two version-2 joined primaries passed clearly while
+the timed noise floor of the box deteriorated 0.72% to 3.09% across the
+night and the final calibration honestly refused; version 3 is the
+structural response.
 
 The audit gate is Torch-free, checks exact slot × TP-rank/process coverage, and
 canonicalizes floating-point facts before durable receipt identity. Audit is
@@ -285,25 +286,26 @@ availability/custody remain deployment responsibilities.
 
 ### Inactive V2 finite debt
 
-The implemented V2 path contains:
+On **2026-08-09** the V2 finite-debt economics implementation — finite
+registered-CROWN debt, the reviewed-discovery bounty class, campaign and
+composition policies, the wallet-free activation command, and
+`set-debt-weights` publication — was extracted from the tree without ever
+being activated. No live V2 activation or publication receipt ever existed.
+The design intent is retained (a bounded post-activation claim paid down over
+confirmed epochs) and the complete implementation is recoverable from Git
+history at [`dc158fb4`](https://github.com/latent-to/cacheon/commit/dc158fb4).
 
-- fixed-point finite registered-CROWN debt;
-- a separate bounded reviewed-discovery bounty class;
-- content-addressed campaign and composition policies;
-- a wallet-free atomic activation command; and
-- gapless, cadence-bounded `set-debt-weights` publication that debits only
-  after exact boundary/vector/policy/readback confirmation.
+Two durable-compatibility artifacts remain in the tree:
 
-Pure arithmetic supports one 100% campaign or two 50% research campaigns. The
-implemented activation path accepts exactly one immutable MiniMax-M3 campaign
-at 100% sizing. Rotation, a second live campaign, and successor activation are
-unsupported.
+- [`chain/reserved_schema.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
+  preserves the schema-4/5/6 migrations and V2 table DDL verbatim, so every
+  existing intake database keeps validating and fresh databases keep
+  producing byte-identical schemas; and
+- the shared-weight offer wire schema keeps its `lane`/`debt_binding` fields
+  with `lane` restricted to `legacy_v1` and any debt-lane payload rejected,
+  so historical stored offers reopen byte-identically.
 
-V2 is **inactive** in this snapshot. There is no retained live activation or
-V2 publication receipt. Durable reviewed discovery can remain
-`review_pending` and can issue `bounty_only` debt, but registered promotion
-fails closed until typed promotion transport, target registration, fresh
-requalification/CROWN linkage, and cross-lane work identity exist.
+Reintroducing V2 is a new reviewed change, not a revert switch.
 
 ### Engine release
 
@@ -563,21 +565,14 @@ failure domains, mainnet economics, V2 activation, or unattended operation.
 
 ### Incentive evidence
 
-The tracked one-campaign load report contains 64 matrix rows and four burst
-controls. Its semantic report digest under the Cacheon vocabulary is
-`b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`; the
-retained historical record and the live replay converge on this digest, so all
-accounting semantics are preserved across the identifier rename. The only
-report-field differences across the rename are the source-file SHA-256, the
-config identity, and the report digest derived from them.
-It is deterministic accounting sensitivity, not chain, GPU, token-value,
-miner-equilibrium, activation, or publication evidence. See
-[Incentive load validation](../results/incentive-load-validation.md).
-
-Historical signer-free shadows exercised synthetic policy fixtures against
-exact testnet membership and submitted no weights. They do not authorize the
-current one-campaign V2 bytes. No live V2 activation or debit-confirming
-publication receipt exists in this snapshot.
+Historical V2 evidence — the deterministic one-campaign load study (semantic
+report digest `b4de2350328a1bb8665cbcdf33f1256723023db662bf429cf80ed3343fb2b4b9`)
+and the signer-free shadow projections against exact testnet membership —
+was accounting-sensitivity and fixture evidence only. It never authorized
+activation, and no live V2 activation or debit-confirming publication receipt
+ever existed. The study, its fixtures, and the shadow tooling were extracted
+with the V2 implementation on 2026-08-09 and remain in Git history at
+[`dc158fb4`](https://github.com/latent-to/cacheon/commit/dc158fb4).
 
 ## Public CLI
 
@@ -587,12 +582,11 @@ The live command inventory is:
 slots  compat  chain-compat  scan  verify
 chain-package  chain-publish  chain-submit  chain-status  chain-register
 chain-reservation-status  chain-validate  chain-snapshot  chain-snapshot-verify
-chain-archive-schema3-hold
+chain-archive-schema3-hold  chain-evaluation-lease
 model-provision  release-verify  release-context
-chain-incentive-shadow  chain-incentive-composition-shadow
-chain-activate-incentives
-set-weights  set-debt-weights
-mint-push-credentials  push-weight-offer  serve-weights  follow-weights
+set-weights
+mint-push-credentials  mint-weight-gateway  push-weight-offer  serve-weights
+follow-weights
 ```
 
 The local miner loop is `scan` plus `verify`. Complete-engine performance and
@@ -621,6 +615,5 @@ claim that a live mainnet deployment or receipt exists.
 - [Audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 - [Settlement](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
 - [Legacy publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
-- [V2 activation](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py)
-- [V2 debt publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)
+- [Reserved V2 schema](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
 - [Release construction](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py)

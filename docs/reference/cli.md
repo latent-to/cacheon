@@ -32,16 +32,12 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-snapshot` | validator | private object-store mutation | Publish and reopen a consistent validator recovery snapshot |
 | `chain-snapshot-verify` | validator | recovery verification | Download and semantically reopen one snapshot, optionally into fresh staging |
 | `chain-archive-schema3-hold` | validator | durable state transition | Terminally archive one exact legacy schema-3 reproduction hold |
-| `chain-incentive-shadow` | policy operator | signer-free evidence | Project explicit synthetic registered-CROWN debt against finalized membership |
-| `chain-incentive-composition-shadow` | policy operator | signer-free evidence | Project explicit synthetic CROWN and discovery debt against finalized membership |
-| `chain-activate-incentives` | policy operator | wallet-free durable transition | Atomically activate one independently approved campaign/composition |
 | `set-weights` | signer | legacy production control plane | Reconcile the journaled V1 projection, including bounded burn bootstrap/watch operation, or run the subnet-owner burn bypass |
 | `mint-push-credentials` | operator | weight-share push auth | Create/rotate HMAC secrets for eval → serve-weights |
 | `mint-weight-gateway` | operator | weight-share deploy | Create a dedicated HTTP authority wallet (and optional push credentials) for serve-weights |
-| `push-weight-offer` | eval | peer weight distribution | Build V1/V2 offer and HTTP-push; never chain-publishes |
+| `push-weight-offer` | eval | peer weight distribution | Build the legacy V1 offer and HTTP-push; never chain-publishes |
 | `serve-weights` | weights gateway | peer weight distribution | Serve/store the offer; optional authenticated PUT from eval |
 | `follow-weights` | signer | peer weight publication | Fetch the shared offer and publish through the commit-reveal reconciler |
-| `set-debt-weights` | validator | active-V2 production control plane | Publish, confirm, and debit the next gapless finite-debt boundary |
 | `model-provision` | release operator | production artifact | Seal model bytes into a content-addressed publication and receipt |
 | `release-verify` | release consumer | production verification | Reopen a signed Engine release under an externally trusted key |
 | `release-context` | release consumer | production build input | Materialize a deterministic OCI context from a verified release |
@@ -488,9 +484,8 @@ python -m cacheon.cli follow-weights \
   --watch
 ```
 
-`push-weight-offer` is the eval path: it builds a V2 debt/composition offer when
-incentive composition is active (else legacy V1), and HTTP-PUTs it. It never
-opens a weight-signing wallet or calls `set_weights`. Credentials resolve from
+`push-weight-offer` is the eval path: it builds the legacy V1 offer and
+HTTP-PUTs it. It never opens a weight-signing wallet or calls `set_weights`. Credentials resolve from
 `--push-credentials`, else `CACHEON_WEIGHT_PUSH_CREDENTIALS` (JSON path), else
 `CACHEON_WEIGHT_PUSH_KEY` (+ optional `CACHEON_WEIGHT_PUSH_CREDENTIAL_ID`).
 The corresponding `CACHEON_WEIGHT_PUSH_*` names remain last-precedence transition
@@ -527,69 +522,6 @@ variables are accepted only as last-precedence transition aliases. The optional
 S3-compatible dependency is
 `pip install -e ".[object-store]"` (boto3, Apache-2.0). See
 [Settlement and weights](../validator-guide/settlement-and-weights.md#shared-current-weights-endpoint).
-
-### Incentive shadows
-
-```bash
-python -m cacheon.cli chain-incentive-shadow \
-  --network <network> --netuid <netuid> \
-  --policy core-policy.json \
-  --claims-fixture synthetic-core-claims.json \
-  --expected-policy-digest <sha256> \
-  --expected-claims-digest <sha256> \
-  --output core-shadow-receipt.json
-
-python -m cacheon.cli chain-incentive-composition-shadow \
-  --network <network> --netuid <netuid> \
-  --core-policy core-policy.json \
-  --core-claims-fixture synthetic-core-claims.json \
-  --discovery-policy discovery-policy.json \
-  --discovery-claims-fixture synthetic-discovery-claims.json \
-  --expected-core-policy-digest <sha256> \
-  --expected-core-claims-digest <sha256> \
-  --expected-discovery-policy-digest <sha256> \
-  --expected-discovery-claims-digest <sha256> \
-  --output composition-shadow-receipt.json
-```
-
-Both commands require explicitly synthetic fixtures, bind exact finalized membership,
-construct no wallet, and never submit. Their receipts establish deterministic projection
-against observed membership; they do not provide review, activation, settlement,
-publication, or debit authority.
-
-### `chain-activate-incentives`
-
-```bash
-python -m cacheon.cli chain-activate-incentives \
-  --network <network> --netuid <netuid> \
-  --intake-db chain_intake/intake.sqlite3 \
-  --core-policy core-policy.json \
-  --composition-policy composition-policy.json \
-  --approval approval.json \
-  --expected-approval-digest <independently-recorded-sha256>
-```
-
-Activation is wallet-free. It validates and atomically binds the exact finalized cursor,
-retained arena, stack, catalog/family roster, membership, reserve, audit controls, policy,
-and independent approval. The implemented path accepts exactly one immutable MiniMax-M3
-campaign. It does not sign or publish weights.
-
-### `set-debt-weights`
-
-```bash
-python -m cacheon.cli set-debt-weights \
-  --network <network> --netuid <netuid> \
-  --intake-db chain_intake/intake.sqlite3 \
-  --wallet <wallet> --hotkey <validator-hotkey> \
-  --refresh-blocks <blocks> \
-  --dry-run
-```
-
-This command is valid only after V2 activation. It projects the next exact gapless policy
-boundary, journals before signing, confirms through authoritative readback, and debits
-claims only after confirmation. Delayed boundaries preserve nominal order and catch up no
-faster than the policy cadence. `--reconcile-only`, `--validator-hotkey`, and
-`--release-hold` provide signer-free recovery surfaces analogous to the V1 publisher.
 
 ## Environment checks
 

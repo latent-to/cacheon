@@ -14,7 +14,6 @@ from cacheon import chain
 from cacheon.chain.weight_share import (
     AuthenticatedWeightOffer,
     CURRENT_WEIGHTS_PATH,
-    LANE_CORE,
     LANE_LEGACY_V1,
     OFFER_SCHEMA,
     CurrentWeightOffer,
@@ -34,7 +33,6 @@ from cacheon.chain.weight_share import (
     push_current_weights,
     read_offer_storage,
     read_current_weight_offer,
-    rebind_offer_signer,
     rebind_projection_signer,
     request_auth_digest,
     serve_current_weights,
@@ -42,7 +40,7 @@ from cacheon.chain.weight_share import (
     verify_authenticated_weight_offer,
     write_current_weight_offer,
 )
-from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
+from cacheon.chain.weights import WeightProjection
 from cacheon.object_store import MemoryObjectStore
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes, sha256_hex
 
@@ -135,124 +133,6 @@ def test_offer_roundtrip_and_default_path(tmp_path: Path) -> None:
     assert raw["lane"] == LANE_LEGACY_V1
 
 
-def _debt_binding(
-    *,
-    hotkey: str = "authority",
-    scope_digest: str | None = None,
-):
-    from types import SimpleNamespace
-
-    from cacheon.chain.debt_publication import (
-        PUBLICATION_KIND_CORE,
-        build_debt_weight_publication_binding,
-    )
-    from cacheon.finite_debt import PPM, DebtEpochProjection, DebtHotkeyWeight
-
-    economic = DebtEpochProjection(
-        _d("core policy"),
-        110,
-        PPM,
-        900_000,
-        0,
-        0,
-        "reserve",
-        PPM,
-        (),
-        (),
-        (DebtHotkeyWeight("reserve", PPM),),
-    )
-    metagraph = SimpleNamespace(
-        block=110,
-        block_hash="0x" + f"{110:064x}",
-        hotkeys=["reserve", hotkey],
-        uids=[1, 2],
-    )
-    return build_debt_weight_publication_binding(
-        economic,
-        publication_kind=PUBLICATION_KIND_CORE,
-        activation_digest=_d("activation"),
-        chain_scope_digest=scope_digest or _d("scope"),
-        netuid=307,
-        validator_hotkey=hotkey,
-        boundary_metagraph=metagraph,
-        epoch_index=1,
-    )
-
-
-def test_debt_offer_roundtrip_and_rebind(tmp_path: Path) -> None:
-    binding = _debt_binding()
-    offer = CurrentWeightOffer.from_debt_binding(binding)
-    assert offer.lane == LANE_CORE
-    assert offer.projection.weights_ppm == tuple(
-        (row.hotkey, row.units) for row in binding.weights
-    )
-    path = tmp_path / "debt_offer.json"
-    write_current_weight_offer(path, offer)
-    loaded = read_current_weight_offer(path)
-    assert loaded == offer
-    rebound = rebind_offer_signer(offer, "follower")
-    assert rebound.projection.validator_hotkey == "follower"
-    assert rebound.debt_binding is not None
-    assert rebound.debt_binding.economic_projection == binding.economic_projection
-    assert rebound.projection.weights_ppm == offer.projection.weights_ppm
-    assert rebound.digest != offer.digest
-
-
-def test_fresh_signer_only_journal_accepts_a_debt_offer(
-    tmp_path: Path,
-) -> None:
-    from cacheon.chain.intake import (
-        FinalizedIntakeStore,
-        IntakeScope,
-        SQLiteFollowerWeightPublicationJournal,
-    )
-
-    scope = IntakeScope("0x" + "0" * 64, 307)
-    rebound = rebind_offer_signer(
-        CurrentWeightOffer.from_debt_binding(
-            _debt_binding(scope_digest=scope.digest)
-        ),
-        "follower",
-    )
-    path = tmp_path / "private" / "follower.sqlite3"
-    intent = WeightPublicationRecord(
-        rebound.projection.digest,
-        "intent",
-        submit_block=111,
-        retry_after_block=121,
-        reason="before_sdk_submission",
-    )
-    with FinalizedIntakeStore(path, scope=scope) as store:
-        journal = SQLiteFollowerWeightPublicationJournal(store, rebound)
-        assert journal.load() is None
-        journal.compare_and_swap(None, intent)
-        assert journal.load() == intent
-        assert (
-            journal.retained_projection(rebound.projection.digest)
-            == rebound.projection
-        )
-
-    pending = WeightPublicationRecord(
-        rebound.projection.digest,
-        "pending",
-        prior_record_digest=intent.digest,
-        submit_block=111,
-        retry_after_block=121,
-        reason="sdk_result_unconfirmed",
-    )
-    with FinalizedIntakeStore(path, scope=scope) as store:
-        journal = SQLiteFollowerWeightPublicationJournal(store, rebound)
-        assert journal.load() == intent
-        journal.compare_and_swap(intent.digest, pending)
-        assert journal.load() == pending
-        assert (
-            store._db.execute(
-                "SELECT COUNT(*) AS n FROM followed_weight_publications"
-            ).fetchone()["n"]
-            == 2
-        )
-
-
 def test_rebind_keeps_weights_changes_signer() -> None:
     projection = _projection()
     rebound = rebind_projection_signer(projection, "follower")
@@ -260,6 +140,20 @@ def test_rebind_keeps_weights_changes_signer() -> None:
     assert rebound.weights_ppm == projection.weights_ppm
     assert rebound.digest != projection.digest
     assert rebind_projection_signer(projection, "authority") is projection
+
+
+def test_debt_lane_offers_are_rejected_after_extraction() -> None:
+    offer = CurrentWeightOffer.from_legacy_projection(_projection())
+    row = offer.to_dict()
+    assert row["debt_binding"] is None
+    assert row["debt_binding_digest"] is None
+    with pytest.raises(WeightShareError, match="lane is unsupported"):
+        CurrentWeightOffer("finite_debt", _projection(), None)
+    stale = dict(row)
+    stale["debt_binding"] = {"publication_kind": "finite_debt_core"}
+    stale["debt_binding_digest"] = "0" * 64
+    with pytest.raises(WeightShareError, match="retired"):
+        CurrentWeightOffer.from_dict(stale)
 
 
 def test_timestamp_skew_and_permit_gates() -> None:
@@ -532,38 +426,6 @@ def test_publish_followed_weights_uses_reconciler(
     assert seen["require_current_crown"] is True
 
 
-def test_publish_followed_debt_offer_skips_crown_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    offer = CurrentWeightOffer.from_debt_binding(_debt_binding())
-    wallet = SimpleNamespace(hotkey=_FakeHotkey("follower", b"f"))
-    seen = {}
-
-    def fake_reconcile(*_a, **kwargs):
-        seen.update(kwargs)
-        return SimpleNamespace(
-            projection_digest="x",
-            status="dry_run",
-            chain_matches=False,
-            submitted=False,
-            refresh_due=False,
-        )
-
-    monkeypatch.setattr(
-        "cacheon.chain.weight_share.reconcile_weight_publication",
-        fake_reconcile,
-    )
-    publish_followed_weights(
-        subtensor=object(),
-        signer_wallet=wallet,
-        offer=offer,
-        journal=_Journal(),
-        refresh_blocks=100,
-        dry_run=True,
-    )
-    assert seen["require_current_crown"] is False
-
-
 def test_push_endpoint_accepts_rotatable_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -603,16 +465,18 @@ def test_push_endpoint_accepts_rotatable_credentials(
     try:
         port = int(server.server_address[1])
         base = f"http://127.0.0.1:{port}"
-        debt_offer = CurrentWeightOffer.from_debt_binding(_debt_binding())
+        updated_offer = CurrentWeightOffer.from_legacy_projection(
+            _projection(block=11)
+        )
         accepted = push_current_weights(
             base,
-            debt_offer,
+            updated_offer,
             credential=credential,
             clock=lambda: 1_700_000_100,
         )
         assert accepted["status"] == "accepted"
-        assert accepted["offer_digest"] == debt_offer.digest
-        assert accepted["projection_digest"] == debt_offer.projection.digest
+        assert accepted["offer_digest"] == updated_offer.digest
+        assert accepted["projection_digest"] == updated_offer.projection.digest
         assert accepted["credential_id"] == credential.credential_id
         assert accepted["request_timestamp"] == 1_700_000_100
         assert accepted["schema"] == "cacheon.weight-share.push-ack.v1"
@@ -623,7 +487,7 @@ def test_push_endpoint_accepts_rotatable_credentials(
             verify_authenticated_weight_offer(
                 stored, PushCredentialSet((credential,))
             )
-            == debt_offer
+            == updated_offer
         )
         with pytest.raises(WeightShareError, match="authenticated storage"):
             read_current_weight_offer(offer_path)
@@ -635,13 +499,13 @@ def test_push_endpoint_accepts_rotatable_credentials(
             verify=verify,
             metagraph=_view(),
         )
-        assert fetched.lane == LANE_CORE
-        assert fetched.digest == debt_offer.digest
+        assert fetched.lane == LANE_LEGACY_V1
+        assert fetched.digest == updated_offer.digest
         bad = mint_push_credential(credential_id="intruder")
         with pytest.raises(WeightShareError, match="rejected"):
             push_current_weights(
                 base,
-                debt_offer,
+                updated_offer,
                 credential=bad,
                 clock=lambda: 1_700_000_100,
             )
@@ -832,11 +696,6 @@ def test_push_weight_offer_cli_never_calls_set_weights(
         chain,
         "fetch_metagraph",
         lambda *_a, **_k: _view(),
-    )
-    monkeypatch.setattr(
-        FinalizedIntakeStore,
-        "active_incentive_composition",
-        lambda *_a, **_k: None,
     )
     monkeypatch.setattr(
         FinalizedIntakeStore,

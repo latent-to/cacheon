@@ -33,7 +33,6 @@ from cacheon.eval.oci_process import (
 )
 from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
-    EVIDENCE_MAGIC,
     MAX_CONTROL_BYTES,
     AuditReceiptFacts,
     BatchEvidence,

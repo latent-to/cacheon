@@ -44,7 +44,7 @@ PRIVATE_PATTERNS = (
         "direct privileged SSH endpoint",
     ),
     (
-        re.compile(r"(?:~/(?:\.claude/projects|\.codex/sessions)|AgentArchive/)"),
+        re.compile(r"(?:~/\.[\w-]+/(?:projects|sessions)\b|AgentArchive/)"),
         "private agent-session path",
     ),
 )

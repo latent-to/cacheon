@@ -20,8 +20,8 @@ Choose the smallest relevant path:
 7. `docs/engine/overview.md` — chain-independent serving releases.
 8. `docs/security/threat-model.md` — implemented controls and residual risk.
 
-If a task continues earlier Codex or Claude work, follow the cross-harness
-continuity instructions supplied by the environment. Historical logs route an
+If a task continues earlier automated-contributor work, follow the
+cross-harness continuity instructions supplied by the environment. Historical logs route an
 investigation; current code, tests, Git state, and external state remain
 authoritative.
 
@@ -49,9 +49,10 @@ or treated as production authority.
   reproduction.
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
-- Legacy V1 weights and inactive V2 finite debt are fenced state machines.
-  Do not infer V2 activation or registered discovery promotion from implemented
-  arithmetic.
+- Legacy V1 weights are a fenced state machine. The V2 finite-debt economics
+  were extracted from the tree on 2026-08-09; only their reserved durable
+  schema remains, and reintroduction requires a new reviewed change. Do not
+  infer registered discovery promotion from implemented arithmetic.
 
 If a change weakens one of these statements, it requires an explicit design and
 security review—not a local implementation shortcut.
@@ -236,6 +237,34 @@ source links, CLI inventory, private-path exclusion, and retired-repository
 removal. `site/` is generated output and is not committed.
 
 See `CONTRIBUTING.md` and `docs/contributing/documentation.md`.
+
+## Code-volume discipline
+
+Introduced after a measured audit found production modules with no importer
+anywhere, files packed to just under the line cap, and tests split into
+numbered files. Deletion is a first-class outcome. These rules bind every
+contributor and subagent:
+
+- Never land a production module without a same-change consumer reachable
+  from a real entrypoint, registered seam, packaging metadata, or the declared
+  capability manifest (`cacheon/capability_manifest.py`). "A future private
+  caller will import this" is not a consumer; a module read only by its own
+  tests is not integrated.
+- `python scripts/check_islands.py` enforces reachability against
+  `scripts/island_baseline.txt`. Shrinking the baseline is cleanup; growing it
+  is a reviewed decision that must be justified in the pull request.
+- Target files under roughly 600 physical lines. The 1,000-line cap is a
+  ceiling, not a budget; packing files to just under it is a design smell.
+  Never split tests into `_partN` files — split by behavior with named scopes.
+- State net line impact in every pull request and handoff summary. Prefer
+  diffs that delete. A single reviewable unit above roughly +1,500 net
+  production lines must be split or explicitly justified.
+- Subagent output is a proposal, not an increment: delete what the task did
+  not need before integrating it. Delegation is not accretion.
+- Configuration flags a loader rejects, wrappers that cannot be enabled, and
+  fences that are not wired are dead on arrival — wire them or drop them.
+- Write the doc or kill the surface: an undocumented new command, flag, or
+  schema is a deletion candidate, not a TODO.
 
 ## Persistence
 

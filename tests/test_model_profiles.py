@@ -31,7 +31,6 @@ def test_slot_for_model_m3_swaps_activation_and_correctness():
     assert slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4").correctness.mode == "cosine"
 
     # the rebound reference computes swigluoai, not SiLU
-    g = torch.Generator().manual_seed(0)
     inp = generic.make_inputs(dtype=torch.float32, device="cpu", seed=0,
                               num_tokens=8, num_experts=4, hidden=32, inter=16, topk=2)
     ref_silu = generic.invoke_reference(inp)[0]

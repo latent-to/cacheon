@@ -107,9 +107,7 @@ reopens evidence but accepts only reviewed integrated source.
 | Transactional settlement state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
 | Pure emissions projection | [`economics.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py) |
 | Weight publication reconciliation | [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py) |
-| Finite-debt arithmetic | [`finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py), [`incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py) |
-| Durable V2 activation and state | [`chain/finite_debt_store.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/finite_debt_store.py), [`chain/incentive_composition_store.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_composition_store.py), [`chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py) |
-| V2 projection, confirmation, and debit | [`chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py) |
+| Reserved V2 durable schema | [`chain/reserved_schema.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py) |
 | Copy and attribution evidence | [`copy_fingerprint.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/copy_fingerprint.py) |
 
 ## Engine integration and release

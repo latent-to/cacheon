@@ -15,10 +15,10 @@ Two generations coexist so retained evidence remains reopenable:
 | Generation | Claim model | Publication command | Status |
 |---|---|---|---|
 | Legacy V1 | Decaying standing credit plus bounded discovery claims | `cacheon set-weights` | Retained and operational |
-| Finite-debt V2 | Finite registered-CROWN principal plus reviewed discovery bounty | `cacheon set-debt-weights` | Implemented behind an explicit one-way activation |
+| Finite-debt V2 | Finite registered-CROWN principal plus reviewed discovery bounty | none | Design retained; implementation extracted from the tree on 2026-08-09 |
 
-Activation does not reinterpret a V1 claim or rewrite its policy digest. V1 and V2
-must never publish concurrently from the same economic authority.
+Only legacy V1 can publish weights. The extracted V2 implementation and its
+durable evidence remain reopenable from Git history and the reserved schema.
 
 ## Legacy V1
 
@@ -162,191 +162,32 @@ Signer-free modes reopen journal state without submitting:
 
 ## Finite-debt V2
 
-V2 accounting uses integers and fixed-point arithmetic. One epoch contains
-1,000,000 weight-ppm units. The selected composition reserves at least 100,000
-units and allocates the rest to finite registered and discovery debt.
+V2 finite debt is a retained design, not implemented code. Its implementation
+— fixed-point finite registered-CROWN principal, a separate bounded
+reviewed-discovery bounty class, content-addressed one-campaign composition
+policies, wallet-free atomic activation, and gapless confirmed-boundary debt
+publication — was extracted from the tree on 2026-08-09 without ever being
+activated. The complete implementation, its policy arithmetic, the reviewed
+selection-report identities, and the deterministic load study remain in Git
+history at
+[`dc158fb4`](https://github.com/latent-to/cacheon/commit/dc158fb4).
 
-### Selected policy evidence identity
+The design intent retained for a future reintroduction:
 
-The implemented one-campaign composition recognizes two exact selection-report
-identities:
+- an eligible post-activation crown receives a **finite** bounded claim that
+  is paid down over later confirmed epochs — no perpetual royalty;
+- a later crown does not erase an unpaid balance;
+- reviewed discovery pays a separate bounded bounty class; and
+- activation is an explicit, independently approved one-way cutover, never an
+  inference from implemented arithmetic.
 
-| Selection authority | Report digest |
-|---|---|
-| Registered-CROWN core policy | `7975a10b2924330cd527e29b0dfe6f2d9dcb40039f9d8f695b558ec6c6f46590` |
-| Reviewed-discovery composition policy | `6bdfce26e4e6090e0dcc8814a636c665f28d1ff20945a09d43a9a90dc94151fc` |
-
-These values identify the reviewed selection reports; they are not substitutes
-for the content digests of the policy manifests, activation approval, claims,
-or shadow receipts. The selected-policy checks in
-[`incentive_composition_store.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_composition_store.py)
-require both report identities together with the selected numeric policy. The
-tracked D-015 replay configuration records the same pair in
-[`d015_launch_load_config.json`](https://github.com/latent-to/cacheon/blob/main/tests/fixtures/incentives/d015_launch_load_config.json).
-Activation still reopens and binds the exact policy and approval bytes described
-below.
-
-### Campaign policy
-
-A finite-debt policy is content-addressed and accepts:
-
-- one campaign with a 1,000,000-ppm claim-sizing share; or
-- two campaigns with 500,000 ppm each.
-
-Every registered family maps to exactly one campaign, and every campaign has at
-least one family. Campaign share sizes new claims; it is not a permanent epoch
-silo and is not divided by the number of families.
-
-The current activation path accepts exactly one retained campaign. Supporting a
-second live campaign, model rotation, or successor activation requires a new
-reviewed migration contract.
-
-### Registered-CROWN principal
-
-Only an independently reproduced registered-lane `CROWN` issues registered
-principal. For reproduced multiplicative speedup `s`:
-
-```text
-G = floor(1_000_000 * ln(s) / ln(1.01))
-```
-
-If the family has no retained or activation-seeded prior clock, its multiplier is
-`1_000_000`. Otherwise, with accepted finalized-crown gap `D`:
-
-```text
-M = 1_000_000 + floor(100_000 * D / (D + 648_000))
-```
-
-For post-reserve capacity `900_000`, campaign share `B_c`, and scaling parameter
-`k`, principal uses this flooring order:
-
-```text
-F_c = floor(900_000 * B_c / 1_000_000)
-Q   = floor(F_c * k * G * M / 1_000_000^3)
-```
-
-Only an accepted crown advances the family clock. A failed, held, copied,
-discovery-only, retirement, or neutralization disposition does not.
-
-### Reviewed discovery
-
-Reviewed discovery has two policy-level decisions:
-
-1. `bounty_only` issues one finite, non-renewable discovery claim.
-2. `registered_promotion` issues no discovery debt and would require fresh
-   registered qualification, reproduction, and a CROWN.
-
-The durable implementation currently supports only `bounty_only`. Registered
-promotion fails closed until typed `DiscoveryWinRecord` and `DiscoveryPromotion`
-authority can be transported, reopened, and linked to fresh registered-lane
-authority.
-
-A bounty is capped at 50,000 weight-ppm epoch units and has a 648,000-block
-lifetime measured from the retained qualified-win block. Review delay consumes
-that lifetime; review at or after expiry cannot mint a claim. The review digest is
-content-bound but supplied by the controller. The store does not independently
-grade an external governance system.
-
-### Epoch composition
-
-For live discovery debt `D_d` and registered debt `D_c`, the selected composition
-allocates:
-
-```text
-P_d     = min(50_000, D_d)
-P_c     = min(900_000 - P_d, D_c)
-reserve = 1_000_000 - P_d - P_c
-```
-
-Each class distributes its integer allocation pro rata by remaining principal
-using claim-digest largest remainder, then aggregates by hotkey. Expired or
-cancelled principal is forfeited accounting debt, not a one-time reserve payment.
-Projection never debits a claim.
-
-The denomination is confirmed weight-ppm epochs. The policy does not promise a
-quantity of TAO, alpha, or fiat value.
-
-## Activation
-
-These commands inspect candidate activation authority without a wallet:
-
-```bash
-cacheon chain-incentive-shadow \
-  --netuid <NETUID> \
-  --network <NETWORK_OR_WSS_URL> \
-  --policy <CORE_POLICY.json> \
-  --claims-fixture <SYNTHETIC_CORE_CLAIMS.json> \
-  --expected-policy-digest <SHA256> \
-  --expected-claims-digest <SHA256> \
-  --output <NEW_RECEIPT.json>
-
-cacheon chain-incentive-composition-shadow \
-  --netuid <NETUID> \
-  --network <NETWORK_OR_WSS_URL> \
-  --core-policy <CORE_POLICY.json> \
-  --core-claims-fixture <SYNTHETIC_CORE_CLAIMS.json> \
-  --discovery-policy <COMPOSITION_POLICY.json> \
-  --discovery-claims-fixture <SYNTHETIC_DISCOVERY_CLAIMS.json> \
-  --expected-core-policy-digest <SHA256> \
-  --expected-core-claims-digest <SHA256> \
-  --expected-discovery-policy-digest <SHA256> \
-  --expected-discovery-claims-digest <SHA256> \
-  --output <NEW_RECEIPT.json>
-```
-
-Activation is a separate one-way local transaction:
-
-```bash
-cacheon chain-activate-incentives \
-  --intake-db chain_intake/intake.sqlite3 \
-  --netuid <NETUID> \
-  --network <NETWORK_OR_WSS_URL> \
-  --core-policy <CORE_POLICY.json> \
-  --composition-policy <COMPOSITION_POLICY.json> \
-  --approval <APPROVAL.json> \
-  --expected-approval-digest <SHA256>
-```
-
-Preflight reopens and binds:
-
-- the exact core and composition policy bytes;
-- an independent approval and activation bundle;
-- chain genesis, netuid, finalized block/hash, and equal intake cursor;
-- one retained arena, stack, target catalog, campaign, and complete family roster;
-- approved finalized membership and reserve hotkey;
-- audit-control, production-canary, and residual-risk acceptance digests; and
-- quiescent intake with no incompatible V1 publication or retained legacy debt.
-
-Activation constructs no wallet and signs no chain transaction. The atomic schema
-cutover is also a rollback fence: an older runtime cannot reopen the activated
-database as legacy authority.
-
-## V2 publication
-
-`set-debt-weights` publishes the earliest due boundary:
-
-```bash
-cacheon set-debt-weights \
-  --intake-db chain_intake/intake.sqlite3 \
-  --netuid <NETUID> \
-  --network <NETWORK_OR_WSS_URL> \
-  --wallet default \
-  --hotkey validator \
-  --refresh-blocks <BLOCKS>
-```
-
-For each boundary it:
-
-1. reopens the active policy and exact finalized economic state;
-2. creates or resumes the earliest gapless projection;
-3. binds that projection to the signer-facing hotkey/UID vector;
-4. journals signing and submission;
-5. grades exact finalized chain readback; and
-6. debits claims only after confirmation and intake-cursor catch-up.
-
-A restart, dry run, SDK success response, or projection build never reduces debt.
-A missed boundary remains ahead of later boundaries, and confirmed catch-up is
-rate-limited to at least one full policy cadence after the prior confirmation.
+Two compatibility artifacts remain in the tree:
+[`chain/reserved_schema.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
+preserves the schema-4/5/6 migrations and V2 table DDL verbatim so existing
+intake databases keep validating, and the shared-weight offer wire schema
+keeps its `lane`/`debt_binding` fields with debt-lane payloads rejected.
+Reintroducing V2 is a new reviewed change with its own design and security
+review, not a revert switch.
 
 ## Operational invariants
 
@@ -361,13 +202,11 @@ rate-limited to at least one full policy cadence after the prior confirmation.
 
 ## Current evidence limits
 
-- The V2 implementation has no retained live activation or live debt-publication
-  receipt.
+- No live V2 activation or debt-publication receipt ever existed, and the V2
+  implementation is no longer in the tree.
 - Registered discovery promotion remains unsupported.
-- Signer-free shadows exercise arithmetic and state binding; they authorize no
-  activation or chain mutation.
-- Synthetic load sweeps establish accounting behavior, not miner equilibrium,
-  token value, GPU performance, or production readiness.
+- Historical signer-free shadows and synthetic load sweeps established
+  accounting behavior only; they authorized no activation or chain mutation.
 - Production still requires exact campaign/reserve manifests, retained historical
   membership authority, independently graded review and invalidation authority,
   and accepted production audit-canary evidence.
@@ -379,9 +218,6 @@ operator flow.
 ## Source anchors
 
 - [Legacy economics](https://github.com/latent-to/cacheon/blob/main/cacheon/economics.py)
-- [Finite-debt arithmetic](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py)
-- [Incentive composition](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py)
-- [Activation authority](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py)
-- [V2 publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)
+- [Reserved V2 schema](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
 - [V1 publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
 - [CLI](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py)

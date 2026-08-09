@@ -1,0 +1,11 @@
+# Known production modules without a reachable consumer, one dotted name per
+# line. scripts/check_islands.py fails on islands missing from this file.
+# Shrinking this list is cleanup; growing it is a reviewed decision. Each
+# entry should either gain a production consumer, be declared in
+# cacheon/capability_manifest.py, or be deleted.
+cacheon.eval.b300_qualification_deployment
+cacheon.eval.b300_registered_qualification
+cacheon.eval.b300_registered_qualification_inputs
+cacheon.eval.b300_remote_qualification_adapter
+cacheon.eval.resident_evaluation_pair
+cacheon.eval.standing_controls

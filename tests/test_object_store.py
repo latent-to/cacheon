@@ -27,7 +27,6 @@ from cacheon.object_store import (
     S3CompatibleObjectStore,
     open_configured_object_store,
     open_object_store,
-    prefixed_store,
 )
 from cacheon.stack_identity import canonical_digest, sha256_hex
 

@@ -19,7 +19,6 @@ from cacheon.eval.crossover_runtime import (
     TimedWindow,
     run_resident_crossover_speed,
 )
-from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.engine_launch import PhysicalHardwareBinding
 from cacheon.eval.oci_backend import EngineExecutionEvidence, OCIEngineExecutor
 from cacheon.eval.oci_outer_session import BatchExecutionEvidence, SessionExecutionEvidence

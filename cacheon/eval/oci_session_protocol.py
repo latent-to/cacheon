@@ -199,8 +199,8 @@ class SlotAuditPolicy:
             self.expected_slots,
             self.expected_member_count,
         )
-        for field in SlotAuditControl.__dataclass_fields__:
-            object.__setattr__(self, field, getattr(control, field))
+        for name in SlotAuditControl.__dataclass_fields__:
+            object.__setattr__(self, name, getattr(control, name))
 
     @property
     def control(self) -> SlotAuditControl:

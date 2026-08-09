@@ -19,7 +19,6 @@ from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.stack_plan import StackArmIdentity
-from cacheon.target_catalog import TargetCatalog, TargetResolutionError
 from cacheon._strict import require_digest, require_identifier, require_int
 
 

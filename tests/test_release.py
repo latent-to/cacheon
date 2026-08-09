@@ -37,10 +37,8 @@ from cacheon.eval.qualification import ReferenceManifest
 from cacheon.model_provision import provision_model
 from cacheon.release import (
     ContainerReproducibility,
-    EngineReleaseDescriptor,
     ReleaseArtifact,
     ReleaseError,
-    ReleaseSignature,
     ServeSpec,
     SignedContainerReproducibility,
     container_context,

@@ -137,12 +137,11 @@ cadence.
 | Policy | Plain-English model | Current status |
 |---|---|---|
 | **Legacy V1 standing rewards** | The current crown for each active target receives standing credit based on its reproduced improvement. That credit decays with age and is normalized relative to all other live claims. | Implemented and exercised end to end on testnet; this does not establish mainnet economics. Check the operator announcement for the deployment you intend to join. |
-| **V2 finite debt** | An eligible post-activation crown receives a bounded claim that is paid down over later confirmed epochs. A later crown does not erase the unpaid balance, but the old crown receives no perpetual royalty. | Implemented but inactive. No live V2 activation or debit-confirming publication receipt exists. |
+| **V2 finite debt** | An eligible post-activation crown receives a bounded claim that is paid down over later confirmed epochs. A later crown does not erase the unpaid balance, but the old crown receives no perpetual royalty. | Design retained; the implementation was extracted from the tree on 2026-08-09 and would return as a new reviewed change. It creates no claim and pays nothing today. |
 
-V1 and V2 must not publish concurrently from the same economic authority. Do not
-estimate a current reward with V2 because its formula looks more attractive.
-Until an operator activates and announces V2, it creates no V2 claim and pays no
-V2 principal.
+Only legacy V1 can publish weights. Do not estimate a current reward with the
+V2 formula; until a future release reintroduces and an operator activates it,
+V2 creates no claim and pays no principal.
 
 ## How V1 standing rewards work
 
@@ -262,6 +261,4 @@ and operational boundaries live in:
 - [Settlement and weights](../validator-guide/settlement-and-weights.md) — validator
   settlement, signing, publication, and recovery;
 - [Current status](../reference/state-of-record.md) — what has actually been
-  exercised and what remains inactive; and
-- [Incentive load validation](../results/incentive-load-validation.md) — V2
-  accounting sensitivity, not a payout forecast.
+  exercised and what remains inactive.

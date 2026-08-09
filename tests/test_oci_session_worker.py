@@ -5,7 +5,6 @@ import hashlib
 import os
 import struct
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
