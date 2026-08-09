@@ -77,10 +77,11 @@ python scripts/check_lanes.py --base origin/main
 rules); formatting and import-sorting are deliberately not enforced yet, and
 the temporary per-file ignores in `pyproject.toml` cover live-lane files
 whose cleanup is deferred past the mainnet merge. `check_lanes.py` fails a
-pull request from a branch outside `codex/*` that modifies a path listed in
-`scripts/live_lane_paths.txt` — the launch lane's active surface. Transfer a
-path out of that lane by deleting its entry in the same pull request, so the
-ownership change is a reviewable line in the diff.
+pull request that modifies a path listed in `scripts/live_lane_paths.txt` —
+the live operations lane's active surface — unless the branch matches one of
+that file's declared live-lane namespaces. Transfer a path out of the lane
+by deleting its entry in the same pull request, so the ownership change is a
+reviewable line in the diff.
 
 ## Documentation
 

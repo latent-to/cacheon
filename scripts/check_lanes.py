@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
-"""Fail a pull request that modifies live launch-lane paths from outside it.
+"""Fail a pull request that modifies live-lane paths from outside that lane.
 
 ``scripts/live_lane_paths.txt`` names the repository paths under active
-modification on the ``codex/*`` launch branches. A change built on any other
-branch that touches those paths will collide with the launch lane's merge, so
+modification on the live operations lane, together with the branch patterns
+that lane works on (``branch <pattern>`` lines). A change built on any other
+branch that touches those paths will collide with the live lane's merge, so
 this check fails it early with the two legitimate remedies:
 
-- move the work to a ``codex/*`` branch, or
+- move the work to a live-lane branch, or
 - transfer the path out of the live lane by deleting its entry in the same
   pull request, making the ownership change a reviewable line in the diff.
 
 The check compares the merge-base diff against the base ref, so entries
 deleted by the pull request itself no longer protect their paths. Branches
-matching an exempt pattern (the live lane's own) always pass. Without a
-resolvable base ref the check reports and exits zero; it is a pull-request
-gate, not a push gate.
+matching a declared live-lane pattern always pass. Without a resolvable base
+ref the check reports and exits zero; it is a pull-request gate, not a push
+gate.
 """
 
 from __future__ import annotations
@@ -25,18 +26,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-EXEMPT_BRANCH_PATTERNS = ("codex/*",)
 
+def read_lane_file(path: Path) -> tuple[list[str], list[str]]:
+    """Return (live-lane branch patterns, protected path patterns)."""
 
-def read_patterns(path: Path) -> list[str]:
     if not path.is_file():
         raise SystemExit(f"error: lane file {path} is missing")
-    patterns = []
+    branch_patterns: list[str] = []
+    path_patterns: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if line and not line.startswith("#"):
-            patterns.append(line)
-    return patterns
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("branch "):
+            branch_patterns.append(line[len("branch "):].strip())
+        else:
+            path_patterns.append(line)
+    return branch_patterns, path_patterns
 
 
 def git_lines(*args: str) -> list[str]:
@@ -70,8 +76,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    branch_patterns, path_patterns = read_lane_file(Path(args.paths_file))
+
     branch = args.branch or current_branch()
-    if any(fnmatch.fnmatch(branch, pattern) for pattern in EXEMPT_BRANCH_PATTERNS):
+    if any(fnmatch.fnmatch(branch, pattern) for pattern in branch_patterns):
         print(f"check_lanes: branch {branch!r} is the live lane; not checked")
         return 0
 
@@ -86,13 +94,12 @@ def main() -> int:
         print(f"check_lanes: base ref {base!r} is not resolvable; not checked")
         return 0
 
-    patterns = read_patterns(Path(args.paths_file))
     changed = git_lines("diff", "--name-only", f"{base}...HEAD")
 
     violations = sorted(
         path
         for path in changed
-        if any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+        if any(fnmatch.fnmatch(path, pattern) for pattern in path_patterns)
     )
     print(
         f"check_lanes: branch {branch!r} vs {base}: "
@@ -101,11 +108,11 @@ def main() -> int:
     if not violations:
         return 0
     for path in violations:
-        print(f"error: {path} is a live launch-lane path")
+        print(f"error: {path} is a live-lane path")
     print(
-        "Move this work to a codex/* branch, or transfer ownership by "
-        "deleting the matching entry in scripts/live_lane_paths.txt in this "
-        "same change."
+        "Move this work to a live-lane branch (declared in "
+        "scripts/live_lane_paths.txt), or transfer ownership by deleting the "
+        "matching path entry there in this same change."
     )
     return 1
 

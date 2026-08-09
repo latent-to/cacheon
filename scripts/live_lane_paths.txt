@@ -1,14 +1,18 @@
-# Live launch-lane surface: repository paths under active modification on
-# the codex/* launch and autonomy branches (snapshot 2026-08-09).
+# Live-lane surface: repository paths under active modification on the live
+# operations lane's launch branches (snapshot 2026-08-09).
 #
-# Pull requests from branches outside codex/* must not modify these paths.
-# scripts/check_lanes.py enforces this in CI. To transfer a path out of the
-# live lane, delete its entry in the same pull request that modifies it —
-# the transfer is then a reviewable line in the diff. Review this whole list
-# at every mainnet merge; entries expire when the live lane's branches land.
+# Pull requests from branches outside the live lane must not modify these
+# paths. scripts/check_lanes.py enforces this in CI. To transfer a path out
+# of the live lane, delete its entry in the same pull request that modifies
+# it — the transfer is then a reviewable line in the diff. Review this whole
+# list at every mainnet merge; entries expire when the lane's branches land.
 #
-# One fnmatch pattern per line. A plain path matches exactly; use a trailing
-# `*` for a family prefix.
+# `branch <pattern>` lines declare the lane's own branch namespaces, which
+# are exempt from the check. Every other line is one fnmatch path pattern:
+# a plain path matches exactly; use a trailing `*` for a family prefix.
+
+# Current live-lane branch namespace; retire with the mainnet merge.
+branch codex/*
 AGENTS.md
 docs/reference/cli.md
 cacheon/cli.py

@@ -63,7 +63,7 @@ extend-exclude = ["cacheon/arena_assets", "examples"]
 select = ["F", "E9"]
 
 [tool.ruff.lint.per-file-ignores]
-# Live-lane files under active modification on the codex/* launch branches
+# Live-lane files under active modification on the launch branches
 # (snapshot 2026-08-09). Enforcement here is deferred to the post-merge
 # cleanup so the gate does not push churn into the mainnet merge window.
 # The b300 input/stage aggregators additionally re-export their imports for

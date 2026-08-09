@@ -34,7 +34,8 @@ def make_repo(tmp_path: Path) -> Path:
     scripts = root / "scripts"
     scripts.mkdir(parents=True)
     (scripts / "live_lane_paths.txt").write_text(
-        "# comment\ncacheon/live_module.py\ncacheon/family_*\n", encoding="utf-8"
+        "# comment\nbranch live/*\ncacheon/live_module.py\ncacheon/family_*\n",
+        encoding="utf-8",
     )
     (root / "cacheon").mkdir()
     (root / "cacheon" / "live_module.py").write_text("A = 1\n", encoding="utf-8")
@@ -68,14 +69,14 @@ def test_live_path_change_fails_with_remedies(tmp_path: Path) -> None:
     git(root, "commit", "-q", "-m", "live change")
     result = run_checker(root, "--base", "main", "--paths-file", paths_file(root))
     assert result.returncode == 1
-    assert "cacheon/live_module.py is a live launch-lane path" in result.stdout
-    assert "cacheon/family_two.py is a live launch-lane path" in result.stdout
-    assert "codex/* branch" in result.stdout
+    assert "cacheon/live_module.py is a live-lane path" in result.stdout
+    assert "cacheon/family_two.py is a live-lane path" in result.stdout
+    assert "live-lane branch" in result.stdout
 
 
 def test_live_lane_branch_is_exempt(tmp_path: Path) -> None:
     root = make_repo(tmp_path)
-    git(root, "switch", "-q", "-c", "codex/launch-work")
+    git(root, "switch", "-q", "-c", "live/launch-work")
     (root / "cacheon" / "live_module.py").write_text("A = 2\n", encoding="utf-8")
     git(root, "commit", "-q", "-am", "live change")
     result = run_checker(root, "--base", "main", "--paths-file", paths_file(root))
