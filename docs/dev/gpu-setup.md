@@ -160,6 +160,33 @@ registered seam, completed it, and produced the expected output. A rank-local
 fallback would diverge the collective, so the candidate engine must abort
 rather than continue with mixed implementations.
 
+## Live serving activation tier (opt-in)
+
+`tests/test_seam_activation_live.py` proves on demand that an armed bundle
+kernel executes inside the real serving path: it boots a server three times in
+a validator worker image — null-armed baseline, exact-math silu bundle, broken
+silu bundle — and requires the exact bundle to reproduce the baseline
+completion byte-identically while the broken bundle corrupts it. Activation is
+log-silent by design, so this behavioral comparison is the only honest
+detector.
+
+The tier never runs by default, in CI or on GPU hosts. Arm it explicitly:
+
+```bash
+CACHEON_LIVE_SERVE_TESTS=1 \
+CACHEON_SERVE_IMAGE=<worker image ref> \
+CACHEON_SERVE_MODEL=/path/to/small-local-model \
+python -m pytest tests/test_seam_activation_live.py
+```
+
+Optional variables: `CACHEON_SERVE_REPO` (a docker-mountable copy of this
+repository when the checkout itself cannot be bind-mounted; the test verifies
+the copy's source identity against the running checkout before trusting it),
+`CACHEON_SERVE_GPU` (device index, default 0), and
+`CACHEON_SERVE_BOOT_TIMEOUT_S` (per-boot readiness budget, default 320). Once
+armed, a missing prerequisite is a loud failure, never a skip. Expect roughly
+ten minutes for the three boots.
+
 ## Complete-engine performance development
 
 Cacheon deliberately exposes no local qualification command. Contributors may profile

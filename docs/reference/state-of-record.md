@@ -626,13 +626,29 @@ These behaviors are retained as standing tests
 `tests/test_golden_consensus_vectors.py`) that activate by capability
 probe — CUDA device count and a usable container daemon — and skip
 cleanly elsewhere, so hosted CI keeps the CPU, containment, and golden
-tiers while the GPU tiers re-arm on any future validator host. This
-establishes suite health, the tested verify/containment behaviors, the
-seam-table currency of this tree against that staging image, the live
-seam activation path on it at one and two devices, and the platform
-stability of the chain-commitment content hash. It does not establish
-serving performance, qualification or settlement evidence, or any crown
-claim.
+tiers while the GPU tiers re-arm on any future validator host.
+
+The live activation demonstration is additionally codified as a
+repeatable, strictly opt-in tier (`tests/test_seam_activation_live.py`):
+the same three boots — null-armed baseline, exact-math bundle, broken
+bundle — with the byte-identity and corruption verdicts asserted. The
+tier runs nowhere by default, including GPU hosts; it arms only under
+`CACHEON_LIVE_SERVE_TESTS=1` with an operator-supplied worker image and
+model, and once armed it fails loudly on a missing prerequisite rather
+than skipping. It was validated armed on the staging host against the
+launch-lineage worker image. The miner submission pipeline also gained
+offline tests (`tests/test_submit_dry_run.py`): the dry-run path returns
+before any chain object is touched, so the commitment round-trip, the
+plaintext-HTTP refusal, and the 1024-byte chain cap are exercised with
+no wallet and no subtensor.
+
+This establishes suite health, the tested verify/containment behaviors,
+the seam-table currency of this tree against that staging image, the
+live seam activation path on it at one and two devices — now
+re-provable on demand — the offline submission wire policy, and the
+platform stability of the chain-commitment content hash. It does not
+establish serving performance, qualification or settlement evidence, or
+any crown claim.
 
 ### Incentive evidence
 
