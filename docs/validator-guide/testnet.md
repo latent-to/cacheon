@@ -223,22 +223,12 @@ For a continuously supervised V1 signer, `--watch --interval <SECONDS>` repeats 
 authority refresh and reconciliation with bounded retry. It cannot be combined with
 dry-run or signer-free journal modes.
 
-## V2 shadows, activation, and publication
+## V2 status
 
-`chain-incentive-shadow` and `chain-incentive-composition-shadow` are signer-free. They
-exercise exact policy/state binding and arithmetic without activating policy or mutating
-chain state.
-
-`chain-activate-incentives` is also wallet-free, but it is a one-way local schema
-cutover. Run it only after independent approval binds the exact policy, retained
-arena/stack/catalog/family roster, finalized membership and reserve, and audit
-control/canary/risk authority. It refuses non-quiescent intake or incompatible V1 state.
-
-After activation, `set-debt-weights` journals and publishes the earliest gapless V2
-boundary. It debits no principal until exact finalized readback is confirmed and the
-intake cursor reaches that authority. The repository currently retains no live V2
-activation or debt-publication receipt, so connectivity is not completed V2
-commissioning.
+The V2 shadow, activation, and debt-publication commands were extracted from
+the tree on 2026-08-09 without ever producing a live activation or
+publication receipt. Legacy V1 `set-weights` is the only publication path.
+See [Emissions policy](../reference/emissions-policy.md#finite-debt-v2).
 
 ## Evidence scope
 
@@ -301,5 +291,3 @@ Never “fix” a test by editing SQLite rows, weakening HTTPS, or treating
 - [Payload contract](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/payload.py)
 - [Current validator loop](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py)
 - [Finalized intake store](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
-- [Incentive activation](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py)
-- [Debt publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)

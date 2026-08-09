@@ -341,27 +341,18 @@ explicitly fenced incentive paths:
   an all-uncrowned bootstrap, an operator may provide a registered burn hotkey; the burn
   projection becomes invalid as soon as a crown, claim, or active V2 composition exists.
   `--watch` operates the same journaled reconciler continuously with bounded retry rules.
-- **V2 finite debt** converts exact registered-CROWN and reviewed-discovery events into
-  fixed-point debt under a content-addressed campaign/composition policy. The implemented
-  launch path activates one immutable campaign at 100% sizing. Activation is wallet-free
-  and binds finalized chain cursor, retained arena/stack/catalog/families, membership,
-  reserve, audit controls, and independent approval. `set-debt-weights` publishes gapless
-  policy boundaries and debits only after exact readback confirmation.
+- **V2 finite debt** is a retained design whose implementation was extracted from the
+  tree on 2026-08-09 without ever being activated; see
+  [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2).
 
 Reviewed discovery promotion into a registered target still fails closed because the
 durable promotion transport and fresh requalification/CROWN linkage are not implemented.
-The current V2 implementation can retain review-pending work and issue bounded
-`bounty_only` debt; prose must not infer the missing promotion branch.
 
-Both publishers persist intent and later readback states. An SDK return value does not
-prove inclusion, and neither publisher may debit or advance economic authority from an
+The publisher persists intent and later readback states. An SDK return value does not
+prove inclusion, and the publisher may not advance economic authority from an
 unconfirmed vector.
 
-Principal code: [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py),
-[`finite_debt.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/finite_debt.py),
-[`incentive_composition.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/incentive_composition.py),
-[`chain/incentive_activation.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/incentive_activation.py),
-and [`chain/debt_publication.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py).
+Principal code: [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py).
 See the [emissions policy](../reference/emissions-policy.md).
 
 ## 11. Integration and release

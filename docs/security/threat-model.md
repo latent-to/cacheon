@@ -128,9 +128,8 @@ reproducible registry identity, host authorization, and serve receipts are later
 ## Control-plane separation
 
 Evaluator workers never receive chain keys. `chain-validate` does not sign weights.
-Legacy `set-weights` and active-composition `set-debt-weights` run separately against
-durable state and live chain readback. Wallet-free `chain-activate-incentives` binds a
-reviewed V2 authority but cannot publish a vector.
+Legacy `set-weights` runs separately against durable state and live chain
+readback.
 
 The preferred shared-weight split keeps eval off the chain-signing path:
 `push-weight-offer` authenticates one exact offer to `serve-weights`; the
@@ -198,5 +197,4 @@ Security status should be stated as “implemented under these assumptions,” n
 - [Shared-weight gateway](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weight_share.py)
 - [Shared-weight push authentication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weight_push_auth.py)
 - [Object-store adapters](https://github.com/latent-to/cacheon/blob/main/cacheon/object_store.py)
-- [V2 debt publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/debt_publication.py)
 - [Release host](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py)
