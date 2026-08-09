@@ -18,7 +18,7 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.oci_resident_session import ResidentSessionEvidence
-from cacheon.eval.resident_count_execution_evidence import (
+from cacheon.eval.resident_count_quality_execution import (
     ResidentCountQualityExecutionEvidence,
 )
 from cacheon.eval.resident_count_quality_execution import (

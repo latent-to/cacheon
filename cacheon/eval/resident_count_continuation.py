@@ -36,7 +36,7 @@ from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
     ResidentCountQualityCheckpoint,
 )
-from cacheon.eval.resident_count_execution_evidence import (
+from cacheon.eval.resident_count_quality_execution import (
     ResidentCountExecutionEvidenceError,
     ResidentCountQualityExecutionEvidence,
 )
