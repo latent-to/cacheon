@@ -13,7 +13,6 @@
 
 # Current live-lane branch namespace; retire with the mainnet merge.
 branch codex/*
-AGENTS.md
 docs/reference/cli.md
 cacheon/cli.py
 cacheon/manifest.py
