@@ -1332,6 +1332,39 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         return self.get(reservation_id)
 
+    def demote_promoted_for_rescreen(
+        self, reservation_id: str, *, reason: str
+    ) -> "IntakeReservation":
+        """Return one promoted reservation to the screen queue.
+
+        A promoted row carries a screen receipt bound to the service identity
+        that produced it. Once that identity is retired the receipt can no
+        longer authorize qualification, and because the qualification selector
+        is deterministic it would otherwise re-pick the same unusable head for
+        as long as the row stays promoted. Demotion re-enters the row in the
+        screen FIFO so a fresh receipt is produced under the live identity.
+        Retained screen dispositions are append-only and are not disturbed."""
+
+        if type(reason) is not str or not reason or len(reason) > 64:
+            raise IntakeError("rescreen reason is malformed")
+        with self._transaction():
+            row = self.get(reservation_id)
+            if row.status != "promoted" or row.screen_status != "promote":
+                raise IntakeError("only a promoted reservation may be rescreened")
+            # Mirrors the screen-retry disposition, which is the proven inverse
+            # of promotion and keeps the reproduction lane in its own queue.
+            status = (
+                "reproduction_pending"
+                if row.screen_lane == "reproduction"
+                else "published"
+            )
+            self._db.execute(
+                "UPDATE reservations SET status=?,screen_status='',decision='',"
+                "reason=? WHERE reservation_id=?",
+                (status, reason, reservation_id),
+            )
+        return self.get(reservation_id)
+
     def latest_promoted_screen(self, reservation_id: str):
         from cacheon.arena_service import (
             ArenaScreenReceipt, PromotionDecision, ScreenGrade, ScreenStageResult,

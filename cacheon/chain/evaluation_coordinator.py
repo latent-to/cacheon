@@ -75,6 +75,8 @@ _REMOTE_EVIDENCE_ARTIFACT_LIMIT = 16 << 20
 _REMOTE_EVIDENCE_ARTIFACTS_LIMIT = 256
 _REMOTE_EVIDENCE_TOTAL_LIMIT = 32 << 20
 
+_ROTATED_SCREEN_RELEASE = "screen_receipt_service_rotated"
+
 SYSTEMIC_QUALIFICATION_REASONS = frozenset(
     {
         "qualification_plan",
@@ -871,6 +873,33 @@ class EvaluationCoordinator:
                 reason="qualification_claim_snapshot",
                 cause=claim_error,
             )
+        rotated = tuple(
+            row.reservation_id
+            for row, receipt in zip(reservations, receipts, strict=True)
+            if receipt.service_digest != self.service.identity
+        )
+        if rotated:
+            # These receipts were produced by a service identity that is no
+            # longer live, so they cannot authorize qualification and the
+            # dispatcher rejects the request as differing provenance. The
+            # qualification selector is deterministic, so leaving the cohort
+            # promoted re-picks the same unusable head on every pass and the
+            # campaign stops advancing. Send it back to the screen queue,
+            # where a fresh receipt is produced under the live identity.
+            self._release(lease, reason=_ROTATED_SCREEN_RELEASE)
+            store, _ = self._open_at_durable_cursor()
+            try:
+                for reservation_id in rotated:
+                    store.demote_promoted_for_rescreen(
+                        reservation_id, reason=_ROTATED_SCREEN_RELEASE
+                    )
+            except IntakeError as exc:
+                raise EvaluationCoordinatorError(
+                    f"rotated screen cohort could not be requeued: {exc}"
+                ) from exc
+            finally:
+                store.close()
+            return None
         try:
             publications = tuple(
                 reopen_worker_bundle(
