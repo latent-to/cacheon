@@ -83,6 +83,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     )
 
     standing: dict[str, object] = {
+        "enable_qualification": True,
         "enable_settlement": False,
         "enable_weights": False,
         "idle_poll_ms": 25,
@@ -184,6 +185,29 @@ def test_build_standing_supervisor_omits_weights(tmp_path: Path) -> None:
     assert supervisor.settle_once is None
     assert callable(supervisor.screen_once)
     assert callable(supervisor.qualification_once)
+
+
+def test_disabled_qualification_gates_the_stage_and_screens_still_claim(
+    tmp_path: Path,
+) -> None:
+    # Operator gate: while a qualification-side defect is under repair, the
+    # stage is held without touching screens (observed need 2026-08-10: a
+    # deterministic arm-boot failure was consuming every claim window).
+    standing_path, raw = _setup(tmp_path)
+    gated = dict(raw)
+    gated["enable_qualification"] = False
+    gated_path = standing_path.parent / "standing-gated.json"
+    _private_file(
+        gated_path,
+        spool.spool_canonical_json(gated) + b"\n",
+    )
+    config = load_standing_config(gated_path)
+    assert config.enable_qualification is False
+    supervisor = build_standing_supervisor(config)
+    assert supervisor.qualification_once is None
+    assert callable(supervisor.screen_once)
+    status = supervisor.tick()
+    assert status.last_stage in ("screen", "idle")
 
 
 def test_main_returns_2_on_missing_config(tmp_path: Path) -> None:

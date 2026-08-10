@@ -41,6 +41,7 @@ CONFIG_DOMAIN = "cacheon.chain.standing-supervisor-config.v1"
 _TERMINAL_CLAIM_STATUSES = frozenset({"failed", "expired", "qualified"})
 _STANDING_CONFIG_FIELDS = frozenset(
     {
+        "enable_qualification",
         "enable_settlement",
         "enable_weights",
         "idle_poll_ms",
@@ -177,7 +178,7 @@ class StandingCpuSupervisor:
     """Compose screen + recoverable qualification (+ later stages) with status."""
 
     screen_once: ScreenOnce
-    qualification_once: QualificationOnce
+    qualification_once: QualificationOnce | None
     settle_once: OptionalStage | None = None
     weights_once: OptionalStage | None = None
     clock: Callable[[], float] = time.time
@@ -186,9 +187,9 @@ class StandingCpuSupervisor:
     _last_tick_progressed: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not callable(self.screen_once) or not callable(self.qualification_once):
-            raise StandingCpuSupervisorError("screen and qualification stages are required")
-        for name in ("settle_once", "weights_once"):
+        if not callable(self.screen_once):
+            raise StandingCpuSupervisorError("the screen stage is required")
+        for name in ("qualification_once", "settle_once", "weights_once"):
             value = getattr(self, name)
             if value is not None and not callable(value):
                 raise StandingCpuSupervisorError(f"{name} is not callable")
@@ -652,6 +653,7 @@ class StandingSupervisorConfig:
     qualification_incumbent_tree_digest: str
     enable_weights: bool
     enable_settlement: bool
+    enable_qualification: bool
     stall_timeout_s: float
     idle_poll_s: float
     restart_initial_backoff_s: float
@@ -705,6 +707,12 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
 
     enable_weights = _exact_bool(row["enable_weights"], "enable_weights")
     enable_settlement = _exact_bool(row["enable_settlement"], "enable_settlement")
+    # Operator gate for the qualification stage: screens keep draining while a
+    # qualification-side defect is being repaired, instead of the broken stage
+    # consuming every claim window.
+    enable_qualification = _exact_bool(
+        row["enable_qualification"], "enable_qualification"
+    )
     if enable_weights:
         raise StandingCpuSupervisorError(
             "enable_weights requires a sealed weights authority composition; "
@@ -743,6 +751,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         qualification_incumbent_tree_digest=tree_digest,
         enable_weights=enable_weights,
         enable_settlement=enable_settlement,
+        enable_qualification=enable_qualification,
         stall_timeout_s=stall_timeout_ms / 1000.0,
         idle_poll_s=idle_poll_ms / 1000.0,
         restart_initial_backoff_s=restart_initial_backoff_ms / 1000.0,
@@ -774,24 +783,26 @@ def build_standing_supervisor(
         screen_config,
         store_factory=RecoverableFinalizedIntakeStore,
     )
-    try:
-        incumbent_raw = load_json(config.qualification_incumbent_stack_path)
-        incumbent = EvaluationStackManifest.from_dict(incumbent_raw)
-    except Exception as exc:
-        raise StandingCpuSupervisorError(
-            f"qualification incumbent stack cannot reopen: {exc}"
-        ) from None
-
-    qualification_dispatcher = RecoverableQualificationDispatcher(
-        coordinator=screen_dispatcher.coordinator,
-        transport=screen_dispatcher.transport,
-        credential=screen_dispatcher.credential,
-        qualification_evidence_root=config.qualification_evidence_root,
-        qualification_incumbent_stack=incumbent,
-        qualification_incumbent_tree_digest=(
-            config.qualification_incumbent_tree_digest
-        ),
-    )
+    qualification_once = None
+    if config.enable_qualification:
+        try:
+            incumbent_raw = load_json(config.qualification_incumbent_stack_path)
+            incumbent = EvaluationStackManifest.from_dict(incumbent_raw)
+        except Exception as exc:
+            raise StandingCpuSupervisorError(
+                f"qualification incumbent stack cannot reopen: {exc}"
+            ) from None
+        qualification_dispatcher = RecoverableQualificationDispatcher(
+            coordinator=screen_dispatcher.coordinator,
+            transport=screen_dispatcher.transport,
+            credential=screen_dispatcher.credential,
+            qualification_evidence_root=config.qualification_evidence_root,
+            qualification_incumbent_stack=incumbent,
+            qualification_incumbent_tree_digest=(
+                config.qualification_incumbent_tree_digest
+            ),
+        )
+        qualification_once = qualification_dispatcher.dispatch_once
 
     weights_once = None
     if config.enable_weights:
@@ -800,7 +811,7 @@ def build_standing_supervisor(
 
     return StandingCpuSupervisor(
         screen_once=screen_dispatcher.dispatch_screen_once,
-        qualification_once=qualification_dispatcher.dispatch_once,
+        qualification_once=qualification_once,
         settle_once=None,
         weights_once=weights_once,
         stall_timeout_s=config.stall_timeout_s,
