@@ -239,9 +239,22 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 if os.environ.get("CACHEON_PREBUILT_ARTIFACTS") == "1"
                 else "all"
             )
+            # Rank 0 must reach this barrier even when its build fails.
+            # A pre-barrier raise strands every other rank in the barrier
+            # while rank 0 blocks in teardown; the parent then times the
+            # whole group out and the real exception is never reported
+            # (measured live on the B300 pod, 2026-08-10). Joining first
+            # lets the peers hit the same deterministic error themselves,
+            # so all ranks report it and the case fails fast.
+            rank0_build_error: BaseException | None = None
             if rank == 0:
-                apply_rebuild_plan(bundle_path, phase=rebuild_phase)
+                try:
+                    apply_rebuild_plan(bundle_path, phase=rebuild_phase)
+                except BaseException as exc:  # noqa: BLE001 - re-raised below
+                    rank0_build_error = exc
             _rank_barrier(dist, rank=rank, device=device)
+            if rank0_build_error is not None:
+                raise rank0_build_error
             if rank != 0:
                 apply_rebuild_plan(bundle_path, phase=rebuild_phase)
             from cacheon.artifact_runtime import resolve_direct_artifact_entry
@@ -266,6 +279,17 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 slot, direct_entry, prepare_name=prepare_name
             )
         else:
+            # Overlay-materialized bundles route the entry through a shim that
+            # imports the tree-rooted delta package absolutely; the bundle root
+            # must be importable in this rank or the shim load dies with
+            # ModuleNotFoundError. Appended, never inserted, so nothing in a
+            # bundle can shadow a real package.
+            if bundle_path:
+                import sys
+
+                bundle_root = os.path.abspath(str(bundle_path))
+                if bundle_root not in sys.path:
+                    sys.path.append(bundle_root)
             module = load_module(source_path)
             entry = callable_from(module, entry_name)
             prepare_fn = callable_from(module, prepare_name) if prepare_name else None

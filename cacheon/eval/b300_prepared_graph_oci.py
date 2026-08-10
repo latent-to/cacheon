@@ -37,8 +37,16 @@ from cacheon.stack_plan import MarginalArmPlan
 CONTAINER_REQUEST = "/cacheon/input/graph-request/request.json"
 _REQUEST_DIR = "/cacheon/input/graph-request"
 _CONTROLLER_ROOT = "/cacheon/controller"
+# The tree root is appended (never inserted): overlay-materialized trees root
+# their delta package (cacheon_c_<digest>/) at the tree root and the entries/
+# shims import it absolutely, so the root must be importable in the worker and
+# in every spawned rank (spawn propagates sys.path). Appending keeps every real
+# package resolving from the image; only the unique delta names fall through.
+# Without this, every overlay-tree probe fails all ranks with
+# ModuleNotFoundError and the store records an incomplete observation.
 _CONTROLLER_BOOTSTRAP = (
     "import runpy,sys;sys.path.insert(0,'/cacheon/controller');"
+    f"sys.path.append('{CONTAINER_TREE}');"
     "runpy.run_module('cacheon.eval.b300_prepared_graph_oci',run_name='__main__')"
 )
 _MAX_REQUEST_BYTES = 256 << 10
