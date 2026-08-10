@@ -594,6 +594,67 @@ def test_active_conditioning_fails_closed_when_telemetry_stays_wedged():
     assert 1 < runner.attempts <= policy.maximum_samples
 
 
+def test_active_conditioning_spans_a_warmup_longer_than_the_drain_budget():
+    # The mainnet B300 commission died here three times: `drain_timeout_s` is
+    # 180s, the final warmup batch runs longer than that, and the observation
+    # was charging an externally gated wait against the drain budget. The
+    # receipt it failed with was 278 passing samples, 0 command problems, and
+    # released=False -- the gate was never unhappy, it just ran out of a budget
+    # that was never meant to cover a warmup.
+    policy = _policy(
+        required_consecutive_idle_samples=2,
+        poll_interval_s=1.0,
+        drain_timeout_s=10.0,
+    )
+    clock = FakeClock()
+    active = "\n".join(
+        (
+            "# gpu pid type sm mem enc dec command",
+            "0 501 C 90 40 - - rank0",
+            "1 502 C 90 40 - - rank1",
+        )
+    ) + "\n"
+    conditioned = _gpu_output(
+        policy,
+        pstate="P0",
+        current_graphics_clock_mhz=210,
+        gpu_utilization=0,
+        memory_utilization=0,
+    )
+    runner = ScriptedRunner([conditioned], [active], clock=clock)
+    released = False
+    waits = 0
+
+    def is_released():
+        return released
+
+    def wait_for_release(timeout_s: float) -> bool:
+        nonlocal released, waits
+        waits += 1
+        clock.value += timeout_s  # the warmup batch is still running
+        if clock.value >= 220.0:  # releases 120s in, 12x the drain budget
+            released = True
+        return released
+
+    receipt = _guard(policy, runner=runner, clock=clock).condition_active(
+        "launch-long-warmup",
+        "final-warmup-conditioning",
+        deadline=clock.value + 600,
+        release=is_released,
+        wait_for_release=wait_for_release,
+    )
+
+    assert receipt.release_sample_index == 2
+    assert len(receipt.samples) == 3
+    assert receipt.samples[-1].active_envelope_passed
+    # It waited well past drain_timeout_s instead of failing at it...
+    assert clock.value >= 220.0
+    # ...and it blocked on the boundary rather than spending a telemetry
+    # sample per wakeup, which is what exhausts the sample budget in practice.
+    assert waits >= 100
+    assert len(runner.calls) == 6
+
+
 def test_active_conditioning_pre_query_cancel_consumes_no_command_or_sequence():
     policy = _policy(required_consecutive_idle_samples=2)
     clock = FakeClock()

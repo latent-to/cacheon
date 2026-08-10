@@ -1207,7 +1207,6 @@ class DeviceStateGuard:
         started = self._now()
         if started < self._last_receipt_completed:
             raise DeviceStateClockError("device receipt order is not monotonic")
-        local_deadline = started + float(self.policy.drain_timeout_s)
         if deadline is not None:
             if (
                 isinstance(deadline, bool)
@@ -1217,7 +1216,20 @@ class DeviceStateGuard:
                 raise DeviceStatePolicyError(
                     "deadline must be an absolute finite monotonic value"
                 )
-            local_deadline = min(local_deadline, float(deadline))
+        # `drain_timeout_s` bounds waiting for GPUs to fall idle, which is a
+        # fast operation. It is the wrong bound for a wait the caller gates on
+        # an external boundary: a final warmup batch legitimately runs for
+        # minutes, and charging it against the drain budget kills the session
+        # mid-warmup. When a release callback is supplied the boundary is the
+        # terminator and the caller's own deadline is the backstop -- which is
+        # the deadline `boundary()` already refuses to let anyone else change.
+        drain_bound = started + float(self.policy.drain_timeout_s)
+        if release is not None and deadline is not None:
+            local_deadline = float(deadline)
+        elif deadline is not None:
+            local_deadline = min(drain_bound, float(deadline))
+        else:
+            local_deadline = drain_bound
         if local_deadline <= started:
             raise DeviceStateTimeoutError(
                 "active device conditioning started after its deadline"
@@ -1295,6 +1307,40 @@ class DeviceStateGuard:
             else:
                 self._sleep(delay)
             return True
+
+        def wait_for_boundary() -> bool:
+            """Block on the final-warmup boundary. False if the window ends.
+
+            Once the required consecutive pre-release run is proven, sampling
+            again before the boundary proves nothing further, and at a 0.05s
+            poll interval it exhausts the sample budget long before a warmup
+            that runs for minutes completes.
+            """
+
+            nonlocal released, release_sample_index
+            assert release is not None and wait_for_release is not None
+            while True:
+                if cancel is not None and cancel():
+                    raise DeviceStateCancelledError(
+                        "active device observation cancelled by the controller"
+                    )
+                remaining = local_deadline - self._now()
+                if remaining <= 0:
+                    return False
+                try:
+                    signalled = bool(
+                        wait_for_release(
+                            min(remaining, float(self.policy.poll_interval_s))
+                        )
+                    )
+                except BaseException as exc:  # noqa: BLE001 - trusted callback
+                    raise DeviceStatePolicyError(
+                        f"active-conditioning release wait failed: {exc}"
+                    ) from None
+                if signalled or release_now():
+                    released = True
+                    release_sample_index = len(samples)
+                    return True
 
         for _ in range(self.policy.maximum_samples):
             if cancel is not None and cancel():
@@ -1379,6 +1425,10 @@ class DeviceStateGuard:
                     return released_receipt(post_release_ready_samples=0)
             elif not released:
                 consecutive = consecutive + 1 if active_passed else 0
+                if consecutive >= required and wait_for_release is not None:
+                    if not wait_for_boundary():
+                        break
+                    continue
             else:
                 if not active_passed:
                     raise DeviceStateEnvelopeError(
