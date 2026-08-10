@@ -336,6 +336,7 @@ class OCIPrebuildConfig:
     seccomp_profile: Path
     executor_id: str
     policy: OCIPrebuildPolicy
+    runtime_seed_root: Path | None = None
 
     def __post_init__(self) -> None:
         docker = _absolute_container_path(self.docker_binary, field="docker_binary")
@@ -354,6 +355,16 @@ class OCIPrebuildConfig:
             if not value.is_absolute():
                 raise OCIPrebuildError(f"{field} must be absolute")
             object.__setattr__(self, field, value)
+        if self.runtime_seed_root is not None:
+            try:
+                seed = Path(self.runtime_seed_root).expanduser()
+            except TypeError:
+                raise OCIPrebuildError(
+                    "runtime_seed_root must be a trusted host path"
+                ) from None
+            if not seed.is_absolute():
+                raise OCIPrebuildError("runtime_seed_root must be absolute")
+            object.__setattr__(self, "runtime_seed_root", seed)
 
 
 @dataclass(frozen=True)

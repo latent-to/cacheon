@@ -329,12 +329,14 @@ def compose_commissioned_qualifications(
         inputs.preflight,
         lane_a_policy,
         executor_id=QUALIFICATION_EXECUTOR_ID,
+        runtime_seed_root=inputs.runtime_seed_root,
     )
     lane_b_executor = screen_deployment._build_executor(
         inputs.root / "qualification-lane-b",
         inputs.preflight,
         lane_b_policy,
         executor_id=QUALIFICATION_EXECUTOR_ID,
+        runtime_seed_root=inputs.runtime_seed_root,
     )
     executors = (lane_a_executor, lane_b_executor)
     try:

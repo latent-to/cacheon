@@ -95,6 +95,49 @@ CONTAINER_TREE = "/cacheon/engine-tree"
 CONTAINER_MODEL = "/cacheon/input/model"
 CONTAINER_ARTIFACT_BASE = "/cacheon/native-artifacts"
 CONTAINER_CACHE = "/cacheon/runtime-cache"
+
+
+def _seed_runtime_cache(
+    seed_root: Path,
+    cache_root: Path,
+    *,
+    uid: int,
+    gid: int,
+    max_bytes: int,
+) -> None:
+    """Mirror validator-provisioned warm-cache bytes into a fresh lease cache.
+
+    Every lease mounts an empty tmpfs cache, so each boot recompiles runtime
+    JIT artifacts; concurrent TP ranks then race the same output path and a
+    torn write kills the session (observed 2026-08-10: four ranks sharing one
+    HOME half-wrote the minfer fmha_sm100 plan .so — "file too short").
+    Seeding the cache from a validator-owned tree removes the compile
+    entirely. The seed is provisioning material, not evidence: it carries no
+    measurement authority and is never hashed into any identity.
+    """
+    if (
+        not seed_root.is_absolute()
+        or seed_root.is_symlink()
+        or not seed_root.is_dir()
+    ):
+        raise OCIBackendError("runtime seed root is not a trusted directory")
+    copied = 0
+    for row in sorted(seed_root.rglob("*")):
+        target = cache_root.joinpath(row.relative_to(seed_root))
+        if row.is_symlink():
+            raise OCIBackendError("runtime seed tree holds a symlink")
+        if row.is_dir():
+            target.mkdir(mode=0o700, exist_ok=True)
+            os.chown(target, uid, gid)
+            continue
+        if not row.is_file():
+            raise OCIBackendError("runtime seed tree holds a non-regular file")
+        copied += row.stat().st_size
+        if copied > max_bytes:
+            raise OCIBackendError("runtime seed tree exceeds the cache budget")
+        shutil.copyfile(row, target)
+        os.chmod(target, 0o600)
+        os.chown(target, uid, gid)
 CONTAINER_ENGINE_WORKER_POLICY = (
     "/usr/local/lib/python3.12/dist-packages/cacheon/eval/engine_worker.py"
 )
@@ -1240,6 +1283,14 @@ class OCIEngineExecutor:
                 gid=self.config.runtime.gid,
                 executable=True,
             )
+            if self.config.prebuild.runtime_seed_root is not None:
+                _seed_runtime_cache(
+                    self.config.prebuild.runtime_seed_root,
+                    cache_root,
+                    uid=self.config.runtime.uid,
+                    gid=self.config.runtime.gid,
+                    max_bytes=self.config.runtime.cache_bytes,
+                )
             resolved = resolve_engine_launch(launch, binding)
             model_root = mount.reopen()
             publication = reopen_native_artifact(

@@ -437,6 +437,7 @@ def _backend_config(
     preflight: RuntimePreflightReceipt,
     *,
     executor_id: str,
+    runtime_seed_root: Path | None = None,
 ) -> OCIBackendConfig:
     runtime = _runtime_policy(preflight)
     return OCIBackendConfig(
@@ -447,6 +448,7 @@ def _backend_config(
             seccomp_profile=_seccomp_path(),
             executor_id=executor_id,
             policy=_prebuild_policy(runtime),
+            runtime_seed_root=runtime_seed_root,
         ),
         runtime,
         NativeArtifactLimits(),
@@ -459,8 +461,14 @@ def _build_executor(
     device_policy: DeviceStatePolicy,
     *,
     executor_id: str = "b300-screen",
+    runtime_seed_root: Path | None = None,
 ) -> OCIEngineExecutor:
-    config = _backend_config(root, preflight, executor_id=executor_id)
+    config = _backend_config(
+        root,
+        preflight,
+        executor_id=executor_id,
+        runtime_seed_root=runtime_seed_root,
+    )
     manager = OCIProcessManager(
         docker_binary=config.prebuild.docker_binary,
         recovery_root=config.prebuild.recovery_root,
@@ -585,6 +593,7 @@ class _CommissionedInputs:
     resident_resource_ids: tuple[str, ...]
     declared_qualification: B300DeclaredQualificationAuthorities
     qualification_commission: dict[str, object] | None
+    runtime_seed_root: Path | None = None
 
 
 class _CommissionedScreenPlanResolver:
@@ -1034,12 +1043,14 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
         inputs.preflight,
         inputs.device_policy,
         executor_id="b300-screen-build",
+        runtime_seed_root=inputs.runtime_seed_root,
     )
     resident_executor = _build_executor(
         inputs.root,
         inputs.preflight,
         inputs.device_policy,
         executor_id="b300-screen-resident",
+        runtime_seed_root=inputs.runtime_seed_root,
     )
     resolver = _CommissionedScreenPlanResolver(inputs, build_executor, catalog)
     static = B300StaticScreenAdapter(catalog)
@@ -1385,6 +1396,15 @@ def _derive_inputs(
 
     source = _mapping(ready.get("source"), "READY source")
     runtime_root = _mapping(ready.get("runtime"), "READY runtime")
+    # Optional validator-provisioned warm-cache tree. Absent on receipts
+    # commissioned before seed delivery existed; absence means every lease
+    # boots with a cold cache and re-rolls the JIT compile race.
+    seed_value = ready.get("runtime_seed")
+    runtime_seed_root = (
+        None
+        if seed_value is None
+        else _absolute_path(seed_value, "READY runtime seed")
+    )
     controller_distribution_digest = _digest(
         source.get("tree_digest"), "READY source tree digest"
     )
@@ -1488,6 +1508,7 @@ def _derive_inputs(
         resident_resource_ids=("b300-resident-screen-lane",),
         declared_qualification=declared,
         qualification_commission=qualification_commission,
+        runtime_seed_root=runtime_seed_root,
     )
 
 
