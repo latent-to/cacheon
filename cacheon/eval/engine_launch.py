@@ -471,6 +471,25 @@ class EngineLaunchSpec:
         return canonical_digest("cacheon.eval.engine-launch", self.to_dict())
 
     @property
+    def measured_digest(self) -> str:
+        """Launch identity blind to controller revisions.
+
+        The controller distribution digest names orchestration code that
+        never executes inside the measured engine; binding it here made every
+        durable measurement (stock arms, calibration) die on every controller
+        commit. Evidence reuse binds this digest; the full launch digest
+        remains the provenance record.
+        """
+        return canonical_digest(
+            "cacheon.eval.engine-launch-measured",
+            {
+                name: value
+                for name, value in self.to_dict().items()
+                if name != "controller_distribution_digest"
+            },
+        )
+
+    @property
     def canonical_bytes(self) -> bytes:
         return canonical_json_bytes(self.to_dict())
 

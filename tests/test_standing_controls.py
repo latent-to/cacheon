@@ -28,7 +28,7 @@ def _h(label: str) -> str:
 
 
 def _policy() -> ResidentSpeedPolicy:
-    context = CalibrationContext(*(_h(f"context-{index}") for index in range(11)))
+    context = CalibrationContext(*(_h(f"context-{index}") for index in range(10)))
     threshold = CalibrationThresholdPolicy(
         context,
         "teacher-familywise-v1",

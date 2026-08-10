@@ -173,6 +173,18 @@ not qualification evidence.
 
 ### Resident adaptive qualification
 
+Since **2026-08-10** measurement-reuse identity is controller-blind: the
+calibration context binds `ReferenceManifest.measured_digest` and no longer
+carries a controller distribution digest, and raw quality bindings match the
+same measured reference identity (`EngineLaunchSpec` exposes the analogous
+`measured_digest`). Full manifest and launch digests remain the provenance
+record — pristine T-session witnesses and per-run receipts still pin the
+exact controller — but sealed calibration and durable measurement
+authorities now survive controller-code revisions instead of being
+invalidated by every commit. Calibration packages sealed under the earlier
+eleven-field context shape do not parse under this contract and are resealed
+from their durable inputs, not re-measured.
+
 Since **2026-08-10** production providers seal resident speed policy
 **version 4**: every timed read is graded (the version-3 mid-run
 window-scatter refusal is retired as verdict control flow), window scatter is

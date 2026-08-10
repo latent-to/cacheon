@@ -270,7 +270,7 @@ def _harness(
         selection_policy_digest=_h("selection-policy"),
     )
     calibration_context = CalibrationContext(
-        reference.digest,
+        reference.measured_digest,
         reference.arena_digest,
         reference.runtime_digest,
         reference.base_engine_digest,
@@ -280,7 +280,6 @@ def _harness(
         reference.logical_hardware_digest,
         reference.workload_digest,
         verification_policy,
-        reference.controller_distribution_digest,
     )
     threshold = CalibrationThresholdPolicy(
         calibration_context,

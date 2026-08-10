@@ -213,7 +213,6 @@ def _validate_speed_context(
         launch.hardware.digest,
         workload,
         expected_context.verification_policy_digest,
-        launch.controller_distribution_digest,
     )
     if observed != expected_context:
         raise RawSpeedEvidenceError("calibration context differs from launch or workload")

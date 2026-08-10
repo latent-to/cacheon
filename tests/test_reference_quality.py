@@ -54,7 +54,7 @@ def _digest(character: str) -> str:
 
 
 def _context() -> CalibrationContext:
-    return CalibrationContext(*[character * 64 for character in "123456789ab"])
+    return CalibrationContext(*[character * 64 for character in "123456789a"])
 
 
 def _calibration(*, status: str = "frozen", z: str = "0.000001") -> CalibrationManifest:

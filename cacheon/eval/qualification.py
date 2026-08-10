@@ -1032,6 +1032,32 @@ class ReferenceManifest(_Canonical):
         for item in fields(self):
             object.__setattr__(self, item.name, _digest(getattr(self, item.name), item.name))
 
+    # Controller-sensitive fields: the controller distribution digest names
+    # the orchestration code revision, and the pristine launch digest embeds
+    # it again through the launch spec. Neither describes the measured
+    # system; both change on every controller commit.
+    _MEASURED_EXCLUDED: ClassVar[frozenset[str]] = frozenset(
+        {"controller_distribution_digest", "pristine_launch_digest"}
+    )
+
+    @property
+    def measured_digest(self) -> str:
+        """Identity of the measured system, blind to controller revisions.
+
+        Calibration and evidence reuse bind to this digest so a controller
+        code fix never invalidates sealed measurement authorities. The full
+        manifest digest (which still pins the controller) remains the
+        provenance record; matching uses measured identity only.
+        """
+        return canonical_digest(
+            "cacheon.qualification.reference-manifest-measured",
+            {
+                name: value
+                for name, value in self.to_dict().items()
+                if name not in self._MEASURED_EXCLUDED
+            },
+        )
+
     @classmethod
     def from_pristine(
         cls,
@@ -2125,7 +2151,7 @@ def validate_quality_binding(
         if not grade_discovery_execution(graph_requirement, lifecycle).execution_passed:
             raise QualificationError("discovery execution authority did not pass")
     expected_calibration_context = CalibrationContext(
-        profile.reference.digest,
+        profile.reference.measured_digest,
         profile.reference.arena_digest,
         profile.reference.runtime_digest,
         profile.reference.base_engine_digest,
@@ -2135,7 +2161,6 @@ def validate_quality_binding(
         profile.reference.logical_hardware_digest,
         profile.reference.workload_digest,
         calibration_policy,
-        profile.reference.controller_distribution_digest,
     )
     lifecycle_digest = candidate_lifecycle_digest(
         lifecycle, selected_delta_digest=selected_delta_digest
@@ -2182,7 +2207,7 @@ def validate_quality_binding(
         != _digest(reference_request_sha256, "T request SHA-256")
         or t_session.reference_manifest_digest != profile.reference.digest
         or t_session.launch_digest != profile.reference.pristine_launch_digest
-        or binding.reference_manifest_digest != profile.reference.digest
+        or binding.reference_manifest_digest != profile.reference.measured_digest
         or binding.calibration_digest != profile.calibration_digest
         or calibration.digest != profile.calibration_digest
         or calibration.context != expected_calibration_context

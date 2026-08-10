@@ -533,7 +533,7 @@ class CausalQualificationInput:
             except CrossoverRuntimeError as exc:
                 raise QualificationRunnerError(str(exc)) from None
             resident_context = CalibrationContext(
-                reference.digest,
+                reference.measured_digest,
                 reference.arena_digest,
                 reference.runtime_digest,
                 reference.base_engine_digest,
@@ -543,7 +543,6 @@ class CausalQualificationInput:
                 reference.logical_hardware_digest,
                 reference.workload_digest,
                 candidate_authority.graph_requirement.binding.verification_policy_digest,
-                reference.controller_distribution_digest,
             )
             if (
                 resident.selected_delta_digest
@@ -2696,7 +2695,7 @@ def _raw_artifact(
     )
     binding = ReferenceQualityRawBinding(
         identity,
-        profile.reference.digest,
+        profile.reference.measured_digest,
         calibration.digest,
         selection.digest,
         lifecycle_digest,

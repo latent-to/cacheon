@@ -803,7 +803,7 @@ class B300RegisteredQualificationInputs:
                 "calibration authority is not exactly typed"
             )
         expected_context = CalibrationContext(
-            self.reference_manifest.digest,
+            self.reference_manifest.measured_digest,
             self.reference_manifest.arena_digest,
             self.reference_manifest.runtime_digest,
             self.reference_manifest.base_engine_digest,
@@ -813,7 +813,6 @@ class B300RegisteredQualificationInputs:
             self.reference_manifest.logical_hardware_digest,
             self.reference_manifest.workload_digest,
             self.policy.verification_policy_digest,
-            self.reference_manifest.controller_distribution_digest,
         )
         if expected_context != self.calibration_context:
             raise B300RegisteredQualificationError(

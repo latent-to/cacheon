@@ -1350,7 +1350,7 @@ def _recompute_release_evidence(
     if any(getattr(reference, field) != expected for field, expected in reference_expected.items()):
         raise ReleaseError("reference manifest differs from the release runtime/model authority")
     calibration_expected = {
-        "reference_manifest_digest": reference.digest,
+        "reference_manifest_digest": reference.measured_digest,
         "arena_digest": reference.arena_digest,
         "runtime_digest": reference.runtime_digest,
         "base_engine_digest": reference.base_engine_digest,
@@ -1359,7 +1359,6 @@ def _recompute_release_evidence(
         "model_content_digest": reference.model_content_digest,
         "logical_hardware_digest": reference.logical_hardware_digest,
         "workload_digest": reference.workload_digest,
-        "controller_distribution_digest": reference.controller_distribution_digest,
     }
     if any(
         getattr(calibration.context, field) != expected

@@ -185,7 +185,6 @@ def _lifecycle(tmp_path: Path, *, after_scale: float = 1.002, top_logprobs_num: 
         case.launch.hardware.digest,
         marginal_workload_digest(prepared.baseline_session_plan),
         _digest("verification-policy"),
-        case.launch.controller_distribution_digest,
     )
     calibration = replace(
         calibration_manifest(), context=context, speed=SpeedCalibration("0.02", "2", "0.1")
@@ -708,7 +707,6 @@ def _lifecycle_repeat(tmp_path: Path):
         case.launch.hardware.digest,
         marginal_workload_digest(prepared.baseline_session_plan),
         _digest("verification-policy"),
-        case.launch.controller_distribution_digest,
     )
     calibration = replace(
         calibration_manifest(), context=context, speed=SpeedCalibration("0.02", "2", "0.1")

@@ -2241,7 +2241,7 @@ def _typed_resident_qualification_input(
         _d(f"typed-resident-{candidate_lane}-device-configuration"),
     )
     calibration_context = CalibrationContext(
-        reference.digest,
+        reference.measured_digest,
         reference.arena_digest,
         reference.runtime_digest,
         reference.base_engine_digest,
@@ -2251,7 +2251,6 @@ def _typed_resident_qualification_input(
         reference.logical_hardware_digest,
         reference.workload_digest,
         requirement.binding.verification_policy_digest,
-        reference.controller_distribution_digest,
     )
     calibration = replace(
         calibration_manifest(),
@@ -2389,7 +2388,7 @@ def test_typed_resident_input_derives_calibration_from_candidate_reference(
         != plan.candidate.launch.resource_policy_digest
     )
     assert value.calibration_context == runner.CalibrationContext(
-        reference.digest,
+        reference.measured_digest,
         reference.arena_digest,
         reference.runtime_digest,
         reference.base_engine_digest,
@@ -2399,7 +2398,6 @@ def test_typed_resident_input_derives_calibration_from_candidate_reference(
         reference.logical_hardware_digest,
         reference.workload_digest,
         verification_policy.verification_policy_digest,
-        reference.controller_distribution_digest,
     )
     assert reference.logical_hardware_digest == plan.candidate.launch.hardware.digest
     assert reference.workload_digest == runner.marginal_workload_digest(

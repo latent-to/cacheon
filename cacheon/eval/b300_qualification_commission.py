@@ -554,7 +554,7 @@ def _compose_locked(
         selection_policy_digest=inputs.prompt_identity["selection_policy_digest"],
     )
     calibration_context = CalibrationContext(
-        reference.digest,
+        reference.measured_digest,
         reference.arena_digest,
         reference.runtime_digest,
         reference.base_engine_digest,
@@ -564,7 +564,6 @@ def _compose_locked(
         reference.logical_hardware_digest,
         reference.workload_digest,
         policy.verification_policy_digest,
-        reference.controller_distribution_digest,
     )
     threshold, calibration_manifest, calibration_evidence = calibration_loader(
         inputs, calibration_context, screen_lane
