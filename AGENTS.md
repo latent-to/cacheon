@@ -265,6 +265,20 @@ contributor and subagent:
   fences that are not wired are dead on arrival — wire them or drop them.
 - Write the doc or kill the surface: an undocumented new command, flag, or
   schema is a deletion candidate, not a TODO.
+- Every change pays for itself. A change that adds production lines deletes
+  bloat in the same change, or its summary states plainly that no deletion was
+  available and names what will be deleted next. Report added and deleted
+  lines separately; a single net figure hides accretion.
+- Two consecutive additive changes with no deletion is a stopped-plan
+  condition. Stop and find the dead surface — importerless modules, orphaned
+  untracked files, superseded scripts, wrappers nothing can enable. Not
+  finding any is a reason to look harder, not a licence to continue.
+- Before adding a module, search for the one that already does this. A
+  near-duplicate under a new name is the most expensive addition there is,
+  because it doubles the surface that must later be reconciled.
+- A passing test suite is a floor, not evidence. For runtime behavior the
+  claim is carried by the system executing on real hardware; cite the run,
+  not the suite.
 
 ## Persistence
 
