@@ -64,7 +64,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (1, 2, 3)
+            or self.version not in (1, 2, 3, 4)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -105,10 +105,15 @@ class ResidentSpeedPolicy:
                 raise CrossoverRuntimeError(
                     "resident speed policy v3 requires 3..512 timed windows"
                 )
-            if not 0 < self.max_window_scatter <= 0.05:
+            # Version 3 refuses to grade an unfit read at all, so its bound is
+            # necessarily also a ceiling on what may be sealed. Version 4
+            # always produces a rate and carries scatter as recorded fitness
+            # evidence, so a looser advisory bound is admissible there.
+            scatter_ceiling = 0.25 if self.version >= 4 else 0.05
+            if not 0 < self.max_window_scatter <= scatter_ceiling:
                 raise CrossoverRuntimeError(
-                    "resident speed policy v3 requires a window scatter bound"
-                    " in (0, 0.05]"
+                    f"resident speed policy v{min(self.version, 4)} requires a"
+                    f" window scatter bound in (0, {scatter_ceiling}]"
                 )
             # The conditioning span is the only place a candidate's prefill
             # cost is visible to the host clock; a v3 verdict must bound it
@@ -187,7 +192,10 @@ class ResidentSpeedPolicy:
         measurement."""
 
         if self.version >= 3:
-            if self.read_window_scatter(row) > self.max_window_scatter:
+            # The call also enforces the sealed window count, which is a
+            # structural evidence requirement under every version.
+            scatter = self.read_window_scatter(row)
+            if self.version < 4 and scatter > self.max_window_scatter:
                 raise CrossoverRuntimeError(
                     "resident read window scatter exceeds the sealed bound"
                 )
@@ -862,6 +870,61 @@ def _final(verdict: SpeedupVerdict) -> SpeedStageDecision:
     return SpeedStageDecision.PASS if verdict.passed_speedup else SpeedStageDecision.FAIL
 
 
+def _invariant_decision(
+    baselines: list[float], candidates: list[float], required: float
+) -> SpeedStageDecision | None:
+    """The verdict that survives the full spread of the reads actually taken.
+
+    A candidate that loses even against its most favorable baseline read has
+    lost under every reading of the drift; one that wins against its least
+    favorable read has won under every reading. Only a verdict that flips
+    inside the observed spread is genuinely undetermined. Nothing here assumes
+    a distribution, so an ill-behaved box cannot turn a settled result into a
+    non-answer."""
+
+    if not baselines or not candidates:
+        return None
+    if max(candidates) / min(baselines) < required:
+        return SpeedStageDecision.FAIL
+    if min(candidates) / max(baselines) >= required:
+        return SpeedStageDecision.PASS
+    return None
+
+
+def _speed_grade(
+    policy: ResidentSpeedPolicy,
+    baselines: list[object],
+    candidates: list[object],
+    *,
+    concluding: bool,
+) -> tuple[SpeedupVerdict, SpeedStageDecision | None]:
+    """Grade one read set, shared by the live stage and the regrade so the two
+    cannot drift apart. ``concluding`` marks the last grade available for this
+    stage, after which no further reads will be taken."""
+
+    baseline_rates = [policy.scored_tokens_per_second(row) for row in baselines]
+    candidate_rates = [policy.scored_tokens_per_second(row) for row in candidates]
+    verdict = score_speedup(
+        baseline_rates,
+        candidate_rates,
+        min_margin=policy.min_margin,
+        k=policy.noise_multiplier,
+        max_noise=policy.max_noise,
+    )
+    if policy.version < 4:
+        if concluding:
+            return verdict, _final(verdict)
+        return verdict, _disposition(verdict, policy.min_margin)
+    decision = _invariant_decision(baseline_rates, candidate_rates, verdict.required)
+    if decision is None and concluding:
+        # Escalation cannot be relied on to converge: taking more reads only
+        # widens the observed spread. The burden of proof sits with the
+        # candidate, so an undetermined conclusion is "not proven faster" —
+        # a decision the miner can act on, never a non-answer.
+        decision = SpeedStageDecision.FAIL
+    return verdict, decision
+
+
 def _execution_digest(value: EngineExecutionEvidence) -> str:
     return canonical_digest(
         "cacheon.qualification.resident-engine-execution",
@@ -1138,38 +1201,29 @@ class ResidentCrossoverEvidence:
                 range(0, block * len(rows), block)
             ) or any(_recomputed_rate(row, execution, arm) != row for row in rows):
                 raise CrossoverRuntimeError("resident rate spans do not independently regrade")
-        initial = score_speedup(
-            [
-                plan.policy.scored_tokens_per_second(baseline_rates[0]),
-                plan.policy.scored_tokens_per_second(baseline_rates[1]),
-            ],
-            [plan.policy.scored_tokens_per_second(candidate_rates[0])],
-            min_margin=plan.policy.min_margin,
-            k=plan.policy.noise_multiplier,
-            max_noise=plan.policy.max_noise,
+        initial, disposition = _speed_grade(
+            plan.policy,
+            [baseline_rates[0], baseline_rates[1]],
+            [candidate_rates[0]],
+            concluding=False,
         )
         if plan.policy.conditioning_regression(
             baseline_rates[0], candidate_rates[0]
         ):
             disposition = SpeedStageDecision.FAIL
-        else:
-            disposition = _disposition(initial, plan.policy.min_margin)
         if disposition is None:
             if not self.escalated:
                 raise CrossoverRuntimeError("borderline resident evidence omitted repeat reads")
-            final = score_speedup(
-                [plan.policy.scored_tokens_per_second(row) for row in baseline_rates],
-                [plan.policy.scored_tokens_per_second(row) for row in candidate_rates],
-                min_margin=plan.policy.min_margin,
-                k=plan.policy.noise_multiplier,
-                max_noise=plan.policy.max_noise,
+            final, decision = _speed_grade(
+                plan.policy,
+                list(baseline_rates),
+                list(candidate_rates),
+                concluding=True,
             )
             if plan.policy.conditioning_regression(
                 baseline_rates[1], candidate_rates[1]
             ):
                 decision = SpeedStageDecision.FAIL
-            else:
-                decision = _final(final)
         else:
             if self.escalated:
                 raise CrossoverRuntimeError("clear resident evidence added unsealed reads")
@@ -1361,15 +1415,6 @@ def run_resident_crossover_speed(
     candidate_plan = _expanded(plan.candidate.session_plan, 2)
     schedule = _Schedule()
 
-    def score(baselines: list[float], candidates: list[float]) -> SpeedupVerdict:
-        return score_speedup(
-            baselines,
-            candidates,
-            min_margin=plan.policy.min_margin,
-            k=plan.policy.noise_multiplier,
-            max_noise=plan.policy.max_noise,
-        )
-
     windowed = plan.policy.version >= 3
 
     def baseline_driver(controller: OpenedOuterSession) -> SessionExecutionEvidence:
@@ -1393,20 +1438,14 @@ def run_resident_crossover_speed(
                 with_windows=windowed,
             )
             schedule.put("B_prime", after)
-            initial = score(
-                [
-                    plan.policy.scored_tokens_per_second(before),
-                    plan.policy.scored_tokens_per_second(after),
-                ],
-                [plan.policy.scored_tokens_per_second(candidate)],
+            initial, disposition = _speed_grade(
+                plan.policy, [before, after], [candidate], concluding=False
             )
             # Conditioning pairs by warmth position: C against B (cold first
             # reads). A regression is a clear FAIL — escalating cannot cure
             # a candidate whose unscored work already blew its bound.
             if plan.policy.conditioning_regression(before, candidate):
                 disposition = SpeedStageDecision.FAIL
-            else:
-                disposition = _disposition(initial, plan.policy.min_margin)
             schedule.put("initial", initial)
             schedule.put("escalate", disposition is None)
             if disposition is None:
@@ -1418,21 +1457,14 @@ def run_resident_crossover_speed(
                     plan.baseline.session_plan,
                     with_windows=windowed,
                 )
-                final = score(
-                    [
-                        plan.policy.scored_tokens_per_second(before),
-                        plan.policy.scored_tokens_per_second(after),
-                        plan.policy.scored_tokens_per_second(third),
-                    ],
-                    [
-                        plan.policy.scored_tokens_per_second(candidate),
-                        plan.policy.scored_tokens_per_second(repeat),
-                    ],
+                final, disposition = _speed_grade(
+                    plan.policy,
+                    [before, after, third],
+                    [candidate, repeat],
+                    concluding=True,
                 )
                 if plan.policy.conditioning_regression(after, repeat):
                     disposition = SpeedStageDecision.FAIL
-                else:
-                    disposition = _final(final)
                 schedule.put("B_double_prime", third)
             else:
                 final = initial
