@@ -364,7 +364,13 @@ def test_screen_to_qualification_restart_reuses_one_request(
         assert store.pending_qualification_recovery() is None
 
 
-def test_postpublication_hold_never_reclaims_or_screens_ahead(tmp_path: Path) -> None:
+def test_postpublication_infrastructure_results_requeue_fresh_until_capped(
+    tmp_path: Path,
+) -> None:
+    # Owner ruling 2026-08-10: a worker infrastructure result retires its dead
+    # request and requeues a fresh one instead of parking HELD; the systemic
+    # release cap bounds the retries and parks the reservation visibly for the
+    # operator, leaving the queue free.
     harness = _harness(
         tmp_path,
         profile="hold-profile",
@@ -374,20 +380,23 @@ def test_postpublication_hold_never_reclaims_or_screens_ahead(tmp_path: Path) ->
     supervisor = _supervisor(harness, screen_runs)
 
     assert supervisor.tick().phase is SupervisorPhase.SCREEN
-    held = supervisor.tick()
-    assert held.phase is SupervisorPhase.HOLD
-    assert held.hold_reason == "transport_hold:worker_infrastructure_result"
-    request_id = harness.transport.plan.request_id
-    repeated = supervisor.tick()
-    assert repeated.phase is SupervisorPhase.HOLD
-    assert harness.transport.plan.request_id == request_id
+    request_ids: list[str] = []
+    for attempt in range(3):
+        status = supervisor.tick()
+        assert status.phase is SupervisorPhase.QUALIFICATION
+        assert status.last_disposition == "requeue"
+        request_ids.append(harness.transport.plan.request_id)
+    assert len(set(request_ids)) == 3, "each retry must mint a fresh request"
     assert (
         harness.transport.plans,
         harness.transport.materializations,
         harness.transport.publications,
-    ) == (1, 1, 1)
+    ) == (3, 3, 3)
     assert len(harness.transport.screen_requests) == 1
     assert len(screen_runs) == 1
+
+    idle = supervisor.tick()
+    assert idle.phase is SupervisorPhase.IDLE
 
     reservation_id = screen_runs[0].lease.reservation_ids[0]
     with RecoverableFinalizedIntakeStore(
@@ -395,8 +404,8 @@ def test_postpublication_hold_never_reclaims_or_screens_ahead(tmp_path: Path) ->
         harness.fixtures.POLICY,
         scope=harness.fixtures.SCOPE,
     ) as store:
-        assert store.get(reservation_id).status == "promoted"
-        recovery = store.pending_qualification_recovery()
-        assert recovery is not None
-        assert recovery.phase.value == "held"
-        assert recovery.request_id == request_id
+        parked = store.get(reservation_id)
+        assert parked.status == "held"
+        assert parked.decision == "NO_DECISION"
+        assert parked.reason.startswith("systemic_release_cap:")
+        assert store.pending_qualification_recovery() is None

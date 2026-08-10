@@ -245,11 +245,14 @@ class ExecutionOutcome:
                 "infrastructure failure never becomes a miner decision"
             )
         if self.disposition is ExecutionDisposition.REQUEUE and (
-            self.failure_code not in PRE_RESIDENT_REQUEUE_FAILURES
+            (
+                self.failure_code not in PRE_RESIDENT_REQUEUE_FAILURES
+                and self.failure_code != WORKER_INFRASTRUCTURE_REQUEUE_FAILURE
+            )
             or self.decision != "NO_DECISION"
         ):
             raise ExecutionDispositionError(
-                "REQUEUE requires a closed pre-resident NO_DECISION refusal"
+                "REQUEUE requires a closed NO_DECISION infrastructure failure"
             )
         if self.disposition is ExecutionDisposition.HOLD and not self.reason:
             raise ExecutionDispositionError("HOLD requires a durable reason")
@@ -257,6 +260,20 @@ class ExecutionOutcome:
             self.failure_code or self.reason
         ):
             raise ExecutionDispositionError("COMPLETE carries no failure or reason")
+
+
+# Closed umbrella failure code for a worker-terminated request with no
+# authenticated refusal and no completed response: requeue-class (owner ruling
+# 2026-08-10). Raw worker codes outside the closed vocabularies normalize to
+# this marker in the typed outcome; the store release reason keeps the raw code.
+WORKER_INFRASTRUCTURE_REQUEUE_FAILURE = "worker_infrastructure_result"
+
+# Durable HELD reason written by the qualification dispatcher before
+# infrastructure results became requeue-class; the store accepts exactly this
+# reason when migrating a parked recovery back into the queue.
+WORKER_INFRASTRUCTURE_HOLD_REASON = (
+    f"transport_hold:{WORKER_INFRASTRUCTURE_REQUEUE_FAILURE}"
+)
 
 
 def resolve_infrastructure_result(
@@ -302,6 +319,8 @@ def resolve_completed_result(has_no_decision: bool) -> ExecutionOutcome:
 
 __all__ = [
     "AuthenticatedPreResidentRefusal",
+    "WORKER_INFRASTRUCTURE_HOLD_REASON",
+    "WORKER_INFRASTRUCTURE_REQUEUE_FAILURE",
     "ExecutionDisposition",
     "ExecutionDispositionError",
     "ExecutionOutcome",

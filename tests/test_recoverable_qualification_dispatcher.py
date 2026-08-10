@@ -233,39 +233,127 @@ def test_waiter_restart_reuses_the_same_plan_request_and_carrier(
     assert len(carriers) == 1
 
 
-def test_postpublication_worker_failure_is_held_and_never_released(
+class _InfrastructureResultTransport(_Transport):
+    """Every published request terminates with a worker infrastructure result."""
+
+    def __init__(self, authority, plan_fixtures):
+        super().__init__(authority, plan_fixtures)
+        self.authority = authority
+        self.request_ids: list[str] = []
+
+    def publish_planned_qualification(self, plan):
+        observed = super().publish_planned_qualification(plan)
+        self.request_ids.append(plan.request_id)
+        self.authority.results.mkdir(parents=True, exist_ok=True)
+        spool.write_local_no_decision(
+            self.authority.results,
+            plan.request_dict(),
+            "adapter_start_failed",
+        )
+        return observed
+
+
+def test_postpublication_worker_failure_retires_request_and_requeues_until_capped(
     tmp_path: Path,
 ) -> None:
+    # Owner ruling 2026-08-10: an unproven worker infrastructure result never
+    # parks the recovery HELD. The dead request retires, a fresh claim mints a
+    # fresh request, and the systemic release cap bounds the retries so an
+    # unfixed fault parks visibly for the operator instead of free-looping.
     fixtures = _fixtures()
     authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _InfrastructureResultTransport(authority, fixtures)
+    dispatcher = _dispatcher(authority, transport)
 
-    class InfrastructureResultTransport(_Transport):
-        def publish_planned_qualification(self, plan):
-            observed = super().publish_planned_qualification(plan)
-            authority.results.mkdir(parents=True, exist_ok=True)
-            spool.write_local_no_decision(
-                authority.results,
-                plan.request_dict(),
-                "adapter_start_failed",
+    outcomes = [dispatcher.dispatch_once() for _ in range(3)]
+    assert [type(outcome).__name__ for outcome in outcomes] == (
+        ["RecoverableQualificationRequeue"] * 3
+    )
+    assert [outcome.request_id for outcome in outcomes] == transport.request_ids
+    assert len(set(transport.request_ids)) == 3, "each retry must mint a fresh request"
+    assert all(
+        outcome.outcome.failure_code == "adapter_start_failed" for outcome in outcomes
+    )
+
+    with _store(authority) as store:
+        assert store.pending_qualification_recovery() is None
+        reservation_id = store._db.execute(
+            "SELECT reservation_id FROM evaluation_lease_members"
+        ).fetchone()["reservation_id"]
+        retained = store.get(reservation_id)
+        reasons = [
+            row["reason"]
+            for row in store._db.execute(
+                "SELECT reason FROM evaluation_leases WHERE state='released'"
+                " ORDER BY completed_block, lease_id"
             )
-            return observed
+        ]
+    assert reasons == ["systemic:worker_infrastructure:adapter_start_failed"] * 3
+    assert retained.status == "held"
+    assert retained.decision == "NO_DECISION"
+    assert retained.reason.startswith("systemic_release_cap:")
 
-    transport = InfrastructureResultTransport(authority, fixtures)
-    outcome = _dispatcher(authority, transport).dispatch_once()
-    assert type(outcome) is RecoverableQualificationHold
-    assert outcome.reason == "transport_hold:worker_infrastructure_result"
-    assert transport.plan is not None
+    # The parked reservation is no longer claimable: the queue moves on.
+    assert dispatcher.dispatch_once() is None
+    assert transport.plans == 3
+
+
+def test_parked_worker_infrastructure_hold_migrates_to_requeue(
+    tmp_path: Path,
+) -> None:
+    # A recovery parked HELD under the pre-change reason (written before
+    # infrastructure results became requeue-class) releases through the same
+    # retire-and-requeue on its next claim.
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, fail_resume=True)
+    dispatcher = _dispatcher(authority, transport)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
+        dispatcher.dispatch_once()
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
-        assert recovery is not None and recovery.phase.value == "held"
-        assert recovery.request_id == transport.plan.request_id
-        retained = store.get(recovery.lease.reservation_ids[0])
-        lease = store._db.execute(
-            "SELECT state FROM evaluation_leases WHERE lease_id=?",
-            (recovery.lease.lease_id,),
+        assert recovery is not None and recovery.phase.value == "request_ready"
+        store.hold_recovery(
+            recovery,
+            current_block=authority.fixtures.BLOCK,
+            reason="transport_hold:worker_infrastructure_result",
+        )
+
+    outcome = _dispatcher(authority, _Transport(authority, fixtures)).dispatch_once()
+    assert type(outcome).__name__ == "RecoverableQualificationRequeue"
+    assert outcome.outcome.failure_code == "worker_infrastructure_result"
+    with _store(authority) as store:
+        assert store.pending_qualification_recovery() is None
+        released = store._db.execute(
+            "SELECT reason FROM evaluation_leases WHERE state='released'"
         ).fetchone()
-    assert retained.status == "promoted"
-    assert lease["state"] == "active"
+    assert released["reason"] == (
+        "systemic:worker_infrastructure:worker_infrastructure_result"
+    )
+
+
+def test_worker_infrastructure_release_refuses_other_holds(tmp_path: Path) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, fail_resume=True)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
+        _dispatcher(authority, transport).dispatch_once()
+    with _store(authority) as store:
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None
+        held = store.hold_recovery(
+            recovery,
+            current_block=authority.fixtures.BLOCK,
+            reason="operator_hold",
+        )
+        with pytest.raises(Exception, match="forbidden"):
+            store.release_worker_infrastructure_recovery(
+                held,
+                failure_code="adapter_start_failed",
+                current_block=authority.fixtures.BLOCK,
+            )
+        still_held = store.pending_qualification_recovery()
+    assert still_held is not None and still_held.phase.value == "held"
 
 
 def test_completed_no_decision_product_is_held_without_retry_or_second_plan(

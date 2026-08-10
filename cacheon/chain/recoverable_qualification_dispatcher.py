@@ -36,6 +36,9 @@ from cacheon.chain.execution_disposition import (
     AuthenticatedPreResidentRefusal,
     ExecutionDisposition,
     ExecutionOutcome,
+    PRE_RESIDENT_REQUEUE_FAILURES,
+    WORKER_INFRASTRUCTURE_HOLD_REASON,
+    WORKER_INFRASTRUCTURE_REQUEUE_FAILURE,
     resolve_completed_result,
     resolve_infrastructure_result,
 )
@@ -139,7 +142,8 @@ class RecoverableQualificationHold:
 
 @dataclass(frozen=True)
 class RecoverableQualificationRequeue:
-    """One typed NO_DECISION + REQUEUE from an authenticated pre-resident refusal."""
+    """One typed NO_DECISION + REQUEUE from an authenticated pre-resident
+    refusal or from an unproven worker infrastructure result."""
 
     recovery_id: str
     request_id: str
@@ -166,6 +170,32 @@ class _PreResidentRefusalObserved(Exception):
         super().__init__(refusal.failure_code)
         self.refusal = refusal
         self.outcome = outcome
+
+
+class _InfrastructureResultObserved(Exception):
+    """Internal control flow: an unproven worker infrastructure result retires
+    its dead request and requeues instead of parking the recovery HELD."""
+
+    def __init__(self, failure_code: str, outcome: ExecutionOutcome) -> None:
+        super().__init__(failure_code)
+        self.failure_code = failure_code
+        self.outcome = outcome
+
+
+def _infrastructure_requeue_signal(failure_code: str) -> _InfrastructureResultObserved:
+    outcome_code = (
+        failure_code
+        if failure_code in PRE_RESIDENT_REQUEUE_FAILURES
+        else WORKER_INFRASTRUCTURE_REQUEUE_FAILURE
+    )
+    return _InfrastructureResultObserved(
+        failure_code,
+        ExecutionOutcome(
+            ExecutionDisposition.REQUEUE,
+            decision="NO_DECISION",
+            failure_code=outcome_code,
+        ),
+    )
 
 
 class _RecoveryLeaseRenewalDenied(Exception):
@@ -500,6 +530,22 @@ class RecoverableQualificationDispatcher:
             recovery.recovery_id, refusal.request_id, outcome
         )
 
+    def _requeue_infrastructure(
+        self,
+        recovery: EvaluationRecovery,
+        signal: _InfrastructureResultObserved,
+    ) -> RecoverableQualificationRequeue:
+        store, point, current = self._current_recovery(recovery.recovery_id)
+        try:
+            store.release_worker_infrastructure_recovery(
+                current, failure_code=signal.failure_code, current_block=point[0]
+            )
+        finally:
+            store.close()
+        return RecoverableQualificationRequeue(
+            recovery.recovery_id, recovery.request_id, signal.outcome
+        )
+
     def _renew_if_due(self, recovery: EvaluationRecovery) -> EvaluationRecovery:
         store, point, current = self._current_recovery(recovery.recovery_id)
         try:
@@ -642,6 +688,17 @@ class RecoverableQualificationDispatcher:
             ):
                 assert observed.refusal is not None
                 raise _PreResidentRefusalObserved(observed.refusal, outcome)
+            if recovery.phase is RecoveryPhase.REQUEST_READY:
+                # No authenticated refusal and no completed response: the
+                # worker terminated this request on its own infrastructure.
+                # Retire the dead request and requeue a fresh attempt instead
+                # of parking the recovery HELD forever. A completed response
+                # recorded in an earlier phase still holds below — that is a
+                # store/spool contradiction, not a retryable failure.
+                raise _infrastructure_requeue_signal(
+                    observed.failure_code
+                    or "worker_returned_no_completed_response"
+                )
             raise QualificationRecoveryHold(
                 "worker_infrastructure_result",
                 plan.request_id,
@@ -810,6 +867,13 @@ class RecoverableQualificationDispatcher:
             return None
         recovery, claim = selected.recovery, selected.claim
         if recovery.phase is RecoveryPhase.HELD:
+            if recovery.reason == WORKER_INFRASTRUCTURE_HOLD_REASON:
+                # Parked before infrastructure results became requeue-class:
+                # retire the dead request and requeue it the same way.
+                return self._requeue_infrastructure(
+                    recovery,
+                    _infrastructure_requeue_signal("worker_infrastructure_result"),
+                )
             return RecoverableQualificationHold(
                 recovery.recovery_id,
                 recovery.phase,
@@ -902,6 +966,8 @@ class RecoverableQualificationDispatcher:
                     )
         except _PreResidentRefusalObserved as signal:
             return self._requeue(recovery, signal.refusal, signal.outcome)
+        except _InfrastructureResultObserved as signal:
+            return self._requeue_infrastructure(recovery, signal)
         except _RecoveryLeaseRenewalDenied as signal:
             return self._hold(
                 signal.recovery,
