@@ -333,9 +333,16 @@ class StandingCpuSupervisor:
         1. qualification (resume same-request recovery before claiming new screen work)
         2. screen FIFO
         3. optional settlement / weights stages (later handoff gates)
+
+        A HOLD or REQUEUE is not a unit of work and must not consume the tick:
+        one durably held qualification would otherwise starve every later
+        stage (observed on mainnet 2026-08-10 — screens stalled behind a held
+        recovery). The first non-progressing result is surfaced only when no
+        stage progresses, and holds never reset the stall clock.
         """
 
         # Qualification first: recover active protected leases after restart.
+        deferred: SupervisorStageResult | None = None
         for stage, callback in (
             ("qualification", self.qualification_once),
             ("screen", self.screen_once),
@@ -345,8 +352,14 @@ class StandingCpuSupervisor:
             if callback is None:
                 continue
             result = self._run_stage(stage, callback)
-            if result is not None:
+            if result is None:
+                continue
+            if result.progressed:
                 return self._observe(result)
+            if deferred is None:
+                deferred = result
+        if deferred is not None:
+            return self._observe(deferred)
 
         now = float(self.clock())
         self._last_tick_progressed = False

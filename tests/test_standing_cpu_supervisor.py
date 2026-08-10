@@ -276,9 +276,13 @@ def test_run_forever_prints_exact_stage_error(capsys) -> None:
 
 
 @pytest.mark.parametrize("disposition", ["hold", "requeue"])
-def test_run_forever_backs_off_typed_no_progress_without_screening(
+def test_run_forever_backs_off_typed_no_progress_after_screening(
     disposition: str,
 ) -> None:
+    # A held or requeued qualification is not a unit of work: the screen stage
+    # still runs on the same tick (2026-08-10 mainnet: one durably held
+    # recovery starved the entire screen FIFO). Backoff engages only once no
+    # stage anywhere progresses, and holds never advance the progress clock.
     clock = _Clock()
     stop = threading.Event()
     calls = {"qualification": 0, "screen": 0}
@@ -307,7 +311,7 @@ def test_run_forever_backs_off_typed_no_progress_without_screening(
 
     def screen():
         calls["screen"] += 1
-        raise AssertionError("screen must not run ahead of protected qualification")
+        return None
 
     def wait(seconds: float) -> bool:
         waits.append(seconds)
@@ -332,10 +336,54 @@ def test_run_forever_backs_off_typed_no_progress_without_screening(
         restart_max_backoff_s=8.0,
     )
 
-    assert calls == {"qualification": 2, "screen": 0}
+    assert calls == {"qualification": 2, "screen": 2}
     assert waits == [2.0, 4.0]
     assert supervisor.status().last_progress_unix == initial_progress
     assert supervisor.status().last_disposition == disposition
+
+
+def test_held_qualification_does_not_starve_screen_progress() -> None:
+    # The regression observed live on 2026-08-10: qualification durably HELD,
+    # screens never claimed again, published count frozen. A progressing
+    # screen must win the tick over a non-progressing qualification hold.
+    hold = RecoverableQualificationHold(
+        recovery_id=_d("held-recovery"),
+        phase=RecoveryPhase.HELD,
+        request_id=_d("held-request"),
+        reason="transport_hold:worker_infrastructure_result",
+    )
+    screens: list[str] = []
+
+    def screen():
+        screens.append("claimed")
+        return SupervisorStageResult(
+            stage="screen",
+            progressed=True,
+            disposition="completed",
+            lease_id=_d("screen-lease"),
+            lane_assignment="primary",
+        )
+
+    supervisor = StandingCpuSupervisor(
+        screen_once=screen,
+        qualification_once=lambda: hold,
+        clock=_Clock(),
+    )
+    for _ in range(3):
+        status = supervisor.tick()
+        assert status.phase is SupervisorPhase.SCREEN
+        assert status.last_disposition == "completed"
+    assert screens == ["claimed"] * 3
+
+    # When the screen queue empties, the standing hold becomes visible again.
+    supervisor_idle = StandingCpuSupervisor(
+        screen_once=lambda: None,
+        qualification_once=lambda: hold,
+        clock=_Clock(),
+    )
+    status = supervisor_idle.tick()
+    assert status.last_disposition == "hold"
+    assert status.hold_reason == "transport_hold:worker_infrastructure_result"
 
 
 def test_optional_settlement_stage_runs_only_when_upstream_idle() -> None:
