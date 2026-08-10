@@ -838,7 +838,10 @@ class B300RegisteredQualificationInputs:
         if (
             type(self.resident_baseline_arm) is not ResidentArmPlan
             or type(self.resident_speed_policy) is not ResidentSpeedPolicy
-            or self.resident_speed_policy.version != 3
+            # Versions 3 and 4 share the resident two-lane choreography this
+            # check guards; v4 changes grading only. (This gate blocked the
+            # first v4 commission on the live pod, 2026-08-10 12:23Z.)
+            or self.resident_speed_policy.version not in (3, 4)
             or marginal_workload_digest(self.resident_baseline_arm.session_plan)
             != marginal_workload_digest(self.baseline_session_plan)
             or self.resident_baseline_arm.executor_namespace_digest
