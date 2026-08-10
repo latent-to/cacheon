@@ -111,13 +111,27 @@ def _parse_request(specifier: str, source_sha256: str) -> tuple[str, str]:
     return module_name, attribute_name
 
 
-def _resolved_source(module_name: str) -> Path:
-    if module_name in sys.modules:
-        raise QualificationCapabilityLoadError(
-            "qualification capabilities module was already imported"
-        )
+def _resolved_source(module_name: str) -> tuple[Path, ModuleType | None]:
+    """Resolve the one source file, and any module already loaded from it.
+
+    The operator installs deliberate in-process bindings on this module before
+    the adapter runs -- the calibration entropy provider and the seeded
+    qualification managers are both applied by assignment to the imported
+    module.  Executing a second private copy of the same bytes would produce a
+    module without them and evaluate against the wrong authorities, so an
+    existing import is reused rather than refused.  It is still pinned to the
+    exact resolved file, and its bytes are still verified against the sealed
+    digest by the caller before the factory is invoked.
+    """
+
+    existing = sys.modules.get(module_name)
     try:
-        specification = importlib.util.find_spec(module_name)
+        # Resolve straight off sys.path. importlib.util.find_spec would hand
+        # back an already-imported module's own __spec__, which would let a
+        # substituted module nominate the file it is checked against.
+        specification = importlib.machinery.PathFinder.find_spec(
+            module_name, sys.path
+        )
     except Exception as exc:
         raise QualificationCapabilityLoadError(
             f"qualification capabilities module cannot be resolved: {exc}"
@@ -152,7 +166,16 @@ def _resolved_source(module_name: str) -> Path:
         raise QualificationCapabilityLoadError(
             "qualification capabilities source path identity is unsafe"
         )
-    return source_path
+    if existing is not None:
+        origin = getattr(existing, "__file__", None)
+        if (
+            type(origin) is not str
+            or os.path.realpath(origin) != str(source_path)
+        ):
+            raise QualificationCapabilityLoadError(
+                "qualification capabilities module was imported from another file"
+            )
+    return source_path, existing
 
 
 def _stable_source_bytes(source_path: Path) -> bytes:
@@ -223,6 +246,59 @@ def _stable_source_bytes(source_path: Path) -> bytes:
         os.close(descriptor)
 
 
+def _invoke_factory(
+    module: ModuleType, attribute_name: str
+) -> B300QualificationCapabilities:
+    """Call one zero-argument factory and require the exact capabilities type."""
+
+    try:
+        factory = vars(module)[attribute_name]
+    except KeyError:
+        raise QualificationCapabilityLoadError(
+            "qualification capabilities factory attribute is unavailable"
+        ) from None
+    if not callable(factory):
+        raise QualificationCapabilityLoadError(
+            "qualification capabilities factory is not callable"
+        )
+    try:
+        parameters = inspect.signature(factory).parameters
+    except (TypeError, ValueError) as exc:
+        raise QualificationCapabilityLoadError(
+            f"qualification capabilities factory signature is unavailable: {exc}"
+        ) from None
+    # The invariant is that the loader invokes the factory with no arguments,
+    # so what disqualifies a factory is a parameter it cannot supply itself. A
+    # parameter carrying a default -- or a *args/**kwargs that binds to
+    # nothing -- still satisfies the zero-argument call and must not be
+    # rejected: refusing it costs a live commission for a signature that is
+    # already correct.
+    required = tuple(
+        name
+        for name, parameter in parameters.items()
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    )
+    if required:
+        raise QualificationCapabilityLoadError(
+            "qualification capabilities factory must accept exactly zero"
+            f" arguments; {', '.join(required)} has no default"
+        )
+    try:
+        capabilities = factory()
+    except Exception as exc:
+        raise QualificationCapabilityLoadError(
+            "qualification capabilities factory failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from None
+    if type(capabilities) is not B300QualificationCapabilities:
+        raise QualificationCapabilityLoadError(
+            "qualification capabilities factory did not return exact capabilities"
+        )
+    return capabilities
+
+
 def _invoke_verified_factory(
     *,
     module_name: str,
@@ -274,57 +350,13 @@ def _invoke_verified_factory(
             raise QualificationCapabilityLoadError(
                 "qualification capabilities source replaced its module identity"
             )
-        try:
-            factory = vars(module)[attribute_name]
-        except KeyError:
-            raise QualificationCapabilityLoadError(
-                "qualification capabilities factory attribute is unavailable"
-            ) from None
-        if not callable(factory):
-            raise QualificationCapabilityLoadError(
-                "qualification capabilities factory is not callable"
-            )
-        try:
-            parameters = inspect.signature(factory).parameters
-        except (TypeError, ValueError) as exc:
-            raise QualificationCapabilityLoadError(
-                f"qualification capabilities factory signature is unavailable: {exc}"
-            ) from None
-        # The invariant is that the loader invokes the factory with no
-        # arguments, so what disqualifies a factory is a parameter it cannot
-        # supply itself. A parameter carrying a default -- or a *args/**kwargs
-        # that binds to nothing -- still satisfies the zero-argument call and
-        # must not be rejected: refusing it costs a live commission for a
-        # signature that is already correct.
-        required = tuple(
-            name
-            for name, parameter in parameters.items()
-            if parameter.default is inspect.Parameter.empty
-            and parameter.kind
-            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
-        )
-        if required:
-            raise QualificationCapabilityLoadError(
-                "qualification capabilities factory must accept exactly zero"
-                f" arguments; {', '.join(required)} has no default"
-            )
-        try:
-            capabilities = factory()
-        except Exception as exc:
-            raise QualificationCapabilityLoadError(
-                "qualification capabilities factory failed: "
-                f"{type(exc).__name__}: {exc}"
-            ) from None
+        capabilities = _invoke_factory(module, attribute_name)
         if (
             sys.modules.get(private_module_name) is not module
             or sys.modules.get(module_name) is not module
         ):
             raise QualificationCapabilityLoadError(
                 "qualification capabilities factory replaced its module identity"
-            )
-        if type(capabilities) is not B300QualificationCapabilities:
-            raise QualificationCapabilityLoadError(
-                "qualification capabilities factory did not return exact capabilities"
             )
         return private_module_name, capabilities
     finally:
@@ -340,20 +372,24 @@ def load_qualification_capabilities(
 
     module_name, attribute_name = _parse_request(specifier, source_sha256)
     with _LOAD_LOCK:
-        source_path = _resolved_source(module_name)
+        source_path, existing = _resolved_source(module_name)
         source_bytes = _stable_source_bytes(source_path)
         actual_sha256 = hashlib.sha256(source_bytes).hexdigest()
         if actual_sha256 != source_sha256:
             raise QualificationCapabilityLoadError(
                 "qualification capabilities source digest differs"
             )
-        private_module_name, capabilities = _invoke_verified_factory(
-            module_name=module_name,
-            attribute_name=attribute_name,
-            source_path=source_path,
-            source_sha256=source_sha256,
-            source_bytes=source_bytes,
-        )
+        if existing is not None:
+            private_module_name = module_name
+            capabilities = _invoke_factory(existing, attribute_name)
+        else:
+            private_module_name, capabilities = _invoke_verified_factory(
+                module_name=module_name,
+                attribute_name=attribute_name,
+                source_path=source_path,
+                source_sha256=source_sha256,
+                source_bytes=source_bytes,
+            )
     return QualificationCapabilityLoadReceipt(
         specifier=specifier,
         module_name=module_name,

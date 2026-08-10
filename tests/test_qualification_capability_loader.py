@@ -241,9 +241,13 @@ def test_extension_module_spec_is_rejected_without_loading(
         origin=str(extension_path),
     )
     monkeypatch.setattr(
-        loader.importlib.util,
+        loader.importlib.machinery.PathFinder,
         "find_spec",
-        lambda observed: specification if observed == module_name else None,
+        staticmethod(
+            lambda observed, path=None, target=None: (
+                specification if observed == module_name else None
+            )
+        ),
     )
 
     with pytest.raises(
@@ -511,3 +515,94 @@ def test_cli_passes_digest_bound_capabilities_to_persistent_service(
     assert adapter.main(argv) == 19
     assert observed_load == [("private_factory:build", "a" * 64)]
     assert observed_serve == [capabilities]
+
+
+def test_an_already_imported_module_is_reused_with_its_operator_bindings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    factory_support: SimpleNamespace,
+) -> None:
+    """The pod adapter binds calibration entropy and seeded managers onto this
+    module before serving. Executing a second private copy of the same bytes
+    would drop those bindings and evaluate against the wrong authorities, so a
+    live import is reused -- after its bytes still verify."""
+
+    module_name = "qualification_factory_preimported"
+    source = _source()
+    source_path = _write_module(tmp_path, module_name, source)
+    monkeypatch.syspath_prepend(str(tmp_path.resolve()))
+
+    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    preimported = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, module_name, preimported)
+    spec.loader.exec_module(preimported)
+    preimported.OPERATOR_BINDING = "installed"
+
+    receipt = loader.load_qualification_capabilities(
+        f"{module_name}:factory", _digest(source)
+    )
+
+    assert type(receipt.capabilities) is B300QualificationCapabilities
+    # The live module is the one that answered, and it is left intact for the
+    # rest of the serving process.
+    assert receipt.private_module_name == module_name
+    assert sys.modules[module_name] is preimported
+    assert preimported.OPERATOR_BINDING == "installed"
+    # Reused, not re-executed: the module body ran once, at the operator's
+    # import, and only the factory was called by the loader.
+    assert factory_support.imports == 1
+    assert factory_support.calls == 1
+
+
+def test_a_preimported_module_from_another_file_is_still_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    factory_support: SimpleNamespace,
+) -> None:
+    """Reuse is pinned to the exact resolved file. A module occupying the name
+    from anywhere else is an identity substitution, not an operator binding."""
+
+    module_name = "qualification_factory_impostor"
+    source = _source()
+    _write_module(tmp_path, module_name, source)
+    monkeypatch.syspath_prepend(str(tmp_path.resolve()))
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    other_path = _write_module(elsewhere, "qualification_factory_other", source)
+    spec = importlib.util.spec_from_file_location(module_name, other_path)
+    impostor = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, module_name, impostor)
+    spec.loader.exec_module(impostor)
+
+    with pytest.raises(
+        loader.QualificationCapabilityLoadError, match="imported from another file"
+    ):
+        loader.load_qualification_capabilities(
+            f"{module_name}:factory", _digest(source)
+        )
+
+
+def test_a_preimported_module_whose_bytes_changed_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    factory_support: SimpleNamespace,
+) -> None:
+    """Reuse never skips the seal: the file still has to match the digest."""
+
+    module_name = "qualification_factory_drifted"
+    source = _source()
+    source_path = _write_module(tmp_path, module_name, source)
+    monkeypatch.syspath_prepend(str(tmp_path.resolve()))
+
+    spec = importlib.util.spec_from_file_location(module_name, source_path)
+    preimported = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, module_name, preimported)
+    spec.loader.exec_module(preimported)
+
+    with pytest.raises(
+        loader.QualificationCapabilityLoadError, match="source digest differs"
+    ):
+        loader.load_qualification_capabilities(
+            f"{module_name}:factory", _sha256("a different sealed declaration")
+        )
