@@ -85,6 +85,61 @@ Do not overwrite, stash, or discard unrelated user changes. Keep changes
 scoped. Runtime changes should be accompanied by focused tests before the full
 suite.
 
+### Execution control gates
+
+- Keep at most three non-root agents active across the entire descendant tree,
+  not merely three direct children. A child may not spawn a descendant unless
+  the user explicitly authorizes descendant delegation. Check the live agent
+  tree immediately before and after every launch. Give each agent one bounded
+  outcome, exact file ownership, explicit forbidden actions, applicable
+  product invariants, and exact acceptance tests. Review its output or diff
+  before accepting it; delegation is not approval.
+- No change merges without naming its consumer and its casualty. The consumer
+  is the real entrypoint that exercises the new code in the same diff. The
+  casualty is the implementation or operator action it supersedes, which must
+  be deleted in the same diff or have a named retirement trigger. Use the
+  explicit phrase "supersedes nothing" only when that is genuinely true. A
+  change or subagent output that can name neither is a proposal, not an
+  increment.
+- Every delegation and handoff must state its consumer, casualty, and net-LOC
+  budget or accounting. Delegation is not accretion: the primary agent deletes
+  down to budget or rejects the proposal before integration.
+- A writing agent may own multiple explicitly listed files when they form one
+  bounded implementation unit. It must state its implementation hypotheses
+  before editing and name the evidence that would falsify each one. Its handoff
+  must enumerate every file and every behavior or configuration choice it
+  introduced, then include a brittleness audit covering hardcoded identities
+  or paths, behavior under a second target profile, configuration precedence,
+  stale state, partial failure, restart/idempotency, concurrency, time bounds,
+  and untested assumptions. The primary agent must inspect the diff and
+  independently rerun the acceptance tests before accepting it.
+- Never use destructive synchronization such as `rsync --delete` for recovery,
+  handoff, snapshot, or deployment work. Use a new destination and verify the
+  copied manifest before considering any separately authorized cleanup.
+- Do not hardcode a target, reservation, model, hotkey, or mission identity in
+  a generic evaluator or scheduler. Resolve identities from registered,
+  sealed, validated inputs and test at least two distinct target profiles.
+- Predeclare device allocation, request concurrency, shard count, and a wall
+  bound for multi-GPU evaluation work. A concurrency-one loop across otherwise
+  idle devices is a stopped-plan condition unless the sealed workload requires
+  it and evidence justifies it.
+- Before an expensive or stateful runtime launch, test every writable path as
+  the exact runtime UID/GID with create, fsync, reopen, and unlink; reopen and
+  hash every read-only input through its exact runtime path; and validate
+  socket parents, stale-result collisions, container names, authorization
+  expiry, and rollback coordinates. A guessed permission or mount contract is
+  a stopped-plan condition, not an infrastructure experiment.
+- Do not hand-transcribe derived digests into commands or configuration. Hash
+  only genuine trust-boundary artifacts, compute the digest from the consumed
+  bytes in the same process whenever possible, and carry it through a
+  machine-produced receipt or file reference. Use ordinary generated IDs or
+  timestamps for non-authority working names; do not add checksum ceremony to
+  incidental files.
+- Do not create or grow a code file beyond 1,000 physical lines. When new
+  behavior touches an existing oversized file, put the behavior in a focused
+  sub-1,000-line module and limit the oversized-file change to the smallest
+  necessary wiring or extraction.
+
 CPU setup and baseline validation:
 
 ```bash

@@ -26,6 +26,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
+| `chain-evaluation-lease` | validator operator | one-shot evaluation lease transition | Preview, claim, heartbeat, or infrastructure-release store-selected work from sealed file authority |
 | `chain-register` | operator | chain mutation | Burn-register a hotkey and run the SDK preflight |
 | `chain-validate` | validator | production intake | Consume finalized reveals; a deployment may inject qualification services |
 | `chain-snapshot` | validator | private object-store mutation | Publish and reopen a consistent validator recovery snapshot |
@@ -230,6 +231,34 @@ product was recorded but cannot reconstruct its contents. Do not turn such a row
 candidate `FAIL` or invent a cause. See the
 [operator diagnostics procedure](../validator-guide/chain-loop.md#operator-reservation-diagnostics)
 for the exact support interpretation and current retention boundary.
+
+### `chain-evaluation-lease`
+
+```bash
+python -m cacheon.cli chain-evaluation-lease \
+  --config /srv/cacheon/sealed/evaluation-lease.json preview
+```
+
+The owner-controlled JSON file is the sole authority for the absolute intake database
+path, exact intake policy and chain scope, owner, stage, lease duration, qualification
+cohort maximum, and bounded lock-retry policy. The command has no environment fallback
+or target, model, hotkey, netuid, mission, endpoint, or path default.
+
+Each invocation performs exactly one operator request and exits. It is not an
+evaluation worker, daemon, or scheduler.
+
+The operations are `preview`, `claim`, `heartbeat <lease-id>`, and
+`release <lease-id> --reason <reason> [--result-digest <sha256>]`. Preview is
+non-mutating. Claim ordering, reproduction priority, qualification cohorts, lease
+generation, heartbeat CAS, infrastructure release, and the finalized block clock remain
+owned by `FinalizedIntakeStore`; this command does not evaluate or settle work. Every
+success prints canonical JSON bound to the retained finalized cursor.
+
+For claim, heartbeat, and release, the durable store mutation and canonical JSON
+emission are not one transaction. A process or output failure after the store commits
+can therefore leave the result ambiguous. These mutating verbs have no process-level
+idempotency promise: inspect the authoritative durable lease state before deciding
+whether to issue another exact operation.
 
 ### `chain-validate`
 
