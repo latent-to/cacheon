@@ -290,9 +290,23 @@ def _invoke_verified_factory(
             raise QualificationCapabilityLoadError(
                 f"qualification capabilities factory signature is unavailable: {exc}"
             ) from None
-        if parameters:
+        # The invariant is that the loader invokes the factory with no
+        # arguments, so what disqualifies a factory is a parameter it cannot
+        # supply itself. A parameter carrying a default -- or a *args/**kwargs
+        # that binds to nothing -- still satisfies the zero-argument call and
+        # must not be rejected: refusing it costs a live commission for a
+        # signature that is already correct.
+        required = tuple(
+            name
+            for name, parameter in parameters.items()
+            if parameter.default is inspect.Parameter.empty
+            and parameter.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+        )
+        if required:
             raise QualificationCapabilityLoadError(
-                "qualification capabilities factory must accept exactly zero arguments"
+                "qualification capabilities factory must accept exactly zero"
+                f" arguments; {', '.join(required)} has no default"
             )
         try:
             capabilities = factory()

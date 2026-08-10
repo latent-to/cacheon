@@ -324,7 +324,36 @@ def test_missing_attribute_and_non_callable_are_rejected(
     assert factory_support.calls == 0
 
 
-def test_factory_must_have_no_parameters_and_return_exact_type(
+def test_a_defaulted_parameter_still_satisfies_the_zero_argument_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    factory_support: SimpleNamespace,
+) -> None:
+    """The loader calls the factory with no arguments, so a parameter carrying
+    a default is already satisfied. Rejecting it is not a safety property: it
+    costs a re-commission of a sealed capability source whose signature is
+    correct. The deployed B300 factory is exactly this shape."""
+
+    root = tmp_path.resolve()
+    name = "qualification_factory_defaulted"
+    source = (
+        "from qualification_loader_test_support import build, record_import\n"
+        "record_import()\n"
+        "def factory(inputs=None):\n"
+        "    return build()\n"
+    ).encode("utf-8")
+    _write_module(root, name, source)
+    monkeypatch.syspath_prepend(str(root))
+
+    receipt = loader.load_qualification_capabilities(
+        f"{name}:factory", _digest(source)
+    )
+
+    assert receipt.attribute_name == "factory"
+    assert factory_support.calls == 1
+
+
+def test_factory_must_have_no_required_parameters_and_return_exact_type(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     factory_support: SimpleNamespace,
@@ -334,7 +363,7 @@ def test_factory_must_have_no_parameters_and_return_exact_type(
     parameter_source = (
         "from qualification_loader_test_support import build, record_import\n"
         "record_import()\n"
-        "def factory(optional=None):\n"
+        "def factory(required):\n"
         "    return build()\n"
     ).encode("utf-8")
     _write_module(root, parameter_name, parameter_source)
