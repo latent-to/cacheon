@@ -15,7 +15,6 @@ import statistics
 import threading
 import time
 from dataclasses import dataclass, replace
-from enum import Enum
 from typing import Callable
 
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
@@ -32,17 +31,15 @@ from cacheon.eval.oci_outer_session import (
 )
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.scoring import SpeedupVerdict, marginal_workload_digest, score_speedup
+from cacheon.eval.speed_verdict import (
+    SpeedStageDecision,
+    speed_grade,
+)
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
 class CrossoverRuntimeError(RuntimeError):
     pass
-
-
-class SpeedStageDecision(str, Enum):
-    PASS = "PASS"
-    FAIL = "FAIL"
-    NO_DECISION = "NO_DECISION"
 
 
 @dataclass(frozen=True)
@@ -852,79 +849,6 @@ class _Schedule:
             return self.values[key]
 
 
-def _disposition(
-    verdict: SpeedupVerdict, margin: float
-) -> SpeedStageDecision | None:
-    if not verdict.confident:
-        return None
-    if verdict.speedup <= verdict.required - margin:
-        return SpeedStageDecision.FAIL
-    if verdict.speedup >= verdict.required + margin:
-        return SpeedStageDecision.PASS
-    return None
-
-
-def _final(verdict: SpeedupVerdict) -> SpeedStageDecision:
-    if not verdict.confident:
-        return SpeedStageDecision.NO_DECISION
-    return SpeedStageDecision.PASS if verdict.passed_speedup else SpeedStageDecision.FAIL
-
-
-def _invariant_decision(
-    baselines: list[float], candidates: list[float], required: float
-) -> SpeedStageDecision | None:
-    """The verdict that survives the full spread of the reads actually taken.
-
-    A candidate that loses even against its most favorable baseline read has
-    lost under every reading of the drift; one that wins against its least
-    favorable read has won under every reading. Only a verdict that flips
-    inside the observed spread is genuinely undetermined. Nothing here assumes
-    a distribution, so an ill-behaved box cannot turn a settled result into a
-    non-answer."""
-
-    if not baselines or not candidates:
-        return None
-    if max(candidates) / min(baselines) < required:
-        return SpeedStageDecision.FAIL
-    if min(candidates) / max(baselines) >= required:
-        return SpeedStageDecision.PASS
-    return None
-
-
-def _speed_grade(
-    policy: ResidentSpeedPolicy,
-    baselines: list[object],
-    candidates: list[object],
-    *,
-    concluding: bool,
-) -> tuple[SpeedupVerdict, SpeedStageDecision | None]:
-    """Grade one read set, shared by the live stage and the regrade so the two
-    cannot drift apart. ``concluding`` marks the last grade available for this
-    stage, after which no further reads will be taken."""
-
-    baseline_rates = [policy.scored_tokens_per_second(row) for row in baselines]
-    candidate_rates = [policy.scored_tokens_per_second(row) for row in candidates]
-    verdict = score_speedup(
-        baseline_rates,
-        candidate_rates,
-        min_margin=policy.min_margin,
-        k=policy.noise_multiplier,
-        max_noise=policy.max_noise,
-    )
-    if policy.version < 4:
-        if concluding:
-            return verdict, _final(verdict)
-        return verdict, _disposition(verdict, policy.min_margin)
-    decision = _invariant_decision(baseline_rates, candidate_rates, verdict.required)
-    if decision is None and concluding:
-        # Escalation cannot be relied on to converge: taking more reads only
-        # widens the observed spread. The burden of proof sits with the
-        # candidate, so an undetermined conclusion is "not proven faster" —
-        # a decision the miner can act on, never a non-answer.
-        decision = SpeedStageDecision.FAIL
-    return verdict, decision
-
-
 def _execution_digest(value: EngineExecutionEvidence) -> str:
     return canonical_digest(
         "cacheon.qualification.resident-engine-execution",
@@ -1201,7 +1125,7 @@ class ResidentCrossoverEvidence:
                 range(0, block * len(rows), block)
             ) or any(_recomputed_rate(row, execution, arm) != row for row in rows):
                 raise CrossoverRuntimeError("resident rate spans do not independently regrade")
-        initial, disposition = _speed_grade(
+        initial, disposition = speed_grade(
             plan.policy,
             [baseline_rates[0], baseline_rates[1]],
             [candidate_rates[0]],
@@ -1214,7 +1138,7 @@ class ResidentCrossoverEvidence:
         if disposition is None:
             if not self.escalated:
                 raise CrossoverRuntimeError("borderline resident evidence omitted repeat reads")
-            final, decision = _speed_grade(
+            final, decision = speed_grade(
                 plan.policy,
                 list(baseline_rates),
                 list(candidate_rates),
@@ -1438,7 +1362,7 @@ def run_resident_crossover_speed(
                 with_windows=windowed,
             )
             schedule.put("B_prime", after)
-            initial, disposition = _speed_grade(
+            initial, disposition = speed_grade(
                 plan.policy, [before, after], [candidate], concluding=False
             )
             # Conditioning pairs by warmth position: C against B (cold first
@@ -1457,7 +1381,7 @@ def run_resident_crossover_speed(
                     plan.baseline.session_plan,
                     with_windows=windowed,
                 )
-                final, disposition = _speed_grade(
+                final, disposition = speed_grade(
                     plan.policy,
                     [before, after, third],
                     [candidate, repeat],
