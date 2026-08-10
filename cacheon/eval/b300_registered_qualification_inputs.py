@@ -848,6 +848,10 @@ class B300RegisteredQualificationInputs:
                 "resident-v3 baseline/candidate lane authority is inconsistent"
             )
         try:
+            # Reconstruct at the sealed policy's own version (the commission
+            # chooses the version; this site only verifies calibration
+            # derivation). The equality check below still refuses any
+            # cross-version splice because version participates in equality.
             expected_speed = ResidentSpeedPolicy.from_calibration(
                 max_stage_seconds=self.resident_speed_policy.max_stage_seconds,
                 max_qualification_seconds=(
@@ -855,7 +859,7 @@ class B300RegisteredQualificationInputs:
                 ),
                 calibration=self.calibration_manifest,
                 context=self.calibration_context,
-                version=3,
+                version=self.resident_speed_policy.version,
                 min_windows=self.resident_speed_policy.min_windows,
                 max_window_scatter=self.resident_speed_policy.max_window_scatter,
                 max_conditioning_slowdown=(
