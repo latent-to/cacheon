@@ -1229,6 +1229,8 @@ class DeviceStateGuard:
         released = release is None
         release_sample_index: int | None = 0 if release is None else None
         last_reason = "no active telemetry sample completed"
+        last_command_failure = ""
+        command_failures = 0
 
         def release_now() -> bool:
             assert release is not None
@@ -1319,7 +1321,12 @@ class DeviceStateGuard:
                 # The consecutive pre-release run cannot span the gap, so it
                 # restarts; a genuinely wedged query still exhausts the bounded
                 # conditioning window and fails closed below.
-                last_reason = str(exc)
+                # Do NOT overwrite last_reason: once the window is spent every
+                # query gets a near-zero budget and reports as a command
+                # timeout, which would bury the envelope reason that actually
+                # explains the failure.
+                command_failures += 1
+                last_command_failure = str(exc)
                 consecutive = 0
                 if not wait_before_next_sample(release is not None and released):
                     break
@@ -1382,7 +1389,18 @@ class DeviceStateGuard:
                     return released_receipt(post_release_ready_samples=1)
             if not wait_before_next_sample(post_release):
                 break
+        # Say which of the two very different failures this was. Reporting only
+        # a command timeout here sent one bringup chasing nvidia-smi latency
+        # twice while the real cause was the envelope never being satisfied.
         raise DeviceStateEnvelopeTimeoutError(
             "selected GPUs did not satisfy the active post-warmup envelope before "
-            f"the bounded conditioning window ended: {last_reason}"
+            f"the bounded conditioning window ended after {self._now() - started:.1f}s: "
+            f"{len(samples)} sample(s) taken, {consecutive}/{required} consecutive, "
+            f"released={released}; last envelope reason: {last_reason}"
+            + (
+                f"; {command_failures} telemetry command failure(s), last: "
+                f"{last_command_failure}"
+                if command_failures
+                else ""
+            )
         )
