@@ -173,7 +173,19 @@ not qualification evidence.
 
 ### Resident adaptive qualification
 
-Production providers select qualification policy version 3:
+Since **2026-08-10** production providers seal resident speed policy
+**version 4**: every timed read is graded (the version-3 mid-run
+window-scatter refusal is retired as verdict control flow), window scatter is
+carried as recorded fitness evidence under an advisory bound, and the speed
+verdict is decided by bookend invariance — a candidate fails when it loses
+against its most favorable bookend, passes when it clears the requirement
+against its least favorable one, and an undecidable spread terminates as
+`FAIL` (`valid_not_faster`) because a crown requires demonstrated
+improvement. Retained version-1..3 evidence regrades under its own sealed
+arithmetic; cross-version splicing remains refused. The adaptive lane
+choreography below is unchanged from version 3.
+
+Production providers previously selected qualification policy version 3:
 
 1. two isolated resident TP lanes are assigned incumbent and candidate roles;
 2. speed begins with B/C/B′;
