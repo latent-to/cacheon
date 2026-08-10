@@ -122,7 +122,16 @@ class IntakePolicy:
     max_transport_retries: int = 3
     max_qualification_retries: int = 3
     max_cohort: int = 8
-    expiry_blocks: int = 2_880
+    # The expiry SLA has to exceed the queue's own service time, or rows expire
+    # because the validator is busy rather than because the miner went away.
+    # A qualifying bundle costs 20-30 minutes of exclusive pod time, so a day
+    # that admits 30 of them owes ~15 hours of evaluation against the 7,200
+    # blocks (24h) in which they arrive. The former 2,880 blocks (9.6h) sat
+    # below a single day's own workload, which made expiry-by-construction the
+    # normal outcome: 201 mainnet rows expired on this SLA in the first six
+    # days without one of them being reached. 10,000 blocks is ~33 hours --
+    # a full day of arrivals plus roughly nine hours to burn down a backlog.
+    expiry_blocks: int = 10_000
 
     def __post_init__(self) -> None:
         values = tuple(getattr(self, field) for field in self.__dataclass_fields__)
