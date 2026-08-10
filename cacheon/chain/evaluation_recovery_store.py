@@ -884,6 +884,55 @@ class EvaluationRecoveryStoreMixin:
             recovery, current_block=current_block, reason=refusal.release_reason
         )
 
+    def release_worker_infrastructure_recovery(
+        self,
+        recovery: EvaluationRecovery,
+        *,
+        failure_code: str,
+        current_block: int,
+    ) -> EvaluationLease:
+        """Requeue one published request the worker terminated with an unproven
+        infrastructure result (no authenticated refusal, no completed
+        response).  The dead request retires with its recovery and a fresh
+        claim mints a fresh request.  Also accepts a recovery already parked
+        HELD under the pre-change worker-infrastructure reason, migrating it
+        into the same requeue.  Repeats are bounded by the systemic release
+        cap, so an unfixed infrastructure fault parks for the operator instead
+        of free-looping."""
+
+        from cacheon.chain.execution_disposition import (
+            WORKER_INFRASTRUCTURE_HOLD_REASON,
+        )
+
+        held_migration = (
+            type(recovery) is EvaluationRecovery
+            and recovery.phase is RecoveryPhase.HELD
+            and recovery.reason == WORKER_INFRASTRUCTURE_HOLD_REASON
+        )
+        if (
+            type(recovery) is not EvaluationRecovery
+            or not isinstance(failure_code, str)
+            or not failure_code
+            or failure_code.strip() != failure_code
+            or len(failure_code) > 256
+            or any(ord(char) < 32 or ord(char) == 127 for char in failure_code)
+            or not (recovery.phase is RecoveryPhase.REQUEST_READY or held_migration)
+        ):
+            raise _intake_error("worker infrastructure recovery release is forbidden")
+        lease = self._release_recovery(
+            recovery,
+            current_block=current_block,
+            reason=f"systemic:worker_infrastructure:{failure_code}",
+            # A resolved recovery may not remain HELD; the migration releases
+            # back through the phase it was parked from.
+            release_phase=(
+                RecoveryPhase.REQUEST_READY if held_migration else None
+            ),
+            allow_expired=held_migration,
+        )
+        self._cap_systemic_releases(lease)
+        return lease
+
     def release_reviewed_legacy_screen_only_recovery(
         self,
         recovery: EvaluationRecovery,

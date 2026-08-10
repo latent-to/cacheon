@@ -8,10 +8,12 @@ import pytest
 
 import cacheon.chain.recoverable_qualification_dispatcher as dispatcher_module
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
+from cacheon.chain.execution_disposition import ExecutionDisposition
 from cacheon.chain.recoverable_qualification_dispatcher import (
     RecoverableQualificationDispatcher,
     RecoverableQualificationDispatcherError,
     RecoverableQualificationHold,
+    RecoverableQualificationRequeue,
 )
 from cacheon.chain.remote_evaluation_dispatcher import seal_remote_response
 from cacheon.chain.remote_qualification_hold import (
@@ -233,9 +235,15 @@ def test_waiter_restart_reuses_the_same_plan_request_and_carrier(
     assert len(carriers) == 1
 
 
-def test_postpublication_worker_failure_is_held_and_never_released(
+def test_postpublication_worker_failure_retires_request_and_requeues(
     tmp_path: Path,
 ) -> None:
+    """An unproven worker infrastructure result (no authenticated refusal, no
+    completed response) retires the dead request and requeues the reservation
+    through the same path the pre-resident refusals use, bounded by the
+    systemic release cap: the third strike parks the reservation HELD with
+    NO_DECISION for the operator instead of free-looping."""
+
     fixtures = _fixtures()
     authority = fixtures._authority(tmp_path, recoverable=True)
 
@@ -251,21 +259,61 @@ def test_postpublication_worker_failure_is_held_and_never_released(
             return observed
 
     transport = InfrastructureResultTransport(authority, fixtures)
-    outcome = _dispatcher(authority, transport).dispatch_once()
-    assert type(outcome) is RecoverableQualificationHold
-    assert outcome.reason == "transport_hold:worker_infrastructure_result"
-    assert transport.plan is not None
-    with _store(authority) as store:
-        recovery = store.pending_qualification_recovery()
-        assert recovery is not None and recovery.phase.value == "held"
-        assert recovery.request_id == transport.plan.request_id
-        retained = store.get(recovery.lease.reservation_ids[0])
-        lease = store._db.execute(
-            "SELECT state FROM evaluation_leases WHERE lease_id=?",
-            (recovery.lease.lease_id,),
-        ).fetchone()
-    assert retained.status == "promoted"
-    assert lease["state"] == "active"
+    dispatcher = _dispatcher(authority, transport)
+
+    request_ids: list[str] = []
+    reservation_id: str | None = None
+    for strike in (1, 2, 3):
+        outcome = dispatcher.dispatch_once()
+        assert type(outcome) is RecoverableQualificationRequeue
+        assert transport.plan is not None
+        assert outcome.request_id == transport.plan.request_id
+        request_ids.append(outcome.request_id)
+        assert outcome.outcome.disposition is ExecutionDisposition.REQUEUE
+        assert outcome.outcome.decision == "NO_DECISION"
+        assert outcome.outcome.failure_code == "adapter_start_failed"
+        with _store(authority) as store:
+            # The dead request retired with its recovery.
+            assert store.pending_qualification_recovery() is None
+            released = store._db.execute(
+                "SELECT l.state, l.reason, m.reservation_id "
+                "FROM evaluation_leases AS l "
+                "JOIN evaluation_lease_members AS m ON m.lease_id=l.lease_id "
+                "WHERE l.reason LIKE 'systemic%' ORDER BY l.claimed_block",
+            ).fetchall()
+            assert len(released) == strike
+            for row in released:
+                assert row["state"] == "released"
+                assert (
+                    row["reason"]
+                    == "systemic:worker_infrastructure:adapter_start_failed"
+                )
+                assert row["reservation_id"] == released[0]["reservation_id"]
+            reservation_id = released[0]["reservation_id"]
+            row = store._db.execute(
+                "SELECT status, decision, reason FROM reservations "
+                "WHERE reservation_id=?",
+                (reservation_id,),
+            ).fetchone()
+            if strike < 3:
+                # Requeued: the reservation is claimable again for a fresh
+                # request; infrastructure failure consumed no candidate attempt.
+                assert row["status"] == "promoted"
+            else:
+                # Third systemic strike parks for the operator; holding is not
+                # a verdict and release_hold reopens it.
+                assert (row["status"], row["decision"]) == ("held", "NO_DECISION")
+                assert row["reason"] == "systemic_release_cap:3"
+
+    # Every strike minted a fresh request through the normal claim path.
+    assert len(set(request_ids)) == 3
+    assert (transport.plans, transport.materializations, transport.publications) == (
+        3,
+        3,
+        3,
+    )
+    # Nothing claimable remains behind the parked reservation.
+    assert dispatcher.dispatch_once() is None
 
 
 def test_completed_no_decision_product_is_held_without_retry_or_second_plan(

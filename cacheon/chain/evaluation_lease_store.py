@@ -814,7 +814,42 @@ class EvaluationLeaseStoreMixin:
                 reason=reason,
                 result_digest=result_digest,
             )
+            if reason.startswith("systemic"):
+                self._cap_systemic_releases(lease)
         return lease
+
+    _SYSTEMIC_RELEASE_CAP = 3
+
+    def _cap_systemic_releases(self, lease: EvaluationLease) -> None:
+        """Park reservations that keep surviving systemic releases.
+
+        A systemic release deliberately consumes no candidate attempt --
+        infrastructure failure never becomes a candidate verdict.  Unbounded,
+        that honesty is a free loop: the same reservation is reclaimed and
+        systemically released forever (observed 2026-08-10: one reservation
+        claimed 16 times against a dead worker).  At the cap the reservation
+        parks as ``held`` with NO_DECISION for operator attention.  Holding
+        is not a verdict; ``release_hold`` reopens it.
+        """
+        for member in lease.members:
+            count = self._db.execute(
+                "SELECT COUNT(*) FROM evaluation_leases AS l "
+                "JOIN evaluation_lease_members AS m ON m.lease_id=l.lease_id "
+                "WHERE m.reservation_id=? AND l.state='released' "
+                "AND l.reason LIKE 'systemic%'",
+                (member.reservation_id,),
+            ).fetchone()[0]
+            if count < self._SYSTEMIC_RELEASE_CAP:
+                continue
+            self._db.execute(
+                "UPDATE reservations SET status='held',decision='NO_DECISION',"
+                "reason=? WHERE reservation_id=? AND status=?",
+                (
+                    f"systemic_release_cap:{count}",
+                    member.reservation_id,
+                    member.prior_status,
+                ),
+            )
 
     @contextmanager
     def accept_evaluation_result(

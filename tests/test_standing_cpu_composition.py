@@ -364,7 +364,14 @@ def test_screen_to_qualification_restart_reuses_one_request(
         assert store.pending_qualification_recovery() is None
 
 
-def test_postpublication_hold_never_reclaims_or_screens_ahead(tmp_path: Path) -> None:
+def test_postpublication_infrastructure_failure_requeues_and_parks_at_cap(
+    tmp_path: Path,
+) -> None:
+    """An unproven worker infrastructure result never parks the pipeline: each
+    strike retires the dead request, mints a fresh one on the next claim, and
+    the third systemic strike parks the reservation HELD for the operator.
+    Completed screen work is never repeated."""
+
     harness = _harness(
         tmp_path,
         profile="hold-profile",
@@ -374,18 +381,23 @@ def test_postpublication_hold_never_reclaims_or_screens_ahead(tmp_path: Path) ->
     supervisor = _supervisor(harness, screen_runs)
 
     assert supervisor.tick().phase is SupervisorPhase.SCREEN
-    held = supervisor.tick()
-    assert held.phase is SupervisorPhase.HOLD
-    assert held.hold_reason == "transport_hold:worker_infrastructure_result"
-    request_id = harness.transport.plan.request_id
-    repeated = supervisor.tick()
-    assert repeated.phase is SupervisorPhase.HOLD
-    assert harness.transport.plan.request_id == request_id
+    request_ids: list[str] = []
+    for strike in (1, 2, 3):
+        status = supervisor.tick()
+        assert status.phase is SupervisorPhase.QUALIFICATION
+        assert status.last_disposition == "requeue"
+        assert harness.transport.plan is not None
+        assert status.request_id == harness.transport.plan.request_id
+        request_ids.append(harness.transport.plan.request_id)
+
+    # Each strike retired its dead request and minted a fresh one.
+    assert len(set(request_ids)) == 3
     assert (
         harness.transport.plans,
         harness.transport.materializations,
         harness.transport.publications,
-    ) == (1, 1, 1)
+    ) == (3, 3, 3)
+    # The completed screen was never re-run.
     assert len(harness.transport.screen_requests) == 1
     assert len(screen_runs) == 1
 
@@ -395,8 +407,17 @@ def test_postpublication_hold_never_reclaims_or_screens_ahead(tmp_path: Path) ->
         harness.fixtures.POLICY,
         scope=harness.fixtures.SCOPE,
     ) as store:
-        assert store.get(reservation_id).status == "promoted"
-        recovery = store.pending_qualification_recovery()
-        assert recovery is not None
-        assert recovery.phase.value == "held"
-        assert recovery.request_id == request_id
+        # Third systemic strike parked the reservation for the operator;
+        # holding is not a verdict and release_hold reopens it.
+        row = store._db.execute(
+            "SELECT status, decision, reason FROM reservations "
+            "WHERE reservation_id=?",
+            (reservation_id,),
+        ).fetchone()
+        assert (row["status"], row["decision"]) == ("held", "NO_DECISION")
+        assert row["reason"] == "systemic_release_cap:3"
+        assert store.pending_qualification_recovery() is None
+
+    # Nothing is claimable behind the parked reservation: the supervisor
+    # settles to idle instead of free-looping the dead request.
+    assert supervisor.tick().phase is SupervisorPhase.IDLE
