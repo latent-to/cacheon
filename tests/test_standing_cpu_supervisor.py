@@ -255,6 +255,26 @@ def test_run_forever_idle_poll_and_stop() -> None:
     assert seen == [SupervisorPhase.IDLE]
 
 
+def test_run_forever_prints_exact_stage_error(capsys) -> None:
+    stop = threading.Event()
+    supervisor = StandingCpuSupervisor(
+        screen_once=lambda: None,
+        qualification_once=lambda: (_ for _ in ()).throw(TimeoutError("exact boom")),
+        clock=_Clock(),
+    )
+
+    def wait(_seconds: float) -> bool:
+        stop.set()
+        return True
+
+    run_forever(supervisor, stop, wait=wait)
+    assert (
+        "STANDING-CPU-SUPERVISOR-STAGE-ERROR: stage 'qualification' failed "
+        "closed without a typed disposition: TimeoutError: exact boom"
+        in capsys.readouterr().err
+    )
+
+
 @pytest.mark.parametrize("disposition", ["hold", "requeue"])
 def test_run_forever_backs_off_typed_no_progress_without_screening(
     disposition: str,

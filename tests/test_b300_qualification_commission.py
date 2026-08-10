@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 import tests.test_calibration as calibration_fixtures
+import tests.test_oci_backend as oci_backend_fixtures
 
 from cacheon.eval import b300_qualification_commission as commission
 from cacheon.eval.b300_qualification_deployment import B300RegisteredProfileAuthority
@@ -146,6 +147,44 @@ def test_tracked_deadline_is_lease_bounded_monotonic() -> None:
     assert deadline(object()) == 1000.0 + QUALIFICATION_DEADLINE_MAXIMUM_SECONDS
     # The policy never depends on the cohort it is asked about.
     assert deadline(None) == deadline(object())
+
+
+def test_pristine_reference_authority_removes_seam_selection(
+    tmp_path: Path,
+) -> None:
+    case = oci_backend_fixtures._case(tmp_path)
+    incumbent_config = replace(
+        case.plan.engine_config,
+        seam_bindings=("collective",),
+    )
+    incumbent_launch = replace(
+        case.launch,
+        engine_config_digest=incumbent_config.digest,
+    )
+    incumbent_plan = replace(
+        case.plan,
+        launch_digest=incumbent_launch.digest,
+        expected_engine_config_digest=incumbent_config.digest,
+        engine_config=incumbent_config,
+        expected_preflight=commission.expected_runtime_preflight(
+            incumbent_launch, case.preflight
+        ),
+    )
+
+    pristine_launch, pristine_plan = commission._pristine_reference_authority(
+        incumbent_launch,
+        incumbent_plan,
+        case.preflight,
+    )
+
+    assert incumbent_plan.engine_config.seam_bindings == ("collective",)
+    assert pristine_plan.engine_config.seam_bindings == ()
+    assert pristine_launch.digest != incumbent_launch.digest
+    assert pristine_launch.engine_config_digest == pristine_plan.engine_config.digest
+    assert pristine_plan.launch_digest == pristine_launch.digest
+    assert pristine_plan.expected_preflight.engine_config_digest == (
+        pristine_plan.engine_config.digest
+    )
 
 
 def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> None:

@@ -1642,6 +1642,7 @@ def cmd_chain_evaluation_lease(args: argparse.Namespace) -> int:
             lease_id=getattr(args, "lease_id", None),
             reason=getattr(args, "reason", None),
             result_digest=getattr(args, "result_digest", ""),
+            authority_path=getattr(args, "authority", None),
         )
     except (FifoLeaseError, IntakeError, OSError) as exc:
         print(f"chain-evaluation-lease: {exc}", file=sys.stderr)
@@ -2483,6 +2484,11 @@ def build_parser() -> argparse.ArgumentParser:
     released.add_argument("lease_id")
     released.add_argument("--reason", required=True)
     released.add_argument("--result-digest", default="")
+    requeue_expired = lease_ops.add_parser(
+        "requeue-expired",
+        help="readmit one sealed validator-downtime cohort with a fresh SLA window",
+    )
+    requeue_expired.add_argument("--authority", required=True)
     sp.set_defaults(func=cmd_chain_evaluation_lease)
 
     sp = sub.add_parser("chain-validate",

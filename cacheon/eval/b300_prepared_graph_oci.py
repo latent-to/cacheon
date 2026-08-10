@@ -424,7 +424,12 @@ class B300PreparedGraphOCIExecutor:
                 capture_runner=self.capture_runner,
             )
             if result.returncode != 0:
-                raise B300PreparedGraphOCIError(f"worker exited {result.returncode}")
+                stderr_tail = result.stderr[-(4 << 10) :].decode(
+                    "utf-8", errors="backslashreplace"
+                )
+                raise B300PreparedGraphOCIError(
+                    f"worker exited {result.returncode}; stderr tail={stderr_tail!a}"
+                )
             artifact = B300QualificationGraphArtifact.from_canonical_bytes(
                 result.stdout
             )
@@ -471,10 +476,12 @@ def _worker() -> int:
     payload = Path(CONTAINER_REQUEST).read_bytes()
     request = PreparedGraphProbeRequest.from_canonical_bytes(payload)
     output = os.dup(sys.stdout.fileno())
+    prior_sys_path = list(sys.path)
 
     try:
         sys.stdout.flush()
         os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+        sys.path.insert(0, CONTAINER_TREE)
         artifact = execute_prepared_graph_probe(request, CONTAINER_TREE)
         sys.stdout.flush()
         os.dup2(output, sys.stdout.fileno())
@@ -485,6 +492,7 @@ def _worker() -> int:
                 raise B300PreparedGraphOCIError("graph artifact write stalled")
             view = view[written:]
     finally:
+        sys.path[:] = prior_sys_path
         os.dup2(output, sys.stdout.fileno())
         os.close(output)
     return 0

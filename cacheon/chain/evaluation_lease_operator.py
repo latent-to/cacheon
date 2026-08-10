@@ -29,13 +29,15 @@ from cacheon.chain.intake import (
 from cacheon.chain.recoverable_intake import (
     RecoverableFinalizedIntakeStore as FinalizedIntakeStore,
 )
-from cacheon.stack_identity import require_sha256_hex
+from cacheon.stack_identity import canonical_digest, require_sha256_hex
 from functools import partial
 from cacheon.chain import sealed_config
 
 
 CONFIG_SCHEMA = "cacheon-fifo-evaluation-lease-config-v1"
 RESULT_SCHEMA = "cacheon-fifo-evaluation-lease-result-v1"
+REQUEUE_AUTHORITY_SCHEMA = "cacheon-validator-downtime-requeue-authority-v1"
+REQUEUE_AUTHORITY_DOMAIN = "cacheon.chain.validator-downtime-requeue-authority.v1"
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_LOCK_ATTEMPTS, MAX_LOCK_RETRY_DELAY_MS = 1_000, 60_000
 MAX_LOCK_RETRY_TOTAL_MS = 60_000
@@ -55,6 +57,9 @@ _CONFIG_FIELDS = frozenset(
 )
 _POLICY_FIELDS = frozenset(IntakePolicy.__dataclass_fields__)
 _SCOPE_FIELDS = frozenset(IntakeScope.__dataclass_fields__)
+_REQUEUE_AUTHORITY_FIELDS = frozenset(
+    {"reason", "reservation_ids", "retained_result_reservation_ids", "schema"}
+)
 
 
 class FifoLeaseError(RuntimeError):
@@ -389,6 +394,68 @@ def release(
         store.close()
 
 
+def requeue_expired(
+    config: FifoLeaseConfig, authority_path: object
+) -> dict[str, object]:
+    """Atomically readmit one exact validator-downtime cohort."""
+
+    if not isinstance(authority_path, (str, os.PathLike)):
+        raise FifoLeaseError("requeue authority path is required")
+    path = _absolute_path(os.fspath(authority_path), "requeue authority path")
+    row = _closed(
+        _read_sealed_json(path),
+        _REQUEUE_AUTHORITY_FIELDS,
+        "validator downtime requeue authority",
+    )
+    if (
+        row["schema"] != REQUEUE_AUTHORITY_SCHEMA
+        or row["reason"] != "validator_worker_unavailable"
+    ):
+        raise FifoLeaseError("validator downtime requeue authority is unsupported")
+    raw_ids = row["reservation_ids"]
+    retained_ids = row["retained_result_reservation_ids"]
+    if type(raw_ids) is not list or not raw_ids or type(retained_ids) is not list:
+        raise FifoLeaseError("validator downtime requeue cohort is malformed")
+    try:
+        reservation_ids = tuple(
+            require_sha256_hex(value, field="requeue reservation id")
+            for value in raw_ids
+        )
+        retained = tuple(
+            require_sha256_hex(value, field="retained-result reservation id")
+            for value in retained_ids
+        )
+    except (TypeError, ValueError) as exc:
+        raise FifoLeaseError(str(exc)) from None
+    if (
+        len(set(reservation_ids)) != len(reservation_ids)
+        or len(set(retained)) != len(retained)
+        or set(reservation_ids) & set(retained)
+    ):
+        raise FifoLeaseError("validator downtime requeue cohort is not disjoint")
+    authority_digest = canonical_digest(REQUEUE_AUTHORITY_DOMAIN, row)
+    store = _open_store(config)
+    try:
+        point = _cursor(store)
+        requeued = store.requeue_validator_downtime_expired(
+            reservation_ids,
+            authority_digest=authority_digest,
+            current_block=point[0],
+        )
+        return _result(
+            "requeue_expired",
+            point,
+            authority_digest=authority_digest,
+            requeued=[
+                {"reservation_id": item.reservation_id, "status": item.status}
+                for item in requeued
+            ],
+            retained_result_reservation_ids=list(retained),
+        )
+    finally:
+        store.close()
+
+
 def operate(
     config: FifoLeaseConfig,
     operation: str,
@@ -396,6 +463,7 @@ def operate(
     lease_id: object = None,
     reason: object = None,
     result_digest: object = "",
+    authority_path: object = None,
 ) -> dict[str, object]:
     """Dispatch one closed operator verb without adding state-machine policy."""
     if operation == "preview":
@@ -408,6 +476,8 @@ def operate(
         return release(
             config, lease_id, reason=reason, result_digest=result_digest
         )
+    if operation == "requeue-expired":
+        return requeue_expired(config, authority_path)
     raise FifoLeaseError("evaluation lease operation is unsupported")
 
 
