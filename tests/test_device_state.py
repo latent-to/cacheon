@@ -11,6 +11,7 @@ from cacheon.eval.device_state import (
     DeviceStateClockError,
     DeviceStateConfigurationError,
     DeviceStateEnvelopeError,
+    DeviceStateEnvelopeTimeoutError,
     DeviceStateGuard,
     DeviceStateParseError,
     DeviceStatePolicy,
@@ -507,6 +508,90 @@ def test_active_conditioning_requires_consecutive_pinned_envelope_samples():
     ]
     # Utilization is recorded but is not forced to the idle <=5% threshold.
     assert receipt.samples[-1].telemetry[0].gpu_utilization_percent == 99
+
+
+class StallingRunner(ScriptedRunner):
+    """A runner whose nvidia-smi overruns its command window on chosen calls."""
+
+    def __init__(self, *args, stall_calls=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stall_calls = frozenset(stall_calls)
+        self.attempts = 0
+
+    def __call__(self, argv: tuple[str, ...], *, timeout_s: float) -> CommandResult:
+        self.attempts += 1
+        if self.attempts in self.stall_calls:
+            raise DeviceStateTimeoutError(
+                "host nvidia-smi command exceeded its absolute deadline"
+            )
+        return super().__call__(argv, timeout_s=timeout_s)
+
+
+def _active_conditioning_script(policy):
+    active = "\n".join(
+        (
+            "# gpu pid type sm mem enc dec command",
+            "0 501 C 90 40 - - rank0",
+            "1 502 C 90 40 - - rank1",
+        )
+    ) + "\n"
+    conditioned = _gpu_output(
+        policy,
+        pstate="P0",
+        current_graphics_clock_mhz=210,
+        gpu_utilization=99,
+        memory_utilization=99,
+    )
+    return conditioned, active
+
+
+def test_active_conditioning_survives_a_transient_telemetry_command_timeout():
+    # A host nvidia-smi that overruns its 10s command window says nothing about
+    # the device envelope, but propagating it ended a session that had already
+    # paid for its model load -- and the caller then laundered the infrastructure
+    # failure into a `no_decision` grade.
+    policy = _policy(required_consecutive_idle_samples=2)
+    clock = FakeClock()
+    conditioned, active = _active_conditioning_script(policy)
+    runner = StallingRunner(
+        [conditioned], [active], clock=clock, stall_calls=(3,)
+    )
+
+    receipt = _guard(policy, runner=runner, clock=clock).condition_active(
+        "launch-stall", deadline=clock.value + 10
+    )
+
+    # One conditioned sample, the stall, then the consecutive run restarts and
+    # completes: the stalled query contributes no sample and no verdict.
+    assert [sample.active_envelope_passed for sample in receipt.samples] == [
+        True,
+        True,
+        True,
+    ]
+    assert runner.attempts == 7
+    # Each pass waits a polling interval rather than spinning on the driver.
+    assert clock.value == pytest.approx(103.0)
+
+
+def test_active_conditioning_fails_closed_when_telemetry_stays_wedged():
+    policy = _policy(required_consecutive_idle_samples=2)
+    clock = FakeClock()
+    conditioned, active = _active_conditioning_script(policy)
+    runner = StallingRunner(
+        [conditioned], [active], clock=clock, stall_calls=range(1, 1_000)
+    )
+
+    with pytest.raises(DeviceStateEnvelopeTimeoutError) as excinfo:
+        _guard(policy, runner=runner, clock=clock).condition_active(
+            "launch-wedged-active", deadline=clock.value + 10
+        )
+
+    # Retrying a transient stall must not turn a wedged driver into a pass: the
+    # bounded conditioning window is still what ends the attempt.
+    assert "did not satisfy the active post-warmup envelope" in str(excinfo.value)
+    assert clock.value == pytest.approx(110.0)
+    # It retried rather than dying on the first stall, and stayed bounded.
+    assert 1 < runner.attempts <= policy.maximum_samples
 
 
 def test_active_conditioning_pre_query_cancel_consumes_no_command_or_sequence():

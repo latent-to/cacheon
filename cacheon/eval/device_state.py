@@ -1270,6 +1270,30 @@ class DeviceStateGuard:
             self._last_receipt_completed = completed
             return receipt
 
+        def wait_before_next_sample(post_release: bool) -> bool:
+            """Sleep one polling interval. False once the window is spent."""
+
+            remaining = local_deadline - self._now()
+            if remaining <= 0:
+                return False
+            delay = min(
+                float(
+                    self.policy.ready_poll_interval_s
+                    if post_release else self.policy.poll_interval_s
+                ),
+                remaining,
+            )
+            if release is not None and not released and wait_for_release is not None:
+                try:
+                    wait_for_release(delay)
+                except BaseException as exc:  # noqa: BLE001 - trusted callback
+                    raise DeviceStatePolicyError(
+                        f"active-conditioning release wait failed: {exc}"
+                    ) from None
+            else:
+                self._sleep(delay)
+            return True
+
         for _ in range(self.policy.maximum_samples):
             if cancel is not None and cancel():
                 raise DeviceStateCancelledError(
@@ -1284,7 +1308,22 @@ class DeviceStateGuard:
                             "final warmup ended before the required consecutive "
                             "pre-release active samples were observed"
                         )
-            telemetry, processes = self._query(deadline=local_deadline)
+            try:
+                telemetry, processes = self._query(deadline=local_deadline)
+            except DeviceStateTimeoutError as exc:
+                # Same standing as the drain loop: a live query holds a short
+                # command window so a wedged driver cannot eat the bracket, and
+                # a command that overruns it says nothing about the envelope.
+                # Retrying is what keeps a transient host-telemetry stall from
+                # ending a session that has already paid for its model load.
+                # The consecutive pre-release run cannot span the gap, so it
+                # restarts; a genuinely wedged query still exhausts the bounded
+                # conditioning window and fails closed below.
+                last_reason = str(exc)
+                consecutive = 0
+                if not wait_before_next_sample(release is not None and released):
+                    break
+                continue
             if cancel is not None and cancel():
                 raise DeviceStateCancelledError(
                     "active device observation cancelled by the controller"
@@ -1341,25 +1380,8 @@ class DeviceStateGuard:
                     )
                 if passed:
                     return released_receipt(post_release_ready_samples=1)
-            remaining = local_deadline - self._now()
-            if remaining <= 0:
+            if not wait_before_next_sample(post_release):
                 break
-            delay = min(
-                float(
-                    self.policy.ready_poll_interval_s
-                    if post_release else self.policy.poll_interval_s
-                ),
-                remaining,
-            )
-            if release is not None and not released and wait_for_release is not None:
-                try:
-                    wait_for_release(delay)
-                except BaseException as exc:  # noqa: BLE001 - trusted callback
-                    raise DeviceStatePolicyError(
-                        f"active-conditioning release wait failed: {exc}"
-                    ) from None
-            else:
-                self._sleep(delay)
         raise DeviceStateEnvelopeTimeoutError(
             "selected GPUs did not satisfy the active post-warmup envelope before "
             f"the bounded conditioning window ended: {last_reason}"
