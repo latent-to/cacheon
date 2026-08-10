@@ -276,13 +276,19 @@ def test_run_forever_prints_exact_stage_error(capsys) -> None:
 
 
 @pytest.mark.parametrize("disposition", ["hold", "requeue"])
-def test_run_forever_backs_off_typed_no_progress_without_screening(
+def test_run_forever_drains_screen_behind_typed_no_progress_qualification(
     disposition: str,
 ) -> None:
+    """A held/requeued qualification is not a unit of work and must not starve
+    the screen FIFO (observed on mainnet 2026-08-10). The same tick keeps
+    draining screen work; the deferred qualification disposition surfaces only
+    when every stage is idle, with backoff and an unmoved progress clock."""
+
     clock = _Clock()
     stop = threading.Event()
     calls = {"qualification": 0, "screen": 0}
     waits: list[float] = []
+    phases: list[SupervisorPhase] = []
     products = {
         "hold": RecoverableQualificationHold(
             recovery_id=_d("held-recovery"),
@@ -307,7 +313,15 @@ def test_run_forever_backs_off_typed_no_progress_without_screening(
 
     def screen():
         calls["screen"] += 1
-        raise AssertionError("screen must not run ahead of protected qualification")
+        if calls["screen"] == 1:
+            return SupervisorStageResult(
+                stage="screen",
+                progressed=True,
+                disposition="completed",
+                lease_id=_d("screen-lease"),
+                lane_assignment="primary",
+            )
+        return None
 
     def wait(seconds: float) -> bool:
         waits.append(seconds)
@@ -322,7 +336,7 @@ def test_run_forever_backs_off_typed_no_progress_without_screening(
         qualification_once=qualification,
         clock=clock,
     )
-    initial_progress = supervisor.status().last_progress_unix
+    progress_at_screen = supervisor.status().last_progress_unix
     run_forever(
         supervisor,
         stop,
@@ -330,12 +344,28 @@ def test_run_forever_backs_off_typed_no_progress_without_screening(
         wait=wait,
         restart_initial_backoff_s=2.0,
         restart_max_backoff_s=8.0,
+        on_status=lambda status: phases.append(status.phase),
     )
 
-    assert calls == {"qualification": 2, "screen": 0}
+    # Every tick ran screen after the non-progressing qualification product.
+    assert calls == {"qualification": 3, "screen": 3}
+    # Tick 1 drained real screen work with no backoff wait; only the two
+    # all-idle ticks surfaced the deferred disposition and backed off.
     assert waits == [2.0, 4.0]
-    assert supervisor.status().last_progress_unix == initial_progress
+    deferred_phase = (
+        SupervisorPhase.HOLD if disposition == "hold" else SupervisorPhase.QUALIFICATION
+    )
+    assert phases == [SupervisorPhase.SCREEN, deferred_phase, deferred_phase]
+    # Holds never reset the stall clock: progress stays at the screen tick
+    # even though the clock advanced across both backoff waits.
+    assert supervisor.status().last_progress_unix == progress_at_screen
+    assert clock() == progress_at_screen + 6.0
     assert supervisor.status().last_disposition == disposition
+    if disposition == "hold":
+        assert supervisor.status().hold_reason == "operator_hold"
+    else:
+        assert supervisor.status().request_id == _d("requeued-request")
+        assert supervisor.status().hold_reason is None
 
 
 def test_optional_settlement_stage_runs_only_when_upstream_idle() -> None:

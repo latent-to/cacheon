@@ -83,6 +83,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     )
 
     standing: dict[str, object] = {
+        "enable_qualification": True,
         "enable_settlement": False,
         "enable_weights": False,
         "idle_poll_ms": 25,
@@ -108,6 +109,7 @@ def test_load_standing_config_closed_and_weights_disabled(tmp_path: Path) -> Non
     config = load_standing_config(standing_path)
     assert config.enable_weights is False
     assert config.enable_settlement is False
+    assert config.enable_qualification is True
     assert config.idle_poll_s == 0.025
     assert config.raw == raw
 
@@ -184,6 +186,23 @@ def test_build_standing_supervisor_omits_weights(tmp_path: Path) -> None:
     assert supervisor.settle_once is None
     assert callable(supervisor.screen_once)
     assert callable(supervisor.qualification_once)
+
+
+def test_enable_qualification_gate_omits_stage(tmp_path: Path) -> None:
+    """The operator gate keeps screens draining while qualification is being
+    repaired: the stage is omitted entirely instead of consuming ticks."""
+
+    standing_path, raw = _setup(tmp_path)
+    gated = dict(raw)
+    gated["enable_qualification"] = False
+    standing_path.chmod(0o600)
+    standing_path.write_bytes(spool.spool_canonical_json(gated) + b"\n")
+    standing_path.chmod(0o400)
+    config = load_standing_config(standing_path)
+    assert config.enable_qualification is False
+    supervisor = build_standing_supervisor(config)
+    assert supervisor.qualification_once is None
+    assert callable(supervisor.screen_once)
 
 
 def test_main_returns_2_on_missing_config(tmp_path: Path) -> None:
