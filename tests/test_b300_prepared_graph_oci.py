@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -237,7 +238,7 @@ def test_failures_hold_and_prove_cleanup(commissioned, monkeypatch, outcome):
         if outcome == "timeout":
             raise subprocess.TimeoutExpired(argv, 1)
         if outcome == "nonzero":
-            return CommandResult(7, b"", b"failed")
+            return CommandResult(7, b"", b"discarded:" + b"x" * 4096 + b"\xff\n")
         if outcome == "oversize":
             return CommandResult(0, b"x" * ((8 << 20) + 1), b"")
         return CommandResult(0, foreign.canonical_bytes, b"")
@@ -246,6 +247,9 @@ def test_failures_hold_and_prove_cleanup(commissioned, monkeypatch, outcome):
     with pytest.raises(graph_oci.B300PreparedGraphOCIError) as raised:
         executor.execute(request, row.prepared, deadline=time.monotonic() + 30)
     assert raised.value.decision == "HOLD"
+    if outcome == "nonzero":
+        assert "discarded:" not in str(raised.value)
+        assert r"\\xff\n" in str(raised.value)
     assert [event[0] for event in executor.device_guard.events] == ["pre", "post"]
     assert executor.manager.prove_quiescent().lease_records == ()
 
@@ -349,14 +353,17 @@ def test_fixed_worker_emits_only_reopened_canonical_artifact(
     monkeypatch.setattr(graph_oci, "CONTAINER_TREE", str(row.prepared.binding.tree.root))
 
     import cacheon.eval.b300_prepared_graph_probe as probe
+    prior_sys_path = list(sys.path)
 
     def execute(reopened: PreparedGraphProbeRequest, root):
         assert reopened == request and Path(root) == row.prepared.binding.tree.root
+        assert sys.path[0] == str(row.prepared.binding.tree.root)
         print("bounded candidate diagnostic")
         return artifact
 
     monkeypatch.setattr(probe, "execute_prepared_graph_probe", execute)
     assert graph_oci.main(["worker"]) == 0
+    assert sys.path == prior_sys_path
     stdout, stderr = capfd.readouterr()
     assert stdout.encode() == artifact.canonical_bytes
     assert "bounded candidate diagnostic" in stderr

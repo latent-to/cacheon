@@ -62,6 +62,7 @@ _AUTOMATICALLY_EXPIRABLE = (
     "reproduction_pending", "held", "no_decision",
 )
 _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
+_VALIDATOR_DOWNTIME_REQUEUE_REASON = "validator_downtime_requeued"
 _SCHEMA3_MIGRATION_HOLD_REASON = "schema3_reproduction_required"
 _SCHEMA3_ARCHIVE_REASON_PREFIX = "schema3_archived@"
 
@@ -532,6 +533,12 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 ON reservations(block, event_index, event_subindex, hotkey, content_hash);
             CREATE INDEX IF NOT EXISTS reservations_status
                 ON reservations(status, admission_epoch, block, event_index, event_subindex);
+            CREATE TABLE IF NOT EXISTS reservation_sla_resets (
+                reservation_id TEXT PRIMARY KEY REFERENCES reservations(reservation_id),
+                reset_block INTEGER NOT NULL CHECK(reset_block>=0),
+                authority_digest TEXT NOT NULL,
+                reason TEXT NOT NULL
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS qualification_dispositions (
                 reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
                 attempt_index INTEGER NOT NULL,
@@ -3046,6 +3053,111 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         return self.get(reservation_id)
 
+    def requeue_validator_downtime_expired(
+        self,
+        reservation_ids: tuple[str, ...],
+        *,
+        authority_digest: str,
+        current_block: int,
+    ) -> tuple[IntakeReservation, ...]:
+        """Readmit an exact validator-expired cohort with one fresh SLA window.
+
+        Original arrival fields remain immutable and therefore continue to own
+        FIFO ordering.  The one-row reset authority only changes the SLA anchor;
+        a reservation may use this recovery at most once.
+        """
+
+        if (
+            type(reservation_ids) is not tuple
+            or not reservation_ids
+            or len(set(reservation_ids)) != len(reservation_ids)
+        ):
+            raise IntakeError("validator downtime requeue cohort is malformed")
+        try:
+            require_sha256_hex(
+                authority_digest, field="validator downtime requeue authority"
+            )
+        except (TypeError, ValueError) as exc:
+            raise IntakeError(str(exc)) from None
+        self._require_evaluation_clock(current_block)
+        restored: list[tuple[str, str]] = []
+        with self._transaction():
+            rows = tuple(self.get(reservation_id) for reservation_id in reservation_ids)
+            for row in rows:
+                self._require_evaluation_mutation_authority(row.reservation_id)
+                if (
+                    row.status != "expired"
+                    or row.reason != _AUTOMATIC_EXPIRY_REASON
+                ):
+                    raise IntakeError(
+                        "only an automatic validator-SLA expiry may be requeued"
+                    )
+                if self._db.execute(
+                    "SELECT 1 FROM reservation_sla_resets WHERE reservation_id=?",
+                    (row.reservation_id,),
+                ).fetchone() is not None:
+                    raise IntakeError(
+                        "validator downtime requeue budget is already consumed"
+                    )
+                if self._db.execute(
+                    "SELECT 1 FROM evaluation_lease_members WHERE reservation_id=? "
+                    "AND active=1",
+                    (row.reservation_id,),
+                ).fetchone() is not None:
+                    raise IntakeError(
+                        "validator downtime requeue conflicts with an active lease"
+                    )
+                if row.screen_status == "promote":
+                    screen_rows = self._db.execute(
+                        "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
+                        "WHERE reservation_id=? AND decision='promote'",
+                        (row.reservation_id,),
+                    ).fetchone()["n"]
+                    if screen_rows != 1 or not row.arena_service_digest:
+                        raise IntakeError(
+                            "validator downtime requeue screen authority is incomplete"
+                        )
+                    status = "promoted"
+                elif (
+                    row.screen_status == ""
+                    and row.publication_digest
+                    and row.publication_root
+                ):
+                    status = "published"
+                else:
+                    raise IntakeError(
+                        "validator downtime requeue cannot restore this pipeline phase"
+                    )
+                restored.append((row.reservation_id, status))
+            self._db.executemany(
+                "INSERT INTO reservation_sla_resets(reservation_id,reset_block,"
+                "authority_digest,reason) VALUES(?,?,?,?)",
+                (
+                    (
+                        reservation_id,
+                        current_block,
+                        authority_digest,
+                        _VALIDATOR_DOWNTIME_REQUEUE_REASON,
+                    )
+                    for reservation_id, _status in restored
+                ),
+            )
+            self._db.executemany(
+                "UPDATE reservations SET status=?,decision='',reason=?,"
+                "retry_group_digest='',retry_position=0,"
+                "qualification_authority_digest='',qualification_authority_json='',"
+                "qualification_evidence_digest='' WHERE reservation_id=?",
+                (
+                    (
+                        status,
+                        _VALIDATOR_DOWNTIME_REQUEUE_REASON,
+                        reservation_id,
+                    )
+                    for reservation_id, status in restored
+                ),
+            )
+        return tuple(self.get(reservation_id) for reservation_id in reservation_ids)
+
     def _transition(
         self,
         reservation_id: str,
@@ -3108,7 +3220,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             f"r.status IN ({placeholders}) AND r.reason!=? AND NOT EXISTS ("
             "SELECT 1 FROM evaluation_lease_members AS em WHERE "
             "em.reservation_id=r.reservation_id AND em.active=1) AND ("
-            "(r.block<=? AND NOT EXISTS ("
+            "(COALESCE((SELECT s.reset_block FROM reservation_sla_resets AS s "
+            "WHERE s.reservation_id=r.reservation_id),r.block)<=? AND NOT EXISTS ("
             "SELECT 1 FROM settlement_qualifications AS q "
             "WHERE q.reservation_id=r.reservation_id)) OR EXISTS ("
             "SELECT 1 FROM settlement_qualifications AS q "

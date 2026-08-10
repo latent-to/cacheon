@@ -195,6 +195,7 @@ def test_config_and_tracked_cli_are_closed(tmp_path: Path, capsys) -> None:
         ["claim"],
         ["heartbeat", "a" * 64],
         ["release", "a" * 64, "--reason", "worker_unavailable"],
+        ["requeue-expired", "--authority", "/tmp/requeue-authority.json"],
     )
     for suffix in parsed:
         args = parser.parse_args(
@@ -369,6 +370,62 @@ def test_canonical_failed_and_expired_rows_are_not_claimed(tmp_path: Path) -> No
     assert operator.claim(config)["lease"]["members"][0]["reservation_id"] == (
         current.reservation_id
     )
+
+
+def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
+    tmp_path: Path,
+) -> None:
+    policy = IntakePolicy(max_cohort=4, expiry_blocks=5)
+    database = _new_database(tmp_path, policy=policy)
+    published, promoted = _published_rows(
+        database,
+        ("profile.screen", "profile.qualification"),
+        policy=policy,
+    )
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        _promote(store, promoted.reservation_id)
+    _advance(database, BLOCK + 5, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert {
+            store.get(published.reservation_id).status,
+            store.get(promoted.reservation_id).status,
+        } == {"expired"}
+
+    authority = _seal(
+        tmp_path / "downtime-requeue.json",
+        {
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "retained_result_reservation_ids": [_h("retained-result")],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    config_path, _ = _config(
+        tmp_path,
+        database,
+        policy=policy,
+        stage="qualification",
+        lease_blocks=3,
+    )
+    config = operator.load_config(config_path)
+    result = operator.requeue_expired(config, authority)
+    assert [item["status"] for item in result["requeued"]] == [
+        "published",
+        "promoted",
+    ]
+    assert operator.preview(config)["reservation_ids"] == [promoted.reservation_id]
+
+    _advance(database, BLOCK + 9, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert store.expire_stale(current_block=BLOCK + 9) == ()
+    _advance(database, BLOCK + 10, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert {
+            store.get(published.reservation_id).status,
+            store.get(promoted.reservation_id).status,
+        } == {"expired"}
+    with pytest.raises(IntakeError, match="budget is already consumed"):
+        operator.requeue_expired(config, authority)
 
 
 def test_lock_retry_is_exact_bounded_and_preserves_one_lease(

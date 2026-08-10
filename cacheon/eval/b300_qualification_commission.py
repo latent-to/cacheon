@@ -82,6 +82,40 @@ from cacheon.target_catalog import default_target_catalog
 _STAGES = QUALIFICATION_STAGES
 
 
+def _pristine_reference_authority(
+    incumbent_launch: EngineLaunchSpec,
+    baseline_session_plan: SessionExecutionPlan,
+    runtime_preflight: object,
+) -> tuple[EngineLaunchSpec, SessionExecutionPlan]:
+    """Derive pristine T without the candidate/stock seam selection."""
+
+    pristine_config = replace(
+        baseline_session_plan.engine_config,
+        seam_bindings=(),
+    )
+    pristine_launch = replace(
+        incumbent_launch,
+        engine_config_digest=pristine_config.digest,
+    )
+    pristine_session_plan = replace(
+        baseline_session_plan,
+        launch_digest=pristine_launch.digest,
+        expected_engine_config_digest=pristine_config.digest,
+        engine_config=pristine_config,
+        expected_preflight=expected_runtime_preflight(
+            pristine_launch, runtime_preflight
+        ),
+    )
+    if (
+        pristine_config.seam_bindings
+        or pristine_launch.digest == incumbent_launch.digest
+    ):
+        raise B300QualificationCommissionError(
+            "pristine T did not remove the incumbent seam selection"
+        )
+    return pristine_launch, pristine_session_plan
+
+
 def _bind_hidden_judge(
     capability: object,
     *,
@@ -486,6 +520,11 @@ def _compose_locked(
         top_logprobs_num=policy.topk_width,
         temperature=float(session_block["temperature"]),
     )
+    pristine_launch, pristine_session_plan = _pristine_reference_authority(
+        incumbent_launch,
+        baseline_session_plan,
+        inputs.preflight,
+    )
     workload_digest = marginal_workload_digest(baseline_session_plan)
     hidden_judge = _bind_hidden_judge(
         capabilities.hidden_judge,
@@ -504,7 +543,7 @@ def _compose_locked(
     )
     reference = ReferenceManifest.from_pristine(
         stock,
-        incumbent_launch,
+        pristine_launch,
         incumbent_binding,
         workload_digest=workload_digest,
         tokenizer_digest=inputs.prompt_identity["tokenizer_digest"],
@@ -692,8 +731,8 @@ def _compose_locked(
             calibration_artifact_ref=calibration_ref,
             pristine_stack=stock,
             pristine_binding=incumbent_binding,
-            pristine_launch=incumbent_launch,
-            pristine_session_plan=baseline_session_plan,
+            pristine_launch=pristine_launch,
+            pristine_session_plan=pristine_session_plan,
             resident_baseline_arm=resident_baseline_arm,
             resident_speed_policy=resident_speed_policy,
             candidate_executor_namespace_digest=(

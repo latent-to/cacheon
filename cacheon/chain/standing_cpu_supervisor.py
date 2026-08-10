@@ -546,6 +546,11 @@ def run_forever(
         try:
             status = supervisor.tick()
         except StandingCpuSupervisorError as exc:
+            print(
+                f"STANDING-CPU-SUPERVISOR-STAGE-ERROR: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
             if on_status is not None:
                 on_status(supervisor.status())
             if waiter(backoff):
