@@ -12,9 +12,17 @@ live identity, with no human in the loop.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from cacheon.chain.evaluation_recovery import RecoveryPhase
 from cacheon.chain.intake import IntakeError
+from cacheon.chain.screen_identity_rotation import (
+    ScreenIdentityRotationError,
+    release_rotated_cohort,
+    rotated_reservation_ids,
+)
 from tests.test_chain_intake import (
     _arrival,
     _fingerprint,
@@ -81,6 +89,41 @@ def test_only_a_promoted_reservation_may_be_rescreened(tmp_path) -> None:
         )[0]
         with pytest.raises(IntakeError, match="only a promoted reservation"):
             store.demote_promoted_for_rescreen(row.reservation_id, reason=ROTATED)
+
+
+def test_rotation_is_detected_per_row_against_the_live_identity() -> None:
+    live = "a" * 64
+    rows = (
+        SimpleNamespace(reservation_id="r0"),
+        SimpleNamespace(reservation_id="r1"),
+        SimpleNamespace(reservation_id="r2"),
+    )
+    receipts = (
+        SimpleNamespace(service_digest=live),
+        SimpleNamespace(service_digest="b" * 64),
+        None,
+    )
+    # Only the rows the live identity cannot vouch for are requeued, and a
+    # missing receipt counts as rotated rather than as silently qualifiable.
+    assert rotated_reservation_ids(rows, receipts, live) == ("r1", "r2")
+    assert rotated_reservation_ids(rows, (receipts[0],) * 3, live) == ()
+
+
+def test_a_built_request_is_never_recovered_by_rescreening() -> None:
+    # Past PREPARED the recovery owns committed request state that a fresh
+    # screen would contradict, so this path must refuse rather than improvise.
+    for phase in (
+        RecoveryPhase.REQUEST_READY,
+        RecoveryPhase.RESULT_READY,
+        RecoveryPhase.HELD,
+    ):
+        with pytest.raises(ScreenIdentityRotationError, match="unbuilt claim"):
+            release_rotated_cohort(
+                object(),
+                SimpleNamespace(phase=phase),
+                current_block=1,
+                reservation_ids=("r0",),
+            )
 
 
 def test_the_recorded_reason_is_bounded(tmp_path) -> None:

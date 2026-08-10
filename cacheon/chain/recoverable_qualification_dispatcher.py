@@ -41,6 +41,11 @@ from cacheon.chain.execution_disposition import (
 )
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
+from cacheon.chain.screen_identity_rotation import (
+    ScreenIdentityRotationError,
+    release_rotated_cohort,
+    rotated_reservation_ids,
+)
 from cacheon.chain.remote_evaluation_dispatcher import (
     AuthenticatedRemoteEvaluationResponse,
     RemoteEvaluationDispatcherError,
@@ -397,8 +402,14 @@ class RecoverableQualificationDispatcher:
                 store.latest_promoted_screen(row.reservation_id)
                 for row in reservations
             )
+            rotated = rotated_reservation_ids(
+                reservations, receipts, self.coordinator.service.identity
+            )
         finally:
             store.close()
+        if rotated:
+            self._rescreen_rotated(recovery, rotated)
+            return None
         try:
             publications = tuple(
                 reopen_worker_bundle(
@@ -428,6 +439,26 @@ class RecoverableQualificationDispatcher:
                 "qualification claim could not be reconstructed"
             ) from exc
         return _RecoveryClaim(recovery, claim)
+
+    def _rescreen_rotated(
+        self, recovery: EvaluationRecovery, rotated: tuple[str, ...]
+    ) -> None:
+        """Return a cohort screened by a retired identity to the screen queue."""
+
+        store, point, current = self._current_recovery(recovery.recovery_id)
+        try:
+            release_rotated_cohort(
+                store,
+                current,
+                current_block=point[0],
+                reservation_ids=rotated,
+            )
+        except (IntakeError, ScreenIdentityRotationError) as exc:
+            raise RecoverableQualificationDispatcherError(
+                f"rotated screen cohort could not be requeued: {exc}"
+            ) from exc
+        finally:
+            store.close()
 
     def _hold(
         self, recovery: EvaluationRecovery, reason: str
