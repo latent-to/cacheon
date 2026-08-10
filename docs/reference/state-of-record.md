@@ -197,6 +197,17 @@ improvement. Retained version-1..3 evidence regrades under its own sealed
 arithmetic; cross-version splicing remains refused. The adaptive lane
 choreography below is unchanged from version 3.
 
+Since **2026-08-10** the sealable range also includes resident speed policy
+**version 5**, which adds the bracket-drift ruling: when the flanking
+baseline brackets disagree beyond the sealed noise ceiling, the earliest
+bracket is the only comparison baseline — the drifted later brackets are
+excluded — and the candidate is graded against B alone under version 4's
+terminating arithmetic. Bracket drift therefore resolves to a decision at
+the initial grade instead of escalating or re-queueing. Sealed version-4
+evidence continues to regrade under bookend invariance without the
+exclusion. Version 5 activates prospectively at the next provider
+registration.
+
 Production providers previously selected qualification policy version 3:
 
 1. two isolated resident TP lanes are assigned incumbent and candidate roles;

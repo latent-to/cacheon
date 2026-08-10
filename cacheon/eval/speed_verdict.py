@@ -14,14 +14,21 @@ Version 4 grades every read and decides by the spread of the reads actually
 taken. It assumes no distribution, so an ill-behaved box cannot manufacture
 indecision, and because taking more reads only widens an observed spread, the
 concluding grade terminates rather than deferring forever.
+
+Version 5 keeps version 4's termination guarantee and adds the owner's
+bracket-drift ruling (2026-08-10): flanking baseline brackets that disagree
+beyond the sealed noise ceiling do not void the read set. The earliest bracket
+was measured adjacent to the candidate arm, so it is the only valid comparison
+baseline; the drifted later brackets are excluded and C against B decides.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from cacheon.eval.scoring import SpeedupVerdict, score_speedup
+from cacheon.eval.scoring import SpeedupVerdict, relative_spread, score_speedup
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
@@ -83,6 +90,13 @@ def speed_grade(
 
     baseline_rates = [policy.scored_tokens_per_second(row) for row in baselines]
     candidate_rates = [policy.scored_tokens_per_second(row) for row in candidates]
+    dropped_brackets = 0
+    bracket_drift = 0.0
+    if policy.version >= 5 and len(baseline_rates) >= 2:
+        bracket_drift = relative_spread(baseline_rates)
+        if bracket_drift > policy.max_noise:
+            dropped_brackets = len(baseline_rates) - 1
+            baseline_rates = baseline_rates[:1]
     verdict = score_speedup(
         baseline_rates,
         candidate_rates,
@@ -90,6 +104,15 @@ def speed_grade(
         k=policy.noise_multiplier,
         max_noise=policy.max_noise,
     )
+    if dropped_brackets:
+        verdict = replace(
+            verdict,
+            detail=(
+                f"bracket drift {bracket_drift:.1%} > max_noise "
+                f"{policy.max_noise:.0%}; {dropped_brackets} later bracket(s) "
+                f"excluded -- C against B decides"
+            ),
+        )
     if policy.version < 4:
         if concluding:
             return verdict, _final(verdict)

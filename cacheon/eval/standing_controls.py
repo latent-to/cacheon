@@ -95,7 +95,7 @@ class StandingEvaluationControls:
         }
 
     def require_derived_from(self, policy: ResidentSpeedPolicy) -> None:
-        if type(policy) is not ResidentSpeedPolicy or policy.version not in (3, 4):
+        if type(policy) is not ResidentSpeedPolicy or policy.version not in (3, 4, 5):
             raise StandingControlsError(
                 "standing controls require the version-3 resident speed policy"
             )

@@ -1,4 +1,4 @@
-"""Version-4 resident speed grading: a decidable run never returns NO_DECISION.
+"""Version-4/5 resident speed grading: a decidable run never returns NO_DECISION.
 
 Version 3 refuses to produce a rate for a read whose own window scatter
 exceeds the sealed bound, which converts settled results into non-answers.
@@ -7,6 +7,10 @@ recorded as NO_DECISION while their evidence already determined the verdict.
 Version 3 semantics must stay byte-identical -- sealed policies and retained
 evidence depend on them -- so the new behavior is reachable only through a
 prospectively sealed version-4 policy.
+
+Version 5 adds the owner's bracket-drift ruling (2026-08-10): brackets that
+disagree beyond the sealed noise ceiling exclude the drifted later brackets,
+and the candidate is compared against the earliest bracket B alone.
 """
 
 from __future__ import annotations
@@ -142,6 +146,60 @@ def test_version_three_concluding_behavior_is_unchanged() -> None:
     # confident and v3 answers NO_DECISION. Sealed v3 policies keep this
     # meaning exactly.
     assert concluded is SpeedStageDecision.NO_DECISION
+
+
+def test_version_five_drift_excludes_the_late_bracket_and_c_against_b_decides() -> None:
+    # The retained 2.36% bookend drift (over the 2% ceiling). Under v5 the
+    # earliest bracket is the baseline, so the same candidate rate passes or
+    # fails depending on which bracket was measured first -- and either way
+    # the run decides immediately instead of escalating or punting.
+    policy = _policy(5)
+    candidate = [_steady(7400.0)]
+
+    verdict, decision = speed_grade(
+        policy, [_steady(7303.009), _steady(7477.155)], candidate, concluding=False
+    )
+    assert decision is SpeedStageDecision.PASS
+    assert verdict.n_baselines == 1
+    assert "C against B decides" in verdict.detail
+    assert verdict.required == pytest.approx(1.005)
+
+    _, decision = speed_grade(
+        policy, [_steady(7477.155), _steady(7303.009)], candidate, concluding=False
+    )
+    assert decision is SpeedStageDecision.FAIL
+
+    # The identical evidence under v4 flips inside the spread and concludes
+    # FAIL; under v3 it is a NO_DECISION. v5 is the only rule that credits a
+    # candidate measured against its adjacent bracket.
+    _, v4_concluded = speed_grade(
+        _policy(4), [_steady(7303.009), _steady(7477.155)], candidate, concluding=True
+    )
+    assert v4_concluded is SpeedStageDecision.FAIL
+    _, v3_concluded = speed_grade(
+        _policy(3), [_steady(7303.009), _steady(7477.155)], candidate, concluding=True
+    )
+    assert v3_concluded is SpeedStageDecision.NO_DECISION
+
+
+def test_version_five_without_drift_matches_version_four_exactly() -> None:
+    baselines = [_steady(7400.0), _steady(7420.0)]
+    candidates = [_steady(7450.0)]
+    for concluding in (False, True):
+        assert speed_grade(
+            _policy(5), baselines, candidates, concluding=concluding
+        ) == speed_grade(_policy(4), baselines, candidates, concluding=concluding)
+
+
+def test_version_five_candidate_straddle_concludes_fail_never_no_decision() -> None:
+    # With the drifted bracket excluded, the candidate's own repeat reads
+    # straddle the required bar against B: the miner's jitter is the miner's
+    # problem, and the conclusion is "not proven faster", not a non-answer.
+    policy = _policy(5)
+    baselines = [_steady(7303.009), _steady(7477.155)]
+    candidates = [_steady(7330.0), _steady(7400.0)]
+    _, concluded = speed_grade(policy, baselines, candidates, concluding=True)
+    assert concluded is SpeedStageDecision.FAIL
 
 
 def test_a_gross_loss_measured_on_an_unstable_box_still_fails() -> None:
