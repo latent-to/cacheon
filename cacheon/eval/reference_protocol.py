@@ -27,7 +27,12 @@ MAX_TOTAL_PROMPT_BYTES = 96_000_000
 MAX_TOKENS = 32_768
 MAX_SUPPORT_WIDTH = 256
 MAX_SUPPORT_UNION = 4096
-MAX_DERIVED_LOGPROBS = 16_777_216
+# Must admit the sealed production qualification shape's worst case: 8 selected
+# prompts x 3 roles x 256 tokens x 4096-token support union = 25_165_824
+# derived logprobs (~101 MiB of evidence). 2**25 keeps that admissible with
+# 1.33x headroom while worst-case transport (~134 MiB) stays well inside
+# MAX_EVIDENCE_BYTES.
+MAX_DERIVED_LOGPROBS = 33_554_432
 MAX_TOKEN_ID = 2_147_483_647
 MAX_INDEX = 0xFFFFFFFE
 

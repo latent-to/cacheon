@@ -290,3 +290,21 @@ def test_width_zero_request_and_evidence_round_trip():
             SESSION, LAUNCH, PLAN, REQUEST, NONCE, 7, 2, 0,
             (ReferencePromptInput("6" * 64, "first prompt", (_role(), role(10), role(20))),),
         )
+
+
+def test_production_qualification_shape_stays_admissible():
+    # The mainnet policy seals select_count=8, tokens_per_prompt=256,
+    # topk_width=16. Plan construction refuses any qualification whose
+    # worst-case derived-logprob demand exceeds MAX_DERIVED_LOGPROBS, so the
+    # bound must admit that shape or no production plan can ever seal (this
+    # blocked commissioning on 2026-08-10 when the bound sat at 2**24).
+    select_count, tokens_per_prompt, topk_width = 8, 256, 16
+    union = min(protocol.MAX_SUPPORT_UNION, tokens_per_prompt * topk_width)
+    derived = (
+        select_count * len(protocol.ROLE_NAMES) * tokens_per_prompt * union
+    )
+    assert derived <= protocol.MAX_DERIVED_LOGPROBS
+    # Worst-case evidence transport stays inside the wire cap: one 4-byte
+    # support logprob per derived entry plus an 8-byte token record.
+    tokens = select_count * len(protocol.ROLE_NAMES) * tokens_per_prompt
+    assert derived * 4 + tokens * 8 <= protocol.MAX_EVIDENCE_BYTES
