@@ -76,9 +76,12 @@ from cacheon.eval.qualification_intake import (
     run_qualification_intake,
 )
 from cacheon.eval.qualification_runner import (
+    ATTEMPT_SCHEMA_V3,
     ATTEMPT_SCHEMA_V4,
     reopen_causal_qualification,
 )
+from cacheon.eval.resident_screen_lane import screen_swappability
+from cacheon.manifest import load_manifest
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
@@ -486,6 +489,7 @@ class B300MainnetWorker:
             )
         self._validate_work(work, candidates)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
+        resident_pair_lifecycle = None
         graph_root = self._remote_qualification_graph_root
         if request_digest is not None:
             if graph_root is None:
@@ -546,37 +550,38 @@ class B300MainnetWorker:
                 authority_digest=work.factory.manifest.authority_digest,
                 source_digest=plan.prepared.source.digest,
             )
-            try:
-                resident_prefix = run_b300_resident_qualification_prefix(
-                    factory=self._resident_pair_factory,
-                    capability=self._resident_count_quality,
-                    candidate=candidates[0],
-                    plan=plan,
-                    continuation=continuation,
-                    screen_lane=self._remote_qualification_lane,
-                    deadline=float(work.deadline),
-                )
-                resident_pair_lifecycle = ResidentPairMarginalLifecycleEvidence(
-                    plan.prepared,
-                    resident_prefix.speed_plan,
-                    resident_prefix.speed,
-                    resident_prefix.retirement,
-                    resident_prefix.count_result,
-                    resident_prefix.count_checkpoint,
-                    (
-                        None if resident_prefix.count_result is None
-                        else self._resident_count_quality.stock_authority
-                    ),
-                )
-            except (
-                B300ResidentQualificationError,
-                ResidentPairQualityLifecycleError,
-            ):
-                return _resident_evidence_hold(
-                    request_digest,
-                    work.factory.manifest.authority_digest,
-                    plan.prepared.source.digest,
-                )
+            if screen_swappability(load_manifest(candidates[0].publication.root)) is None:
+                try:
+                    resident_prefix = run_b300_resident_qualification_prefix(
+                        factory=self._resident_pair_factory,
+                        capability=self._resident_count_quality,
+                        candidate=candidates[0],
+                        plan=plan,
+                        continuation=continuation,
+                        screen_lane=self._remote_qualification_lane,
+                        deadline=float(work.deadline),
+                    )
+                    resident_pair_lifecycle = ResidentPairMarginalLifecycleEvidence(
+                        plan.prepared,
+                        resident_prefix.speed_plan,
+                        resident_prefix.speed,
+                        resident_prefix.retirement,
+                        resident_prefix.count_result,
+                        resident_prefix.count_checkpoint,
+                        (
+                            None if resident_prefix.count_result is None
+                            else self._resident_count_quality.stock_authority
+                        ),
+                    )
+                except (
+                    B300ResidentQualificationError,
+                    ResidentPairQualityLifecycleError,
+                ):
+                    return _resident_evidence_hold(
+                        request_digest,
+                        work.factory.manifest.authority_digest,
+                        plan.prepared.source.digest,
+                    )
         try:
             batch = run_qualification_intake(
                 work.factory,
@@ -601,20 +606,35 @@ class B300MainnetWorker:
                 plan.prepared.source.digest,
             )
         if request_digest is not None:
-            count_checkpoint = resident_pair_lifecycle.count_checkpoint
-            if count_checkpoint is not None:
+            count_checkpoint = (
+                None
+                if resident_pair_lifecycle is None
+                else resident_pair_lifecycle.count_checkpoint
+            )
+            if count_checkpoint is not None and resident_pair_lifecycle is not None:
                 assert resident_pair_lifecycle.stock_authority is not None
                 supporting_evidence_refs += (
                     count_checkpoint.raw_execution_evidence,
                     count_checkpoint.candidate_observation,
                     resident_pair_lifecycle.stock_authority.artifact,
                 )
-            if batch.attempt_ref is not None and batch.attempt_ref.schema == ATTEMPT_SCHEMA_V4:
-                attempt = reopen_causal_qualification(
-                    plan.evidence_root,
-                    batch.attempt_ref,
-                    expected=plan,
-                    resident_pair_lifecycle=resident_pair_lifecycle,
+            if (
+                batch.attempt_ref is not None
+                and batch.attempt_ref.schema in {ATTEMPT_SCHEMA_V3, ATTEMPT_SCHEMA_V4}
+            ):
+                attempt = (
+                    reopen_causal_qualification(
+                        plan.evidence_root,
+                        batch.attempt_ref,
+                        expected=plan,
+                        resident_pair_lifecycle=resident_pair_lifecycle,
+                    )
+                    if resident_pair_lifecycle is not None
+                    else reopen_causal_qualification(
+                        plan.evidence_root,
+                        batch.attempt_ref,
+                        expected=plan,
+                    )
                 )
                 supporting_evidence_refs += tuple(
                     reference

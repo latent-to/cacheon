@@ -790,18 +790,21 @@ def run_qualification_intake(
     if request_digest is not None:
         request_digest = _digest(request_digest, "authenticated request digest")
     if (
-        (prebuilt_plan is None) != (resident_pair_lifecycle is None)
-        or (
+        (
             prebuilt_plan is not None
+            and type(prebuilt_plan) is not CausalQualificationInput
+        )
+        or (
+            resident_pair_lifecycle is not None
             and (
-                type(prebuilt_plan) is not CausalQualificationInput
+                prebuilt_plan is None
                 or type(resident_pair_lifecycle)
                 is not ResidentPairMarginalLifecycleEvidence
             )
         )
     ):
         raise QualificationIntakeError(
-            "resident pair intake requires one exact prebuilt plan and lifecycle"
+            "prebuilt qualification intake authorities are not exact"
         )
     manifest = factory.manifest
     try:

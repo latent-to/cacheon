@@ -35,8 +35,13 @@ from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
     QualificationContinuationStore,
 )
-from cacheon.eval.qualification_intake import QualificationPlanFactory
+from cacheon.eval.qualification_intake import (
+    QualificationIntakeBatch,
+    QualificationIntakeOutcome,
+    QualificationPlanFactory,
+)
 from tests.test_b300_qualification_graph_gate import _factory
+from tests.test_marginal_runtime import FUSED
 from tests.test_qualification_graph_exit import _plan
 
 
@@ -73,6 +78,7 @@ def _case(
     executor_factory,
     *,
     failure: bool,
+    source_fixture: Path | None = None,
 ) -> _Case:
     authorities, resident, _builder = mainnet_fixtures._authorities(
         tmp_path / "worker",
@@ -80,7 +86,9 @@ def _case(
     )
     manifest = mainnet_fixtures._manifest(authorities)
     readiness = mainnet_fixtures._readiness(manifest, authorities)
-    harness, plan, authority = _plan(tmp_path / "graph", failure=failure)
+    harness, plan, authority = _plan(
+        tmp_path / "graph", failure=failure, source_fixture=source_fixture
+    )
     factory = _factory(harness, plan)
     candidate = harness.candidate
     receipt = mainnet_fixtures._promoted_receipt(manifest, candidate)
@@ -236,6 +244,88 @@ def test_graph_pass_reuses_one_plan_callback_and_exact_factory(
         *count_refs,
     }
     assert case.resident.created == 0
+
+
+def test_native_rebuild_uses_dedicated_candidate_launch(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = _case(
+        tmp_path,
+        executor_factory,
+        failure=False,
+        source_fixture=FUSED,
+    )
+    _install_plan(case, monkeypatch)
+    intake_calls = []
+    attempt_ref = EvidenceArtifactRef(
+        "cacheon.qualification.cohort-attempt.v1",
+        _h("native-direct-attempt"),
+        1,
+        "application/json",
+        worker_module.ATTEMPT_SCHEMA_V3,
+    )
+    raw_quality_ref = _ref("native-direct-raw-quality")
+
+    def forbidden_pair(**_kwargs):
+        raise AssertionError("native qualification must not enter resident pair swap")
+
+    def intake(factory, **kwargs):
+        intake_calls.append((factory, kwargs))
+        reservation = factory.manifest.reservations[0]
+        return QualificationIntakeBatch(
+            factory.manifest.digest,
+            (
+                QualificationIntakeOutcome(
+                    reservation.reservation_digest,
+                    reservation.selected_delta_digest,
+                    factory.manifest.digest,
+                    QualificationDecision.FAIL,
+                    "speed_regression",
+                    False,
+                    attempt_artifact_sha256=attempt_ref.sha256,
+                    report_digest=_h("native-direct-report"),
+                ),
+            ),
+            attempt_ref,
+        )
+
+    monkeypatch.setattr(
+        worker_module,
+        "run_b300_resident_qualification_prefix",
+        forbidden_pair,
+    )
+    monkeypatch.setattr(worker_module, "run_qualification_intake", intake)
+    monkeypatch.setattr(
+        worker_module,
+        "reopen_causal_qualification",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            reports=(
+                SimpleNamespace(
+                    raw_quality_artifact=raw_quality_ref,
+                    repeat_quality=None,
+                ),
+            )
+        ),
+    )
+    try:
+        result = _run(case)
+    finally:
+        case.worker.close()
+
+    assert type(result) is B300RemoteQualificationRun
+    assert len(intake_calls) == 1
+    assert intake_calls[0][0] is case.factory
+    kwargs = intake_calls[0][1]
+    assert kwargs["prebuilt_plan"] is case.plan
+    assert kwargs["resident_pair_lifecycle"] is None
+    assert kwargs["executor"] is case.authorities.executor
+    assert (
+        kwargs["resident_baseline_executor"]
+        is case.authorities.resident_baseline_executor
+    )
+    assert raw_quality_ref in result.supporting_evidence_refs
 
 
 def test_durable_resident_ambiguity_returns_authenticated_hold(

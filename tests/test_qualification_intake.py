@@ -187,6 +187,31 @@ def test_plan_factory_reopens_exact_secret_and_public_authority(monkeypatch) -> 
         ).build()
 
 
+def test_prebuilt_plan_can_run_without_resident_pair_lifecycle(monkeypatch) -> None:
+    plan, manifest = _fake_plan(monkeypatch, count=1)
+    calls = []
+
+    def run(value, **kwargs):
+        calls.append((value, kwargs))
+        raise QualificationRunnerError("stop after authority handoff")
+
+    monkeypatch.setattr(intake, "run_causal_qualification", run)
+    result = intake.run_qualification_intake(
+        _factory(plan, manifest),
+        executor=object(),
+        resident_baseline_executor=object(),
+        entropy_provider=lambda *_args: None,
+        hidden_judge=lambda **_kwargs: None,
+        deadline=100.0,
+        prebuilt_plan=plan,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] is plan
+    assert "resident_pair_lifecycle" not in calls[0][1]
+    assert result.outcomes[0].reason == "qualification_runner"
+
+
 def test_graph_observation_publishes_and_reopens_canonical_raw_facts(tmp_path) -> None:
     requirement = _requirement()
     product = intake.publish_graph_observation(
