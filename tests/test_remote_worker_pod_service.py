@@ -172,11 +172,16 @@ def test_adapter_start_count_is_durable_in_events_and_heartbeat(
     assert all(fields["adapter_start_count"] == 1 for _event, fields in events)
 
 
-def test_first_adapter_failure_trips_epoch_and_success_resets(tmp_path: Path) -> None:
+def test_adapter_failures_reach_cooldown_threshold_and_success_resets(
+    tmp_path: Path,
+) -> None:
     process = pod_service.PersistentAdapterProcess(
         {}, paths=_pod_paths(tmp_path), heartbeat_seconds=5
     )
-    process.record_result(completed=False)
+    for expected in range(1, spool.MAX_CONSECUTIVE_ADAPTER_FAILURES + 1):
+        assert process.consecutive_failures < spool.MAX_CONSECUTIVE_ADAPTER_FAILURES
+        process.record_result(completed=False)
+        assert process.consecutive_failures == expected
     assert process.consecutive_failures == spool.MAX_CONSECUTIVE_ADAPTER_FAILURES
     process.record_result(completed=True)
     assert process.consecutive_failures == 0
@@ -208,6 +213,183 @@ def test_dead_adapter_is_never_silently_restarted(
     )
     assert failure == "adapter_exit_nonzero"
     assert process.start_count == 1
+
+
+class _ReapedDeadProcess:
+    stdin = None
+    stdout = None
+
+    def poll(self):
+        return 2
+
+    def wait(self, timeout=None):
+        del timeout
+        return 2
+
+
+def test_permit_restart_authorizes_exactly_one_boot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = pod_service.PersistentAdapterProcess(
+        {}, paths=_pod_paths(tmp_path), heartbeat_seconds=5
+    )
+    process.process = _ReapedDeadProcess()  # type: ignore[assignment]
+    process.start_count = 1
+    process.consecutive_failures = spool.MAX_CONSECUTIVE_ADAPTER_FAILURES
+
+    process.permit_restart()
+    assert process.consecutive_failures == 0
+    assert process.process is None
+    assert process.restart_permitted
+
+    starts: list[str] = []
+
+    def start(self, *, deadline, request_id):
+        del deadline
+        starts.append(request_id)
+        self.start_count += 1
+        return False
+
+    monkeypatch.setattr(pod_service.PersistentAdapterProcess, "_start", start)
+    failure = process.evaluate(
+        {"request_id": "d" * 64},
+        tmp_path / "request",
+        tmp_path / "result",
+        deadline=int(time.time()) + 60,
+    )
+    assert failure == "adapter_start_failed"
+    assert starts == ["d" * 64]
+    assert not process.restart_permitted
+
+    # The permission is consumed by the attempt; a second request must not
+    # silently boot another replacement engine before the next cooldown.
+    failure = process.evaluate(
+        {"request_id": "e" * 64},
+        tmp_path / "request",
+        tmp_path / "result",
+        deadline=int(time.time()) + 60,
+    )
+    assert failure == "adapter_exit_nonzero"
+    assert starts == ["d" * 64]
+
+
+def test_permit_restart_leaves_live_adapter_resident(tmp_path: Path) -> None:
+    process = pod_service.PersistentAdapterProcess(
+        {}, paths=_pod_paths(tmp_path), heartbeat_seconds=5
+    )
+    fake = _FakeProcess()
+    process.process = fake  # type: ignore[assignment]
+    process.start_count = 1
+    process.consecutive_failures = spool.MAX_CONSECUTIVE_ADAPTER_FAILURES
+
+    process.permit_restart()
+
+    assert process.consecutive_failures == 0
+    assert process.process is fake
+    assert not process.restart_permitted
+
+
+def test_adapter_cooldown_parks_resumes_and_doubles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = {"worker_epoch": "b" * 32}
+    events: list[tuple[str, dict[str, object]]] = []
+    heartbeat_states: list[str] = []
+    sleeps: list[float] = []
+    now = [1_000.0]
+
+    monkeypatch.setattr(
+        pod_service,
+        "append_event",
+        lambda _root, event, **fields: events.append((event, fields)),
+    )
+    monkeypatch.setattr(
+        pod_service, "verify_pod_registration", lambda _paths: registration
+    )
+    process = pod_service.PersistentAdapterProcess(
+        registration, paths=_pod_paths(tmp_path), heartbeat_seconds=5
+    )
+    process.start_count = 1
+    process.consecutive_failures = spool.MAX_CONSECUTIVE_ADAPTER_FAILURES
+    monkeypatch.setattr(
+        process,
+        "_heartbeat",
+        lambda _request_id, state: heartbeat_states.append(state),
+    )
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    next_cooldown = pod_service.adapter_cooldown(
+        process,
+        registration,
+        _pod_paths(tmp_path),
+        cooldown_seconds=spool.ADAPTER_COOLDOWN_INITIAL_SECONDS,
+        poll_seconds=5,
+        clock=lambda: now[0],
+        sleep=sleep,
+    )
+
+    assert next_cooldown == 2 * spool.ADAPTER_COOLDOWN_INITIAL_SECONDS
+    assert [event for event, _fields in events] == [
+        "adapter_cooldown_started",
+        "adapter_cooldown_resumed",
+    ]
+    assert events[0][1]["cooldown_seconds"] == spool.ADAPTER_COOLDOWN_INITIAL_SECONDS
+    assert set(heartbeat_states) == {"adapter_cooldown"}
+    assert sum(sleeps) >= spool.ADAPTER_COOLDOWN_INITIAL_SECONDS
+    assert process.consecutive_failures == 0
+    assert process.restart_permitted
+
+    process.consecutive_failures = spool.MAX_CONSECUTIVE_ADAPTER_FAILURES
+    assert (
+        pod_service.adapter_cooldown(
+            process,
+            registration,
+            _pod_paths(tmp_path),
+            cooldown_seconds=spool.ADAPTER_COOLDOWN_MAX_SECONDS,
+            poll_seconds=5,
+            clock=lambda: now[0],
+            sleep=sleep,
+        )
+        == spool.ADAPTER_COOLDOWN_MAX_SECONDS
+    )
+
+
+def test_cooldown_heartbeat_requires_failure_threshold_and_cap() -> None:
+    registration = {
+        "ready_receipt_digest": "a" * 64,
+        "worker_epoch": "b" * 32,
+        "worker_readiness_digest": "c" * 64,
+    }
+
+    def payload(state: str, failures: int) -> dict[str, object]:
+        return spool.heartbeat_payload(
+            registration,
+            state,
+            None,
+            adapter_start_count=1,
+            adapter_alive=False,
+            consecutive_adapter_failures=failures,
+        )
+
+    verified = spool.verify_heartbeat(
+        payload("adapter_cooldown", spool.MAX_CONSECUTIVE_ADAPTER_FAILURES),
+        registration,
+        30,
+    )
+    assert verified["state"] == "adapter_cooldown"
+    with pytest.raises(spool.RemoteWorkerError):
+        spool.verify_heartbeat(payload("adapter_cooldown", 1), registration, 30)
+    with pytest.raises(spool.RemoteWorkerError):
+        spool.verify_heartbeat(
+            payload("idle", spool.MAX_CONSECUTIVE_ADAPTER_FAILURES + 1),
+            registration,
+            30,
+        )
 
 
 def test_publish_result_emits_verifiable_ready_receipt(tmp_path: Path) -> None:

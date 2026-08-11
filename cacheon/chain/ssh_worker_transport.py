@@ -333,6 +333,37 @@ def remote_heartbeat(
     return verify_heartbeat(strict_json_object(output), registration, max_age)
 
 
+def _observe_worker_hold(
+    previous_state: str | None,
+    heartbeat: Mapping[str, Any],
+    spool_root: Path,
+    registration: Mapping[str, Any],
+) -> str | None:
+    """Track pod hold states without ever exiting the relay.
+
+    ``epoch_failed`` (legacy latch) and ``adapter_cooldown`` are worker-side
+    conditions; the relay's job is transport, and the pod's ``accept-request``
+    and ``pull-result`` verbs keep working through both.  Exiting here is what
+    turned one adapter fault into a dead dispatcher and a stalled spool on
+    mainnet 2026-08-10.  One event per transition keeps the spool log quiet.
+    """
+    state = heartbeat["state"]
+    if state not in ("epoch_failed", "adapter_cooldown"):
+        return None
+    if state != previous_state:
+        append_event(
+            spool_root,
+            "dispatcher_worker_cooldown",
+            adapter_start_count=heartbeat["adapter_start_count"],
+            consecutive_adapter_failures=heartbeat[
+                "consecutive_adapter_failures"
+            ],
+            worker_epoch=registration["worker_epoch"],
+            worker_state=state,
+        )
+    return state
+
+
 def cpu_serve(
     *,
     registration_path: Path,
@@ -363,6 +394,7 @@ def cpu_serve(
         append_event(
             spool_root, "dispatcher_started", worker_epoch=registration["worker_epoch"]
         )
+        worker_hold_state: str | None = None
         while True:
             if not registration_is_current(registration, current_registration_path):
                 append_event(
@@ -373,17 +405,9 @@ def cpu_serve(
                 return
             try:
                 heartbeat = remote_heartbeat(registration, site, max_heartbeat_age)
-                if heartbeat["state"] == "epoch_failed":
-                    append_event(
-                        spool_root,
-                        "dispatcher_epoch_failed",
-                        adapter_start_count=heartbeat["adapter_start_count"],
-                        consecutive_adapter_failures=heartbeat[
-                            "consecutive_adapter_failures"
-                        ],
-                        worker_epoch=registration["worker_epoch"],
-                    )
-                    return
+                worker_hold_state = _observe_worker_hold(
+                    worker_hold_state, heartbeat, spool_root, registration
+                )
                 queue = iter_queue(
                     outbox, registration, identity=identity, credential=credential
                 )
