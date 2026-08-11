@@ -275,6 +275,13 @@ WORKER_INFRASTRUCTURE_HOLD_REASON = (
     f"transport_hold:{WORKER_INFRASTRUCTURE_REQUEUE_FAILURE}"
 )
 
+# Durable HELD reason written when a retained request no longer verifies
+# against the live worker authority.  The retained request is dead by
+# definition -- it can never dispatch again -- so the recovery migrates into
+# the same bounded requeue: retire the dead request, mint a fresh one under
+# the current authority, capped by the systemic release limit.
+AUTHORITY_CHANGED_HOLD_REASON = "transport_hold:authority_changed"
+
 
 def resolve_infrastructure_result(
     failure_code: str | None,
@@ -319,6 +326,7 @@ def resolve_completed_result(has_no_decision: bool) -> ExecutionOutcome:
 
 __all__ = [
     "AuthenticatedPreResidentRefusal",
+    "AUTHORITY_CHANGED_HOLD_REASON",
     "WORKER_INFRASTRUCTURE_HOLD_REASON",
     "WORKER_INFRASTRUCTURE_REQUEUE_FAILURE",
     "ExecutionDisposition",

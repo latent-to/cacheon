@@ -504,6 +504,39 @@ def test_changed_worker_readiness_registration_or_credential_holds(
     authority.cleanup()
 
 
+def test_same_epoch_registration_refresh_keeps_plan_dispatchable(
+    tmp_path: Path,
+) -> None:
+    """A registration refresh that re-digests the registration without touching
+    the worker epoch, transport identity, credential, or readiness (for
+    example a service file rotation) must not hold retained plans: every
+    binding the sealed request carries still verifies."""
+
+    authority = _authority(tmp_path)
+    plan = _plan(authority)
+    _materialize(authority, plan)
+
+    refreshed = dict(authority.registration)
+    refreshed["remote_service_sha256"] = "f" * 64
+    refreshed.pop("registration_digest")
+    refreshed["registration_digest"] = spool.spool_digest(
+        spool.DOMAIN_REGISTRATION, refreshed
+    )
+    verify_registration(refreshed)
+    assert refreshed["registration_digest"] != plan.registration_digest
+
+    observation = planning.inspect_planned_qualification(
+        plan,
+        authority.outbox,
+        authority.results,
+        refreshed,
+        identity=authority.identity,
+        credential=authority.credential,
+    )
+    assert observation.state == "carrier_materialized"
+    authority.cleanup()
+
+
 @pytest.mark.parametrize("evidence", ["ready", "dispatch", "result"])
 def test_prepublication_proof_rejects_any_point_of_no_return_evidence(
     tmp_path: Path, evidence: str
