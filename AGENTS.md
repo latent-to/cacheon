@@ -280,6 +280,28 @@ contributor and subagent:
   claim is carried by the system executing on real hardware; cite the run,
   not the suite.
 
+## Cheap-preflight liveness
+
+The 2026-08-08 graph-evidence store overreached: exactly-once machinery for a
+cheap, idempotent CUDA-graph preflight converted an ordinary producer exception
+into a permanent armed queue wedge and discarded the useful traceback. Do not
+repeat that failure mode.
+
+- Preserve expensive B/C/B' work and resident-model outputs. A cheap,
+  deterministic preflight may rerun after an unpublished infrastructure
+  failure; do not make the queue permanently inert to avoid repeating it.
+- Do not add exactly-once journals, hashes, sealed receipts, generations, or
+  recovery state machines unless repeating the protected action has a
+  demonstrated irreversible or materially expensive consequence.
+- Strictness that converts a recoverable validator failure into permanent queue
+  state is a liveness defect. Preserve the original exception durably and keep
+  the producer path re-enterable.
+- Prefer removing the offending condition or automating the known recovery to
+  introducing a broader abstraction. Existing implementation boundaries are
+  not design authority.
+- If a narrow mainnet-liveness fix grows beyond roughly 250 net production
+  lines before runtime proof, stop and justify every additional line.
+
 ## Persistence
 
 Committed code, tests, this file, and `docs/` are the portable context. Keep

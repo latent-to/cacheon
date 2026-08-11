@@ -239,8 +239,8 @@ def test_late_arm_publication_returns_hold_not_success(
     with pytest.raises(B300QualificationGraphEvidenceHold, match="deadline expired"):
         store.arm(binding, deadline=_deadline(0.5))
     assert fired  # the armed record was durable before the deadline expired
-    with pytest.raises(B300QualificationGraphEvidenceHold, match="armed"):
-        store.probe_once(binding, _producer(policy), deadline=_deadline())
+    reference = store.probe_once(binding, _producer(policy), deadline=_deadline())
+    assert store.reopen(binding, deadline=_deadline()) == reference
 
 
 def test_artifact_publication_receives_same_absolute_deadline(
