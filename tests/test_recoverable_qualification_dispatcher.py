@@ -316,6 +316,62 @@ def test_postpublication_worker_failure_retires_request_and_requeues(
     assert dispatcher.dispatch_once() is None
 
 
+def test_authority_changed_held_recovery_migrates_into_bounded_requeue(
+    tmp_path: Path,
+) -> None:
+    """A recovery parked HELD with transport_hold:authority_changed carries a
+    retained request that can never dispatch again (it was sealed against an
+    authority that no longer verifies).  The dispatcher migrates it through
+    the same bounded infrastructure requeue: retire the dead request, release
+    the reservation for a fresh claim, count one systemic strike."""
+
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, fail_resume=True)
+    dispatcher = _dispatcher(authority, transport)
+
+    with pytest.raises(
+        RecoverableQualificationDispatcherError,
+        match="same-request qualification result is not ready",
+    ):
+        dispatcher.dispatch_once()
+    assert transport.plan is not None
+    dead_request_id = transport.plan.request_id
+    with _store(authority) as store:
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None and recovery.phase.value == "request_ready"
+        store.hold_recovery(
+            recovery,
+            current_block=authority.fixtures.BLOCK,
+            reason="transport_hold:authority_changed",
+        )
+
+    transport.fail_resume = False
+    outcome = dispatcher.dispatch_once()
+    assert type(outcome) is RecoverableQualificationRequeue
+    assert outcome.request_id == dead_request_id
+    assert outcome.outcome.disposition is ExecutionDisposition.REQUEUE
+    assert outcome.outcome.decision == "NO_DECISION"
+    with _store(authority) as store:
+        # The dead request retired with its recovery; the reservation is
+        # claimable again and one systemic strike was recorded.
+        assert store.pending_qualification_recovery() is None
+        released = store._db.execute(
+            "SELECT l.state, l.reason, m.reservation_id "
+            "FROM evaluation_leases AS l "
+            "JOIN evaluation_lease_members AS m ON m.lease_id=l.lease_id "
+            "WHERE l.reason LIKE 'systemic%'",
+        ).fetchall()
+        assert len(released) == 1
+        assert released[0]["state"] == "released"
+        assert released[0]["reason"].startswith("systemic:worker_infrastructure:")
+        row = store._db.execute(
+            "SELECT status FROM reservations WHERE reservation_id=?",
+            (released[0]["reservation_id"],),
+        ).fetchone()
+        assert row["status"] == "promoted"
+
+
 def test_completed_no_decision_product_is_held_without_retry_or_second_plan(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -33,6 +33,7 @@ from cacheon.chain.evaluation_recovery import (
 )
 from cacheon.chain.guarded_evaluation_run import GuardedEvaluationRun
 from cacheon.chain.execution_disposition import (
+    AUTHORITY_CHANGED_HOLD_REASON,
     AuthenticatedPreResidentRefusal,
     ExecutionDisposition,
     ExecutionOutcome,
@@ -867,9 +868,14 @@ class RecoverableQualificationDispatcher:
             return None
         recovery, claim = selected.recovery, selected.claim
         if recovery.phase is RecoveryPhase.HELD:
-            if recovery.reason == WORKER_INFRASTRUCTURE_HOLD_REASON:
-                # Parked before infrastructure results became requeue-class:
-                # retire the dead request and requeue it the same way.
+            if recovery.reason in (
+                WORKER_INFRASTRUCTURE_HOLD_REASON,
+                AUTHORITY_CHANGED_HOLD_REASON,
+            ):
+                # Both reasons mean the retained request is durably dead --
+                # parked before infrastructure results became requeue-class,
+                # or sealed against an authority that no longer verifies.
+                # Retire the dead request and requeue it the same bounded way.
                 return self._requeue_infrastructure(
                     recovery,
                     _infrastructure_requeue_signal("worker_infrastructure_result"),

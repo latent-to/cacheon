@@ -522,9 +522,14 @@ def _assert_plan_authority(
         )
     except (RemoteWorkerError, RemoteEvaluationDispatcherError) as exc:
         _hold(plan, "authority_changed", str(exc))
+    # The plan's registration digest is a mint-time snapshot, deliberately not
+    # compared here: a same-epoch registration refresh (for example a service
+    # file rotation) re-digests the registration while every binding the
+    # sealed request carries -- worker epoch, transport identity, credential,
+    # readiness, service identity -- still verifies above.  Requiring the
+    # snapshot froze every in-flight recovery on refresh (mainnet 2026-08-10).
     if (
-        verified["registration_digest"] != plan.registration_digest
-        or verified["worker_epoch"] != plan.worker_epoch
+        verified["worker_epoch"] != plan.worker_epoch
         or identity.digest != plan.transport_identity_digest
         or credential.digest != plan.credential_digest
     ):

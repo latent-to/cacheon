@@ -895,19 +895,22 @@ class EvaluationRecoveryStoreMixin:
         infrastructure result (no authenticated refusal, no completed
         response).  The dead request retires with its recovery and a fresh
         claim mints a fresh request.  Also accepts a recovery already parked
-        HELD under the pre-change worker-infrastructure reason, migrating it
-        into the same requeue.  Repeats are bounded by the systemic release
-        cap, so an unfixed infrastructure fault parks for the operator instead
-        of free-looping."""
+        HELD under the pre-change worker-infrastructure reason or under the
+        authority-changed reason (both mean the retained request is durably
+        dead), migrating it into the same requeue.  Repeats are bounded by the
+        systemic release cap, so an unfixed infrastructure fault parks for the
+        operator instead of free-looping."""
 
         from cacheon.chain.execution_disposition import (
+            AUTHORITY_CHANGED_HOLD_REASON,
             WORKER_INFRASTRUCTURE_HOLD_REASON,
         )
 
         held_migration = (
             type(recovery) is EvaluationRecovery
             and recovery.phase is RecoveryPhase.HELD
-            and recovery.reason == WORKER_INFRASTRUCTURE_HOLD_REASON
+            and recovery.reason
+            in (WORKER_INFRASTRUCTURE_HOLD_REASON, AUTHORITY_CHANGED_HOLD_REASON)
         )
         if (
             type(recovery) is not EvaluationRecovery
