@@ -3128,29 +3128,53 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     raise IntakeError(
                         "validator downtime requeue conflicts with an active lease"
                     )
+                # Promote restore keys off the live receipt: after a service-
+                # identity rotation a row may carry an older promote under the
+                # retired service plus a fresh promote under the live one
+                # (append-only dispositions).  Require the latest promote to
+                # match the reservation's arena_service_digest.
                 if row.screen_status == "promote":
-                    screen_rows = self._db.execute(
-                        "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
-                        "WHERE reservation_id=? AND decision='promote'",
+                    latest = self._db.execute(
+                        "SELECT decision,service_digest FROM arena_screen_dispositions "
+                        "WHERE reservation_id=? ORDER BY attempt_index DESC LIMIT 1",
                         (row.reservation_id,),
-                    ).fetchone()["n"]
-                    if screen_rows != 1 or not row.arena_service_digest:
+                    ).fetchone()
+                    if (
+                        latest is None
+                        or latest["decision"] != "promote"
+                        or not row.arena_service_digest
+                        or latest["service_digest"] != row.arena_service_digest
+                    ):
                         raise IntakeError(
                             "validator downtime requeue screen authority is incomplete"
                         )
                     status = "promoted"
+                    clear_screen = False
                 elif (
                     row.screen_status == ""
                     and row.publication_digest
                     and row.publication_root
                 ):
                     status = "published"
+                    clear_screen = False
+                elif (
+                    row.screen_status in ("hold", "retry")
+                    and row.publication_digest
+                    and row.publication_root
+                ):
+                    # Mid-screen when the SLA expired: drop back to the
+                    # pre-screen published queue so screening starts fresh.
+                    # Disposition history stays append-only.
+                    status = "published"
+                    clear_screen = True
                 else:
                     raise IntakeError(
                         "validator downtime requeue cannot restore this pipeline phase"
                     )
-                restored.append((row.reservation_id, status, reset_reason))
-            for reservation_id, _status, reset_reason in restored:
+                restored.append(
+                    (row.reservation_id, status, reset_reason, clear_screen)
+                )
+            for reservation_id, _status, reset_reason, _clear in restored:
                 if reset_reason == _VALIDATOR_DOWNTIME_REQUEUE_REASON:
                     self._db.execute(
                         "INSERT INTO reservation_sla_resets(reservation_id,"
@@ -3173,20 +3197,26 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             reservation_id,
                         ),
                     )
-            self._db.executemany(
-                "UPDATE reservations SET status=?,decision='',reason=?,"
-                "retry_group_digest='',retry_position=0,"
-                "qualification_authority_digest='',qualification_authority_json='',"
-                "qualification_evidence_digest='' WHERE reservation_id=?",
-                (
-                    (
-                        status,
-                        reset_reason,
-                        reservation_id,
+            for reservation_id, status, reset_reason, clear_screen in restored:
+                if clear_screen:
+                    self._db.execute(
+                        "UPDATE reservations SET status=?,screen_status='',"
+                        "screen_stage_count=0,decision='',reason=?,"
+                        "retry_group_digest='',retry_position=0,"
+                        "qualification_authority_digest='',"
+                        "qualification_authority_json='',"
+                        "qualification_evidence_digest='' WHERE reservation_id=?",
+                        (status, reset_reason, reservation_id),
                     )
-                    for reservation_id, status, reset_reason in restored
-                ),
-            )
+                else:
+                    self._db.execute(
+                        "UPDATE reservations SET status=?,decision='',reason=?,"
+                        "retry_group_digest='',retry_position=0,"
+                        "qualification_authority_digest='',"
+                        "qualification_authority_json='',"
+                        "qualification_evidence_digest='' WHERE reservation_id=?",
+                        (status, reset_reason, reservation_id),
+                    )
         return tuple(self.get(reservation_id) for reservation_id in reservation_ids)
 
     def _transition(
