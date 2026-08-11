@@ -501,6 +501,56 @@ def test_heartbeat_retries_after_full_transient_cursor_mismatch_budget(
     assert [event.event_type for event in events] == ["claimed", "heartbeat"]
 
 
+def test_ownership_opens_when_intake_advances_the_cursor_during_every_open(
+    tmp_path: Path,
+) -> None:
+    """The store open blocks on the intake controller's flock. An intake pass
+    that advances the durable cursor while the open waits makes every pre-open
+    reading stale; ownership must still open by re-verifying the authority
+    against the store's own durable cursor inside ownership (271 consecutive
+    live failures, mainnet 2026-08-11)."""
+
+    _published_rows(tmp_path, 1)
+    service = ArenaService(_manifest(), _Provider())
+    calls = 0
+
+    def always_behind_the_open() -> tuple[int, str]:
+        # Odd (pre-open) reads see the block the intake is about to leave;
+        # even (post-open) reads agree with the store's durable cursor.
+        nonlocal calls
+        calls += 1
+        if calls % 2:
+            return BLOCK + 1, _block_hash(BLOCK + 1)
+        return BLOCK, _block_hash(BLOCK)
+
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        always_behind_the_open,
+        lock_attempts=3,
+    )
+    store, point = coordinator._open_at_durable_cursor()
+    try:
+        assert point == (BLOCK, _block_hash(BLOCK))
+        assert store.finalized_cursor() == point
+    finally:
+        store.close()
+    assert calls == 2
+
+    # An authority that never agrees with the durable store still fails
+    # closed after the full attempt budget.
+    coordinator = _coordinator(
+        tmp_path,
+        service,
+        _CursorAuthority((BLOCK + 1, _block_hash(BLOCK + 1))),
+        lock_attempts=2,
+    )
+    with pytest.raises(
+        EvaluationCoordinatorError, match="did not stabilize within retry bounds"
+    ):
+        coordinator._open_at_durable_cursor()
+
+
 def test_transient_heartbeat_contention_does_not_admit_an_expired_result(
     tmp_path: Path,
 ) -> None:

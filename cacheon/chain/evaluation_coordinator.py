@@ -713,6 +713,16 @@ class EvaluationCoordinator:
                     ) from exc
                 if observed == point:
                     return store, point
+                # The store open blocks on the intake controller's flock; an
+                # intake pass that advances the cursor while this open waits
+                # makes the pre-open point stale on every attempt (271
+                # consecutive failures, mainnet 2026-08-11).  Ownership is
+                # held now, so the cursor cannot move: re-advance inside
+                # ownership and accept when the authority agrees with the
+                # store's own durable reading.
+                refreshed = _closed_cursor(self.advance_finalized_cursor())
+                if observed == refreshed:
+                    return store, refreshed
                 store.close()
                 last_error = EvaluationCoordinatorError(
                     "finalized cursor changed before coordinator ownership"
