@@ -4,8 +4,8 @@ Every OCI lease mounts an empty tmpfs cache, so each boot recompiles runtime
 JIT artifacts and concurrent TP ranks race the same output path (observed
 2026-08-10: a half-written minfer fmha_sm100 plan .so killed a qualification
 lane). These tests pin the seeding contract: a verbatim, symlink-free mirror
-of a validator-owned tree into the cache root, private modes, bounded by the
-cache budget, and absent-seed means exactly the old cold-boot behavior.
+of a validator-owned FMHA tree into MInfer's exact cache path, read-only modes,
+and the cache byte budget.
 """
 
 import os
@@ -18,10 +18,12 @@ from cacheon.eval.oci_backend import OCIBackendError, _seed_runtime_cache
 
 def _seed_tree(root: Path) -> Path:
     seed = root / "seed"
-    plan = seed / "home" / ".cache" / "minfer" / "fmha_sm100" / "plan"
+    plan = seed / "plan"
     plan.mkdir(parents=True)
     (plan / "fmha_sm100_plan.so").write_bytes(b"x" * 64)
-    (seed / "home" / ".cache" / "generic.bin").write_bytes(b"y" * 8)
+    variant = seed / "0_0_0_0_1_1_4"
+    variant.mkdir()
+    (variant / "fmha_sm100.so").write_bytes(b"y" * 8)
     return seed
 
 
@@ -42,14 +44,19 @@ def test_seed_mirrors_tree_with_private_modes(tmp_path):
         / "fmha_sm100_plan.so"
     )
     assert plan.read_bytes() == b"x" * 64
-    assert (cache / "home" / ".cache" / "generic.bin").read_bytes() == b"y" * 8
-    assert plan.stat().st_mode & 0o777 == 0o600
+    variant = (
+        cache / "home" / ".cache" / "minfer" / "fmha_sm100"
+        / "0_0_0_0_1_1_4" / "fmha_sm100.so"
+    )
+    assert variant.read_bytes() == b"y" * 8
+    assert plan.stat().st_mode & 0o777 == 0o444
+    assert plan.parent.stat().st_mode & 0o777 == 0o555
     assert (cache / "home").stat().st_mode & 0o777 == 0o700
 
 
 def test_seed_refuses_symlink_members(tmp_path):
     seed = _seed_tree(tmp_path)
-    (seed / "home" / "link").symlink_to(seed / "home" / ".cache")
+    (seed / "link").symlink_to(seed / "plan")
     with pytest.raises(OCIBackendError, match="symlink"):
         _seed_runtime_cache(
             seed,

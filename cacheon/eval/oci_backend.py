@@ -105,15 +105,17 @@ def _seed_runtime_cache(
     gid: int,
     max_bytes: int,
 ) -> None:
-    """Mirror validator-provisioned warm-cache bytes into a fresh lease cache.
+    """Install the sealed FMHA cache into the path consumed by MInfer.
 
     Every lease mounts an empty tmpfs cache, so each boot recompiles runtime
     JIT artifacts; concurrent TP ranks then race the same output path and a
     torn write kills the session (observed 2026-08-10: four ranks sharing one
     HOME half-wrote the minfer fmha_sm100 plan .so — "file too short").
     Seeding the cache from a validator-owned tree removes the compile
-    entirely. The seed is provisioning material, not evidence: it carries no
-    measurement authority and is never hashed into any identity.
+    entirely. The supplied root begins with ``plan/`` and the compiled
+    variants; MInfer consumes it below ``HOME/.cache/minfer/fmha_sm100``.
+    Keeping the installed tree read-only prevents ranks from falling back to
+    concurrent publication in the shared cache.
     """
     if (
         not seed_root.is_absolute()
@@ -121,14 +123,28 @@ def _seed_runtime_cache(
         or not seed_root.is_dir()
     ):
         raise OCIBackendError("runtime seed root is not a trusted directory")
+    target_root = cache_root / "home" / ".cache" / "minfer" / "fmha_sm100"
+    if target_root.exists() or target_root.is_symlink():
+        raise OCIBackendError("fresh runtime cache already holds FMHA state")
+    for parent in (
+        cache_root / "home",
+        cache_root / "home" / ".cache",
+        cache_root / "home" / ".cache" / "minfer",
+    ):
+        parent.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(parent, 0o700)
+        os.chown(parent, uid, gid)
+    target_root.mkdir(mode=0o700)
     copied = 0
+    copied_directories = [target_root]
     for row in sorted(seed_root.rglob("*")):
-        target = cache_root.joinpath(row.relative_to(seed_root))
+        target = target_root.joinpath(row.relative_to(seed_root))
         if row.is_symlink():
             raise OCIBackendError("runtime seed tree holds a symlink")
         if row.is_dir():
             target.mkdir(mode=0o700, exist_ok=True)
             os.chown(target, uid, gid)
+            copied_directories.append(target)
             continue
         if not row.is_file():
             raise OCIBackendError("runtime seed tree holds a non-regular file")
@@ -136,8 +152,12 @@ def _seed_runtime_cache(
         if copied > max_bytes:
             raise OCIBackendError("runtime seed tree exceeds the cache budget")
         shutil.copyfile(row, target)
-        os.chmod(target, 0o600)
+        os.chmod(target, 0o444)
         os.chown(target, uid, gid)
+    for target in sorted(
+        copied_directories, key=lambda path: len(path.parts), reverse=True
+    ):
+        os.chmod(target, 0o555)
 CONTAINER_ENGINE_WORKER_POLICY = (
     "/usr/local/lib/python3.12/dist-packages/cacheon/eval/engine_worker.py"
 )

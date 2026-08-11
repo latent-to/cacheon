@@ -1396,15 +1396,15 @@ def _derive_inputs(
 
     source = _mapping(ready.get("source"), "READY source")
     runtime_root = _mapping(ready.get("runtime"), "READY runtime")
-    # Optional validator-provisioned warm-cache tree. Absent on receipts
-    # commissioned before seed delivery existed; absence means every lease
-    # boots with a cold cache and re-rolls the JIT compile race.
+    # Current-pod commissions bind the exact runtime seed as runtime.path.
+    # The earlier Lium bootstrap schema carried the same path in a structured
+    # runtime_seed field, so accept that representation when replaying one.
     seed_value = ready.get("runtime_seed")
-    runtime_seed_root = (
-        None
-        if seed_value is None
-        else _absolute_path(seed_value, "READY runtime seed")
-    )
+    if seed_value is None:
+        seed_value = runtime_root.get("path")
+    elif type(seed_value) is dict:
+        seed_value = seed_value.get("path")
+    runtime_seed_root = _absolute_path(seed_value, "READY runtime seed")
     controller_distribution_digest = _digest(
         source.get("tree_digest"), "READY source tree digest"
     )
