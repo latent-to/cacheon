@@ -56,10 +56,6 @@ class ResidentScreenLaneError(RuntimeError):
     """The lane, its lifetime, or a stage input is invalid or failed."""
 
 
-class ResidentScreenLaneQuarantined(ResidentScreenLaneError):
-    """The model remains resident, but stock canaries have not recovered."""
-
-
 class ResidentScreenLifetimeFailed(ResidentScreenLaneError):
     """The standing engine failed and may not be silently recreated."""
 
@@ -131,13 +127,14 @@ def make_backend_lifetime_factory(
 
 
 class _Work:
-    __slots__ = ("candidate", "done", "verdict", "error")
+    __slots__ = ("candidate", "done", "verdict", "error", "recycle")
 
     def __init__(self, candidate: ScreenCandidate) -> None:
         self.candidate = candidate
         self.done = threading.Event()
         self.verdict: CandidateScreenVerdict | None = None
         self.error: BaseException | None = None
+        self.recycle = False
 
 
 _CLOSE = object()
@@ -198,7 +195,6 @@ class ResidentScreenLane:
         self._last_evidence: object | None = None
         self._last_canary_recovery: tuple[float, float] | None = None
         self._last_canary_recovered: bool | None = None
-        self._quarantined_reason: str | None = None
         self._closed = False
 
     @property
@@ -224,10 +220,8 @@ class ResidentScreenLane:
     def screen(self, candidate: ScreenCandidate) -> CandidateScreenVerdict:
         """Screen one candidate on the live lifetime, booting one if needed.
 
-        A budget-exhausted scoring bracket resets transparently inside the
-        same engine session (the candidate was untouched).  A canary-withdrawn
-        verdict is returned as-is, while the next arrival begins a fresh
-        bracket without reloading the model.
+        Budget exhaustion and canary withdrawal are internal retry events.
+        Neither is exposed as a candidate ``NO_DECISION``.
         """
 
         if type(candidate) is not ScreenCandidate:
@@ -236,23 +230,34 @@ class ResidentScreenLane:
             if self._closed:
                 raise ResidentScreenLaneError("resident screen lane is closed")
             with self._state:
-                quarantined = self._quarantined_reason
-            if quarantined is not None:
-                raise ResidentScreenLaneQuarantined(quarantined)
-            self._ensure_lifetime()
-            item = _Work(candidate)
-            self._work.put(item)
-            self._await(item)
-            if item.error is not None:
+                self._last_canary_recovery = None
+                self._last_canary_recovered = None
+            for recycle_attempt in range(2):
+                self._ensure_lifetime()
+                item = _Work(candidate)
+                self._work.put(item)
+                self._await(item)
+                if item.error is None and item.recycle:
+                    self._join_lifetime()
+                    if recycle_attempt == 0:
+                        continue
+                    failure = ResidentScreenLifetimeFailed(
+                        "stock canary failed again on a fresh resident lifetime"
+                    )
+                    with self._state:
+                        self._lifetime_error = failure
+                    raise failure
+                if item.error is None and item.verdict is not None:
+                    return item.verdict
                 self._join_lifetime()
-                raise ResidentScreenLifetimeFailed(
-                    f"resident screen lifetime failed: {item.error}"
-                ) from item.error
-            if item.verdict is None:
+                if item.error is not None:
+                    raise ResidentScreenLifetimeFailed(
+                        f"resident screen lifetime failed: {item.error}"
+                    ) from item.error
                 raise ResidentScreenLaneError(
-                    "resident scoring bracket returned no candidate verdict"
+                    "resident scoring bracket returned no candidate verdict or recycle"
                 )
-            return item.verdict
+            raise AssertionError("resident recycle loop exhausted")
 
     def close(self) -> None:
         """Permanently close the lane, ending any live lifetime."""
@@ -301,22 +306,25 @@ class ResidentScreenLane:
                 if item is _CLOSE:
                     break
                 try:
-                    verdict = loop.screen(item.candidate)
-                    if verdict is None:
-                        if loop.stopped_reason is None:
-                            raise ResidentScreenLaneError(
-                                "resident bracket refused work without a stop reason"
-                            )
-                        loop = ResidentScreenLoop(
-                            session, prompts=self._prompts, policy=self._policy
-                        )
+                    recovered_once = False
+                    while True:
                         verdict = loop.screen(item.candidate)
                         if verdict is None:
-                            raise ResidentScreenLaneError(
-                                "fresh resident bracket refused work"
+                            if loop.stopped_reason is None:
+                                raise ResidentScreenLaneError(
+                                    "resident bracket refused work without a stop reason"
+                                )
+                            loop = ResidentScreenLoop(
+                                session, prompts=self._prompts, policy=self._policy
                             )
-                    item.verdict = verdict
-                    if verdict.withdrawn:
+                            verdict = loop.screen(item.candidate)
+                            if verdict is None:
+                                raise ResidentScreenLaneError(
+                                    "fresh resident bracket refused work"
+                                )
+                        if not verdict.withdrawn:
+                            item.verdict = verdict
+                            break
                         reference = loop.withdrawn_reference
                         recovery, recovered = self._recover_stock_in_place(
                             session, reference
@@ -324,23 +332,23 @@ class ResidentScreenLane:
                         with self._state:
                             self._last_canary_recovery = recovery
                             self._last_canary_recovered = recovered
-                        if recovered:
+                        if recovered and not recovered_once:
+                            recovered_once = True
                             loop = ResidentScreenLoop(
                                 session,
                                 prompts=self._prompts,
                                 policy=self._policy,
                             )
-                        else:
-                            with self._state:
-                                self._quarantined_reason = (
-                                    "resident stock canary did not recover; "
-                                    "model retained in quarantine"
-                                )
+                            continue
+                        item.recycle = True
+                        break
                 except BaseException as exc:
                     item.error = exc
                     item.done.set()
                     raise
                 item.done.set()
+                if item.recycle:
+                    break
                 if loop.stopped_reason is not None and not item.verdict.withdrawn:
                     # The engine is already back on stock dispatch.  Drop only
                     # the scoring window; retaining this driver keeps SGLang,
@@ -368,7 +376,7 @@ class ResidentScreenLane:
         session: ScreenSession,
         reference: float | None,
     ) -> tuple[tuple[float, float], bool]:
-        """Require two unchanged-threshold stock reads before leaving quarantine."""
+        """Require two unchanged-threshold stock reads before reusing a lifetime."""
 
         if reference is None or reference <= 0:
             return (0.0, 0.0), False
@@ -427,8 +435,9 @@ class ResidentServingScreenStage:
     Swappable bundles are staged into the content-addressed swap intake and
     screened through the resident lane; the verdict maps to the stage grade
     (confident pass -> PASS, confident regression or wrong dispatch -> FAIL,
-    noise or withdrawn evidence -> NO_DECISION, retried by the controller's
-    screen budgets).  Non-swappable bundles receive an explicitly recorded
+    noisy but valid evidence -> PASS to qualification).  Canary withdrawal is
+    retried inside the lane and cannot become a screen result.  Non-swappable
+    bundles receive an explicitly recorded
     waiver PASS: the screen tier cannot pre-price them cheaply, so
     qualification — the deciding authority for every candidate — prices them
     on its own dedicated launches.
@@ -477,7 +486,7 @@ class ResidentServingScreenStage:
                 candidate.reservation.reservation_digest, staged_digest, slots
             )
         )
-        recovery = self._lane.last_canary_recovery if verdict.withdrawn else None
+        recovery = self._lane.last_canary_recovery
         evidence = canonical_digest(
             _STAGE_EVIDENCE_SCHEMA,
             {
@@ -511,11 +520,13 @@ class ResidentServingScreenStage:
 
 def _stage_grade(verdict: CandidateScreenVerdict) -> ScreenGrade:
     if verdict.withdrawn:
-        return ScreenGrade.NO_DECISION
+        raise ResidentScreenLaneError("canary withdrawal escaped the lane retry loop")
     if verdict.rejected_dispatch:
         return ScreenGrade.FAIL
-    if verdict.verdict is None or not verdict.verdict.confident:
-        return ScreenGrade.NO_DECISION
+    if verdict.verdict is None:
+        raise ResidentScreenLaneError("resident screen returned no speed verdict")
+    if not verdict.verdict.confident:
+        return ScreenGrade.PASS
     return ScreenGrade.PASS if verdict.passed else ScreenGrade.FAIL
 
 
@@ -523,7 +534,6 @@ __all__ = [
     "ResidentLifetimeFactory",
     "ResidentScreenLane",
     "ResidentScreenLaneError",
-    "ResidentScreenLaneQuarantined",
     "ResidentScreenLifetimeFailed",
     "ResidentServingScreenStage",
     "SERVING_SCREEN_STAGE",

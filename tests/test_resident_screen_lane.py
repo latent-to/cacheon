@@ -18,6 +18,7 @@ from cacheon.eval.resident_queue import ScreenCandidate, ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLaneError,
+    ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
     screen_swappability,
 )
@@ -208,29 +209,43 @@ class TestResidentScreenLane:
         lane = ResidentScreenLane(
             factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
         )
-        first = lane.screen(_candidate(DIGEST_A, "a"))
-        assert first.withdrawn and first.verdict is None
-        second = lane.screen(_candidate(DIGEST_A, "a"))
-        assert second.passed
+        assert lane.screen(_candidate(DIGEST_A, "a")).passed
         assert factory.calls == 1
+        recovery = lane.last_canary_recovery
+        assert recovery is not None and recovery[1]
+        assert recovery[0] == pytest.approx((95.0, 95.0))
         lane.close()
 
-    def test_persistent_canary_drift_quarantines_without_unloading(self) -> None:
+    def test_persistent_canary_drift_recycles_and_retries_same_candidate(self) -> None:
         factory = FakeLifetimeFactory(
-            lambda _n: FakeResidentSession(
+            lambda n: FakeResidentSession(
                 100.0,
                 {DIGEST_A: 112.0},
-                stock_drift_after=1,
+                stock_drift_after=1 if n == 1 else None,
             )
         )
         lane = ResidentScreenLane(
             factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
         )
-        assert lane.screen(_candidate()).withdrawn
-        with pytest.raises(ResidentScreenLaneError, match="retained in quarantine"):
+        assert lane.screen(_candidate()).passed
+        assert factory.calls == 2
+        assert factory.sessions[0].finished
+        assert not factory.sessions[1].finished
+        lane.close()
+
+    def test_canary_drift_on_fresh_lifetime_fails_worker_not_candidate(self) -> None:
+        factory = FakeLifetimeFactory(
+            lambda _n: FakeResidentSession(
+                100.0, {DIGEST_A: 112.0}, stock_drift_after=1
+            )
+        )
+        lane = ResidentScreenLane(
+            factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
+        )
+        with pytest.raises(ResidentScreenLifetimeFailed, match="fresh resident"):
             lane.screen(_candidate())
-        assert factory.calls == 1
-        assert not factory.sessions[0].finished
+        assert factory.calls == 2
+        assert all(session.finished for session in factory.sessions)
         lane.close()
 
     def test_boot_failure_requires_explicit_service_restart(self) -> None:
@@ -461,16 +476,16 @@ class TestResidentServingScreenStage:
         assert stage.run_screen(binding).grade is ScreenGrade.FAIL
         lane.close()
 
-    def test_noise_or_withdrawal_is_no_decision(self, tmp_path) -> None:
+    def test_canary_recycle_is_internal_and_routes_candidate(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
         stage, lane, _root = self._stage(
             tmp_path,
-            lambda _n: FakeResidentSession(
-                100.0, {staged: 112.0}, stock_drift_after=1
+            lambda n: FakeResidentSession(
+                100.0, {staged: 112.0}, stock_drift_after=1 if n == 1 else None
             ),
         )
-        assert stage.run_screen(binding).grade is ScreenGrade.NO_DECISION
+        assert stage.run_screen(binding).grade is ScreenGrade.PASS
         lane.close()
 
     @pytest.mark.parametrize(

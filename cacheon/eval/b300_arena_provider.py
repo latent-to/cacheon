@@ -53,7 +53,6 @@ from cacheon.eval.b300_qualification_graph_store_io import (
 from cacheon.eval.qualification_intake import QualificationPlanFactory
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_screen_lane import (
-    ResidentScreenLaneQuarantined,
     ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
 )
@@ -681,9 +680,9 @@ class B300ArenaServiceProvider:
                     try:
                         created = self._create_resident()
                     except Exception as exc:
-                        return self._exception_result(
-                            manifest, stage, candidate, exc, started
-                        )
+                        raise B300ArenaProviderError(
+                            "resident screen start failed"
+                        ) from exc
                     if type(created) is not B300ResidentScreenLifetime:
                         raise B300ArenaProviderError(
                             "resident factory returned an untyped lifetime"
@@ -692,23 +691,17 @@ class B300ArenaServiceProvider:
                     self._resident_lifetime = lifetime
                 try:
                     result = lifetime.screen_stage.run_screen(candidate)
-                except ResidentScreenLaneQuarantined as exc:
-                    # A canary quarantine retains the standing model for
-                    # inspection/recovery.  It is infrastructure NO_DECISION,
-                    # never an authority to destroy and reload the engine.
-                    return self._exception_result(
-                        manifest, stage, candidate, exc, started
-                    )
                 except ResidentScreenLifetimeFailed as exc:
                     self._resident_failed = True
                     raise B300ArenaProviderError(
                         "resident screen lifetime failed; epoch restart required"
                     ) from exc
                 except Exception as exc:
-                    # Candidate-carrier and host-side stage errors are typed
-                    # NO_DECISION.  They do not own the standing engine and
-                    # therefore cannot release or reload it.
-                    return self._exception_result(manifest, stage, candidate, exc, started)
+                    # The request may retry while the healthy resident remains,
+                    # but the exception is not a candidate screen verdict.
+                    raise B300ArenaProviderError(
+                        "resident screen request failed"
+                    ) from exc
             else:
                 configured = self._handlers.get(stage.stage)
                 if configured is None:
