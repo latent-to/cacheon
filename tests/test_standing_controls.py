@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 
 import pytest
@@ -113,6 +114,28 @@ def test_drift_bound_must_equal_the_sealed_speed_policy_exactly() -> None:
         StandingControlsError, match="differs from the sealed speed policy"
     ):
         verify_standing_controls(drifted, dict(drifted), policy)
+
+
+def test_version_four_and_five_lineage_policies_also_derive_controls() -> None:
+    for version in (4, 5):
+        policy = dataclasses.replace(_policy(), version=version)
+        raw = _controls(policy)
+        controls = verify_standing_controls(raw, dict(raw), policy)
+        assert controls.maximum_bookend_drift_ppm == (
+            bookend_drift_ppm_from_max_noise(policy.max_noise)
+        )
+    pre_lineage = dataclasses.replace(
+        _policy(),
+        version=2,
+        min_windows=0,
+        max_window_scatter=0.0,
+        max_conditioning_slowdown=0.0,
+    )
+    raw = _controls(pre_lineage)
+    with pytest.raises(
+        StandingControlsError, match="version-3 resident speed policy"
+    ):
+        verify_standing_controls(raw, dict(raw), pre_lineage)
 
 
 def test_non_v3_policy_and_inexact_noise_are_rejected() -> None:

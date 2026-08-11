@@ -14,14 +14,23 @@ Version 4 grades every read and decides by the spread of the reads actually
 taken. It assumes no distribution, so an ill-behaved box cannot manufacture
 indecision, and because taking more reads only widens an observed spread, the
 concluding grade terminates rather than deferring forever.
+
+Version 5 adds the drift rule (operator order, 2026-08-10): when the baseline
+brackets drift apart by more than the sealed ``max_noise``, the later brackets
+are excluded and the candidate is compared against the earliest baseline only,
+still under version 4's terminating arithmetic. Under version 4 that drift
+inflates the required bar until a genuine win is graded FAIL; the box's
+instability after the first bracket is the box's fault, never grounds to move
+the bar the candidate was measured against.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from cacheon.eval.scoring import SpeedupVerdict, score_speedup
+from cacheon.eval.scoring import SpeedupVerdict, relative_spread, score_speedup
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
@@ -83,18 +92,35 @@ def speed_grade(
 
     baseline_rates = [policy.scored_tokens_per_second(row) for row in baselines]
     candidate_rates = [policy.scored_tokens_per_second(row) for row in candidates]
+    scored_baselines = baseline_rates
+    drift_note = None
+    if policy.version >= 5 and len(baseline_rates) >= 2:
+        drift = relative_spread(baseline_rates)
+        if drift > policy.max_noise:
+            # The drift rule: brackets after the first measured the box in a
+            # state the sealed calibration disowns, so they are excluded from
+            # the verdict entirely -- from the bar (no noise inflation) and
+            # from the invariance window alike. Candidate reads all stay: the
+            # candidate's own spread remains fully disqualifying.
+            scored_baselines = baseline_rates[:1]
+            drift_note = (
+                f"baseline drift {drift:.1%} > max_noise {policy.max_noise:.0%};"
+                " later brackets excluded, C vs earliest B (v5 drift rule)"
+            )
     verdict = score_speedup(
-        baseline_rates,
+        scored_baselines,
         candidate_rates,
         min_margin=policy.min_margin,
         k=policy.noise_multiplier,
         max_noise=policy.max_noise,
     )
+    if drift_note is not None:
+        verdict = replace(verdict, detail=drift_note)
     if policy.version < 4:
         if concluding:
             return verdict, _final(verdict)
         return verdict, _disposition(verdict, policy.min_margin)
-    decision = invariant_decision(baseline_rates, candidate_rates, verdict.required)
+    decision = invariant_decision(scored_baselines, candidate_rates, verdict.required)
     if decision is None and concluding:
         # Escalation cannot be relied on to converge: taking more reads only
         # widens the observed spread. The burden of proof sits with the

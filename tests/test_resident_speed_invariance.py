@@ -7,6 +7,11 @@ recorded as NO_DECISION while their evidence already determined the verdict.
 Version 3 semantics must stay byte-identical -- sealed policies and retained
 evidence depend on them -- so the new behavior is reachable only through a
 prospectively sealed version-4 policy.
+
+Version 5 layers the drift rule on top of v4: baseline brackets that drift
+past the sealed ``max_noise`` are excluded and the candidate is compared
+against the earliest baseline only, under the same terminating arithmetic.
+Versions 3 and 4 must keep grading the same evidence identically.
 """
 
 from __future__ import annotations
@@ -142,6 +147,102 @@ def test_version_three_concluding_behavior_is_unchanged() -> None:
     # confident and v3 answers NO_DECISION. Sealed v3 policies keep this
     # meaning exactly.
     assert concluded is SpeedStageDecision.NO_DECISION
+
+
+def test_version_five_is_sealable_and_round_trips_canonically() -> None:
+    policy = _policy(5)
+    assert policy.version == 5
+    reopened = type(policy).from_dict(policy.to_dict())
+    assert reopened == policy
+    assert policy.digest != _policy(4).digest
+
+    # v5 shares v4's advisory scatter ceiling, no wider.
+    assert _policy(5, max_window_scatter=0.25).max_window_scatter == 0.25
+    with pytest.raises(CrossoverRuntimeError, match=r"v5 .*in \(0, 0.25\]"):
+        _policy(5, max_window_scatter=0.26)
+
+
+def test_v5_drift_rule_decides_from_the_earliest_baseline() -> None:
+    # Bookends drift 2.36% against the sealed 2% ceiling. Under v4 the drift
+    # inflates the required bar to ~1.047 and a genuine ~1% win against the
+    # bracket the candidate was actually measured beside is graded FAIL.
+    # Under v5 the later bracket is excluded: C vs earliest B, bar 1.005.
+    drifted = [_steady(7477.155), _steady(7303.009)]
+    winner = [_steady(7550.0)]
+
+    verdict, decision = speed_grade(_policy(5), drifted, winner, concluding=False)
+    assert decision is SpeedStageDecision.PASS
+    assert "v5 drift rule" in verdict.detail
+    assert verdict.required == pytest.approx(1.005)
+    assert verdict.speedup == pytest.approx(7550.0 / 7477.155)
+
+    _, under_v4 = speed_grade(_policy(4), drifted, winner, concluding=False)
+    assert under_v4 is SpeedStageDecision.FAIL
+
+    # A candidate that loses against the earliest bracket is a FAIL under v5
+    # without escalation.
+    loser = [_steady(7400.0)]
+    _, decision = speed_grade(_policy(5), drifted, loser, concluding=False)
+    assert decision is SpeedStageDecision.FAIL
+
+    # A ~3% win sits inside v4's drift-inflated window (bar ~1.047), so v4
+    # escalates for more reads it can never make decisive; v5 crowns it
+    # against the bracket it was measured beside, no escalation.
+    strong = [_steady(7700.0)]
+    _, decision = speed_grade(_policy(5), drifted, strong, concluding=False)
+    assert decision is SpeedStageDecision.PASS
+    _, under_v4 = speed_grade(_policy(4), drifted, strong, concluding=False)
+    assert under_v4 is None
+
+
+def test_v5_candidate_spread_stays_disqualifying_and_concludes_fail() -> None:
+    # The drift rule excludes later BASELINE brackets only. Candidate reads
+    # that straddle the bar keep the verdict undetermined, and an undetermined
+    # conclusion terminates FAIL exactly as under v4 -- never NO_DECISION.
+    drifted = [_steady(7477.155), _steady(7303.009)]
+    straddling = [_steady(7550.0), _steady(7450.0)]
+
+    _, escalate = speed_grade(_policy(5), drifted, straddling, concluding=False)
+    assert escalate is None
+    _, concluded = speed_grade(_policy(5), drifted, straddling, concluding=True)
+    assert concluded is SpeedStageDecision.FAIL
+
+
+def test_v5_without_drift_is_byte_identical_to_v4() -> None:
+    # Inside the sealed noise ceiling the drift rule never engages: verdict
+    # and decision match v4 exactly, for the clear win, the clear loss, and
+    # the genuinely ambiguous read.
+    tight = [_steady(7400.0), _steady(7420.0)]
+    for candidate, concluding in (
+        ([_steady(7900.0)], False),
+        ([_steady(6900.0)], False),
+        ([_steady(7450.0)], False),
+        ([_steady(7450.0)], True),
+    ):
+        v4_verdict, v4_decision = speed_grade(
+            _policy(4), tight, candidate, concluding=concluding
+        )
+        v5_verdict, v5_decision = speed_grade(
+            _policy(5), tight, candidate, concluding=concluding
+        )
+        assert v5_verdict == v4_verdict
+        assert v5_decision is v4_decision
+
+
+def test_sealed_v3_and_v4_arithmetic_is_untouched_by_the_drift_rule() -> None:
+    # The exact drifted-bookend evidence the drift rule exists for must keep
+    # regrading identically under the sealed earlier versions.
+    drifted = [_steady(7477.155), _steady(7303.009)]
+    _, v3_concluded = speed_grade(
+        _policy(3), drifted, [_steady(7400.0)], concluding=True
+    )
+    assert v3_concluded is SpeedStageDecision.NO_DECISION
+
+    v4_verdict, v4_concluded = speed_grade(
+        _policy(4), drifted, [_steady(7400.0)], concluding=True
+    )
+    assert v4_concluded is SpeedStageDecision.FAIL
+    assert "v5" not in v4_verdict.detail
 
 
 def test_a_gross_loss_measured_on_an_unstable_box_still_fails() -> None:

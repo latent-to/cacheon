@@ -185,6 +185,18 @@ improvement. Retained version-1..3 evidence regrades under its own sealed
 arithmetic; cross-version splicing remains refused. The adaptive lane
 choreography below is unchanged from version 3.
 
+As of **2026-08-10**, resident speed policy **version 5** is sealable but not
+yet production-selected: the commission still seals version 4 and the
+registered-input authority accepts versions 3 and 4 only, so activation is
+the next provider registration that seals `version=5`. Version 5 adds the
+drift rule (operator order, 2026-08-10): when the baseline brackets drift
+apart by more than the sealed `max_noise`, the later brackets are excluded
+and the candidate is compared against the earliest baseline only, still under
+version 4's terminating invariance arithmetic — drift is the box's fault,
+never grounds to inflate the bar the candidate was measured against, and
+never a `NO_DECISION`. Candidate-read spread remains fully disqualifying.
+Sealed version-1..4 evidence continues to regrade under its own arithmetic.
+
 Production providers previously selected qualification policy version 3:
 
 1. two isolated resident TP lanes are assigned incumbent and candidate roles;

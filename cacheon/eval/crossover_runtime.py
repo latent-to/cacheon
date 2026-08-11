@@ -61,7 +61,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (1, 2, 3, 4)
+            or self.version not in (1, 2, 3, 4, 5)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -109,7 +109,7 @@ class ResidentSpeedPolicy:
             scatter_ceiling = 0.25 if self.version >= 4 else 0.05
             if not 0 < self.max_window_scatter <= scatter_ceiling:
                 raise CrossoverRuntimeError(
-                    f"resident speed policy v{min(self.version, 4)} requires a"
+                    f"resident speed policy v{self.version} requires a"
                     f" window scatter bound in (0, {scatter_ceiling}]"
                 )
             # The conditioning span is the only place a candidate's prefill
