@@ -185,7 +185,7 @@ invalidated by every commit. Calibration packages sealed under the earlier
 eleven-field context shape do not parse under this contract and are resealed
 from their durable inputs, not re-measured.
 
-Since **2026-08-10** production providers seal resident speed policy
+Providers commissioned on **2026-08-10** sealed resident speed policy
 **version 4**: every timed read is graded (the version-3 mid-run
 window-scatter refusal is retired as verdict control flow), window scatter is
 carried as recorded fitness evidence under an advisory bound, and the speed
@@ -205,8 +205,9 @@ excluded — and the candidate is graded against B alone under version 4's
 terminating arithmetic. Bracket drift therefore resolves to a decision at
 the initial grade instead of escalating or re-queueing. Sealed version-4
 evidence continues to regrade under bookend invariance without the
-exclusion. Version 5 activates prospectively at the next provider
-registration.
+exclusion. The current commission constructor selects version 5
+prospectively for the next provider registration; already sealed version-4
+providers and evidence keep their original policy identity.
 
 Production providers previously selected qualification policy version 3:
 

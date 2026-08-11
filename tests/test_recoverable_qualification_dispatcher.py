@@ -7,11 +7,13 @@ from pathlib import Path
 import pytest
 
 import cacheon.chain.recoverable_qualification_dispatcher as dispatcher_module
+from cacheon.chain.execution_disposition import ExecutionDisposition
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.recoverable_qualification_dispatcher import (
     RecoverableQualificationDispatcher,
     RecoverableQualificationDispatcherError,
     RecoverableQualificationHold,
+    RecoverableQualificationRequeue,
 )
 from cacheon.chain.remote_evaluation_dispatcher import seal_remote_response
 from cacheon.chain.remote_qualification_hold import (
