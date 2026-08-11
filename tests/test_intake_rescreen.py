@@ -16,7 +16,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from cacheon.chain.evaluation_recovery import RecoveryPhase
+from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
+from cacheon.chain.evaluation_recovery import (
+    EvaluationRecovery,
+    RecoveryPhase,
+    RecoveryResolution,
+    evaluation_recovery_id,
+)
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.screen_identity_rotation import (
     ScreenIdentityRotationError,
@@ -109,21 +115,64 @@ def test_rotation_is_detected_per_row_against_the_live_identity() -> None:
     assert rotated_reservation_ids(rows, (receipts[0],) * 3, live) == ()
 
 
-def test_a_built_request_is_never_recovered_by_rescreening() -> None:
-    # Past PREPARED the recovery owns committed request state that a fresh
-    # screen would contradict, so this path must refuse rather than improvise.
+def test_an_executed_or_held_request_is_never_recovered_by_rescreening() -> None:
     for phase in (
-        RecoveryPhase.REQUEST_READY,
         RecoveryPhase.RESULT_READY,
         RecoveryPhase.HELD,
     ):
-        with pytest.raises(ScreenIdentityRotationError, match="unbuilt claim"):
+        with pytest.raises(ScreenIdentityRotationError, match="unexecuted claim"):
             release_rotated_cohort(
                 object(),
                 SimpleNamespace(phase=phase),
                 current_block=1,
                 reservation_ids=("r0",),
             )
+
+
+def test_a_rotated_request_ready_is_retired_before_rescreening() -> None:
+    member = EvaluationLeaseMember("a" * 64, "promoted")
+    lease = EvaluationLease(
+        "b" * 64, 1, "qualification", "owner", (member,), 1, 2, 2
+    )
+    recovery = EvaluationRecovery(
+        evaluation_recovery_id(lease),
+        lease,
+        3,
+        RecoveryPhase.REQUEST_READY,
+        RecoveryResolution.UNRESOLVED,
+        1,
+        1,
+        "c" * 64,
+        "d" * 64,
+        b"request",
+    )
+    calls: list[tuple[object, ...]] = []
+
+    class Store:
+        def release_worker_infrastructure_recovery(self, observed, **kwargs):
+            calls.append(("retire", observed, kwargs))
+
+        def get(self, reservation_id):
+            return SimpleNamespace(status="promoted", reservation_id=reservation_id)
+
+        def demote_promoted_for_rescreen(self, reservation_id, *, reason):
+            calls.append(("demote", reservation_id, reason))
+
+    release_rotated_cohort(
+        Store(), recovery, current_block=7, reservation_ids=(member.reservation_id,)
+    )
+
+    assert calls == [
+        (
+            "retire",
+            recovery,
+            {
+                "current_block": 7,
+                "failure_code": ROTATED,
+            },
+        ),
+        ("demote", member.reservation_id, ROTATED),
+    ]
 
 
 def test_the_recorded_reason_is_bounded(tmp_path) -> None:

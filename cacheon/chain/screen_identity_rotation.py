@@ -29,8 +29,9 @@ from cacheon.chain.evaluation_recovery import EvaluationRecovery, RecoveryPhase
 
 ROTATED_SCREEN_RELEASE = "screen_receipt_service_rotated"
 
-# Only a claim that has not yet built a request may be recovered this way.
-# Anything further along has committed state that a re-screen would contradict.
+# An unbuilt claim can be released directly. A REQUEST_READY claim must first
+# retire its authority-bound request through the existing bounded systemic
+# transition; later phases may contain execution evidence and remain forbidden.
 _RELEASABLE_PHASES = frozenset({RecoveryPhase.CLAIMED, RecoveryPhase.PREPARED})
 
 
@@ -66,21 +67,31 @@ def release_rotated_cohort(
     the status it was leased with, so the cohort may only be demoted afterwards.
     """
 
-    if type(recovery) is not EvaluationRecovery or recovery.phase not in (
-        _RELEASABLE_PHASES
-    ):
+    if type(recovery) is not EvaluationRecovery or recovery.phase not in {
+        *_RELEASABLE_PHASES,
+        RecoveryPhase.REQUEST_READY,
+    }:
         raise ScreenIdentityRotationError(
-            "rotated screen recovery release requires an unbuilt claim"
+            "rotated screen recovery release requires an unexecuted claim"
         )
     if not reservation_ids:
         raise ScreenIdentityRotationError("rotated screen cohort is empty")
-    store._release_recovery(  # type: ignore[attr-defined]
-        recovery,
-        current_block=current_block,
-        reason=ROTATED_SCREEN_RELEASE,
-        allow_expired=True,
-    )
+    if recovery.phase is RecoveryPhase.REQUEST_READY:
+        store.release_worker_infrastructure_recovery(  # type: ignore[attr-defined]
+            recovery,
+            current_block=current_block,
+            failure_code=ROTATED_SCREEN_RELEASE,
+        )
+    else:
+        store._release_recovery(  # type: ignore[attr-defined]
+            recovery,
+            current_block=current_block,
+            reason=ROTATED_SCREEN_RELEASE,
+            allow_expired=True,
+        )
     for reservation_id in reservation_ids:
+        if store.get(reservation_id).status == "held":  # type: ignore[attr-defined]
+            continue
         store.demote_promoted_for_rescreen(  # type: ignore[attr-defined]
             reservation_id, reason=ROTATED_SCREEN_RELEASE
         )
