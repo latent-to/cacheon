@@ -488,7 +488,9 @@ def test_infrastructure_or_incomplete_shape_aborts_publication(
     assert raised.value.decision == "HOLD"
 
 
-def test_collective_temporal_failure_is_hold_not_graph_evidence(atomic, monkeypatch) -> None:
+def test_collective_temporal_candidate_failure_is_structured_evidence(
+    atomic, monkeypatch
+) -> None:
     request = _request(atomic)
     monkeypatch.setattr(
         probe,
@@ -499,6 +501,41 @@ def test_collective_temporal_failure_is_hold_not_graph_evidence(atomic, monkeypa
             kwargs["variant_name"],
             collective=True,
             temporal_outcome=GraphPhaseOutcome.eager_candidate_failed(),
+        ),
+    )
+    artifact = execute_prepared_graph_probe(request, atomic.prepared.binding.tree.root)
+    for variant in artifact.variants:
+        failures = [shape for shape in variant.shapes if shape.failure_is_candidate_attributable]
+        assert len(failures) == 1
+        failure = failures[0]
+        assert failure.applicable
+        assert failure.observation_complete
+        assert not failure.eager_passed
+        assert not failure.capture_succeeded
+        assert failure.replay_count == 0
+        assert not failure.replay_passed
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        GraphPhaseOutcome.infrastructure_before_eager(),
+        GraphPhaseOutcome.unobserved(),
+    ],
+)
+def test_collective_temporal_incomplete_outcome_remains_hold(
+    atomic, monkeypatch, outcome
+) -> None:
+    request = _request(atomic)
+    monkeypatch.setattr(
+        probe,
+        "_VERIFY_COLLECTIVE",
+        lambda slot, _source, _entry, **kwargs: _result(
+            request.policy,
+            slot.name,
+            kwargs["variant_name"],
+            collective=True,
+            temporal_outcome=outcome,
         ),
     )
     with pytest.raises(PreparedGraphProbeIncompleteError, match="temporal-eager"):

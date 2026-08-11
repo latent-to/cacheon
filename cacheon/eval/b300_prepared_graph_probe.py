@@ -516,16 +516,23 @@ def _shape_record(
         raise PreparedGraphProbeError("case descriptor graph mode differs from commissioned phase")
 
     if temporal:
-        if (
-            not row.applicable
-            or not row.passed
-            or phase != GraphPhaseOutcome.eager_only_passed()
-            or row.graph_replays != 0
-        ):
+        if not row.applicable or row.graph_replays != 0:
             raise PreparedGraphProbeIncompleteError(
                 f"collective temporal-eager precondition failed for {(slot_id, variant_id)!r}"
             )
-        return None
+        if row.passed and phase == GraphPhaseOutcome.eager_only_passed():
+            return None
+        if not row.passed and phase == GraphPhaseOutcome.eager_candidate_failed():
+            return StructuredGraphShapeRecord(
+                descriptor.digest, True, False, False, 0, False, True, True
+            )
+        if not phase.observation_complete:
+            raise PreparedGraphProbeIncompleteError(
+                f"collective temporal-eager observation is incomplete for {(slot_id, variant_id)!r}"
+            )
+        raise PreparedGraphProbeError(
+            "collective temporal-eager result disagrees with its typed outcome"
+        )
 
     if not row.applicable:
         if not row.passed or phase != GraphPhaseOutcome.not_applicable():
