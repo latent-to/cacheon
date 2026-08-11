@@ -63,6 +63,9 @@ _AUTOMATICALLY_EXPIRABLE = (
 )
 _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
 _VALIDATOR_DOWNTIME_REQUEUE_REASON = "validator_downtime_requeued"
+# One refresh of the SLA anchor after a prior validator-downtime requeue
+# re-expired (operator/SLA mismatch).  A third attempt still fails closed.
+_VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON = "validator_downtime_requeued_refresh"
 _SCHEMA3_MIGRATION_HOLD_REASON = "schema3_reproduction_required"
 _SCHEMA3_ARCHIVE_REASON_PREFIX = "schema3_archived@"
 
@@ -3072,8 +3075,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         """Readmit an exact validator-expired cohort with one fresh SLA window.
 
         Original arrival fields remain immutable and therefore continue to own
-        FIFO ordering.  The one-row reset authority only changes the SLA anchor;
-        a reservation may use this recovery at most once.
+        FIFO ordering.  The one-row reset authority only changes the SLA anchor.
+        A reservation may use the initial recovery once; if it then re-expires
+        under automatic SLA (operator fault / mismatched window), exactly one
+        refresh of that anchor is admitted before the budget fails closed.
         """
 
         if (
@@ -3089,7 +3094,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         except (TypeError, ValueError) as exc:
             raise IntakeError(str(exc)) from None
         self._require_evaluation_clock(current_block)
-        restored: list[tuple[str, str]] = []
+        restored: list[tuple[str, str, str]] = []
         with self._transaction():
             rows = tuple(self.get(reservation_id) for reservation_id in reservation_ids)
             for row in rows:
@@ -3101,10 +3106,17 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     raise IntakeError(
                         "only an automatic validator-SLA expiry may be requeued"
                     )
-                if self._db.execute(
-                    "SELECT 1 FROM reservation_sla_resets WHERE reservation_id=?",
+                prior = self._db.execute(
+                    "SELECT reason FROM reservation_sla_resets WHERE reservation_id=?",
                     (row.reservation_id,),
-                ).fetchone() is not None:
+                ).fetchone()
+                if prior is None:
+                    reset_reason = _VALIDATOR_DOWNTIME_REQUEUE_REASON
+                elif prior["reason"] == _VALIDATOR_DOWNTIME_REQUEUE_REASON:
+                    # First requeue already burned; admit one refresh after
+                    # the cohort re-expired under the automatic SLA again.
+                    reset_reason = _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON
+                else:
                     raise IntakeError(
                         "validator downtime requeue budget is already consumed"
                     )
@@ -3137,20 +3149,30 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     raise IntakeError(
                         "validator downtime requeue cannot restore this pipeline phase"
                     )
-                restored.append((row.reservation_id, status))
-            self._db.executemany(
-                "INSERT INTO reservation_sla_resets(reservation_id,reset_block,"
-                "authority_digest,reason) VALUES(?,?,?,?)",
-                (
-                    (
-                        reservation_id,
-                        current_block,
-                        authority_digest,
-                        _VALIDATOR_DOWNTIME_REQUEUE_REASON,
+                restored.append((row.reservation_id, status, reset_reason))
+            for reservation_id, _status, reset_reason in restored:
+                if reset_reason == _VALIDATOR_DOWNTIME_REQUEUE_REASON:
+                    self._db.execute(
+                        "INSERT INTO reservation_sla_resets(reservation_id,"
+                        "reset_block,authority_digest,reason) VALUES(?,?,?,?)",
+                        (
+                            reservation_id,
+                            current_block,
+                            authority_digest,
+                            reset_reason,
+                        ),
                     )
-                    for reservation_id, _status in restored
-                ),
-            )
+                else:
+                    self._db.execute(
+                        "UPDATE reservation_sla_resets SET reset_block=?,"
+                        "authority_digest=?,reason=? WHERE reservation_id=?",
+                        (
+                            current_block,
+                            authority_digest,
+                            reset_reason,
+                            reservation_id,
+                        ),
+                    )
             self._db.executemany(
                 "UPDATE reservations SET status=?,decision='',reason=?,"
                 "retry_group_digest='',retry_position=0,"
@@ -3159,10 +3181,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 (
                     (
                         status,
-                        _VALIDATOR_DOWNTIME_REQUEUE_REASON,
+                        reset_reason,
                         reservation_id,
                     )
-                    for reservation_id, status in restored
+                    for reservation_id, status, reset_reason in restored
                 ),
             )
         return tuple(self.get(reservation_id) for reservation_id in reservation_ids)

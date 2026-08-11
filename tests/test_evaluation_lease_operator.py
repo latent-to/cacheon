@@ -424,8 +424,35 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
             store.get(published.reservation_id).status,
             store.get(promoted.reservation_id).status,
         } == {"expired"}
+
+    # One refresh is admitted after the cohort re-expires under the automatic
+    # SLA (operator fault / mismatched window); a third attempt fails closed.
+    refresh_authority = _seal(
+        tmp_path / "downtime-requeue-refresh.json",
+        {
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "retained_result_reservation_ids": [_h("retained-result-refresh")],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    refreshed = operator.requeue_expired(config, refresh_authority)
+    assert [item["status"] for item in refreshed["requeued"]] == [
+        "published",
+        "promoted",
+    ]
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert store.get(published.reservation_id).reason == (
+            "validator_downtime_requeued_refresh"
+        )
+    _advance(database, BLOCK + 15, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert {
+            store.get(published.reservation_id).status,
+            store.get(promoted.reservation_id).status,
+        } == {"expired"}
     with pytest.raises(IntakeError, match="budget is already consumed"):
-        operator.requeue_expired(config, authority)
+        operator.requeue_expired(config, refresh_authority)
 
 
 def test_lock_retry_is_exact_bounded_and_preserves_one_lease(
