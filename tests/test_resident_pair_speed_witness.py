@@ -5,13 +5,53 @@ import pytest
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.resident_pair_crossover import run_resident_pair_crossover
 from cacheon.eval.resident_pair_speed_witness import (
+    ResidentPairLiveSpeedWitness,
     ResidentPairSpeedWitnessError,
+    project_resident_pair_live_speed_witness,
     project_resident_pair_speed_witness,
 )
 from tests.test_resident_pair_crossover import _setup, cleanup_pairs as _cleanup_pairs
 
 
 resident_pairs = _cleanup_pairs
+
+
+def test_live_speed_failure_reopens_without_retiring_loaded_pair(
+    tmp_path, resident_pairs
+):
+    plan, pair, clock, _, factory_a, factory_b = _setup(
+        tmp_path,
+        resident_pairs,
+        baseline=(1.0, 1.0),
+        candidate=(1.25,),
+    )
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+
+    witness = project_resident_pair_live_speed_witness(evidence, plan=plan)
+    reopened = ResidentPairLiveSpeedWitness.from_dict(witness.to_dict())
+
+    assert reopened == witness
+    assert witness.pair_session_ids == tuple(
+        row.session_id for row in plan.pair_binding.lanes
+    )
+    assert len(witness.stock_return_digests) == len(evidence.request_slices)
+    assert all(
+        row.ending_bundle_digest is None and not row.ending_slots
+        for row in evidence.request_slices
+    )
+    assert factory_a.sessions[0].finish_calls == 0
+    assert factory_b.sessions[0].finish_calls == 0
+
+
+def test_live_projection_refuses_a_speed_pass(tmp_path, resident_pairs):
+    plan, pair, clock, *_ = _setup(tmp_path, resident_pairs)
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+    with pytest.raises(ResidentPairSpeedWitnessError, match="speed failure"):
+        project_resident_pair_live_speed_witness(evidence, plan=plan)
 
 
 def _quiescence(plan, completed):

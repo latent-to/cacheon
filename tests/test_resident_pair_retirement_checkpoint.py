@@ -40,6 +40,7 @@ from cacheon.eval.qualification_runner import (
     ATTEMPT_SCHEMA_V4,
     CohortQualificationAttempt,
     HiddenJudgeBinding,
+    STAGE_EXIT_SCHEMA,
     STAGE_EXIT_SCHEMA_V2,
     _resident_closure_codec,
     qualification_authority_digest,
@@ -73,6 +74,7 @@ from cacheon.eval.resident_pair_quality_lifecycle import (
     ResidentPairMarginalLifecycleEvidence,
     ResidentPairQualityLifecycleError,
 )
+from cacheon.eval.resident_pair_speed_witness import ResidentPairLiveSpeedWitness
 from cacheon.eval.resident_pair_retirement_checkpoint import (
     ResidentPairRetirementHold,
     build_resident_pair_retirement_checkpoint,
@@ -246,6 +248,8 @@ def _coordinator_case(
     source_fixture=None,
     escalated=False,
     count_drop=0,
+    speed_fail=False,
+    first_speed_fail=False,
 ):
     from cacheon.eval import b300_resident_qualification as coordinator
 
@@ -343,6 +347,8 @@ def _coordinator_case(
         pair_fixtures._Session, "execute_batch_with_shape", execute
     )
 
+    speed_request_count = 0
+
     def speed_plan(
         _plan,
         _factory,
@@ -352,13 +358,20 @@ def _coordinator_case(
         candidate_bundle_digest,
         screen_lane,
     ):
+        nonlocal speed_request_count
         del _plan, _factory, screen_lane
         if pair is not None:
             if escalated:
                 lifetimes.factories[0].sessions[0].durations = (1.0, 1.0, 1.0)
                 lifetimes.factories[1].sessions[0].durations = (0.995, 0.98)
             else:
-                lifetimes.factories[1].sessions[0].durations = (0.8,)
+                should_fail = speed_fail or (
+                    first_speed_fail and speed_request_count == 0
+                )
+                lifetimes.factories[1].sessions[0].durations = (
+                    1.25 if should_fail else 0.8,
+                )
+            speed_request_count += 1
         binding = pair.binding if pair is not None else retirement.pair_binding
         crossover = ResidentCrossoverPlan(
             plan.candidates[0].selected_delta_digest,
@@ -387,6 +400,249 @@ def _coordinator_case(
         source_digest=plan.prepared.source.digest,
     )
     return coordinator, commissioned, harness, plan, capability, continuation
+
+
+def test_speed_fail_releases_one_loaded_pair_for_the_next_request(
+    tmp_path, monkeypatch, lifetimes, managed_executors
+):
+    coordinator, commissioned, harness, plan, capability, first_continuation = (
+        _coordinator_case(
+            tmp_path,
+            monkeypatch,
+            lifetimes,
+            managed_executors,
+            speed_fail=True,
+        )
+    )
+    first = coordinator.run_b300_resident_qualification_prefix(
+        factory=commissioned.factory,
+        capability=capability,
+        candidate=harness.candidate,
+        plan=plan,
+        continuation=first_continuation,
+        screen_lane="primary",
+        deadline=time.monotonic() + 30.0,
+    )
+    second_continuation = QualificationContinuationStore(
+        tmp_path / "continuation"
+    ).scope(
+        request_digest=_h("coordinator:second-authenticated-request"),
+        authority_digest=qualification_authority_digest(plan),
+        source_digest=plan.prepared.source.digest,
+    )
+    second = coordinator.run_b300_resident_qualification_prefix(
+        factory=commissioned.factory,
+        capability=capability,
+        candidate=harness.candidate,
+        plan=plan,
+        continuation=second_continuation,
+        screen_lane="primary",
+        deadline=time.monotonic() + 30.0,
+    )
+
+    assert first.retirement is second.retirement is None
+    assert first.speed.decision is second.speed.decision is SpeedStageDecision.FAIL
+    assert first.speed_plan.pair_binding == second.speed_plan.pair_binding
+    assert len(lifetimes.calls) == 2
+    assert all(
+        factory.sessions[0].finish_calls == 0 for factory in lifetimes.factories
+    )
+    commissioned.factory.close()
+    assert all(
+        factory.sessions[0].finish_calls == 1 for factory in lifetimes.factories
+    )
+
+
+def test_live_speed_fail_is_an_authoritative_terminal_without_audit_or_t(
+    tmp_path, monkeypatch, lifetimes, managed_executors
+):
+    commissioned = _commissioned(tmp_path / "pair", lifetimes, managed_executors)
+    harness, plan, _ = graph_fixtures._plan(tmp_path / "qualification", failure=False)
+    plan = replace(plan, model_mount=commissioned.model_mount)
+    resident = plan.resident_speed_plan
+    assert resident is not None
+    resident = replace(
+        resident,
+        policy=replace(
+            resident.policy,
+            version=1,
+            min_windows=0,
+            max_window_scatter=0.0,
+            max_conditioning_slowdown=0.0,
+        ),
+    )
+    plan = replace(plan, resident_speed_plan=resident)
+    clock, activity = pair_fixtures._Clock(), pair_fixtures._Activity()
+    factory_a = pair_fixtures._Factory(
+        "a" * 32,
+        resident.baseline.session_plan,
+        (1.0, 1.0, 1.0),
+        clock,
+        activity,
+    )
+    factory_b = pair_fixtures._Factory(
+        "b" * 32,
+        resident.candidate.session_plan,
+        (1.25, 1.25),
+        clock,
+        activity,
+    )
+    pair = ResidentEvaluationPair(
+        factory_a,
+        factory_b,
+        start_timeout_s=2.0,
+        request_timeout_s=2.0,
+        close_timeout_s=2.0,
+        clock=clock,
+    )
+    identities = pair.start()
+    binding = ResidentPairRuntimeBinding(
+        _h("live-terminal-service-epoch"),
+        tuple(
+            ResidentPairLaneBinding(
+                identity.lane_id,
+                identity.session_id,
+                _h(f"live-terminal-stock:{identity.lane_id}"),
+                (
+                    resident.baseline_lane_digest
+                    if identity.lane_id == "A"
+                    else resident.candidate_lane_digest
+                ),
+                _h(f"live-terminal-allocation:{identity.lane_id}"),
+                (
+                    resident.baseline.executor_namespace_digest
+                    if identity.lane_id == "A"
+                    else resident.candidate.executor_namespace_digest
+                ),
+            )
+            for identity in identities
+        ),
+    )
+    speed_plan = ResidentPairCrossoverPlan(
+        harness.candidate.publication.content_hash,
+        resident,
+        binding,
+        "A",
+        "B",
+    )
+    speed = run_resident_pair_crossover(
+        speed_plan,
+        pair=pair,
+        deadline=clock() + resident.policy.max_stage_seconds,
+        clock=clock,
+    )
+    assert speed.decision is SpeedStageDecision.FAIL
+    lifecycle = ResidentPairMarginalLifecycleEvidence(
+        plan.prepared,
+        speed_plan,
+        speed,
+        None,
+        None,
+        None,
+        None,
+    )
+    continuation = QualificationContinuationStore(
+        tmp_path / "live-terminal-continuation"
+    ).scope(
+        request_digest=_h("live-terminal-request"),
+        authority_digest=qualification_authority_digest(plan),
+        source_digest=plan.prepared.source.digest,
+    )
+    continuation.record_resident_pair_speed(speed)
+    profile = plan.candidates[0].profile
+
+    class NoLaterJudge:
+        binding = HiddenJudgeBinding(
+            profile.reference.hidden_corpus_commitment,
+            profile.reference.hidden_judge_digest,
+            profile.hidden_task_policy_digest,
+        )
+
+        def __call__(self, **_kwargs):
+            raise AssertionError("speed FAIL entered the hidden judge")
+
+    def no_entropy(*_args, **_kwargs):
+        raise AssertionError("speed FAIL entered entropy selection")
+
+    reference = run_causal_qualification(
+        plan,
+        executor=commissioned.plans[1].executor,
+        entropy_provider=no_entropy,
+        hidden_judge=NoLaterJudge(),
+        deadline=time.monotonic() + 30.0,
+        continuation=continuation,
+        resident_pair_lifecycle=lifecycle,
+    )
+    terminal = reopen_qualification_stage_exit(
+        plan.evidence_root,
+        reference,
+        expected=plan,
+        resident_pair_lifecycle=lifecycle,
+    )
+
+    assert reference.schema == STAGE_EXIT_SCHEMA
+    assert (terminal.stage, terminal.decision, terminal.reason) == (
+        "speed",
+        QualificationDecision.FAIL,
+        "speed_regression",
+    )
+    assert type(terminal.speed_witness) is ResidentPairLiveSpeedWitness
+    assert factory_a.sessions[0].finish_calls == 0
+    assert factory_b.sessions[0].finish_calls == 0
+    assert not (continuation.directory / "audit_armed.json").exists()
+    assert not (continuation.directory / "t_armed.json").exists()
+    pair.close()
+
+
+def test_pass_after_reused_failure_retires_full_service_history_once(
+    tmp_path, monkeypatch, lifetimes, managed_executors
+):
+    coordinator, commissioned, harness, plan, capability, first_continuation = (
+        _coordinator_case(
+            tmp_path,
+            monkeypatch,
+            lifetimes,
+            managed_executors,
+            first_speed_fail=True,
+        )
+    )
+    first = coordinator.run_b300_resident_qualification_prefix(
+        factory=commissioned.factory,
+        capability=capability,
+        candidate=harness.candidate,
+        plan=plan,
+        continuation=first_continuation,
+        screen_lane="primary",
+        deadline=time.monotonic() + 30.0,
+    )
+    assert first.retirement is None
+    second_continuation = QualificationContinuationStore(
+        tmp_path / "continuation"
+    ).scope(
+        request_digest=_h("coordinator:pass-after-fail-request"),
+        authority_digest=qualification_authority_digest(plan),
+        source_digest=plan.prepared.source.digest,
+    )
+    second = coordinator.run_b300_resident_qualification_prefix(
+        factory=commissioned.factory,
+        capability=capability,
+        candidate=harness.candidate,
+        plan=plan,
+        continuation=second_continuation,
+        screen_lane="primary",
+        deadline=time.monotonic() + 30.0,
+    )
+
+    assert second.retirement is not None
+    assert second.speed.decision is SpeedStageDecision.PASS
+    assert first.speed_plan.pair_binding == second.speed_plan.pair_binding
+    assert len(second.retirement.request_history_slice_digests) > (
+        len(second.speed.request_slices) + 2
+    )
+    assert len(lifetimes.calls) == 2
+    assert all(
+        factory.sessions[0].finish_calls == 1 for factory in lifetimes.factories
+    )
 
 
 @pytest.mark.parametrize("fast_lane", ("A", "B"))

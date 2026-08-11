@@ -367,11 +367,13 @@ class B300MainnetWorker:
             )
 
     def close(self) -> None:
-        """Permanently release the resident provider lifetime."""
+        """Permanently release qualification and screen resident lifetimes."""
 
         with self._lock:
             if self._closed:
                 return
+            if self._resident_pair_factory is not None:
+                self._resident_pair_factory.close()
             self._provider.close()
             self._closed = True
 

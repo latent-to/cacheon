@@ -1,4 +1,4 @@
-"""Qualification view of fully retired resident-pair evidence."""
+"""Qualification view of stock-restored or fully retired pair evidence."""
 
 from __future__ import annotations
 
@@ -92,12 +92,12 @@ class ResidentPairCandidateView:
 
 @dataclass(frozen=True)
 class ResidentPairMarginalLifecycleEvidence:
-    """Path-free B/C/B-prime evidence after exact pair retirement."""
+    """Path-free B/C/B-prime evidence at a durable pair boundary."""
 
     prepared: PreparedMarginalRuntime
     plan: ResidentPairCrossoverPlan
     crossover: ResidentPairCrossoverEvidence
-    retirement: ResidentPairRetirementCheckpoint
+    retirement: ResidentPairRetirementCheckpoint | None
     count_result: RegisteredResidentCountQualityResult | None
     count_checkpoint: ResidentCountQualityCheckpoint | None
     stock_authority: ResidentCountQualityStockAuthority | None
@@ -109,7 +109,10 @@ class ResidentPairMarginalLifecycleEvidence:
             or len(self.prepared.candidates) != 1
             or type(self.plan) is not ResidentPairCrossoverPlan
             or type(self.crossover) is not ResidentPairCrossoverEvidence
-            or type(self.retirement) is not ResidentPairRetirementCheckpoint
+            or (
+                self.retirement is not None
+                and type(self.retirement) is not ResidentPairRetirementCheckpoint
+            )
             or (
                 self.count_result is not None
                 and type(self.count_result) is not RegisteredResidentCountQualityResult
@@ -136,13 +139,33 @@ class ResidentPairMarginalLifecycleEvidence:
             != crossover_plan.baseline.launch.tree_digest
             or self.crossover.plan_digest != self.plan.digest
             or self.crossover.pair_binding != self.plan.pair_binding
-            or self.retirement.pair_binding != self.plan.pair_binding
-            or self.retirement.speed_plan_digest != self.plan.digest
-            or self.retirement.speed_evidence_digest != self.crossover.digest
+            or (
+                self.retirement is not None
+                and (
+                    self.retirement.pair_binding != self.plan.pair_binding
+                    or self.retirement.speed_plan_digest != self.plan.digest
+                    or self.retirement.speed_evidence_digest
+                    != self.crossover.digest
+                )
+            )
             or (self.quality_read == 2 and not self.crossover.escalated)
-            or len(self.retirement.request_history_slice_digests)
-            != len(self.crossover.request_slices)
-            + (0 if self.count_result is None else 2)
+            or (
+                self.retirement is not None
+                and len(self.retirement.request_history_slice_digests)
+                < len(self.crossover.request_slices)
+                + (0 if self.count_result is None else 2)
+            )
+            or (
+                self.retirement is None
+                and (
+                    self.crossover.decision is not SpeedStageDecision.FAIL
+                    or self.count_result is not None
+                    or any(
+                        row.ending_bundle_digest is not None or row.ending_slots
+                        for row in self.crossover.request_slices
+                    )
+                )
+            )
         ):
             raise ResidentPairQualityLifecycleError(
                 "resident pair lifecycle differs from its prepared authority"
@@ -151,7 +174,10 @@ class ResidentPairMarginalLifecycleEvidence:
         if self.count_result is None:
             if (
                 self.crossover.decision is not SpeedStageDecision.FAIL
-                or self.retirement.count_plan_digest is not None
+                or (
+                    self.retirement is not None
+                    and self.retirement.count_plan_digest is not None
+                )
             ):
                 raise ResidentPairQualityLifecycleError(
                     "resident count retirement lacks its registered result"
@@ -163,6 +189,7 @@ class ResidentPairMarginalLifecycleEvidence:
             assert checkpoint is not None and stock is not None
             if (
                 self.crossover.decision is not SpeedStageDecision.PASS
+                or self.retirement is None
                 or result.candidate_bundle_digest
                 != self.plan.candidate_bundle_digest
                 or not _count_retirement_matches(
@@ -176,19 +203,20 @@ class ResidentPairMarginalLifecycleEvidence:
                 ResidentPairQualificationClosure(
                     result, checkpoint, stock, self.retirement
                 )
-        for binding, lane in zip(
-            self.plan.pair_binding.lanes, self.retirement.lanes, strict=True
-        ):
-            if (
-                lane.lane_id != binding.lane_id
-                or lane.quiescence.namespace_digest
-                != binding.executor_namespace_digest
-                or lane.quiescence.observed_monotonic_s
-                < self.crossover.completed_monotonic_s
+        if self.retirement is not None:
+            for binding, lane in zip(
+                self.plan.pair_binding.lanes, self.retirement.lanes, strict=True
             ):
-                raise ResidentPairQualityLifecycleError(
-                    "resident pair quiescence differs from its runtime binding"
-                )
+                if (
+                    lane.lane_id != binding.lane_id
+                    or lane.quiescence.namespace_digest
+                    != binding.executor_namespace_digest
+                    or lane.quiescence.observed_monotonic_s
+                    < self.crossover.completed_monotonic_s
+                ):
+                    raise ResidentPairQualityLifecycleError(
+                        "resident pair quiescence differs from its runtime binding"
+                    )
 
     @property
     def source(self):
@@ -231,15 +259,27 @@ class ResidentPairMarginalLifecycleEvidence:
 
     @property
     def lane_quiescence(self):
+        if self.retirement is None:
+            raise ResidentPairQualityLifecycleError(
+                "live resident pair has no quiescence evidence"
+            )
         return tuple((row.lane_id, row.quiescence) for row in self.retirement.lanes)
 
     @property
     def retirement_cutoff(self) -> float:
+        if self.retirement is None:
+            raise ResidentPairQualityLifecycleError(
+                "live resident pair has no retirement cutoff"
+            )
         return max(row.quiescence.observed_monotonic_s for row in self.retirement.lanes)
 
     @property
     def closure(self) -> ResidentPairQualificationClosure | None:
-        if self.count_result is None or self.count_result.decision != "PASS":
+        if (
+            self.retirement is None
+            or self.count_result is None
+            or self.count_result.decision != "PASS"
+        ):
             return None
         return ResidentPairQualificationClosure(
             self.count_result, self.count_checkpoint,

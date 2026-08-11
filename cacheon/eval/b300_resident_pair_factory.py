@@ -1,11 +1,9 @@
-"""Request-scoped commissioned B300 resident-pair construction.
+"""Service-scoped commissioned B300 resident-pair construction.
 
 The eight-device qualification deployment can host one physical TP4 pair at a
-time.  This module therefore commissions reusable *stock launch authorities*,
-but creates a fresh :class:`ResidentEvaluationPair` for every authenticated
-qualification request.  A request owner starts its two lifetimes lazily,
-freezes the actual session identities, and must retire both lanes before the
-request can be considered complete.
+time.  One pair is therefore kept loaded across sequential authenticated speed
+failures.  Every request still gets an exact authority view; a speed pass may
+retire the shared pair before the separate audit/T roles use the devices.
 
 No candidate path, target name, or audit launch is accepted here.  Candidate
 work is admitted later through the pair-native request capabilities.
@@ -56,6 +54,7 @@ from cacheon.stack_identity import canonical_digest, require_sha256_hex
 PAIR_START_TIMEOUT_SECONDS = 1_800.0
 PAIR_REQUEST_TIMEOUT_SECONDS = 3_600.0
 PAIR_CLOSE_TIMEOUT_SECONDS = 1_800.0
+PAIR_LIFETIME_SECONDS = 30 * 24 * 60 * 60
 _OWNER_CONSTRUCTION_TOKEN = object()
 
 
@@ -323,7 +322,7 @@ class B300ResidentRequestPair:
 
 
 class B300ResidentPairRequestOwner:
-    """Own one fresh pair from lazy start through all-or-nothing retirement."""
+    """Own one service pair and expose one authenticated request at a time."""
 
     def __init__(
         self,
@@ -380,6 +379,7 @@ class B300ResidentPairRequestOwner:
         self._start_attempted = False
         self._close_attempted = False
         self._failure: BaseException | None = None
+        self._released = False
 
     @property
     def request_epoch_digest(self) -> str:
@@ -416,6 +416,42 @@ class B300ResidentPairRequestOwner:
                 "resident pair request authority is stale or foreign"
             )
 
+    @property
+    def reusable(self) -> bool:
+        """Whether the exact stock-restored pair may accept another request."""
+
+        with self._lock:
+            return bool(
+                self._released
+                and self._pair is not None
+                and self._failure is None
+                and not self._close_attempted
+                and self._pair.fatal_error is None
+            )
+
+    def _rebind(
+        self,
+        authority: B300ResidentPairRequestAuthority,
+        *,
+        deadline: float,
+    ) -> "B300ResidentPairRequestOwner":
+        with self._lock:
+            if type(authority) is not B300ResidentPairRequestAuthority:
+                raise B300ResidentPairFactoryError(
+                    "resident pair request authority is not exact"
+                )
+            if not self.reusable or self._borrow is None or self._pair is None:
+                raise B300ResidentPairFactoryError(
+                    "resident service pair is not reusable"
+                )
+            self.authority = authority
+            self._deadline = _absolute_deadline(deadline, self._clock)
+            self._borrow = B300ResidentRequestPair(
+                authority, self._pair, self._borrow.binding
+            )
+            self._released = False
+            return self
+
     def _retire_after_start_failure(self) -> None:
         self._close_attempted = True
         if self._pair is None:
@@ -438,6 +474,10 @@ class B300ResidentPairRequestOwner:
                 raise B300ResidentPairFactoryError(
                     "resident request pair is permanently failed"
                 ) from self._failure
+            if self._released:
+                raise B300ResidentPairFactoryError(
+                    "resident request pair was released for reuse"
+                )
             if self._close_attempted:
                 raise B300ResidentPairFactoryError(
                     "resident request pair is already retired"
@@ -549,6 +589,30 @@ class B300ResidentPairRequestOwner:
                     "resident request pair failed to freeze its runtime binding"
                 ) from exc
             return self._borrow
+
+    def release(
+        self,
+        authority: B300ResidentPairRequestAuthority,
+        binding: ResidentPairRuntimeBinding,
+    ) -> ResidentPairRuntimeBinding:
+        with self._lock:
+            borrowed = self.require_binding(authority, binding)
+            if self._failure is not None or self._close_attempted:
+                raise B300ResidentPairFactoryError(
+                    "resident request pair cannot be released"
+                )
+            fatal = borrowed.pair.fatal_error
+            if fatal is not None:
+                self._failure = fatal
+                try:
+                    self.close()
+                except B300ResidentPairFactoryError:
+                    pass
+                raise B300ResidentPairFactoryError(
+                    "resident request pair failed before release"
+                ) from fatal
+            self._released = True
+            return borrowed.binding
 
     def require_binding(
         self,
@@ -697,7 +761,7 @@ class B300ResidentPairRequestOwner:
 
 
 class B300CommissionedResidentPairFactory:
-    """Commissioned stock authority which creates one new pair per request."""
+    """Commissioned stock authority for one reusable loaded TP4 pair."""
 
     def __init__(
         self,
@@ -771,6 +835,9 @@ class B300CommissionedResidentPairFactory:
                 "service": service,
             },
         )
+        self._owner: B300ResidentPairRequestOwner | None = None
+        self._lock = threading.RLock()
+        self._closed = False
 
     @staticmethod
     def _validate_common_authority(
@@ -845,13 +912,31 @@ class B300CommissionedResidentPairFactory:
         *,
         deadline: float,
     ) -> B300ResidentPairRequestOwner:
-        """Create a fresh unstarted pair for exactly one authenticated request."""
+        """Lease the loaded pair, or lazily create it for the first request."""
 
         if type(authority) is not B300ResidentPairRequestAuthority:
             raise B300ResidentPairFactoryError(
                 "resident pair request authority is not exact"
             )
         absolute = _absolute_deadline(deadline, self.clock)
+        with self._lock:
+            if self._closed:
+                raise B300ResidentPairFactoryError(
+                    "commissioned resident pair factory is closed"
+                )
+            if self._owner is not None and self._owner.reusable:
+                return self._owner._rebind(authority, deadline=absolute)
+            if self._owner is not None and self._owner._released:
+                self._owner.close()
+            if (
+                self._owner is not None
+                and not self._owner._close_attempted
+                and self._owner._failure is None
+            ):
+                raise B300ResidentPairFactoryError(
+                    "previous resident request has not released its pair"
+                )
+            lifetime_deadline = float(self.clock()) + PAIR_LIFETIME_SECONDS
         def lifetime_factories() -> tuple[Callable, Callable]:
             factories = []
             try:
@@ -864,7 +949,7 @@ class B300CommissionedResidentPairFactory:
                             self.model_mount,
                             plan.resident_plan,
                             swap_intake_root=self.swap_intake_root,
-                            deadline_provider=lambda absolute=absolute: absolute,
+                            deadline_provider=lambda: lifetime_deadline,
                         )
                     )
             except Exception as exc:
@@ -873,7 +958,7 @@ class B300CommissionedResidentPairFactory:
                 ) from exc
             return factories[0], factories[1]
 
-        return B300ResidentPairRequestOwner(
+        owner = B300ResidentPairRequestOwner(
             authority=authority,
             commissioned_epoch_digest=self.commissioned_epoch_digest,
             lane_plans=self.lane_plans,
@@ -885,6 +970,23 @@ class B300CommissionedResidentPairFactory:
             clock=self.clock,
             _construction_token=_OWNER_CONSTRUCTION_TOKEN,
         )
+        with self._lock:
+            if self._closed:
+                owner.close()
+                raise B300ResidentPairFactoryError(
+                    "commissioned resident pair factory closed during request open"
+                )
+            self._owner = owner
+        return owner
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            owner = self._owner
+        if owner is not None:
+            owner.close()
 
 
 __all__ = [
