@@ -7,11 +7,12 @@ and answering status verbs over the pinned SSH channel.  All filesystem
 coordinates come from one closed :class:`PodPaths`; nothing here selects a
 command, module, environment, or output path from request content.
 
-Epoch failure policy: a command-level adapter failure after the resident
-worker was entered is epoch-fatal on its first occurrence.  The service parks
-in an ``epoch_failed`` heartbeat state instead of silently restarting the
-adapter, so a transport or candidate fault can never cause an avoidable
-resident-model unload or spend another miner request on an unproven engine.
+Epoch failure policy: bounded consecutive command-level adapter failures park
+the service in an ``adapter_cooldown`` heartbeat state, after which exactly
+one fresh adapter boot is authorized at the evented cooldown boundary.  A
+transport or candidate fault therefore never causes an avoidable
+resident-model unload or a permanently frozen epoch; a still-live resident
+engine is retried in place, and only a dead adapter is ever replaced.
 """
 
 from __future__ import annotations
@@ -47,6 +48,8 @@ from cacheon.chain.remote_worker_execution_marker import (
     reopen_resident_entry,
 )
 from cacheon.chain.remote_worker_spool import (
+    ADAPTER_COOLDOWN_INITIAL_SECONDS,
+    ADAPTER_COOLDOWN_MAX_SECONDS,
     ALLOWED_FAILURE_CODES,
     HEX64,
     MAX_ARCHIVE_BYTES,
@@ -441,6 +444,7 @@ class PersistentAdapterProcess:
         self.log_handle: io.BufferedWriter | None = None
         self.start_count = 0
         self.consecutive_failures = 0
+        self.restart_permitted = False
 
     @property
     def alive(self) -> bool:
@@ -451,6 +455,20 @@ class PersistentAdapterProcess:
         if type(completed) is not bool:
             fail("adapter completion state is not boolean")
         self.consecutive_failures = 0 if completed else self.consecutive_failures + 1
+
+    def permit_restart(self) -> None:
+        """Clear the failure burst at an explicit cooldown boundary.
+
+        A dead adapter is only ever replaced here, never mid-request, so a
+        replacement boot is always an evented operator-visible decision.  A
+        still-live resident model is left untouched; resume simply retries
+        against the commissioned engine.
+        """
+        self.consecutive_failures = 0
+        if self.alive:
+            return
+        self.close()
+        self.restart_permitted = True
 
     def _heartbeat(self, request_id: str | None, state: str) -> None:
         atomic_json(
@@ -560,8 +578,9 @@ class PersistentAdapterProcess:
         request_id = request["request_id"]
         process = self.process
         if process is None:
-            if self.start_count:
+            if self.start_count and not self.restart_permitted:
                 return "adapter_exit_nonzero"
+            self.restart_permitted = False
             if not self._start(deadline=deadline, request_id=request_id):
                 return "adapter_start_failed"
             process = self.process
@@ -763,6 +782,47 @@ def run_adapter(
     return final
 
 
+def adapter_cooldown(
+    adapter_process: PersistentAdapterProcess,
+    registration: Mapping[str, Any],
+    paths: PodPaths,
+    *,
+    cooldown_seconds: int,
+    poll_seconds: int,
+    clock=time.time,
+    sleep=time.sleep,
+) -> int:
+    """Park through one bounded cooldown, then authorize one adapter boot.
+
+    Replaces the permanent ``epoch_failed`` latch: the pod stays registered
+    and heartbeating, resumes on its own, and doubles the cooldown up to a
+    cap so a persistent fault degrades to a slow evented retry instead of a
+    frozen epoch.  Returns the next cooldown duration.
+    """
+    append_event(
+        paths.root,
+        "adapter_cooldown_started",
+        adapter_start_count=adapter_process.start_count,
+        consecutive_adapter_failures=adapter_process.consecutive_failures,
+        cooldown_seconds=cooldown_seconds,
+        worker_epoch=registration["worker_epoch"],
+    )
+    resume_at = clock() + cooldown_seconds
+    while clock() < resume_at:
+        verify_pod_registration(paths)
+        adapter_process._heartbeat(None, "adapter_cooldown")
+        sleep(poll_seconds)
+    adapter_process.permit_restart()
+    append_event(
+        paths.root,
+        "adapter_cooldown_resumed",
+        adapter_start_count=adapter_process.start_count,
+        cooldown_seconds=cooldown_seconds,
+        worker_epoch=registration["worker_epoch"],
+    )
+    return min(ADAPTER_COOLDOWN_MAX_SECONDS, cooldown_seconds * 2)
+
+
 def pod_serve(
     paths: PodPaths,
     *,
@@ -803,6 +863,7 @@ def pod_serve(
             heartbeat_seconds=heartbeat_seconds,
             adapter_arguments=adapter_arguments,
         )
+        cooldown_seconds = ADAPTER_COOLDOWN_INITIAL_SECONDS
         try:
             while True:
                 verify_pod_registration(paths)
@@ -834,14 +895,16 @@ def pod_serve(
                         credential=credential,
                     )
                     # A typed request-local refusal leaves the commissioned
-                    # adapter and resident model healthy.  Every other adapter
-                    # failure is epoch-fatal on its first occurrence.
+                    # adapter and resident model healthy.  Other adapter
+                    # failures count toward the bounded cooldown threshold.
                     adapter_process.record_result(
                         completed=(
                             result_row["state"] == "completed"
                             or result_row["failure_code"] == "adapter_request_failed"
                         )
                     )
+                    if adapter_process.consecutive_failures == 0:
+                        cooldown_seconds = ADAPTER_COOLDOWN_INITIAL_SECONDS
                     publish_result(
                         registration,
                         request,
@@ -860,23 +923,13 @@ def pod_serve(
                         adapter_process.consecutive_failures
                         >= MAX_CONSECUTIVE_ADAPTER_FAILURES
                     ):
-                        append_event(
-                            paths.root,
-                            "resident_epoch_failed",
-                            adapter_start_count=adapter_process.start_count,
-                            consecutive_adapter_failures=(
-                                adapter_process.consecutive_failures
-                            ),
-                            worker_epoch=registration["worker_epoch"],
+                        cooldown_seconds = adapter_cooldown(
+                            adapter_process,
+                            registration,
+                            paths,
+                            cooldown_seconds=cooldown_seconds,
+                            poll_seconds=poll_seconds,
                         )
-                        # Fail the epoch closed without tearing down a still-
-                        # live resident model.  A human may inspect or recover
-                        # the epoch; this service never turns a candidate or
-                        # transport failure into an avoidable model unload.
-                        while True:
-                            verify_pod_registration(paths)
-                            adapter_process._heartbeat(None, "epoch_failed")
-                            time.sleep(poll_seconds)
                 time.sleep(poll_seconds)
         finally:
             adapter_process.close()
