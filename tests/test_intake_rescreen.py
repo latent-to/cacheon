@@ -12,6 +12,7 @@ live identity, with no human in the loop.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,7 @@ from cacheon.chain.evaluation_recovery import (
     RecoveryResolution,
     evaluation_recovery_id,
 )
+from cacheon.chain.execution_disposition import AUTHORITY_CHANGED_HOLD_REASON
 from cacheon.chain.intake import IntakeError
 from cacheon.chain.screen_identity_rotation import (
     ScreenIdentityRotationError,
@@ -149,6 +151,15 @@ def test_a_rotated_request_ready_is_retired_before_rescreening() -> None:
     calls: list[tuple[object, ...]] = []
 
     class Store:
+        def hold_recovery(self, observed, **kwargs):
+            held = replace(
+                observed,
+                phase=RecoveryPhase.HELD,
+                reason=AUTHORITY_CHANGED_HOLD_REASON,
+            )
+            calls.append(("hold", observed, kwargs))
+            return held
+
         def release_worker_infrastructure_recovery(self, observed, **kwargs):
             calls.append(("retire", observed, kwargs))
 
@@ -164,8 +175,20 @@ def test_a_rotated_request_ready_is_retired_before_rescreening() -> None:
 
     assert calls == [
         (
-            "retire",
+            "hold",
             recovery,
+            {
+                "current_block": 7,
+                "reason": AUTHORITY_CHANGED_HOLD_REASON,
+            },
+        ),
+        (
+            "retire",
+            replace(
+                recovery,
+                phase=RecoveryPhase.HELD,
+                reason=AUTHORITY_CHANGED_HOLD_REASON,
+            ),
             {
                 "current_block": 7,
                 "failure_code": ROTATED,

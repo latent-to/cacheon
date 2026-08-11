@@ -77,6 +77,16 @@ def release_rotated_cohort(
     if not reservation_ids:
         raise ScreenIdentityRotationError("rotated screen cohort is empty")
     if recovery.phase is RecoveryPhase.REQUEST_READY:
+        if current_block >= recovery.lease.expires_block:
+            from cacheon.chain.execution_disposition import (
+                AUTHORITY_CHANGED_HOLD_REASON,
+            )
+
+            recovery = store.hold_recovery(  # type: ignore[attr-defined]
+                recovery,
+                current_block=current_block,
+                reason=AUTHORITY_CHANGED_HOLD_REASON,
+            )
         store.release_worker_infrastructure_recovery(  # type: ignore[attr-defined]
             recovery,
             current_block=current_block,
