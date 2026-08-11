@@ -10,7 +10,9 @@ from cacheon.chain.execution_disposition import (
     ExecutionOutcome,
 )
 from cacheon.chain.evaluation_recovery import RecoveryPhase
+from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.recoverable_qualification_dispatcher import (
+    CompletedQualificationHold,
     RecoverableQualificationHold,
     RecoverableQualificationRequeue,
 )
@@ -141,6 +143,38 @@ def test_hold_and_requeue_products_are_visible_without_inventing_retry() -> None
     assert status.request_id == _d("requeue-request")
     assert status.last_disposition == "requeue"
     assert status.hold_reason is None
+
+
+def test_completed_remote_hold_advances_the_qualification_lane() -> None:
+    lease = EvaluationLease(
+        _d("completed-hold-lease"),
+        1,
+        "qualification",
+        "standing-test",
+        (EvaluationLeaseMember(_d("completed-hold-reservation"), "promoted"),),
+        10,
+        20,
+        20,
+    )
+    completed = CompletedQualificationHold(
+        _d("completed-hold-recovery"),
+        _d("completed-hold-request"),
+        lease,
+        "remote_qualification_hold:graph_evidence_unavailable",
+        _d("completed-hold-result"),
+    )
+    status = StandingCpuSupervisor(
+        screen_once=lambda: (_ for _ in ()).throw(
+            AssertionError("screen ran before terminal HOLD was observed")
+        ),
+        qualification_once=lambda: completed,
+        clock=_Clock(),
+    ).tick()
+    assert (status.phase, status.lease_id, status.last_disposition) == (
+        SupervisorPhase.HOLD,
+        lease.lease_id,
+        "hold",
+    )
 
 
 def test_stall_becomes_visible_hold_not_idle_wait() -> None:
