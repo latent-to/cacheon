@@ -574,7 +574,7 @@ def test_restart_holds_interrupted_work_instead_of_replaying(tmp_path):
         store.mark_fetching(row.reservation_id)
     with _store(tmp_path) as reopened:
         held = reopened.get(row.reservation_id)
-        assert held.status == "held" and held.decision == "NO_DECISION"
+        assert held.status == "held" and held.decision == ""
         assert reopened.pending() == ()
 
 
@@ -701,7 +701,7 @@ def test_transport_retry_exhaustion_becomes_an_explicit_hold(tmp_path):
         store.mark_fetching(row.reservation_id)
         held = store.mark_transport_retry(row.reservation_id, "host unavailable")
         assert held.status == "held"
-        assert held.decision == "NO_DECISION"
+        assert held.decision == ""
         assert held.reason == "transport_retry_limit"
         released = store.release_hold(
             row.reservation_id, reason="operator granted one fresh transport budget"
@@ -1231,7 +1231,7 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
 
         held = store.get(offender.reservation_id)
         assert held.status == "held"
-        assert held.decision == "NO_DECISION"
+        assert held.decision == ""
         assert len(store.qualification_dispositions(offender.reservation_id)) == 2
 
         # Once the bounded offender is held, the peer's isolated group remains

@@ -292,7 +292,7 @@ def test_postpublication_worker_failure_retires_request_and_requeues_until_cappe
         ]
     assert reasons == ["systemic:worker_infrastructure:adapter_start_failed"] * 3
     assert retained.status == "held"
-    assert retained.decision == "NO_DECISION"
+    assert retained.decision == ""
     assert retained.reason.startswith("systemic_release_cap:")
 
     # The parked reservation is no longer claimable: the queue moves on.

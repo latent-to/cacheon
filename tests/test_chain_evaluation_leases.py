@@ -643,6 +643,7 @@ def test_systemic_release_cap_parks_reservation_held(tmp_path):
                 assert retained.status == "published"
             else:
                 assert retained.status == "held"
+                assert retained.decision == ""
                 assert retained.reason == "systemic_release_cap:3"
         _advance(store, clock)
         assert store.claim_evaluation_lease(

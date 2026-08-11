@@ -12,8 +12,10 @@ This is the bridge between two call shapes that cannot meet directly:
 background thread whose driver serves a work queue, so the engine stays
 loaded between arrivals — the inference-service shape — and each
 ``screen`` call hands its candidate to that standing lifetime.  Candidate
-budgets and canary withdrawals reset the scoring bracket inside the same
-engine session; they never own or trigger model teardown.
+budgets and recovered canary withdrawals reset the scoring bracket inside the
+same engine session.  An unrecovered stock canary retires that untrusted
+routing lifetime once and bypasses screening; it never cold-loads a
+replacement lifetime for the same candidate.
 
 Trust tier: screen/routing only, exactly like the queue module underneath.
 Non-swappable bundles (AOT device artifacts, native rebuild inputs,
@@ -58,6 +60,42 @@ class ResidentScreenLaneError(RuntimeError):
 
 class ResidentScreenLifetimeFailed(ResidentScreenLaneError):
     """The standing engine failed and may not be silently recreated."""
+
+
+class ResidentScreenUnavailable(ResidentScreenLaneError):
+    """The routing-only stock canary is unusable; qualify the candidate."""
+
+
+def screen_waiver_result(
+    candidate: ArenaCandidateBinding,
+    reason: str,
+    elapsed_ms: int,
+) -> ScreenStageResult:
+    """Route a valid bundle around an unavailable screen into qualification."""
+
+    if (
+        type(candidate) is not ArenaCandidateBinding
+        or not isinstance(reason, str)
+        or not reason
+        or isinstance(elapsed_ms, bool)
+        or not isinstance(elapsed_ms, int)
+        or elapsed_ms <= 0
+    ):
+        raise ResidentScreenLaneError("screen waiver inputs are invalid")
+    evidence = canonical_digest(
+        _WAIVER_EVIDENCE_SCHEMA,
+        {
+            "candidate_digest": candidate.digest,
+            "publication_content_hash": candidate.publication.content_hash,
+            "reason": reason,
+        },
+    )
+    return ScreenStageResult(
+        SERVING_SCREEN_STAGE,
+        ScreenGrade.PASS,
+        evidence,
+        elapsed_ms,
+    )
 
 
 def screen_swappability(manifest: Manifest) -> str | None:
@@ -220,8 +258,10 @@ class ResidentScreenLane:
     def screen(self, candidate: ScreenCandidate) -> CandidateScreenVerdict:
         """Screen one candidate on the live lifetime, booting one if needed.
 
-        Budget exhaustion and canary withdrawal are internal retry events.
-        Neither is exposed as a candidate ``NO_DECISION``.
+        Budget exhaustion resets inside the same session.  An unrecovered
+        stock canary ends this routing lifetime and tells the caller to bypass
+        screening; it never cold-loads a second model or emits a candidate
+        ``NO_DECISION``.
         """
 
         if type(candidate) is not ScreenCandidate:
@@ -232,32 +272,25 @@ class ResidentScreenLane:
             with self._state:
                 self._last_canary_recovery = None
                 self._last_canary_recovered = None
-            for recycle_attempt in range(2):
-                self._ensure_lifetime()
-                item = _Work(candidate)
-                self._work.put(item)
-                self._await(item)
-                if item.error is None and item.recycle:
-                    self._join_lifetime()
-                    if recycle_attempt == 0:
-                        continue
-                    failure = ResidentScreenLifetimeFailed(
-                        "stock canary failed again on a fresh resident lifetime"
-                    )
-                    with self._state:
-                        self._lifetime_error = failure
-                    raise failure
-                if item.error is None and item.verdict is not None:
-                    return item.verdict
+            self._ensure_lifetime()
+            item = _Work(candidate)
+            self._work.put(item)
+            self._await(item)
+            if item.error is None and item.recycle:
                 self._join_lifetime()
-                if item.error is not None:
-                    raise ResidentScreenLifetimeFailed(
-                        f"resident screen lifetime failed: {item.error}"
-                    ) from item.error
-                raise ResidentScreenLaneError(
-                    "resident scoring bracket returned no candidate verdict or recycle"
+                raise ResidentScreenUnavailable(
+                    "stock canary did not recover; routing screen bypassed"
                 )
-            raise AssertionError("resident recycle loop exhausted")
+            if item.error is None and item.verdict is not None:
+                return item.verdict
+            self._join_lifetime()
+            if item.error is not None:
+                raise ResidentScreenLifetimeFailed(
+                    f"resident screen lifetime failed: {item.error}"
+                ) from item.error
+            raise ResidentScreenLaneError(
+                "resident scoring bracket returned no candidate verdict or recycle"
+            )
 
     def close(self) -> None:
         """Permanently close the lane, ending any live lifetime."""
@@ -457,6 +490,11 @@ class ResidentServingScreenStage:
         self._lane = lane
         self._root = Path(swap_intake_root)
         self._clock = clock
+        self._bypass_reason: str | None = None
+
+    @property
+    def bypass_reason(self) -> str | None:
+        return self._bypass_reason
 
     def run_screen(self, candidate: ArenaCandidateBinding) -> ScreenStageResult:
         if type(candidate) is not ArenaCandidateBinding:
@@ -466,26 +504,34 @@ class ResidentServingScreenStage:
         manifest = load_manifest(publication.root)
         refusal = screen_swappability(manifest)
         if refusal is not None:
-            evidence = canonical_digest(
-                _WAIVER_EVIDENCE_SCHEMA,
-                {
-                    "candidate_digest": candidate.digest,
-                    "publication_content_hash": publication.content_hash,
-                    "reason": refusal,
-                },
+            return screen_waiver_result(
+                candidate,
+                refusal,
+                self._elapsed_ms(started),
             )
-            return ScreenStageResult(
-                self.stage, ScreenGrade.PASS, evidence, self._elapsed_ms(started)
+        if self._bypass_reason is not None:
+            return screen_waiver_result(
+                candidate,
+                self._bypass_reason,
+                self._elapsed_ms(started),
             )
         staged_digest = stage_swap_bundle(
             self._root, publication.root, expected_digest=publication.content_hash
         )
         slots = tuple(sorted({op.slot for op in manifest.ops}))
-        verdict = self._lane.screen(
-            ScreenCandidate(
-                candidate.reservation.reservation_digest, staged_digest, slots
+        try:
+            verdict = self._lane.screen(
+                ScreenCandidate(
+                    candidate.reservation.reservation_digest, staged_digest, slots
+                )
             )
-        )
+        except (ResidentScreenLifetimeFailed, ResidentScreenUnavailable) as exc:
+            self._bypass_reason = str(exc)
+            return screen_waiver_result(
+                candidate,
+                self._bypass_reason,
+                self._elapsed_ms(started),
+            )
         recovery = self._lane.last_canary_recovery
         evidence = canonical_digest(
             _STAGE_EVIDENCE_SCHEMA,
@@ -535,8 +581,10 @@ __all__ = [
     "ResidentScreenLane",
     "ResidentScreenLaneError",
     "ResidentScreenLifetimeFailed",
+    "ResidentScreenUnavailable",
     "ResidentServingScreenStage",
     "SERVING_SCREEN_STAGE",
     "make_backend_lifetime_factory",
+    "screen_waiver_result",
     "screen_swappability",
 ]

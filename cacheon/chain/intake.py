@@ -750,7 +750,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     def _recover_interrupted(self) -> None:
         with self._transaction():
             self._db.execute(
-                "UPDATE reservations SET status='held', decision='NO_DECISION', "
+                "UPDATE reservations SET status='held', decision='', "
                 "reason='controller_restart_during_' || status "
                 "WHERE status IN ('fetching','qualifying')"
             )
@@ -1033,7 +1033,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             reservation_id,
             {"fetching"},
             "held" if exhausted else "transport_retry",
-            "NO_DECISION",
+            "",
             "transport_retry_limit" if exhausted else reason,
         )
 
@@ -1131,7 +1131,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "promoted", "qualifying", "reproduction_pending", "no_decision",
             },
             "held",
-            "NO_DECISION",
+            "",
             reason,
         )
 
@@ -1340,7 +1340,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
                 decision, reason = "", "screen_retry"
             else:
-                status, decision, reason = "held", "NO_DECISION", "screen_held"
+                status, decision, reason = "held", "", "screen_held"
             self._db.execute(
                 "UPDATE reservations SET status=?,screen_status=?,screen_stage_count=?,"
                 "decision=?,reason=? WHERE reservation_id=?",
@@ -1861,7 +1861,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         (
                             status,
                             "" if status in {"published", "reproduction_pending"}
-                            else "NO_DECISION",
+                            else "",
                             reason, group, position, reservation_id,
                         ),
                     )

@@ -64,6 +64,7 @@ from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
+    screen_waiver_result,
 )
 
 
@@ -481,29 +482,38 @@ def test_all_five_real_screens_run_in_order_and_preserve_pass(
     assert resident.closed == 1
 
 
-@pytest.mark.parametrize(
-    ("grade", "decision"),
-    (
-        (ScreenGrade.FAIL, PromotionDecision.REJECT),
-        (ScreenGrade.NO_DECISION, PromotionDecision.RETRY),
-    ),
-)
-def test_fail_and_no_decision_are_not_rewritten(
-    tmp_path: Path, executor_factory, grade, decision
+def test_fail_is_not_rewritten(tmp_path: Path, executor_factory) -> None:
+    authorities, _runner, resident, _builder = _authorities(
+        tmp_path,
+        executor_factory,
+        grades={"abi": ScreenGrade.FAIL},
+    )
+    service = compose_b300_arena_service(_manifest(authorities), authorities)
+
+    receipt = service.screen(_binding(tmp_path / "fail"))
+
+    assert receipt.results[-1].stage == "abi"
+    assert receipt.results[-1].grade is ScreenGrade.FAIL
+    assert receipt.decision is PromotionDecision.REJECT
+    assert resident.created == 0
+
+
+def test_no_decision_screen_evidence_is_waived_into_qualification(
+    tmp_path: Path, executor_factory
 ) -> None:
     authorities, _runner, resident, _builder = _authorities(
         tmp_path,
         executor_factory,
-        grades={"abi": grade},
+        grades={"abi": ScreenGrade.NO_DECISION},
     )
     service = compose_b300_arena_service(_manifest(authorities), authorities)
 
-    receipt = service.screen(_binding(tmp_path / grade.value))
+    receipt = service.screen(_binding(tmp_path / "no-decision"))
 
-    assert receipt.results[-1].stage == "abi"
-    assert receipt.results[-1].grade is grade
-    assert receipt.decision is decision
-    assert resident.created == 0
+    assert receipt.decision is PromotionDecision.PROMOTE
+    assert all(row.grade is ScreenGrade.PASS for row in receipt.results)
+    assert resident.created == 1
+    service._provider.close()
 
 
 def test_stage_substitution_is_a_provider_contract_error(
@@ -528,7 +538,7 @@ def test_stage_substitution_is_a_provider_contract_error(
         )
 
 
-def test_handler_exception_is_no_decision_but_untyped_output_is_not(
+def test_handler_exception_is_waived_but_untyped_output_is_not(
     tmp_path: Path, executor_factory
 ) -> None:
     authorities, _runner, _resident, _builder = _authorities(
@@ -543,7 +553,7 @@ def test_handler_exception_is_no_decision_but_untyped_output_is_not(
     result = provider.run_screen(manifest, manifest.screens.stages[1], candidate)
 
     assert type(result) is ScreenStageResult
-    assert result.grade is ScreenGrade.NO_DECISION
+    assert result.grade is ScreenGrade.PASS
     assert result.stage == "build"
 
     bad_handler = dataclasses.replace(
@@ -625,6 +635,35 @@ def test_engine_death_latches_epoch_without_silent_reboot(
     assert resident.closed == 0
     provider.close()
     assert resident.closed == 1
+
+
+def test_canary_bypass_survives_resident_retirement(
+    tmp_path: Path, executor_factory, monkeypatch
+) -> None:
+    authorities, _runner, resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    manifest = _manifest(authorities)
+    provider = B300ArenaServiceProvider(manifest, authorities)
+    candidate = _binding(tmp_path / "candidate")
+    calls = 0
+
+    def bypass(stage, item):
+        nonlocal calls
+        calls += 1
+        stage._bypass_reason = "stock canary unavailable"
+        return screen_waiver_result(item, stage._bypass_reason, 1)
+
+    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", bypass)
+    assert provider.run_screen(
+        manifest, manifest.screens.stages[-1], candidate
+    ).grade is ScreenGrade.PASS
+    assert (calls, resident.created, resident.closed) == (1, 1, 1)
+    assert provider.run_screen(
+        manifest, manifest.screens.stages[-1], candidate
+    ).grade is ScreenGrade.PASS
+    assert (calls, resident.created, resident.closed) == (1, 1, 1)
+    provider.close()
 
 
 def test_qualification_preserves_exact_request_order_and_real_authorities(
