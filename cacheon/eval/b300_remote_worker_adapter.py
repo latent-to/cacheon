@@ -863,19 +863,35 @@ def _load_qualification_capabilities(specifier: str, source_sha256: str):
         raise AdapterError(str(exc)) from None
 
 
-def _serve(paths: AdapterPaths, qualification_capabilities=None) -> int:
-    # Reserve the original stdout exclusively for the tiny control protocol.
-    # Imported controller/runtime code is redirected to stderr so an
-    # incidental diagnostic cannot be mistaken for a completed request.
-    control_output = sys.stdout.buffer
-    sys.stdout = sys.stderr
-    runtime = AdapterRuntime(
-        paths, qualification_capabilities=qualification_capabilities
-    )
+def _isolate_control_output():
+    """Keep native child stdout out of the adapter control protocol."""
+
+    control_fd = os.dup(sys.stdout.fileno())
+    os.set_inheritable(control_fd, False)
+    control_output = os.fdopen(control_fd, "wb", buffering=0)
     try:
-        return serve_runtime(runtime, paths, sys.stdin.buffer, control_output)
+        os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    except BaseException:
+        control_output.close()
+        raise
+    sys.stdout = sys.stderr
+    return control_output
+
+
+def _serve(paths: AdapterPaths, qualification_capabilities=None) -> int:
+    # Python-level redirection alone leaves fd 1 inherited by native children.
+    # Preserve a private control fd, then redirect fd 1 itself to diagnostics.
+    control_output = _isolate_control_output()
+    try:
+        runtime = AdapterRuntime(
+            paths, qualification_capabilities=qualification_capabilities
+        )
+        try:
+            return serve_runtime(runtime, paths, sys.stdin.buffer, control_output)
+        finally:
+            runtime.close()
     finally:
-        runtime.close()
+        control_output.close()
 
 
 def _adapter_paths(args: argparse.Namespace) -> AdapterPaths:

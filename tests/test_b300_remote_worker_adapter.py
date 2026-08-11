@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,37 @@ def _adapter_paths(tmp_path: Path) -> adapter.AdapterPaths:
         results_root=tmp_path / "results",
         continuation_root=tmp_path / "continuation",
     )
+
+
+def test_native_child_stdout_cannot_corrupt_adapter_control() -> None:
+    code = r"""
+import subprocess
+import sys
+from cacheon.eval.b300_remote_worker_adapter import (
+    _emit_control,
+    _isolate_control_output,
+)
+
+control = _isolate_control_output()
+try:
+    subprocess.run(
+        [sys.executable, "-c", "import os; os.write(1, b'native-output\\n')"],
+        check=True,
+    )
+    _emit_control("ready", output=control)
+finally:
+    control.close()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+    )
+
+    assert result.stdout == (
+        b'{"schema":"cacheon-b300-adapter-control-v1","state":"ready"}\n'
+    )
+    assert result.stderr == b"native-output\n"
 
 
 def test_continuation_root_is_an_explicit_absolute_adapter_path(
