@@ -44,8 +44,15 @@ _CONTROLLER_ROOT = "/cacheon/controller"
 # package resolving from the image; only the unique delta names fall through.
 # Without this, every overlay-tree probe fails all ranks with
 # ModuleNotFoundError and the store records an incomplete observation.
+#
+# Image site still runs under ``python -I`` and executes ``cacheon.pth``
+# (``import cacheon.bootstrap``) before ``-c``, pinning the image's incomplete
+# dist-packages ``cacheon`` into ``sys.modules``. Evict those entries after the
+# controller insert so ``run_module`` resolves the mounted controller source.
 _CONTROLLER_BOOTSTRAP = (
     "import runpy,sys;sys.path.insert(0,'/cacheon/controller');"
+    "[sys.modules.pop(n) for n in tuple(sys.modules)"
+    " if n=='cacheon' or n.startswith('cacheon.')];"
     f"sys.path.append('{CONTAINER_TREE}');"
     "runpy.run_module('cacheon.eval.b300_prepared_graph_oci',run_name='__main__')"
 )
