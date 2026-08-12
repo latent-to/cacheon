@@ -65,9 +65,12 @@ _PACKAGE_NAMES = (
     "triton",
 )
 
+# `index` instead of direct field access: Docker 29 renders image Config as a
+# plain map and errors on absent keys (e.g. Volumes when the Dockerfile never
+# declared one); `index` yields null there, and older Docker behaves the same.
 _INSPECT_FORMAT = (
     '--format={"Id":{{json .Id}},"RepoDigests":{{json .RepoDigests}},'
-    '"Volumes":{{json .Config.Volumes}},"Os":{{json .Os}},'
+    '"Volumes":{{json (index .Config "Volumes")}},"Os":{{json .Os}},'
     '"Architecture":{{json .Architecture}}}'
 )
 
