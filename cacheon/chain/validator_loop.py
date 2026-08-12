@@ -41,6 +41,7 @@ from cacheon.chain.publication import (
     publish_worker_bundle,
     reopen_worker_bundle,
 )
+from cacheon.chain.reference_copy_policy import reconcile_reference_copies
 from cacheon.copy_fingerprint import fingerprint_submitted_delta
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
@@ -470,6 +471,9 @@ def run_pass(
         # cannot permanently bypass finalized priority.
         for copied, predecessor in store.reconcile_copies():
             result.copies[copied] = predecessor
+            result.published.pop(copied, None)
+        for copied, reference in reconcile_reference_copies(store):
+            result.copies[copied] = f"validator_reference:{reference}"
             result.published.pop(copied, None)
 
         if service is not None:

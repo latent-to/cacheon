@@ -1532,6 +1532,26 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             f"copy_of:{predecessor.reservation_id}",
         )
 
+    def mark_reference_copy(
+        self, reservation_id: str, reference_name: str
+    ) -> IntakeReservation:
+        """Demote an authoritative copy of a validator-published bundle."""
+
+        if not isinstance(reference_name, str) or not re.fullmatch(
+            r"[A-Za-z0-9._-]{1,80}", reference_name
+        ):
+            raise IntakeError("validator reference name is malformed")
+        return self._transition(
+            reservation_id,
+            {
+                "published", "screening", "promoted", "qualifying",
+                "reproduction_pending", "qualified", "held", "no_decision",
+            },
+            "failed",
+            "FAIL",
+            f"copy_of:validator_reference:{reference_name}",
+        )
+
     def mark_qualifying(
         self,
         reservation_id: str,
