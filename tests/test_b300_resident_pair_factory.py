@@ -759,3 +759,38 @@ def test_owner_has_no_partial_close_or_audit_launch_surface(
         assert not hasattr(owner, forbidden)
     assert owner.close() is None
     assert owner.close() is None
+
+
+def test_pre_gate_retire_closes_only_a_released_pair(
+    tmp_path: Path,
+    lifetimes: _LifetimeHarness,
+    managed_executors,
+) -> None:
+    commissioned = _commissioned(tmp_path, lifetimes, managed_executors)
+    assert commissioned.factory.retire_released_pair() is False
+
+    authority = _authority("pre-gate")
+    owner = commissioned.factory.open_request(authority, deadline=100.0)
+    borrowed = owner.borrow(authority)
+    assert commissioned.factory.retire_released_pair() is False
+    assert all(
+        session.finish_calls == 0
+        for lifetime in lifetimes.factories
+        for session in lifetime.sessions
+    )
+
+    owner.release(authority, borrowed.binding)
+    assert commissioned.factory.retire_released_pair() is True
+    assert all(
+        session.finish_calls == 1
+        for lifetime in lifetimes.factories
+        for session in lifetime.sessions
+    )
+    assert commissioned.factory.retire_released_pair() is False
+
+    fresh_authority = _authority("after-retire")
+    fresh = commissioned.factory.open_request(fresh_authority, deadline=200.0)
+    fresh_borrow = fresh.borrow(fresh_authority)
+    assert fresh_borrow.pair is not borrowed.pair
+    assert len(lifetimes.calls) == 4
+    assert type(fresh.close()) is ResidentEvaluationRetirementEvidence

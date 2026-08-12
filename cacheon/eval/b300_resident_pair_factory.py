@@ -15,8 +15,17 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Callable
+
+from cacheon.eval.resident_pair_shapes import (
+    absolute_deadline,
+    physical_ids,
+    positive_seconds,
+    resident_shape,
+    workload_shape,
+)
 
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.engine_tree import MaterializedEngineTree
@@ -69,65 +78,11 @@ def _digest(value: object, field: str) -> str:
         raise B300ResidentPairFactoryError(str(exc)) from None
 
 
-def _positive_seconds(value: object, field: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or not 0 < float(value) <= 86_400
-    ):
-        raise B300ResidentPairFactoryError(f"{field} is invalid")
-    return float(value)
-
-
-def _absolute_deadline(value: object, clock: Callable[[], float]) -> float:
-    try:
-        now = float(clock())
-    except BaseException as exc:
-        raise B300ResidentPairFactoryError(
-            f"resident pair host clock failed: {exc}"
-        ) from None
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or not math.isfinite(now)
-        or float(value) <= now
-    ):
-        raise B300ResidentPairFactoryError(
-            "resident pair requires a future absolute deadline"
-        )
-    return float(value)
-
-
-def _physical_ids(policy: B300QualificationLanePolicy) -> tuple[str, ...]:
-    return tuple(str(value) for value in policy.physical_gpu_ids)
-
-
-def _workload_shape(plan: SessionExecutionPlan) -> tuple[object, ...]:
-    return (
-        plan.engine_config,
-        plan.prompt_batches,
-        plan.warmup_count,
-        plan.conditioning_count,
-        plan.max_new_tokens,
-        plan.top_logprobs_num,
-        plan.temperature,
-        plan.expected_discovery_overlay_identity_digest,
-        plan.audit_policy,
-    )
-
-
-def _resident_shape(plan: ResidentSessionPlan) -> tuple[object, ...]:
-    return (
-        plan.expected_engine_config_digest,
-        plan.engine_config,
-        plan.max_swaps,
-        plan.max_batches,
-        plan.max_new_tokens,
-        plan.top_logprobs_num,
-        plan.temperature,
-    )
+_positive_seconds = partial(positive_seconds, error=B300ResidentPairFactoryError)
+_absolute_deadline = partial(absolute_deadline, error=B300ResidentPairFactoryError)
+_physical_ids = physical_ids
+_workload_shape = workload_shape
+_resident_shape = resident_shape
 
 
 @dataclass(frozen=True)
@@ -978,6 +933,23 @@ class B300CommissionedResidentPairFactory:
                 )
             self._owner = owner
         return owner
+
+    def retire_released_pair(self) -> bool:
+        """Retire a released pair so pre-pair gates can find idle devices.
+
+        ``open_request`` already closes a released, non-reusable pair, but it
+        runs after the prepared-graph gate, which needs idle TP4 devices; a
+        pair the previous qualification left loaded therefore starves every
+        later capture.  A borrowed (in-flight) pair is never touched.
+        """
+
+        with self._lock:
+            owner = self._owner
+            if owner is None or not owner._released:
+                return False
+            owner.close()
+            self._owner = None
+        return True
 
     def close(self) -> None:
         with self._lock:

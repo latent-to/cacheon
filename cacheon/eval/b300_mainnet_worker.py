@@ -508,6 +508,20 @@ class B300MainnetWorker:
                     authority_context_digest=work.factory.manifest.digest,
                     code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
                 )
+            if self._resident_pair_factory is not None:
+                try:
+                    if self._resident_pair_factory.retire_released_pair():
+                        _LOG.info(
+                            "retired the released resident pair before the "
+                            "graph gate for request %s",
+                            request_digest,
+                        )
+                except Exception:
+                    _LOG.exception(
+                        "released resident pair retirement failed before the "
+                        "graph gate for request %s; the gate drain will decide",
+                        request_digest,
+                    )
             try:
                 plan = work.factory.build()
             except (
