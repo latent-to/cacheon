@@ -75,6 +75,7 @@ from cacheon.chain.remote_worker_request_plan import (
     QualificationRequestPlan,
 )
 from cacheon.chain.publication import reopen_worker_bundle
+from cacheon.chain.qualification_hold_requeue import QualificationHoldRequeuePolicy
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_intake import QualificationIntakeBatch
 from cacheon.stack_identity import require_sha256_hex
@@ -367,6 +368,7 @@ class RecoverableQualificationDispatcher:
         self.qualification_evidence_root = root
         self.qualification_incumbent_stack = qualification_incumbent_stack
         self.qualification_incumbent_tree_digest = tree_digest
+        self.hold_requeue = QualificationHoldRequeuePolicy()
 
     def _validate_live_authority(self) -> None:
         self.coordinator.readiness.validate(self.coordinator.service)
@@ -555,6 +557,11 @@ class RecoverableQualificationDispatcher:
                 reason=reason,
                 reservation_ids=product.reservation_digests,
                 lease_blocks=self.coordinator.lease_blocks,
+            )
+            self.hold_requeue.after_hold(
+                store,
+                reservation_ids=lease.reservation_ids,
+                reason=reason,
             )
         finally:
             store.close()
@@ -940,6 +947,13 @@ class RecoverableQualificationDispatcher:
         except (TypeError, ValueError) as exc:
             raise RecoverableQualificationDispatcherError(str(exc)) from None
         self._validate_live_authority()
+        if (
+            expected_members is None
+            and expected_lease_id is None
+            and expected_request_id is None
+            and self.hold_requeue.refuse_fresh_claim()
+        ):
+            return None
         selected = self._claim_or_reopen(
             expected_members=expected_members,
             expected_lease_id=expected_lease_id,
@@ -1053,10 +1067,12 @@ class RecoverableQualificationDispatcher:
                     recovery = self._record_import(recovery)
                     continue
                 if recovery.phase is RecoveryPhase.EVIDENCE_IMPORTED:
-                    return GuardedEvaluationRun(
+                    run = GuardedEvaluationRun(
                         recovery.request_id,
                         self._commit_product(recovery, claim, product),
                     )
+                    self.hold_requeue.note_terminal()
+                    return run
         except _PreResidentRefusalObserved as signal:
             return self._requeue(recovery, signal.refusal, signal.outcome)
         except _InfrastructureResultObserved as signal:

@@ -10,6 +10,7 @@ import cacheon.chain.recoverable_qualification_dispatcher as dispatcher_module
 from cacheon.chain.execution_disposition import ExecutionDisposition
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.recoverable_qualification_dispatcher import (
+    CompletedQualificationHold,
     RecoverableQualificationDispatcher,
     RecoverableQualificationDispatcherError,
     RecoverableQualificationHold,
@@ -292,7 +293,9 @@ def test_postpublication_worker_failure_retires_request_and_requeues_until_cappe
         ]
     assert reasons == ["systemic:worker_infrastructure:adapter_start_failed"] * 3
     assert retained.status == "held"
-    assert retained.decision == "NO_DECISION"
+    # Holding is not a verdict: the park keeps a blank candidate decision
+    # (NO_DECISION retired as a decision category, owner order 2026-08-12).
+    assert retained.decision == ""
     assert retained.reason.startswith("systemic_release_cap:")
 
     # The parked reservation is no longer claimable: the queue moves on.
@@ -524,19 +527,17 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
     transport = HoldTransport(authority, fixtures)
     dispatcher = _dispatcher(authority, transport)
     monkeypatch.setattr(dispatcher, "_has_no_decision", forbidden_batch)
-    durable_hold = dispatcher._hold
+    durable_commit = dispatcher._commit_remote_hold
     interrupted = False
 
-    def interrupt_after_result(recovery, reason):
+    def interrupt_before_commit(recovery, product):
         nonlocal interrupted
-        if not reason.startswith("remote_qualification_hold:"):
-            raise AssertionError(f"unexpected hold reason: {reason}")
         if not interrupted:
             interrupted = True
             raise RuntimeError("simulated restart after durable HOLD result")
-        return durable_hold(recovery, reason)
+        return durable_commit(recovery, product)
 
-    monkeypatch.setattr(dispatcher, "_hold", interrupt_after_result)
+    monkeypatch.setattr(dispatcher, "_commit_remote_hold", interrupt_before_commit)
     with pytest.raises(RuntimeError, match="restart after durable HOLD result"):
         dispatcher.dispatch_once()
     assert transport.plan is not None
@@ -550,16 +551,13 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
         )
 
     outcome = dispatcher.dispatch_once()
-    repeated = dispatcher.dispatch_once()
 
-    assert type(outcome) is RecoverableQualificationHold
-    assert repeated == outcome
-    assert (
-        outcome.recovery_id,
-        outcome.request_id,
-        outcome.reason,
-    ) == (
-        result_ready.recovery_id,
+    # The reopened recovery commits the durable HOLD exactly once from the
+    # retained response — no replanning, no republication — then bounded
+    # auto-requeue releases the cohort straight back to FIFO instead of
+    # parking it for an operator (hold-requeue policy, 2026-08-12).
+    assert type(outcome) is CompletedQualificationHold
+    assert (outcome.request_id, outcome.reason) == (
         request_id,
         "remote_qualification_hold:graph_evidence_incomplete",
     )
@@ -576,21 +574,20 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
     ]
     assert len(carriers) == 1
     with _store(authority) as store:
-        held = store.pending_qualification_recovery()
-        assert held is not None
-        events = store.evaluation_recovery_events(held)
-        retained = store.get(held.lease.reservation_ids[0])
-    assert (held.recovery_id, held.request_id, held.phase.value) == (
-        result_ready.recovery_id,
-        request_id,
-        "held",
+        assert store.pending_qualification_recovery() is None
+        completed = store._db.execute(
+            "SELECT result_digest FROM evaluation_leases WHERE lease_id=? "
+            "AND state='completed'",
+            (outcome.lease.lease_id,),
+        ).fetchone()
+        retained = store.get(outcome.lease.reservation_ids[0])
+    assert completed is not None
+    assert completed["result_digest"] == outcome.result_digest
+    assert retained.status == "published"
+    assert retained.reason == (
+        "auto_requeue_attempt_2_of_3:"
+        "remote_qualification_hold:graph_evidence_incomplete"
     )
-    assert [event.event_type.value for event in events].count("result_ready") == 1
-    assert [event.event_type.value for event in events][-2:] == [
-        "result_ready",
-        "held",
-    ]
-    assert retained.status == "promoted"
     assert not (authority.root / "cpu-evidence").exists()
 
 
