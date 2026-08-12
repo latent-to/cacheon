@@ -735,3 +735,71 @@ metadata = "metadata/small.json"
     artifact = execute_prepared_graph_probe(request, profile.prepared.binding.tree.root)
     assert calls == ["large", "small"]
     assert tuple(row.variant_id for row in artifact.variants) == ("large", "small")
+
+
+def test_identical_duplicate_domain_cases_collapse_to_one_authority_row(
+    singleton, monkeypatch
+) -> None:
+    request = _request(singleton)
+    outcome = GraphPhaseOutcome.graph_passed(request.policy.expected_graph_replays)
+
+    def _verify(slot, _source, _entry, **kwargs):
+        variant = kwargs["variant_name"]
+        rows = [
+            _shape(request.policy, slot, variant, outcome,
+                   kind=VerificationCaseKind.ORDINARY_SINGLE, ordinal=0),
+            _shape(request.policy, slot, variant, outcome,
+                   kind=VerificationCaseKind.ORDINARY_SINGLE, ordinal=0),
+            _shape(request.policy, slot, variant, outcome,
+                   kind=VerificationCaseKind.ORDINARY_SINGLE, ordinal=1),
+        ]
+        return VerifyResult(
+            slot=slot,
+            dtype=request.policy.dtype_name,
+            passed=True,
+            shape_results=rows,
+            graph_required=True,
+            graph_verified=True,
+            coverage_required=1,
+            context_inapplicable=False,
+            domain_coverage_complete=True,
+        )
+
+    monkeypatch.setattr(probe, "_VERIFY_ENTRY_FROM_SOURCE", _verify)
+    artifact = execute_prepared_graph_probe(
+        request, singleton.prepared.binding.tree.root
+    )
+    digests = [shape.descriptor_digest for shape in artifact.variants[0].shapes]
+    assert len(digests) == 2
+    assert len(set(digests)) == 2
+
+
+def test_disagreeing_duplicate_domain_cases_stay_fatal(singleton, monkeypatch) -> None:
+    request = _request(singleton)
+    passing = GraphPhaseOutcome.graph_passed(request.policy.expected_graph_replays)
+    failing = GraphPhaseOutcome.replay_candidate_failed(1)
+
+    def _verify(slot, _source, _entry, **kwargs):
+        variant = kwargs["variant_name"]
+        rows = [
+            _shape(request.policy, slot, variant, passing,
+                   kind=VerificationCaseKind.ORDINARY_SINGLE, ordinal=0),
+            _shape(request.policy, slot, variant, failing,
+                   kind=VerificationCaseKind.ORDINARY_SINGLE, ordinal=0),
+        ]
+        return VerifyResult(
+            slot=slot,
+            dtype=request.policy.dtype_name,
+            passed=False,
+            shape_results=rows,
+            graph_required=True,
+            graph_verified=False,
+            coverage_required=1,
+            context_inapplicable=False,
+            domain_coverage_complete=True,
+        )
+
+    monkeypatch.setattr(probe, "_VERIFY_ENTRY_FROM_SOURCE", _verify)
+    with pytest.raises(PreparedGraphProbeError) as raised:
+        execute_prepared_graph_probe(request, singleton.prepared.binding.tree.root)
+    assert "disagreeing" in str(raised.value)

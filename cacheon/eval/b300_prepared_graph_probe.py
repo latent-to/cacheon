@@ -627,15 +627,29 @@ def _variant_record(
         if record is not None:
             records.append(record)
     records.sort(key=lambda row: row.descriptor_digest)
-    if not records or len({row.descriptor_digest for row in records}) != len(records):
-        digests = [row.descriptor_digest[:12] for row in records]
+    deduped: list[StructuredGraphShapeRecord] = []
+    for record in records:
+        previous = deduped[-1] if deduped else None
+        if previous is not None and previous.descriptor_digest == record.descriptor_digest:
+            if record != previous:
+                raise PreparedGraphProbeError(
+                    "graph descriptor authority repeats case "
+                    f"{record.descriptor_digest[:12]} with disagreeing evidence: "
+                    f"first={previous} second={record}"
+                )
+            # The jittered verification domain can collide two catalog shapes
+            # onto one descriptor; the verifier then ran one case twice. The
+            # rows are byte-identical, so one authority row carries them both.
+            continue
+        deduped.append(record)
+    records = deduped
+    if not records:
         kinds = [
             str(getattr(getattr(row, "case_descriptor", None), "case_kind", "?"))
             for row in result.shape_results
         ]
         raise PreparedGraphProbeError(
-            "graph descriptor authority is empty or duplicated: "
-            f"records={len(records)} digests={digests} row_kinds={kinds}"
+            f"graph descriptor authority is empty: row_kinds={kinds}"
         )
     context_applicable = any(row.applicable for row in records)
     if collective and temporal_count != int(context_applicable):
