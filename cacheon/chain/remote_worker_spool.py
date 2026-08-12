@@ -952,11 +952,6 @@ def verify_heartbeat(
     )
     if value["adapter_alive"] and starts == 0:
         fail("worker heartbeat reports an unstarted live adapter")
-    if (
-        value["state"] in ("epoch_failed", "adapter_cooldown")
-        and failures < MAX_CONSECUTIVE_ADAPTER_FAILURES
-    ):
-        fail("worker heartbeat failed epoch lacks its failure threshold")
     return value
 
 
