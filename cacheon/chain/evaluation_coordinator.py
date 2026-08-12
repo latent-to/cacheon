@@ -620,8 +620,8 @@ class EvaluationCoordinator:
         qualification_max_members: int | None = None,
         heartbeat_interval_s: float = 5.0,
         heartbeat_join_timeout_s: float = 5.0,
-        lock_attempts: int = 3,
-        lock_retry_delay_s: float = 0.05,
+        lock_attempts: int = 1000,
+        lock_retry_delay_s: float = 0.1,
         store_factory: Callable[..., FinalizedIntakeStore] = FinalizedIntakeStore,
     ):
         if type(policy) is not IntakePolicy or type(scope) is not IntakeScope:
