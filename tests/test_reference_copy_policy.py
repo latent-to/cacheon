@@ -18,8 +18,10 @@ from cacheon.copy_fingerprint import fingerprint_submitted_delta
 @pytest.fixture(autouse=True)
 def _fresh_corpus_cache():
     policy_module._CACHE = None
+    policy_module._LIBRARY_CACHE = None
     yield
     policy_module._CACHE = None
+    policy_module._LIBRARY_CACHE = None
 
 
 @dataclasses.dataclass
@@ -80,3 +82,51 @@ def test_reconcile_marks_only_live_matching_rows() -> None:
         ("msa-copy", "stack_msa_singleton"),
     )
     assert store.marked == list(dispositions)
+
+
+def test_library_corpus_fingerprints_kernel_files() -> None:
+    table = policy_module.validator_library_fingerprints()
+    assert table, "cacheon_kernels produced no fingerprints"
+    assert any(rel.endswith(".py") for rel in table.values())
+    assert all(len(fp) == 64 for fp in table)
+
+
+def _doctored(base, library_fp):
+    return dataclasses.replace(
+        base,
+        exact_payload_digest="1" * 64,
+        selected_delta_digest="2" * 64,
+        normalized_delta_digest="3" * 64,
+        containment_fingerprints=tuple(sorted({library_fp})),
+    )
+
+
+def test_submission_containing_library_code_is_demoted() -> None:
+    base = fingerprint_submitted_delta(
+        policy_module._repo_root() / "tests/fixtures/stack_msa_singleton"
+    )
+    table = policy_module.validator_library_fingerprints()
+    library_fp, rel = next(iter(sorted(table.items())))
+    doctored = _doctored(base, library_fp)
+
+    assert policy_module.library_copy_match(doctored) == rel
+    assert policy_module.library_copy_match(base) is None
+    assert policy_module.library_copy_match(None) is None
+
+    store = _Store([_Row("returns-our-code", "promoted", doctored)])
+    dispositions = reconcile_reference_copies(store)
+    marker = "library-" + rel.replace("/", "-")
+    assert dispositions == (("returns-our-code", marker[:80]),)
+
+
+def test_library_kill_flag_off_is_inert(monkeypatch) -> None:
+    base = fingerprint_submitted_delta(
+        policy_module._repo_root() / "tests/fixtures/stack_msa_singleton"
+    )
+    table = policy_module.validator_library_fingerprints()
+    library_fp = next(iter(sorted(table)))
+    doctored = _doctored(base, library_fp)
+    monkeypatch.setattr(policy_module, "_LIBRARY_KILL_ENABLED", False)
+    assert policy_module.library_copy_match(doctored) is None
+    store = _Store([_Row("spared", "promoted", doctored)])
+    assert reconcile_reference_copies(store) == ()
