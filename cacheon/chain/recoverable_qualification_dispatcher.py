@@ -21,7 +21,7 @@ from cacheon.chain.evaluation_coordinator import (
     EvaluationRun,
     _qualification_reservations,
 )
-from cacheon.chain.evaluation_leases import EvaluationLeaseMember
+from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.evaluation_lease_store import (
     EvaluationClaimConflict,
     _closed_expected_members,
@@ -138,6 +138,30 @@ class RecoverableQualificationHold:
         ):
             raise RecoverableQualificationDispatcherError(
                 "qualification hold reason is malformed"
+            )
+
+
+@dataclass(frozen=True)
+class CompletedQualificationHold:
+    """Authenticated terminal HOLD that released the qualification lane."""
+
+    recovery_id: str
+    request_id: str
+    lease: EvaluationLease
+    reason: str
+    result_digest: str
+
+    def __post_init__(self) -> None:
+        require_sha256_hex(self.recovery_id, field="completed HOLD recovery id")
+        require_sha256_hex(self.request_id, field="completed HOLD request id")
+        require_sha256_hex(self.result_digest, field="completed HOLD result digest")
+        if (
+            type(self.lease) is not EvaluationLease
+            or self.lease.stage != "qualification"
+            or not self.reason.startswith("remote_qualification_hold:")
+        ):
+            raise RecoverableQualificationDispatcherError(
+                "completed qualification HOLD is malformed"
             )
 
 
@@ -423,7 +447,9 @@ class RecoverableQualificationDispatcher:
                 )
             if recovery is None:
                 return None
-            if recovery.phase is RecoveryPhase.HELD:
+            if recovery.phase is RecoveryPhase.HELD and not recovery.reason.startswith(
+                "remote_qualification_hold:"
+            ):
                 return _RecoveryClaim(recovery, None)
             reservations = tuple(
                 store.get(reservation_id)
@@ -513,6 +539,58 @@ class RecoverableQualificationDispatcher:
             held.request_id,
             held.reason,
         )
+
+    def _commit_remote_hold(
+        self,
+        recovery: EvaluationRecovery,
+        product: RemoteQualificationHoldProduct,
+    ) -> CompletedQualificationHold:
+        reason = durable_remote_qualification_hold_reason(product)
+        store, point, current = self._current_recovery(recovery.recovery_id)
+        try:
+            lease = store.commit_remote_qualification_hold(
+                current,
+                current_block=point[0],
+                result_digest=product.digest,
+                reason=reason,
+                reservation_ids=product.reservation_digests,
+                lease_blocks=self.coordinator.lease_blocks,
+            )
+        finally:
+            store.close()
+        return CompletedQualificationHold(
+            recovery.recovery_id,
+            recovery.request_id,
+            lease,
+            reason,
+            product.digest,
+        )
+
+    def _reopen_held_remote_product(
+        self,
+        recovery: EvaluationRecovery,
+        claim: ClaimedQualificationEvaluation,
+    ) -> RemoteQualificationHoldProduct:
+        plan = self._reopen_plan(recovery, claim)
+        observed = self.transport.inspect_planned_qualification(plan)
+        if observed.state != "completed_response":
+            raise RecoverableQualificationDispatcherError(
+                "held remote qualification response is no longer retained"
+            )
+        response = self.transport.resume_planned_qualification(plan)
+        if type(response) is not AuthenticatedRemoteEvaluationResponse:
+            raise RecoverableQualificationDispatcherError(
+                "held remote qualification response changed type"
+            )
+        product = self._product(plan, response)
+        if (
+            type(product) is not RemoteQualificationHoldProduct
+            or durable_remote_qualification_hold_reason(product) != recovery.reason
+        ):
+            raise RecoverableQualificationDispatcherError(
+                "held remote qualification product changed"
+            )
+        return product
 
     def _requeue(
         self,
@@ -808,6 +886,7 @@ class RecoverableQualificationDispatcher:
     ) -> (
         EvaluationRun
         | RecoverableQualificationHold
+        | CompletedQualificationHold
         | RecoverableQualificationRequeue
         | None
     ):
@@ -827,6 +906,7 @@ class RecoverableQualificationDispatcher:
     ) -> (
         GuardedEvaluationRun
         | RecoverableQualificationHold
+        | CompletedQualificationHold
         | RecoverableQualificationRequeue
         | None
     ):
@@ -845,6 +925,7 @@ class RecoverableQualificationDispatcher:
     ) -> (
         GuardedEvaluationRun
         | RecoverableQualificationHold
+        | CompletedQualificationHold
         | RecoverableQualificationRequeue
         | None
     ):
@@ -868,6 +949,15 @@ class RecoverableQualificationDispatcher:
             return None
         recovery, claim = selected.recovery, selected.claim
         if recovery.phase is RecoveryPhase.HELD:
+            if recovery.reason.startswith("remote_qualification_hold:"):
+                if claim is None:
+                    raise RecoverableQualificationDispatcherError(
+                        "remote qualification HOLD lost its exact claim"
+                    )
+                return self._commit_remote_hold(
+                    recovery,
+                    self._reopen_held_remote_product(recovery, claim),
+                )
             if recovery.reason in (
                 WORKER_INFRASTRUCTURE_HOLD_REASON,
                 AUTHORITY_CHANGED_HOLD_REASON,
@@ -950,10 +1040,7 @@ class RecoverableQualificationDispatcher:
                         "recovery entered an unsupported phase"
                     )
                 if type(product) is RemoteQualificationHoldProduct:
-                    return self._hold(
-                        recovery,
-                        durable_remote_qualification_hold_reason(product),
-                    )
+                    return self._commit_remote_hold(recovery, product)
                 completed = resolve_completed_result(
                     self._has_no_decision(product.batch)
                 )
@@ -989,6 +1076,7 @@ class RecoverableQualificationDispatcher:
 
 __all__ = [
     "GuardedEvaluationRun",
+    "CompletedQualificationHold",
     "RecoverableQualificationDispatcher",
     "RecoverableQualificationDispatcherError",
     "RecoverableQualificationHold",

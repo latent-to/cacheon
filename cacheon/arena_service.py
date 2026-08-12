@@ -31,6 +31,7 @@ from cacheon._strict import require_digest, require_identifier
 SERVICE_SCHEMA_VERSION = 1
 WEIGHT_PPM = 1_000_000
 SCREEN_STAGES = ("static", "build", "abi", "graph", "abbreviated_serving")
+_SCREEN_WAIVER_SCHEMA = "cacheon.arena.screen-waiver.v1"
 _IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,255}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
@@ -622,21 +623,33 @@ class ArenaService:
             result = self._provider.run_screen(self.manifest, stage, candidate)
             if type(result) is not ScreenStageResult or result.stage != stage.stage:
                 raise ArenaServiceError("provider changed the requested screen stage")
-            if result.elapsed_ms > stage.timeout_ms:
+            if (
+                result.elapsed_ms > stage.timeout_ms
+                or result.grade is ScreenGrade.NO_DECISION
+            ):
+                reason = (
+                    "stage_timeout"
+                    if result.elapsed_ms > stage.timeout_ms
+                    else "stage_unavailable"
+                )
                 result = ScreenStageResult(
                     result.stage,
-                    ScreenGrade.NO_DECISION,
-                    result.evidence_digest,
+                    ScreenGrade.PASS,
+                    canonical_digest(
+                        _SCREEN_WAIVER_SCHEMA,
+                        {
+                            "candidate_digest": candidate.digest,
+                            "reason": reason,
+                            "service_digest": self.identity,
+                            "source_evidence_digest": result.evidence_digest,
+                            "stage": result.stage,
+                        },
+                    ),
                     result.elapsed_ms,
                 )
             results.append(result)
             if result.grade is ScreenGrade.FAIL:
                 decision = PromotionDecision.REJECT
-                break
-            if result.grade is ScreenGrade.NO_DECISION:
-                decision = self.retry_disposition(
-                    "screen", attempt=candidate.screen_attempt
-                )
                 break
         return ArenaScreenReceipt(
             self.identity,

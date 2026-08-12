@@ -256,10 +256,21 @@ class StandingCpuSupervisor:
 
         # Recoverable qualification HOLD / REQUEUE are first-class public products.
         from cacheon.chain.recoverable_qualification_dispatcher import (
+            CompletedQualificationHold,
             RecoverableQualificationHold,
             RecoverableQualificationRequeue,
         )
 
+        if type(raw) is CompletedQualificationHold:
+            return SupervisorStageResult(
+                stage=stage,
+                progressed=True,
+                disposition="hold",
+                request_id=raw.request_id,
+                lease_id=raw.lease.lease_id,
+                hold_reason=raw.reason,
+                phase=SupervisorPhase.HOLD,
+            )
         if type(raw) is RecoverableQualificationHold:
             return SupervisorStageResult(
                 stage=stage,

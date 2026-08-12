@@ -6,6 +6,7 @@ import contextlib
 import errno
 import fcntl
 import hashlib
+import logging
 import os
 import secrets
 import stat
@@ -52,6 +53,7 @@ ATTEMPT_SCHEMA = "cacheon.eval.b300-qualification-graph-evidence-attempt.v2"
 MAX_INDEX_BYTES = 64 * 1024
 MAX_ATTEMPT_BYTES = 64 * 1024
 _LOCK_POLL_SECONDS = 0.01
+_LOG = logging.getLogger(__name__)
 
 
 class B300QualificationGraphPreEntryFailure(Exception):
@@ -208,6 +210,60 @@ class B300QualificationGraphEvidenceStore:
 
     def _lock_path(self, binding: B300QualificationGraphBinding) -> Path:
         return self._policy_lock_root / f"{binding.digest}.lock"
+
+    def _producer_lock_path(self, binding: B300QualificationGraphBinding) -> Path:
+        return self._policy_lock_root / f"{binding.digest}.producer.lock"
+
+    def _acquire_producer_lease(self, binding: B300QualificationGraphBinding) -> int | None:
+        """Acquire a crash-released lease without waiting behind a live producer."""
+
+        self._validate_directories()
+        path = self._producer_lock_path(binding)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, flags, 0o600)
+            before = path.lstat()
+            opened = os.fstat(descriptor)
+            if (
+                stat.S_ISLNK(before.st_mode)
+                or not stat.S_ISREG(opened.st_mode)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                or opened.st_nlink != 1
+                or opened.st_uid != _owner()
+                or stat.S_IMODE(opened.st_mode) != 0o600
+            ):
+                raise B300QualificationGraphEvidenceStoreError(
+                    "graph evidence producer lease is unsafe"
+                )
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                    os.close(descriptor)
+                    return None
+                raise
+            self._validate_directories()
+            return descriptor
+        except (B300QualificationGraphEvidenceStoreError, OSError) as exc:
+            if descriptor is not None:
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
+            if isinstance(exc, B300QualificationGraphEvidenceStoreError):
+                raise
+            raise B300QualificationGraphEvidenceStoreError(
+                f"graph evidence producer lease failed: {exc}"
+            ) from None
+
+    @staticmethod
+    def _release_producer_lease(descriptor: int | None) -> None:
+        if descriptor is None:
+            return
+        with contextlib.suppress(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
 
     @contextlib.contextmanager
     def _locked(self, binding: B300QualificationGraphBinding, deadline: float) -> Iterator[None]:
@@ -812,60 +868,78 @@ class B300QualificationGraphEvidenceStore:
         *,
         deadline: float,
     ) -> EvidenceArtifactRef:
-        """Arm once; recovery consumes only store-owned durable output."""
+        """Reuse durable output or run one crash-recoverable producer."""
 
         exact = self._binding(binding)
         bound = _deadline(deadline)
         if not callable(producer):
             raise B300QualificationGraphEvidenceStoreError("graph artifact producer must be callable before arming")
 
-        with self._locked(exact, bound):
-            state = self._attempt_state(exact)
-            self._reject_unbacked_index(exact, state)
-            if state.outcome == "success":
-                reference = self._resolve_success_locked(exact, state, bound)
-                _check_deadline(bound)
-                return reference
-            if state.outcome == "output":
-                token = state.token
-                reference = state.reference
-                if type(token) is not B300QualificationGraphAttemptToken or type(
-                    reference
-                ) is not EvidenceArtifactRef:
-                    raise B300QualificationGraphEvidenceStoreError(
-                        "graph durable output state is incomplete"
+        lease: int | None = None
+        try:
+            with self._locked(exact, bound):
+                state = self._attempt_state(exact)
+                self._reject_unbacked_index(exact, state)
+                if state.outcome == "success":
+                    reference = self._resolve_success_locked(exact, state, bound)
+                    _check_deadline(bound)
+                    return reference
+                if state.outcome == "output":
+                    token = state.token
+                    reference = state.reference
+                    if type(token) is not B300QualificationGraphAttemptToken or type(
+                        reference
+                    ) is not EvidenceArtifactRef:
+                        raise B300QualificationGraphEvidenceStoreError(
+                            "graph durable output state is incomplete"
+                        )
+                    self._append_success(exact, token, reference, bound)
+                    self._publish_index(exact, reference, bound)
+                    indexed = self._read_index(exact)
+                    _check_deadline(bound)
+                    return indexed
+                lease = self._acquire_producer_lease(exact)
+                if lease is None:
+                    raise B300QualificationGraphEvidenceHold(
+                        "graph evidence attempt is armed while its producer is active"
                     )
-                self._append_success(exact, token, reference, bound)
-                self._publish_index(exact, reference, bound)
-                indexed = self._read_index(exact)
-                _check_deadline(bound)
-                return indexed
-            if state.outcome == "armed":
-                raise B300QualificationGraphEvidenceHold(
-                    "graph evidence attempt is armed without durable generation output"
+                if state.outcome == "armed":
+                    token = state.token
+                    if type(token) is not B300QualificationGraphAttemptToken:
+                        raise B300QualificationGraphEvidenceStoreError(
+                            "graph evidence armed state lacks an exact token"
+                        )
+                else:
+                    token = self._token(exact)
+                    self._append_arm(exact, token, bound)
+            if type(token) is not B300QualificationGraphAttemptToken:
+                raise B300QualificationGraphEvidenceStoreError(
+                    "graph evidence armed state lacks an exact token"
                 )
-            else:
-                token = self._token(exact)
-                self._append_arm(exact, token, bound)
-        if type(token) is not B300QualificationGraphAttemptToken:
-            raise B300QualificationGraphEvidenceStoreError("graph evidence armed state lacks an exact token")
 
-        _check_deadline(bound)
-        try:
-            output = producer(exact, token, bound)
-        except Exception as exc:
-            raise B300QualificationGraphEvidenceHold(
-                f"graph artifact producer outcome is ambiguous and remains on HOLD: {exc}"
-            ) from None
-        _check_deadline(bound)
-        try:
-            return self.finalize(exact, output, deadline=bound)
-        except B300QualificationGraphEvidenceHold:
-            raise
-        except B300QualificationGraphEvidenceStoreError as exc:
-            raise B300QualificationGraphEvidenceHold(
-                f"graph artifact producer was not exact and remains on HOLD: {exc}"
-            ) from None
+            _check_deadline(bound)
+            try:
+                output = producer(exact, token, bound)
+            except Exception as exc:
+                _LOG.exception(
+                    "graph artifact producer failed for binding %s; the existing "
+                    "armed attempt remains re-enterable",
+                    exact.digest,
+                )
+                raise B300QualificationGraphEvidenceHold(
+                    f"graph artifact producer failed before durable output: {exc}"
+                ) from None
+            _check_deadline(bound)
+            try:
+                return self.finalize(exact, output, deadline=bound)
+            except B300QualificationGraphEvidenceHold:
+                raise
+            except B300QualificationGraphEvidenceStoreError as exc:
+                raise B300QualificationGraphEvidenceHold(
+                    f"graph artifact producer was not exact and remains on HOLD: {exc}"
+                ) from None
+        finally:
+            self._release_producer_lease(lease)
 
 
 __all__ = [

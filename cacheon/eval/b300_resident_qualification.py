@@ -55,6 +55,7 @@ from cacheon.eval.resident_pair_retirement_checkpoint import (
     build_resident_pair_retirement_checkpoint,
     regrade_resident_pair_retirement_checkpoint,
 )
+from cacheon.eval.resident_pair_binding import ResidentPairRuntimeBinding
 
 
 class B300ResidentQualificationError(RuntimeError):
@@ -69,7 +70,7 @@ class B300ResidentQualificationHold(B300ResidentQualificationError):
 
 @dataclass(frozen=True)
 class B300ResidentQualificationPrefix:
-    """Reopened speed/count/retirement product preceding eager audit and T."""
+    """Reopened speed product, optionally followed by count and retirement."""
 
     speed_plan: ResidentPairCrossoverPlan
     speed: ResidentPairCrossoverEvidence
@@ -77,7 +78,7 @@ class B300ResidentQualificationPrefix:
     count: ResidentCountQualityExecutionResult | None
     count_result: RegisteredResidentCountQualityResult | None
     count_checkpoint: ResidentCountQualityCheckpoint | None
-    retirement: ResidentPairRetirementCheckpoint
+    retirement: ResidentPairRetirementCheckpoint | None
 
     def __post_init__(self) -> None:
         count_rows = (
@@ -86,9 +87,18 @@ class B300ResidentQualificationPrefix:
         if (
             type(self.speed_plan) is not ResidentPairCrossoverPlan
             or type(self.speed) is not ResidentPairCrossoverEvidence
-            or type(self.retirement) is not ResidentPairRetirementCheckpoint
             or self.speed.plan_digest != self.speed_plan.digest
-            or self.speed.pair_binding != self.retirement.pair_binding
+            or (
+                self.retirement is not None
+                and (
+                    type(self.retirement) is not ResidentPairRetirementCheckpoint
+                    or self.speed.pair_binding != self.retirement.pair_binding
+                )
+            )
+            or (
+                self.retirement is None
+                and self.speed.decision is not SpeedStageDecision.FAIL
+            )
             or (all(row is None for row in count_rows))
             != (self.speed.decision is SpeedStageDecision.FAIL)
             or (
@@ -135,13 +145,39 @@ def _speed_plan(
     screen_lane: str,
 ) -> ResidentPairCrossoverPlan:
     orientation = factory.lane_pair.orientation(screen_lane)
-    binding = pair.binding if pair is not None else retirement.pair_binding  # type: ignore[union-attr]
+    resolved = pair.binding if pair is not None else retirement.pair_binding  # type: ignore[union-attr]
+    if type(resolved) is not ResidentPairRuntimeBinding:
+        raise B300ResidentQualificationError(
+            "resident speed plan lacks one exact pair binding"
+        )
     return ResidentPairCrossoverPlan(
         candidate_bundle_digest,
         plan.resident_speed_plan,
-        binding,
+        resolved,
         orientation.resident_baseline.lane_id,
         orientation.candidate.lane_id,
+    )
+
+
+def _speed_plan_from_binding(
+    plan: CausalQualificationInput,
+    factory: B300CommissionedResidentPairFactory,
+    binding: ResidentPairRuntimeBinding,
+    *,
+    candidate_bundle_digest: str,
+    screen_lane: str,
+) -> ResidentPairCrossoverPlan:
+    class _BindingView:
+        def __init__(self, value: ResidentPairRuntimeBinding) -> None:
+            self.binding = value
+
+    return _speed_plan(
+        plan,
+        factory,
+        _BindingView(binding),  # type: ignore[arg-type]
+        None,
+        candidate_bundle_digest=candidate_bundle_digest,
+        screen_lane=screen_lane,
     )
 
 
@@ -299,10 +335,31 @@ def run_b300_resident_qualification_prefix(
                 retirement=retirement,
                 screen_lane=screen_lane,
             )
-        if (
-            continuation.load_resident_pair_speed_raw() is not None
-            or continuation.load_resident_count_quality() is not None
-        ):
+        durable_speed = continuation.load_resident_pair_speed_raw()
+        if durable_speed is not None:
+            speed_plan = _speed_plan_from_binding(
+                plan,
+                factory,
+                durable_speed.pair_binding,
+                candidate_bundle_digest=candidate.publication.content_hash,
+                screen_lane=screen_lane,
+            )
+            speed = continuation.load_resident_pair_speed(speed_plan)
+            if speed is None:
+                raise B300ResidentQualificationHold(
+                    "durable resident speed disappeared while reopening"
+                )
+            if (
+                speed.decision is not SpeedStageDecision.FAIL
+                or continuation.load_resident_count_quality() is not None
+            ):
+                raise B300ResidentQualificationHold(
+                    "durable resident work exists without exact pair retirement"
+                )
+            return B300ResidentQualificationPrefix(
+                speed_plan, speed, None, None, None, None, None
+            )
+        if continuation.load_resident_count_quality() is not None:
             raise B300ResidentQualificationHold(
                 "durable resident work exists without exact pair retirement"
             )
@@ -342,44 +399,49 @@ def run_b300_resident_qualification_prefix(
                 raise B300ResidentQualificationHold(
                     "resident speed disappeared after durable publication"
                 )
+            if speed.decision is SpeedStageDecision.FAIL:
+                owner.release(authority, borrowed.binding)
+                completed = True
+                return B300ResidentQualificationPrefix(
+                    speed_plan, speed, None, None, None, None, None
+                )
             count_plan = count = None
-            if speed.decision is SpeedStageDecision.PASS:
-                count_plan = _count_plan(capability, speed_plan)
-                count = execute_candidate_count_quality(
-                    count_plan,
-                    pair=borrowed.pair,
-                    judge=capability.judge,
-                    deadline=deadline,
+            count_plan = _count_plan(capability, speed_plan)
+            count = execute_candidate_count_quality(
+                count_plan,
+                pair=borrowed.pair,
+                judge=capability.judge,
+                deadline=deadline,
+            )
+            publish_resident_count_quality_continuation(
+                plan.evidence_root,
+                continuation,
+                count,
+                plan=count_plan,
+                fixed_stock_authority_digest=capability.stock_authority.digest,
+                pair_binding=borrowed.binding,
+                judge=capability.judge,
+                deadline=deadline,
+            )
+            count = reopen_resident_count_quality_continuation(
+                plan.evidence_root,
+                continuation,
+                plan=count_plan,
+                fixed_stock_authority_digest=capability.stock_authority.digest,
+                pair_binding=borrowed.binding,
+                judge=capability.judge,
+            )
+            if count is None:
+                raise B300ResidentQualificationHold(
+                    "resident count disappeared after durable publication"
                 )
-                publish_resident_count_quality_continuation(
-                    plan.evidence_root,
-                    continuation,
-                    count,
-                    plan=count_plan,
-                    fixed_stock_authority_digest=capability.stock_authority.digest,
-                    pair_binding=borrowed.binding,
-                    judge=capability.judge,
-                    deadline=deadline,
-                )
-                count = reopen_resident_count_quality_continuation(
-                    plan.evidence_root,
-                    continuation,
-                    plan=count_plan,
-                    fixed_stock_authority_digest=capability.stock_authority.digest,
-                    pair_binding=borrowed.binding,
-                    judge=capability.judge,
-                )
-                if count is None:
-                    raise B300ResidentQualificationHold(
-                        "resident count disappeared after durable publication"
-                    )
-                _registered_count(
-                    capability,
-                    candidate,
-                    count_plan,
-                    count,
-                    evidence_root=plan.evidence_root,
-                )
+            _registered_count(
+                capability,
+                candidate,
+                count_plan,
+                count,
+                evidence_root=plan.evidence_root,
+            )
             retirement = build_resident_pair_retirement_checkpoint(
                 owner,
                 factory=factory,

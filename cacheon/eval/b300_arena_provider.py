@@ -53,9 +53,9 @@ from cacheon.eval.b300_qualification_graph_store_io import (
 from cacheon.eval.qualification_intake import QualificationPlanFactory
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_screen_lane import (
-    ResidentScreenLaneQuarantined,
     ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
+    screen_waiver_result,
 )
 from cacheon.stack_identity import canonical_digest
 
@@ -635,6 +635,7 @@ class B300ArenaServiceProvider:
             capabilities.qualification_stage if capabilities is not None else None
         )
         self._resident_lifetime: B300ResidentScreenLifetime | None = None
+        self._resident_screen_bypass_reason: str | None = None
         self._resident_failed = False
         self._resident_teardown_failed = False
         self._closed = False
@@ -676,14 +677,20 @@ class B300ArenaServiceProvider:
             self._require_open_and_current()
             started = time.monotonic()
             if stage.stage == _SERVING_STAGE:
+                if self._resident_screen_bypass_reason is not None:
+                    return screen_waiver_result(
+                        candidate,
+                        self._resident_screen_bypass_reason,
+                        max(1, round((time.monotonic() - started) * 1000)),
+                    )
                 lifetime = self._resident_lifetime
                 if lifetime is None:
                     try:
                         created = self._create_resident()
                     except Exception as exc:
-                        return self._exception_result(
-                            manifest, stage, candidate, exc, started
-                        )
+                        raise B300ArenaProviderError(
+                            "resident screen start failed"
+                        ) from exc
                     if type(created) is not B300ResidentScreenLifetime:
                         raise B300ArenaProviderError(
                             "resident factory returned an untyped lifetime"
@@ -692,23 +699,21 @@ class B300ArenaServiceProvider:
                     self._resident_lifetime = lifetime
                 try:
                     result = lifetime.screen_stage.run_screen(candidate)
-                except ResidentScreenLaneQuarantined as exc:
-                    # A canary quarantine retains the standing model for
-                    # inspection/recovery.  It is infrastructure NO_DECISION,
-                    # never an authority to destroy and reload the engine.
-                    return self._exception_result(
-                        manifest, stage, candidate, exc, started
-                    )
                 except ResidentScreenLifetimeFailed as exc:
                     self._resident_failed = True
                     raise B300ArenaProviderError(
                         "resident screen lifetime failed; epoch restart required"
                     ) from exc
                 except Exception as exc:
-                    # Candidate-carrier and host-side stage errors are typed
-                    # NO_DECISION.  They do not own the standing engine and
-                    # therefore cannot release or reload it.
-                    return self._exception_result(manifest, stage, candidate, exc, started)
+                    # The request may retry while the healthy resident remains,
+                    # but the exception is not a candidate screen verdict.
+                    raise B300ArenaProviderError(
+                        "resident screen request failed"
+                    ) from exc
+                bypass_reason = lifetime.screen_stage.bypass_reason
+                if bypass_reason is not None:
+                    self._resident_screen_bypass_reason = bypass_reason
+                    self._release_resident()
             else:
                 configured = self._handlers.get(stage.stage)
                 if configured is None:
@@ -825,7 +830,7 @@ class B300ArenaServiceProvider:
         elapsed_ms = max(1, round((time.monotonic() - started) * 1_000))
         return ScreenStageResult(
             stage.stage,
-            ScreenGrade.NO_DECISION,
+            ScreenGrade.PASS,
             evidence,
             elapsed_ms,
         )

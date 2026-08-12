@@ -114,6 +114,7 @@ if TYPE_CHECKING:
         ResidentPairMarginalLifecycleEvidence, ResidentPairQualificationClosure,
     )
     from cacheon.eval.resident_pair_speed_witness import (
+        ResidentPairLiveSpeedWitness,
         project_resident_pair_speed_witness,
     )
 
@@ -1316,7 +1317,7 @@ class QualificationStageExit:
     stage: str
     decision: QualificationDecision
     reason: str
-    speed_witness: ResidentSpeedWitness
+    speed_witness: ResidentSpeedWitness | ResidentPairLiveSpeedWitness
     audit_witness: AuditWitness | None
     audit_started_monotonic_s: float | None
     audit_completed_monotonic_s: float | None
@@ -1328,6 +1329,9 @@ class QualificationStageExit:
         from cacheon.eval.registered_resident_count_quality import (
             RegisteredResidentCountQualityResult,
         )
+        from cacheon.eval.resident_pair_speed_witness import (
+            ResidentPairLiveSpeedWitness,
+        )
 
         for name in ("authority_digest", "source_digest", "selected_delta_digest"):
             object.__setattr__(
@@ -1336,9 +1340,17 @@ class QualificationStageExit:
         object.__setattr__(self, "decision", _decision(self.decision))
         if (
             self.stage not in {"speed", "resident_count", "audit"}
-            or type(self.speed_witness) is not ResidentSpeedWitness
+            or type(self.speed_witness)
+            not in {ResidentSpeedWitness, ResidentPairLiveSpeedWitness}
             or self.speed_witness.selected_delta_digest
             != self.selected_delta_digest
+            or (
+                type(self.speed_witness) is ResidentPairLiveSpeedWitness
+                and (
+                    self.stage != "speed"
+                    or self.decision is not QualificationDecision.FAIL
+                )
+            )
         ):
             raise QualificationRunnerError("qualification stage exit is malformed")
         if self.terminal_quiescence_digest is not None:
@@ -1457,6 +1469,10 @@ class QualificationStageExit:
 
     @classmethod
     def from_dict(cls, value: object) -> "QualificationStageExit":
+        from cacheon.eval.resident_pair_speed_witness import (
+            ResidentPairLiveSpeedWitness,
+        )
+
         base = set(cls.__dataclass_fields__) - {
             "resident_count_result",
             "retirement_digest",
@@ -1498,8 +1514,11 @@ class QualificationStageExit:
         return cls(
             **{
                 **raw,
-                "speed_witness": ResidentSpeedWitness.from_dict(
-                    raw["speed_witness"]
+                "speed_witness": (
+                    ResidentPairLiveSpeedWitness.from_dict(raw["speed_witness"])
+                    if type(raw["speed_witness"]) is dict
+                    and "stock_return_digests" in raw["speed_witness"]
+                    else ResidentSpeedWitness.from_dict(raw["speed_witness"])
                 ),
                 "audit_witness": (
                     None
@@ -3126,6 +3145,7 @@ def reopen_qualification_stage_exit(
         ResidentPairMarginalLifecycleEvidence,
     )
     from cacheon.eval.resident_pair_speed_witness import (
+        project_resident_pair_live_speed_witness,
         project_resident_pair_speed_witness,
     )
 
@@ -3155,21 +3175,32 @@ def reopen_qualification_stage_exit(
             )
         plan = expected.resident_speed_plan
         witness = result.speed_witness
-        if resident_pair_lifecycle is not None and (
-            type(resident_pair_lifecycle)
-            is not ResidentPairMarginalLifecycleEvidence
-            or resident_pair_lifecycle.prepared != expected.prepared
-            or resident_pair_lifecycle.plan.crossover_plan != plan
-            or witness
-            != project_resident_pair_speed_witness(
-                resident_pair_lifecycle.crossover,
-                plan=resident_pair_lifecycle.plan,
-                lane_quiescence=resident_pair_lifecycle.lane_quiescence,
+        if resident_pair_lifecycle is not None:
+            if (
+                type(resident_pair_lifecycle)
+                is not ResidentPairMarginalLifecycleEvidence
+                or resident_pair_lifecycle.prepared != expected.prepared
+                or resident_pair_lifecycle.plan.crossover_plan != plan
+            ):
+                raise QualificationRunnerError(
+                    "qualification stage exit differs from resident pair evidence"
+                )
+            expected_witness = (
+                project_resident_pair_live_speed_witness(
+                    resident_pair_lifecycle.crossover,
+                    plan=resident_pair_lifecycle.plan,
+                )
+                if resident_pair_lifecycle.retirement is None
+                else project_resident_pair_speed_witness(
+                    resident_pair_lifecycle.crossover,
+                    plan=resident_pair_lifecycle.plan,
+                    lane_quiescence=resident_pair_lifecycle.lane_quiescence,
+                )
             )
-        ):
-            raise QualificationRunnerError(
-                "qualification stage exit differs from resident pair evidence"
-            )
+            if witness != expected_witness:
+                raise QualificationRunnerError(
+                    "qualification stage exit differs from resident pair evidence"
+                )
         if (
             result.to_dict() != payload
             or result.authority_digest != qualification_authority_digest(expected)
@@ -3861,7 +3892,9 @@ def run_causal_qualification(
         ResidentPairMarginalLifecycleEvidence,
     )
     from cacheon.eval.resident_pair_speed_witness import (
+        ResidentPairLiveSpeedWitness,
         ResidentPairSpeedWitnessError,
+        project_resident_pair_live_speed_witness,
         project_resident_pair_speed_witness,
     )
 
@@ -3994,7 +4027,9 @@ def run_causal_qualification(
     quality_state: QualityContinuation | None = (
         None if continuation is None else continuation.load_quality()
     )
-    resident_speed_witness: ResidentSpeedWitness | None = None
+    resident_speed_witness: (
+        ResidentSpeedWitness | ResidentPairLiveSpeedWitness | None
+    ) = None
     if resident_mode:
         assert value.resident_speed_plan is not None
         if pair_mode:
@@ -4011,10 +4046,17 @@ def run_causal_qualification(
                     "resident pair lifecycle differs from durable continuation"
                 )
             try:
-                resident_speed_witness = project_resident_pair_speed_witness(
-                    crossover,
-                    plan=lifecycle.plan,
-                    lane_quiescence=lifecycle.lane_quiescence,
+                resident_speed_witness = (
+                    project_resident_pair_live_speed_witness(
+                        crossover,
+                        plan=lifecycle.plan,
+                    )
+                    if lifecycle.retirement is None
+                    else project_resident_pair_speed_witness(
+                        crossover,
+                        plan=lifecycle.plan,
+                        lane_quiescence=lifecycle.lane_quiescence,
+                    )
                 )
             except ResidentPairSpeedWitnessError as exc:
                 raise QualificationContinuationError(str(exc)) from None

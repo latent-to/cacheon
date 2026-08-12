@@ -828,8 +828,8 @@ class EvaluationLeaseStoreMixin:
         that honesty is a free loop: the same reservation is reclaimed and
         systemically released forever (observed 2026-08-10: one reservation
         claimed 16 times against a dead worker).  At the cap the reservation
-        parks as ``held`` with NO_DECISION for operator attention.  Holding
-        is not a verdict; ``release_hold`` reopens it.
+        parks as ``held`` with a blank candidate decision for operator
+        attention.  Holding is not a verdict; ``release_hold`` reopens it.
         """
         for member in lease.members:
             count = self._db.execute(
@@ -842,7 +842,7 @@ class EvaluationLeaseStoreMixin:
             if count < self._SYSTEMIC_RELEASE_CAP:
                 continue
             self._db.execute(
-                "UPDATE reservations SET status='held',decision='NO_DECISION',"
+                "UPDATE reservations SET status='held',decision='',"
                 "reason=? WHERE reservation_id=? AND status=?",
                 (
                     f"systemic_release_cap:{count}",

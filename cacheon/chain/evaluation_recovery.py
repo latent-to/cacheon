@@ -369,10 +369,20 @@ def valid_evaluation_recovery_event_transition(
             and not event.reason
         )
     if event.event_type is RecoveryEventType.RESULT_READY:
+        terminal_hold_reopen = (
+            previous.resolution is RecoveryResolution.UNRESOLVED
+            and previous.phase is RecoveryPhase.HELD
+            and previous.reason.startswith("remote_qualification_hold:")
+            and event.resolution is RecoveryResolution.UNRESOLVED
+        )
         return (
-            phase_continuation
+            (phase_continuation or terminal_hold_reopen)
             and previous.phase
-            in {RecoveryPhase.PUBLICATION_COMMITTED, RecoveryPhase.REQUEST_READY}
+            in {
+                RecoveryPhase.PUBLICATION_COMMITTED,
+                RecoveryPhase.REQUEST_READY,
+                RecoveryPhase.HELD,
+            }
             and event.phase is RecoveryPhase.RESULT_READY
             and not event.reason
         )

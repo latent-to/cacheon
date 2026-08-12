@@ -119,18 +119,25 @@ def _history(
     results = retirement.request_history
     slices = tuple(row.request_slice for row in results)
     speed_count = len(speed.request_slices)
+    current = speed.request_slices + (() if count is None else count.request_slices)
+    current_count = len(current)
     if (
         type(results) is not tuple
-        or len(results) != speed_count + (2 if count is not None else 0)
+        or len(results) < current_count
         or any(type(row) is not ResidentRequestResult or not row.ok for row in results)
-        or slices[:speed_count] != speed.request_slices
-        or (count is not None and {row.request_id for row in slices[speed_count:]} != {
+        or slices[-current_count:-current_count + speed_count if count is not None else None]
+        != speed.request_slices
+        or (count is not None and {row.request_id for row in slices[-2:]} != {
             row.request_id for row in count.request_slices
         })
         or len({row.request_id for row in slices}) != len(slices)
         or any(
             row.value
-            != (row.request_slice.new_batches if index < speed_count else row.request_slice.new_batches[0])
+            != (
+                row.request_slice.new_batches
+                if index < len(results) - 2 or count is None
+                else row.request_slice.new_batches[0]
+            )
             for index, row in enumerate(results)
         )
     ):
@@ -277,6 +284,9 @@ def regrade_resident_pair_retirement_checkpoint(
         raise ResidentPairRetirementHold("resident pair retirement checkpoint is not exact")
     speed_digests = tuple(_slice_digest(row) for row in speed.request_slices)
     count_digests = () if count is None else tuple(_slice_digest(row) for row in count.request_slices)
+    current_digests = speed_digests + count_digests
+    history = checkpoint.request_history_slice_digests
+    prefix_count = len(history) - len(current_digests)
     if (
         checkpoint.authenticated_request_digest != authority.authenticated_request_digest
         or checkpoint.qualification_authority_digest != authority.qualification_authority_digest
@@ -287,8 +297,10 @@ def regrade_resident_pair_retirement_checkpoint(
         or checkpoint.speed_evidence_digest != speed.digest
         or checkpoint.count_plan_digest != (None if count_plan is None else count_plan.digest)
         or checkpoint.count_evidence_digest != (None if count is None else count.digest)
-        or checkpoint.request_history_slice_digests[: len(speed_digests)] != speed_digests
-        or sorted(checkpoint.request_history_slice_digests[len(speed_digests) :])
+        or prefix_count < 0
+        or history[prefix_count:prefix_count + len(speed_digests)]
+        != speed_digests
+        or sorted(history[prefix_count + len(speed_digests):])
         != sorted(count_digests)
     ):
         raise ResidentPairRetirementHold("retirement names another request or history")
@@ -321,8 +333,15 @@ def regrade_resident_pair_retirement_checkpoint(
             or post.configuration_sha256 != plan.lane_policy.device_configuration_digest
             or pre.policy_sha256 != plan.lane_policy.device_policy_digest
             or post.policy_sha256 != plan.lane_policy.device_policy_digest
-            or _typed_digest(_SESSION_CODEC, session, "cacheon.eval.resident-session-evidence.v1")
-            != lane.session_digest
+            or (
+                prefix_count == 0
+                and _typed_digest(
+                    _SESSION_CODEC,
+                    session,
+                    "cacheon.eval.resident-session-evidence.v1",
+                )
+                != lane.session_digest
+            )
             or lane.quiescence.executor_id != plan.executor.manager.executor_id
             or lane.quiescence.namespace_digest != binding.executor_namespace_digest
             or lane.quiescence.observed_monotonic_s < post.completed_monotonic_s

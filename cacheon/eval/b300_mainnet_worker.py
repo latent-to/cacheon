@@ -13,6 +13,7 @@ arena manifest selects that adapter.
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,6 +87,7 @@ from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
 WORKER_SCHEMA = "cacheon.eval.b300-mainnet-worker.v1"
+_LOG = logging.getLogger(__name__)
 
 
 class B300MainnetWorkerError(RuntimeError):
@@ -367,11 +369,13 @@ class B300MainnetWorker:
             )
 
     def close(self) -> None:
-        """Permanently release the resident provider lifetime."""
+        """Permanently release qualification and screen resident lifetimes."""
 
         with self._lock:
             if self._closed:
                 return
+            if self._resident_pair_factory is not None:
+                self._resident_pair_factory.close()
             self._provider.close()
             self._closed = True
 
@@ -473,6 +477,11 @@ class B300MainnetWorker:
         ):
             if request_digest is None:
                 raise
+            _LOG.exception(
+                "qualification graph evidence unavailable while planning for "
+                "request %s; the qualification is held without a candidate decision",
+                request_digest,
+            )
             return qualification_graph_gate_hold(
                 RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
                 authenticated_request_digest=request_digest,
@@ -505,6 +514,12 @@ class B300MainnetWorker:
                 B300QualificationGraphEvidenceHold,
                 B300QualificationGraphEvidenceStoreError,
             ):
+                _LOG.exception(
+                    "qualification graph evidence unavailable while building the "
+                    "plan for request %s; the qualification is held without a "
+                    "candidate decision",
+                    request_digest,
+                )
                 return qualification_graph_gate_hold(
                     RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
                     authenticated_request_digest=request_digest,
@@ -523,6 +538,13 @@ class B300MainnetWorker:
                 authenticated_request_digest=request_digest,
             )
             if type(graph) is B300QualificationGraphGateHold:
+                _LOG.error(
+                    "qualification graph gate held request %s with reason %s "
+                    "diagnostic %s",
+                    request_digest,
+                    graph.reason,
+                    graph.diagnostic_digest,
+                )
                 return graph
             if (
                 graph.plan is not plan
@@ -577,6 +599,11 @@ class B300MainnetWorker:
                     B300ResidentQualificationError,
                     ResidentPairQualityLifecycleError,
                 ):
+                    _LOG.exception(
+                        "resident qualification prefix failed for request %s; the "
+                        "qualification is held without a candidate decision",
+                        request_digest,
+                    )
                     return _resident_evidence_hold(
                         request_digest,
                         work.factory.manifest.authority_digest,
@@ -600,6 +627,11 @@ class B300MainnetWorker:
         except QualificationContinuationError:
             if request_digest is None:
                 raise
+            _LOG.exception(
+                "resident continuation failed for request %s; the qualification "
+                "is held without a candidate decision",
+                request_digest,
+            )
             return _resident_evidence_hold(
                 request_digest,
                 work.factory.manifest.authority_digest,
