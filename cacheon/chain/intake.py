@@ -3091,6 +3091,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         *,
         authority_digest: str,
         current_block: int,
+        allow_repeat_refresh: bool = False,
     ) -> tuple[IntakeReservation, ...]:
         """Readmit an exact validator-expired cohort with one fresh SLA window.
 
@@ -3135,6 +3136,16 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 elif prior["reason"] == _VALIDATOR_DOWNTIME_REQUEUE_REASON:
                     # First requeue already burned; admit one refresh after
                     # the cohort re-expired under the automatic SLA again.
+                    reset_reason = _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON
+                elif (
+                    allow_repeat_refresh
+                    and prior["reason"]
+                    == _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON
+                ):
+                    # Owner-escalated repeat: every prior window burned while
+                    # the validator itself was down. Only an authority that
+                    # explicitly carries the escalation reopens the window;
+                    # the default budget stays fail-closed.
                     reset_reason = _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON
                 else:
                     raise IntakeError(

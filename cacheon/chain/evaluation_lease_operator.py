@@ -402,11 +402,20 @@ def requeue_expired(
     if not isinstance(authority_path, (str, os.PathLike)):
         raise FifoLeaseError("requeue authority path is required")
     path = _absolute_path(os.fspath(authority_path), "requeue authority path")
-    row = _closed(
-        _read_sealed_json(path),
+    raw = _read_sealed_json(path)
+    if type(raw) is not dict or set(raw) not in (
         _REQUEUE_AUTHORITY_FIELDS,
-        "validator downtime requeue authority",
-    )
+        _REQUEUE_AUTHORITY_FIELDS | {"allow_repeat_refresh"},
+    ):
+        raise FifoLeaseError(
+            "validator downtime requeue authority fields are not closed"
+        )
+    row = raw
+    allow_repeat_refresh = row.get("allow_repeat_refresh", False)
+    if type(allow_repeat_refresh) is not bool:
+        raise FifoLeaseError(
+            "validator downtime requeue repeat escalation must be boolean"
+        )
     if (
         row["schema"] != REQUEUE_AUTHORITY_SCHEMA
         or row["reason"] != "validator_worker_unavailable"
@@ -441,6 +450,7 @@ def requeue_expired(
             reservation_ids,
             authority_digest=authority_digest,
             current_block=point[0],
+            allow_repeat_refresh=allow_repeat_refresh,
         )
         return _result(
             "requeue_expired",

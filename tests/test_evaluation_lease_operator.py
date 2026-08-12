@@ -477,6 +477,41 @@ def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
     with pytest.raises(IntakeError, match="budget is already consumed"):
         operator.requeue_expired(config, refresh_authority)
 
+    # Owner-escalated repeat: only an authority explicitly carrying
+    # allow_repeat_refresh reopens a consumed budget; the flag must be a
+    # real boolean.
+    malformed_repeat = _seal(
+        tmp_path / "downtime-requeue-repeat-malformed.json",
+        {
+            "allow_repeat_refresh": "yes",
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "retained_result_reservation_ids": [_h("retained-result-repeat")],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    with pytest.raises(operator.FifoLeaseError, match="must be boolean"):
+        operator.requeue_expired(config, malformed_repeat)
+    repeat_authority = _seal(
+        tmp_path / "downtime-requeue-repeat.json",
+        {
+            "allow_repeat_refresh": True,
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "retained_result_reservation_ids": [_h("retained-result-repeat")],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    repeated = operator.requeue_expired(config, repeat_authority)
+    assert [item["status"] for item in repeated["requeued"]] == [
+        "published",
+        "promoted",
+    ]
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert store.get(published.reservation_id).reason == (
+            "validator_downtime_requeued_refresh"
+        )
+
 
 def test_downtime_requeue_restores_midscreen_and_rotated_promote(
     tmp_path: Path,
