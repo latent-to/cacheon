@@ -831,6 +831,116 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
         worker.close()
 
 
+def test_remote_qualification_retires_released_pair_and_retries_plan_build(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch,
+) -> None:
+    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(authorities)
+    readiness = _readiness(manifest, authorities)
+    claim = _qualification_claim(tmp_path / "cohort", manifest)
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
+
+    build_calls: list[object] = []
+    sentinel_plan = object()
+
+    def flaky_build(self):
+        build_calls.append(self)
+        if len(build_calls) == 1:
+            raise worker_module.B300QualificationGraphEvidenceHold(
+                "capture devices busy"
+            )
+        return sentinel_plan
+
+    gate_hold = worker_module.qualification_graph_gate_hold(
+        RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
+        authenticated_request_digest=request_digest,
+        authority_context_digest=manifest.digest,
+        code=worker_module.B300QualificationGraphHoldCode.RAW_EVIDENCE_INCOMPLETE,
+    )
+    gate_calls = []
+
+    def fake_gate(factory, plan, *, evidence_root, candidates, authenticated_request_digest):
+        assert plan is sentinel_plan
+        gate_calls.append(factory)
+        return gate_hold
+
+    monkeypatch.setattr(QualificationPlanFactory, "build", flaky_build)
+    monkeypatch.setattr(
+        worker_module, "run_b300_qualification_graph_gate", fake_gate
+    )
+    worker = B300MainnetWorker(manifest, authorities, readiness)
+    retires = []
+    monkeypatch.setattr(
+        worker._resident_pair_factory,
+        "retire_released_pair",
+        lambda: retires.append(True) or True,
+        raising=False,
+    )
+    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
+    try:
+        result = worker.run_remote_qualification(
+            claim.lease,
+            claim.candidates,
+            claim.screen_receipts,
+            screen_lane="primary",
+            continuation_store=continuation,
+            request_digest=request_digest,
+        )
+
+        assert result is gate_hold
+        assert len(build_calls) == 2
+        assert retires == [True]
+        assert len(gate_calls) == 1
+    finally:
+        worker.close()
+
+
+def test_remote_qualification_holds_when_no_released_pair_can_be_retired(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch,
+) -> None:
+    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(authorities)
+    readiness = _readiness(manifest, authorities)
+    claim = _qualification_claim(tmp_path / "cohort", manifest)
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
+
+    build_calls: list[object] = []
+
+    def busy_build(self):
+        build_calls.append(self)
+        raise worker_module.B300QualificationGraphEvidenceHold(
+            "capture devices busy"
+        )
+
+    monkeypatch.setattr(QualificationPlanFactory, "build", busy_build)
+    worker = B300MainnetWorker(manifest, authorities, readiness)
+    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
+    try:
+        result = worker.run_remote_qualification(
+            claim.lease,
+            claim.candidates,
+            claim.screen_receipts,
+            screen_lane="primary",
+            continuation_store=continuation,
+            request_digest=request_digest,
+        )
+
+        assert type(result) is B300QualificationGraphGateHold
+        assert (
+            result.reason
+            is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
+        )
+        assert len(build_calls) == 1
+    finally:
+        worker.close()
+
+
 def test_qualification_refuses_result_that_reorders_leased_cohort(
     tmp_path: Path,
     executor_factory,

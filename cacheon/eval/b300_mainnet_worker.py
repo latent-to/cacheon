@@ -508,38 +508,66 @@ class B300MainnetWorker:
                     authority_context_digest=work.factory.manifest.digest,
                     code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
                 )
-            if self._resident_pair_factory is not None:
-                try:
-                    if self._resident_pair_factory.retire_released_pair():
-                        _LOG.info(
-                            "retired the released resident pair before the "
-                            "graph gate for request %s",
-                            request_digest,
-                        )
-                except Exception:
-                    _LOG.exception(
-                        "released resident pair retirement failed before the "
-                        "graph gate for request %s; the gate drain will decide",
-                        request_digest,
-                    )
             try:
                 plan = work.factory.build()
             except (
                 B300QualificationGraphEvidenceHold,
                 B300QualificationGraphEvidenceStoreError,
             ):
-                _LOG.exception(
-                    "qualification graph evidence unavailable while building the "
-                    "plan for request %s; the qualification is held without a "
-                    "candidate decision",
+                retired = False
+                if self._resident_pair_factory is not None:
+                    try:
+                        retired = (
+                            self._resident_pair_factory.retire_released_pair()
+                        )
+                    except Exception:
+                        _LOG.exception(
+                            "released resident pair retirement failed after a "
+                            "graph evidence hold for request %s",
+                            request_digest,
+                        )
+                if not retired:
+                    _LOG.exception(
+                        "qualification graph evidence unavailable while building "
+                        "the plan for request %s; the qualification is held "
+                        "without a candidate decision",
+                        request_digest,
+                    )
+                    return qualification_graph_gate_hold(
+                        RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+                        authenticated_request_digest=request_digest,
+                        authority_context_digest=work.factory.manifest.digest,
+                        code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+                    )
+                _LOG.warning(
+                    "graph evidence capture held on busy devices for request %s; "
+                    "retired the released resident pair and retrying the plan "
+                    "build once",
                     request_digest,
                 )
-                return qualification_graph_gate_hold(
-                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                    authenticated_request_digest=request_digest,
-                    authority_context_digest=work.factory.manifest.digest,
-                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-                )
+                try:
+                    plan = work.factory.build()
+                except (
+                    B300QualificationGraphEvidenceHold,
+                    B300QualificationGraphEvidenceStoreError,
+                ):
+                    _LOG.exception(
+                        "qualification graph evidence still unavailable after "
+                        "pair retirement for request %s; the qualification is "
+                        "held without a candidate decision",
+                        request_digest,
+                    )
+                    return qualification_graph_gate_hold(
+                        RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+                        authenticated_request_digest=request_digest,
+                        authority_context_digest=work.factory.manifest.digest,
+                        code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+                    )
+                except QualificationIntakeError as exc:
+                    raise B300MainnetWorkerError(
+                        "remote graph gate could not reopen the prebuilt "
+                        "qualification plan"
+                    ) from exc
             except QualificationIntakeError as exc:
                 raise B300MainnetWorkerError(
                     "remote graph gate could not reopen the prebuilt qualification plan"
