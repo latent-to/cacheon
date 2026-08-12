@@ -628,7 +628,15 @@ def _variant_record(
             records.append(record)
     records.sort(key=lambda row: row.descriptor_digest)
     if not records or len({row.descriptor_digest for row in records}) != len(records):
-        raise PreparedGraphProbeError("graph descriptor authority is empty or duplicated")
+        digests = [row.descriptor_digest[:12] for row in records]
+        kinds = [
+            str(getattr(getattr(row, "case_descriptor", None), "case_kind", "?"))
+            for row in result.shape_results
+        ]
+        raise PreparedGraphProbeError(
+            "graph descriptor authority is empty or duplicated: "
+            f"records={len(records)} digests={digests} row_kinds={kinds}"
+        )
     context_applicable = any(row.applicable for row in records)
     if collective and temporal_count != int(context_applicable):
         raise PreparedGraphProbeIncompleteError(
