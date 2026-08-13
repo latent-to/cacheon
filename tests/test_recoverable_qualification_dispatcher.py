@@ -970,3 +970,71 @@ def test_completed_no_decision_hold_migrates_when_its_epoch_is_retired(
         "systemic:worker_infrastructure:retained_epoch_retired"
     )
     assert restored.status == member.prior_status
+
+
+def test_epoch_orphaned_completed_hold_migrates_autonomously(
+    tmp_path: Path,
+) -> None:
+    """The dispatcher itself migrates a completed-product hold once the
+    transport's live registered epoch provably differs from the epoch the
+    retained request plan binds (2026-08-13 zombie: the same migration
+    needed a manual operator release and starved both lanes meanwhile)."""
+
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, fail_resume=True)
+    dispatcher = _dispatcher(authority, transport)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
+        dispatcher.dispatch_once()
+    assert transport.plan is not None
+    plan_epoch = transport.plan.worker_epoch
+    with _store(authority) as store:
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None
+        store.hold_recovery(
+            recovery,
+            current_block=authority.fixtures.BLOCK,
+            reason="post_publication_no_decision",
+        )
+
+    live_epoch = "0" * 32 if plan_epoch != "0" * 32 else "1" * 32
+    transport.registration = {"worker_epoch": live_epoch}
+    outcome = dispatcher.dispatch_once()
+    assert type(outcome) is RecoverableQualificationRequeue
+    assert outcome.outcome.disposition is ExecutionDisposition.REQUEUE
+    with _store(authority) as store:
+        assert store.pending_qualification_recovery() is None
+        released = store._db.execute(
+            "SELECT reason FROM evaluation_leases WHERE state='released'"
+            " AND reason LIKE 'systemic%'"
+        ).fetchone()
+    assert released["reason"] == (
+        "systemic:worker_infrastructure:retained_epoch_retired"
+    )
+
+
+def test_completed_hold_for_the_live_epoch_parks_at_the_dispatcher(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, fail_resume=True)
+    dispatcher = _dispatcher(authority, transport)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
+        dispatcher.dispatch_once()
+    assert transport.plan is not None
+    with _store(authority) as store:
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None
+        store.hold_recovery(
+            recovery,
+            current_block=authority.fixtures.BLOCK,
+            reason="post_publication_no_decision",
+        )
+
+    transport.registration = {"worker_epoch": transport.plan.worker_epoch}
+    outcome = dispatcher.dispatch_once()
+    assert type(outcome) is RecoverableQualificationHold
+    assert outcome.reason == "post_publication_no_decision"
+    with _store(authority) as store:
+        assert store.pending_qualification_recovery() is not None

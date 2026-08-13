@@ -8,6 +8,7 @@ plan is retained, and never generically releases post-publication work.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -35,6 +36,7 @@ from cacheon.chain.guarded_evaluation_run import GuardedEvaluationRun
 from cacheon.chain.execution_disposition import (
     AUTHORITY_CHANGED_HOLD_REASON,
     AuthenticatedPreResidentRefusal,
+    COMPLETED_NO_DECISION_HOLD_REASON,
     ExecutionDisposition,
     ExecutionOutcome,
     PRE_RESIDENT_REQUEUE_FAILURES,
@@ -620,17 +622,44 @@ class RecoverableQualificationDispatcher:
         self,
         recovery: EvaluationRecovery,
         signal: _InfrastructureResultObserved,
+        *,
+        live_worker_epoch: str = "",
     ) -> RecoverableQualificationRequeue:
         store, point, current = self._current_recovery(recovery.recovery_id)
         try:
             store.release_worker_infrastructure_recovery(
-                current, failure_code=signal.failure_code, current_block=point[0]
+                current,
+                failure_code=signal.failure_code,
+                current_block=point[0],
+                live_worker_epoch=live_worker_epoch,
             )
         finally:
             store.close()
         return RecoverableQualificationRequeue(
             recovery.recovery_id, recovery.request_id, signal.outcome
         )
+
+    def _live_worker_epoch(self) -> str | None:
+        """Read the live registered worker epoch when the transport carries one.
+
+        Only the spool-backed transport exposes its verified registration;
+        every other transport keeps epoch-orphan migration inert and the
+        completed-product hold parks for the operator exactly as before.
+        """
+        registration = getattr(self.transport, "registration", None)
+        if not isinstance(registration, dict):
+            return None
+        value = registration.get("worker_epoch")
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value):
+            return value
+        return None
+
+    def _retained_epoch(self, recovery: EvaluationRecovery) -> str:
+        store, _point, current = self._current_recovery(recovery.recovery_id)
+        try:
+            return store.reopen_recovery_request_plan(current).worker_epoch
+        finally:
+            store.close()
 
     def _renew_if_due(self, recovery: EvaluationRecovery) -> EvaluationRecovery:
         store, point, current = self._current_recovery(recovery.recovery_id)
@@ -984,6 +1013,23 @@ class RecoverableQualificationDispatcher:
                     recovery,
                     _infrastructure_requeue_signal("worker_infrastructure_result"),
                 )
+            if recovery.reason == COMPLETED_NO_DECISION_HOLD_REASON:
+                live_epoch = self._live_worker_epoch()
+                if (
+                    live_epoch is not None
+                    and self._retained_epoch(recovery) != live_epoch
+                ):
+                    # The completed product binds a torn-down worker epoch:
+                    # nothing can ever consume it (2026-08-13 zombie: a result
+                    # published seconds before teardown starved dispatch). The
+                    # store independently re-verifies the epoch mismatch before
+                    # migrating the hold into the bounded requeue; for the live
+                    # epoch the product stays parked for the operator.
+                    return self._requeue_infrastructure(
+                        recovery,
+                        _infrastructure_requeue_signal("retained_epoch_retired"),
+                        live_worker_epoch=live_epoch,
+                    )
             return RecoverableQualificationHold(
                 recovery.recovery_id,
                 recovery.phase,
