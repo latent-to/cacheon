@@ -878,3 +878,95 @@ def test_dispatcher_holds_when_product_incumbent_differs_from_cpu_owned(
     outcome = dispatcher.dispatch_once()
     assert type(outcome) is RecoverableQualificationHold
     assert "incumbent_changed" in outcome.reason
+
+
+def test_completed_no_decision_hold_stays_parked_while_members_are_active(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, fail_resume=True)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
+        _dispatcher(authority, transport).dispatch_once()
+    with _store(authority) as store:
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None
+        held = store.hold_recovery(
+            recovery,
+            current_block=authority.fixtures.BLOCK,
+            reason="post_publication_no_decision",
+        )
+        with pytest.raises(Exception, match="forbidden"):
+            store.release_worker_infrastructure_recovery(
+                held,
+                failure_code="retained_epoch_retired",
+                current_block=authority.fixtures.BLOCK,
+            )
+        assert store.pending_qualification_recovery() is not None
+
+
+def test_completed_no_decision_hold_stays_parked_for_the_live_epoch(
+    tmp_path: Path,
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, fail_resume=True)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
+        _dispatcher(authority, transport).dispatch_once()
+    with _store(authority) as store:
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None
+        held = store.hold_recovery(
+            recovery,
+            current_block=authority.fixtures.BLOCK,
+            reason="post_publication_no_decision",
+        )
+        live_epoch = store.reopen_recovery_request_plan(held).worker_epoch
+        with pytest.raises(Exception, match="forbidden"):
+            store.release_worker_infrastructure_recovery(
+                held,
+                failure_code="retained_epoch_retired",
+                current_block=authority.fixtures.BLOCK,
+                live_worker_epoch=live_epoch,
+            )
+        assert store.pending_qualification_recovery() is not None
+
+
+def test_completed_no_decision_hold_migrates_when_its_epoch_is_retired(
+    tmp_path: Path,
+) -> None:
+    """A completed-product hold whose sealed request plan binds a worker epoch
+    other than the live one is an orphan of a torn-down epoch: it migrates
+    through the bounded requeue and its fenced member returns to the queue."""
+
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+    transport = _Transport(authority, fixtures, fail_resume=True)
+    with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
+        _dispatcher(authority, transport).dispatch_once()
+    with _store(authority) as store:
+        recovery = store.pending_qualification_recovery()
+        assert recovery is not None
+        held = store.hold_recovery(
+            recovery,
+            current_block=authority.fixtures.BLOCK,
+            reason="post_publication_no_decision",
+        )
+        plan_epoch = store.reopen_recovery_request_plan(held).worker_epoch
+        live_epoch = "0" * 32 if plan_epoch != "0" * 32 else "1" * 32
+        store.release_worker_infrastructure_recovery(
+            held,
+            failure_code="retained_epoch_retired",
+            current_block=authority.fixtures.BLOCK,
+            live_worker_epoch=live_epoch,
+        )
+        assert store.pending_qualification_recovery() is None
+        released = store._db.execute(
+            "SELECT reason FROM evaluation_leases WHERE state='released'"
+        ).fetchone()
+        member = held.lease.members[0]
+        restored = store.get(member.reservation_id)
+    assert released["reason"] == (
+        "systemic:worker_infrastructure:retained_epoch_retired"
+    )
+    assert restored.status == member.prior_status

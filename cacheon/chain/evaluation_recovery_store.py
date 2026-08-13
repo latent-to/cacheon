@@ -7,6 +7,7 @@ never creates a replacement request, lease generation, or experiment.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import MutableSet
 from contextlib import contextmanager
@@ -1038,6 +1039,7 @@ class EvaluationRecoveryStoreMixin:
         *,
         failure_code: str,
         current_block: int,
+        live_worker_epoch: str = "",
     ) -> EvaluationLease:
         """Requeue one published request the worker terminated with an unproven
         infrastructure result (no authenticated refusal, no completed
@@ -1045,18 +1047,34 @@ class EvaluationRecoveryStoreMixin:
         claim mints a fresh request.  Also accepts a recovery already parked
         HELD under the pre-change worker-infrastructure reason or under the
         authority-changed reason (both mean the retained request is durably
-        dead), migrating it into the same requeue.  Repeats are bounded by the
-        systemic release cap, so an unfixed infrastructure fault parks for the
-        operator instead of free-looping."""
+        dead), migrating it into the same requeue; a completed-product hold
+        joins them only when the caller names the live worker epoch and the
+        retained request plan provably binds a different one -- the store
+        verifies the mismatch against its own sealed plan, so an orphan of a
+        torn-down epoch migrates while a live-epoch hold stays parked.
+        Repeats are bounded by the systemic release cap, so an unfixed
+        infrastructure fault parks for the operator instead of free-looping."""
 
         from cacheon.chain.execution_disposition import (
             AUTHORITY_CHANGED_HOLD_REASON,
+            COMPLETED_NO_DECISION_HOLD_REASON,
             WORKER_INFRASTRUCTURE_HOLD_REASON,
         )
 
-        held_migration = (
+        parked_held = (
             type(recovery) is EvaluationRecovery
             and recovery.phase is RecoveryPhase.HELD
+        )
+        completed_orphan = (
+            parked_held
+            and recovery.reason == COMPLETED_NO_DECISION_HOLD_REASON
+            and isinstance(live_worker_epoch, str)
+            and re.fullmatch(r"[0-9a-f]{32}", live_worker_epoch) is not None
+            and self.reopen_recovery_request_plan(recovery).worker_epoch
+            != live_worker_epoch
+        )
+        held_migration = completed_orphan or (
+            parked_held
             and recovery.reason
             in (WORKER_INFRASTRUCTURE_HOLD_REASON, AUTHORITY_CHANGED_HOLD_REASON)
         )

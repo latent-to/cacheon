@@ -282,6 +282,14 @@ WORKER_INFRASTRUCTURE_HOLD_REASON = (
 # the current authority, capped by the systemic release limit.
 AUTHORITY_CHANGED_HOLD_REASON = "transport_hold:authority_changed"
 
+# Durable HELD reason written when a completed, published product carries no
+# decision.  Completed products never requeue on their own; the recovery
+# parks for the operator.  Once the parked recovery's lease binds no active
+# member (the reservations were freed elsewhere, e.g. across an epoch
+# teardown), the retained request protects nothing and may migrate through
+# the same bounded requeue as the other durably-dead retained requests.
+COMPLETED_NO_DECISION_HOLD_REASON = "post_publication_no_decision"
+
 
 def resolve_infrastructure_result(
     failure_code: str | None,
@@ -319,7 +327,7 @@ def resolve_completed_result(has_no_decision: bool) -> ExecutionOutcome:
         return ExecutionOutcome(
             ExecutionDisposition.HOLD,
             decision="NO_DECISION",
-            reason="post_publication_no_decision",
+            reason=COMPLETED_NO_DECISION_HOLD_REASON,
         )
     return ExecutionOutcome(ExecutionDisposition.COMPLETE)
 
@@ -327,6 +335,7 @@ def resolve_completed_result(has_no_decision: bool) -> ExecutionOutcome:
 __all__ = [
     "AuthenticatedPreResidentRefusal",
     "AUTHORITY_CHANGED_HOLD_REASON",
+    "COMPLETED_NO_DECISION_HOLD_REASON",
     "WORKER_INFRASTRUCTURE_HOLD_REASON",
     "WORKER_INFRASTRUCTURE_REQUEUE_FAILURE",
     "ExecutionDisposition",
