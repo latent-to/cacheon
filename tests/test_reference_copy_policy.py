@@ -119,6 +119,29 @@ def test_submission_containing_library_code_is_demoted() -> None:
     assert dispositions == (("returns-our-code", marker[:80]),)
 
 
+def test_lease_fenced_mark_defers_without_killing_the_tick() -> None:
+    from cacheon.chain.intake import IntakeError
+
+    fixture = fingerprint_submitted_delta(
+        policy_module._repo_root() / "tests/fixtures/stack_fused_epilogue_atomic"
+    )
+
+    class _FencedStore(_Store):
+        def mark_reference_copy(self, reservation_id, reference_name):
+            if reservation_id == "leased":
+                raise IntakeError("active evaluation lease fences reservation mutation")
+            super().mark_reference_copy(reservation_id, reference_name)
+
+    store = _FencedStore(
+        [
+            _Row("leased", "promoted", fixture),
+            _Row("free", "promoted", fixture),
+        ]
+    )
+    dispositions = reconcile_reference_copies(store)
+    assert dispositions == (("free", "stack_fused_epilogue_atomic"),)
+
+
 def test_library_kill_flag_off_is_inert(monkeypatch) -> None:
     base = fingerprint_submitted_delta(
         policy_module._repo_root() / "tests/fixtures/stack_msa_singleton"

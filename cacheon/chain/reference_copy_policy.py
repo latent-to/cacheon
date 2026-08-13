@@ -16,6 +16,7 @@ import hashlib
 import logging
 from pathlib import Path
 
+from cacheon.chain.intake import IntakeError
 from cacheon.copy_fingerprint import (
     _SUBSTANTIAL_NORM_LEN,
     _top_level_definition_fingerprints,
@@ -175,7 +176,19 @@ def reconcile_reference_copies(store) -> tuple[tuple[str, str], ...]:
             if library is not None:
                 name = _library_marker(library)
         if name is not None:
-            store.mark_reference_copy(row.reservation_id, name)
+            try:
+                store.mark_reference_copy(row.reservation_id, name)
+            except IntakeError as exc:
+                # An active evaluation lease fences reservation mutation; the
+                # mark is idempotent and lands on a later pass once the lease
+                # ends. The tick must survive the fence.
+                _LOG.warning(
+                    "reference copy %s -> %s deferred: %s",
+                    row.reservation_id[:12],
+                    name,
+                    exc,
+                )
+                continue
             dispositions.append((row.reservation_id, name))
     return tuple(dispositions)
 
