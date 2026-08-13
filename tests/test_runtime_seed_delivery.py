@@ -67,6 +67,34 @@ def test_seed_refuses_symlink_members(tmp_path):
         )
 
 
+def test_seed_refuses_planless_tree(tmp_path):
+    seed = tmp_path / "seed"
+    variant = seed / "0_0_0_0_1_1_4"
+    variant.mkdir(parents=True)
+    (variant / "fmha_sm100.so").write_bytes(b"y" * 8)
+    with pytest.raises(OCIBackendError, match="plan/ subtree"):
+        _seed_runtime_cache(
+            seed,
+            _fresh_cache(tmp_path),
+            uid=os.geteuid(),
+            gid=os.getegid(),
+            max_bytes=1 << 20,
+        )
+
+
+def test_seed_refuses_file_free_tree(tmp_path):
+    seed = tmp_path / "seed"
+    (seed / "plan").mkdir(parents=True)
+    with pytest.raises(OCIBackendError, match="holds no files"):
+        _seed_runtime_cache(
+            seed,
+            _fresh_cache(tmp_path),
+            uid=os.geteuid(),
+            gid=os.getegid(),
+            max_bytes=1 << 20,
+        )
+
+
 def test_seed_refuses_untrusted_root(tmp_path):
     with pytest.raises(OCIBackendError, match="trusted directory"):
         _seed_runtime_cache(

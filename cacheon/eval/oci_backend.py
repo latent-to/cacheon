@@ -115,7 +115,10 @@ def _seed_runtime_cache(
     entirely. The supplied root begins with ``plan/`` and the compiled
     variants; MInfer consumes it below ``HOME/.cache/minfer/fmha_sm100``.
     Keeping the installed tree read-only prevents ranks from falling back to
-    concurrent publication in the shared cache.
+    concurrent publication in the shared cache. A planless or file-free seed
+    is refused here, at lease time: sealing it read-only anyway makes the
+    first JIT compile kill the session mid-evaluation (observed 2026-08-13:
+    an empty seed sealed 0o555 crashed lane-b on ``mkdir .../plan``).
     """
     if (
         not seed_root.is_absolute()
@@ -123,6 +126,9 @@ def _seed_runtime_cache(
         or not seed_root.is_dir()
     ):
         raise OCIBackendError("runtime seed root is not a trusted directory")
+    plan_root = seed_root / "plan"
+    if plan_root.is_symlink() or not plan_root.is_dir():
+        raise OCIBackendError("runtime seed tree lacks its plan/ subtree")
     target_root = cache_root / "home" / ".cache" / "minfer" / "fmha_sm100"
     if target_root.exists() or target_root.is_symlink():
         raise OCIBackendError("fresh runtime cache already holds FMHA state")
@@ -136,6 +142,7 @@ def _seed_runtime_cache(
         os.chown(parent, uid, gid)
     target_root.mkdir(mode=0o700)
     copied = 0
+    copied_files = 0
     copied_directories = [target_root]
     for row in sorted(seed_root.rglob("*")):
         target = target_root.joinpath(row.relative_to(seed_root))
@@ -149,11 +156,14 @@ def _seed_runtime_cache(
         if not row.is_file():
             raise OCIBackendError("runtime seed tree holds a non-regular file")
         copied += row.stat().st_size
+        copied_files += 1
         if copied > max_bytes:
             raise OCIBackendError("runtime seed tree exceeds the cache budget")
         shutil.copyfile(row, target)
         os.chmod(target, 0o444)
         os.chown(target, uid, gid)
+    if copied_files == 0:
+        raise OCIBackendError("runtime seed tree holds no files")
     for target in sorted(
         copied_directories, key=lambda path: len(path.parts), reverse=True
     ):
