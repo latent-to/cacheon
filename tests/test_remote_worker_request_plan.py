@@ -63,14 +63,17 @@ class _Authority:
     registration_path: Path
     request: object
     wire_path: Path
-    publication_path: Path
+    publication_paths: tuple[Path, ...]
     fixtures: object
 
     @property
     def inputs(self):
         return (
             ("qualification_payload", self.wire_path),
-            ("candidate_publication", self.publication_path),
+            *(
+                ("candidate_publication", path)
+                for path in self.publication_paths
+            ),
         )
 
     @property
@@ -96,7 +99,7 @@ class _Authority:
 
 
 def _published_profile(fixtures, root: Path, profile: str) -> None:
-    source = root / "source"
+    source = root / f"source-{profile}"
     source.mkdir(parents=True)
     leaf = source / "manifest.toml"
     leaf.write_text(f"bundle_id = '{profile}'\n", encoding="utf-8")
@@ -144,19 +147,26 @@ def _authority(
     *,
     endpoint: str = "worker-endpoint-a",
     profile: str = "alpha",
+    profiles: tuple[str, ...] | None = None,
     recoverable: bool = False,
 ) -> _Authority:
     fixtures = _dispatcher_fixtures()
-    _published_profile(fixtures, root, profile)
+    cohort = profiles if profiles is not None else (profile,)
+    for name in cohort:
+        _published_profile(fixtures, root, name)
     service = ArenaService(fixtures._manifest(), fixtures._Provider())
     cursor = fixtures._Cursor((fixtures.BLOCK, fixtures._block_hash(fixtures.BLOCK)))
-    coordinator_options: dict[str, object] = {"qualification_max_members": 1}
+    coordinator_options: dict[str, object] = {
+        "qualification_max_members": len(cohort)
+    }
     if recoverable:
         coordinator_options["store_factory"] = RecoverableFinalizedIntakeStore
     coordinator = fixtures._coordinator(root, service, cursor, **coordinator_options)
-    assert coordinator.run_screen_once() is not None
+    for _name in cohort:
+        assert coordinator.run_screen_once() is not None
     claim = coordinator.claim_qualification()
     assert claim is not None
+    assert len(claim.publications) == len(cohort)
     credential = RemoteWorkerCredential("qualification-key-v1", b"q" * 32)
     identity = fixtures._transport_identity(
         coordinator, credential, endpoint=endpoint
@@ -210,8 +220,11 @@ def _authority(
     )
     wire_path = root / "qualification-request.json"
     spool.atomic_json(wire_path, request.to_dict(), mode=0o400)
-    publication_path = root / "candidate-publication.tar"
-    publication_archive(claim.publications[0], publication_path)
+    publication_paths = []
+    for index, publication in enumerate(claim.publications):
+        publication_path = root / f"candidate-publication-{index}.tar"
+        publication_archive(publication, publication_path)
+        publication_paths.append(publication_path)
     return _Authority(
         root,
         coordinator,
@@ -223,7 +236,7 @@ def _authority(
         registration_path,
         request,
         wire_path,
-        publication_path,
+        tuple(publication_paths),
         fixtures,
     )
 
@@ -731,3 +744,31 @@ def test_sqlite_recovery_tampered_plan_bytes_hold_without_redispatch(
             )
         with pytest.raises(EvaluationRecoveryHoldError, match="request plan.*HOLD"):
             store.pending_qualification_recovery()
+
+
+def test_two_member_cohort_plan_carries_every_publication_in_order(
+    tmp_path: Path,
+) -> None:
+    authority = _authority(tmp_path, profiles=("alpha", "beta"))
+    try:
+        assert len(authority.claim.lease.reservation_ids) == 2
+        plan = _plan(authority)
+        roles = tuple(row.role for row in plan.artifacts)
+        assert roles == (
+            "qualification_payload",
+            "candidate_publication",
+            "candidate_publication",
+        )
+        expected = tuple(
+            spool.file_sha256(path) for path in authority.publication_paths
+        )
+        assert tuple(row.sha256 for row in plan.artifacts[1:]) == expected
+        assert _materialize(authority, plan).state == "carrier_materialized"
+        published = _publish(authority, plan)
+        assert published.state == "request_ready"
+        assert published.carrier_path is not None
+        blobs = published.carrier_path / "blobs"
+        for row in plan.artifacts:
+            assert (blobs / row.sha256).is_file()
+    finally:
+        authority.cleanup()

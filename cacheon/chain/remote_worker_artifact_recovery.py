@@ -63,19 +63,18 @@ class PlannedQualificationArtifact:
 
 def qualification_source_map(
     artifact_inputs: Sequence[tuple[str, Path]],
-) -> dict[str, Path]:
-    """Close qualification inputs to one unique path per required role."""
+) -> tuple[tuple[str, Path], ...]:
+    """Close qualification inputs to one payload plus its ordered carriers."""
 
-    result: dict[str, Path] = {}
-    for role, source in artifact_inputs:
-        if role not in QUALIFICATION_ARTIFACT_ROLES or role in result:
-            fail("qualification artifact input roles are not exact and unique")
-        result[role] = source
-    if tuple(role for role in QUALIFICATION_ARTIFACT_ROLES if role in result) != (
-        QUALIFICATION_ARTIFACT_ROLES
+    rows = tuple((role, source) for role, source in artifact_inputs)
+    roles = tuple(role for role, _source in rows)
+    if (
+        len(rows) < 2
+        or roles[0] != "qualification_payload"
+        or any(role != "candidate_publication" for role in roles[1:])
     ):
-        fail("qualification artifact inputs are incomplete")
-    return result
+        fail("qualification artifact inputs are not one payload plus its carriers")
+    return rows
 
 
 def stable_artifact_identity(path: Path) -> tuple[int, str]:

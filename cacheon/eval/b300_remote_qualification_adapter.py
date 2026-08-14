@@ -499,8 +499,8 @@ class B300RemoteQualificationAdapter:
             set(body) != _QUALIFICATION_BODY_FIELDS
             or body["kind"] != "qualification_work"
             or type(body["candidates"]) is not list
-            or len(body["candidates"]) != 1
-            or len(request.members) != 1
+            or not 1 <= len(body["candidates"]) <= manifest.capacity.max_cohort_size
+            or len(request.members) != len(body["candidates"])
             or request.worker_readiness_digest != self.readiness.digest
             or request.ready_receipt_digest != self.readiness.ready_receipt_digest
             or request.ready_epoch != self.readiness.ready_epoch
@@ -585,7 +585,7 @@ class B300RemoteQualificationAdapter:
             or qualification.screen_receipts != receipts
         ):
             raise B300RemoteQualificationAdapterError(
-                "remote lease differs from the exact promoted singleton"
+                "remote lease differs from the exact promoted cohort"
             )
 
         worker = self.worker

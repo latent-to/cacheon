@@ -644,14 +644,21 @@ class DurableSpoolAuthenticatedWorkerTransport:
         publications = tuple(resolver(request))
         candidates = request.body["candidates"]
         if (
-            len(publications) != 1
-            or type(candidates) is not list
-            or len(candidates) != 1
-            or type(candidates[0]) is not dict
-            or publications[0].to_dict() != candidates[0]["publication"]
+            type(candidates) is not list
+            or not candidates
+            or len(publications) != len(candidates)
+            or any(type(row) is not dict for row in candidates)
+            or any(
+                publication.to_dict() != row["publication"]
+                for publication, row in zip(publications, candidates, strict=True)
+            )
         ):
             raise RemoteEvaluationDispatcherError(
-                "resolved qualification publication differs from authenticated work"
+                "resolved qualification publications differ from authenticated work"
+            )
+        if len({row.publication_digest for row in publications}) != len(publications):
+            raise RemoteEvaluationDispatcherError(
+                "qualification cohort carries duplicate candidate publications"
             )
         scratch = Path(
             tempfile.mkdtemp(prefix=".qualification.", dir=self.spool_root / "state")
@@ -659,8 +666,11 @@ class DurableSpoolAuthenticatedWorkerTransport:
         try:
             wire_path = scratch / "qualification-request.json"
             atomic_json(wire_path, request.to_dict(), mode=0o400)
-            publication_path = scratch / "candidate-publication.tar"
-            publication_archive(publications[0], publication_path)
+            carriers: list[tuple[str, Path]] = []
+            for index, publication in enumerate(publications):
+                publication_path = scratch / f"candidate-publication-{index}.tar"
+                publication_archive(publication, publication_path)
+                carriers.append(("candidate_publication", publication_path))
             lease = EvaluationLease(
                 request.lease_id,
                 request.generation,
@@ -673,10 +683,7 @@ class DurableSpoolAuthenticatedWorkerTransport:
             )
             return operation(
                 lease,
-                (
-                    ("qualification_payload", wire_path),
-                    ("candidate_publication", publication_path),
-                ),
+                (("qualification_payload", wire_path), *carriers),
             )
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -768,72 +775,3 @@ class DurableSpoolAuthenticatedWorkerTransport:
         return self._await_completed_result(
             plan.request_id, observed.carrier_path, stage="qualification"
         )
-
-    def run_qualification(self, request):
-        if type(request) is not RemoteEvaluationRequest or request.stage != "qualification":
-            raise RemoteEvaluationDispatcherError(
-                "spool qualification transport requires an exact qualification request"
-            )
-        resolver = self.qualification_publication_resolver
-        if resolver is None:
-            raise RemoteEvaluationDispatcherError(
-                "spool qualification publication authority is not configured"
-            )
-        try:
-            verify_remote_request(request, self.identity, self.credential)
-            self._require_dispatcher_liveness()
-            publications = tuple(resolver(request))
-            if len(publications) != 1:
-                raise RemoteEvaluationDispatcherError(
-                    "resident-v3 qualification transport requires one publication"
-                )
-            publication = publications[0]
-            candidates = request.body["candidates"]
-            if (
-                type(candidates) is not list
-                or len(candidates) != 1
-                or type(candidates[0]) is not dict
-                or publication.to_dict() != candidates[0]["publication"]
-            ):
-                raise RemoteEvaluationDispatcherError(
-                    "resolved qualification publication differs from authenticated work"
-                )
-            scratch = Path(
-                tempfile.mkdtemp(
-                    prefix=".qualification.", dir=self.spool_root / "state"
-                )
-            )
-            try:
-                wire_path = scratch / "qualification-request.json"
-                atomic_json(wire_path, request.to_dict(), mode=0o400)
-                publication_path = scratch / "candidate-publication.tar"
-                publication_archive(publication, publication_path)
-                lease = EvaluationLease(
-                    request.lease_id,
-                    request.generation,
-                    request.stage,
-                    request.owner,
-                    request.members,
-                    request.claimed_block,
-                    request.initial_expires_block,
-                    request.initial_expires_block,
-                )
-                request_id, job_dir = enqueue_request(
-                    self.registration,
-                    self._lease_dict(lease),
-                    (
-                        ("qualification_payload", wire_path),
-                        ("candidate_publication", publication_path),
-                    ),
-                    self.spool_root / "outbox",
-                    deadline_seconds=self.response_timeout_seconds,
-                    identity=self.identity,
-                    credential=self.credential,
-                )
-            finally:
-                shutil.rmtree(scratch, ignore_errors=True)
-            return self._await_completed_result(
-                request_id, job_dir, stage="qualification"
-            )
-        except RemoteWorkerError as exc:
-            raise RemoteEvaluationDispatcherError(str(exc)) from exc

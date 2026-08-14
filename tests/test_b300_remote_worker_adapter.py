@@ -13,6 +13,7 @@ import pytest
 
 from cacheon.chain import remote_worker_spool as spool
 from cacheon.chain.publication import reopen_worker_bundle
+from cacheon.eval import b300_publication_intake as publication_intake
 from cacheon.eval import b300_remote_worker_adapter as adapter
 
 
@@ -421,11 +422,9 @@ def test_commission_materializes_and_resolves_each_fifo_publication(
                 monkeypatch, stage="qualification", wire=wire
             )
             monkeypatch.setattr(
-                adapter,
-                "artifact_for_role",
-                lambda _outer, root, role, archive=archive: (
-                    archive if role == "candidate_publication" else root / role
-                ),
+                publication_intake,
+                "artifacts_for_role",
+                lambda _outer, _root, _role, archive=archive: (archive,),
             )
             result_dir = tmp_path / f"result-{index}"
             result_dir.mkdir(mode=0o700)
@@ -474,11 +473,9 @@ def test_qualification_archive_mismatch_never_builds_or_runs_adapter(
         monkeypatch, stage="qualification", wire=wire
     )
     monkeypatch.setattr(
-        adapter,
-        "artifact_for_role",
-        lambda _outer, root, role: (
-            archive if role == "candidate_publication" else root / role
-        ),
+        publication_intake,
+        "artifacts_for_role",
+        lambda _outer, _root, _role: (archive,),
     )
     factory_calls: list[object] = []
     resident_calls: list[object] = []
@@ -527,7 +524,9 @@ def test_qualification_execution_failure_is_epoch_fatal(
     _patch_authenticated_carrier(
         monkeypatch, stage="qualification", wire=wire
     )
-    monkeypatch.setattr(adapter, "safe_publication", lambda *_args: object())
+    monkeypatch.setattr(
+        adapter, "resolve_cohort_publications", lambda *_args: (object(),)
+    )
     monkeypatch.setattr(
         adapter.B300RemoteQualificationCommission,
         "adapter_for",

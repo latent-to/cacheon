@@ -641,7 +641,6 @@ def build_dispatcher(
         "owner": config.owner,
         "advance_finalized_cursor": cursor,
         "lease_blocks": config.lease_blocks,
-        "qualification_max_members": 1,
         "heartbeat_interval_s": config.heartbeat_interval_s,
         "heartbeat_join_timeout_s": config.heartbeat_join_timeout_s,
         "lock_attempts": config.lock_attempts,

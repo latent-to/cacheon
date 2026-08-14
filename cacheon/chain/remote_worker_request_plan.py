@@ -44,7 +44,6 @@ from cacheon.chain.remote_evaluation_dispatcher import (
 )
 from cacheon.chain.remote_worker_artifact_recovery import (
     PlannedQualificationArtifact,
-    QUALIFICATION_ARTIFACT_ROLES,
     copy_stable_artifact,
     publication_archive,
     qualification_source_map,
@@ -170,8 +169,9 @@ class QualificationRequestPlan:
             fail("qualification plan lease is not exactly typed")
         artifacts = tuple(self.artifacts)
         if (
-            len(artifacts) != len(QUALIFICATION_ARTIFACT_ROLES)
-            or tuple(row.role for row in artifacts) != QUALIFICATION_ARTIFACT_ROLES
+            len(artifacts) < 2
+            or artifacts[0].role != "qualification_payload"
+            or any(row.role != "candidate_publication" for row in artifacts[1:])
         ):
             fail("qualification plan artifact roles are incomplete or reordered")
         object.__setattr__(self, "artifacts", artifacts)
@@ -456,13 +456,13 @@ def create_qualification_request_plan(
         maximum=MAX_JOB_SECONDS,
     )
     sources = qualification_source_map(artifact_inputs)
-    payload = load_json(sources["qualification_payload"], maximum=MAX_WIRE_PAYLOAD_BYTES)
+    payload = load_json(sources[0][1], maximum=MAX_WIRE_PAYLOAD_BYTES)
     if spool_canonical_json(payload) != spool_canonical_json(request.to_dict()):
         fail("qualification payload differs from authenticated request")
     artifacts = tuple(
         PlannedQualificationArtifact(role, digest, size)
-        for role in QUALIFICATION_ARTIFACT_ROLES
-        for size, digest in (stable_artifact_identity(sources[role]),)
+        for role, source in sources
+        for size, digest in (stable_artifact_identity(source),)
     )
     queued_at = time.time_ns()
     created_at = queued_at // 1_000_000_000
@@ -901,14 +901,15 @@ def materialize_planned_qualification(
     try:
         sources = qualification_source_map(artifact_inputs)
         identities = tuple(
-            stable_artifact_identity(sources[expected.role])
-            for expected in plan.artifacts
+            stable_artifact_identity(source) for _role, source in sources
         )
     except RemoteWorkerError as exc:
         _hold(plan, "artifact_changed", str(exc))
-    if any(
-        observed != (expected.size, expected.sha256)
-        for observed, expected in zip(identities, plan.artifacts, strict=True)
+    if len(sources) != len(plan.artifacts) or any(
+        role != expected.role or observed != (expected.size, expected.sha256)
+        for (role, _source), observed, expected in zip(
+            sources, identities, plan.artifacts, strict=True
+        )
     ):
         _hold(plan, "artifact_changed", "materialization input differs from plan")
     with _plan_lock(plan, outbox):
@@ -934,10 +935,10 @@ def materialize_planned_qualification(
         hidden.mkdir(mode=0o700)
         blobs = hidden / "blobs"
         blobs.mkdir(mode=0o700)
-        for expected in plan.artifacts:
+        for (_role, source), expected in zip(sources, plan.artifacts, strict=True):
             try:
                 copy_stable_artifact(
-                    sources[expected.role],
+                    source,
                     blobs / expected.sha256,
                     expected_size=expected.size,
                     expected_sha256=expected.sha256,

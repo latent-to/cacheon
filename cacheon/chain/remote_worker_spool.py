@@ -512,8 +512,8 @@ def verify_request(
         "screen_payload" if lease["stage"] == "screen" else "qualification_payload"
     )
     artifacts = verify_artifacts(value["artifacts"], root, allow_output_roles=False)
-    if sum(item["role"] == "candidate_publication" for item in artifacts) != 1:
-        fail("request must retain exactly one candidate publication")
+    # Carrier counts are enforced at consumption: screens via artifact_for_role,
+    # qualification cohorts via pairwise checks at both transport endpoints.
     if sum(item["role"] == expected_kind for item in artifacts) != 1:
         fail("request must retain exactly one stage payload")
     wire = authenticated_wire_request(

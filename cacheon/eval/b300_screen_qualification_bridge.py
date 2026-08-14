@@ -84,7 +84,7 @@ class CommissionedB300QualificationService:
                 "commissioned service does not own both qualification orientations"
             )
 
-    def adapter_for(self, publication, continuation_store, screen_lane: str):
+    def adapter_for(self, publications, continuation_store, screen_lane: str):
         with self._lock:
             if self._closed:
                 raise B300QualificationCommissionError(
@@ -107,7 +107,7 @@ class CommissionedB300QualificationService:
                     "qualification stage must be primary or reproduction"
                 )
             return commission.adapter_for(
-                publication,
+                publications,
                 continuation_store,
                 worker=worker,
             )

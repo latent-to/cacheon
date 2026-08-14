@@ -326,7 +326,7 @@ def _configured(
         candidate,
     )
     adapter = owner.service.adapter_for(
-        candidate.publication,
+        (candidate.publication,),
         QualificationContinuationStore(continuation_root),
         "primary",
     )
@@ -367,7 +367,7 @@ def test_service_routes_reproduction_to_swapped_lane_owner(
     )
     store = QualificationContinuationStore(tmp_path / "reproduction-continuation")
     adapter = owner.service.adapter_for(
-        candidate.publication,
+        (candidate.publication,),
         store,
         "reproduction",
     )
@@ -381,7 +381,7 @@ def test_service_routes_reproduction_to_swapped_lane_owner(
         authorities.resident_baseline_executor.device_policy.physical_gpu_ids
     ) == (0, 1, 2, 3)
     assert owner.service.adapter_for(
-        candidate.publication,
+        (candidate.publication,),
         store,
         "reproduction",
     ).worker is worker
@@ -639,8 +639,8 @@ def test_pre_entry_refusal_and_post_entry_failure_never_replace_owner(
     )
     monkeypatch.setattr(
         worker_module,
-        "safe_publication",
-        lambda *_args: candidate.publication,
+        "resolve_cohort_publications",
+        lambda *_args: (candidate.publication,),
     )
     delegated: list[B300MainnetWorker] = []
 
@@ -784,7 +784,7 @@ def test_injected_commission_runtime_owns_one_full_worker_and_closes_once(
         target_id=ALL_REDUCE,
     )
     request_adapter = runtime.qualification_adapter_for(
-        candidate.publication,
+        (candidate.publication,),
         "primary",
     )
     assert request_adapter.worker is runtime.worker

@@ -552,11 +552,6 @@ class AuthenticatedWorkerTransport(Protocol):
         job: ClaimedScreenEvaluation,
     ) -> AuthenticatedRemoteEvaluationResponse: ...
 
-    def run_qualification(
-        self,
-        request: RemoteEvaluationRequest,
-    ) -> AuthenticatedRemoteEvaluationResponse: ...
-
 def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
     if type(payload) is ArenaScreenReceipt:
         return "arena_screen_receipt", canonical_json_bytes(payload.to_dict()), payload.digest
@@ -992,9 +987,7 @@ class RemoteEvaluationDispatcher:
         identity = getattr(transport, "identity", None)
         if type(identity) is not RemoteWorkerTransportIdentity:
             raise RemoteEvaluationDispatcherError("remote transport has no exact identity")
-        if not callable(getattr(transport, "run_screen", None)) or not callable(
-            getattr(transport, "run_qualification", None)
-        ):
+        if not callable(getattr(transport, "run_screen", None)):
             raise RemoteEvaluationDispatcherError("remote transport is not closed and typed")
         if (
             identity.service_digest != coordinator.service.identity
