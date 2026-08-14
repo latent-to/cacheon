@@ -11,6 +11,7 @@ import pytest
 
 import cacheon.eval.qualification_runner as runner
 from cacheon.eval.device_state import DeviceStateReceipt, DeviceStateSample
+from cacheon.eval.qualification import declared_qualification_entropy_digest
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
 from cacheon.eval.oci_backend import OCIBackendError, OCIEngineExecutor
 from cacheon.eval.oci_outer_session import OuterSessionWorkerError
@@ -2308,7 +2309,9 @@ def _typed_resident_qualification_input(
     commitment = SelectionCommitment.seal(
         source_plan_digest=prepared.source.digest,
         reference_manifest=reference,
-        entropy_source_digest=reference.selection_policy_digest,
+        entropy_source_digest=declared_qualification_entropy_digest(
+            reference.selection_policy_digest
+        ),
         prompt_digests=runner._planned_prompt_digests(prepared),
         select_count=2,
         secret=secret,

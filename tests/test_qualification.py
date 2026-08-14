@@ -14,6 +14,7 @@ from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_DOMAIN,
     GRAPH_EVIDENCE_MEDIA_TYPE,
     GRAPH_EVIDENCE_SCHEMA,
+    declared_qualification_entropy_digest,
     DiscoveryExecutionGrade,
     DiscoveryExecutionRequirement,
     DiscoveryQualificationProfile,
@@ -1125,7 +1126,9 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
     prompts = lifecycle_prompt_digests(lifecycle)
     commitment = SelectionCommitment.seal(
         source_plan_digest=lifecycle.source.digest, reference_manifest=reference,
-        entropy_source_digest=reference.selection_policy_digest,
+        entropy_source_digest=declared_qualification_entropy_digest(
+            reference.selection_policy_digest
+        ),
         prompt_digests=prompts, select_count=2, secret=b"s" * 32,
     )
     entropy = SelectionEntropyReceipt(
@@ -1406,7 +1409,9 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
     prompts = lifecycle_prompt_digests(lifecycle)
     commitment = SelectionCommitment.seal(
         source_plan_digest=lifecycle.source.digest, reference_manifest=reference,
-        entropy_source_digest=reference.selection_policy_digest,
+        entropy_source_digest=declared_qualification_entropy_digest(
+            reference.selection_policy_digest
+        ),
         prompt_digests=prompts, select_count=2, secret=b"s" * 32,
     )
     entropy = SelectionEntropyReceipt(

@@ -1264,6 +1264,24 @@ class DiscoveryQualificationProfile(_Canonical):
         )
 
 
+def declared_qualification_entropy_digest(selection_policy_digest: str) -> str:
+    """The declared entropy identity for one sealed selection policy.
+
+    Both the commitment sealed before execution and the durable entropy
+    provider must name exactly this domain-separated identity; the provider
+    compares them at first entropy use.
+    """
+
+    return canonical_digest(
+        "cacheon.eval.b300-declared-entropy-provider.v1",
+        {
+            "selection_policy_digest": _digest(
+                selection_policy_digest, "selection policy digest"
+            )
+        },
+    )
+
+
 @dataclass(frozen=True)
 class SelectionCommitment(_Canonical):
     """Prompt pool and secret commitment sealed before candidate results exist."""
@@ -2179,7 +2197,10 @@ def validate_quality_binding(
         commitment.source_plan_digest != lifecycle.source.digest
         or commitment.reference_manifest_digest != profile.reference.digest
         or commitment.workload_digest != profile.reference.workload_digest
-        or commitment.entropy_source_digest != profile.reference.selection_policy_digest
+        or commitment.entropy_source_digest
+        != declared_qualification_entropy_digest(
+            profile.reference.selection_policy_digest
+        )
         or commitment.prompt_digests != lifecycle_prompt_digests(lifecycle)
         or selection.sealed_cohort_trajectory_digest != cohort_trajectory_digest(lifecycle)
         or binding.selected_trajectory_digest != selected_trajectory_digest(

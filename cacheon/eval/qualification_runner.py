@@ -61,6 +61,7 @@ from cacheon.eval.qualification import (
     SelectionEntropyReceipt, SelectionReceipt, _selected_prompt_texts, _trajectory_rows,
     candidate_lifecycle_digest, cohort_trajectory_digest, derived_hidden_task_plan_digest,
     grade_discovery_execution, qualification_identity_digest,
+    declared_qualification_entropy_digest,
     reopen_discovery_execution_binding, reopen_graph_verification,
     selected_trajectory_digest,
     selected_trajectory_projection_digest, validate_quality_binding,
@@ -2420,7 +2421,8 @@ def _validate_pre_execution(
         or value.commitment.workload_digest != workload
         or reference.workload_digest != workload
         or value.commitment.prompt_digests != _planned_prompt_digests(value.prepared)
-        or value.commitment.entropy_source_digest != reference.selection_policy_digest
+        or value.commitment.entropy_source_digest
+        != declared_qualification_entropy_digest(reference.selection_policy_digest)
         or value.commitment.secret_commitment != secret_commitment
         or value.pristine_stack.digest != reference.pristine_stack_digest
         or value.pristine_launch.digest != reference.pristine_launch_digest

@@ -395,3 +395,34 @@ def test_graph_converter_preserves_complete_candidate_failure_without_grading() 
     assert observed.capture_succeeded is False
     assert observed.failure_kind == "capture"
     assert not hasattr(facts, "decision")
+
+
+def test_sealed_commitment_names_the_declared_entropy_provider(tmp_path: Path) -> None:
+    """The cross-module contract that field mirroring in fixtures cannot prove.
+
+    Production seals commitments with the declared (domain-separated) entropy
+    identity while the deployed capability declares the same identity for its
+    durable provider; both derive it from one selection policy digest.  A raw
+    policy digest on either side must fail closed before entropy is minted.
+    """
+
+    from cacheon.eval.qualification import declared_qualification_entropy_digest
+
+    policy = _h("selection-policy")
+    declared = declared_qualification_entropy_digest(policy)
+    commitment = _commitment("declared", declared)
+    provider = capabilities.DurableSelectionEntropyProvider(
+        tmp_path / "entropy",
+        source_digest=declared,
+        entropy_source=lambda _commitment, _teardown: b"e" * 32,
+    )
+
+    receipt = provider(commitment, _teardown())
+
+    assert receipt.source_digest == declared
+    raw_commitment = _commitment("raw", policy)
+    with pytest.raises(
+        capabilities.B300QualificationCapabilityError,
+        match="names another entropy source",
+    ):
+        provider(raw_commitment, _teardown())

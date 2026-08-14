@@ -67,6 +67,7 @@ from cacheon.eval.qualification import (
     QualificationProfile,
     ReferenceManifest,
     SelectionCommitment,
+    declared_qualification_entropy_digest,
 )
 from cacheon.eval.qualification_intake import (
     GraphMemberObservation,
@@ -583,7 +584,9 @@ class B300RegisteredQualificationFactory:
         commitment = SelectionCommitment.seal(
             source_plan_digest=prepared.source.digest,
             reference_manifest=inputs.reference_manifest,
-            entropy_source_digest=inputs.reference_manifest.selection_policy_digest,
+            entropy_source_digest=declared_qualification_entropy_digest(
+                inputs.reference_manifest.selection_policy_digest
+            ),
             prompt_digests=_planned_prompt_digests(prepared),
             select_count=inputs.policy.select_count,
             secret=secret,

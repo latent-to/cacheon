@@ -39,6 +39,7 @@ from cacheon.eval.calibration import (
     decimal_value,
     derive_calibration_manifest,
 )
+from cacheon.eval.qualification import declared_qualification_entropy_digest
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.stack_identity import canonical_digest
 from cacheon.target_catalog import TargetCatalog
@@ -365,19 +366,6 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         speed.get("max_conditioning_slowdown"), "max_conditioning_slowdown"
     )
     return value
-
-
-def declared_qualification_entropy_digest(selection_policy_digest: str) -> str:
-    """The declared entropy identity for one sealed selection policy."""
-
-    return canonical_digest(
-        "cacheon.eval.b300-declared-entropy-provider.v1",
-        {
-            "selection_policy_digest": _digest(
-                selection_policy_digest, "selection policy digest"
-            )
-        },
-    )
 
 
 def declared_qualification_deadline_digest() -> str:
