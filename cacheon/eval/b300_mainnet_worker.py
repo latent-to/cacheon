@@ -477,25 +477,67 @@ class B300MainnetWorker:
         ):
             if request_digest is None:
                 raise
-            _LOG.exception(
-                "qualification graph evidence unavailable while planning for "
-                "request %s; the qualification is held without a candidate decision",
+            planning_context_digest = canonical_digest(
+                "cacheon.eval.b300-qualification-graph-provider-context.v1",
+                {
+                    "candidate_digests": [row.digest for row in candidates],
+                    "reservation_digests": [
+                        row.reservation.reservation_digest for row in candidates
+                    ],
+                },
+            )
+            retired = False
+            if self._resident_pair_factory is not None:
+                try:
+                    retired = (
+                        self._resident_pair_factory.retire_released_pair()
+                    )
+                except Exception:
+                    _LOG.exception(
+                        "released resident pair retirement failed after a "
+                        "graph evidence hold while planning for request %s",
+                        request_digest,
+                    )
+            if not retired:
+                _LOG.exception(
+                    "qualification graph evidence unavailable while planning for "
+                    "request %s; the qualification is held without a candidate decision",
+                    request_digest,
+                )
+                return qualification_graph_gate_hold(
+                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+                    authenticated_request_digest=request_digest,
+                    authority_context_digest=planning_context_digest,
+                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+                )
+            _LOG.warning(
+                "graph evidence capture held on busy devices while planning "
+                "for request %s; retired the released resident pair and "
+                "retrying the qualification plan once",
                 request_digest,
             )
-            return qualification_graph_gate_hold(
-                RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
-                authenticated_request_digest=request_digest,
-                authority_context_digest=canonical_digest(
-                    "cacheon.eval.b300-qualification-graph-provider-context.v1",
-                    {
-                        "candidate_digests": [row.digest for row in candidates],
-                        "reservation_digests": [
-                            row.reservation.reservation_digest for row in candidates
-                        ],
-                    },
-                ),
-                code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
-            )
+            try:
+                work = self.service.plan_qualification(
+                    candidates,
+                    screen_receipts,
+                    state=None,
+                )
+            except (
+                B300QualificationGraphEvidenceHold,
+                B300QualificationGraphEvidenceStoreError,
+            ):
+                _LOG.exception(
+                    "qualification graph evidence still unavailable after pair "
+                    "retirement while planning for request %s; the "
+                    "qualification is held without a candidate decision",
+                    request_digest,
+                )
+                return qualification_graph_gate_hold(
+                    RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE,
+                    authenticated_request_digest=request_digest,
+                    authority_context_digest=planning_context_digest,
+                    code=B300QualificationGraphHoldCode.GRAPH_PROVIDER_UNAVAILABLE,
+                )
         self._validate_work(work, candidates)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
         resident_pair_lifecycle = None
