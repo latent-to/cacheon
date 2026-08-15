@@ -33,6 +33,14 @@ from cacheon.chain.intake import (
     IntakeReservation,
     IntakeScope,
 )
+from cacheon.chain.eval_cost import (
+    EvalCostFetchError,
+    EvalCostPolicy,
+    EvalCostRequest,
+    quote_eval_cost,
+    verify_eval_cost_payment,
+)
+from cacheon.chain.eval_cost_payment import read_eval_cost_payment
 from cacheon.chain.payload import decode_payload
 from cacheon.chain.publication import (
     WorkerBundlePublication,
@@ -78,7 +86,13 @@ class PassResult:
     screens: dict[str, str] = field(default_factory=dict)
 
 
-def _finalized_arrivals(snapshot) -> tuple[FinalizedArrival, ...]:
+def _finalized_arrivals(
+    snapshot,
+    *,
+    netuid: int,
+    policy: IntakePolicy,
+    payment_lookup=None,
+) -> tuple[FinalizedArrival, ...]:
     rows: list[FinalizedArrival] = []
     for reveal in snapshot.reveals:
         payload_digest = hashlib.sha256(reveal.data.encode("utf-8")).hexdigest()
@@ -98,6 +112,14 @@ def _finalized_arrivals(snapshot) -> tuple[FinalizedArrival, ...]:
                 )
             )
             continue
+        invalid_reason = ""
+        if policy.eval_cost_alpha_rao > 0:
+            invalid_reason = _eval_cost_invalid_reason(
+                ref,
+                netuid=netuid,
+                policy=policy,
+                payment_lookup=payment_lookup,
+            )
         rows.append(
             FinalizedArrival(
                 ref.hotkey,
@@ -108,9 +130,51 @@ def _finalized_arrivals(snapshot) -> tuple[FinalizedArrival, ...]:
                 reveal.event_index,
                 0,
                 payload_digest,
+                invalid_reason,
+                ref.payment_block,
+                ref.payment_extrinsic_index,
             )
         )
     return tuple(rows)
+
+
+def _eval_cost_invalid_reason(
+    ref,
+    *,
+    netuid: int,
+    policy: IntakePolicy,
+    payment_lookup,
+) -> str:
+    if ref.payment_block <= 0:
+        return "missing_eval_cost_payment"
+    lookup = payment_lookup or (lambda block, index: None)
+    try:
+        proof = lookup(ref.payment_block, ref.payment_extrinsic_index)
+    except EvalCostFetchError:
+        raise
+    except Exception as exc:
+        raise EvalCostFetchError(
+            f"cannot read eval-cost payment at {ref.payment_block}/{ref.payment_extrinsic_index}: {exc}"
+        ) from exc
+    if proof is None:
+        return "eval_cost_payment_invalid"
+    request = EvalCostRequest(
+        netuid=netuid, hotkey=ref.hotkey, content_hash=ref.content_hash
+    )
+    quote = quote_eval_cost(
+        request,
+        policy=EvalCostPolicy(
+            amount_alpha_rao=policy.eval_cost_alpha_rao,
+            payment_window_blocks=policy.eval_cost_payment_window_blocks,
+        ),
+    )
+    return verify_eval_cost_payment(
+        request=request,
+        quote=quote,
+        proof=proof,
+        reveal_block=ref.block,
+        window_blocks=policy.eval_cost_payment_window_blocks,
+    )
 
 
 def _fingerprint_private_bundle(root: Path):
@@ -400,7 +464,14 @@ def run_pass(
                 after_block=None if cursor is None else cursor[0],
             )
             result = PassResult(snapshot.finalized_block, snapshot.finalized_block_hash)
-            arrivals = _finalized_arrivals(snapshot)
+            arrivals = _finalized_arrivals(
+                snapshot,
+                netuid=netuid,
+                policy=policy,
+                payment_lookup=lambda block, index: read_eval_cost_payment(
+                    subtensor, block, index
+                ),
+            )
             result.seen = len(arrivals)
             inserted = store.reserve_finalized(
                 arrivals,

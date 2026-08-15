@@ -351,6 +351,8 @@ The default `IntakePolicy` values are:
 | Transport / qualification attempts | 3 / 3 | Exhaustion produces a retained hold rather than infinite work |
 | Controller cohort | 8 | Bounds fetch, screening, and qualification selection per pass |
 | Finalized-block expiry SLA | 2,880 blocks | Automatically expires eligible unresolved rows and sets the minimum age for explicit expiry |
+| Eval-cost alpha-rao | 0 (off) | Required `burn_alpha` amount per admission; `chain-validate --eval-cost-alpha-rao` enables the gate |
+| Eval-cost payment window | 7,200 blocks | Maximum finalized distance from the burn to the reveal |
 
 Arena capacity is an additional bound. Its queue age/depth, active-screen,
 active-qualification, cohort, and retry limits are content-bound in the service manifest.
@@ -379,7 +381,8 @@ The controller maps failures according to where authority was lost:
 
 | Point of failure | Stored disposition | Retry behavior |
 |---|---|---|
-| Invalid chain payload, unsafe archive, content-hash mismatch, malformed proposal | `failed` / `FAIL` | None; attributable intake failure |
+| Invalid chain payload, unpaid or invalid eval-cost payment, unsafe archive, content-hash mismatch, malformed proposal | `failed` / `FAIL` | None; attributable intake failure |
+| Eval-cost payment lookup RPC/decode blip | pass aborted; cursor unchanged | Retry the pass; do not fail the miner |
 | Transient HTTPS/DNS or immutable-publication storage fault | `transport_retry` / `NO_DECISION` | Retry until the transport budget, then `held` |
 | Static/build/ABI/graph/serving screen `FAIL` | `failed` / `FAIL` | None under that screen authority |
 | Screen timeout or inconclusive evidence | Retry in the same primary or reproduction lane | Arena screen budget decides retry versus hold |

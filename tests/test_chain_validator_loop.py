@@ -12,7 +12,15 @@ from cacheon.arena_service import (
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain import FinalizedRevealSnapshot, RevealedCommitment
-from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+from cacheon.chain.eval_cost import (
+    EvalCostFetchError,
+    EvalCostPaymentProof,
+    EvalCostPolicy,
+    EvalCostRequest,
+    encode_payment_remark,
+    quote_eval_cost,
+)
+from cacheon.chain.intake import FinalizedIntakeStore, IntakePolicy, IntakeScope
 from cacheon.chain.payload import encode_payload
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.qualification import QualificationDecision
@@ -123,6 +131,167 @@ def test_finalized_reveal_publishes_once_and_restart_reopens(tmp_path, monkeypat
     )
     assert second.reserved == [] and second.published == {}
     assert second_calls == []
+
+
+def test_unpaid_v1_is_failed_when_eval_cost_is_required(tmp_path, monkeypatch):
+    source = _bundle(
+        tmp_path / "source",
+        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+    )
+    digest = content_hash(source)
+    snapshot = _snapshot([("miner", encode_payload(digest, "https://example.com/a"))])
+    result, calls, options = _run(
+        tmp_path,
+        monkeypatch,
+        snapshot,
+        {digest: source},
+        policy=IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+    )
+    assert calls == [] and len(result.rejected) == 1
+    with FinalizedIntakeStore(
+        options["intake_db"],
+        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        row = store.all()[0]
+        assert row.status == "failed"
+        assert row.reason == "missing_eval_cost_payment"
+
+
+def _paid_proof(digest: str) -> EvalCostPaymentProof:
+    request = EvalCostRequest(netuid=307, hotkey="miner", content_hash=digest)
+    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_alpha_rao=10))
+    return EvalCostPaymentProof(
+        block=80,
+        extrinsic_index=4,
+        signer="coldkey",
+        burn_coldkey="coldkey",
+        burn_hotkey="miner",
+        burn_netuid=307,
+        alpha_decrease=10,
+        remark=encode_payment_remark(request, quote),
+    )
+
+
+def test_paid_v2_is_admitted_when_eval_cost_is_required(tmp_path, monkeypatch):
+    source = _bundle(
+        tmp_path / "source",
+        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+    )
+    digest = content_hash(source)
+    snapshot = _snapshot(
+        [
+            (
+                "miner",
+                encode_payload(
+                    digest,
+                    "https://example.com/a",
+                    payment_block=80,
+                    payment_extrinsic_index=4,
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        loop,
+        "read_eval_cost_payment",
+        lambda *_args, **_kwargs: _paid_proof(digest),
+    )
+    result, calls, options = _run(
+        tmp_path,
+        monkeypatch,
+        snapshot,
+        {digest: source},
+        policy=IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+    )
+    assert calls == [digest] and len(result.rejected) == 0
+    with FinalizedIntakeStore(
+        options["intake_db"],
+        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        row = store.all()[0]
+        assert row.status == "published"
+        assert row.arrival.payment_block == 80
+
+
+def test_unrecognizable_payment_pointer_is_invalid(tmp_path, monkeypatch):
+    source = _bundle(
+        tmp_path / "source",
+        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+    )
+    digest = content_hash(source)
+    snapshot = _snapshot(
+        [
+            (
+                "miner",
+                encode_payload(
+                    digest,
+                    "https://example.com/a",
+                    payment_block=80,
+                    payment_extrinsic_index=4,
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr(loop, "read_eval_cost_payment", lambda *_args, **_kwargs: None)
+    result, calls, options = _run(
+        tmp_path,
+        monkeypatch,
+        snapshot,
+        {digest: source},
+        policy=IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+    )
+    assert calls == [] and len(result.rejected) == 1
+    with FinalizedIntakeStore(
+        options["intake_db"],
+        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        row = store.all()[0]
+        assert row.status == "failed"
+        assert row.reason == "eval_cost_payment_invalid"
+
+
+def test_eval_cost_fetch_error_does_not_advance_the_cursor(tmp_path, monkeypatch):
+    source = _bundle(
+        tmp_path / "source",
+        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+    )
+    digest = content_hash(source)
+    snapshot = _snapshot(
+        [
+            (
+                "miner",
+                encode_payload(
+                    digest,
+                    "https://example.com/a",
+                    payment_block=80,
+                    payment_extrinsic_index=4,
+                ),
+            )
+        ]
+    )
+
+    def boom(*_args, **_kwargs):
+        raise EvalCostFetchError("rpc blip")
+
+    monkeypatch.setattr(loop, "read_eval_cost_payment", boom)
+    with pytest.raises(EvalCostFetchError, match="rpc blip"):
+        _run(
+            tmp_path,
+            monkeypatch,
+            snapshot,
+            {digest: source},
+            policy=IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        )
+    with FinalizedIntakeStore(
+        tmp_path / "state" / "intake.sqlite3",
+        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        assert store.finalized_cursor() is None
+        assert store.all() == ()
 
 
 def test_malformed_finalized_payload_is_reserved_and_never_fetched(tmp_path, monkeypatch):

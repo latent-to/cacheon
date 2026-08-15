@@ -23,6 +23,7 @@ installed `cacheon` console script resolves to the same parser.
 | `verify` | contributor | local gate | Check declared slot behavior against validator-owned references |
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
 | `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
+| `chain-eval-cost` | contributor | read-only | Print the published eval-cost quote (v1 is a fixed alpha burn) |
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
@@ -157,9 +158,16 @@ python -m cacheon.cli chain-submit path/to/bundle \
 ```
 
 `chain-submit` re-hashes the local bundle before constructing the payload. Use
-`--dry-run` to print the payload without signing or submitting it. Validators act only
+`--dry-run` to print the payload without signing or submitting it. `--pay` burns
+the published eval-cost alpha amount (coldkey) and commits a v2 payment pointer;
+`--dry-run --pay` prints the quote without burning. Validators act only
 on finalized, valid reveals and independently fetch, extract, and re-hash the hosted
-archive.
+archive. When the operator sets `--eval-cost-alpha-rao` above zero, unpaid v1
+reveals fail admission.
+
+```bash
+python -m cacheon.cli chain-eval-cost --netuid <netuid>
+```
 
 ### Inspect public chain state
 
@@ -269,7 +277,9 @@ python -m cacheon.cli chain-validate \
 Intake mode persists finalized order, hardened fetch and re-hash results, private
 retention, immutable worker publication, and copy disposition. Storage and loop controls
 are `--intake-db`, `--private-root`, `--publication-root`, `--audit-log`,
-`--interval`, and `--once`. The audit file is a redacted, fsynced JSONL chronology;
+`--interval`, and `--once`. `--eval-cost-alpha-rao` defaults to `0` (gate off);
+set `1000000000` to require the published 1 α `burn_alpha` per admission, and
+`--eval-cost-payment-window-blocks` to bound how old that burn may be. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 

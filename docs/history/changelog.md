@@ -370,6 +370,18 @@ points installed, and an old evaluator image does not contain the renamed
 `cacheon` worker modules. `HOW_CACHEON_WORKS.md` is the canonical
 compatibility redirect.
 
+## 2026-08-15 — Fixed eval-cost quote and alpha burn
+
+Intake can require a miner-paid evaluation cost before a finalized reveal is
+admitted. v1 `quote_eval_cost` returns a published `burn_alpha` amount and
+ignores submission extras so a later quote can price the specific eval request
+without changing payment verification. Miners optionally burn that amount with
+a content-hash remark and commit a v2 payload pointer; validators consume the
+pointer once. The gate defaults off (`eval_cost_alpha_rao=0`). Enabling it with
+`chain-validate --eval-cost-alpha-rao 1000000000` matches the published 1 α
+quote. Sealed FIFO/dispatcher configs must include the new
+`eval_cost_alpha_rao` and `eval_cost_payment_window_blocks` policy keys.
+
 ## Corrections and retractions
 
 ### MXFP4 throughput claim retracted — 2026-06-07

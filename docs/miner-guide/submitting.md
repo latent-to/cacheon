@@ -34,7 +34,7 @@ Confirm all of the following against the operator's current announcement:
 
 - network, netuid, active arena, target catalog, and evaluation stack;
 - registered target and required target mode;
-- submission window, timelock policy, and any admission limits;
+- submission window, timelock policy, eval-cost quote, and any admission limits;
 - the designated version of the submission terms;
 - how the operator publishes intake and qualification status.
 
@@ -52,8 +52,9 @@ python -m cacheon.cli chain-register \
   --wallet <WALLET> --hotkey <HOTKEY>
 ```
 
-Registration needs coldkey authorization. Normal `chain-submit` is hotkey-signed
-and does not need the coldkey.
+Registration needs coldkey authorization. A plain `chain-submit` is
+hotkey-signed. Paying the eval cost with `--pay` also needs the coldkey: it
+burns subnet alpha and then commits a v2 payload that points at that burn.
 
 ## 1. Freeze and check the bundle
 
@@ -197,11 +198,32 @@ python -m cacheon.cli chain-submit my_bundle \
   --dry-run
 ```
 
-Check that the printed `content_hash` equals the package result. The payload is
-canonical JSON with exactly three fields:
+Check that the printed `content_hash` equals the package result. The unpaid payload is canonical JSON with exactly three fields:
 
 ```json
 {"v":1,"h":"<64-lowercase-hex>","u":"https://.../my_bundle.tar.gz"}
+```
+
+When the operator enables the eval-cost gate, quote first. `--pay --dry-run`
+prints the published burn amount without signing; the dry-run payload stays v1
+because there is no inclusion pointer yet.
+
+```bash
+python -m cacheon.cli chain-eval-cost --netuid <NETUID>
+python -m cacheon.cli chain-submit my_bundle \
+  --url https://downloads.example.org/cacheon/my_bundle.tar.gz \
+  --netuid <NETUID> --network <NETWORK> \
+  --wallet <WALLET> --hotkey <HOTKEY> \
+  --blocks-until-reveal <BLOCKS> \
+  --pay \
+  --dry-run
+```
+
+A live `--pay` burns that alpha amount from the coldkey, then commits a v2
+payload whose `p` pointer locates the burn. Identity remains `h`/`u`:
+
+```json
+{"v":2,"h":"<64-lowercase-hex>","u":"https://.../my_bundle.tar.gz","p":{"b":<block>,"i":<extrinsic_index>}}
 ```
 
 The production payload cap is 1,024 bytes. A refused dry run has not signed or
@@ -209,14 +231,16 @@ sent anything.
 
 ## 4. Submit the timelock commitment
 
-Run the same command without `--dry-run`:
+Run the same command without `--dry-run`. When the operator requires an
+eval-cost burn, keep `--pay`:
 
 ```bash
 python -m cacheon.cli chain-submit my_bundle \
   --url https://downloads.example.org/cacheon/my_bundle.tar.gz \
   --netuid <NETUID> --network <NETWORK> \
   --wallet <WALLET> --hotkey <HOTKEY> \
-  --blocks-until-reveal <BLOCKS>
+  --blocks-until-reveal <BLOCKS> \
+  --pay
 ```
 
 The SDK encrypts the payload for automatic reveal after the requested timelock.

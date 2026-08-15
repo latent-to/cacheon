@@ -1363,27 +1363,74 @@ def cmd_chain_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
+    from cacheon.chain.eval_cost import (
+        EvalCostPolicy,
+        EvalCostRequest,
+        quote_eval_cost,
+    )
+
+    request = EvalCostRequest(
+        netuid=args.netuid,
+        hotkey=args.hotkey or "query",
+        content_hash=args.content_hash or "",
+        target_id=args.target_id or "",
+    )
+    quote = quote_eval_cost(request, policy=EvalCostPolicy())
+    print(f"version:      {quote.version}")
+    print(f"netuid:       {quote.netuid}")
+    print(f"asset:        {quote.asset}")
+    print(f"instrument:   {quote.instrument}")
+    print(f"amount_rao:   {quote.amount_alpha_rao}")
+    print(
+        "v1 quote ignores submission extras; later versions may price the "
+        "specific eval request."
+    )
+    return 0
+
+
 def cmd_chain_submit(args: argparse.Namespace) -> int:
+    from cacheon.chain.eval_cost import EvalCostError
     from cacheon.chain.payload import PayloadError
     from cacheon.chain.submit import submit_bundle
 
     from cacheon import chain
 
     subtensor = wallet = None
+    pay = bool(getattr(args, "pay", False))
     if not args.dry_run:
         import bittensor as bt
 
         subtensor = chain.connect(args.network)
         wallet = bt.Wallet(name=args.wallet, hotkey=args.hotkey)
     try:
-        res = submit_bundle(subtensor, wallet, args.netuid, args.bundle, args.url,
-                            blocks_until_reveal=args.blocks_until_reveal,
-                            dry_run=args.dry_run)
-    except PayloadError as e:
+        res = submit_bundle(
+            subtensor,
+            wallet,
+            args.netuid,
+            args.bundle,
+            args.url,
+            blocks_until_reveal=args.blocks_until_reveal,
+            dry_run=args.dry_run,
+            pay=pay,
+        )
+    except (PayloadError, EvalCostError) as e:
         print(f"REFUSED before signing: {e}")
         return 2
     print(f"content_hash: {res['content_hash']}")
     print(f"payload:      {res['payload']}")
+    if res.get("paid"):
+        print(f"eval_cost:    {res.get('eval_cost_alpha_rao')} alpha-rao "
+              f"({res.get('eval_cost_instrument')})")
+        payment = res.get("eval_cost_payment") or {}
+        if payment.get("dry_run"):
+            print("eval_cost payment is quoted only; --dry-run does not burn alpha.")
+        elif payment.get("submitted"):
+            print(
+                "eval_cost payment: "
+                f"block={payment.get('payment_block')} "
+                f"extrinsic={payment.get('payment_extrinsic_index')}"
+            )
     if args.dry_run:
         print("DRY RUN — nothing sent. The payload above is what would be committed "
               f"(timelock, reveals after {args.blocks_until_reveal} blocks).")
@@ -1492,12 +1539,21 @@ def cmd_chain_validate(
         _handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         _chain_lg.addHandler(_handler)
+    from cacheon.chain.intake import IntakePolicy
+
+    policy = IntakePolicy(
+        eval_cost_alpha_rao=int(getattr(args, "eval_cost_alpha_rao", 0)),
+        eval_cost_payment_window_blocks=int(
+            getattr(args, "eval_cost_payment_window_blocks", 7_200)
+        ),
+    )
     res = run_validator(
         subtensor,
         args.netuid,
         intake_db=args.intake_db,
         private_root=args.private_root,
         publication_root=args.publication_root,
+        policy=policy,
         arena_registry=injected,
         arena_id=None if args.intake_only else args.arena_id,
         intake_only=args.intake_only,
@@ -1908,7 +1964,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Commands by workflow:\n"
             "  develop a kernel (miner) ... slots, scan, verify\n"
             "  submit on-chain (miner) .... chain-register, chain-package,\n"
-            "                               chain-publish, chain-submit, chain-status\n"
+            "                               chain-publish, chain-eval-cost,\n"
+            "                               chain-submit, chain-status\n"
             "  referee + settlement ....... chain-validate, chain-snapshot\n"
             "  environment checks ......... compat, chain-compat\n"
             "\n"
@@ -2421,6 +2478,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_chain_publish)
 
+    sp = sub.add_parser(
+        "chain-eval-cost",
+        help="miner: print the published eval-cost quote (v1 is a fixed alpha burn)",
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument("--hotkey", default="", help="miner hotkey ss58; unused by the v1 quote")
+    sp.add_argument("--content-hash", default="", help="proposal hash; unused by the v1 quote")
+    sp.add_argument("--target-id", default="", help="registered target; unused by the v1 quote")
+    sp.set_defaults(func=cmd_chain_eval_cost)
+
     sp = sub.add_parser("chain-submit",
                         help="miner: commit a bundle (hash + fetch URL) on-chain via "
                              "timelock commit-reveal")
@@ -2435,6 +2502,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="timelock length; the payload is unreadable until then")
     sp.add_argument("--dry-run", action="store_true",
                     help="build + print the payload, do NOT sign or submit")
+    sp.add_argument(
+        "--pay",
+        action="store_true",
+        help="burn the published eval-cost alpha amount, then commit a v2 payment pointer",
+    )
     sp.set_defaults(func=cmd_chain_submit)
 
     sp = sub.add_parser("chain-status",
@@ -2508,6 +2580,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--interval", type=float, default=60.0, help="seconds between passes")
     sp.add_argument("--once", action="store_true", help="single pass, then exit")
+    sp.add_argument(
+        "--eval-cost-alpha-rao",
+        type=int,
+        default=0,
+        help="required burn_alpha amount per admission; 0 disables the gate; 1000000000 (1 alpha) matches the published v1 quote",
+    )
+    sp.add_argument(
+        "--eval-cost-payment-window-blocks",
+        type=int,
+        default=7200,
+        help="max finalized blocks between the burn and the reveal (default 7200)",
+    )
     sp.set_defaults(func=cmd_chain_validate)
 
     sp = sub.add_parser(

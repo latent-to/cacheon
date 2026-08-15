@@ -1,7 +1,9 @@
 # How miners earn rewards
 
 Cacheon does not reward the act of uploading a kernel. It rewards a measured
-improvement that survives independent reproduction and settlement.
+improvement that survives independent reproduction and settlement. When the
+operator enables the eval-cost gate, each admitted proposal must also burn the
+published alpha amount; that burn is an anti-spam admission cost, not a reward.
 
 !!! tip "The 30-second answer"
     You submit one optimization for a target in a validator-published evaluation
