@@ -30,7 +30,7 @@ from cacheon.eval.oci_outer_session import (
     SessionExecutionPlan,
 )
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
-from cacheon.eval.scoring import SpeedupVerdict, marginal_workload_digest, score_speedup
+from cacheon.eval.scoring import SpeedupVerdict, marginal_workload_digest
 from cacheon.eval.speed_verdict import (
     SpeedStageDecision,
     speed_grade,
@@ -61,7 +61,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (1, 2, 3, 4, 5)
+            or self.version not in (1, 2, 3, 4, 5, 6)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -209,9 +209,17 @@ class ResidentSpeedPolicy:
         return canonical_digest(
             "cacheon.qualification.resident-speed-policy",
             {
-                "borderline_band": "one_min_margin_around_required",
                 **self.to_dict(),
-                "read_order": ["B", "C", "B_prime", "C_prime", "B_double_prime"],
+                "borderline_band": (
+                    "pod_bookend_invariant"
+                    if self.version >= 6
+                    else "one_min_margin_around_required"
+                ),
+                "read_order": (
+                    ["B", "C", "B_prime_if_inconclusive"]
+                    if self.version >= 6
+                    else ["B", "C", "B_prime", "C_prime", "B_double_prime"]
+                ),
                 "timing": "serialized_resident_host_time",
             },
         )
@@ -1319,6 +1327,10 @@ def run_resident_crossover_speed(
         or type(model_mount) is not TrustedArenaModelMountReceipt
     ):
         raise CrossoverRuntimeError("resident crossover authorities are not exact")
+    if plan.policy.version >= 6:
+        raise CrossoverRuntimeError(
+            "resident speed policy v6 requires the pair-native crossover"
+        )
     started = float(clock())
     thresholds = (deadline, started)
     if any(

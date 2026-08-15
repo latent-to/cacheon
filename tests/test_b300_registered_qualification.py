@@ -516,26 +516,29 @@ def test_concrete_prefill_blockscore_plan_is_registered_resident_v3_and_repeatab
     assert first.evidence_root == harness.inputs.evidence_root
 
 
-def test_registered_plan_accepts_commissioned_resident_v5(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", (5, 6))
+def test_registered_plan_accepts_commissioned_resident_policy(
+    tmp_path: Path, version: int
+) -> None:
     harness = _harness(tmp_path)
     current = harness.inputs.resident_speed_policy
-    v5 = ResidentSpeedPolicy.from_calibration(
+    commissioned = ResidentSpeedPolicy.from_calibration(
         max_stage_seconds=current.max_stage_seconds,
         max_qualification_seconds=current.max_qualification_seconds,
         calibration=harness.inputs.calibration_manifest,
         context=harness.inputs.calibration_context,
-        version=5,
+        version=version,
         min_windows=current.min_windows,
         max_window_scatter=current.max_window_scatter,
         max_conditioning_slowdown=current.max_conditioning_slowdown,
     )
-    inputs = replace(harness.inputs, resident_speed_policy=v5)
+    inputs = replace(harness.inputs, resident_speed_policy=commissioned)
     value = registered.build_b300_registered_qualification_factory(
         inputs
     ).plan_builder(harness.cohort, b"v" * 32)
 
     assert value.resident_speed_plan is not None
-    assert value.resident_speed_plan.policy.version == 5
+    assert value.resident_speed_plan.policy.version == version
 
 
 def test_atomic_fixture_builds_one_registered_plan_with_partitioned_member_evidence(

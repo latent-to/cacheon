@@ -308,17 +308,18 @@ def test_exact_serial_b_c_b_prime_clear_decisions(
 
 
 def _borderline_policy(*, version=1):
+    windowed = version >= 3
     return ResidentSpeedPolicy(
         60,
         0.005,
         0.1,
-        0.02 if version == 3 else 0.1,
+        0.002 if version >= 6 else 0.02 if version >= 2 else 0.1,
         "8" * 64,
         "9" * 64,
         version=version,
-        min_windows=3 if version == 3 else 0,
-        max_window_scatter=0.01 if version == 3 else 0.0,
-        max_conditioning_slowdown=1.5 if version == 3 else 0.0,
+        min_windows=3 if windowed else 0,
+        max_window_scatter=0.01 if windowed else 0.0,
+        max_conditioning_slowdown=1.5 if windowed else 0.0,
     )
 
 
@@ -350,6 +351,128 @@ def test_borderline_escalates_exactly_and_settles_pass(tmp_path, cleanup_pairs):
         "A",
     )
     assert factory_a.sessions[0].finish_calls == factory_b.sessions[0].finish_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("baseline_durations", "candidate_duration", "roles", "decision"),
+    (
+        (((1.0,) * 3,) * 2, 1.05, ("B", "C"), SpeedStageDecision.FAIL),
+        (((1.0,) * 3,) * 2, 0.99, ("B", "C"), SpeedStageDecision.PASS),
+        (
+            ((1.0,) * 3, (1.0 / 1.002,) * 3),
+            1.0 / 1.006,
+            ("B", "C", "B_prime"),
+            SpeedStageDecision.FAIL,
+        ),
+        (
+            ((1.0,) * 3,) * 2,
+            1.0 / 1.006,
+            ("B", "C", "B_prime"),
+            SpeedStageDecision.PASS,
+        ),
+    ),
+)
+def test_v6_runs_two_leg_clear_fail_or_three_leg_terminal(
+    tmp_path, cleanup_pairs, baseline_durations, candidate_duration, roles, decision
+):
+    plan, pair, clock, activity, factory_a, factory_b = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=baseline_durations,
+        candidate=((candidate_duration,) * 3,),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
+    )
+
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+
+    assert evidence.decision is decision
+    assert not evidence.escalated
+    assert tuple(row.role for row in evidence.rates) == roles
+    expected_lanes = tuple("B" if role == "C" else "A" for role in roles)
+    assert tuple(row.lane_id for row in evidence.request_slices) == expected_lanes
+    assert tuple(
+        row.request_slice for row in pair.request_history
+    ) == evidence.request_slices
+    assert len(factory_a.sessions[0].batch_rows) == (
+        len(plan.crossover_plan.baseline.session_plan.prompt_batches)
+        * sum(role.startswith("B") for role in roles)
+    )
+    assert len(factory_b.sessions[0].batch_rows) == (
+        len(plan.crossover_plan.baseline.session_plan.prompt_batches)
+        * sum(role.startswith("C") for role in roles)
+    )
+    assert evidence.regrade(plan) == evidence.final_verdict
+    assert not activity.overlap
+    assert factory_a.sessions[0].finish_calls == factory_b.sessions[0].finish_calls == 0
+
+
+def test_v5_borderline_five_leg_evidence_still_regrades(
+    tmp_path, cleanup_pairs
+):
+    plan, pair, clock, *_ = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 3,
+        candidate=((0.995,) * 3, (0.98,) * 3),
+        policy=_borderline_policy(version=5),
+        timed_batches=3,
+    )
+
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+
+    assert evidence.escalated
+    assert tuple(row.role for row in evidence.rates) == (
+        "B",
+        "C",
+        "B_prime",
+        "C_prime",
+        "B_double_prime",
+    )
+    assert evidence.regrade(plan) == evidence.final_verdict
+
+
+def test_v6_regrade_rejects_missing_b_prime_and_bad_windows(
+    tmp_path, cleanup_pairs
+):
+    plan, pair, clock, *_ = _setup(
+        tmp_path / "missing",
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        # 1.006 is inside v6's sealed uncertainty band, so the
+        # production runner appends B-prime. Removing that retained leg below
+        # must fail independent regrade.
+        candidate=((1.0 / 1.006,) * 3,),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
+    )
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+    with pytest.raises(ResidentPairCrossoverHold, match="omitted required B-prime"):
+        replace(
+            evidence,
+            request_slices=evidence.request_slices[:2],
+            rates=evidence.rates[:2],
+        ).regrade(plan)
+
+    bad_plan, bad_pair, bad_clock, *_ = _setup(
+        tmp_path / "windows",
+        cleanup_pairs,
+        policy=_borderline_policy(version=6),
+        timed_batches=2,
+    )
+    with pytest.raises(ResidentPairCrossoverHold, match="required timed windows"):
+        run_resident_pair_crossover(
+            bad_plan,
+            pair=bad_pair,
+            deadline=bad_clock() + 120.0,
+            clock=bad_clock,
+        )
 
 
 @pytest.mark.parametrize("tamper", ("candidate_first", "cross_lane", "host_order"))

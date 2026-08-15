@@ -82,9 +82,10 @@ from cacheon.eval.resident_audit_authority import (
     ResidentAuditAuthorityError, ResidentAuditExecutionAuthority,
 )
 from cacheon.eval.scoring import (
-    ChargedExecutionRate, MarginalSpeedProjection, _projection_digest,
+    ChargedExecutionRate, MarginalSpeedProjection, RawSpeedEvidenceError, _projection_digest,
     marginal_workload_digest, project_marginal_speed, score_speedup,
 )
+from cacheon.eval.speed_verdict import resident_speed_roles, v6_grade
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes, require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon._strict import require_exact_fields
@@ -910,11 +911,9 @@ class ResidentSpeedWitness:
         ):
             raise QualificationRunnerError("resident speed wall time is invalid")
         rates = tuple(self.rates)
-        expected_roles = {
-            3: ("B", "C", "B_prime"),
-            5: ("B", "C", "B_prime", "C_prime", "B_double_prime"),
-        }
-        if tuple(row.role for row in rates) != expected_roles.get(len(rates)):
+        if tuple(row.role for row in rates) != resident_speed_roles(
+            self.resident_policy.version, len(rates)
+        ):
             raise QualificationRunnerError("resident speed witness read order differs")
         if any(
             bool(row.windows) != (self.resident_policy.version >= 3)
@@ -1050,6 +1049,19 @@ class ResidentSpeedWitness:
             ]
         except CrossoverRuntimeError as exc:
             raise QualificationRunnerError(str(exc)) from None
+        if self.resident_policy.version >= 6:
+            try:
+                _, verdict, decision = v6_grade(
+                    self.resident_policy,
+                    self.rates[0],
+                    self.rates[1],
+                    self.rates[2] if len(self.rates) == 3 else None,
+                )
+            except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
+                raise QualificationRunnerError(str(exc)) from None
+            return QualificationDecision(decision.value), format(
+                verdict.speedup, ".17g"
+            )
         initial = score_speedup(
             baselines[:2],
             candidates[:1],

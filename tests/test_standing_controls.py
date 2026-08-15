@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import pytest
 
@@ -27,8 +28,12 @@ def _h(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-def _policy() -> ResidentSpeedPolicy:
+def _authority(
+    version: int = 3, *, workload_digest: str | None = None
+) -> tuple[CalibrationContext, object, ResidentSpeedPolicy]:
     context = CalibrationContext(*(_h(f"context-{index}") for index in range(10)))
+    if workload_digest is not None:
+        context = replace(context, workload_digest=workload_digest)
     threshold = CalibrationThresholdPolicy(
         context,
         "teacher-familywise-v1",
@@ -41,16 +46,21 @@ def _policy() -> ResidentSpeedPolicy:
         "2.576",
     )
     calibration = derive_calibration_manifest(threshold, _observations())
-    return ResidentSpeedPolicy.from_calibration(
+    policy = ResidentSpeedPolicy.from_calibration(
         max_stage_seconds=60,
         max_qualification_seconds=600,
         calibration=calibration,
         context=context,
-        version=3,
+        version=version,
         min_windows=3,
         max_window_scatter=0.05,
         max_conditioning_slowdown=1.5,
     )
+    return context, calibration, policy
+
+
+def _policy() -> ResidentSpeedPolicy:
+    return _authority()[2]
 
 
 def _controls(policy: ResidentSpeedPolicy) -> dict[str, object]:
@@ -115,11 +125,11 @@ def test_drift_bound_must_equal_the_sealed_speed_policy_exactly() -> None:
         verify_standing_controls(drifted, dict(drifted), policy)
 
 
-def test_non_v3_policy_and_inexact_noise_are_rejected() -> None:
+def test_unsupported_policy_and_inexact_noise_are_rejected() -> None:
     policy = _policy()
     raw = _controls(policy)
     with pytest.raises(
-        StandingControlsError, match="version-3 resident speed policy"
+        StandingControlsError, match="supported resident speed policy"
     ):
         verify_standing_controls(raw, dict(raw), object())
     with pytest.raises(

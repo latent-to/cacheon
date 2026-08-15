@@ -22,6 +22,7 @@ from cacheon.eval.qualification_runner import (
     SpeedEvidencePolicy,
     _resident_speed_projection_digest,
 )
+from cacheon.eval.speed_verdict import resident_speed_roles
 from cacheon.eval.resident_evaluation_pair import ResidentRequestSlice
 from cacheon.eval.resident_pair_crossover import (
     ResidentPairCrossoverError,
@@ -153,11 +154,9 @@ class ResidentPairLiveSpeedWitness:
             raise QualificationRunnerError("live resident speed witness is malformed")
         for row in self.stock_return_digests:
             require_sha256_hex(row, field="stock return digest")
-        expected_roles = {
-            3: ("B", "C", "B_prime"),
-            5: ("B", "C", "B_prime", "C_prime", "B_double_prime"),
-        }
-        if tuple(row.role for row in self.rates) != expected_roles.get(len(self.rates)):
+        if tuple(row.role for row in self.rates) != resident_speed_roles(
+            self.resident_policy.version, len(self.rates)
+        ):
             raise QualificationRunnerError("live resident speed read order differs")
         if any(
             bool(row.windows) != (self.resident_policy.version >= 3)

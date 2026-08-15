@@ -95,9 +95,9 @@ class StandingEvaluationControls:
         }
 
     def require_derived_from(self, policy: ResidentSpeedPolicy) -> None:
-        if type(policy) is not ResidentSpeedPolicy or policy.version not in (3, 4, 5):
+        if type(policy) is not ResidentSpeedPolicy or policy.version not in (3, 4, 5, 6):
             raise StandingControlsError(
-                "standing controls require the version-3 resident speed policy"
+                "standing controls require a supported resident speed policy"
             )
         expected = bookend_drift_ppm_from_max_noise(policy.max_noise)
         if self.maximum_bookend_drift_ppm != expected:

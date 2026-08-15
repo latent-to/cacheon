@@ -22,7 +22,7 @@ from cacheon.eval.resident_pair_crossover import (
     run_resident_pair_crossover,
 )
 from cacheon.stack_identity import canonical_json_bytes
-from tests.test_resident_pair_crossover import _setup
+from tests.test_resident_pair_crossover import _borderline_policy, _setup
 
 
 def _digest(label: str) -> str:
@@ -91,6 +91,31 @@ def test_resident_pair_roundtrip_rerecord_conflict_and_restart(
     assert _scope(tmp_path).load_resident_pair_speed(plan) == evidence
     with pytest.raises(QualificationContinuationError, match="other content"):
         continuation.record_resident_pair_speed(other)
+
+
+@pytest.mark.parametrize(
+    "candidate_duration", (1.05, 0.80, 1.0 / 1.006, 0.99)
+)
+def test_v6_adaptive_shapes_survive_continuation_restart(
+    tmp_path: Path, resident_pairs: list, candidate_duration: float
+) -> None:
+    plan, pair, clock, *_ = _setup(
+        tmp_path / "pair",
+        resident_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((candidate_duration,) * 3,),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
+    )
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+    continuation = _scope(tmp_path)
+    continuation.record_resident_pair_speed(evidence)
+
+    reopened = _scope(tmp_path).load_resident_pair_speed(plan)
+    assert reopened == evidence
+    assert reopened.regrade(plan) == evidence.final_verdict
 
 
 def test_resident_pair_reopen_rejects_foreign_plan_and_untyped_inputs(

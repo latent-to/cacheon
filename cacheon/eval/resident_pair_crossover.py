@@ -44,6 +44,11 @@ from cacheon.eval.scoring import (
     marginal_workload_digest,
     score_speedup,
 )
+from cacheon.eval.speed_verdict import (
+    resident_speed_roles,
+    speed_grade,
+    v6_grade,
+)
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
@@ -465,13 +470,22 @@ def _regrade(evidence: ResidentPairCrossoverEvidence, plan: ResidentPairCrossove
     if type(plan) is not ResidentPairCrossoverPlan:
         raise ResidentPairCrossoverError("resident pair crossover plan is not exact")
     crossover = plan.crossover_plan
-    expected_roles = (
-        ("B", "C", "B_prime", "C_prime", "B_double_prime")
-        if evidence.escalated
-        else ("B", "C", "B_prime")
-    )
+    observed_roles = tuple(row.role for row in evidence.rates)
+    if crossover.policy.version >= 6:
+        expected_roles = resident_speed_roles(
+            crossover.policy.version, len(evidence.rates)
+        )
+        schedule_valid = not evidence.escalated and bool(expected_roles)
+    else:
+        expected_roles = (
+            ("B", "C", "B_prime", "C_prime", "B_double_prime")
+            if evidence.escalated
+            else ("B", "C", "B_prime")
+        )
+        schedule_valid = True
     if (
-        evidence.plan_digest != plan.digest
+        not schedule_valid
+        or evidence.plan_digest != plan.digest
         or evidence.candidate_bundle_digest != plan.candidate_bundle_digest
         or evidence.selected_delta_digest != crossover.selected_delta_digest
         or evidence.workload_digest != plan.workload_digest
@@ -484,7 +498,7 @@ def _regrade(evidence: ResidentPairCrossoverEvidence, plan: ResidentPairCrossove
         or evidence.batch_shape != plan.batch_shape
         or evidence.deadline_monotonic_s - evidence.started_monotonic_s
         > crossover.policy.max_stage_seconds + 1e-9
-        or tuple(row.role for row in evidence.rates) != expected_roles
+        or observed_roles != expected_roles
         or len(evidence.request_slices) != len(expected_roles)
     ):
         raise ResidentPairCrossoverHold("resident pair evidence names another plan or schedule")
@@ -515,36 +529,48 @@ def _regrade(evidence: ResidentPairCrossoverEvidence, plan: ResidentPairCrossove
         raise ResidentPairCrossoverHold("resident pair rates do not regrade from raw slices")
     baselines = [row for row in recomputed if row.role.startswith("B")]
     candidates = [row for row in recomputed if row.role.startswith("C")]
-    initial = _score(crossover.policy, baselines[:2], candidates[:1])
-    try:
-        conditioning_failed = crossover.policy.conditioning_regression(
-            baselines[0], candidates[0]
-        )
-    except CrossoverRuntimeError as exc:
-        raise ResidentPairCrossoverHold(str(exc)) from None
-    disposition = SpeedStageDecision.FAIL if conditioning_failed else _initial_decision(
-        initial, crossover.policy.min_margin
-    )
-    if disposition is None:
-        if not evidence.escalated:
-            raise ResidentPairCrossoverHold("borderline resident evidence omitted escalation")
-        final = _score(crossover.policy, baselines, candidates)
+    policy = crossover.policy
+    if policy.version >= 6:
         try:
-            conditioning_failed = crossover.policy.conditioning_regression(
-                baselines[1], candidates[1]
+            initial, final, decision = v6_grade(
+                policy, recomputed[0], recomputed[1],
+                recomputed[2] if len(recomputed) == 3 else None,
+            )
+        except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
+            raise ResidentPairCrossoverHold(
+                f"resident speed measurement is unfit: {exc}"
+            ) from None
+    else:
+        initial = _score(policy, baselines[:2], candidates[:1])
+        try:
+            conditioning_failed = policy.conditioning_regression(
+                baselines[0], candidates[0]
             )
         except CrossoverRuntimeError as exc:
             raise ResidentPairCrossoverHold(str(exc)) from None
-        if conditioning_failed:
-            decision = SpeedStageDecision.FAIL
-        elif not final.confident:
-            raise ResidentPairCrossoverHold("post-escalation resident speed is nonconfident")
+        disposition = SpeedStageDecision.FAIL if conditioning_failed else _initial_decision(
+            initial, policy.min_margin
+        )
+        if disposition is None:
+            if not evidence.escalated:
+                raise ResidentPairCrossoverHold("borderline resident evidence omitted escalation")
+            final = _score(policy, baselines, candidates)
+            try:
+                conditioning_failed = policy.conditioning_regression(
+                    baselines[1], candidates[1]
+                )
+            except CrossoverRuntimeError as exc:
+                raise ResidentPairCrossoverHold(str(exc)) from None
+            if conditioning_failed:
+                decision = SpeedStageDecision.FAIL
+            elif not final.confident:
+                raise ResidentPairCrossoverHold("post-escalation resident speed is nonconfident")
+            else:
+                decision = SpeedStageDecision.PASS if final.passed_speedup else SpeedStageDecision.FAIL
         else:
-            decision = SpeedStageDecision.PASS if final.passed_speedup else SpeedStageDecision.FAIL
-    else:
-        if evidence.escalated:
-            raise ResidentPairCrossoverHold("clear resident evidence added repeat reads")
-        final, decision = initial, disposition
+            if evidence.escalated:
+                raise ResidentPairCrossoverHold("clear resident evidence added repeat reads")
+            final, decision = initial, disposition
     if (
         evidence.initial_verdict != initial
         or evidence.final_verdict != final
@@ -561,7 +587,7 @@ def run_resident_pair_crossover(
     deadline: float,
     clock: Callable[[], float] = time.monotonic,
 ) -> ResidentPairCrossoverEvidence:
-    """Run serial B/C/B-prime and only the precommitted borderline repeats."""
+    """Run the policy-sealed serialized pair schedule."""
 
     if type(plan) is not ResidentPairCrossoverPlan or type(pair) is not ResidentEvaluationPair or not callable(clock):
         raise ResidentPairCrossoverError("resident pair crossover authorities are not exact")
@@ -628,33 +654,51 @@ def run_resident_pair_crossover(
     try:
         read("B")
         read("C")
-        read("B_prime")
         policy = plan.crossover_plan.policy
-        initial = _score(policy, [rates[0], rates[2]], [rates[1]])
-        try:
-            conditioning_failed = policy.conditioning_regression(rates[0], rates[1])
-        except CrossoverRuntimeError as exc:
-            raise ResidentPairCrossoverHold(str(exc)) from None
-        disposition = SpeedStageDecision.FAIL if conditioning_failed else _initial_decision(
-            initial, policy.min_margin
-        )
-        escalated = disposition is None
-        if escalated:
-            read("C_prime")
-            read("B_double_prime")
-            final = _score(policy, [rates[0], rates[2], rates[4]], [rates[1], rates[3]])
+        if policy.version >= 6:
             try:
-                conditioning_failed = policy.conditioning_regression(rates[2], rates[3])
+                initial, disposition = speed_grade(
+                    policy, [rates[0]], [rates[1]], concluding=False
+                )
+            except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
+                raise ResidentPairCrossoverHold(
+                    f"resident speed measurement is unfit: {exc}"
+                ) from None
+            if disposition is not None:
+                final, decision = initial, disposition
+            else:
+                read("B_prime")
+                final, decision = speed_grade(
+                    policy, [rates[0], rates[2]], [rates[1]], concluding=True
+                )
+            escalated = False
+        else:
+            read("B_prime")
+            initial = _score(policy, [rates[0], rates[2]], [rates[1]])
+            try:
+                conditioning_failed = policy.conditioning_regression(rates[0], rates[1])
             except CrossoverRuntimeError as exc:
                 raise ResidentPairCrossoverHold(str(exc)) from None
-            if conditioning_failed:
-                decision = SpeedStageDecision.FAIL
-            elif not final.confident:
-                raise ResidentPairCrossoverHold("post-escalation resident speed is nonconfident")
+            disposition = SpeedStageDecision.FAIL if conditioning_failed else _initial_decision(
+                initial, policy.min_margin
+            )
+            escalated = disposition is None
+            if escalated:
+                read("C_prime")
+                read("B_double_prime")
+                final = _score(policy, [rates[0], rates[2], rates[4]], [rates[1], rates[3]])
+                try:
+                    conditioning_failed = policy.conditioning_regression(rates[2], rates[3])
+                except CrossoverRuntimeError as exc:
+                    raise ResidentPairCrossoverHold(str(exc)) from None
+                if conditioning_failed:
+                    decision = SpeedStageDecision.FAIL
+                elif not final.confident:
+                    raise ResidentPairCrossoverHold("post-escalation resident speed is nonconfident")
+                else:
+                    decision = SpeedStageDecision.PASS if final.passed_speedup else SpeedStageDecision.FAIL
             else:
-                decision = SpeedStageDecision.PASS if final.passed_speedup else SpeedStageDecision.FAIL
-        else:
-            final, decision = initial, disposition
+                final, decision = initial, disposition
         completed = _now(clock)
         if completed > stage_deadline:
             raise ResidentPairCrossoverHold("resident pair speed stage timed out")

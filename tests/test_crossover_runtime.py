@@ -802,6 +802,24 @@ def test_policy_v3_serialization_is_version_dependent() -> None:
         replace(legacy, max_conditioning_slowdown=1.25)
 
 
+def test_v6_cannot_enter_the_legacy_resident_consumer(tmp_path: Path) -> None:
+    plan, baseline, candidate, mount, trace, _ = _rig(
+        tmp_path,
+        (0.9,),
+        policy=replace(_policy_v3(), version=6),
+        timed_batches=3,
+    )
+    with pytest.raises(CrossoverRuntimeError, match="requires the pair-native"):
+        run_resident_crossover_speed(
+            plan,
+            baseline_executor=baseline,
+            candidate_executor=candidate,
+            model_mount=mount,
+            deadline=time.monotonic() + 60,
+        )
+    assert trace == []
+
+
 def test_v3_crossover_scores_window_medians_and_retains_windows(
     tmp_path: Path,
 ) -> None:

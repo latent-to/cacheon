@@ -20,6 +20,8 @@ bracket-drift ruling (2026-08-10): flanking baseline brackets that disagree
 beyond the sealed noise ceiling do not void the read set. The earliest bracket
 was measured adjacent to the candidate arm, so it is the only valid comparison
 baseline; the drifted later brackets are excluded and C against B decides.
+
+Version 6 runs B/C, then B-prime only when a legal bookend could reverse it.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from dataclasses import replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from cacheon.eval.scoring import SpeedupVerdict, relative_spread, score_speedup
+from cacheon.eval.scoring import RawSpeedEvidenceError, SpeedupVerdict, relative_spread, score_speedup
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
@@ -38,6 +40,51 @@ class SpeedStageDecision(str, Enum):
     PASS = "PASS"
     FAIL = "FAIL"
     NO_DECISION = "NO_DECISION"
+
+
+def resident_speed_roles(version: int, count: int) -> tuple[str, ...] | None:
+    roles = {2: ("B", "C"), 3: ("B", "C", "B_prime")}
+    if version < 6:
+        roles[5] = ("B", "C", "B_prime", "C_prime", "B_double_prime")
+        roles.pop(2)
+    return roles.get(count)
+
+
+def v6_decision_limits(
+    policy: "ResidentSpeedPolicy",
+) -> tuple[float, float]:
+    """B/C limits invariant to every sealed or discarded B-prime."""
+
+    margin = policy.min_margin
+    multiplier = policy.noise_multiplier
+    noise = policy.max_noise
+    clear_fail_below = 1.0 + margin
+    high_bookend = (2.0 + noise) / (2.0 - noise)
+    clear_pass_at = high_bookend * (
+        1.0 + max(margin, multiplier * noise)
+    )
+    return clear_fail_below, clear_pass_at
+
+
+def v6_grade(
+    policy: "ResidentSpeedPolicy", baseline: object, candidate: object,
+    baseline_after: object | None = None,
+) -> tuple[SpeedupVerdict, SpeedupVerdict, SpeedStageDecision]:
+    initial, initial_decision = speed_grade(
+        policy, [baseline], [candidate], concluding=False
+    )
+    if baseline_after is None and initial_decision is None:
+        raise RawSpeedEvidenceError("resident v6 evidence omitted required B-prime")
+    if baseline_after is None:
+        return initial, initial, initial_decision  # type: ignore[return-value]
+    if initial_decision is not None:
+        raise RawSpeedEvidenceError("resident v6 clear decision added B-prime")
+    final, decision = speed_grade(
+        policy, [baseline, baseline_after], [candidate], concluding=True
+    )
+    if decision is None:
+        raise RawSpeedEvidenceError("resident v6 evidence has no terminal decision")
+    return initial, final, decision
 
 
 def _disposition(
@@ -104,6 +151,29 @@ def speed_grade(
         k=policy.noise_multiplier,
         max_noise=policy.max_noise,
     )
+    if policy.version >= 6 and not concluding and len(baseline_rates) == len(candidate_rates) == 1:
+        fail_ratio, pass_ratio = v6_decision_limits(policy)
+        conditioning = policy.conditioning_regression(baselines[0], candidates[0])
+        decision = (
+            SpeedStageDecision.FAIL
+            if conditioning or verdict.speedup < fail_ratio
+            else SpeedStageDecision.PASS
+            if verdict.speedup >= pass_ratio
+            else None
+        )
+        return replace(
+            verdict,
+            noise=0.0,
+            required=pass_ratio,
+            passed_speedup=decision is SpeedStageDecision.PASS,
+            confident=decision is not None,
+            detail=(
+                "conditioning regression in v6 B/C precheck"
+                if conditioning
+                else f"v6 B/C ratio {verdict.speedup:.3f}; invariant bounds "
+                f"[{fail_ratio:.3f}, {pass_ratio:.3f})"
+            ),
+        ), decision
     if dropped_brackets:
         verdict = replace(
             verdict,
@@ -130,5 +200,8 @@ def speed_grade(
 __all__ = [
     "SpeedStageDecision",
     "invariant_decision",
+    "resident_speed_roles",
     "speed_grade",
+    "v6_decision_limits",
+    "v6_grade",
 ]
