@@ -310,10 +310,9 @@ class SettlementQualification:
         if self.resident_lane_orientation is not None and (
             type(self.resident_lane_orientation) is not ResidentLaneOrientation
             or self.lane != "registered"
-            or self.audit_policy is None
         ):
             raise SettlementError(
-                "resident lane orientation requires one audited registered qualification"
+                "resident lane orientation requires one registered qualification"
             )
         if (
             self.resident_lane_orientation is not None
@@ -516,7 +515,11 @@ class SettlementQualification:
                     "resident acceptance differs from its plan or authority"
                 )
             selection_evidence_digest = closure.count_result.digest
-            audit_evidence_digest = report.audit_witness.digest
+            audit_evidence_digest = (
+                _LEGACY_AUDIT_EVIDENCE_DIGEST
+                if report.audit_witness is None
+                else report.audit_witness.digest
+            )
         else:
             if (
                 attempt.authority_digest != authority.authority_digest
@@ -591,8 +594,14 @@ class SettlementQualification:
             proposal_digest=(arm.proposal_digest if lane == "discovery" else ""),
             candidate_manifest=manifest,
             speed_evidence_policy_digest=report.speed_witness.policy.digest,
-            audit_control_digest=report.audit_witness.policy.control.digest,
-            audit_policy=report.audit_witness.policy,
+            audit_control_digest=(
+                _LEGACY_AUDIT_CONTROL_DIGEST
+                if report.audit_witness is None
+                else report.audit_witness.policy.control.digest
+            ),
+            audit_policy=(
+                None if report.audit_witness is None else report.audit_witness.policy
+            ),
             audit_evidence_digest=audit_evidence_digest,
             resident_lane_orientation=resident_lane_orientation,
         )

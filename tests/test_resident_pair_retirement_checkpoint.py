@@ -782,63 +782,11 @@ def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
     scope.record_resident_pair_retirement(lifecycle.retirement)
 
     executor = commissioned.plans[1].executor
-    monkeypatch.setattr(executor.manager, "clock", lifetimes.clock)
-    if lifetimes.clock() <= lifecycle.retirement_cutoff:
-        lifetimes.clock.span(
-            lifecycle.retirement_cutoff - lifetimes.clock() + 1.0
-        )
-    policy = plan.audit_policies[0]
-    receipts = tuple(
-        runner_module.AuditReceiptFacts(
-            slot,
-            policy.minimum_calls,
-            0,
-            0,
-            0,
-            1.0,
-            0.995,
-            "allclose",
-            1_200 + rank,
-            rank,
-            policy.expected_member_count,
-        )
-        for slot in policy.expected_slots
-        for rank in range(policy.expected_member_count)
-    )
-    passed, detail = gate(
-        [row.to_gate_dict() for row in receipts],
-        min_calls=policy.minimum_calls,
-        expected_slots=policy.expected_slots,
-        expected_member_count=policy.expected_member_count,
-    )
-    assert passed
-    audit = runner_module.AuditWitness(
-        plan.candidates[0].selected_delta_digest,
-        plan.resident_audit_plan.launch.digest,
-        _h("v6-pass-audit-execution"),
-        "f" * 32,
-        plan.expected_runtime_resource_policy_digest,
-        policy,
-        receipts,
-        QualificationDecision.PASS,
-        detail,
-    )
-    audit_calls = []
 
-    def run_audit(
-        value, observed_lifecycle, *, executor, deadline, completion_sink=None
-    ):
-        assert value is plan
-        assert observed_lifecycle == lifecycle
-        assert deadline > executor.manager.clock()
-        audit_calls.append(audit.digest)
-        _started, completed = lifetimes.clock.span(0.5)
-        witnesses = {audit.selected_delta_digest: audit}
-        if completion_sink is not None:
-            completion_sink(witnesses, completed)
-        return witnesses, completed
+    def no_audit(*_args, **_kwargs):  # pragma: no cover - must stay post-fidelity
+        raise AssertionError("v6 resident PASS entered the obsolete slot audit")
 
-    monkeypatch.setattr(runner_module, "_run_slot_audits", run_audit)
+    monkeypatch.setattr(runner_module, "_run_slot_audits", no_audit)
 
     profile = plan.candidates[0].profile
 
@@ -885,12 +833,16 @@ def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
         False,
     )
     assert outcome.settlement_qualification is not None
-    assert len(audit_calls) == 1
+    assert outcome.settlement_qualification.audit_policy is None
+    assert (
+        outcome.settlement_qualification.selection_evidence_digest
+        == lifecycle.closure.count_result.digest
+    )
     assert len(lifetimes.calls) == pair_calls
+    assert not (scope.directory / "audit_armed.json").exists()
     assert not (scope.directory / "t_armed.json").exists()
     assert not (scope.directory / "quality.json").exists()
     assert run_qualification_intake(factory, **kwargs) == batch
-    assert len(audit_calls) == 1
     assert len(lifetimes.calls) == pair_calls
 
     closure = lifecycle.closure

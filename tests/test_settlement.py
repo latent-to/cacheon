@@ -319,7 +319,7 @@ def test_resident_reproduction_requires_exact_physical_lane_role_swap() -> None:
         )
 
 
-def test_resident_lane_orientation_is_registered_audited_and_nonoverlapping() -> None:
+def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
     with pytest.raises(SettlementError, match="reused one physical TP lane"):
         _resident_orientation("lane-a", "lane-a")
     with pytest.raises(SettlementError, match="all-zero"):
@@ -332,7 +332,7 @@ def test_resident_lane_orientation_is_registered_audited_and_nonoverlapping() ->
 
     catalog = default_target_catalog()
     discovery = _discovery(_stack(catalog), label="resident-discovery")
-    with pytest.raises(SettlementError, match="audited registered"):
+    with pytest.raises(SettlementError, match="registered qualification"):
         replace(
             discovery.primary,
             resident_lane_orientation=_resident_orientation(),

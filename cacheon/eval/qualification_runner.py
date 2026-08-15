@@ -1441,6 +1441,38 @@ class QualificationStageExit:
                 raise QualificationRunnerError(
                     "resident-count exit lacks its failed registered result"
                 )
+        elif self.stage == "resident_accept" and self.audit_witness is None:
+            closure = self.resident_pair_closure
+            if (
+                any(
+                    value is not None
+                    for value in (
+                        self.audit_started_monotonic_s,
+                        self.audit_completed_monotonic_s,
+                        self.terminal_quiescence_digest,
+                        self.resident_count_result,
+                        self.retirement_digest,
+                    )
+                )
+                or type(self.speed_witness) is not ResidentSpeedWitness
+                or type(closure) is not ResidentPairQualificationClosure
+                or closure.count_result.decision != "PASS"
+                or self.speed_witness.resident_policy.version < 6
+                or closure.retirement.qualification_authority_digest
+                != self.authority_digest
+                or closure.retirement.speed_evidence_digest
+                != self.speed_witness.raw_crossover_digest
+                or {
+                    row.quiescence.digest for row in closure.retirement.lanes
+                }
+                != {
+                    self.speed_witness.baseline_quiescence_digest,
+                    self.speed_witness.candidate_quiescence_digest,
+                }
+            ):
+                raise QualificationRunnerError(
+                    "resident acceptance lacks passing speed/count authority"
+                )
         else:
             if (
                 type(self.audit_witness) is not AuditWitness
@@ -3341,6 +3373,19 @@ def reopen_qualification_stage_exit(
                 raise QualificationRunnerError(
                     "resident-count exit does not independently regrade"
                 )
+        elif result.stage == "resident_accept" and result.audit_witness is None:
+            if (
+                type(resident_pair_lifecycle)
+                is not ResidentPairMarginalLifecycleEvidence
+                or speed_grade is not QualificationDecision.PASS
+                or witness.resident_policy.version < 6
+                or result.resident_pair_closure
+                != resident_pair_lifecycle.closure
+                or graph_grade.decision is not QualificationDecision.PASS
+            ):
+                raise QualificationRunnerError(
+                    "resident acceptance does not independently regrade"
+                )
         else:
             audit = result.audit_witness
             policy = expected.audit_policies[0]
@@ -4261,6 +4306,37 @@ def run_causal_qualification(
                 )
                 continuation.record_final(reference)
                 return reference
+            if resident_speed_witness.resident_policy.version >= 6:
+                closure = lifecycle.closure
+                if closure is None:
+                    raise QualificationContinuationError(
+                        "passing resident speed/count lacks its retired pair closure"
+                    )
+                terminal = QualificationStageExit(
+                    authority_digest=qualification_authority_digest(value),
+                    source_digest=value.prepared.source.digest,
+                    selected_delta_digest=value.candidates[0].selected_delta_digest,
+                    stage="resident_accept",
+                    decision=QualificationDecision.PASS,
+                    reason="qualified",
+                    speed_witness=resident_speed_witness,
+                    audit_witness=None,
+                    audit_started_monotonic_s=None,
+                    audit_completed_monotonic_s=None,
+                    terminal_quiescence_digest=None,
+                    resident_pair_closure=closure,
+                )
+                reference = publish_qualification_stage_exit(
+                    value.evidence_root, terminal
+                )
+                reopen_qualification_stage_exit(
+                    value.evidence_root,
+                    reference,
+                    expected=value,
+                    resident_pair_lifecycle=lifecycle,
+                )
+                continuation.record_final(reference)
+                return reference
         quality_reads = 2 if crossover.escalated else 1
     else:
         quality_reads = value.speed_evidence_policy.candidate_reads
@@ -4278,10 +4354,7 @@ def run_causal_qualification(
         quality_reads=quality_reads,
         resident_lifecycle=lifecycle if resident_mode else None,
         resident_speed_witness=resident_speed_witness,
-        resident_accept=(
-            pair_mode
-            and resident_speed_witness.resident_policy.version >= 6
-        ),
+        resident_accept=False,
         seams=QualificationContinuationRunnerSeams(
             qualification_decision=QualificationDecision,
             discovery_candidate_authority_type=(
