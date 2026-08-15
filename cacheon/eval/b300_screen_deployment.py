@@ -123,6 +123,11 @@ ARCHITECTURE = "sm103"
 GPU_COUNT = 4
 TP_SIZE = 4
 DEFAULT_OUTPUT_ROOT = Path("/data/cacheon-b300/remote-worker/commissioned")
+_MODEL_QUANTIZATION = "modelopt_fp4"
+_LIVE_SLOT_QUANT_REQUIREMENTS = (
+    ("moe.fused_experts", "nvfp4"),
+    ("moe.fused_experts_reduce", "nvfp4"),
+)
 
 
 class B300ScreenDeploymentError(RuntimeError):
@@ -514,7 +519,7 @@ def _engine_config(
         "cuda_graph_backend_prefill": "disabled",
         "kv_cache_dtype": "auto",
         "page_size": 128,
-        "quantization": "modelopt_fp4",
+        "quantization": _MODEL_QUANTIZATION,
         "trust_remote_code": True,
     }
     if "arfusion" in bindings:
@@ -1053,7 +1058,10 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
         runtime_seed_root=inputs.runtime_seed_root,
     )
     resolver = _CommissionedScreenPlanResolver(inputs, build_executor, catalog)
-    static = B300StaticScreenAdapter(catalog)
+    static = B300StaticScreenAdapter(
+        catalog,
+        required_slot_quant=_LIVE_SLOT_QUANT_REQUIREMENTS,
+    )
     pipeline = B300BuildABIGraphScreenAdapter(
         catalog=catalog,
         executor=build_executor,

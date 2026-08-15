@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import time
@@ -139,8 +140,14 @@ def _candidate(
     catalog: TargetCatalog,
     *,
     hostile: bool = False,
+    quant: str | None = None,
 ) -> ArenaCandidateBinding:
     source = _copy_candidate_source(root, hostile=hostile)
+    if quant is not None:
+        metadata_path = source / "metadata" / "silu_and_mul.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["quant"] = [quant]
+        metadata_path.write_text(json.dumps(metadata, sort_keys=True) + "\n")
     inspected = inspect_contribution(source, catalog=catalog)
     publication = publish_worker_bundle(
         source,
@@ -213,6 +220,26 @@ def test_static_candidate_policy_fault_is_fail_but_mutation_is_no_decision(
     with leaf.open("a") as handle:
         handle.write("\n# changed after publication\n")
     assert adapter.run_screen(manifest, policy, mutated).grade is ScreenGrade.NO_DECISION
+
+
+def test_static_rejects_candidate_outside_sealed_runtime_quant(
+    tmp_path: Path,
+) -> None:
+    catalog = default_target_catalog()
+    candidate = _candidate(tmp_path, catalog)
+    manifest = _manifest(_static_runtime())
+    policy = ScreenStagePolicy("static", 30_000)
+    requirement = ((candidate.reservation.target_id, "nvfp4"),)
+    adapter = B300StaticScreenAdapter(
+        catalog,
+        required_slot_quant=requirement,
+    )
+
+    assert adapter.run_screen(manifest, policy, candidate).grade is ScreenGrade.FAIL
+    assert adapter.identity_digest != B300StaticScreenAdapter(catalog).identity_digest
+
+    compatible = _candidate(tmp_path / "compatible", catalog, quant="nvfp4")
+    assert adapter.run_screen(manifest, policy, compatible).grade is ScreenGrade.PASS
 
 
 def _runtime_policy() -> OCIRuntimeResourcePolicy:

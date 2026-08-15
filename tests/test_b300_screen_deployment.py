@@ -366,7 +366,9 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
     try:
         source = tmp_path / "candidate-source"
         shutil.copytree(
-            Path(__file__).parents[1] / "examples" / "miner_silu_torch",
+            Path(__file__).parents[1]
+            / "examples"
+            / "miner_moe_fused_experts_reduce_torch",
             source,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
@@ -397,6 +399,12 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
             publication,
             1,
         )
+        static_result = composition.authorities.screen_handlers[0].run_screen(
+            composition.manifest,
+            composition.manifest.screens.stages[0],
+            candidate,
+        )
+        assert static_result.grade.value == "fail"
         plan = composition.pipeline._plan_resolver(  # noqa: SLF001 - exact deployment seam
             composition.manifest, candidate
         )

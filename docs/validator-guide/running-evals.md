@@ -9,8 +9,12 @@ not provide a local qualification substitute.
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
 | `verify` | Do applicable variants satisfy the registered component ABI, reference, and graph checks? | Local component diagnostic |
 | Arena screen | Can the exact materialized delta pass static, build, ABI, graph, and abbreviated-serving routing gates? | Promotion eligibility only |
-| Resident B/C/B′/(C′/B″) + audit/T qualification | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
+| Resident B/C (+ B′ only when inconclusive) + audit/T qualification | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
 | Independent reproduction | Do two separately bound PASS attempts reopen and agree? | Settlement prerequisite |
+
+The static arena screen also rejects a candidate whose declared eligibility cannot
+run under a sealed runtime requirement, such as a dense-only MoE implementation in
+an NVFP4 arena. That rejection happens before paid build or GPU qualification work.
 
 Unknown bundles still execute code during verification. Run them only inside the minimum
 [hostile-code isolation boundary](../security/isolation.md#operator-requirements) used for
