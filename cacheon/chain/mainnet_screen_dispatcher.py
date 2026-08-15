@@ -641,6 +641,13 @@ def build_dispatcher(
         "owner": config.owner,
         "advance_finalized_cursor": cursor,
         "lease_blocks": config.lease_blocks,
+        # The v3 execution core is a one-candidate contract: the deployment
+        # factory refuses multi-candidate requests (B300QualificationCohort,
+        # "resident v3 qualification requires one submitted bundle") while the
+        # arena manifest still advertises capacity.max_cohort_size > 1. Claim
+        # singletons until the cohort fan-out exists at that boundary; retire
+        # this pin in the same change that implements it.
+        "qualification_max_members": 1,
         "heartbeat_interval_s": config.heartbeat_interval_s,
         "heartbeat_join_timeout_s": config.heartbeat_join_timeout_s,
         "lock_attempts": config.lock_attempts,

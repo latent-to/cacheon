@@ -253,7 +253,7 @@ def test_builds_exact_screen_only_dispatcher_over_live_durable_cursor(
         provider.build_qualification(None)
 
 
-def test_composed_qualification_claim_takes_the_fifo_cohort(tmp_path: Path) -> None:
+def test_composed_qualification_claim_is_pinned_singleton_fifo(tmp_path: Path) -> None:
     config_path, raw = _setup_authority(tmp_path)
     intake_db = Path(raw["intake_db"])
     rows = tuple(
@@ -281,13 +281,11 @@ def test_composed_qualification_claim_takes_the_fifo_cohort(tmp_path: Path) -> N
         coordinator.commit_screen_result(claim, receipt, envelope)
     qualification = coordinator.claim_qualification()
     assert qualification is not None
-    assert coordinator.qualification_max_members == min(
-        coordinator.policy.max_cohort,
-        coordinator.service.manifest.capacity.max_cohort_size,
-    )
-    assert qualification.lease.reservation_ids == tuple(
-        row.reservation_id for row in rows
-    )
+    # Mainnet 2026-08-15: the v3 execution core refuses multi-candidate
+    # requests at the deployment factory, so the dispatcher pins singleton
+    # claims instead of deriving min(policy.max_cohort, capacity).
+    assert coordinator.qualification_max_members == 1
+    assert qualification.lease.reservation_ids == (rows[0].reservation_id,)
 
 
 def _published_intake_row(tmp_path: Path, intake_db: Path, *, label: str):
