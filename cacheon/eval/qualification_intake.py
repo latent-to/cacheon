@@ -45,6 +45,7 @@ from cacheon.eval.qualification_runner import (
     QualificationRunnerError,
     STAGE_EXIT_SCHEMA,
     STAGE_EXIT_SCHEMA_V2,
+    STAGE_EXIT_SCHEMA_V3,
     SpeedStageDisposition,
     qualification_authority_digest,
     reopen_causal_qualification,
@@ -754,6 +755,34 @@ def _no_decision_batch(
     )
 
 
+def _settlement_projection(
+    reservation,
+    prepared,
+    report,
+    authority,
+    attempt_ref,
+    attempt,
+):
+    if report.decision is not QualificationDecision.PASS:
+        return None
+    from cacheon.settlement import SettlementQualification
+
+    return SettlementQualification.from_qualification(
+        reservation_digest=reservation.reservation_digest,
+        finalized_block=reservation.finalized_block,
+        event_index=reservation.finalized_event_index,
+        event_subindex=reservation.finalized_event_subindex,
+        hotkey=reservation.hotkey,
+        target_id=reservation.target_id,
+        members=reservation.target_members,
+        prepared=prepared,
+        report=report,
+        authority=authority,
+        attempt_ref=attempt_ref,
+        attempt=attempt,
+    )
+
+
 def run_qualification_intake(
     factory: QualificationPlanFactory,
     *,
@@ -850,7 +879,11 @@ def run_qualification_intake(
         reference = run_causal_qualification(value, **runner_kwargs)
         if type(reference) is not EvidenceArtifactRef:
             raise QualificationIntakeError("qualification runner returned no typed artifact")
-        if reference.schema in {STAGE_EXIT_SCHEMA, STAGE_EXIT_SCHEMA_V2}:
+        if reference.schema in {
+            STAGE_EXIT_SCHEMA,
+            STAGE_EXIT_SCHEMA_V2,
+            STAGE_EXIT_SCHEMA_V3,
+        }:
             terminal = (
                 reopen_qualification_stage_exit(
                     value.evidence_root,
@@ -875,6 +908,13 @@ def run_qualification_intake(
                     "qualification stage exit differs from intake authority"
                 )
             reservation = manifest.reservations[0]
+            settlement_qualification = (
+                _settlement_projection(
+                    reservation, value.prepared.candidates[0], terminal,
+                    manifest, reference, value,
+                )
+                if terminal.decision is QualificationDecision.PASS else None
+            )
             outcome = QualificationIntakeOutcome(
                 reservation.reservation_digest,
                 reservation.selected_delta_digest,
@@ -884,6 +924,7 @@ def run_qualification_intake(
                 terminal.decision is QualificationDecision.NO_DECISION,
                 attempt_artifact_sha256=reference.sha256,
                 report_digest=terminal.digest,
+                settlement_qualification=settlement_qualification,
             )
             retry_plan = None
             if terminal.decision is QualificationDecision.NO_DECISION:
@@ -973,27 +1014,13 @@ def run_qualification_intake(
             or report.selected_delta_digest != reservation.selected_delta_digest
         ):
             raise QualificationIntakeError("qualification report order differs")
-        settlement_qualification = None
-        if (
-            report.decision is QualificationDecision.PASS
-            and prepared_candidates
-        ):
-            from cacheon.settlement import SettlementQualification
-
-            settlement_qualification = SettlementQualification.from_qualification(
-                reservation_digest=reservation.reservation_digest,
-                finalized_block=reservation.finalized_block,
-                event_index=reservation.finalized_event_index,
-                event_subindex=reservation.finalized_event_subindex,
-                hotkey=reservation.hotkey,
-                target_id=reservation.target_id,
-                members=reservation.target_members,
-                prepared=prepared_candidates[index],
-                report=report,
-                authority=manifest,
-                attempt_ref=reference,
-                attempt=attempt,
+        settlement_qualification = (
+            _settlement_projection(
+                reservation, prepared_candidates[index], report,
+                manifest, reference, attempt,
             )
+            if prepared_candidates else None
+        )
         outcomes.append(
             QualificationIntakeOutcome(
                 reservation.reservation_digest,

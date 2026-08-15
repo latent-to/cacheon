@@ -32,6 +32,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import traceback
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -664,6 +665,7 @@ def serve_runtime(
             _emit_control("request_failed", request_id, output=control_output)
             continue
         except Exception as exc:
+            traceback.print_exception(exc, file=sys.stderr)
             print(
                 "CACHEON-B300-ADAPTER-EPOCH-FAILED: "
                 f"request={request_id or 'unknown'} "

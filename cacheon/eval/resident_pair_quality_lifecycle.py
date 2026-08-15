@@ -231,19 +231,12 @@ class ResidentPairMarginalLifecycleEvidence:
         return self.candidates if self.crossover.escalated else ()
 
     @property
-    def role_names(self) -> tuple[str, str, str]:
-        return (
-            ("B", "C", "B_prime")
-            if self.quality_read == 1
-            else ("B_prime", "C_prime", "B_double_prime")
-        )
+    def role_names(self) -> tuple[str, ...]:
+        roles = tuple(row.role for row in self.crossover.rates)
+        return roles if self.quality_read == 1 else roles[2:]
 
     def role_batches(self, role: str):
-        roles = (
-            ("B", "C", "B_prime", "C_prime", "B_double_prime")
-            if self.crossover.escalated
-            else ("B", "C", "B_prime")
-        )
+        roles = tuple(row.role for row in self.crossover.rates)
         if role not in self.role_names:
             raise ResidentPairQualityLifecycleError(
                 "resident pair quality role is absent"
@@ -287,61 +280,79 @@ class ResidentPairMarginalLifecycleEvidence:
         )
 
 
-def reopen_resident_pair_qualification_attempt(
+def reopen_resident_pair_qualification_product(
     payload: bytes,
     *,
     authority_digest: str,
     report_digests: tuple[str, ...],
     evidence_inventory: tuple[EvidenceArtifactRef, ...],
 ):
-    """Reopen one self-contained resident attempt after CPU CAS import."""
+    """Reopen a self-contained resident PASS after CPU CAS import."""
 
-    from cacheon.eval.qualification_runner import CohortQualificationAttempt
+    from cacheon.eval.qualification_runner import (
+        CohortQualificationAttempt,
+        QualificationStageExit,
+    )
 
     try:
         authority_digest = require_sha256_hex(
             authority_digest, field="qualification authority digest"
         )
-        attempt = CohortQualificationAttempt.from_dict(
-            json.loads(payload.decode("utf-8"))
+        raw = json.loads(payload.decode("utf-8"))
+        acceptance = type(raw) is dict and raw.get("stage") == "resident_accept"
+        product = (
+            QualificationStageExit.from_dict(raw)
+            if acceptance
+            else CohortQualificationAttempt.from_dict(raw)
         )
     except (UnicodeError, ValueError, TypeError, RuntimeError) as exc:
         raise ResidentPairQualityLifecycleError(
-            f"CPU resident attempt cannot reopen: {exc}"
+            f"CPU resident product cannot reopen: {exc}"
         ) from None
-    closures = tuple(row.resident_pair_closure for row in attempt.reports)
+    reports = () if acceptance else product.reports
+    closures = (
+        (product.resident_pair_closure,)
+        if acceptance
+        else tuple(row.resident_pair_closure for row in reports)
+    )
+    observed_report_digests = (
+        (product.digest,)
+        if acceptance
+        else tuple(row.digest for row in reports)
+    )
     if (
-        canonical_json_bytes(attempt.to_dict()) != payload
-        or attempt.authority_digest != authority_digest
-        or tuple(row.digest for row in attempt.reports) != report_digests
+        canonical_json_bytes(product.to_dict()) != payload
+        or product.authority_digest != authority_digest
+        or observed_report_digests != report_digests
         or any(row is None for row in closures)
     ):
         raise ResidentPairQualityLifecycleError(
-            "CPU resident attempt differs from its qualification product"
+            "CPU resident PASS differs from its qualification product"
         )
+    assert all(row is not None for row in closures)
     required = {
-        reference
-        for report, closure in zip(attempt.reports, closures, strict=True)
+        reference for closure in closures
         for reference in (
-            report.raw_quality_artifact,
             closure.count_checkpoint.raw_execution_evidence,
             closure.count_checkpoint.candidate_observation,
             closure.stock_authority.artifact,
-            *(() if report.repeat_quality is None else (
-                report.repeat_quality.raw_quality_artifact,
-            )),
         )
     }
+    required.update(row.raw_quality_artifact for row in reports)
+    required.update(
+        row.repeat_quality.raw_quality_artifact
+        for row in reports if row.repeat_quality is not None
+    )
     if not required.issubset(evidence_inventory):
         raise ResidentPairQualityLifecycleError(
-            "CPU resident attempt lacks its supporting evidence inventory"
+            "CPU resident PASS lacks its supporting evidence inventory"
         )
-    return attempt
+    return product
 
 
 __all__ = [
     "ResidentPairMarginalLifecycleEvidence",
     "ResidentPairQualificationClosure",
     "ResidentPairQualityLifecycleError",
-    "reopen_resident_pair_qualification_attempt",
+    "reopen_resident_pair_qualification_product",
 ]

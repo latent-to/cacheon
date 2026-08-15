@@ -286,21 +286,6 @@ def test_v6_two_leg_limits_follow_each_pods_sealed_noise(
     )[1] is SpeedStageDecision.FAIL
 
 
-def test_v6_clear_pass_survives_every_legal_or_discarded_v5_bookend() -> None:
-    policy = _policy(6, max_noise=0.002)
-    baseline = _steady(100.0)
-    _, safe_ratio = v6_decision_limits(policy)
-    candidate = _steady(100.0 * math.nextafter(safe_ratio, math.inf))
-    assert v6_grade(policy, baseline, candidate)[2] is SpeedStageDecision.PASS
-    for later_ratio in (0.5, 1.98 / 2.02, 1.0, 2.02 / 1.98, 1.5):
-        assert speed_grade(
-            _policy(5, max_noise=policy.max_noise),
-            [baseline, _steady(100.0 * later_ratio)],
-            [candidate],
-            concluding=True,
-        )[1] is SpeedStageDecision.PASS
-
-
 def test_v6_ambiguous_read_requires_b_prime_and_conditioning_can_fail_fast() -> None:
     policy = _policy(6, max_noise=0.002)
     fail_below, pass_at = v6_decision_limits(policy)

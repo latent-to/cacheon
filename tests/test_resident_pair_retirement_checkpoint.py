@@ -35,12 +35,15 @@ from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
     QualificationIntakeOutcome,
+    QualificationPlanFactory,
+    run_qualification_intake,
 )
 from cacheon.eval.qualification_runner import (
     ATTEMPT_SCHEMA_V4,
     CohortQualificationAttempt,
     HiddenJudgeBinding,
     STAGE_EXIT_SCHEMA_V2,
+    STAGE_EXIT_SCHEMA_V3,
     _resident_closure_codec,
     qualification_authority_digest,
     reopen_causal_qualification,
@@ -721,6 +724,224 @@ def test_registered_count_fail_is_a_durable_terminal_without_audit_or_t(
     assert len(lifetimes.calls) == pair_calls
     assert not (fail_continuation.directory / "audit_armed.json").exists()
     assert not (fail_continuation.directory / "t_armed.json").exists()
+
+
+def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
+    tmp_path, monkeypatch, lifetimes, managed_executors
+):
+    coordinator, commissioned, harness, old_plan, capability, prefix_scope = (
+        _coordinator_case(tmp_path, monkeypatch, lifetimes, managed_executors)
+    )
+    prefix = coordinator.run_b300_resident_qualification_prefix(
+        factory=commissioned.factory,
+        capability=capability,
+        candidate=harness.candidate,
+        plan=old_plan,
+        continuation=prefix_scope,
+        screen_lane="primary",
+        deadline=time.monotonic() + 30.0,
+    )
+    assert prefix.count_result.decision == "PASS"
+    resident = old_plan.resident_speed_plan
+    assert resident is not None
+    plan = replace(
+        old_plan,
+        resident_speed_plan=replace(
+            resident,
+            policy=replace(resident.policy, version=6),
+        ),
+    )
+    monkeypatch.setattr(
+        ResidentSpeedPolicy,
+        "read_window_scatter",
+        lambda _policy, _row: 0.0,
+    )
+    _prepared, _resident, lifecycle = _exact_lifecycle(
+        harness, plan, capability, prefix, preserve_workload=True
+    )
+    lifecycle = replace(
+        lifecycle,
+        retirement=replace(
+            lifecycle.retirement,
+            qualification_authority_digest=qualification_authority_digest(plan),
+        ),
+    )
+    assert lifecycle.role_names == ("B", "C")
+    assert lifecycle.crossover.decision is SpeedStageDecision.PASS
+    assert lifecycle.closure is not None
+
+    store = QualificationContinuationStore(tmp_path / "v6-pass-continuation")
+    request_digest = lifecycle.retirement.authenticated_request_digest
+    scope = store.scope(
+        request_digest=request_digest,
+        authority_digest=qualification_authority_digest(plan),
+        source_digest=plan.prepared.source.digest,
+    )
+    scope.record_resident_pair_speed(lifecycle.crossover)
+    scope.record_resident_count_quality(lifecycle.count_checkpoint)
+    scope.record_resident_pair_retirement(lifecycle.retirement)
+
+    executor = commissioned.plans[1].executor
+    monkeypatch.setattr(executor.manager, "clock", lifetimes.clock)
+    if lifetimes.clock() <= lifecycle.retirement_cutoff:
+        lifetimes.clock.span(
+            lifecycle.retirement_cutoff - lifetimes.clock() + 1.0
+        )
+    policy = plan.audit_policies[0]
+    receipts = tuple(
+        runner_module.AuditReceiptFacts(
+            slot,
+            policy.minimum_calls,
+            0,
+            0,
+            0,
+            1.0,
+            0.995,
+            "allclose",
+            1_200 + rank,
+            rank,
+            policy.expected_member_count,
+        )
+        for slot in policy.expected_slots
+        for rank in range(policy.expected_member_count)
+    )
+    passed, detail = gate(
+        [row.to_gate_dict() for row in receipts],
+        min_calls=policy.minimum_calls,
+        expected_slots=policy.expected_slots,
+        expected_member_count=policy.expected_member_count,
+    )
+    assert passed
+    audit = runner_module.AuditWitness(
+        plan.candidates[0].selected_delta_digest,
+        plan.resident_audit_plan.launch.digest,
+        _h("v6-pass-audit-execution"),
+        "f" * 32,
+        plan.expected_runtime_resource_policy_digest,
+        policy,
+        receipts,
+        QualificationDecision.PASS,
+        detail,
+    )
+    audit_calls = []
+
+    def run_audit(
+        value, observed_lifecycle, *, executor, deadline, completion_sink=None
+    ):
+        assert value is plan
+        assert observed_lifecycle == lifecycle
+        assert deadline > executor.manager.clock()
+        audit_calls.append(audit.digest)
+        _started, completed = lifetimes.clock.span(0.5)
+        witnesses = {audit.selected_delta_digest: audit}
+        if completion_sink is not None:
+            completion_sink(witnesses, completed)
+        return witnesses, completed
+
+    monkeypatch.setattr(runner_module, "_run_slot_audits", run_audit)
+
+    profile = plan.candidates[0].profile
+
+    class NoPristineT:
+        binding = HiddenJudgeBinding(
+            profile.reference.hidden_corpus_commitment,
+            profile.reference.hidden_judge_digest,
+            profile.hidden_task_policy_digest,
+        )
+
+        def __call__(self, **_kwargs):  # pragma: no cover - must stay pre-T
+            raise AssertionError("v6 resident PASS entered pristine T")
+
+    def no_entropy(*_args, **_kwargs):  # pragma: no cover - must stay pre-T
+        raise AssertionError("v6 resident PASS requested pristine-T entropy")
+
+    authority = QualificationAuthorityManifest.seal(
+        plan,
+        reservations=(harness.candidate.reservation,),
+        selection_secret_reference=_h("v6-pass-secret-reference"),
+    )
+    factory = QualificationPlanFactory(
+        authority,
+        lambda _reference: plan.selection_secret,
+        lambda _secret: plan,
+    )
+    pair_calls = len(lifetimes.calls)
+    kwargs = dict(
+        executor=executor,
+        entropy_provider=no_entropy,
+        hidden_judge=NoPristineT(),
+        deadline=time.monotonic() + 30.0,
+        continuation_store=store,
+        request_digest=request_digest,
+        prebuilt_plan=plan,
+        resident_pair_lifecycle=lifecycle,
+    )
+    batch = run_qualification_intake(factory, **kwargs)
+    outcome = batch.outcomes[0]
+    assert batch.attempt_ref.schema == STAGE_EXIT_SCHEMA_V3
+    assert (outcome.decision, outcome.reason, outcome.retryable) == (
+        QualificationDecision.PASS,
+        "qualified",
+        False,
+    )
+    assert outcome.settlement_qualification is not None
+    assert len(audit_calls) == 1
+    assert len(lifetimes.calls) == pair_calls
+    assert not (scope.directory / "t_armed.json").exists()
+    assert not (scope.directory / "quality.json").exists()
+    assert run_qualification_intake(factory, **kwargs) == batch
+    assert len(audit_calls) == 1
+    assert len(lifetimes.calls) == pair_calls
+
+    closure = lifecycle.closure
+    reference = profile.reference
+    hardware = plan.pristine_launch.hardware
+    readiness = WorkerReadiness(
+        _h("v6-pass-ready"),
+        1,
+        plan.pristine_stack.arena_digest,
+        "v6-pass",
+        _h("v6-pass-provider"),
+        plan.pristine_stack.runtime_digest,
+        reference.worker_distribution_digest,
+        reference.model_revision_digest,
+        reference.model_manifest_digest,
+        reference.model_content_digest,
+        hardware.architecture,
+        hardware.topology_class,
+        hardware.topology_digest,
+        hardware.visible_gpu_count,
+        plan.reference_engine_config.tp_size,
+        reference.workload_digest,
+        _h("v6-pass-policy"),
+    )
+    supports = (
+        closure.count_checkpoint.raw_execution_evidence,
+        closure.count_checkpoint.candidate_observation,
+        closure.stock_authority.artifact,
+    )
+
+    def capture(refs):
+        return capture_remote_qualification_product(
+            batch=batch,
+            authority_manifest=authority,
+            incumbent_stack=plan.pristine_stack,
+            incumbent_tree_digest=reference.pristine_tree_digest,
+            screen_lane="primary",
+            service_digest=readiness.service_digest,
+            readiness=readiness,
+            evidence_root=plan.evidence_root,
+            evidence_references=refs,
+        )
+
+    product = capture(supports)
+    assert import_remote_qualification_evidence(
+        product, tmp_path / "v6-pass-import"
+    ) == product.evidence_inventory
+    with pytest.raises(RemoteEvaluationDispatcherError, match="supporting evidence"):
+        import_remote_qualification_evidence(
+            capture(supports[:-1]), tmp_path / "v6-pass-missing-stock"
+        )
 
 
 def test_real_v4_attempt_restarts_and_imports_through_cpu_semantic_reopen(

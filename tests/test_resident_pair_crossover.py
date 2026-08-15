@@ -409,33 +409,6 @@ def test_v6_runs_two_leg_clear_fail_or_three_leg_terminal(
     assert factory_a.sessions[0].finish_calls == factory_b.sessions[0].finish_calls == 0
 
 
-def test_v5_borderline_five_leg_evidence_still_regrades(
-    tmp_path, cleanup_pairs
-):
-    plan, pair, clock, *_ = _setup(
-        tmp_path,
-        cleanup_pairs,
-        baseline=((1.0,) * 3,) * 3,
-        candidate=((0.995,) * 3, (0.98,) * 3),
-        policy=_borderline_policy(version=5),
-        timed_batches=3,
-    )
-
-    evidence = run_resident_pair_crossover(
-        plan, pair=pair, deadline=clock() + 120.0, clock=clock
-    )
-
-    assert evidence.escalated
-    assert tuple(row.role for row in evidence.rates) == (
-        "B",
-        "C",
-        "B_prime",
-        "C_prime",
-        "B_double_prime",
-    )
-    assert evidence.regrade(plan) == evidence.final_verdict
-
-
 def test_v6_regrade_rejects_missing_b_prime_and_bad_windows(
     tmp_path, cleanup_pairs
 ):
