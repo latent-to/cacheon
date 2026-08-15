@@ -26,7 +26,6 @@ from types import SimpleNamespace
 from typing import Any, Iterator
 
 from cacheon.eval.engine_worker import (
-    CandidateExecutionCoverageError,
     _environment,
     _path_mount_is_read_only as _path_is_read_only,
 )
@@ -1351,26 +1350,11 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                     raise SessionProtocolError(
                         "audited engine lacks its raw audit receipt collector"
                     )
-                try:
-                    handle.require_completion()
-                except CandidateExecutionCoverageError as exc:
-                    if audit_policy is None:
-                        raise
-                    # The audit gate already treats an empty policy-bound receipt
-                    # set as candidate FAIL. Preserve the exact execution cause in
-                    # captured stderr while allowing the typed FAIL witness to cross
-                    # the worker boundary instead of converting it into HOLD/retry.
-                    print(
-                        f"CACHEON-AUDIT-CANDIDATE-FAIL: {exc}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    audit_receipts = ()
-                else:
-                    audit_receipts = tuple(
-                        AuditReceiptFacts.from_receipt_dict(row)
-                        for row in (collector() if callable(collector) else ())
-                    )
+                handle.require_completion()
+                audit_receipts = tuple(
+                    AuditReceiptFacts.from_receipt_dict(row)
+                    for row in (collector() if callable(collector) else ())
+                )
                 _write_all(
                     protocol_fd, evidence_frame(evidence, request=request)
                 )

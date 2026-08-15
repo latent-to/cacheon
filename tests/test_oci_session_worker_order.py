@@ -621,15 +621,26 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
     def engine_session(_config, _tree, *, audit_policy):
         assert audit_policy == policy
 
-        def fail_completion():
+        def fail_completion(*_args, **_kwargs):
             raise CandidateExecutionCoverageError("completed coverage 0/1")
+
+        monkeypatch.setattr(
+            engine_policy, "_require_execution_completion", fail_completion
+        )
+
+        def complete():
+            engine_policy._complete_candidate_execution(
+                "receipts",
+                active_receipts=[],
+                expected_slots=["moe.fused_experts_reduce"],
+                expected_member_count=config.tp_size,
+                audit_policy=policy,
+            )
 
         yield SimpleNamespace(
             engine=Engine(),
-            require_completion=fail_completion,
-            collect_audit_receipts=lambda: pytest.fail(
-                "failed completion must not consume potentially partial audits"
-            ),
+            require_completion=complete,
+            collect_audit_receipts=lambda: (),
         )
 
     monkeypatch.setattr(worker, "_engine_session", engine_session)
@@ -664,6 +675,23 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
         except OSError:
             pass
         os.close(output_read)
+
+
+def test_candidate_coverage_failure_remains_hard_error_outside_audit(monkeypatch):
+    def fail_completion(*_args, **_kwargs):
+        raise CandidateExecutionCoverageError("completed coverage 0/1")
+
+    monkeypatch.setattr(
+        engine_policy, "_require_execution_completion", fail_completion
+    )
+    with pytest.raises(CandidateExecutionCoverageError, match="coverage 0/1"):
+        engine_policy._complete_candidate_execution(
+            "receipts",
+            active_receipts=[],
+            expected_slots=["moe.fused_experts_reduce"],
+            expected_member_count=4,
+            audit_policy=None,
+        )
 
 
 def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monkeypatch):

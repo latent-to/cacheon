@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -286,6 +287,36 @@ def _require_execution_completion(
     return detail
 
 
+def _complete_candidate_execution(
+    receipt_dir: str,
+    *,
+    active_receipts: list[dict],
+    expected_slots: list[str],
+    expected_member_count: int,
+    audit_policy: object | None,
+) -> None:
+    """Keep missing execution terminal only inside the independent audit role."""
+
+    try:
+        _require_execution_completion(
+            receipt_dir,
+            active_receipts=active_receipts,
+            expected_slots=expected_slots,
+            expected_member_count=expected_member_count,
+        )
+    except CandidateExecutionCoverageError as exc:
+        if audit_policy is None:
+            raise
+        # The host audit gate grades an empty policy-bound receipt set FAIL.
+        # This module is the file bind-mounted into the sealed OCI image, so the
+        # conversion must live here rather than in the image-owned session loop.
+        print(
+            f"CACHEON-AUDIT-CANDIDATE-FAIL: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 @dataclass(frozen=True)
 class EngineWorkerHandle:
     engine: object
@@ -402,11 +433,12 @@ def isolated_engine_session(
 
                 def complete() -> None:
                     if active:
-                        _require_execution_completion(
+                        _complete_candidate_execution(
                             receipt_dir,
                             active_receipts=active_receipts,
                             expected_slots=expected_slots,
                             expected_member_count=expected_members,
+                            audit_policy=audit_policy,
                         )
 
                 def collect_audits() -> list[dict]:
