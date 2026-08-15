@@ -189,6 +189,12 @@ class ResidentPairLiveSpeedWitness:
             self, calibration, context, expected_policy=expected_policy
         )
 
+    def v6_result(self):
+        # ``ResidentSpeedWitness.regrade`` dispatches here for policy v6+;
+        # it reads only ``resident_policy`` and ``rates``, which this live
+        # projection shares.
+        return ResidentSpeedWitness.v6_result(self)
+
     def to_dict(self) -> dict[str, object]:
         return {
             **{
