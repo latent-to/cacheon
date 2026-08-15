@@ -2106,3 +2106,44 @@ def test_auto_requeueable_holds_lists_evaluation_parks_but_not_authority_fences(
         for bad in (0, True, "2"):
             with pytest.raises(IntakeError, match="reconciliation limit"):
                 store.auto_requeueable_holds(limit=bad)
+
+
+def test_retry_exhausted_mark_survives_and_removes_the_row_from_reconciliation(
+    tmp_path,
+):
+    with _store(tmp_path) as store:
+        row = store.reserve_finalized(
+            (_arrival(0),),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )[0]
+        store.mark_held(
+            row.reservation_id, "remote_qualification_hold:legacy_no_decision"
+        )
+        assert store.auto_requeueable_holds() == (row.reservation_id,)
+
+        stamped = store.mark_hold_retry_exhausted(row.reservation_id)
+
+        assert stamped.status == "held"
+        assert stamped.reason == (
+            "remote_qualification_hold:legacy_no_decision:retry_budget_exhausted"
+        )
+        # The whole point: a later lifetime must not hand it a fresh budget.
+        assert store.auto_requeueable_holds() == ()
+        # Idempotent, so a repeated cap cannot stack suffixes.
+        assert store.mark_hold_retry_exhausted(row.reservation_id) == stamped
+        # Still releasable by an operator who has fixed the cause.
+        assert store.release_hold(
+            row.reservation_id, reason="operator fixed the cause"
+        ).status != "held"
+
+
+def test_retry_exhausted_mark_refuses_a_row_that_is_not_held(tmp_path):
+    with _store(tmp_path) as store:
+        row = store.reserve_finalized(
+            (_arrival(0),),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )[0]
+        with pytest.raises(IntakeError, match="retry-exhausted"):
+            store.mark_hold_retry_exhausted(row.reservation_id)

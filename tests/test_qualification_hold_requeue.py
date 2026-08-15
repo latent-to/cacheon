@@ -18,10 +18,16 @@ class _FakeStore:
         self.fail_for = fail_for or set()
         self.parked = parked
 
+        self.exhausted: list[str] = []
+
     def release_hold(self, reservation_id: str, *, reason: str) -> None:
         if reservation_id in self.fail_for:
             raise RuntimeError("release refused")
         self.released.append((reservation_id, reason))
+
+    def mark_hold_retry_exhausted(self, reservation_id: str) -> None:
+        self.exhausted.append(reservation_id)
+        self.parked = tuple(p for p in self.parked if p != reservation_id)
 
     def auto_requeueable_holds(self, *, limit: int = 64) -> tuple[str, ...]:
         return self.parked[:limit]
@@ -63,25 +69,23 @@ def test_release_failure_is_contained_and_row_stays_held() -> None:
     assert [row[0] for row in store.released] == ["ok"]
 
 
-def test_breaker_opens_on_consecutive_identical_reasons() -> None:
+def test_a_retry_still_within_budget_never_counts_toward_the_breaker() -> None:
+    """max_attempts=99: no row can exhaust, so no number of holds may trip it."""
+
     policy = QualificationHoldRequeuePolicy(max_attempts=99, breaker_threshold=3)
     store = _FakeStore()
     reason = "remote_qualification_hold:graph_evidence_unavailable"
 
-    assert policy.after_hold(store, reservation_ids=("r1",), reason=reason)
-    assert policy.after_hold(store, reservation_ids=("r2",), reason=reason)
-    assert not policy.breaker_open
-    tripped = policy.after_hold(store, reservation_ids=("r3",), reason=reason)
+    for rid in ("r1", "r2", "r3", "r4", "r5"):
+        assert policy.after_hold(store, reservation_ids=(rid,), reason=reason) == (rid,)
 
-    assert tripped == ()
-    assert policy.breaker_open
-    assert policy.refuse_fresh_claim()
-    # r3 stayed held: only the first two rows were released.
-    assert [row[0] for row in store.released] == ["r1", "r2"]
+    assert not policy.breaker_open
+    assert not policy.refuse_fresh_claim()
+    assert store.exhausted == []
 
 
 def test_distinct_reasons_and_terminals_reset_the_streak() -> None:
-    policy = QualificationHoldRequeuePolicy(max_attempts=99, breaker_threshold=2)
+    policy = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=2)
     store = _FakeStore()
 
     policy.after_hold(
@@ -90,6 +94,7 @@ def test_distinct_reasons_and_terminals_reset_the_streak() -> None:
     policy.after_hold(
         store, reservation_ids=("r2",), reason="remote_qualification_hold:b"
     )
+    # A different reason restarts the count, so one 'b' is not two.
     assert not policy.breaker_open
 
     policy.after_hold(
@@ -100,10 +105,6 @@ def test_distinct_reasons_and_terminals_reset_the_streak() -> None:
     policy.note_terminal()
     assert not policy.breaker_open
     assert not policy.refuse_fresh_claim()
-    released = policy.after_hold(
-        store, reservation_ids=("r4",), reason="remote_qualification_hold:b"
-    )
-    assert released == ("r4",)
 
 
 def test_reconcile_releases_rows_parked_by_an_earlier_lifetime() -> None:
@@ -126,15 +127,20 @@ def test_reconcile_contains_a_failed_release_and_keeps_the_rest() -> None:
     assert [row[0] for row in store.released] == ["ok"]
 
 
-def test_reconcile_restores_a_full_attempt_budget_for_the_reopened_row() -> None:
-    policy = QualificationHoldRequeuePolicy(max_attempts=2, breaker_threshold=99)
+def test_reconcile_gives_a_fresh_budget_only_to_a_row_that_never_exhausted_one() -> None:
+    policy = QualificationHoldRequeuePolicy(max_attempts=3, breaker_threshold=99)
     store = _FakeStore(parked=("r1",))
     reason = "remote_qualification_hold:legacy_no_decision"
 
+    # One retry consumed, budget not spent: a restart may legitimately retry it.
     assert policy.after_hold(store, reservation_ids=("r1",), reason=reason) == ("r1",)
-    assert policy.after_hold(store, reservation_ids=("r1",), reason=reason) == ()
-    assert policy.reconcile_parked(store) == ("r1",)
-    assert policy.after_hold(store, reservation_ids=("r1",), reason=reason) == ("r1",)
+    assert store.exhausted == []
+
+    restarted = QualificationHoldRequeuePolicy(max_attempts=3, breaker_threshold=99)
+    assert restarted.reconcile_parked(store) == ("r1",)
+    assert restarted.after_hold(
+        store, reservation_ids=("r1",), reason=reason
+    ) == ("r1",)
 
 
 def test_reconcile_refuses_an_untyped_parked_listing() -> None:
@@ -144,3 +150,74 @@ def test_reconcile_refuses_an_untyped_parked_listing() -> None:
 
     with pytest.raises(QualificationHoldRequeueError):
         QualificationHoldRequeuePolicy().reconcile_parked(_Untyped())
+
+
+def test_one_reservations_own_retries_never_open_the_breaker() -> None:
+    """The 2026-08-15 outage: two bad rows halted every qualification claim.
+
+    Counting hold events made one reservation's three bounded retries plus a
+    second reservation's two look like five systemic faults.
+    """
+
+    policy = QualificationHoldRequeuePolicy(max_attempts=3, breaker_threshold=5)
+    store = _FakeStore()
+    reason = "remote_qualification_hold:legacy_no_decision"
+
+    for _ in range(3):
+        policy.after_hold(store, reservation_ids=("r1",), reason=reason)
+    for _ in range(2):
+        policy.after_hold(store, reservation_ids=("r2",), reason=reason)
+
+    assert store.exhausted == ["r1"]
+    assert not policy.breaker_open
+    assert not policy.refuse_fresh_claim()
+
+
+def test_breaker_opens_on_distinct_exhausted_reservations() -> None:
+    policy = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=3)
+    store = _FakeStore()
+    reason = "remote_qualification_hold:legacy_no_decision"
+
+    for rid in ("r1", "r2"):
+        policy.after_hold(store, reservation_ids=(rid,), reason=reason)
+    assert not policy.breaker_open
+
+    policy.after_hold(store, reservation_ids=("r3",), reason=reason)
+    assert policy.breaker_open
+    assert policy.refuse_fresh_claim()
+    assert sorted(store.exhausted) == ["r1", "r2", "r3"]
+
+    policy.note_terminal()
+    assert not policy.breaker_open
+
+
+def test_exhausted_row_is_marked_durably_and_not_rehydrated_by_reconcile() -> None:
+    """A spent budget must survive a restart, or the watchdog loops forever."""
+
+    reason = "remote_qualification_hold:legacy_no_decision"
+    store = _FakeStore(parked=("r1",))
+
+    first = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=99)
+    first.after_hold(store, reservation_ids=("r1",), reason=reason)
+    assert store.exhausted == ["r1"]
+
+    # A restart forgets in-memory attempt counts; the durable mark must not be
+    # forgotten with them.
+    restarted = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=99)
+    assert restarted.reconcile_parked(store) == ()
+    assert store.released == []
+
+
+def test_a_mark_failure_is_contained_and_still_counts_toward_the_breaker() -> None:
+    class _MarkFails(_FakeStore):
+        def mark_hold_retry_exhausted(self, reservation_id: str) -> None:
+            raise RuntimeError("stamp refused")
+
+    policy = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=2)
+    store = _MarkFails()
+    reason = "remote_qualification_hold:legacy_no_decision"
+
+    policy.after_hold(store, reservation_ids=("r1",), reason=reason)
+    assert not policy.breaker_open
+    policy.after_hold(store, reservation_ids=("r2",), reason=reason)
+    assert policy.breaker_open
