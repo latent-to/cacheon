@@ -1554,7 +1554,7 @@ def cmd_chain_validate(
             getattr(args, "eval_cost_payment_window_blocks", 7_200)
         ),
         eval_cost_quote_ttl_blocks=int(
-            getattr(args, "eval_cost_quote_ttl_blocks", 30)
+            getattr(args, "eval_cost_quote_ttl_blocks", 300)
         ),
     )
     res = run_validator(
@@ -2605,8 +2605,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--eval-cost-quote-ttl-blocks",
         type=int,
-        default=30,
-        help="blocks a quoted amount stays valid until the burn is included (default 30)",
+        default=300,
+        help="blocks a quoted amount stays valid until the burn is included (default 300, ~1 hour)",
     )
     sp.set_defaults(func=cmd_chain_validate)
 

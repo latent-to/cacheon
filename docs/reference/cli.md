@@ -159,7 +159,7 @@ python -m cacheon.cli chain-submit path/to/bundle \
 
 `chain-submit` re-hashes the local bundle before constructing the payload. Use
 `--dry-run` to print the payload without signing or submitting it. `--pay` quotes
-at the current block (the amount is frozen for 30 blocks), burns that alpha
+at the current block (the amount is frozen for 300 blocks, about one hour), burns that alpha
 amount (coldkey), and commits a v2 payment pointer; `--dry-run --pay` prints the
 quote without burning. Validators act only
 on finalized, valid reveals and independently fetch, extract, and re-hash the hosted
@@ -281,7 +281,7 @@ are `--intake-db`, `--private-root`, `--publication-root`, `--audit-log`,
 `--interval`, and `--once`. `--eval-cost-alpha-rao` defaults to `0` (gate off);
 set `1000000000` to require the published 1 α `burn_alpha` per admission, and
 `--eval-cost-payment-window-blocks` to bound how old that burn may be relative
-to the reveal. `--eval-cost-quote-ttl-blocks` (default 30) is how long a quoted
+to the reveal. `--eval-cost-quote-ttl-blocks` (default 300, about one hour) is how long a quoted
 amount stays valid until the burn is included. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.

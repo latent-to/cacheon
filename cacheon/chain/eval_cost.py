@@ -1,8 +1,9 @@
 """Fixed, upgradeable evaluation-cost quotes and on-chain payment verification.
 
 v1 ``quote_eval_cost`` ignores submission extras and returns a published alpha-rao
-amount frozen from ``issued_block`` through ``expires_block`` (a short TTL) so
-the miner can quote once and pay that same amount. Later quote versions may
+amount frozen from ``issued_block`` through ``expires_block`` (300 blocks, about
+one hour) so the miner can quote once and pay that same amount. The freeze lives
+in the on-chain remark. Later quote versions may
 inspect ``EvalCostRequest.submission`` without changing the burn, remark,
 payload pointer, or intake consume-once machinery.
 
@@ -26,7 +27,8 @@ EVAL_COST_ASSET = "alpha"
 EVAL_COST_INSTRUMENT = "burn_alpha"
 PUBLISHED_EVAL_COST_ALPHA_RAO = 1_000_000_000
 DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS = 7_200
-DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS = 30
+# ~1 hour at 12s blocks. Ridges freezes a payment quote for 3600s of wall time.
+DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS = 300
 
 REASON_MISSING = "missing_eval_cost_payment"
 REASON_INVALID = "eval_cost_payment_invalid"

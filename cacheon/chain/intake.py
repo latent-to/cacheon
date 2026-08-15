@@ -124,7 +124,7 @@ class IntakePolicy:
     expiry_blocks: int = 2_880
     eval_cost_alpha_rao: int = 0
     eval_cost_payment_window_blocks: int = 7_200
-    eval_cost_quote_ttl_blocks: int = 30
+    eval_cost_quote_ttl_blocks: int = 300
 
     def __post_init__(self) -> None:
         for field in self.__dataclass_fields__:
