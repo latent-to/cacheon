@@ -601,6 +601,11 @@ class RecoverableQualificationDispatcher:
                 reservation_ids=reservation_ids,
                 lease_blocks=self.coordinator.lease_blocks,
             )
+            self.hold_requeue.after_hold(
+                store,
+                reservation_ids=lease.reservation_ids,
+                reason=reason,
+            )
         finally:
             store.close()
         return CompletedQualificationHold(
@@ -610,6 +615,15 @@ class RecoverableQualificationDispatcher:
             reason,
             product.digest,
         )
+
+    def reconcile_parked_holds(self) -> tuple[str, ...]:
+        """Reopen evaluation holds parked before this lifetime; see the policy."""
+
+        store, _point = self._open_store()
+        try:
+            return self.hold_requeue.reconcile_parked(store)
+        finally:
+            store.close()
 
     def _reopen_held_legacy_product(
         self,

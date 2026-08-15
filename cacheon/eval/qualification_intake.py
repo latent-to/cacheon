@@ -696,7 +696,7 @@ class QualificationIntakeBatch:
 
 
 def _failure_digest(manifest: QualificationAuthorityManifest, exc: BaseException) -> str:
-    return canonical_digest(
+    digest = canonical_digest(
         "cacheon.qualification.intake-failure",
         {
             "authority_manifest_digest": manifest.digest,
@@ -704,6 +704,23 @@ def _failure_digest(manifest: QualificationAuthorityManifest, exc: BaseException
             "message": str(exc)[:4096],
         },
     )
+    # The digest binds the failure text but does not carry it, and the batch
+    # crosses the trust boundary carrying only NO_DECISION plus this digest.
+    # Without an operator-readable copy on the worker side, a non-verdict is
+    # undiagnosable: on 2026-08-15 six reservations parked with reason
+    # "qualification_runner" and the cause could not be read back from any
+    # retained artifact.  Emit the text to the worker log only -- widening the
+    # wire schema is what broke two consumers earlier the same day.
+    import sys
+
+    print(
+        "CACHEON-QUALIFICATION-INTAKE-FAILURE: "
+        f"authority={manifest.digest[:16]} failure={digest[:16]} "
+        f"{type(exc).__name__}: {str(exc)[:2048]}",
+        flush=True,
+        file=sys.stderr,
+    )
+    return digest
 
 
 def _retry_plan(

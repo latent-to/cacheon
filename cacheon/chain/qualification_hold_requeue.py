@@ -41,6 +41,10 @@ class _ReleasesHolds(Protocol):
     def release_hold(self, reservation_id: str, *, reason: str) -> object: ...
 
 
+class _ListsParkedHolds(_ReleasesHolds, Protocol):
+    def auto_requeueable_holds(self, *, limit: int = ...) -> tuple[str, ...]: ...
+
+
 def _alarm(line: str) -> None:
     import sys
 
@@ -95,6 +99,46 @@ class QualificationHoldRequeuePolicy:
                 "restart the standing supervisor to close the breaker."
             )
         return True
+
+    def reconcile_parked(self, store: _ListsParkedHolds) -> tuple[str, ...]:
+        """Release evaluation holds parked before this lifetime back into FIFO.
+
+        ``after_hold`` only reaches rows this process itself parked, so a hold
+        committed by an earlier lifetime -- or by a lifetime that died between
+        the commit and the release -- stays held forever and the queue never
+        drains to zero.  A supervisor start is already this policy's "cause
+        fixed" signal (it closes the breaker and forgets attempt counts), so it
+        is also the right moment to reopen those rows on a fresh budget.  Each
+        released row re-enters FIFO for a real re-execution; a row that parks
+        again lands back here at the next restart, never silently.
+        """
+
+        parked = store.auto_requeueable_holds()
+        if type(parked) is not tuple:
+            raise QualificationHoldRequeueError(
+                "parked hold listing is not exactly typed"
+            )
+        released: list[str] = []
+        for reservation_id in parked:
+            self._attempts.pop(reservation_id, None)
+            try:
+                store.release_hold(
+                    reservation_id, reason="auto_requeue_reconciled_at_start"
+                )
+            except Exception as exc:  # noqa: BLE001 - alarmed, held is safe
+                _alarm(
+                    "QUALIFICATION-HOLD-RECONCILE-FAILED: reservation "
+                    f"{reservation_id} stays held: {type(exc).__name__}: {exc}"
+                )
+                continue
+            released.append(reservation_id)
+        if released:
+            _alarm(
+                "QUALIFICATION-HOLD-RECONCILED: released "
+                f"{len(released)} parked reservation(s) back to FIFO "
+                f"of {len(parked)} eligible."
+            )
+        return tuple(released)
 
     def after_hold(
         self,

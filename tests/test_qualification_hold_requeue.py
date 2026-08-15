@@ -9,14 +9,22 @@ from cacheon.chain.qualification_hold_requeue import (
 
 
 class _FakeStore:
-    def __init__(self, fail_for: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        fail_for: set[str] | None = None,
+        parked: tuple[str, ...] = (),
+    ) -> None:
         self.released: list[tuple[str, str]] = []
         self.fail_for = fail_for or set()
+        self.parked = parked
 
     def release_hold(self, reservation_id: str, *, reason: str) -> None:
         if reservation_id in self.fail_for:
             raise RuntimeError("release refused")
         self.released.append((reservation_id, reason))
+
+    def auto_requeueable_holds(self, *, limit: int = 64) -> tuple[str, ...]:
+        return self.parked[:limit]
 
 
 def test_policy_rejects_malformed_budgets() -> None:
@@ -96,3 +104,43 @@ def test_distinct_reasons_and_terminals_reset_the_streak() -> None:
         store, reservation_ids=("r4",), reason="remote_qualification_hold:b"
     )
     assert released == ("r4",)
+
+
+def test_reconcile_releases_rows_parked_by_an_earlier_lifetime() -> None:
+    policy = QualificationHoldRequeuePolicy()
+    store = _FakeStore(parked=("r1", "r2"))
+
+    released = policy.reconcile_parked(store)
+
+    assert released == ("r1", "r2")
+    assert [row[1] for row in store.released] == [
+        "auto_requeue_reconciled_at_start"
+    ] * 2
+
+
+def test_reconcile_contains_a_failed_release_and_keeps_the_rest() -> None:
+    policy = QualificationHoldRequeuePolicy()
+    store = _FakeStore(fail_for={"bad"}, parked=("bad", "ok"))
+
+    assert policy.reconcile_parked(store) == ("ok",)
+    assert [row[0] for row in store.released] == ["ok"]
+
+
+def test_reconcile_restores_a_full_attempt_budget_for_the_reopened_row() -> None:
+    policy = QualificationHoldRequeuePolicy(max_attempts=2, breaker_threshold=99)
+    store = _FakeStore(parked=("r1",))
+    reason = "remote_qualification_hold:legacy_no_decision"
+
+    assert policy.after_hold(store, reservation_ids=("r1",), reason=reason) == ("r1",)
+    assert policy.after_hold(store, reservation_ids=("r1",), reason=reason) == ()
+    assert policy.reconcile_parked(store) == ("r1",)
+    assert policy.after_hold(store, reservation_ids=("r1",), reason=reason) == ("r1",)
+
+
+def test_reconcile_refuses_an_untyped_parked_listing() -> None:
+    class _Untyped(_FakeStore):
+        def auto_requeueable_holds(self, *, limit: int = 64) -> tuple[str, ...]:
+            return ["r1"]  # type: ignore[return-value]
+
+    with pytest.raises(QualificationHoldRequeueError):
+        QualificationHoldRequeuePolicy().reconcile_parked(_Untyped())

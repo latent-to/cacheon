@@ -813,6 +813,7 @@ def build_standing_supervisor(
                 config.qualification_incumbent_tree_digest
             ),
         )
+        qualification_dispatcher.reconcile_parked_holds()
         qualification_once = qualification_dispatcher.dispatch_once
 
     weights_once = None

@@ -3467,6 +3467,33 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 raise IntakeError("schema3 migration hold changed during archival")
         return self.get(reservation_id)
 
+    def auto_requeueable_holds(self, *, limit: int = 64) -> tuple[str, ...]:
+        """Held rows parked by a bounded evaluation hold, oldest arrival first.
+
+        An evaluation hold records that the stage produced no PASS/FAIL
+        evidence -- worker infrastructure loss, a non-verdict batch, or a
+        systemic release cap.  Both producers document ``release_hold`` as the
+        reopen path (``_cap_systemic_releases`` and
+        ``commit_remote_qualification_hold``), and on an autonomous validator
+        no operator is there to call it, so every such park is a permanent
+        queue leak.  Transport-retry limits, screen holds, and the schema3
+        migration hold are authority fences, not evaluation holds; they are
+        never listed here and ``release_hold`` refuses the last one outright.
+        """
+
+        if type(limit) is not int or isinstance(limit, bool) or limit < 1:
+            raise IntakeError("hold reconciliation limit is invalid")
+        rows = self._db.execute(
+            "SELECT reservation_id FROM reservations WHERE status='held' AND ("
+            "reason LIKE 'remote_qualification_hold:%' OR "
+            "reason LIKE 'systemic_release_cap:%' OR "
+            "reason LIKE 'auto_requeue_attempt_%') "
+            "ORDER BY block,event_index,event_subindex,hotkey,content_hash "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return tuple(row["reservation_id"] for row in rows)
+
     def release_hold(self, reservation_id: str, *, reason: str) -> IntakeReservation:
         if not reason:
             raise IntakeError("hold release requires an operator reason")

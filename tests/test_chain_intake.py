@@ -574,7 +574,7 @@ def test_restart_holds_interrupted_work_instead_of_replaying(tmp_path):
         store.mark_fetching(row.reservation_id)
     with _store(tmp_path) as reopened:
         held = reopened.get(row.reservation_id)
-        assert held.status == "held" and held.decision == "NO_DECISION"
+        assert held.status == "held" and held.decision == ""  # a hold is not a verdict
         assert reopened.pending() == ()
 
 
@@ -701,7 +701,7 @@ def test_transport_retry_exhaustion_becomes_an_explicit_hold(tmp_path):
         store.mark_fetching(row.reservation_id)
         held = store.mark_transport_retry(row.reservation_id, "host unavailable")
         assert held.status == "held"
-        assert held.decision == "NO_DECISION"
+        assert held.decision == ""  # a hold is not a verdict
         assert held.reason == "transport_retry_limit"
         released = store.release_hold(
             row.reservation_id, reason="operator granted one fresh transport budget"
@@ -1231,7 +1231,7 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
 
         held = store.get(offender.reservation_id)
         assert held.status == "held"
-        assert held.decision == "NO_DECISION"
+        assert held.decision == ""  # a hold is not a verdict
         assert len(store.qualification_dispositions(offender.reservation_id)) == 2
 
         # Once the bounded offender is held, the peer's isolated group remains
@@ -2069,3 +2069,40 @@ def test_sqlite_weight_journal_reopen_rejects_corrupt_head_projection(tmp_path):
         )
         with pytest.raises(IntakeError, match="projection is corrupt"):
             SQLiteWeightPublicationJournal.reopen_from_head(store)
+
+
+def test_auto_requeueable_holds_lists_evaluation_parks_but_not_authority_fences(
+    tmp_path,
+):
+    with _store(tmp_path, max_transport_retries=1) as store:
+        rows = store.reserve_finalized(
+            (_arrival(0), _arrival(1), _arrival(2)),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )
+        no_decision, release_cap, fenced = rows
+        store.mark_held(
+            no_decision.reservation_id,
+            "remote_qualification_hold:legacy_no_decision",
+        )
+        store.mark_held(release_cap.reservation_id, "systemic_release_cap:3")
+        store.mark_fetching(fenced.reservation_id)
+        assert (
+            store.mark_transport_retry(
+                fenced.reservation_id, "host unavailable"
+            ).status
+            == "held"
+        )
+
+        parked = store.auto_requeueable_holds()
+
+        assert parked == (
+            no_decision.reservation_id,
+            release_cap.reservation_id,
+        )
+        assert store.auto_requeueable_holds(limit=1) == (
+            no_decision.reservation_id,
+        )
+        for bad in (0, True, "2"):
+            with pytest.raises(IntakeError, match="reconciliation limit"):
+                store.auto_requeueable_holds(limit=bad)
