@@ -660,6 +660,11 @@ class SettlementQualification:
 
     @classmethod
     def from_dict(cls, value: object) -> "SettlementQualification":
+        # ``to_dict`` serializes three optional groups independently: the
+        # speed policy digest, the audit triple, and the resident lane
+        # orientation.  Accept exactly the shapes it can emit; a resident
+        # acceptance without an audit witness carries the orientation and no
+        # audit fields.
         fields_v4 = set(cls.__dataclass_fields__)
         fields_v3 = fields_v4 - {"resident_lane_orientation"}
         audit_fields = {
@@ -671,7 +676,7 @@ class SettlementQualification:
         fields_v1 = fields_v2 - {"speed_evidence_policy_digest"}
         if type(value) is not dict or frozenset(value) not in {
             frozenset(fields_v1), frozenset(fields_v2), frozenset(fields_v3),
-            frozenset(fields_v4),
+            frozenset(fields_v4), frozenset(fields_v4 - audit_fields),
         }:
             raise SettlementError("settlement qualification fields do not match")
         row = dict(value)

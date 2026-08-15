@@ -319,6 +319,36 @@ def test_resident_reproduction_requires_exact_physical_lane_role_swap() -> None:
         )
 
 
+def test_auditless_resident_acceptance_round_trips_exact_wire_shape() -> None:
+    """A v6 resident acceptance carries orientation and no audit witness.
+
+    This is the exact production shape that wedged mainnet request
+    ``0fb58834…`` on 2026-08-15: ``to_dict`` omitted the audit triple while
+    emitting ``resident_lane_orientation`` and ``from_dict`` refused it.
+    """
+
+    catalog = default_target_catalog()
+    candidate = _candidate(
+        _stack(catalog), _ref(catalog, MSA, "resident"), catalog, label="resident"
+    )
+    orientation = _resident_orientation()
+    fields = SettlementQualification.__dataclass_fields__  # type: ignore[attr-defined]
+    auditless = replace(
+        candidate.primary,
+        speed_evidence_policy_digest=orientation.speed_evidence_policy_digest,
+        resident_lane_orientation=orientation,
+        audit_control_digest=fields["audit_control_digest"].default,
+        audit_policy=None,
+        audit_evidence_digest=fields["audit_evidence_digest"].default,
+    )
+    wire = auditless.to_dict()
+    assert "resident_lane_orientation" in wire
+    assert not {"audit_policy", "audit_control_digest", "audit_evidence_digest"} & set(wire)
+    reopened = SettlementQualification.from_dict(wire)
+    assert reopened == auditless
+    assert reopened.digest == auditless.digest
+
+
 def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
     with pytest.raises(SettlementError, match="reused one physical TP lane"):
         _resident_orientation("lane-a", "lane-a")
