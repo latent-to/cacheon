@@ -21,6 +21,10 @@ from typing import Any, Iterator
 logger = logging.getLogger("cacheon.eval.engine-worker")
 
 
+class CandidateExecutionCoverageError(RuntimeError):
+    """The active candidate failed its positive execution-evidence contract."""
+
+
 def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -229,14 +233,14 @@ def _require_execution_completion(
             f"observed_receipts=completed:{len(completed)},fallback:{len(fallbacks)},"
             f"aot_loaded:{len(aot_loaded)},aot_invoked:{len(aot_invoked)}"
         )
-        raise RuntimeError(
+        raise CandidateExecutionCoverageError(
             "candidate engine run failed execution coverage: "
             + detail
             + "; "
             + observed
         )
     if aot_invoked and not aot_loaded:
-        raise RuntimeError(
+        raise CandidateExecutionCoverageError(
             "candidate engine run has sealed CuTe AOT use evidence without "
             "matching load evidence"
         )
@@ -249,11 +253,11 @@ def _require_execution_completion(
             }
         )
         if not aot_slots:
-            raise RuntimeError(
+            raise CandidateExecutionCoverageError(
                 "candidate engine run has malformed CuTe AOT load evidence"
             )
         if not set(aot_slots).issubset(expected_slots):
-            raise RuntimeError(
+            raise CandidateExecutionCoverageError(
                 "candidate engine run loaded sealed CuTe AOT for an inactive slot"
             )
         loaded_passed, loaded_detail = receipts.completed_gate(
@@ -263,7 +267,7 @@ def _require_execution_completion(
             expected_member_count=expected_member_count,
         )
         if not loaded_passed:
-            raise RuntimeError(
+            raise CandidateExecutionCoverageError(
                 "candidate engine run failed sealed CuTe AOT load coverage: "
                 + loaded_detail
             )
@@ -274,7 +278,7 @@ def _require_execution_completion(
             expected_member_count=expected_member_count,
         )
         if not aot_passed:
-            raise RuntimeError(
+            raise CandidateExecutionCoverageError(
                 "candidate engine run failed sealed CuTe AOT use coverage: "
                 + aot_detail
             )

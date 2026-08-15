@@ -1235,10 +1235,7 @@ class AuditWitness:
         if type(execution) is not EngineExecutionEvidence:
             raise QualificationRunnerError("audit execution evidence is not typed")
         session = execution.session
-        if (
-            session.audit_policy_digest != policy.digest
-            or not session.audit_receipts
-        ):
+        if session.audit_policy_digest != policy.digest:
             raise QualificationRunnerError(
                 "audit session lacks policy-bound raw receipt evidence"
             )

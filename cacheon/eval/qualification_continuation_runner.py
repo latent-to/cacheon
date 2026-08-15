@@ -115,7 +115,11 @@ def run_continuation_quality_stage(
         passed: bool,
     ) -> QualificationContinuationStageResult:
         audit = audit_witnesses[value.candidates[0].selected_delta_digest]
-        closure = None if resident_lifecycle is None else resident_lifecycle.closure
+        closure = (
+            resident_lifecycle.closure
+            if passed and resident_lifecycle is not None
+            else None
+        )
         if passed and (
             not resident_pair_mode
             or closure is None

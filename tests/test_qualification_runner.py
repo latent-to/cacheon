@@ -868,10 +868,13 @@ def _install_resident_runner_path(
         published_stage_exits.append(result)
         return stage_reference
 
-    def reopen_stage(root, reference, *, expected):
+    def reopen_stage(root, reference, *, expected, resident_pair_lifecycle=None):
         assert root is harness.value.evidence_root
         assert reference == stage_reference
         assert expected is harness.value
+        assert resident_pair_lifecycle is None or isinstance(
+            resident_pair_lifecycle, FakeResidentLifecycle
+        )
         assert len(published_stage_exits) == 1
         harness.calls.append("stage.reopen")
         return published_stage_exits[0]
@@ -1818,6 +1821,45 @@ def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
         match="worst_frac is not canonical",
     ):
         runner.AuditWitness.from_dict(spelling_tamper)
+
+
+def test_audit_witness_grades_policy_bound_empty_receipts_as_fail() -> None:
+    policy = runner.SlotAuditPolicy(
+        "a" * 32,
+        250_000,
+        32,
+        ("moe.fused_experts_reduce",),
+        4,
+    )
+    execution = runner.EngineExecutionEvidence(
+        "cacheon.oci-engine-execution.v1",
+        _d("empty-audit-launch"),
+        SimpleNamespace(),
+        _d("empty-audit-preflight"),
+        _d("empty-audit-model"),
+        _d("empty-audit-runtime-policy"),
+        SimpleNamespace(build_spec_digest=_d("empty-audit-build")),
+        _d("empty-audit-publication"),
+        _d("empty-audit-argv"),
+        (),
+        (),
+        SimpleNamespace(
+            audit_policy_digest=policy.digest,
+            audit_receipts=(),
+            session_id="3" * 32,
+        ),
+    )
+
+    witness = runner.AuditWitness.from_execution(
+        execution,
+        selected_delta_digest=_d("empty-audit-delta"),
+        policy=policy,
+    )
+
+    assert witness.decision is QualificationDecision.FAIL
+    assert witness.receipts == ()
+    assert witness.detail == "no audit receipts (need >= 32 audited calls)"
+    assert runner.AuditWitness.from_dict(witness.to_dict()) == witness
 
 
 def test_audit_witness_host_regrade_does_not_import_torch(monkeypatch) -> None:
