@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal
 
 import pytest
 
@@ -347,6 +348,55 @@ def test_auditless_resident_acceptance_round_trips_exact_wire_shape() -> None:
     reopened = SettlementQualification.from_dict(wire)
     assert reopened == auditless
     assert reopened.digest == auditless.digest
+
+
+def test_auditless_resident_pair_becomes_settlement_candidate() -> None:
+    """Two auditless resident acceptances on swapped lanes form a candidate.
+
+    Exact production shape of mainnet reservation ``87982705…`` on
+    2026-08-15: primary and lane-swapped reproduction both PASS without an
+    audit witness; ``from_reproductions`` must accept the pair, while an
+    auditless pair without lane orientation stays legacy-only.
+    """
+
+    catalog = default_target_catalog()
+    candidate = _candidate(
+        _stack(catalog), _ref(catalog, MSA, "resident"), catalog, label="resident"
+    )
+    fields = SettlementQualification.__dataclass_fields__  # type: ignore[attr-defined]
+    auditless = {
+        "audit_control_digest": fields["audit_control_digest"].default,
+        "audit_policy": None,
+        "audit_evidence_digest": fields["audit_evidence_digest"].default,
+    }
+    primary_orientation = _resident_orientation()
+    reproduction_orientation = _resident_orientation("lane-b", "lane-a")
+    primary = replace(
+        candidate.primary,
+        speed_evidence_policy_digest=primary_orientation.speed_evidence_policy_digest,
+        resident_lane_orientation=primary_orientation,
+        **auditless,
+    )
+    reproduction = replace(
+        candidate.reproduction,
+        speed_evidence_policy_digest=(
+            reproduction_orientation.speed_evidence_policy_digest
+        ),
+        resident_lane_orientation=reproduction_orientation,
+        **auditless,
+    )
+    pair = SettlementCandidate.from_reproductions(primary, reproduction)
+    assert pair.primary.audit_policy is None
+    assert pair.reproduction.audit_policy is None
+    assert SettlementCandidate.from_dict(pair.to_dict()) == pair
+    assert pair.speedup == min(primary.speedup, reproduction.speedup, key=Decimal)
+    with pytest.raises(SettlementError, match="requires two audited"):
+        SettlementCandidate.from_reproductions(
+            replace(primary, resident_lane_orientation=None,
+                    speed_evidence_policy_digest=candidate.primary.speed_evidence_policy_digest),
+            replace(reproduction, resident_lane_orientation=None,
+                    speed_evidence_policy_digest=candidate.reproduction.speed_evidence_policy_digest),
+        )
 
 
 def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
