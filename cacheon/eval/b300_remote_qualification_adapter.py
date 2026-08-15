@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
+import logging
 from pathlib import Path
 
 from cacheon.arena_service import (
@@ -41,6 +42,7 @@ from cacheon.chain.remote_evaluation_dispatcher import (
 )
 from cacheon.chain.remote_qualification_hold import (
     RemoteQualificationHoldProduct,
+    RemoteQualificationHoldReason,
     capture_remote_qualification_hold,
 )
 from cacheon.eval.b300_mainnet_worker import (
@@ -56,6 +58,7 @@ from cacheon.eval.b300_qualification_graph_gate import (
     B300QualificationGraphGateHold,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.oci_outer_session import OuterSessionWorkerError
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationIntakeBatch,
@@ -77,6 +80,7 @@ _QUALIFICATION_BODY_FIELDS = frozenset(
 _CANDIDATE_FIELDS = frozenset(
     {"candidate_digest", "publication", "reservation", "screen_receipt"}
 )
+_LOG = logging.getLogger(__name__)
 _SCREEN_RECEIPT_FIELDS = frozenset(
     {"candidate_digest", "decision", "results", "screen_attempt", "service_digest"}
 )
@@ -590,14 +594,34 @@ class B300RemoteQualificationAdapter:
 
         worker = self.worker
         assert worker is not None
-        result = worker.run_remote_qualification(
-            lease,
-            candidates,
-            receipts,
-            screen_lane=self.deployment.screen_lane,
-            continuation_store=self.continuation_store,
-            request_digest=request.digest,
-        )
+        try:
+            result = worker.run_remote_qualification(
+                lease,
+                candidates,
+                receipts,
+                screen_lane=self.deployment.screen_lane,
+                continuation_store=self.continuation_store,
+                request_digest=request.digest,
+            )
+        except OuterSessionWorkerError as exc:
+            diagnostic = exc.diagnostic
+            _LOG.exception(
+                "qualification worker error for request %s: %s: %s",
+                request.digest,
+                type(exc).__name__,
+                exc.message,
+            )
+            return capture_remote_qualification_hold(
+                request,
+                reason=RemoteQualificationHoldReason.QUALIFICATION_WORKER_ERROR,
+                diagnostic_digest=(
+                    ""
+                    if diagnostic is None or diagnostic.stream_sha256 is None
+                    else diagnostic.stream_sha256
+                ),
+                failure_type=type(exc).__name__,
+                failure_message=exc.message,
+            )
         if type(result) is B300QualificationGraphGateHold:
             try:
                 hold = capture_remote_qualification_hold(

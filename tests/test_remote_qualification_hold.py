@@ -24,6 +24,7 @@ from cacheon.chain.remote_qualification_hold import (
     capture_remote_qualification_hold,
     remote_qualification_hold_from_dict,
     remote_qualification_hold_to_dict,
+    verify_remote_qualification_hold_request,
 )
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.stack_identity import canonical_json_bytes, sha256_hex
@@ -120,6 +121,30 @@ def test_hold_roundtrip_is_path_free_and_binds_the_exact_request(
     encoded = json.dumps(product.to_dict(), sort_keys=True)
     assert str(tmp_path) not in encoded
     assert not any("path" in key for key in product.to_dict())
+
+
+def test_legacy_v1_hold_still_reopens_and_verifies_against_its_request(
+    tmp_path: Path,
+) -> None:
+    request, identity, credential = _qualification_request(tmp_path)
+    product = capture_remote_qualification_hold(
+        request,
+        reason=RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
+        diagnostic_digest=_h("legacy-graph-hold-diagnostic"),
+        schema_version=1,
+    )
+
+    reopened = reopen_remote_response(
+        request,
+        seal_remote_response(request, product, identity, credential),
+        identity,
+        credential,
+    )
+
+    assert reopened == product
+    assert product.schema_version == 1
+    assert "failure_type" not in product.to_dict()
+    verify_remote_qualification_hold_request(product, request)
 
 
 def test_hold_projection_is_target_neutral_for_a_two_candidate_cohort(

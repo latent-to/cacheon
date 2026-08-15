@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 import cacheon.chain.recoverable_qualification_dispatcher as dispatcher_module
-from cacheon.chain.execution_disposition import ExecutionDisposition
+from cacheon.chain.execution_disposition import (
+    COMPLETED_NO_DECISION_HOLD_REASON,
+    ExecutionDisposition,
+)
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.recoverable_qualification_dispatcher import (
     CompletedQualificationHold,
@@ -417,7 +420,7 @@ def test_authority_changed_held_recovery_migrates_into_bounded_requeue(
         assert row["status"] == "promoted"
 
 
-def test_completed_no_decision_product_is_held_without_retry_or_second_plan(
+def test_completed_no_decision_product_terminalizes_without_retry_or_second_plan(
     tmp_path: Path, monkeypatch
 ) -> None:
     fixtures = _fixtures()
@@ -449,15 +452,15 @@ def test_completed_no_decision_product_is_held_without_retry_or_second_plan(
     dispatcher = _dispatcher(authority, transport)
 
     outcome = dispatcher.dispatch_once()
-    assert type(outcome) is RecoverableQualificationHold
-    assert outcome.reason == "post_publication_no_decision"
+    assert type(outcome) is CompletedQualificationHold
+    assert outcome.reason == "remote_qualification_hold:legacy_no_decision"
     assert (transport.plans, transport.materializations, transport.publications) == (
         1,
         1,
         1,
     )
     repeated = dispatcher.dispatch_once()
-    assert repeated == outcome
+    assert repeated is None
     assert (transport.plans, transport.materializations, transport.publications) == (
         1,
         1,
@@ -465,9 +468,75 @@ def test_completed_no_decision_product_is_held_without_retry_or_second_plan(
     )
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
-        assert recovery is not None and recovery.phase.value == "held"
-        retained = store.get(recovery.lease.reservation_ids[0])
-    assert retained.status == "promoted"
+        retained = store.get(outcome.lease.reservation_ids[0])
+    assert recovery is None
+    assert retained.status == "held"
+    assert retained.decision == ""
+    assert retained.qualification_evidence_digest == outcome.result_digest
+
+
+def test_already_held_no_decision_product_migrates_without_gpu_redispatch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, recoverable=True)
+
+    def no_decision_batch(manifest, _attempt_ref):
+        failure = authority.fixtures._h("retained-worker-failure")
+        outcome = QualificationIntakeOutcome(
+            manifest.reservations[0].reservation_digest,
+            manifest.reservations[0].selected_delta_digest,
+            manifest.digest,
+            QualificationDecision.NO_DECISION,
+            "outer_session_worker",
+            True,
+            failure_digest=failure,
+        )
+        return QualificationIntakeBatch(
+            manifest.digest,
+            (outcome,),
+            retry_plan=QualificationRetryPlan(
+                manifest.digest,
+                "requeue",
+                ((outcome.reservation_digest,),),
+                failure,
+            ),
+        )
+
+    monkeypatch.setattr(authority.fixtures, "_failed_batch", no_decision_batch)
+    transport = _Transport(authority, fixtures, complete_on_publish=True)
+    old_dispatcher = _dispatcher(authority, transport)
+    monkeypatch.setattr(
+        old_dispatcher,
+        "_commit_legacy_no_decision_hold",
+        lambda recovery, _product: old_dispatcher._hold(
+            recovery, COMPLETED_NO_DECISION_HOLD_REASON
+        ),
+    )
+
+    parked = old_dispatcher.dispatch_once()
+    assert type(parked) is RecoverableQualificationHold
+    assert parked.reason == COMPLETED_NO_DECISION_HOLD_REASON
+    before = (
+        transport.plans,
+        transport.materializations,
+        transport.publications,
+    )
+
+    migrated = _dispatcher(authority, transport).dispatch_once()
+
+    assert type(migrated) is CompletedQualificationHold
+    assert migrated.reason == "remote_qualification_hold:legacy_no_decision"
+    assert (
+        transport.plans,
+        transport.materializations,
+        transport.publications,
+    ) == before == (1, 1, 1)
+    with _store(authority) as store:
+        assert store.pending_qualification_recovery() is None
+        retained = store.get(migrated.lease.reservation_ids[0])
+    assert (retained.status, retained.decision) == ("held", "")
+    assert retained.qualification_evidence_digest == migrated.result_digest
 
 
 @pytest.mark.parametrize("profile", ("collective-hold", "block-hold"))

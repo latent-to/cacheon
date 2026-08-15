@@ -54,7 +54,6 @@ from cacheon.eval.qualification_runner import (
 from cacheon.eval.oci_backend import OCIBackendError
 from cacheon.eval.oci_outer_session import (
     OuterSessionProcessError,
-    OuterSessionWorkerError,
 )
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.marginal_runtime import CandidateArmWorkerError
@@ -934,10 +933,6 @@ def run_qualification_intake(
                 "candidate worker identity differs from intake authority"
             ) from exc
         return _no_decision_batch(manifest, exc, reason="candidate_worker")
-    except OuterSessionWorkerError as exc:
-        # Raw worker errors can come from B/B-prime or pristine T.  They are
-        # shared-authority failures, never evidence against a candidate arm.
-        return _no_decision_batch(manifest, exc, reason="outer_session_worker")
     except OCIBackendError as exc:
         return _no_decision_batch(manifest, exc, reason="oci_backend")
     except QualificationRunnerError as exc:

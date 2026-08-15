@@ -27,6 +27,10 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     seal_remote_request,
     verify_remote_request,
 )
+from cacheon.chain.remote_qualification_hold import (
+    RemoteQualificationHoldReason,
+    verify_remote_qualification_hold_request,
+)
 from cacheon.eval.b300_mainnet_worker import B300RemoteQualificationRun
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
@@ -35,6 +39,7 @@ from cacheon.eval.b300_qualification_deployment import (
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
+from cacheon.eval.oci_outer_session import OuterSessionWorkerError
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.qualification import QualificationDecision
@@ -412,6 +417,31 @@ def test_success_captures_every_typed_batch_reference_without_paths(
     assert str(configured.candidate.publication.root) not in str(product.to_dict())
     assert str(configured.construction.evidence_root) not in str(product.to_dict())
     assert calls == [(configured.adapter.continuation_store, request.digest)]
+
+
+def test_worker_control_error_is_an_exact_terminal_hold(
+    configured: _Configured,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = "audit_execute: RuntimeError: exact retained worker failure"
+
+    def fail(*_args, **_kwargs):
+        raise OuterSessionWorkerError(message)
+
+    monkeypatch.setattr(
+        adapter_module.B300MainnetWorker,
+        "run_remote_qualification",
+        fail,
+    )
+    request = _request(configured)
+
+    product = configured.adapter.run(request)
+
+    assert product.reason is RemoteQualificationHoldReason.QUALIFICATION_WORKER_ERROR
+    assert product.failure_type == "OuterSessionWorkerError"
+    assert product.failure_message == message
+    assert product.schema_version == 2
+    verify_remote_qualification_hold_request(product, request)
 
 
 def test_publication_identity_and_configured_root_substitution_fail_closed(

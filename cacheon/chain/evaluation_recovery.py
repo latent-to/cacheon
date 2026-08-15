@@ -372,7 +372,10 @@ def valid_evaluation_recovery_event_transition(
         terminal_hold_reopen = (
             previous.resolution is RecoveryResolution.UNRESOLVED
             and previous.phase is RecoveryPhase.HELD
-            and previous.reason.startswith("remote_qualification_hold:")
+            and (
+                previous.reason.startswith("remote_qualification_hold:")
+                or previous.reason == "post_publication_no_decision"
+            )
             and event.resolution is RecoveryResolution.UNRESOLVED
         )
         return (

@@ -595,7 +595,7 @@ def test_candidate_worker_error_is_contained_by_deterministic_bisection(
 
 
 @pytest.mark.parametrize("source", ("baseline", "reference"))
-def test_shared_worker_error_is_not_attributed_to_candidate(
+def test_shared_worker_error_reaches_the_authenticated_adapter_unchanged(
     monkeypatch, source: str
 ) -> None:
     plan, manifest = _fake_plan(monkeypatch, count=2)
@@ -607,22 +607,17 @@ def test_shared_worker_error_is_not_attributed_to_candidate(
         ),
     )
 
-    result = intake.run_qualification_intake(
-        _factory(plan, manifest),
-        executor=object(),
-        entropy_provider=lambda *_args: None,
-        hidden_judge=lambda **_kwargs: None,
-        deadline=100.0,
-    )
-
-    assert all(
-        row.decision is QualificationDecision.NO_DECISION
-        and row.reason == "outer_session_worker"
-        and row.reason != "candidate_worker"
-        for row in result.outcomes
-    )
-    assert result.retry_plan is not None
-    assert result.retry_plan.strategy == "bisect"
+    with pytest.raises(
+        OuterSessionWorkerError,
+        match=rf"{source} worker raised",
+    ):
+        intake.run_qualification_intake(
+            _factory(plan, manifest),
+            executor=object(),
+            entropy_provider=lambda *_args: None,
+            hidden_judge=lambda **_kwargs: None,
+            deadline=100.0,
+        )
 
 
 def test_candidate_worker_identity_mismatch_is_a_controller_failure(

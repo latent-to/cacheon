@@ -880,7 +880,9 @@ class EvaluationRecoveryStoreMixin:
         with self._transaction():
             current = self._active_qualification_recovery(recovery.lease)
             if current != recovery or (
-                current.phase is RecoveryPhase.HELD and current.reason != reason
+                current.phase is RecoveryPhase.HELD
+                and current.reason
+                not in {reason, "post_publication_no_decision"}
             ):
                 raise _intake_error("remote qualification HOLD recovery changed")
             reservations = tuple(

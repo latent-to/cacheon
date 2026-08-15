@@ -42,7 +42,6 @@ from cacheon.chain.execution_disposition import (
     PRE_RESIDENT_REQUEUE_FAILURES,
     WORKER_INFRASTRUCTURE_HOLD_REASON,
     WORKER_INFRASTRUCTURE_REQUEUE_FAILURE,
-    resolve_completed_result,
     resolve_infrastructure_result,
 )
 from cacheon.chain.intake import IntakeError
@@ -451,8 +450,10 @@ class RecoverableQualificationDispatcher:
                 )
             if recovery is None:
                 return None
-            if recovery.phase is RecoveryPhase.HELD and not recovery.reason.startswith(
-                "remote_qualification_hold:"
+            if (
+                recovery.phase is RecoveryPhase.HELD
+                and not recovery.reason.startswith("remote_qualification_hold:")
+                and recovery.reason != COMPLETED_NO_DECISION_HOLD_REASON
             ):
                 return _RecoveryClaim(recovery, None)
             reservations = tuple(
@@ -574,6 +575,66 @@ class RecoverableQualificationDispatcher:
             reason,
             product.digest,
         )
+
+    def _commit_legacy_no_decision_hold(
+        self,
+        recovery: EvaluationRecovery,
+        product: RemoteQualificationProduct,
+    ) -> CompletedQualificationHold:
+        """Terminalize a retained legacy non-verdict without rerunning GPU work."""
+
+        if not self._has_no_decision(product.batch):
+            raise RecoverableQualificationDispatcherError(
+                "legacy qualification product has no non-verdict to migrate"
+            )
+        reason = "remote_qualification_hold:legacy_no_decision"
+        reservation_ids = tuple(
+            outcome.reservation_digest for outcome in product.batch.outcomes
+        )
+        store, point, current = self._current_recovery(recovery.recovery_id)
+        try:
+            lease = store.commit_remote_qualification_hold(
+                current,
+                current_block=point[0],
+                result_digest=product.digest,
+                reason=reason,
+                reservation_ids=reservation_ids,
+                lease_blocks=self.coordinator.lease_blocks,
+            )
+        finally:
+            store.close()
+        return CompletedQualificationHold(
+            recovery.recovery_id,
+            recovery.request_id,
+            lease,
+            reason,
+            product.digest,
+        )
+
+    def _reopen_held_legacy_product(
+        self,
+        recovery: EvaluationRecovery,
+        claim: ClaimedQualificationEvaluation,
+    ) -> RemoteQualificationProduct | None:
+        """Reopen only an already-completed legacy response; never republish it."""
+
+        plan = self._reopen_plan(recovery, claim)
+        observed = self.transport.inspect_planned_qualification(plan)
+        if observed.state != "completed_response":
+            return None
+        response = self.transport.resume_planned_qualification(plan)
+        if type(response) is not AuthenticatedRemoteEvaluationResponse:
+            raise RecoverableQualificationDispatcherError(
+                "held legacy qualification response changed type"
+            )
+        product = self._product(plan, response)
+        if type(product) is not RemoteQualificationProduct or not self._has_no_decision(
+            product.batch
+        ):
+            raise RecoverableQualificationDispatcherError(
+                "held legacy qualification product changed"
+            )
+        return product
 
     def _reopen_held_remote_product(
         self,
@@ -1030,6 +1091,13 @@ class RecoverableQualificationDispatcher:
                         _infrastructure_requeue_signal("retained_epoch_retired"),
                         live_worker_epoch=live_epoch,
                     )
+                if claim is None:
+                    raise RecoverableQualificationDispatcherError(
+                        "completed legacy qualification lost its exact claim"
+                    )
+                legacy = self._reopen_held_legacy_product(recovery, claim)
+                if legacy is not None:
+                    return self._commit_legacy_no_decision_hold(recovery, legacy)
             return RecoverableQualificationHold(
                 recovery.recovery_id,
                 recovery.phase,
@@ -1101,11 +1169,8 @@ class RecoverableQualificationDispatcher:
                     )
                 if type(product) is RemoteQualificationHoldProduct:
                     return self._commit_remote_hold(recovery, product)
-                completed = resolve_completed_result(
-                    self._has_no_decision(product.batch)
-                )
-                if completed.disposition is not ExecutionDisposition.COMPLETE:
-                    return self._hold(recovery, completed.reason)
+                if self._has_no_decision(product.batch):
+                    return self._commit_legacy_no_decision_hold(recovery, product)
                 if recovery.phase is RecoveryPhase.RESULT_READY:
                     import_remote_qualification_evidence(
                         product, self.qualification_evidence_root

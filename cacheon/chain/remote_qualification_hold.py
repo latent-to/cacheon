@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import re
 
 from cacheon.arena_service import ArenaScreenReceipt
 from cacheon.chain.remote_qualification_evidence import (
@@ -20,8 +21,13 @@ from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
 
-_SCHEMA_VERSION = 1
+_LEGACY_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _MAX_COHORT_MEMBERS = 256
+_FAILURE_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,127}\Z")
+# The session protocol bounds stage and type at 128 characters each and the
+# original message at 16,384, then joins all three with two ``": "`` tokens.
+_MAX_FAILURE_MESSAGE_CHARS = 16_644
 
 
 class RemoteQualificationHoldReason(str, Enum):
@@ -31,6 +37,7 @@ class RemoteQualificationHoldReason(str, Enum):
     GRAPH_EVIDENCE_UNAVAILABLE = "graph_evidence_unavailable"
     GRAPH_EXIT_PUBLICATION_AMBIGUOUS = "graph_exit_publication_ambiguous"
     RESIDENT_EVIDENCE_UNAVAILABLE = "resident_evidence_unavailable"
+    QUALIFICATION_WORKER_ERROR = "qualification_worker_error"
 
 
 def _digest(value: object, field: str) -> str:
@@ -73,6 +80,8 @@ class RemoteQualificationHoldProduct:
     candidate_digests: tuple[str, ...]
     reason: RemoteQualificationHoldReason
     diagnostic_digest: str = ""
+    failure_type: str = ""
+    failure_message: str = ""
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -99,7 +108,10 @@ class RemoteQualificationHoldProduct:
             or self.screen_lane not in {"primary", "reproduction"}
             or type(self.reason) is not RemoteQualificationHoldReason
             or type(self.schema_version) is not int
-            or self.schema_version != _SCHEMA_VERSION
+            or self.schema_version not in {
+                _LEGACY_SCHEMA_VERSION,
+                _SCHEMA_VERSION,
+            }
             or not (
                 len(reservations) == len(deltas) == len(candidates)
             )
@@ -115,13 +127,39 @@ class RemoteQualificationHoldProduct:
             diagnostic = _digest(diagnostic, "diagnostic digest")
         elif type(diagnostic) is not str:
             raise RemoteEvaluationDispatcherError("diagnostic digest is malformed")
+        worker_failure = (
+            self.reason is RemoteQualificationHoldReason.QUALIFICATION_WORKER_ERROR
+        )
+        if (
+            not isinstance(self.failure_type, str)
+            or not isinstance(self.failure_message, str)
+            or (self.failure_type and _FAILURE_TYPE.fullmatch(self.failure_type) is None)
+            or len(self.failure_message) > _MAX_FAILURE_MESSAGE_CHARS
+            or "\x00" in self.failure_message
+            or (self.schema_version == _LEGACY_SCHEMA_VERSION and (
+                self.failure_type or self.failure_message or worker_failure
+            ))
+            or (
+                self.schema_version == _SCHEMA_VERSION
+                and worker_failure
+                and not (self.failure_type and self.failure_message)
+            )
+            or (
+                self.schema_version == _SCHEMA_VERSION
+                and not worker_failure
+                and bool(self.failure_type or self.failure_message)
+            )
+        ):
+            raise RemoteEvaluationDispatcherError(
+                "remote qualification HOLD failure detail is malformed"
+            )
         object.__setattr__(self, "reservation_digests", reservations)
         object.__setattr__(self, "selected_delta_digests", deltas)
         object.__setattr__(self, "candidate_digests", candidates)
         object.__setattr__(self, "diagnostic_digest", diagnostic)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        row = {
             "candidate_digests": list(self.candidate_digests),
             "diagnostic_digest": self.diagnostic_digest,
             "kind": "remote_qualification_hold",
@@ -137,11 +175,16 @@ class RemoteQualificationHoldProduct:
             "service_identity": self.service_identity,
             "worker_readiness_digest": self.worker_readiness_digest,
         }
+        if self.schema_version >= 2:
+            row["failure_message"] = self.failure_message
+            row["failure_type"] = self.failure_type
+        return row
 
     @property
     def digest(self) -> str:
         return canonical_digest(
-            "cacheon.chain.remote-qualification-hold.v1", self.to_dict()
+            f"cacheon.chain.remote-qualification-hold.v{self.schema_version}",
+            self.to_dict(),
         )
 
 
@@ -181,8 +224,12 @@ def remote_qualification_hold_from_dict(
         "service_identity",
         "worker_readiness_digest",
     }
+    version = value.get("schema_version") if type(value) is dict else None
+    if version == _SCHEMA_VERSION:
+        fields |= {"failure_message", "failure_type"}
     if (
         type(value) is not dict
+        or version not in {_LEGACY_SCHEMA_VERSION, _SCHEMA_VERSION}
         or set(value) != fields
         or value["kind"] != "remote_qualification_hold"
         or type(value["reservation_digests"]) is not list
@@ -206,6 +253,8 @@ def remote_qualification_hold_from_dict(
             candidate_digests=tuple(value["candidate_digests"]),
             reason=RemoteQualificationHoldReason(value["reason"]),
             diagnostic_digest=value["diagnostic_digest"],  # type: ignore[arg-type]
+            failure_type=value.get("failure_type", ""),  # type: ignore[arg-type]
+            failure_message=value.get("failure_message", ""),  # type: ignore[arg-type]
             schema_version=value["schema_version"],  # type: ignore[arg-type]
         )
     except RemoteEvaluationDispatcherError:
@@ -221,6 +270,9 @@ def capture_remote_qualification_hold(
     *,
     reason: RemoteQualificationHoldReason,
     diagnostic_digest: str = "",
+    failure_type: str = "",
+    failure_message: str = "",
+    schema_version: int = _SCHEMA_VERSION,
 ) -> RemoteQualificationHoldProduct:
     """Derive every authority binding from the consumed request bytes."""
 
@@ -261,6 +313,9 @@ def capture_remote_qualification_hold(
             candidate_digests=candidate_digests,
             reason=reason,
             diagnostic_digest=diagnostic_digest,
+            failure_type=failure_type,
+            failure_message=failure_message,
+            schema_version=schema_version,
         )
     except RemoteEvaluationDispatcherError:
         raise
@@ -284,6 +339,9 @@ def verify_remote_qualification_hold_request(
         request,
         reason=product.reason,
         diagnostic_digest=product.diagnostic_digest,
+        failure_type=product.failure_type,
+        failure_message=product.failure_message,
+        schema_version=product.schema_version,
     )
     if product != expected:
         raise RemoteEvaluationDispatcherError(
