@@ -613,3 +613,36 @@ def test_publication_resolver_is_canonical_and_path_bound(
     assert str(configured.candidate.publication.root) not in str(
         configured.candidate.publication.to_dict()
     )
+
+
+def test_commission_adapter_for_canonicalizes_cohort_order(
+    configured: _Configured,
+    tmp_path: Path,
+) -> None:
+    """Cohort wire order is arrival order; adapter_for must digest-sort it.
+
+    Mainnet 2026-08-15: every 4-member cohort was refused pre-resident because
+    the commission handed FIFO-ordered publications to the canonical resolver.
+    A singleton tuple is trivially sorted, so no single-candidate path could
+    catch this.
+    """
+
+    from cacheon.eval.b300_remote_worker_adapter import (
+        B300RemoteQualificationCommission,
+    )
+
+    second = deployment_fixtures._bundle(tmp_path / "cohort-second", 11).publication
+    rows = (configured.candidate.publication, second)
+    unsorted_rows = tuple(sorted(rows, key=lambda row: row.digest, reverse=True))
+    commission = B300RemoteQualificationCommission(
+        configured.deployment,
+        configured.construction,
+        configured.readiness,
+    )
+    derived = commission.adapter_for(
+        unsorted_rows,
+        configured.adapter.continuation_store,
+    )
+    assert derived.publications.publications == tuple(
+        sorted(rows, key=lambda row: row.digest)
+    )

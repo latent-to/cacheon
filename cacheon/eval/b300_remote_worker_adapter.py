@@ -170,7 +170,11 @@ class B300RemoteQualificationCommission:
             self.deployment,
             self.construction,
             self.readiness,
-            B300WorkerBundleResolver(publications),
+            # The resolver's contract is one canonical digest-sorted mapping;
+            # cohort wire order is arrival order and must be canonicalized here.
+            B300WorkerBundleResolver(
+                tuple(sorted(publications, key=lambda row: row.digest))
+            ),
             continuation_store,
         )
         if worker is None:
