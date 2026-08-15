@@ -1,9 +1,10 @@
 """Fixed, upgradeable evaluation-cost quotes and on-chain payment verification.
 
 v1 ``quote_eval_cost`` ignores submission extras and returns a published alpha-rao
-amount. Later quote versions may inspect ``EvalCostRequest.submission`` (target,
-stack, estimated work) without changing the burn, remark, payload pointer, or
-intake consume-once machinery.
+amount frozen from ``issued_block`` through ``expires_block`` (a short TTL) so
+the miner can quote once and pay that same amount. Later quote versions may
+inspect ``EvalCostRequest.submission`` without changing the burn, remark,
+payload pointer, or intake consume-once machinery.
 
 The miner pays with ``SubtensorModule.burn_alpha`` batched with
 ``System.remark_with_event``. Validators admit a paid reveal only after the
@@ -12,6 +13,7 @@ remark binds the burn to this exact proposal.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -24,10 +26,12 @@ EVAL_COST_ASSET = "alpha"
 EVAL_COST_INSTRUMENT = "burn_alpha"
 PUBLISHED_EVAL_COST_ALPHA_RAO = 1_000_000_000
 DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS = 7_200
+DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS = 30
 
 REASON_MISSING = "missing_eval_cost_payment"
 REASON_INVALID = "eval_cost_payment_invalid"
 REASON_WINDOW = "eval_cost_payment_window"
+REASON_QUOTE_EXPIRED = "eval_cost_quote_expired"
 REASON_USED = "eval_cost_payment_used"
 
 _BURN_CALL = "burn_alpha"
@@ -75,6 +79,7 @@ class EvalCostRequest:
 class EvalCostPolicy:
     amount_alpha_rao: int = PUBLISHED_EVAL_COST_ALPHA_RAO
     payment_window_blocks: int = DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS
+    quote_ttl_blocks: int = DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS
 
     def __post_init__(self) -> None:
         if type(self.amount_alpha_rao) is not int or self.amount_alpha_rao < 0:
@@ -84,6 +89,8 @@ class EvalCostPolicy:
             or self.payment_window_blocks <= 0
         ):
             raise EvalCostError("eval-cost payment window must be a positive integer")
+        if type(self.quote_ttl_blocks) is not int or self.quote_ttl_blocks <= 0:
+            raise EvalCostError("eval-cost quote TTL must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,8 @@ class EvalCostQuote:
     amount_alpha_rao: int
     asset: str
     instrument: str
+    issued_block: int
+    expires_block: int
 
     def __post_init__(self) -> None:
         if type(self.version) is not int or self.version < 1:
@@ -103,6 +112,10 @@ class EvalCostQuote:
             raise EvalCostError("eval-cost quote amount is malformed")
         if self.asset != EVAL_COST_ASSET or self.instrument != EVAL_COST_INSTRUMENT:
             raise EvalCostError("eval-cost quote instrument is unsupported")
+        if type(self.issued_block) is not int or self.issued_block < 0:
+            raise EvalCostError("eval-cost quote issued block is malformed")
+        if type(self.expires_block) is not int or self.expires_block <= self.issued_block:
+            raise EvalCostError("eval-cost quote expiry is malformed")
 
 
 @dataclass(frozen=True)
@@ -142,11 +155,19 @@ def quote_eval_cost(
     request: EvalCostRequest,
     *,
     policy: EvalCostPolicy | None = None,
+    at_block: int = 0,
 ) -> EvalCostQuote:
-    """Return the v1 published cost. Submission extras are ignored until a later quote version."""
+    """Return the v1 published cost frozen until ``at_block + quote_ttl``.
+
+    Submission extras are ignored until a later quote version. The amount is
+    static from issuance through payment; a later quote function may return a
+    different amount after this quote expires.
+    """
 
     if type(request) is not EvalCostRequest:
         raise EvalCostError("eval-cost request is not typed")
+    if type(at_block) is not int or at_block < 0:
+        raise EvalCostError("eval-cost quote block is malformed")
     resolved = policy if policy is not None else EvalCostPolicy()
     if type(resolved) is not EvalCostPolicy:
         raise EvalCostError("eval-cost policy is not typed")
@@ -156,11 +177,13 @@ def quote_eval_cost(
         amount_alpha_rao=resolved.amount_alpha_rao,
         asset=EVAL_COST_ASSET,
         instrument=EVAL_COST_INSTRUMENT,
+        issued_block=at_block,
+        expires_block=at_block + resolved.quote_ttl_blocks,
     )
 
 
 def encode_payment_remark(request: EvalCostRequest, quote: EvalCostQuote) -> str:
-    """Canonical remark bytes binding one burn to one proposal."""
+    """Canonical remark bytes binding one burn to one frozen quote."""
 
     if type(request) is not EvalCostRequest or type(quote) is not EvalCostQuote:
         raise EvalCostError("payment remark inputs are not typed")
@@ -174,7 +197,9 @@ def encode_payment_remark(request: EvalCostRequest, quote: EvalCostQuote) -> str
             "payload": {
                 "amount_alpha_rao": quote.amount_alpha_rao,
                 "content_hash": request.content_hash,
+                "expires_block": quote.expires_block,
                 "hotkey": request.hotkey,
+                "issued_block": quote.issued_block,
                 "netuid": request.netuid,
             },
             "schema_version": 1,
@@ -182,35 +207,104 @@ def encode_payment_remark(request: EvalCostRequest, quote: EvalCostQuote) -> str
     ).decode("utf-8")
 
 
+def decode_payment_remark(text: object) -> dict[str, object] | None:
+    """Return the closed remark payload, or ``None`` when it is not canonical."""
+
+    if not isinstance(text, str) or not text or len(text.encode("utf-8")) > 4_096:
+        return None
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            value[key] = item
+        return value
+
+    try:
+        obj = json.loads(text, object_pairs_hook=unique_object)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if (
+        not isinstance(obj, dict)
+        or set(obj) != {"domain", "payload", "schema_version"}
+        or obj.get("domain") != EVAL_COST_PAYMENT_DOMAIN
+        or obj.get("schema_version") != 1
+    ):
+        return None
+    payload = obj.get("payload")
+    if (
+        not isinstance(payload, dict)
+        or set(payload)
+        != {
+            "amount_alpha_rao",
+            "content_hash",
+            "expires_block",
+            "hotkey",
+            "issued_block",
+            "netuid",
+        }
+    ):
+        return None
+    if canonical_json_bytes(obj).decode("utf-8") != text:
+        return None
+    issued = payload.get("issued_block")
+    expires = payload.get("expires_block")
+    amount = payload.get("amount_alpha_rao")
+    netuid = payload.get("netuid")
+    if (
+        type(issued) is not int
+        or issued < 0
+        or type(expires) is not int
+        or expires <= issued
+        or type(amount) is not int
+        or amount < 0
+        or type(netuid) is not int
+        or netuid < 0
+        or not isinstance(payload.get("content_hash"), str)
+        or not isinstance(payload.get("hotkey"), str)
+    ):
+        return None
+    return payload
+
+
 def verify_eval_cost_payment(
     *,
     request: EvalCostRequest,
-    quote: EvalCostQuote,
+    policy: EvalCostPolicy,
     proof: EvalCostPaymentProof | None,
     reveal_block: int,
-    window_blocks: int,
 ) -> str:
-    """Return ``""`` when the proof pays this quote, else a stable invalid-reason token."""
+    """Return ``""`` when the proof pays the quote frozen at issuance, else a reason token."""
 
-    if type(request) is not EvalCostRequest or type(quote) is not EvalCostQuote:
+    if type(request) is not EvalCostRequest or type(policy) is not EvalCostPolicy:
         raise EvalCostError("eval-cost verification inputs are not typed")
     if type(reveal_block) is not int or reveal_block < 0:
         raise EvalCostError("reveal block is malformed")
-    if type(window_blocks) is not int or window_blocks <= 0:
-        raise EvalCostError("payment window is malformed")
     if proof is None:
         return REASON_MISSING
     if type(proof) is not EvalCostPaymentProof:
         raise EvalCostError("eval-cost payment proof is not typed")
-    if proof.block > reveal_block or reveal_block - proof.block > window_blocks:
+    parsed = decode_payment_remark(proof.remark)
+    if parsed is None:
+        return REASON_INVALID
+    expected = quote_eval_cost(
+        request, policy=policy, at_block=int(parsed["issued_block"])
+    )
+    if proof.remark != encode_payment_remark(request, expected):
+        return REASON_INVALID
+    if proof.block < expected.issued_block or proof.block > expected.expires_block:
+        return REASON_QUOTE_EXPIRED
+    if (
+        proof.block > reveal_block
+        or reveal_block - proof.block > policy.payment_window_blocks
+    ):
         return REASON_WINDOW
-    expected = encode_payment_remark(request, quote)
     if (
         proof.signer != proof.burn_coldkey
         or proof.burn_hotkey != request.hotkey
         or proof.burn_netuid != request.netuid
-        or proof.alpha_decrease < quote.amount_alpha_rao
-        or proof.remark != expected
+        or proof.alpha_decrease < expected.amount_alpha_rao
     ):
         return REASON_INVALID
     return ""

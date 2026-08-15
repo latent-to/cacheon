@@ -32,10 +32,15 @@ def burn_eval_cost_alpha(
             "submitted": False,
             "dry_run": True,
             "amount_alpha_rao": quote.amount_alpha_rao,
+            "issued_block": quote.issued_block,
+            "expires_block": quote.expires_block,
             "remark": remark,
         }
     if subtensor is None or wallet is None:
         raise EvalCostError("eval-cost burn requires a chain client and wallet")
+    current = current_eval_cost_block(subtensor)
+    if current < quote.issued_block or current > quote.expires_block:
+        raise EvalCostError("eval-cost quote has expired")
     substrate = getattr(subtensor, "substrate", None)
     compose = getattr(substrate, "compose_call", None)
     send = getattr(subtensor, "sign_and_send_extrinsic", None)
@@ -70,6 +75,8 @@ def burn_eval_cost_alpha(
     if not success:
         raise EvalCostError(f"eval-cost burn failed: {message or result}")
     block, index = _inclusion_pointer(result, subtensor)
+    if block < quote.issued_block or block > quote.expires_block:
+        raise EvalCostError("eval-cost burn landed outside the quote window")
     return {
         "submitted": True,
         "result": result,
@@ -78,7 +85,21 @@ def burn_eval_cost_alpha(
         "payment_extrinsic_index": index,
         "remark": remark,
         "amount_alpha_rao": quote.amount_alpha_rao,
+        "issued_block": quote.issued_block,
+        "expires_block": quote.expires_block,
     }
+
+
+def current_eval_cost_block(subtensor) -> int:
+    """Read the live chain height used to issue or check a frozen quote."""
+
+    reader = getattr(subtensor, "get_current_block", None)
+    if not callable(reader):
+        raise EvalCostError("subtensor exposes no current block API")
+    block = reader()
+    if type(block) is not int or block < 0:
+        raise EvalCostError("current block is malformed")
+    return block
 
 
 def read_eval_cost_payment(

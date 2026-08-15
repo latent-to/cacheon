@@ -205,8 +205,10 @@ Check that the printed `content_hash` equals the package result. The unpaid payl
 ```
 
 When the operator enables the eval-cost gate, quote first. `--pay --dry-run`
-prints the published burn amount without signing; the dry-run payload stays v1
-because there is no inclusion pointer yet.
+prints the published burn amount and its short TTL without signing; the dry-run
+payload stays v1 because there is no inclusion pointer yet. A live `--pay`
+quotes at the current block, freezes that amount until the burn is included
+(default 30 blocks), then commits the v2 pointer.
 
 ```bash
 python -m cacheon.cli chain-eval-cost --netuid <NETUID>

@@ -21,7 +21,7 @@ from cacheon.chain.eval_cost import (
     EvalCostRequest,
     quote_eval_cost,
 )
-from cacheon.chain.eval_cost_payment import burn_eval_cost_alpha
+from cacheon.chain.eval_cost_payment import burn_eval_cost_alpha, current_eval_cost_block
 from cacheon.chain.payload import encode_payload
 
 
@@ -57,7 +57,10 @@ def submit_bundle(
     payment_index = 0
     if pay:
         request = EvalCostRequest(netuid=netuid, hotkey=hotkey, content_hash=ch)
-        quote = quote_eval_cost(request, policy=eval_cost_policy)
+        at_block = 0 if dry_run else current_eval_cost_block(subtensor)
+        quote = quote_eval_cost(
+            request, policy=eval_cost_policy, at_block=at_block
+        )
         payment = burn_eval_cost_alpha(
             subtensor, wallet, request, quote, dry_run=dry_run
         )
@@ -87,6 +90,8 @@ def submit_bundle(
     if quote is not None:
         payload["eval_cost_alpha_rao"] = quote.amount_alpha_rao
         payload["eval_cost_instrument"] = quote.instrument
+        payload["eval_cost_issued_block"] = quote.issued_block
+        payload["eval_cost_expires_block"] = quote.expires_block
     if payment is not None:
         payload["eval_cost_payment"] = payment
     return payload

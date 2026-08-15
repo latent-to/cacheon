@@ -4,10 +4,11 @@ from pathlib import Path
 
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.eval_cost import (
-    DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS,
+    DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS,
     PUBLISHED_EVAL_COST_ALPHA_RAO,
     REASON_INVALID,
     REASON_MISSING,
+    REASON_QUOTE_EXPIRED,
     REASON_WINDOW,
     EvalCostPaymentProof,
     EvalCostPolicy,
@@ -41,9 +42,28 @@ def _request(**changes) -> EvalCostRequest:
     return EvalCostRequest(**values)
 
 
-def _proof(**changes) -> EvalCostPaymentProof:
+def _quote(**changes) -> tuple[EvalCostRequest, object]:
     request = _request()
-    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_alpha_rao=10))
+    values = dict(amount_alpha_rao=10, at_block=70)
+    values.update(changes)
+    at_block = values.pop("at_block")
+    policy_kwargs = {
+        key: values[key]
+        for key in ("amount_alpha_rao", "quote_ttl_blocks", "payment_window_blocks")
+        if key in values
+    }
+    if "amount_alpha_rao" not in policy_kwargs:
+        policy_kwargs["amount_alpha_rao"] = 10
+    quote = quote_eval_cost(
+        request,
+        policy=EvalCostPolicy(**policy_kwargs),
+        at_block=at_block,
+    )
+    return request, quote
+
+
+def _proof(**changes) -> EvalCostPaymentProof:
+    request, quote = _quote()
     values = dict(
         block=80,
         extrinsic_index=4,
@@ -59,66 +79,90 @@ def _proof(**changes) -> EvalCostPaymentProof:
 
 
 def test_v1_quote_ignores_submission_extras() -> None:
-    base = quote_eval_cost(_request())
+    base = quote_eval_cost(_request(), at_block=70)
     varied = quote_eval_cost(
-        _request(target_id="activation.silu_and_mul", submission={"gpu_s": 1800})
+        _request(target_id="activation.silu_and_mul", submission={"gpu_s": 1800}),
+        at_block=70,
     )
     assert base == varied
     assert base.amount_alpha_rao == PUBLISHED_EVAL_COST_ALPHA_RAO
     assert base.instrument == "burn_alpha"
+    assert base.issued_block == 70
+    assert base.expires_block == 70 + DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS
+
+
+def test_quote_stays_valid_through_payment_ttl() -> None:
+    request, quote = _quote(quote_ttl_blocks=5, at_block=70)
+    assert quote.expires_block == 75
+    policy = EvalCostPolicy(amount_alpha_rao=10, quote_ttl_blocks=5)
+    assert (
+        verify_eval_cost_payment(
+            request=request,
+            policy=policy,
+            proof=_proof(remark=encode_payment_remark(request, quote), block=75),
+            reveal_block=90,
+        )
+        == ""
+    )
+    assert (
+        verify_eval_cost_payment(
+            request=request,
+            policy=policy,
+            proof=_proof(remark=encode_payment_remark(request, quote), block=76),
+            reveal_block=90,
+        )
+        == REASON_QUOTE_EXPIRED
+    )
 
 
 def test_payment_remark_round_trip_binds_content_hash() -> None:
-    request = _request()
-    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_alpha_rao=10))
+    request, quote = _quote()
     remark = encode_payment_remark(request, quote)
     other = encode_payment_remark(_request(content_hash="b" * 64), quote)
     assert remark != other
     assert "cacheon.chain.eval-cost-payment.v1" in remark
+    assert "issued_block" in remark
 
 
 def test_verify_accepts_matching_burn() -> None:
-    request = _request()
-    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_alpha_rao=10))
+    request, quote = _quote()
     assert (
         verify_eval_cost_payment(
             request=request,
-            quote=quote,
+            policy=EvalCostPolicy(amount_alpha_rao=10),
             proof=_proof(),
             reveal_block=90,
-            window_blocks=DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS,
         )
         == ""
     )
+    assert quote.amount_alpha_rao == 10
 
 
-def test_verify_rejects_missing_wrong_and_stale_payments() -> None:
+def test_verify_rejects_missing_wrong_stale_and_expired_payments() -> None:
     request = _request()
-    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_alpha_rao=10))
+    policy = EvalCostPolicy(amount_alpha_rao=10, payment_window_blocks=10)
     cases = [
         (None, REASON_MISSING),
         (_proof(signer="other"), REASON_INVALID),
         (_proof(burn_hotkey="other"), REASON_INVALID),
         (_proof(alpha_decrease=9), REASON_INVALID),
         (_proof(block=91), REASON_WINDOW),
-        (_proof(block=1), REASON_WINDOW),
+        (_proof(block=69), REASON_QUOTE_EXPIRED),
     ]
     for proof, reason in cases:
         assert (
             verify_eval_cost_payment(
                 request=request,
-                quote=quote,
+                policy=policy,
                 proof=proof,
                 reveal_block=90,
-                window_blocks=10,
             )
             == reason
         )
 
 
 def test_proof_from_batch_all_and_alpha_burned_event() -> None:
-    request = _request()
-    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_alpha_rao=10))
+    request, quote = _quote()
     remark = encode_payment_remark(request, quote)
     proof = proof_from_decoded_extrinsic(
         block=80,
@@ -157,8 +201,7 @@ def test_proof_from_batch_all_and_alpha_burned_event() -> None:
 
 
 def test_proof_from_named_call_arg_lists() -> None:
-    request = _request()
-    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_alpha_rao=10))
+    request, quote = _quote()
     remark = encode_payment_remark(request, quote)
     proof = proof_from_decoded_extrinsic(
         block=80,
@@ -225,7 +268,10 @@ def test_dry_run_pay_quotes_without_a_chain() -> None:
     assert result["dry_run"] is True
     assert result["paid"] is True
     assert result["eval_cost_alpha_rao"] == 10
+    assert result["eval_cost_issued_block"] == 0
+    assert result["eval_cost_expires_block"] == DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS
     assert result["eval_cost_payment"]["dry_run"] is True
+    assert result["eval_cost_payment"]["expires_block"] == DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS
     ref = decode_payload("dry-run", 7, result["payload"])
     assert ref is not None
     assert ref.payment_block == 0

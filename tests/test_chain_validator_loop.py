@@ -160,7 +160,9 @@ def test_unpaid_v1_is_failed_when_eval_cost_is_required(tmp_path, monkeypatch):
 
 def _paid_proof(digest: str) -> EvalCostPaymentProof:
     request = EvalCostRequest(netuid=307, hotkey="miner", content_hash=digest)
-    quote = quote_eval_cost(request, policy=EvalCostPolicy(amount_alpha_rao=10))
+    quote = quote_eval_cost(
+        request, policy=EvalCostPolicy(amount_alpha_rao=10), at_block=70
+    )
     return EvalCostPaymentProof(
         block=80,
         extrinsic_index=4,

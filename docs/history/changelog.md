@@ -379,8 +379,10 @@ without changing payment verification. Miners optionally burn that amount with
 a content-hash remark and commit a v2 payload pointer; validators consume the
 pointer once. The gate defaults off (`eval_cost_alpha_rao=0`). Enabling it with
 `chain-validate --eval-cost-alpha-rao 1000000000` matches the published 1 α
-quote. Sealed FIFO/dispatcher configs must include the new
-`eval_cost_alpha_rao` and `eval_cost_payment_window_blocks` policy keys.
+quote. A quote is frozen from issuance through payment for 30 blocks so the
+amount cannot move mid-submit. Sealed FIFO/dispatcher configs must include the
+new `eval_cost_alpha_rao`, `eval_cost_payment_window_blocks`, and
+`eval_cost_quote_ttl_blocks` policy keys.
 
 ## Corrections and retractions
 

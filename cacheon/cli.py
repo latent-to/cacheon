@@ -1382,9 +1382,11 @@ def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
     print(f"asset:        {quote.asset}")
     print(f"instrument:   {quote.instrument}")
     print(f"amount_rao:   {quote.amount_alpha_rao}")
+    print(f"quote_ttl:    {quote.expires_block - quote.issued_block} blocks")
     print(
-        "v1 quote ignores submission extras; later versions may price the "
-        "specific eval request."
+        "v1 quote ignores submission extras and stays valid through payment if "
+        "the burn is included within the TTL of issuance. chain-submit --pay "
+        "quotes at the current block and burns that frozen amount."
     )
     return 0
 
@@ -1422,6 +1424,11 @@ def cmd_chain_submit(args: argparse.Namespace) -> int:
     if res.get("paid"):
         print(f"eval_cost:    {res.get('eval_cost_alpha_rao')} alpha-rao "
               f"({res.get('eval_cost_instrument')})")
+        print(
+            "eval_cost quote: "
+            f"issued_block={res.get('eval_cost_issued_block')} "
+            f"expires_block={res.get('eval_cost_expires_block')}"
+        )
         payment = res.get("eval_cost_payment") or {}
         if payment.get("dry_run"):
             print("eval_cost payment is quoted only; --dry-run does not burn alpha.")
@@ -1545,6 +1552,9 @@ def cmd_chain_validate(
         eval_cost_alpha_rao=int(getattr(args, "eval_cost_alpha_rao", 0)),
         eval_cost_payment_window_blocks=int(
             getattr(args, "eval_cost_payment_window_blocks", 7_200)
+        ),
+        eval_cost_quote_ttl_blocks=int(
+            getattr(args, "eval_cost_quote_ttl_blocks", 30)
         ),
     )
     res = run_validator(
@@ -2591,6 +2601,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=7200,
         help="max finalized blocks between the burn and the reveal (default 7200)",
+    )
+    sp.add_argument(
+        "--eval-cost-quote-ttl-blocks",
+        type=int,
+        default=30,
+        help="blocks a quoted amount stays valid until the burn is included (default 30)",
     )
     sp.set_defaults(func=cmd_chain_validate)
 

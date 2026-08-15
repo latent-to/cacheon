@@ -37,7 +37,6 @@ from cacheon.chain.eval_cost import (
     EvalCostFetchError,
     EvalCostPolicy,
     EvalCostRequest,
-    quote_eval_cost,
     verify_eval_cost_payment,
 )
 from cacheon.chain.eval_cost_payment import read_eval_cost_payment
@@ -161,19 +160,15 @@ def _eval_cost_invalid_reason(
     request = EvalCostRequest(
         netuid=netuid, hotkey=ref.hotkey, content_hash=ref.content_hash
     )
-    quote = quote_eval_cost(
-        request,
+    return verify_eval_cost_payment(
+        request=request,
         policy=EvalCostPolicy(
             amount_alpha_rao=policy.eval_cost_alpha_rao,
             payment_window_blocks=policy.eval_cost_payment_window_blocks,
+            quote_ttl_blocks=policy.eval_cost_quote_ttl_blocks,
         ),
-    )
-    return verify_eval_cost_payment(
-        request=request,
-        quote=quote,
         proof=proof,
         reveal_block=ref.block,
-        window_blocks=policy.eval_cost_payment_window_blocks,
     )
 
 
