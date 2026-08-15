@@ -1,4 +1,4 @@
-"""Chain I/O for eval-cost alpha burns. Pure quote/verify lives in eval_cost.py."""
+"""Chain I/O for eval-cost TAO transfers. Pure quote/verify lives in eval_cost.py."""
 
 from __future__ import annotations
 
@@ -16,7 +16,45 @@ from cacheon.chain.eval_cost import (
 )
 
 
-def burn_eval_cost_alpha(
+def read_subnet_owner_coldkey(subtensor, netuid: int, *, block: int) -> str:
+    """Return the subnet owner coldkey at ``block``.
+
+    This is the eval-cost destination. It is the metagraph ``owner_coldkey``,
+    not a miner-supplied wallet and not the owner-burn hotkey used for
+    all-uncrowned weight projection.
+    """
+
+    if type(netuid) is not int or netuid < 0:
+        raise EvalCostError("eval-cost netuid is malformed")
+    if type(block) is not int or block < 0:
+        raise EvalCostError("eval-cost owner block is malformed")
+    reader = getattr(subtensor, "metagraph", None)
+    if not callable(reader):
+        raise EvalCostFetchError("subtensor exposes no metagraph API")
+    try:
+        mg = reader(netuid=netuid, block=block)
+    except Exception as exc:
+        raise EvalCostFetchError(
+            f"cannot read subnet owner at block {block}: {exc}"
+        ) from None
+    reported = getattr(mg, "block", None)
+    if type(reported) is int and reported != block:
+        raise EvalCostFetchError(
+            "metagraph response does not match the requested block"
+        )
+    owner = getattr(mg, "owner_coldkey", None)
+    if (
+        not isinstance(owner, str)
+        or not owner
+        or owner.strip() != owner
+        or len(owner) > 256
+        or any(char in owner for char in "\x00\r\n")
+    ):
+        raise EvalCostFetchError("subnet owner coldkey is missing or malformed")
+    return owner
+
+
+def pay_eval_cost_tao(
     subtensor,
     wallet,
     request: EvalCostRequest,
@@ -24,35 +62,38 @@ def burn_eval_cost_alpha(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Coldkey-sign ``burn_alpha`` + ``remark_with_event`` for this quote."""
+    """Coldkey-sign ``transfer_keep_alive`` + ``remark_with_event`` for this quote."""
 
     remark = encode_payment_remark(request, quote)
     if dry_run:
         return {
             "submitted": False,
             "dry_run": True,
-            "amount_alpha_rao": quote.amount_alpha_rao,
+            "amount_rao": quote.amount_rao,
+            "destination": quote.destination,
             "issued_block": quote.issued_block,
             "expires_block": quote.expires_block,
             "remark": remark,
         }
     if subtensor is None or wallet is None:
-        raise EvalCostError("eval-cost burn requires a chain client and wallet")
+        raise EvalCostError("eval-cost payment requires a chain client and wallet")
     current = current_eval_cost_block(subtensor)
     if current < quote.issued_block or current > quote.expires_block:
         raise EvalCostError("eval-cost quote has expired")
+    owner = read_subnet_owner_coldkey(subtensor, request.netuid, block=current)
+    if owner != quote.destination:
+        raise EvalCostError("subnet owner changed; requote before paying")
     substrate = getattr(subtensor, "substrate", None)
     compose = getattr(substrate, "compose_call", None)
     send = getattr(subtensor, "sign_and_send_extrinsic", None)
     if not callable(compose) or not callable(send):
         raise EvalCostError("subtensor exposes no compose/sign extrinsic API")
-    burn = compose(
-        call_module="SubtensorModule",
-        call_function="burn_alpha",
+    transfer = compose(
+        call_module="Balances",
+        call_function="transfer_keep_alive",
         call_params={
-            "hotkey": request.hotkey,
-            "amount": quote.amount_alpha_rao,
-            "netuid": request.netuid,
+            "dest": quote.destination,
+            "value": quote.amount_rao,
         },
     )
     noted = compose(
@@ -63,7 +104,7 @@ def burn_eval_cost_alpha(
     batch = compose(
         call_module="Utility",
         call_function="batch_all",
-        call_params={"calls": [burn, noted]},
+        call_params={"calls": [transfer, noted]},
     )
     result = send(
         call=batch,
@@ -73,10 +114,10 @@ def burn_eval_cost_alpha(
     )
     success, message = _extrinsic_outcome(result)
     if not success:
-        raise EvalCostError(f"eval-cost burn failed: {message or result}")
+        raise EvalCostError(f"eval-cost transfer failed: {message or result}")
     block, index = _inclusion_pointer(result, subtensor)
     if block < quote.issued_block or block > quote.expires_block:
-        raise EvalCostError("eval-cost burn landed outside the quote window")
+        raise EvalCostError("eval-cost transfer landed outside the quote window")
     return {
         "submitted": True,
         "result": result,
@@ -84,7 +125,8 @@ def burn_eval_cost_alpha(
         "payment_block": block,
         "payment_extrinsic_index": index,
         "remark": remark,
-        "amount_alpha_rao": quote.amount_alpha_rao,
+        "amount_rao": quote.amount_rao,
+        "destination": quote.destination,
         "issued_block": quote.issued_block,
         "expires_block": quote.expires_block,
     }
@@ -163,7 +205,7 @@ def _inclusion_pointer(result: object, subtensor) -> tuple[int, int]:
         if callable(reader):
             block = _as_uint(reader(block_hash))
     if block is None or index is None:
-        raise EvalCostError("eval-cost burn inclusion pointer is unavailable")
+        raise EvalCostError("eval-cost transfer inclusion pointer is unavailable")
     return block, index
 
 
@@ -221,6 +263,10 @@ def _account_id(value: object) -> str:
         inner = value.get("Id", value.get("id", value.get("Address32")))
         if isinstance(inner, str):
             return inner
+        if isinstance(inner, Mapping):
+            nested = inner.get("Id", inner.get("id"))
+            if isinstance(nested, str):
+                return nested
     return ""
 
 

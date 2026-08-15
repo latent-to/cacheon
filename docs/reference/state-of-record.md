@@ -82,6 +82,10 @@ The evidence classes are intentionally non-substitutable:
 - Replayed discovery proposals are terminally disposed or deduplicated before
   screening. Legacy schema-3 single-PASS migration holds are non-crownable and
   have an evidence-preserving archive command.
+- Optional eval-cost admission (default off) requires a coldkey
+  `Balances.transfer_keep_alive` of the published TAO amount to the current
+  subnet owner coldkey, bound by a content-hash remark and consumed once. v1
+  quotes freeze that amount for 300 blocks (~1 hour).
 
 ### Validator recovery archive
 

@@ -145,12 +145,12 @@ def test_unpaid_v1_is_failed_when_eval_cost_is_required(tmp_path, monkeypatch):
         monkeypatch,
         snapshot,
         {digest: source},
-        policy=IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        policy=IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
     )
     assert calls == [] and len(result.rejected) == 1
     with FinalizedIntakeStore(
         options["intake_db"],
-        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
         scope=SCOPE,
     ) as store:
         row = store.all()[0]
@@ -161,17 +161,24 @@ def test_unpaid_v1_is_failed_when_eval_cost_is_required(tmp_path, monkeypatch):
 def _paid_proof(digest: str) -> EvalCostPaymentProof:
     request = EvalCostRequest(netuid=307, hotkey="miner", content_hash=digest)
     quote = quote_eval_cost(
-        request, policy=EvalCostPolicy(amount_alpha_rao=10), at_block=70
+        request,
+        policy=EvalCostPolicy(amount_rao=10, destination="treasury"),
+        at_block=70,
     )
     return EvalCostPaymentProof(
         block=80,
         extrinsic_index=4,
         signer="coldkey",
-        burn_coldkey="coldkey",
-        burn_hotkey="miner",
-        burn_netuid=307,
-        alpha_decrease=10,
+        payer="coldkey",
+        destination="treasury",
+        amount_rao=10,
         remark=encode_payment_remark(request, quote),
+    )
+
+
+def _stub_owner(monkeypatch, dest: str = "treasury") -> None:
+    monkeypatch.setattr(
+        loop, "read_subnet_owner_coldkey", lambda *_args, **_kwargs: dest
     )
 
 
@@ -199,22 +206,66 @@ def test_paid_v2_is_admitted_when_eval_cost_is_required(tmp_path, monkeypatch):
         "read_eval_cost_payment",
         lambda *_args, **_kwargs: _paid_proof(digest),
     )
+    _stub_owner(monkeypatch)
     result, calls, options = _run(
         tmp_path,
         monkeypatch,
         snapshot,
         {digest: source},
-        policy=IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        policy=IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
     )
     assert calls == [digest] and len(result.rejected) == 0
     with FinalizedIntakeStore(
         options["intake_db"],
-        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
         scope=SCOPE,
     ) as store:
         row = store.all()[0]
         assert row.status == "published"
         assert row.arrival.payment_block == 80
+
+
+def test_payment_to_a_stale_owner_is_invalid(tmp_path, monkeypatch):
+    source = _bundle(
+        tmp_path / "source",
+        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+    )
+    digest = content_hash(source)
+    snapshot = _snapshot(
+        [
+            (
+                "miner",
+                encode_payload(
+                    digest,
+                    "https://example.com/a",
+                    payment_block=80,
+                    payment_extrinsic_index=4,
+                ),
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        loop,
+        "read_eval_cost_payment",
+        lambda *_args, **_kwargs: _paid_proof(digest),
+    )
+    _stub_owner(monkeypatch, "owner-b")
+    result, calls, options = _run(
+        tmp_path,
+        monkeypatch,
+        snapshot,
+        {digest: source},
+        policy=IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
+    )
+    assert calls == [] and len(result.rejected) == 1
+    with FinalizedIntakeStore(
+        options["intake_db"],
+        IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        row = store.all()[0]
+        assert row.status == "failed"
+        assert row.reason == "eval_cost_payment_invalid"
 
 
 def test_unrecognizable_payment_pointer_is_invalid(tmp_path, monkeypatch):
@@ -242,12 +293,12 @@ def test_unrecognizable_payment_pointer_is_invalid(tmp_path, monkeypatch):
         monkeypatch,
         snapshot,
         {digest: source},
-        policy=IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        policy=IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
     )
     assert calls == [] and len(result.rejected) == 1
     with FinalizedIntakeStore(
         options["intake_db"],
-        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
         scope=SCOPE,
     ) as store:
         row = store.all()[0]
@@ -285,11 +336,11 @@ def test_eval_cost_fetch_error_does_not_advance_the_cursor(tmp_path, monkeypatch
             monkeypatch,
             snapshot,
             {digest: source},
-            policy=IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+            policy=IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
         )
     with FinalizedIntakeStore(
         tmp_path / "state" / "intake.sqlite3",
-        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        IntakePolicy(eval_cost_tao_rao=10, expiry_blocks=100),
         scope=SCOPE,
     ) as store:
         assert store.finalized_cursor() is None

@@ -54,7 +54,8 @@ python -m cacheon.cli chain-register \
 
 Registration needs coldkey authorization. A plain `chain-submit` is
 hotkey-signed. Paying the eval cost with `--pay` also needs the coldkey: it
-burns subnet alpha and then commits a v2 payload that points at that burn.
+transfers TAO to the current subnet owner coldkey and then commits a v2 payload
+that points at that transfer.
 
 ## 1. Freeze and check the bundle
 
@@ -205,13 +206,15 @@ Check that the printed `content_hash` equals the package result. The unpaid payl
 ```
 
 When the operator enables the eval-cost gate, quote first. `--pay --dry-run`
-prints the published burn amount and its one-hour TTL without signing; the dry-run
-payload stays v1 because there is no inclusion pointer yet. A live `--pay`
-quotes at the current block, freezes that amount until the burn is included
-(default 300 blocks, about one hour), then commits the v2 pointer.
+prints the published TAO amount, the current subnet owner destination, and
+one-hour TTL without signing; the dry-run payload stays v1 because there is no
+inclusion pointer yet. A live `--pay` quotes at the current block, freezes that
+amount until the transfer is included (default 300 blocks, about one hour), then
+commits the v2 pointer. `--pay` always resolves the destination from the
+metagraph `owner_coldkey` at payment time.
 
 ```bash
-python -m cacheon.cli chain-eval-cost --netuid <NETUID>
+python -m cacheon.cli chain-eval-cost --netuid <NETUID> --network <NETWORK>
 python -m cacheon.cli chain-submit my_bundle \
   --url https://downloads.example.org/cacheon/my_bundle.tar.gz \
   --netuid <NETUID> --network <NETWORK> \
@@ -221,8 +224,9 @@ python -m cacheon.cli chain-submit my_bundle \
   --dry-run
 ```
 
-A live `--pay` burns that alpha amount from the coldkey, then commits a v2
-payload whose `p` pointer locates the burn. Identity remains `h`/`u`:
+A live `--pay` transfers that TAO amount from the coldkey to the current subnet
+owner, then commits a v2 payload whose `p` pointer locates the transfer.
+Identity remains `h`/`u`:
 
 ```json
 {"v":2,"h":"<64-lowercase-hex>","u":"https://.../my_bundle.tar.gz","p":{"b":<block>,"i":<extrinsic_index>}}
@@ -234,7 +238,7 @@ sent anything.
 ## 4. Submit the timelock commitment
 
 Run the same command without `--dry-run`. When the operator requires an
-eval-cost burn, keep `--pay`:
+eval-cost transfer, keep `--pay`:
 
 ```bash
 python -m cacheon.cli chain-submit my_bundle \

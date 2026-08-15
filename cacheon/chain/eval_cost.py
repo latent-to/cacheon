@@ -1,15 +1,16 @@
 """Fixed, upgradeable evaluation-cost quotes and on-chain payment verification.
 
-v1 ``quote_eval_cost`` ignores submission extras and returns a published alpha-rao
+v1 ``quote_eval_cost`` ignores submission extras and returns a published TAO-rao
 amount frozen from ``issued_block`` through ``expires_block`` (300 blocks, about
 one hour) so the miner can quote once and pay that same amount. The freeze lives
-in the on-chain remark. Later quote versions may
-inspect ``EvalCostRequest.submission`` without changing the burn, remark,
-payload pointer, or intake consume-once machinery.
+in the on-chain remark. Later quote versions may inspect
+``EvalCostRequest.submission`` without changing the transfer, remark, payload
+pointer, or intake consume-once machinery.
 
-The miner pays with ``SubtensorModule.burn_alpha`` batched with
-``System.remark_with_event``. Validators admit a paid reveal only after the
-remark binds the burn to this exact proposal.
+The miner pays with ``Balances.transfer_keep_alive`` to the subnet owner
+coldkey at payment time, batched with ``System.remark_with_event``. Validators
+admit a paid reveal only after the remark binds that transfer to this exact
+proposal and the destination matches the owner at the inclusion block.
 """
 
 from __future__ import annotations
@@ -23,9 +24,9 @@ from cacheon.stack_identity import canonical_json_bytes, require_sha256_hex
 
 EVAL_COST_QUOTE_VERSION = 1
 EVAL_COST_PAYMENT_DOMAIN = "cacheon.chain.eval-cost-payment.v1"
-EVAL_COST_ASSET = "alpha"
-EVAL_COST_INSTRUMENT = "burn_alpha"
-PUBLISHED_EVAL_COST_ALPHA_RAO = 1_000_000_000
+EVAL_COST_ASSET = "tao"
+EVAL_COST_INSTRUMENT = "transfer_keep_alive"
+PUBLISHED_EVAL_COST_TAO_RAO = 1_000_000_000
 DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS = 7_200
 # ~1 hour at 12s blocks. Ridges freezes a payment quote for 3600s of wall time.
 DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS = 300
@@ -36,8 +37,19 @@ REASON_WINDOW = "eval_cost_payment_window"
 REASON_QUOTE_EXPIRED = "eval_cost_quote_expired"
 REASON_USED = "eval_cost_payment_used"
 
-_BURN_CALL = "burn_alpha"
+_TRANSFER_CALL = "transfer_keep_alive"
 _REMARK_CALL = "remark_with_event"
+_REMARK_PAYLOAD_FIELDS = frozenset(
+    {
+        "amount_rao",
+        "content_hash",
+        "destination",
+        "expires_block",
+        "hotkey",
+        "issued_block",
+        "netuid",
+    }
+)
 
 
 class EvalCostError(ValueError):
@@ -46,6 +58,18 @@ class EvalCostError(ValueError):
 
 class EvalCostFetchError(RuntimeError):
     """The chain payment lookup could not be completed; retry the pass."""
+
+
+def _require_account(value: object, *, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.strip() != value
+        or len(value) > 256
+        or any(char in value for char in "\x00\r\n")
+    ):
+        raise EvalCostError(f"eval-cost {field} is malformed")
+    return value
 
 
 @dataclass(frozen=True)
@@ -59,14 +83,7 @@ class EvalCostRequest:
     def __post_init__(self) -> None:
         if type(self.netuid) is not int or self.netuid < 0:
             raise EvalCostError("eval-cost netuid is malformed")
-        if (
-            not isinstance(self.hotkey, str)
-            or not self.hotkey
-            or self.hotkey.strip() != self.hotkey
-            or len(self.hotkey) > 256
-            or any(char in self.hotkey for char in "\x00\r\n")
-        ):
-            raise EvalCostError("eval-cost hotkey is malformed")
+        _require_account(self.hotkey, field="hotkey")
         if self.content_hash:
             require_sha256_hex(self.content_hash, field="content_hash")
         if not isinstance(self.target_id, str) or any(
@@ -79,13 +96,18 @@ class EvalCostRequest:
 
 @dataclass(frozen=True)
 class EvalCostPolicy:
-    amount_alpha_rao: int = PUBLISHED_EVAL_COST_ALPHA_RAO
+    amount_rao: int = PUBLISHED_EVAL_COST_TAO_RAO
+    destination: str = ""
     payment_window_blocks: int = DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS
     quote_ttl_blocks: int = DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS
 
     def __post_init__(self) -> None:
-        if type(self.amount_alpha_rao) is not int or self.amount_alpha_rao < 0:
+        if type(self.amount_rao) is not int or self.amount_rao < 0:
             raise EvalCostError("eval-cost amount must be a non-negative integer")
+        if self.destination:
+            _require_account(self.destination, field="destination")
+        elif not isinstance(self.destination, str):
+            raise EvalCostError("eval-cost destination is malformed")
         if (
             type(self.payment_window_blocks) is not int
             or self.payment_window_blocks <= 0
@@ -99,7 +121,8 @@ class EvalCostPolicy:
 class EvalCostQuote:
     version: int
     netuid: int
-    amount_alpha_rao: int
+    amount_rao: int
+    destination: str
     asset: str
     instrument: str
     issued_block: int
@@ -110,8 +133,12 @@ class EvalCostQuote:
             raise EvalCostError("eval-cost quote version is malformed")
         if type(self.netuid) is not int or self.netuid < 0:
             raise EvalCostError("eval-cost quote netuid is malformed")
-        if type(self.amount_alpha_rao) is not int or self.amount_alpha_rao < 0:
+        if type(self.amount_rao) is not int or self.amount_rao < 0:
             raise EvalCostError("eval-cost quote amount is malformed")
+        if self.destination:
+            _require_account(self.destination, field="destination")
+        elif not isinstance(self.destination, str):
+            raise EvalCostError("eval-cost quote destination is malformed")
         if self.asset != EVAL_COST_ASSET or self.instrument != EVAL_COST_INSTRUMENT:
             raise EvalCostError("eval-cost quote instrument is unsupported")
         if type(self.issued_block) is not int or self.issued_block < 0:
@@ -125,10 +152,9 @@ class EvalCostPaymentProof:
     block: int
     extrinsic_index: int
     signer: str
-    burn_coldkey: str
-    burn_hotkey: str
-    burn_netuid: int
-    alpha_decrease: int
+    payer: str
+    destination: str
+    amount_rao: int
     remark: str
 
     def __post_init__(self) -> None:
@@ -136,19 +162,10 @@ class EvalCostPaymentProof:
             raise EvalCostError("payment block is malformed")
         if type(self.extrinsic_index) is not int or self.extrinsic_index < 0:
             raise EvalCostError("payment extrinsic index is malformed")
-        for field in ("signer", "burn_coldkey", "burn_hotkey"):
-            value = getattr(self, field)
-            if (
-                not isinstance(value, str)
-                or not value
-                or value.strip() != value
-                or len(value) > 256
-            ):
-                raise EvalCostError(f"payment {field} is malformed")
-        if type(self.burn_netuid) is not int or self.burn_netuid < 0:
-            raise EvalCostError("payment netuid is malformed")
-        if type(self.alpha_decrease) is not int or self.alpha_decrease < 0:
-            raise EvalCostError("payment alpha decrease is malformed")
+        for field in ("signer", "payer", "destination"):
+            _require_account(getattr(self, field), field=field)
+        if type(self.amount_rao) is not int or self.amount_rao < 0:
+            raise EvalCostError("payment amount is malformed")
         if not isinstance(self.remark, str) or len(self.remark.encode("utf-8")) > 4_096:
             raise EvalCostError("payment remark is malformed")
 
@@ -159,11 +176,11 @@ def quote_eval_cost(
     policy: EvalCostPolicy | None = None,
     at_block: int = 0,
 ) -> EvalCostQuote:
-    """Return the v1 published cost frozen until ``at_block + quote_ttl``.
+    """Return the v1 published TAO cost frozen until ``at_block + quote_ttl``.
 
     Submission extras are ignored until a later quote version. The amount is
-    static from issuance through payment; a later quote function may return a
-    different amount after this quote expires.
+    static from issuance through payment. The destination is the subnet owner
+    coldkey resolved at payment, not a miner-supplied wallet.
     """
 
     if type(request) is not EvalCostRequest:
@@ -176,7 +193,8 @@ def quote_eval_cost(
     return EvalCostQuote(
         version=EVAL_COST_QUOTE_VERSION,
         netuid=request.netuid,
-        amount_alpha_rao=resolved.amount_alpha_rao,
+        amount_rao=resolved.amount_rao,
+        destination=resolved.destination,
         asset=EVAL_COST_ASSET,
         instrument=EVAL_COST_INSTRUMENT,
         issued_block=at_block,
@@ -185,20 +203,25 @@ def quote_eval_cost(
 
 
 def encode_payment_remark(request: EvalCostRequest, quote: EvalCostQuote) -> str:
-    """Canonical remark bytes binding one burn to one frozen quote."""
+    """Canonical remark bytes binding one transfer to one frozen quote."""
 
     if type(request) is not EvalCostRequest or type(quote) is not EvalCostQuote:
         raise EvalCostError("payment remark inputs are not typed")
     if not request.content_hash:
         raise EvalCostError("payment remark requires a content hash")
+    if not quote.destination:
+        raise EvalCostError("payment remark requires a destination wallet")
+    if quote.amount_rao <= 0:
+        raise EvalCostError("payment remark requires a positive amount")
     if quote.netuid != request.netuid:
         raise EvalCostError("payment remark quote netuid differs")
     return canonical_json_bytes(
         {
             "domain": EVAL_COST_PAYMENT_DOMAIN,
             "payload": {
-                "amount_alpha_rao": quote.amount_alpha_rao,
+                "amount_rao": quote.amount_rao,
                 "content_hash": request.content_hash,
+                "destination": quote.destination,
                 "expires_block": quote.expires_block,
                 "hotkey": request.hotkey,
                 "issued_block": quote.issued_block,
@@ -235,24 +258,13 @@ def decode_payment_remark(text: object) -> dict[str, object] | None:
     ):
         return None
     payload = obj.get("payload")
-    if (
-        not isinstance(payload, dict)
-        or set(payload)
-        != {
-            "amount_alpha_rao",
-            "content_hash",
-            "expires_block",
-            "hotkey",
-            "issued_block",
-            "netuid",
-        }
-    ):
+    if not isinstance(payload, dict) or set(payload) != _REMARK_PAYLOAD_FIELDS:
         return None
     if canonical_json_bytes(obj).decode("utf-8") != text:
         return None
     issued = payload.get("issued_block")
     expires = payload.get("expires_block")
-    amount = payload.get("amount_alpha_rao")
+    amount = payload.get("amount_rao")
     netuid = payload.get("netuid")
     if (
         type(issued) is not int
@@ -265,6 +277,8 @@ def decode_payment_remark(text: object) -> dict[str, object] | None:
         or netuid < 0
         or not isinstance(payload.get("content_hash"), str)
         or not isinstance(payload.get("hotkey"), str)
+        or not isinstance(payload.get("destination"), str)
+        or not payload.get("destination")
     ):
         return None
     return payload
@@ -287,6 +301,8 @@ def verify_eval_cost_payment(
         return REASON_MISSING
     if type(proof) is not EvalCostPaymentProof:
         raise EvalCostError("eval-cost payment proof is not typed")
+    if not policy.destination:
+        raise EvalCostError("eval-cost destination is required")
     parsed = decode_payment_remark(proof.remark)
     if parsed is None:
         return REASON_INVALID
@@ -303,10 +319,9 @@ def verify_eval_cost_payment(
     ):
         return REASON_WINDOW
     if (
-        proof.signer != proof.burn_coldkey
-        or proof.burn_hotkey != request.hotkey
-        or proof.burn_netuid != request.netuid
-        or proof.alpha_decrease < expected.amount_alpha_rao
+        proof.signer != proof.payer
+        or proof.destination != expected.destination
+        or proof.amount_rao < expected.amount_rao
     ):
         return REASON_INVALID
     return ""
@@ -324,9 +339,8 @@ def proof_from_decoded_extrinsic(
 ) -> EvalCostPaymentProof | None:
     """Build a proof from already-decoded extrinsic and event records.
 
-    Accepts a top-level ``burn_alpha`` or ``Utility.batch_all`` containing
-    ``burn_alpha`` plus ``remark_with_event``. Returns ``None`` when the
-    extrinsic is not a recognizable eval-cost payment.
+    Accepts a top-level ``transfer_keep_alive`` or ``Utility.batch_all``
+    containing ``transfer_keep_alive`` plus ``remark_with_event``.
     """
 
     if (
@@ -340,13 +354,13 @@ def proof_from_decoded_extrinsic(
         or not isinstance(call_function, str)
     ):
         return None
-    burn = None
+    transfer = None
     remark = ""
     args = _call_args_map(call_args)
     if args is None:
         return None
-    if call_module == "SubtensorModule" and call_function == _BURN_CALL:
-        burn = args
+    if call_module == "Balances" and call_function == _TRANSFER_CALL:
+        transfer = args
     elif call_module == "Utility" and call_function == "batch_all":
         calls = args.get("calls")
         if not isinstance(calls, Sequence) or isinstance(calls, (str, bytes)):
@@ -356,10 +370,10 @@ def proof_from_decoded_extrinsic(
             if decoded is None:
                 return None
             module, function, inner_args = decoded
-            if module == "SubtensorModule" and function == _BURN_CALL:
-                if burn is not None:
+            if module == "Balances" and function == _TRANSFER_CALL:
+                if transfer is not None:
                     return None
-                burn = inner_args
+                transfer = inner_args
             elif module == "System" and function == _REMARK_CALL:
                 if remark:
                     return None
@@ -370,27 +384,26 @@ def proof_from_decoded_extrinsic(
                 return None
     else:
         return None
-    if not isinstance(burn, Mapping):
+    if not isinstance(transfer, Mapping):
         return None
-    hotkey = burn.get("hotkey")
-    netuid = _as_uint(burn.get("netuid"))
-    if not isinstance(hotkey, str) or netuid is None:
+    dest = _account_id(transfer.get("dest", transfer.get("dest_id")))
+    value = _as_uint(transfer.get("value", transfer.get("amount")))
+    if not dest or value is None:
         return None
-    burned = _alpha_burned_event(events, extrinsic_index, netuid)
-    if burned is None:
+    moved = _tao_transferred_event(events, extrinsic_index)
+    if moved is None:
         return None
-    coldkey, event_hotkey, alpha_decrease, event_netuid = burned
-    if event_hotkey != hotkey or event_netuid != netuid:
+    payer, event_dest, amount = moved
+    if event_dest != dest or amount != value:
         return None
     try:
         return EvalCostPaymentProof(
             block=block,
             extrinsic_index=extrinsic_index,
             signer=signer,
-            burn_coldkey=coldkey,
-            burn_hotkey=hotkey,
-            burn_netuid=netuid,
-            alpha_decrease=alpha_decrease,
+            payer=payer,
+            destination=dest,
+            amount_rao=amount,
             remark=remark,
         )
     except EvalCostError:
@@ -454,6 +467,20 @@ def _remark_text(value: object) -> str | None:
     return None
 
 
+def _account_id(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        inner = value.get("Id", value.get("id", value.get("Address32", value.get("dest"))))
+        if isinstance(inner, str):
+            return inner
+        if isinstance(inner, Mapping):
+            nested = inner.get("Id", inner.get("id"))
+            if isinstance(nested, str):
+                return nested
+    return ""
+
+
 def _as_uint(value: object) -> int | None:
     if type(value) is int and value >= 0:
         return value
@@ -462,11 +489,10 @@ def _as_uint(value: object) -> int | None:
     return None
 
 
-def _alpha_burned_event(
+def _tao_transferred_event(
     events: Sequence[Mapping[str, object]],
     extrinsic_index: int,
-    netuid: int,
-) -> tuple[str, str, int, int] | None:
+) -> tuple[str, str, int] | None:
     for record in events:
         if not isinstance(record, Mapping):
             continue
@@ -478,49 +504,37 @@ def _alpha_burned_event(
             continue
         module = inner.get("module_id", inner.get("module"))
         name = inner.get("event_id", inner.get("event"))
-        if module != "SubtensorModule" or name != "AlphaBurned":
+        if module != "Balances" or name != "Transfer":
             continue
-        parsed = _parse_alpha_burned(inner.get("attributes", inner))
+        parsed = _parse_transfer(inner.get("attributes", inner))
         if parsed is None:
             continue
-        coldkey, hotkey, amount, event_netuid = parsed
-        if event_netuid != netuid:
-            continue
-        return coldkey, hotkey, amount, event_netuid
+        return parsed
     return None
 
 
-def _parse_alpha_burned(attributes: object) -> tuple[str, str, int, int] | None:
+def _parse_transfer(attributes: object) -> tuple[str, str, int] | None:
     if isinstance(attributes, Sequence) and not isinstance(attributes, (str, bytes)):
-        if len(attributes) < 4:
+        if len(attributes) < 3:
             return None
-        coldkey, hotkey, amount, netuid = attributes[:4]
+        source, dest, amount = attributes[:3]
         parsed_amount = _as_uint(amount)
-        parsed_netuid = _as_uint(netuid)
-        if (
-            not isinstance(coldkey, str)
-            or not isinstance(hotkey, str)
-            or parsed_amount is None
-            or parsed_netuid is None
-        ):
+        source_id = _account_id(source)
+        dest_id = _account_id(dest)
+        if not source_id or not dest_id or parsed_amount is None:
             return None
-        return coldkey, hotkey, parsed_amount, parsed_netuid
+        return source_id, dest_id, parsed_amount
     if isinstance(attributes, Mapping):
-        coldkey = attributes.get("Coldkey", attributes.get("coldkey"))
-        hotkey = attributes.get("Hotkey", attributes.get("hotkey"))
-        amount = attributes.get(
-            "Actual Alpha Decrease",
-            attributes.get("alpha_decrease", attributes.get("amount")),
+        source = _account_id(
+            attributes.get("from", attributes.get("From", attributes.get("source")))
         )
-        netuid = attributes.get("Netuid", attributes.get("netuid"))
-        parsed_amount = _as_uint(amount)
-        parsed_netuid = _as_uint(netuid)
-        if (
-            not isinstance(coldkey, str)
-            or not isinstance(hotkey, str)
-            or parsed_amount is None
-            or parsed_netuid is None
-        ):
+        dest = _account_id(
+            attributes.get("to", attributes.get("To", attributes.get("dest")))
+        )
+        parsed_amount = _as_uint(
+            attributes.get("amount", attributes.get("Amount", attributes.get("value")))
+        )
+        if not source or not dest or parsed_amount is None:
             return None
-        return coldkey, hotkey, parsed_amount, parsed_netuid
+        return source, dest, parsed_amount
     return None

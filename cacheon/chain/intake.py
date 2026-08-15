@@ -122,7 +122,7 @@ class IntakePolicy:
     max_qualification_retries: int = 3
     max_cohort: int = 8
     expiry_blocks: int = 2_880
-    eval_cost_alpha_rao: int = 0
+    eval_cost_tao_rao: int = 0
     eval_cost_payment_window_blocks: int = 7_200
     eval_cost_quote_ttl_blocks: int = 300
 
@@ -131,7 +131,7 @@ class IntakePolicy:
             value = getattr(self, field)
             if type(value) is not int:
                 raise IntakeError("intake policy bounds must be positive integers")
-            if field == "eval_cost_alpha_rao":
+            if field == "eval_cost_tao_rao":
                 if value < 0:
                     raise IntakeError("eval cost amount cannot be negative")
                 continue
@@ -669,7 +669,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
                 content_hash TEXT NOT NULL,
                 hotkey TEXT NOT NULL,
-                amount_alpha_rao INTEGER NOT NULL,
+                amount_tao_rao INTEGER NOT NULL,
                 PRIMARY KEY(payment_block, payment_extrinsic_index)
             ) STRICT;
             """
@@ -950,14 +950,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     self._db.execute(
                         "INSERT INTO eval_cost_payments("
                         "payment_block,payment_extrinsic_index,reservation_id,"
-                        "content_hash,hotkey,amount_alpha_rao) VALUES(?,?,?,?,?,?)",
+                        "content_hash,hotkey,amount_tao_rao) VALUES(?,?,?,?,?,?)",
                         (
                             arrival.payment_block,
                             arrival.payment_extrinsic_index,
                             arrival.reservation_id,
                             arrival.content_hash,
                             arrival.hotkey,
-                            self.policy.eval_cost_alpha_rao,
+                            self.policy.eval_cost_tao_rao,
                         ),
                     )
                 inserted.append(arrival.reservation_id)

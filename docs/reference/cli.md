@@ -23,7 +23,7 @@ installed `cacheon` console script resolves to the same parser.
 | `verify` | contributor | local gate | Check declared slot behavior against validator-owned references |
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
 | `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
-| `chain-eval-cost` | contributor | read-only | Print the published eval-cost quote (v1 is a fixed alpha burn) |
+| `chain-eval-cost` | contributor | read-only | Print the published eval-cost quote (v1 is a fixed TAO transfer) |
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
@@ -159,15 +159,16 @@ python -m cacheon.cli chain-submit path/to/bundle \
 
 `chain-submit` re-hashes the local bundle before constructing the payload. Use
 `--dry-run` to print the payload without signing or submitting it. `--pay` quotes
-at the current block (the amount is frozen for 300 blocks, about one hour), burns that alpha
-amount (coldkey), and commits a v2 payment pointer; `--dry-run --pay` prints the
-quote without burning. Validators act only
+at the current block (the amount is frozen for 300 blocks, about one hour),
+transfers that TAO amount (coldkey) to the current subnet owner, and commits a
+v2 payment pointer; `--dry-run --pay` prints the quote without transferring.
+Validators act only
 on finalized, valid reveals and independently fetch, extract, and re-hash the hosted
-archive. When the operator sets `--eval-cost-alpha-rao` above zero, unpaid v1
+archive. When the operator sets `--eval-cost-tao-rao` above zero, unpaid v1
 reveals fail admission.
 
 ```bash
-python -m cacheon.cli chain-eval-cost --netuid <netuid>
+python -m cacheon.cli chain-eval-cost --netuid <netuid> --network <network>
 ```
 
 ### Inspect public chain state
@@ -278,11 +279,12 @@ python -m cacheon.cli chain-validate \
 Intake mode persists finalized order, hardened fetch and re-hash results, private
 retention, immutable worker publication, and copy disposition. Storage and loop controls
 are `--intake-db`, `--private-root`, `--publication-root`, `--audit-log`,
-`--interval`, and `--once`. `--eval-cost-alpha-rao` defaults to `0` (gate off);
-set `1000000000` to require the published 1 α `burn_alpha` per admission, and
-`--eval-cost-payment-window-blocks` to bound how old that burn may be relative
+`--interval`, and `--once`. `--eval-cost-tao-rao` defaults to `0` (gate off);
+set `1000000000` to require the published 1 TAO `transfer_keep_alive` to the
+current subnet owner coldkey per admission, and
+`--eval-cost-payment-window-blocks` to bound how old that transfer may be relative
 to the reveal. `--eval-cost-quote-ttl-blocks` (default 300, about one hour) is how long a quoted
-amount stays valid until the burn is included. The audit file is a redacted, fsynced JSONL chronology;
+amount stays valid until the transfer is included. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 

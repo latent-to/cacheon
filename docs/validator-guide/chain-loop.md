@@ -351,9 +351,9 @@ The default `IntakePolicy` values are:
 | Transport / qualification attempts | 3 / 3 | Exhaustion produces a retained hold rather than infinite work |
 | Controller cohort | 8 | Bounds fetch, screening, and qualification selection per pass |
 | Finalized-block expiry SLA | 2,880 blocks | Automatically expires eligible unresolved rows and sets the minimum age for explicit expiry |
-| Eval-cost alpha-rao | 0 (off) | Required `burn_alpha` amount per admission; `chain-validate --eval-cost-alpha-rao` enables the gate |
-| Eval-cost quote TTL | 300 blocks | Quoted amount stays valid until the burn is included (~1 hour); later quote versions may change the amount only after this window |
-| Eval-cost payment window | 7,200 blocks | Maximum finalized distance from the burn to the reveal |
+| Eval-cost TAO-rao | 0 (off) | Required `transfer_keep_alive` amount per admission; destination is the current subnet owner coldkey; `chain-validate --eval-cost-tao-rao` enables the gate |
+| Eval-cost quote TTL | 300 blocks | Quoted amount stays valid until the transfer is included (~1 hour); later quote versions may change the amount only after this window |
+| Eval-cost payment window | 7,200 blocks | Maximum finalized distance from the transfer to the reveal |
 
 Arena capacity is an additional bound. Its queue age/depth, active-screen,
 active-qualification, cohort, and retry limits are content-bound in the service manifest.

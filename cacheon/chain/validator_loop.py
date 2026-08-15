@@ -39,7 +39,10 @@ from cacheon.chain.eval_cost import (
     EvalCostRequest,
     verify_eval_cost_payment,
 )
-from cacheon.chain.eval_cost_payment import read_eval_cost_payment
+from cacheon.chain.eval_cost_payment import (
+    read_eval_cost_payment,
+    read_subnet_owner_coldkey,
+)
 from cacheon.chain.payload import decode_payload
 from cacheon.chain.publication import (
     WorkerBundlePublication,
@@ -91,6 +94,7 @@ def _finalized_arrivals(
     netuid: int,
     policy: IntakePolicy,
     payment_lookup=None,
+    owner_lookup=None,
 ) -> tuple[FinalizedArrival, ...]:
     rows: list[FinalizedArrival] = []
     for reveal in snapshot.reveals:
@@ -112,12 +116,13 @@ def _finalized_arrivals(
             )
             continue
         invalid_reason = ""
-        if policy.eval_cost_alpha_rao > 0:
+        if policy.eval_cost_tao_rao > 0:
             invalid_reason = _eval_cost_invalid_reason(
                 ref,
                 netuid=netuid,
                 policy=policy,
                 payment_lookup=payment_lookup,
+                owner_lookup=owner_lookup,
             )
         rows.append(
             FinalizedArrival(
@@ -143,6 +148,7 @@ def _eval_cost_invalid_reason(
     netuid: int,
     policy: IntakePolicy,
     payment_lookup,
+    owner_lookup,
 ) -> str:
     if ref.payment_block <= 0:
         return "missing_eval_cost_payment"
@@ -157,13 +163,26 @@ def _eval_cost_invalid_reason(
         ) from exc
     if proof is None:
         return "eval_cost_payment_invalid"
+    if owner_lookup is None:
+        raise EvalCostFetchError("eval-cost owner lookup is unavailable")
+    try:
+        owner = owner_lookup(ref.payment_block)
+    except EvalCostFetchError:
+        raise
+    except Exception as exc:
+        raise EvalCostFetchError(
+            f"cannot read subnet owner at payment block {ref.payment_block}: {exc}"
+        ) from exc
+    if not isinstance(owner, str) or not owner:
+        raise EvalCostFetchError("subnet owner coldkey is unavailable")
     request = EvalCostRequest(
         netuid=netuid, hotkey=ref.hotkey, content_hash=ref.content_hash
     )
     return verify_eval_cost_payment(
         request=request,
         policy=EvalCostPolicy(
-            amount_alpha_rao=policy.eval_cost_alpha_rao,
+            amount_rao=policy.eval_cost_tao_rao,
+            destination=owner,
             payment_window_blocks=policy.eval_cost_payment_window_blocks,
             quote_ttl_blocks=policy.eval_cost_quote_ttl_blocks,
         ),
@@ -465,6 +484,9 @@ def run_pass(
                 policy=policy,
                 payment_lookup=lambda block, index: read_eval_cost_payment(
                     subtensor, block, index
+                ),
+                owner_lookup=lambda block: read_subnet_owner_coldkey(
+                    subtensor, netuid, block=block
                 ),
             )
             result.seen = len(arrivals)

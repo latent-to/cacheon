@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.eval_cost import (
     DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS,
-    PUBLISHED_EVAL_COST_ALPHA_RAO,
+    PUBLISHED_EVAL_COST_TAO_RAO,
     REASON_INVALID,
     REASON_MISSING,
     REASON_QUOTE_EXPIRED,
     REASON_WINDOW,
+    EvalCostError,
+    EvalCostFetchError,
     EvalCostPaymentProof,
     EvalCostPolicy,
     EvalCostRequest,
@@ -18,6 +22,7 @@ from cacheon.chain.eval_cost import (
     quote_eval_cost,
     verify_eval_cost_payment,
 )
+from cacheon.chain.eval_cost_payment import read_subnet_owner_coldkey
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
@@ -33,7 +38,9 @@ from cacheon.chain.submit import submit_bundle
 
 HASH = "a" * 64
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
+TREASURY = "treasury"
 _BUNDLE = Path(__file__).resolve().parent.parent / "examples" / "miner_silu_torch"
+_PAID_POLICY = dict(eval_cost_tao_rao=10)
 
 
 def _request(**changes) -> EvalCostRequest:
@@ -44,16 +51,23 @@ def _request(**changes) -> EvalCostRequest:
 
 def _quote(**changes) -> tuple[EvalCostRequest, object]:
     request = _request()
-    values = dict(amount_alpha_rao=10, at_block=70)
+    values = dict(amount_rao=10, destination=TREASURY, at_block=70)
     values.update(changes)
     at_block = values.pop("at_block")
     policy_kwargs = {
         key: values[key]
-        for key in ("amount_alpha_rao", "quote_ttl_blocks", "payment_window_blocks")
+        for key in (
+            "amount_rao",
+            "destination",
+            "quote_ttl_blocks",
+            "payment_window_blocks",
+        )
         if key in values
     }
-    if "amount_alpha_rao" not in policy_kwargs:
-        policy_kwargs["amount_alpha_rao"] = 10
+    if "amount_rao" not in policy_kwargs:
+        policy_kwargs["amount_rao"] = 10
+    if "destination" not in policy_kwargs:
+        policy_kwargs["destination"] = TREASURY
     quote = quote_eval_cost(
         request,
         policy=EvalCostPolicy(**policy_kwargs),
@@ -68,10 +82,9 @@ def _proof(**changes) -> EvalCostPaymentProof:
         block=80,
         extrinsic_index=4,
         signer="coldkey",
-        burn_coldkey="coldkey",
-        burn_hotkey="miner",
-        burn_netuid=307,
-        alpha_decrease=10,
+        payer="coldkey",
+        destination=TREASURY,
+        amount_rao=10,
         remark=encode_payment_remark(request, quote),
     )
     values.update(changes)
@@ -85,8 +98,9 @@ def test_v1_quote_ignores_submission_extras() -> None:
         at_block=70,
     )
     assert base == varied
-    assert base.amount_alpha_rao == PUBLISHED_EVAL_COST_ALPHA_RAO
-    assert base.instrument == "burn_alpha"
+    assert base.amount_rao == PUBLISHED_EVAL_COST_TAO_RAO
+    assert base.instrument == "transfer_keep_alive"
+    assert base.asset == "tao"
     assert base.issued_block == 70
     assert base.expires_block == 70 + DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS
 
@@ -94,7 +108,9 @@ def test_v1_quote_ignores_submission_extras() -> None:
 def test_quote_stays_valid_through_payment_ttl() -> None:
     request, quote = _quote(quote_ttl_blocks=5, at_block=70)
     assert quote.expires_block == 75
-    policy = EvalCostPolicy(amount_alpha_rao=10, quote_ttl_blocks=5)
+    policy = EvalCostPolicy(
+        amount_rao=10, destination=TREASURY, quote_ttl_blocks=5
+    )
     assert (
         verify_eval_cost_payment(
             request=request,
@@ -115,37 +131,45 @@ def test_quote_stays_valid_through_payment_ttl() -> None:
     )
 
 
-def test_payment_remark_round_trip_binds_content_hash() -> None:
+def test_payment_remark_round_trip_binds_content_hash_and_destination() -> None:
     request, quote = _quote()
     remark = encode_payment_remark(request, quote)
-    other = encode_payment_remark(_request(content_hash="b" * 64), quote)
-    assert remark != other
+    other_hash = encode_payment_remark(_request(content_hash="b" * 64), quote)
+    other_dest = encode_payment_remark(
+        request, quote_eval_cost(request, policy=EvalCostPolicy(amount_rao=10, destination="other"), at_block=70)
+    )
+    assert remark != other_hash
+    assert remark != other_dest
     assert "cacheon.chain.eval-cost-payment.v1" in remark
     assert "issued_block" in remark
+    assert TREASURY in remark
 
 
-def test_verify_accepts_matching_burn() -> None:
+def test_verify_accepts_matching_transfer() -> None:
     request, quote = _quote()
     assert (
         verify_eval_cost_payment(
             request=request,
-            policy=EvalCostPolicy(amount_alpha_rao=10),
+            policy=EvalCostPolicy(amount_rao=10, destination=TREASURY),
             proof=_proof(),
             reveal_block=90,
         )
         == ""
     )
-    assert quote.amount_alpha_rao == 10
+    assert quote.amount_rao == 10
+    assert quote.destination == TREASURY
 
 
 def test_verify_rejects_missing_wrong_stale_and_expired_payments() -> None:
     request = _request()
-    policy = EvalCostPolicy(amount_alpha_rao=10, payment_window_blocks=10)
+    policy = EvalCostPolicy(
+        amount_rao=10, destination=TREASURY, payment_window_blocks=10
+    )
     cases = [
         (None, REASON_MISSING),
         (_proof(signer="other"), REASON_INVALID),
-        (_proof(burn_hotkey="other"), REASON_INVALID),
-        (_proof(alpha_decrease=9), REASON_INVALID),
+        (_proof(destination="other"), REASON_INVALID),
+        (_proof(amount_rao=9), REASON_INVALID),
         (_proof(block=91), REASON_WINDOW),
         (_proof(block=69), REASON_QUOTE_EXPIRED),
     ]
@@ -161,7 +185,7 @@ def test_verify_rejects_missing_wrong_stale_and_expired_payments() -> None:
         )
 
 
-def test_proof_from_batch_all_and_alpha_burned_event() -> None:
+def test_proof_from_batch_all_and_transfer_event() -> None:
     request, quote = _quote()
     remark = encode_payment_remark(request, quote)
     proof = proof_from_decoded_extrinsic(
@@ -173,9 +197,9 @@ def test_proof_from_batch_all_and_alpha_burned_event() -> None:
         call_args={
             "calls": [
                 {
-                    "call_module": "SubtensorModule",
-                    "call_function": "burn_alpha",
-                    "call_args": {"hotkey": "miner", "amount": 10, "netuid": 307},
+                    "call_module": "Balances",
+                    "call_function": "transfer_keep_alive",
+                    "call_args": {"dest": TREASURY, "value": 10},
                 },
                 {
                     "call_module": "System",
@@ -188,15 +212,16 @@ def test_proof_from_batch_all_and_alpha_burned_event() -> None:
             {
                 "extrinsic_idx": 4,
                 "event": {
-                    "module_id": "SubtensorModule",
-                    "event_id": "AlphaBurned",
-                    "attributes": ("coldkey", "miner", 10, 307),
+                    "module_id": "Balances",
+                    "event_id": "Transfer",
+                    "attributes": ("coldkey", TREASURY, 10),
                 },
             }
         ],
     )
     assert proof is not None
-    assert proof.alpha_decrease == 10
+    assert proof.amount_rao == 10
+    assert proof.destination == TREASURY
     assert proof.remark == remark
 
 
@@ -214,12 +239,11 @@ def test_proof_from_named_call_arg_lists() -> None:
                 "name": "calls",
                 "value": [
                     {
-                        "call_module": "SubtensorModule",
-                        "call_function": "burn_alpha",
+                        "call_module": "Balances",
+                        "call_function": "transfer_keep_alive",
                         "call_args": [
-                            {"name": "hotkey", "value": "miner"},
-                            {"name": "amount", "value": 10},
-                            {"name": "netuid", "value": 307},
+                            {"name": "dest", "value": {"Id": TREASURY}},
+                            {"name": "value", "value": 10},
                         ],
                     },
                     {
@@ -234,20 +258,20 @@ def test_proof_from_named_call_arg_lists() -> None:
             {
                 "extrinsic_idx": 4,
                 "event": {
-                    "module_id": "SubtensorModule",
-                    "event_id": "AlphaBurned",
+                    "module_id": "Balances",
+                    "event_id": "Transfer",
                     "attributes": {
-                        "Coldkey": "coldkey",
-                        "Hotkey": "miner",
-                        "Actual Alpha Decrease": 10,
-                        "Netuid": 307,
+                        "from": "coldkey",
+                        "to": TREASURY,
+                        "amount": 10,
                     },
                 },
             }
         ],
     )
     assert proof is not None
-    assert proof.burn_hotkey == "miner"
+    assert proof.payer == "coldkey"
+    assert proof.destination == TREASURY
     assert proof.remark == remark
 
 
@@ -263,11 +287,14 @@ def test_v2_payload_round_trip() -> None:
 def test_dry_run_pay_quotes_without_a_chain() -> None:
     result = submit_bundle(
         None, None, 307, _BUNDLE, "https://example.com/bundles/miner-silu-torch.tar",
-        dry_run=True, pay=True, eval_cost_policy=EvalCostPolicy(amount_alpha_rao=10),
+        dry_run=True,
+        pay=True,
+        eval_cost_policy=EvalCostPolicy(amount_rao=10, destination=TREASURY),
     )
     assert result["dry_run"] is True
     assert result["paid"] is True
-    assert result["eval_cost_alpha_rao"] == 10
+    assert result["eval_cost_tao_rao"] == 10
+    assert result["eval_cost_destination"] == TREASURY
     assert result["eval_cost_issued_block"] == 0
     assert result["eval_cost_expires_block"] == DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS
     assert result["eval_cost_payment"]["dry_run"] is True
@@ -276,6 +303,70 @@ def test_dry_run_pay_quotes_without_a_chain() -> None:
     assert ref is not None
     assert ref.payment_block == 0
     assert ref.content_hash == content_hash(_BUNDLE)
+
+
+def test_verify_accepts_distinct_subnet_owners() -> None:
+    for dest in ("owner-a", "owner-b"):
+        request, quote = _quote(destination=dest)
+        proof = EvalCostPaymentProof(
+            block=80,
+            extrinsic_index=4,
+            signer="coldkey",
+            payer="coldkey",
+            destination=dest,
+            amount_rao=10,
+            remark=encode_payment_remark(request, quote),
+        )
+        assert (
+            verify_eval_cost_payment(
+                request=request,
+                policy=EvalCostPolicy(amount_rao=10, destination=dest),
+                proof=proof,
+                reveal_block=90,
+            )
+            == ""
+        )
+
+
+def test_read_subnet_owner_coldkey_two_profiles() -> None:
+    class _Metagraph:
+        def __init__(self, owner: str, block: int) -> None:
+            self.owner_coldkey = owner
+            self.block = block
+
+    class _Subtensor:
+        def __init__(self, owner: str) -> None:
+            self.owner = owner
+
+        def metagraph(self, netuid, block=None):
+            assert netuid == 307
+            return _Metagraph(self.owner, block)
+
+    assert read_subnet_owner_coldkey(_Subtensor("owner-a"), 307, block=80) == "owner-a"
+    assert read_subnet_owner_coldkey(_Subtensor("owner-b"), 307, block=81) == "owner-b"
+
+
+def test_read_subnet_owner_coldkey_refuses_missing_owner() -> None:
+    class _Metagraph:
+        owner_coldkey = ""
+        block = 80
+
+    class _Subtensor:
+        def metagraph(self, netuid, block=None):
+            return _Metagraph()
+
+    with pytest.raises(EvalCostFetchError, match="owner"):
+        read_subnet_owner_coldkey(_Subtensor(), 307, block=80)
+
+
+def test_dry_run_pay_refuses_without_a_destination() -> None:
+    with pytest.raises(EvalCostError, match="destination"):
+        submit_bundle(
+            None, None, 307, _BUNDLE, "https://example.com/bundles/miner-silu-torch.tar",
+            dry_run=True,
+            pay=True,
+            eval_cost_policy=EvalCostPolicy(amount_rao=10),
+        )
 
 
 def test_unpaid_v1_fails_when_eval_cost_is_required(tmp_path) -> None:
@@ -290,7 +381,7 @@ def test_unpaid_v1_fails_when_eval_cost_is_required(tmp_path) -> None:
     )
     with FinalizedIntakeStore(
         tmp_path / "private" / "intake.sqlite3",
-        IntakePolicy(eval_cost_alpha_rao=10),
+        IntakePolicy(**_PAID_POLICY),
         scope=SCOPE,
     ) as store:
         row = store.reserve_finalized(
@@ -325,7 +416,7 @@ def test_valid_payment_is_consumed_once(tmp_path) -> None:
     )
     with FinalizedIntakeStore(
         tmp_path / "private" / "intake.sqlite3",
-        IntakePolicy(eval_cost_alpha_rao=10, expiry_blocks=100),
+        IntakePolicy(**_PAID_POLICY, expiry_blocks=100),
         scope=SCOPE,
     ) as store:
         rows = store.reserve_finalized(

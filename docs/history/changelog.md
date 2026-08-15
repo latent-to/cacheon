@@ -370,18 +370,21 @@ points installed, and an old evaluator image does not contain the renamed
 `cacheon` worker modules. `HOW_CACHEON_WORKS.md` is the canonical
 compatibility redirect.
 
-## 2026-08-15 — Fixed eval-cost quote and alpha burn
+## 2026-08-15 — Fixed eval-cost quote and TAO transfer to the subnet owner
 
 Intake can require a miner-paid evaluation cost before a finalized reveal is
-admitted. v1 `quote_eval_cost` returns a published `burn_alpha` amount and
+admitted. v1 `quote_eval_cost` returns a published TAO-rao amount and
 ignores submission extras so a later quote can price the specific eval request
-without changing payment verification. Miners optionally burn that amount with
-a content-hash remark and commit a v2 payload pointer; validators consume the
-pointer once. The gate defaults off (`eval_cost_alpha_rao=0`). Enabling it with
-`chain-validate --eval-cost-alpha-rao 1000000000` matches the published 1 α
-quote. A quote is frozen from issuance through payment for 300 blocks (~1 hour)
-so the amount cannot move while the miner signs the burn. Sealed FIFO/dispatcher configs must include the
-new `eval_cost_alpha_rao`, `eval_cost_payment_window_blocks`, and
+without changing payment verification. Miners optionally transfer that amount
+to the current subnet owner coldkey with a content-hash remark
+(`Balances.transfer_keep_alive`) and commit a v2 payload pointer; validators
+consume the pointer once. The destination is the metagraph `owner_coldkey` at
+the payment block, not a miner- or operator-supplied wallet. The gate defaults
+off (`eval_cost_tao_rao=0`). Enabling it with
+`chain-validate --eval-cost-tao-rao 1000000000` matches the published 1 TAO
+quote. A quote freezes the amount from issuance through payment for 300 blocks
+(~1 hour). Sealed FIFO/dispatcher configs must include the new
+`eval_cost_tao_rao`, `eval_cost_payment_window_blocks`, and
 `eval_cost_quote_ttl_blocks` policy keys.
 
 ## Corrections and retractions
