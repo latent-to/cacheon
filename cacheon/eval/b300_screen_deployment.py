@@ -102,6 +102,7 @@ from cacheon.eval.runtime_preflight import (
     HOST_RECEIPT_SCHEMA,
     RuntimePreflightReceipt,
 )
+from cacheon.eval.screen_quant_policy import slot_quant_requirements
 from cacheon.seams import SEAM_ADAPTERS
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 from cacheon.stack_manifest import (
@@ -124,10 +125,6 @@ GPU_COUNT = 4
 TP_SIZE = 4
 DEFAULT_OUTPUT_ROOT = Path("/data/cacheon-b300/remote-worker/commissioned")
 _MODEL_QUANTIZATION = "modelopt_fp4"
-_LIVE_SLOT_QUANT_REQUIREMENTS = (
-    ("moe.fused_experts", "nvfp4"),
-    ("moe.fused_experts_reduce", "nvfp4"),
-)
 
 
 class B300ScreenDeploymentError(RuntimeError):
@@ -1060,7 +1057,7 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
     resolver = _CommissionedScreenPlanResolver(inputs, build_executor, catalog)
     static = B300StaticScreenAdapter(
         catalog,
-        required_slot_quant=_LIVE_SLOT_QUANT_REQUIREMENTS,
+        required_slot_quant=slot_quant_requirements(_MODEL_QUANTIZATION),
     )
     pipeline = B300BuildABIGraphScreenAdapter(
         catalog=catalog,
