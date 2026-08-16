@@ -18,6 +18,8 @@ from cacheon.eval.device_state import (
     DeviceStatePolicyError,
     DeviceStateTimeoutError,
     GPUConfiguration,
+    GPUProcess,
+    GPUTelemetry,
     NVIDIA_SMI,
     provision_gpu_configurations,
     validate_device_state_policy,
@@ -940,3 +942,60 @@ def test_malformed_process_monitor_and_clock_regression_fail_closed():
     clock.value -= 100
     with pytest.raises(DeviceStateClockError):
         guard.after_launch("launch-b")
+
+
+def _capture_telemetry(
+    physical_id: int, *, gpu_util: int = 0, memory_util: int = 0, temperature: int = 40
+) -> GPUTelemetry:
+    return GPUTelemetry(
+        physical_id=physical_id,
+        uuid=_gpu(physical_id).uuid,
+        pstate="P0",
+        temperature_c=temperature,
+        gpu_utilization_percent=gpu_util,
+        memory_utilization_percent=memory_util,
+        current_graphics_clock_mhz=300,
+        current_memory_clock_mhz=405,
+        power_draw_mw=200_000,
+    )
+
+
+def test_capture_envelope_admits_a_quiescent_retained_pair_and_nothing_else() -> None:
+    """Graph capture must not demand an idle lane, but must still reject work.
+
+    Demanding the idle envelope forced a full engine retire+reload per bundle,
+    because a retained pair holds a process on every selected GPU by design.
+    Exactly one state changes verdict here; every rejection the idle envelope
+    made for a real reason is still a rejection.
+    """
+
+    guard = DeviceStateGuard(_policy())
+    telemetry = (_capture_telemetry(0), _capture_telemetry(1))
+    resident = (
+        GPUProcess(0, 111, "C", "python3"),
+        GPUProcess(1, 222, "C", "python3"),
+    )
+
+    # The one intended change: loaded and quiescent is capture-safe, not idle.
+    assert guard._capture_verdict(telemetry, resident)[0] is True
+    assert guard._idle_verdict(telemetry, resident)[0] is False
+
+    # A cold lane is untouched -- _ready_envelope_verdict alone would reject it
+    # for having no process on every GPU, which would break a cold start.
+    assert guard._capture_verdict(telemetry, ())[0] is True
+    assert guard._idle_verdict(telemetry, ())[0] is True
+
+    busy = (_capture_telemetry(0, gpu_util=97, memory_util=60), _capture_telemetry(1))
+    hot = (_capture_telemetry(0, temperature=99), _capture_telemetry(1))
+    assert guard._capture_verdict(busy, resident)[0] is False
+    assert guard._capture_verdict(hot, resident)[0] is False
+    assert guard._capture_verdict(telemetry, resident[:1])[0] is False
+    assert guard._capture_verdict(
+        telemetry, (GPUProcess(0, 111, "G", "Xorg"), GPUProcess(1, 222, "C", "python3"))
+    )[0] is False
+
+
+def test_drain_rejects_an_unknown_envelope() -> None:
+    guard = DeviceStateGuard(_policy())
+    with pytest.raises(DeviceStatePolicyError):
+        guard._drain(launch_id="x", phase="pre", deadline=None, envelope="anything")

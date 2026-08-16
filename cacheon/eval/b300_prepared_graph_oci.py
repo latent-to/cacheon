@@ -377,7 +377,7 @@ class B300PreparedGraphOCIExecutor:
             limits=self.config.native_limits,
         )
         launch_id = "graph-" + secrets.token_hex(10)
-        self.device_guard.before_launch(launch_id, deadline=deadline)
+        self.device_guard.before_capture(launch_id, deadline=deadline)
         lease = None
         primary = None
         artifact = None
@@ -465,7 +465,7 @@ class B300PreparedGraphOCIExecutor:
                 except BaseException as exc:
                     cleanup.append(exc)
             for action in (
-                lambda: self.device_guard.after_launch(launch_id, deadline=deadline),
+                lambda: self.device_guard.after_capture(launch_id, deadline=deadline),
                 self.manager.prove_quiescent,
             ):
                 try:

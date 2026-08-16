@@ -475,6 +475,31 @@ def test_two_sequential_requests_create_fresh_pairs_and_four_lifetimes(
     )
 
 
+def test_released_pair_rebinds_without_reloading(
+    tmp_path: Path,
+    lifetimes: _LifetimeHarness,
+    managed_executors,
+) -> None:
+    commissioned = _commissioned(tmp_path, lifetimes, managed_executors)
+    first_authority = _authority("first")
+    first = commissioned.factory.open_request(first_authority, deadline=100.0)
+    first_borrow = first.borrow(first_authority)
+    first_request_epoch = first.request_epoch_digest
+    first.release(first_authority, first_borrow.binding)
+
+    second_authority = _authority("second")
+    second = commissioned.factory.open_request(second_authority, deadline=200.0)
+    second_borrow = second.borrow(second_authority)
+
+    assert second is first
+    assert second_borrow.pair is first_borrow.pair
+    assert second_borrow.binding is first_borrow.binding
+    assert second.request_epoch_digest != first_request_epoch
+    assert len(lifetimes.calls) == 2
+    assert sum(len(row.sessions) for row in lifetimes.factories) == 2
+    second.close()
+
+
 def test_binding_freezes_exact_stock_lane_and_request_authorities(
     tmp_path: Path,
     lifetimes: _LifetimeHarness,
