@@ -57,6 +57,7 @@ from cacheon.eval.oci_outer_session import (
     OuterSessionProcessError,
 )
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
+from cacheon.eval.qualification_failure_ledger import record_qualification_failure
 from cacheon.eval.marginal_runtime import CandidateArmWorkerError
 from cacheon.eval.resident_pair_quality_lifecycle import (
     ResidentPairMarginalLifecycleEvidence,
@@ -719,6 +720,12 @@ def _failure_digest(manifest: QualificationAuthorityManifest, exc: BaseException
         f"{type(exc).__name__}: {str(exc)[:2048]}",
         flush=True,
         file=sys.stderr,
+    )
+    # A rotating log answers this for as long as it happens to survive. The
+    # ledger keeps the digest -> why mapping durably, so a miner asking why a
+    # bundle reached no verdict has an answer that outlives the log.
+    record_qualification_failure(
+        failure_digest=digest, authority_digest=manifest.digest, exc=exc
     )
     return digest
 
