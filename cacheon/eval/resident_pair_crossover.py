@@ -8,6 +8,7 @@ finished by a speed read.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -50,6 +51,15 @@ from cacheon.eval.speed_verdict import (
     v6_grade,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
+
+logger = logging.getLogger(__name__)
+
+# Re-arm criterion, single line: flip to True once a live qualification has been
+# observed to report `prior_execution_ranks == expected_ranks` for a candidate
+# that really ran. Until then the execution evidence is minted, carried over the
+# wire, and logged, but never decides a verdict — arming a gate in the same
+# commission that first executes it cost a 23-minute paid hold on 2026-08-16.
+ENFORCE_EXECUTION_EVIDENCE = False
 
 
 class ResidentPairCrossoverError(RuntimeError):
@@ -406,16 +416,27 @@ def _rate_from_slice(
         # a wrong FAIL is permanent and lands on an honest miner. Once this has
         # been seen to separate the two live, an observed zero across a healthy
         # rank group is a candidate FAIL and should be graded as one.
-        if not restoration.execution.proves_execution(
+        #
+        # RECORD-ONLY until the evidence path is proven (see ENFORCE_EXECUTION_
+        # EVIDENCE). Arming this guard and executing it for the first time were
+        # the same commission on 2026-08-16, and its first live qualification
+        # held after 23 paid minutes with no retained log to attribute it. The
+        # verdict must not depend on evidence whose plumbing has never been seen
+        # to produce an observed reading.
+        proven = restoration.execution.proves_execution(
             generation=activation.generation,
             expected_ranks=restoration.expected_ranks,
-        ):
-            raise ResidentPairCrossoverHold(
+        )
+        if not proven:
+            detail = (
                 f"resident {role} candidate has no proof its kernel executed "
                 f"(generation {restoration.execution.prior_generation}, "
                 f"ranks {restoration.execution.prior_execution_ranks} of "
                 f"{restoration.expected_ranks})"
             )
+            if ENFORCE_EXECUTION_EVIDENCE:
+                raise ResidentPairCrossoverHold(detail)
+            logger.warning("cacheon: %s [record-only, not enforced]", detail)
     previous = request.host_started_at
     seen: set[str] = set()
     # Whichever swap precedes the batches: the candidate's activation, or v7's

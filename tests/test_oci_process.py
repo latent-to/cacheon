@@ -474,7 +474,7 @@ def test_failure_artifact_retains_earliest_rank_error_and_caps_disk_bytes(
         manager.reopen_stderr_artifact(artifact)
 
 
-def test_successful_attached_finalize_discards_streamed_stderr_artifact(
+def test_successful_attached_finalize_retains_streamed_stderr_artifact(
     tmp_path: Path, monkeypatch
 ) -> None:
     manager = _manager(tmp_path)
@@ -496,7 +496,15 @@ def test_successful_attached_finalize_discards_streamed_stderr_artifact(
     readable, _, _ = select.select([client.stdout], [], [], 5.0)
     assert readable and client.stdout.read(1) == b"R"
     client.finalize()
-    assert not tuple(manager.diagnostics_root.iterdir())
+    # A clean exit is exactly what a qualification HOLD looks like, so the
+    # diagnostic must survive it; discarding here is what left a 23-minute
+    # 2026-08-16 hold unattributable.
+    retained = sorted(
+        path.name for path in manager.diagnostics_root.iterdir()
+        if path.name.endswith(".stderr")
+    )
+    assert len(retained) == 1
+    assert (manager.diagnostics_root / retained[0]).read_bytes() == b"benign startup log"
 
 
 def test_stderr_receipt_publication_never_unlinks_a_preexisting_path(
