@@ -344,7 +344,9 @@ def _rate_from_slice(
     lane = plan.candidate_pair_lane if candidate else plan.baseline_pair_lane
     template = arm.session_plan
     batches, swaps = request.new_batches, request.new_swaps
-    expected_swaps = 2 if candidate else 0
+    # v7 puts the baseline through one stock-to-stock swap so both arms take the
+    # same recapture path; v6 and earlier left the baseline unswapped.
+    expected_swaps = 2 if candidate else int(crossover.policy.version >= 7)
     if (
         type(request) is not ResidentRequestSlice
         or request.bundle_digest != plan.candidate_bundle_digest
@@ -360,6 +362,7 @@ def _rate_from_slice(
         raise ResidentPairCrossoverHold(f"resident {role} request slice is incomplete")
     if candidate:
         activation, restoration = swaps
+        baseline_restock = None
         valid_dispatch = (
             activation.bundle_digest == plan.candidate_bundle_digest
             and bool(activation.slots)
@@ -369,19 +372,63 @@ def _rate_from_slice(
             and restoration.generation == activation.generation + 1
             and request.ending_generation == restoration.generation
         )
-    else:
+    elif expected_swaps:
+        # v7 baseline: exactly one stock-to-stock swap, taken *before* the
+        # batches so both arms enter measurement through the same recapture.
+        # It must carry no bundle and no slots — otherwise the "baseline" ran
+        # something — and it advances the generation exactly once, like the
+        # candidate activation. It is a leading swap, never a restoration:
+        # the trailing-clock check below applies only to restorations.
         activation = restoration = None
+        (baseline_restock,) = swaps
+        valid_dispatch = (
+            baseline_restock.bundle_digest is None
+            and not baseline_restock.slots
+            and baseline_restock.generation == request.starting_generation + 1
+            and request.ending_generation == baseline_restock.generation
+        )
+    else:
+        activation = restoration = baseline_restock = None
         valid_dispatch = request.ending_generation == request.starting_generation
     if not valid_dispatch:
         raise ResidentPairCrossoverHold(f"resident {role} dispatch or stock restore is ambiguous")
+    if candidate:
+        # The candidate's reads are worth nothing unless its kernel actually ran
+        # during them. Registering a slot is not running it: a bundle can load,
+        # register, capture, and then never dispatch, and every such run still
+        # produces a clean speed number. The restoration swap closes the
+        # activation generation, so it carries that generation's per-rank
+        # execution count.
+        #
+        # HOLD rather than FAIL, deliberately. An unproven execution and a
+        # broken evidence path are different claims, and only the first is the
+        # candidate's fault; holding is recoverable and requeue is capped, while
+        # a wrong FAIL is permanent and lands on an honest miner. Once this has
+        # been seen to separate the two live, an observed zero across a healthy
+        # rank group is a candidate FAIL and should be graded as one.
+        if not restoration.execution.proves_execution(
+            generation=activation.generation,
+            expected_ranks=restoration.expected_ranks,
+        ):
+            raise ResidentPairCrossoverHold(
+                f"resident {role} candidate has no proof its kernel executed "
+                f"(generation {restoration.execution.prior_generation}, "
+                f"ranks {restoration.execution.prior_execution_ranks} of "
+                f"{restoration.expected_ranks})"
+            )
     previous = request.host_started_at
     seen: set[str] = set()
-    expected_generation = activation.generation if activation is not None else request.starting_generation
+    # Whichever swap precedes the batches: the candidate's activation, or v7's
+    # stock-to-stock baseline swap. Stock exposes no slots either way.
+    leading = activation if candidate else baseline_restock
+    expected_generation = (
+        leading.generation if leading is not None else request.starting_generation
+    )
     expected_slots = activation.slots if activation is not None else ()
-    if activation is not None:
-        if not request.host_started_at <= activation.requested_at < activation.completed_at:
+    if leading is not None:
+        if not request.host_started_at <= leading.requested_at < leading.completed_at:
             raise ResidentPairCrossoverHold(f"resident {role} activation clock is malformed")
-        previous = activation.completed_at
+        previous = leading.completed_at
     for batch, prompts in zip(batches, template.prompt_batches, strict=True):
         if (
             type(batch) is not ResidentBatchEvidence
@@ -607,6 +654,18 @@ def run_resident_pair_crossover(
     history_prefix = pair.request_history
     history_index = len(history_prefix)
 
+    # Version 7 measures both arms through the same swap. Under v6 only the
+    # candidate lane swapped, and a bundle audited `aot_invoked:0` — running
+    # stock code on both lanes — still read 0.9-2.7% fast in the C role across
+    # six runs and both physical orientations (2026-08-16). Position accounted
+    # for 0.117% of that (B vs B_prime, same lane) and the physical lane for
+    # none of it, because the sign did not flip when the lanes swapped roles.
+    # The swap is the only remaining per-role difference, so the baseline lane
+    # now takes `swap(None)`: the same registry clear and CUDA-graph recapture,
+    # loading nothing. That equalises the recapture, not the candidate's module
+    # load, so the inert controls decide whether it is sufficient.
+    symmetric_swap = plan.crossover_plan.policy.version >= 7
+
     def read(role: str) -> None:
         nonlocal history_index, history_prefix
         _within_wall(clock, stage_deadline)
@@ -617,6 +676,8 @@ def run_resident_pair_crossover(
         def operation(handle: ResidentEvaluationHandle) -> tuple[ResidentBatchEvidence, ...]:
             if candidate:
                 handle.swap(plan.candidate_bundle_digest)
+            elif symmetric_swap:
+                handle.swap(None)
             return tuple(
                 handle.execute_batch_with_shape(prompts, shape=plan.batch_shape)
                 for prompts in template.prompt_batches
@@ -628,7 +689,9 @@ def run_resident_pair_crossover(
                 plan.candidate_bundle_digest,
                 operation,
                 expected_batch_count=len(template.prompt_batches),
-                expected_swap_count=2 if candidate else 0,
+                # A candidate activation declares its own stock restoration; a
+                # symmetric baseline swap is already stock and needs none.
+                expected_swap_count=2 if candidate else int(symmetric_swap),
                 deadline=stage_deadline,
             )
         except ResidentEvaluationPairError as exc:

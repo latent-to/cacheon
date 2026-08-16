@@ -1157,8 +1157,8 @@ def validate_swap_request(message: object) -> SwapRequest:
 
 
 _SWAP_EVIDENCE_FIELDS = frozenset("""
-bundle_digest generation launch_digest nonce rank_count request_id schema
-session_id slots swap_index type
+bundle_digest generation launch_digest nonce prior_execution_ranks
+prior_generation rank_count request_id schema session_id slots swap_index type
 """.split())
 
 
@@ -1178,6 +1178,8 @@ def swap_evidence_message(
     request: SwapRequest,
     slots: Sequence[str],
     rank_count: int,
+    prior_generation: int,
+    prior_execution_ranks: int,
 ) -> dict[str, object]:
     """The worker's post-swap report; carries no worker timing or verdict.
 
@@ -1188,6 +1190,10 @@ def swap_evidence_message(
 
     if type(request) is not SwapRequest:
         raise SessionProtocolError("swap evidence binding is not exactly typed")
+    if any(
+        type(value) is not int for value in (prior_generation, prior_execution_ranks)
+    ):
+        raise SessionProtocolError("swap execution evidence is not integral")
     clean_slots = _swap_slots(tuple(slots))
     if request.bundle_digest is None and clean_slots:
         raise SessionProtocolError("stock swap evidence must register no slots")
@@ -1198,6 +1204,15 @@ def swap_evidence_message(
         "generation": request.generation,
         "launch_digest": request.launch_digest,
         "nonce": request.nonce,
+        # Execution evidence for the generation this swap CLOSES, not the one it
+        # opens. -1 means "unobserved" and is a distinct state from an observed
+        # zero; the two must never be flattened into one, because absent
+        # evidence is an infrastructure fault while an observed zero is a fact
+        # about the candidate. The protocol carries the integers only — their
+        # interpretation belongs to the evaluator, which this module must not
+        # import.
+        "prior_execution_ranks": prior_execution_ranks,
+        "prior_generation": prior_generation,
         "rank_count": _bounded_int(
             rank_count, field_name="swap rank_count", minimum=1,
             maximum=MAX_SWAP_RANKS,
@@ -1216,7 +1231,7 @@ def validate_swap_evidence(
     *,
     request: SwapRequest,
     expected_rank_count: int,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], int, int]:
     if type(request) is not SwapRequest:
         raise SessionProtocolError("swap evidence expectation is not exactly typed")
     expected_ranks = _bounded_int(
@@ -1245,7 +1260,20 @@ def validate_swap_evidence(
         raise SessionProtocolError("stock swap evidence must register no slots")
     if request.bundle_digest is not None and not slots:
         raise SessionProtocolError("bundle swap evidence must register slots")
-    return slots
+    prior_generation = row["prior_generation"]
+    prior_ranks = row["prior_execution_ranks"]
+    if any(type(value) is not int for value in (prior_generation, prior_ranks)):
+        raise SessionProtocolError("swap execution evidence is not integral")
+    # A closed generation precedes the one being opened, and a rank count cannot
+    # exceed the group. Either may be -1 (unobserved); neither may be a fiction
+    # that would let a worker manufacture execution the controller never saw.
+    if not -1 <= prior_generation < request.generation:
+        raise SessionProtocolError(
+            "swap execution evidence names an impossible generation"
+        )
+    if not -1 <= prior_ranks <= expected_ranks:
+        raise SessionProtocolError("swap execution evidence exceeds its rank group")
+    return slots, prior_generation, prior_ranks
 
 
 _BATCH_REQUEST_FIELDS = frozenset("""

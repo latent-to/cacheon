@@ -61,9 +61,105 @@ _IDENTITY_KINDS = frozenset(
 _ONCE: set[tuple[str, int, str, str]] = set()
 _ONCE_LOCK = threading.Lock()
 
+# Sub-path appended to the receipt root, so "once per slot" means once per
+# scope rather than once per process lifetime.
+_SCOPE = ""
+_SCOPE_LOCK = threading.Lock()
+
+# Fallback receipt root for a process the driver launched WITHOUT one. The
+# one-shot driver mints a receipt directory only for an engine that is active at
+# construction (engine_worker: `mkdtemp() if active else ""`), and a resident
+# lane is born stock — it acquires candidates later by hot-swap — so it runs its
+# whole life with the environment variable forced empty and cannot emit any
+# evidence at all. The swap seam establishes this root instead, at the moment
+# the lane stops being stock. The environment still wins where it is set, so the
+# one-shot path is untouched.
+_ROOT = ""
+_ROOT_LOCK = threading.Lock()
+
+
+def set_root(path: object) -> str:
+    """Establish a receipt root for a process launched without one.
+
+    Returns the root actually in force, which is the environment's whenever that
+    is set. Never raises: a diagnostic must not be able to kill an engine.
+    """
+
+    global _ROOT
+    try:
+        cleaned = "" if path is None else str(path).strip()
+    except Exception:  # noqa: BLE001 - hostile __str__ must not break the engine
+        cleaned = ""
+    if cleaned and os.path.isabs(cleaned):
+        with _ROOT_LOCK:
+            _ROOT = cleaned
+    return _root()
+
+
+def _root() -> str:
+    """The receipt root in force: the driver's environment, else the seam's."""
+
+    return os.environ.get("CACHEON_SEAM_RECEIPT_DIR", "").strip() or _ROOT
+
+
+def set_scope(scope: object) -> str:
+    """Re-scope subsequent receipts; returns the scope actually applied.
+
+    A resident engine serves many candidates on one process. Execution receipts
+    are once-per-slot-per-root, so without a scope the second candidate onward
+    would emit nothing at all and the controller would either read the *first*
+    candidate's evidence as if it were theirs, or see an empty directory and
+    convict an honest bundle. Scoping by the swap generation — which the swap
+    ack already carries, so no wire change is needed to find it — keeps "once"
+    honest while letting every candidate produce its own receipts.
+
+    Never raises: a diagnostic must not be able to kill an engine.
+    """
+
+    global _SCOPE
+    try:
+        cleaned = "" if scope is None else _SAFE_RE.sub("_", str(scope))[:64]
+    except Exception:  # noqa: BLE001 - hostile __str__ must not break the engine
+        cleaned = ""
+    # `_SAFE_RE` permits '.', so a scope of ".." would resolve to the receipt
+    # root's parent. Production passes an integer swap generation, but this
+    # runs in the candidate's own process: fail closed to unscoped rather than
+    # let a scope escape the root it is supposed to partition.
+    if not cleaned or not cleaned[0].isalnum() or ".." in cleaned:
+        cleaned = ""
+    with _SCOPE_LOCK:
+        _SCOPE = cleaned
+    # Create the scope eagerly. Receipt files are written lazily, so without
+    # this an un-invoked candidate and a broken receipt path are the same
+    # observation — an absent directory — and a reader would have to convert an
+    # infrastructure fault into a candidate verdict to act on it. With the
+    # directory present, "exists but holds no execution receipt" means the
+    # candidate did not run, and "absent" means the evidence path itself is
+    # unsound. Best effort: never raise into an engine.
+    if cleaned:
+        raw = _root()
+        if raw:
+            try:
+                _resolved_dir(os.path.join(raw, cleaned)).mkdir(
+                    parents=True, exist_ok=True
+                )
+            except Exception:  # noqa: BLE001 - diagnostics never break an engine
+                logger.exception("cacheon: receipt scope mkdir failed (%s)", cleaned)
+    return cleaned
+
+
+def current_scope() -> str:
+    """The scope receipts are currently being written under ("" when unscoped)."""
+
+    return _SCOPE
+
 
 def _dir() -> str:
-    return os.environ.get("CACHEON_SEAM_RECEIPT_DIR", "").strip()
+    raw = _root()
+    if not raw:
+        return ""
+    scope = _SCOPE
+    return os.path.join(raw, scope) if scope else raw
 
 
 def _resolved_dir(raw: str) -> Path:
@@ -184,6 +280,47 @@ def collect(rdir: str | Path, kind: str) -> list[dict]:
             raise ReceiptFormatError(f"invalid receipt {p}: expected a JSON object")
         out.append(payload)
     return out
+
+
+_EXECUTION_KINDS = ("active", "fired", "completed", "fallback", "load_failed")
+
+
+def counts_for_scope(scope: object, *, pid: Optional[int] = None) -> Optional[dict]:
+    """Count this scope's receipts by kind, or ``None`` when unobservable.
+
+    The tri-state is the whole point. ``None`` means the evidence path itself is
+    unusable (no root established, or a malformed receipt) and no verdict may be
+    drawn from it; a dict of zeros means the scope existed and nothing executed
+    under it, which is a fact about the candidate rather than the plumbing.
+
+    Passing ``pid`` restricts the count to receipts this process wrote itself.
+    That is race-free across a TP group sharing one root: a rank finishes its own
+    receipts before it acknowledges the swap that closes the scope, whereas a
+    global count could observe a peer mid-write.
+
+    Never raises: a diagnostic must not be able to kill an engine.
+    """
+
+    try:
+        root = _root()
+        if not root:
+            return None
+        cleaned = "" if scope is None else _SAFE_RE.sub("_", str(scope))[:64]
+        if not cleaned or not cleaned[0].isalnum() or ".." in cleaned:
+            return None
+        directory = _resolved_dir(os.path.join(root, cleaned))
+        if not directory.is_dir():
+            return None
+        counts: dict = {}
+        for kind in _EXECUTION_KINDS:
+            rows = collect(directory, kind)
+            if pid is not None:
+                rows = [row for row in rows if row.get("pid") == pid]
+            counts[kind] = len(rows)
+        return counts
+    except Exception:  # noqa: BLE001 - unreadable evidence is unobservable, not zero
+        logger.exception("cacheon: receipt scope count failed (%s)", scope)
+        return None
 
 
 def require(rdir: str | Path, kind: str, *, context: str) -> list[dict]:

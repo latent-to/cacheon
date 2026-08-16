@@ -190,6 +190,34 @@ recognized plan, runner, and raw-speed authority failures into typed failure pro
 retry plans. Other controller exceptions are contained by the pass loop and recovered
 conservatively on restart.
 
+### Resident execution evidence
+
+A resident lane is launched stock and acquires candidates by hot-swap, so registering a
+slot is the only thing a swap by itself proves. Registration is not execution: a bundle
+can load, register its slot, capture, and then never dispatch, and such a run still
+produces a complete speed number.
+
+Each swap therefore reports per-rank execution evidence for the generation it closes —
+the scope is final only once the lane has swapped away from it. A resident candidate leg
+is graded only when every rank of the group completed the candidate under exactly the
+activation generation. A rank that fell back to the trusted baseline, or failed to load
+the bundle, does not count as having executed it.
+
+The reported count is a tri-state, and the states carry different authority:
+
+| Reported | Meaning | Decision |
+|---|---|---|
+| Unobserved | The evidence path itself is unusable | `NO_DECISION` |
+| Observed, short of the rank group | The candidate did not execute on every rank | Not a `PASS` |
+| Observed, complete | Execution is proven for that generation | Speed evidence may be graded |
+
+Unobserved is never read as zero. Absent evidence is an infrastructure fault and may not
+be converted into a candidate verdict.
+
+This evidence is written from inside the candidate's own process. It closes accidental
+non-invocation; it is not proof against a deliberate forger, for which complete-engine
+isolation and external qualification remain the boundary.
+
 ## Independent reproduction
 
 One passing qualification is persisted as `reproduction_pending`. Settlement requires a

@@ -26,6 +26,7 @@ from types import SimpleNamespace
 from typing import Any, Iterator
 
 from cacheon.eval.engine_worker import (
+    CandidateExecutionCoverageError,
     _environment,
     _path_mount_is_read_only as _path_is_read_only,
 )
@@ -59,6 +60,10 @@ from cacheon.eval.oci_session_protocol import (
     validate_init,
     validate_preflight_accept,
     validate_swap_request,
+)
+from cacheon.eval.resident_execution_evidence import (
+    ResidentExecutionEvidence,
+    summarize_rank_acks,
 )
 from cacheon.seams import seam_binding_environment
 
@@ -812,8 +817,13 @@ def _read_rank_acks(control_dir: str, *, tp_size: int) -> dict[int, dict]:
 
 def _apply_resident_swap(
     engine: object, request: SwapRequest, *, control_dir: str, tp_size: int
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], ResidentExecutionEvidence]:
     """Re-hash the staged tree, command every rank, and wait for exact acks.
+
+    Returns the registered slots and the execution evidence for the generation
+    this swap closes — each rank counts its own receipts before acknowledging,
+    so the reads that were just timed are accounted for before anything new can
+    run under the lane.
 
     The trigger is sglang's own idle-gated ``flush_cache`` broadcast: the
     ``resident_swap`` seam applies the pending command and recaptures CUDA
@@ -905,7 +915,7 @@ def _apply_resident_swap(
         raise SessionProtocolError(
             "resident swap ranks registered different slot sets"
         )
-    return slot_views.pop()
+    return slot_views.pop(), summarize_rank_acks(rows, tp_size=tp_size)
 
 
 def _serve_resident(
@@ -943,14 +953,18 @@ def _serve_resident(
                 )
             seen_request_ids.add(request.request_id)
             seen_nonces.add(request.nonce)
-            slots = _apply_resident_swap(
+            slots, execution = _apply_resident_swap(
                 engine, request, control_dir=control_dir, tp_size=tp_size
             )
             _write_all(
                 protocol_fd,
                 frame_message(
                     swap_evidence_message(
-                        request=request, slots=slots, rank_count=tp_size
+                        request=request,
+                        slots=slots,
+                        rank_count=tp_size,
+                        prior_generation=execution.prior_generation,
+                        prior_execution_ranks=execution.prior_execution_ranks,
                     ),
                     max_bytes=MAX_CONTROL_BYTES,
                 ),
@@ -1350,11 +1364,26 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                     raise SessionProtocolError(
                         "audited engine lacks its raw audit receipt collector"
                     )
-                handle.require_completion()
-                audit_receipts = tuple(
-                    AuditReceiptFacts.from_receipt_dict(row)
-                    for row in (collector() if callable(collector) else ())
-                )
+                try:
+                    handle.require_completion()
+                except CandidateExecutionCoverageError as exc:
+                    if audit_policy is None:
+                        raise
+                    # The audit gate already treats an empty policy-bound receipt
+                    # set as candidate FAIL. Preserve the exact execution cause in
+                    # captured stderr while allowing the typed FAIL witness to cross
+                    # the worker boundary instead of converting it into HOLD/retry.
+                    print(
+                        f"CACHEON-AUDIT-CANDIDATE-FAIL: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    audit_receipts = ()
+                else:
+                    audit_receipts = tuple(
+                        AuditReceiptFacts.from_receipt_dict(row)
+                        for row in (collector() if callable(collector) else ())
+                    )
                 _write_all(
                     protocol_fd, evidence_frame(evidence, request=request)
                 )

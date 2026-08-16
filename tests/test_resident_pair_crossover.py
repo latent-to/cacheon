@@ -15,6 +15,10 @@ from cacheon.eval.oci_resident_session import (
     SwapReceipt,
 )
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
+from cacheon.eval.resident_execution_evidence import (
+    UNOBSERVED_EVIDENCE,
+    ResidentExecutionEvidence,
+)
 from cacheon.eval.resident_evaluation_pair import (
     ResidentEvaluationPair,
     ResidentEvaluationPairError,
@@ -75,6 +79,7 @@ class _Session:
         durations: tuple[float | tuple[float, ...], ...],
         clock: _Clock,
         activity: _Activity,
+        executed_ranks: int | None = None,
     ) -> None:
         self.session_id = session_id
         self.template = template
@@ -82,6 +87,11 @@ class _Session:
         self.clock = clock
         self.activity = activity
         self.active_generation = 0
+        self.applied_generation = -1
+        self.expected_ranks = 4
+        # None means "an honest candidate": every rank executed. A test that
+        # wants an inert bundle sets this to the number of ranks that did.
+        self.executed_ranks = executed_ranks
         self.active_bundle_digest = None
         self.active_slots = ()
         self.batch_rows = []
@@ -92,6 +102,23 @@ class _Session:
 
     def swap(self, bundle_digest):
         started, completed = self.clock.span(0.01)
+        # A swap closes the generation that was live and reports ITS execution
+        # evidence, exactly as the seam does: the closing scope is final only
+        # once the lane has swapped away from it. A generation that had a bundle
+        # active is modelled as having executed on every rank, which is what an
+        # honest candidate produces; `executed_ranks` lets a test say otherwise.
+        closing = self.applied_generation
+        if closing < 0:
+            execution = UNOBSERVED_EVIDENCE
+        else:
+            execution = ResidentExecutionEvidence(
+                closing,
+                self.expected_ranks
+                if self.active_bundle_digest is not None
+                else 0,
+            )
+            if self.executed_ranks is not None and self.active_bundle_digest:
+                execution = ResidentExecutionEvidence(closing, self.executed_ranks)
         self.active_generation += 1
         self.active_bundle_digest = bundle_digest
         self.active_slots = () if bundle_digest is None else ("registered.slot",)
@@ -102,7 +129,10 @@ class _Session:
             self.active_slots,
             started,
             completed,
+            execution,
+            self.expected_ranks,
         )
+        self.applied_generation = self.active_generation
         self.swap_receipts.append(row)
         return row
 
@@ -175,12 +205,15 @@ class _Session:
 
 
 class _Factory:
-    def __init__(self, session_id, template, durations, clock, activity):
+    def __init__(
+        self, session_id, template, durations, clock, activity, executed_ranks=None
+    ):
         self.session_id = session_id
         self.template = template
         self.durations = durations
         self.clock = clock
         self.activity = activity
+        self.executed_ranks = executed_ranks
         self.sessions = []
 
     def __call__(self, driver):
@@ -190,6 +223,7 @@ class _Factory:
             self.durations,
             self.clock,
             self.activity,
+            executed_ranks=self.executed_ranks,
         )
         self.sessions.append(session)
         return driver(session)
@@ -212,6 +246,7 @@ def _setup(
     policy=None,
     timed_batches=1,
     baseline_pair_lane="A",
+    candidate_executed_ranks=None,
 ):
     crossover, *_ = _rig(
         tmp_path,
@@ -230,6 +265,9 @@ def _setup(
         tuple(baseline if baseline_pair_lane == "A" else candidate),
         clock,
         activity,
+        executed_ranks=(
+            None if baseline_pair_lane == "A" else candidate_executed_ranks
+        ),
     )
     factory_b = _Factory(
         "b" * 32,
@@ -237,6 +275,9 @@ def _setup(
         tuple(baseline if baseline_pair_lane == "B" else candidate),
         clock,
         activity,
+        executed_ranks=(
+            None if baseline_pair_lane == "B" else candidate_executed_ranks
+        ),
     )
     pair = ResidentEvaluationPair(
         factory_a,
@@ -407,6 +448,120 @@ def test_v6_runs_two_leg_clear_fail_or_three_leg_terminal(
     assert evidence.regrade(plan) == evidence.final_verdict
     assert not activity.overlap
     assert factory_a.sessions[0].finish_calls == factory_b.sessions[0].finish_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("candidate_duration", "decision"),
+    ((1.05, SpeedStageDecision.FAIL), (0.99, SpeedStageDecision.PASS)),
+)
+def test_v7_swaps_both_arms_so_neither_role_is_measured_unswapped(
+    tmp_path, cleanup_pairs, candidate_duration, decision
+):
+    """Under v7 the baseline takes a stock-to-stock swap of its own.
+
+    v6 swapped only the candidate lane, which handed the candidate role a
+    measured advantage on identical work: a bundle audited ``aot_invoked:0``
+    read 0.9-2.7% fast in the C role across six runs and both physical
+    orientations. Position explained 0.117% of it and the physical lane none,
+    so the swap was the remaining asymmetry. Both arms must now traverse one.
+    """
+
+    plan, pair, clock, activity, factory_a, factory_b = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((candidate_duration,) * 3,),
+        policy=_borderline_policy(version=7),
+        timed_batches=3,
+    )
+
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+
+    assert evidence.decision is decision
+    assert tuple(row.role for row in evidence.rates) == ("B", "C")
+    baseline_slice, candidate_slice = evidence.request_slices
+    # The baseline is swapped exactly once, and that swap must be stock: no
+    # bundle and no registered slots, or the "baseline" ran a candidate.
+    assert baseline_slice.expected_swap_count == 1
+    assert len(baseline_slice.new_swaps) == 1
+    (restock,) = baseline_slice.new_swaps
+    assert restock.bundle_digest is None
+    assert not restock.slots
+    # The candidate keeps activation plus its declared stock restoration.
+    assert candidate_slice.expected_swap_count == 2
+    assert len(candidate_slice.new_swaps) == 2
+    # Neither arm ends holding a bundle.
+    assert baseline_slice.ending_bundle_digest is None
+    assert candidate_slice.ending_bundle_digest is None
+    assert evidence.regrade(plan) == evidence.final_verdict
+    assert not activity.overlap
+
+
+@pytest.mark.parametrize(
+    "executed_ranks, why",
+    [
+        (0, "inert bundle: registered its slot and never dispatched it"),
+        (3, "partial: one rank of the group did not execute"),
+    ],
+)
+def test_a_candidate_that_did_not_execute_cannot_win(
+    tmp_path, cleanup_pairs, executed_ranks, why
+):
+    """A winning duration is not a win if the kernel never ran.
+
+    This is the defect that produced a settlement candidate audited
+    ``aot_invoked:0`` on all four ranks: the resident lane is launched stock, so
+    the one-shot driver's execution gate never applied to it, and registration
+    was the only thing the crossover could see. Registration is not execution.
+
+    The candidate here is given a decisively winning duration precisely so the
+    hold cannot be attributed to its speed.
+    """
+
+    plan, pair, clock, activity, factory_a, factory_b = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((0.5,) * 3,),
+        policy=_borderline_policy(version=7),
+        timed_batches=3,
+        candidate_executed_ranks=executed_ranks,
+    )
+
+    with pytest.raises(ResidentPairCrossoverHold) as caught:
+        run_resident_pair_crossover(
+            plan, pair=pair, deadline=clock() + 120.0, clock=clock
+        )
+    assert "no proof its kernel executed" in str(caught.value), why
+
+
+def test_v6_leaves_the_baseline_unswapped(tmp_path, cleanup_pairs):
+    """v6 evidence stays verifiable at its own version after v7 lands.
+
+    Version participates in policy equality, so a v6 record must keep grading
+    under the procedure it was taken with rather than v7's.
+    """
+
+    plan, pair, clock, _activity, _factory_a, _factory_b = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=((1.0,) * 3,) * 2,
+        candidate=((1.05,) * 3,),
+        policy=_borderline_policy(version=6),
+        timed_batches=3,
+    )
+
+    evidence = run_resident_pair_crossover(
+        plan, pair=pair, deadline=clock() + 120.0, clock=clock
+    )
+
+    baseline_slice, candidate_slice = evidence.request_slices
+    assert baseline_slice.expected_swap_count == 0
+    assert not baseline_slice.new_swaps
+    assert candidate_slice.expected_swap_count == 2
+    assert evidence.regrade(plan) == evidence.final_verdict
 
 
 def test_v6_regrade_rejects_missing_b_prime_and_bad_windows(

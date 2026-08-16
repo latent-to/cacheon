@@ -837,10 +837,12 @@ class B300RegisteredQualificationInputs:
         if (
             type(self.resident_baseline_arm) is not ResidentArmPlan
             or type(self.resident_speed_policy) is not ResidentSpeedPolicy
-            # Versions 3 through 6 share the resident two-lane authority this
+            # Versions 3 through 7 share the resident two-lane authority this
             # check guards. (This gate blocked
-            # the first v4 commission on the live pod, 2026-08-10 12:23Z.)
-            or self.resident_speed_policy.version not in (3, 4, 5, 6)
+            # the first v4 commission on the live pod, 2026-08-10 12:23Z, and
+            # it must be widened with every new resident policy version or the
+            # commission fails the same way.)
+            or self.resident_speed_policy.version not in (3, 4, 5, 6, 7)
             or marginal_workload_digest(self.resident_baseline_arm.session_plan)
             != marginal_workload_digest(self.baseline_session_plan)
             or self.resident_baseline_arm.executor_namespace_digest
