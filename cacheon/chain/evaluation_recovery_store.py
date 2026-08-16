@@ -1060,6 +1060,7 @@ class EvaluationRecoveryStoreMixin:
         from cacheon.chain.execution_disposition import (
             AUTHORITY_CHANGED_HOLD_REASON,
             COMPLETED_NO_DECISION_HOLD_REASON,
+            ORPHANED_CARRIER_HOLD_REASON,
             WORKER_INFRASTRUCTURE_HOLD_REASON,
         )
 
@@ -1078,7 +1079,11 @@ class EvaluationRecoveryStoreMixin:
         held_migration = completed_orphan or (
             parked_held
             and recovery.reason
-            in (WORKER_INFRASTRUCTURE_HOLD_REASON, AUTHORITY_CHANGED_HOLD_REASON)
+            in (
+                WORKER_INFRASTRUCTURE_HOLD_REASON,
+                AUTHORITY_CHANGED_HOLD_REASON,
+                ORPHANED_CARRIER_HOLD_REASON,
+            )
         )
         if (
             type(recovery) is not EvaluationRecovery

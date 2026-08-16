@@ -39,6 +39,7 @@ from cacheon.chain.execution_disposition import (
     COMPLETED_NO_DECISION_HOLD_REASON,
     ExecutionDisposition,
     ExecutionOutcome,
+    ORPHANED_CARRIER_HOLD_REASON,
     PRE_RESIDENT_REQUEUE_FAILURES,
     WORKER_INFRASTRUCTURE_HOLD_REASON,
     WORKER_INFRASTRUCTURE_REQUEUE_FAILURE,
@@ -1079,10 +1080,12 @@ class RecoverableQualificationDispatcher:
             if recovery.reason in (
                 WORKER_INFRASTRUCTURE_HOLD_REASON,
                 AUTHORITY_CHANGED_HOLD_REASON,
+                ORPHANED_CARRIER_HOLD_REASON,
             ):
-                # Both reasons mean the retained request is durably dead --
+                # All three reasons mean the retained request is durably dead --
                 # parked before infrastructure results became requeue-class,
-                # or sealed against an authority that no longer verifies.
+                # sealed against an authority that no longer verifies, or left
+                # with a result whose carrier is gone and can never deliver it.
                 # Retire the dead request and requeue it the same bounded way.
                 return self._requeue_infrastructure(
                     recovery,

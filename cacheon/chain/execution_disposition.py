@@ -282,6 +282,18 @@ WORKER_INFRASTRUCTURE_HOLD_REASON = (
 # the current authority, capped by the systemic release limit.
 AUTHORITY_CHANGED_HOLD_REASON = "transport_hold:authority_changed"
 
+# Durable HELD reason written when a published request's spool carrier is gone
+# while its result directory survives.  The carrier is the only thing that can
+# deliver a retained request, so such a request is dead by definition exactly
+# like the two reasons above, and migrates through the same bounded requeue.
+# Before 2026-08-16 this reason had no handler at all: an operator outbox
+# rotation retired carriers whose results stayed behind, the dispatcher stamped
+# the recovery HELD, and because "resume the active recovery" runs before any
+# fresh claim, one parked row starved every qualification claim for hours with
+# no operator escape.  Never a candidate signal -- a missing spool artifact
+# says nothing about the bundle.
+ORPHANED_CARRIER_HOLD_REASON = "transport_hold:published_carrier_missing"
+
 # Durable HELD reason written when a completed, published product carries no
 # decision.  Completed products never requeue on their own; the recovery
 # parks for the operator.  Once the parked recovery's lease binds no active
