@@ -130,7 +130,7 @@ def test_reconcile_contains_a_failed_release_and_keeps_the_rest() -> None:
 def test_reconcile_gives_a_fresh_budget_only_to_a_row_that_never_exhausted_one() -> None:
     policy = QualificationHoldRequeuePolicy(max_attempts=3, breaker_threshold=99)
     store = _FakeStore(parked=("r1",))
-    reason = "remote_qualification_hold:legacy_no_decision"
+    reason = "remote_qualification_hold:graph_evidence_unavailable"
 
     # One retry consumed, budget not spent: a restart may legitimately retry it.
     assert policy.after_hold(store, reservation_ids=("r1",), reason=reason) == ("r1",)
@@ -161,7 +161,7 @@ def test_one_reservations_own_retries_never_open_the_breaker() -> None:
 
     policy = QualificationHoldRequeuePolicy(max_attempts=3, breaker_threshold=5)
     store = _FakeStore()
-    reason = "remote_qualification_hold:legacy_no_decision"
+    reason = "remote_qualification_hold:graph_evidence_unavailable"
 
     for _ in range(3):
         policy.after_hold(store, reservation_ids=("r1",), reason=reason)
@@ -176,7 +176,7 @@ def test_one_reservations_own_retries_never_open_the_breaker() -> None:
 def test_breaker_opens_on_distinct_exhausted_reservations() -> None:
     policy = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=3)
     store = _FakeStore()
-    reason = "remote_qualification_hold:legacy_no_decision"
+    reason = "remote_qualification_hold:graph_evidence_unavailable"
 
     for rid in ("r1", "r2"):
         policy.after_hold(store, reservation_ids=(rid,), reason=reason)
@@ -194,7 +194,7 @@ def test_breaker_opens_on_distinct_exhausted_reservations() -> None:
 def test_exhausted_row_is_marked_durably_and_not_rehydrated_by_reconcile() -> None:
     """A spent budget must survive a restart, or the watchdog loops forever."""
 
-    reason = "remote_qualification_hold:legacy_no_decision"
+    reason = "remote_qualification_hold:graph_evidence_unavailable"
     store = _FakeStore(parked=("r1",))
 
     first = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=99)
@@ -215,9 +215,61 @@ def test_a_mark_failure_is_contained_and_still_counts_toward_the_breaker() -> No
 
     policy = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=2)
     store = _MarkFails()
-    reason = "remote_qualification_hold:legacy_no_decision"
+    reason = "remote_qualification_hold:graph_evidence_unavailable"
 
     policy.after_hold(store, reservation_ids=("r1",), reason=reason)
     assert not policy.breaker_open
     policy.after_hold(store, reservation_ids=("r2",), reason=reason)
     assert policy.breaker_open
+
+
+def test_a_non_systemic_reason_retries_but_never_opens_the_breaker() -> None:
+    """Native bundles must not halt the queue for every other bundle.
+
+    `legacy_no_decision` means the runner got no resident pair, which happens
+    exactly when the bundle is not hot-swappable. That is one bundle class, not
+    a fault burning the queue. On 2026-08-16 five such bundles opened the
+    breaker eleven times; each time every qualification stopped -- including the
+    swappable bundles producing verdicts -- until the stall watchdog restarted
+    the supervisor, whereupon the same five re-exhausted and reopened it.
+
+    They keep their bounded retries, because a transient `raw_speed_evidence`
+    failure reports the same reason and does deserve them, and they are still
+    durably marked so a restart does not rehydrate the budget.
+    """
+
+    policy = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=2)
+    store = _FakeStore()
+    reason = "remote_qualification_hold:legacy_no_decision"
+
+    for rid in ("native1", "native2", "native3", "native4", "native5"):
+        policy.after_hold(store, reservation_ids=(rid,), reason=reason)
+
+    # Five exhausted against a threshold of two, and claims still flow.
+    assert not policy.breaker_open
+    assert not policy.refuse_fresh_claim()
+    # Still durably marked, so a restart does not hand them a fresh budget.
+    assert sorted(store.exhausted) == [
+        "native1", "native2", "native3", "native4", "native5"
+    ]
+
+
+def test_non_systemic_holds_do_not_blind_the_breaker_to_a_real_fault() -> None:
+    """Excluding one reason must not weaken the breaker for the others."""
+
+    policy = QualificationHoldRequeuePolicy(max_attempts=1, breaker_threshold=2)
+    store = _FakeStore()
+
+    for rid in ("native1", "native2", "native3"):
+        policy.after_hold(
+            store,
+            reservation_ids=(rid,),
+            reason="remote_qualification_hold:legacy_no_decision",
+        )
+    assert not policy.breaker_open
+
+    systemic = "remote_qualification_hold:graph_evidence_unavailable"
+    for rid in ("r1", "r2"):
+        policy.after_hold(store, reservation_ids=(rid,), reason=systemic)
+    assert policy.breaker_open
+    assert policy.refuse_fresh_claim()

@@ -38,6 +38,31 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_BREAKER_THRESHOLD = 5
 _SUPPRESSED_CLAIM_REMINDER_EVERY = 60
 
+# Reasons that still retry within their budget, but must never open the
+# breaker.
+#
+# The breaker exists for a fault that is burning the *whole* queue, where
+# stopping is cheaper than continuing.  ``legacy_no_decision`` is not that: it
+# is raised when the runner got no resident pair and fell back to a crossover
+# that cannot serve speed policy v6+, which happens exactly when the bundle is
+# not hot-swappable (native rebuild, AOT exports, dep patches, engine setup).
+# That is a property of one bundle class, so the other bundles in the queue are
+# unaffected and would grade normally.
+#
+# Refusing every claim on their account inverts the cure: on 2026-08-16 five
+# native bundles opened the breaker eleven times, and each time it halted every
+# qualification -- including the swappable bundles that were producing verdicts
+# -- until the stall watchdog restarted the supervisor, whereupon the same five
+# re-exhausted and reopened it.  A ~30-minute oscillation that can never drain.
+#
+# These keep their bounded retries (a transient ``raw_speed_evidence`` failure
+# reports the same reason and does deserve them) and are still durably marked
+# so a restart does not rehydrate their budget.  They simply do not count as
+# evidence of a systemic fault, because they are not one.
+NON_SYSTEMIC_HOLD_REASONS = frozenset(
+    {"remote_qualification_hold:legacy_no_decision"}
+)
+
 
 class QualificationHoldRequeueError(RuntimeError):
     """The hold-requeue policy is malformed."""
@@ -123,10 +148,12 @@ class QualificationHoldRequeuePolicy:
         retries are not independent evidence of a systemic fault.
         """
 
-        if reason != self._streak_reason:
-            self._streak_reason = reason
-            self._exhausted.clear()
-        self._exhausted.add(reservation_id)
+        systemic = reason not in NON_SYSTEMIC_HOLD_REASONS
+        if systemic:
+            if reason != self._streak_reason:
+                self._streak_reason = reason
+                self._exhausted.clear()
+            self._exhausted.add(reservation_id)
         try:
             store.mark_hold_retry_exhausted(reservation_id)
         except Exception as exc:  # noqa: BLE001 - alarmed, held is safe
@@ -139,7 +166,8 @@ class QualificationHoldRequeuePolicy:
             "QUALIFICATION-HOLD-CAP: reservation "
             f"{reservation_id} burned {burned} attempts "
             f"(cap {self.max_attempts}), latest reason {reason!r}; "
-            "staying held for operator review."
+            "staying held for operator review"
+            + ("." if systemic else "; not counted toward the systemic breaker.")
         )
         if self.breaker_open:
             _alarm(
