@@ -68,7 +68,7 @@ def _new_database(
     return database
 
 
-def _policy_dict(policy: IntakePolicy) -> dict[str, object]:
+def _policy_dict(policy: IntakePolicy) -> dict[str, int]:
     return {
         name: getattr(policy, name) for name in policy.__dataclass_fields__
     }
