@@ -646,13 +646,26 @@ before any chain object is touched, so the commitment round-trip, the
 plaintext-HTTP refusal, and the 1024-byte chain cap are exercised with
 no wallet and no subtensor.
 
+The native `cutlass.cute.cubin.v1` toolchain gained its first live
+proof (`tests/test_native_toolchain_live.py`, opt-in via
+`CACHEON_LIVE_NATIVE_TESTS=1`): a deviceless container compiled a
+minimal `@cute.jit` kernel under the validator compiler recipe on the
+staging image's cutlass-dsl 4.5.2, and a GPU container accepted the
+produced bytes through the production ELF gate and Driver-API
+admission, resolving exactly the declared kernel. The lane's CPU tests
+exercise its policy code against forged headers and a monkeypatched
+compiler; this tier is the only place genuine compiler output meets the
+gate and a device.
+
 This establishes suite health, the tested verify/containment behaviors,
 the seam-table currency of this tree against that staging image, the
 live seam activation path on it at one and two devices — now
-re-provable on demand — the offline submission wire policy, and the
-platform stability of the chain-commitment content hash. It does not
-establish serving performance, qualification or settlement evidence, or
-any crown claim.
+re-provable on demand — the native toolchain's compile and admission
+path on genuine compiler output, the offline submission wire policy,
+and the platform stability of the chain-commitment content hash. It
+does not establish serving performance, the sealed prebuild protocol,
+slot numeric contracts, qualification or settlement evidence, or any
+crown claim.
 
 ### Incentive evidence
 
