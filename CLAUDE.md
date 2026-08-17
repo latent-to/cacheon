@@ -24,6 +24,12 @@ under-weight:
 - **Executed output is the only authority.** Tool calls, logs, and on-disk
   artifacts decide; assistant prose in any transcript does not. For runtime
   systems, one live run beats three offline reviews.
+- **A future consumer is not evidence.** Never call a path end-to-end or remove
+  a safety pin from plural schemas, manifests, mocks, or count-two fixtures;
+  trace and instantiate the exact production factory at the new shape first.
+  Scope every receipt to its exact target, stage depth, and state transition.
+- **Keep the last proven launch path.** At the first live failure of an optional
+  change, restore or narrow to it; fail-closed is safety, not green.
 - **Never convert an infrastructure, baseline, or teardown failure into a
   candidate verdict**, and never fix an evaluation by weakening a gate after
   seeing a result.

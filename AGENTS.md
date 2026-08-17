@@ -22,12 +22,49 @@ Choose the smallest relevant path:
 
 If a task continues earlier Codex or Claude work, follow the cross-harness
 continuity instructions supplied by the environment. Historical logs route an
-investigation; current code, tests, Git state, and external state remain
-authoritative.
+investigation. Current source, Git, and external state are authoritative about
+what exists, not whether it is correct; behavior at the real consumer decides
+implementation claims.
 
 `WORKLOG.md` and `docs/WORKLOG.md`, when present, are private local working
 records. They are ignored and must not be committed, linked from public docs,
 or treated as production authority.
+
+## De-slop discipline (binding)
+
+- The existing codebase is evidence, not ground truth. Inherited code, tests,
+  docs, and abstractions—especially AI-written ones—are hypotheses with no
+  presumption of correctness or survival.
+- Trace the real production entrypoint and terminal artifact before preserving
+  or extending anything. A module is not validated by its own tests or adjacent
+  AI prose. If first real consumption crashes or violates the contract, stop:
+  repair, narrow, or delete it before adding around it.
+- A named or future consumer is not consumption. "End-to-end" requires the
+  exact production entrypoint, input/target, shape/cardinality, state
+  transition, deepest concrete factory/executor, and terminal artifact. A
+  receipt proves only that envelope; mocks, plural schemas/manifests, adjacent
+  loops, count-greater-than-one fixtures, and unexercised branches remain
+  unproven.
+- Before widening shape/cardinality/capability or removing a pin or fallback,
+  trace the complete consumed call graph and run the cheapest exact-shape
+  constructor/preflight. Any disagreeing guard or authority stops the change.
+- During launch/recovery, keep the last proven path deployable. If an optional
+  or unproven change fails its first live consumer, restore or narrow to that
+  path immediately; do not discover successive seams on the paid critical
+  path. Fail-closed preserves integrity but is still a launch regression, not
+  progress toward green.
+- Prefer deletion, reuse of the working manual path, and one proven vertical
+  slice. Never complete or generalize inherited architecture merely because it
+  exists or cost effort.
+- Harness identity earns no trust. Judge Claude and Codex changes by the same
+  real-consumer evidence, failure accounting, and subtraction test.
+- A new runtime target has a new identity. Derive endpoint, paths, image,
+  model, and runtime digests from that target's sealed receipts; an old helper
+  may be read as history but must never be executed or copied unchanged.
+- Before paid deployment, rehearse the exact first command from its final
+  execution path and verify every relative dependency and target binary there.
+  Trace the real call graph to count serial GPU arms and cold-cache work before
+  quoting time or launching; help text and warm prior timings are not evidence.
 
 ## Product invariants
 
