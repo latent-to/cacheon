@@ -3,7 +3,7 @@
 Production payloads are exact JSON objects. Version 1 names a content hash
 and a canonical HTTPS URL. Version 2 adds a compact eval-cost payment pointer
 ``{"b":block,"i":extrinsic_index}``. Identity remains ``h``/``u``; the pointer
-only locates the burn that paid for this reveal. ``file://`` exists behind
+only locates the transfer that paid for this reveal. ``file://`` exists behind
 separate test-only functions so an on-chain value can never select local files
 or plaintext HTTP.
 """

@@ -1429,7 +1429,13 @@ def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
 
 
 def cmd_chain_submit(args: argparse.Namespace) -> int:
-    from cacheon.chain.eval_cost import EvalCostError, EvalCostFetchError, EvalCostPolicy
+    from cacheon.chain.eval_cost import (
+        EvalCostCommitError,
+        EvalCostError,
+        EvalCostFetchError,
+        EvalCostPolicy,
+        unused_eval_cost_retry_flags,
+    )
     from cacheon.chain.payload import PayloadError
     from cacheon.chain.submit import submit_bundle
 
@@ -1437,8 +1443,14 @@ def cmd_chain_submit(args: argparse.Namespace) -> int:
 
     subtensor = wallet = None
     pay = bool(getattr(args, "pay", False))
+    payment_block = int(getattr(args, "eval_cost_payment_block", 0) or 0)
+    payment_index = int(getattr(args, "eval_cost_payment_extrinsic_index", 0) or 0)
+    reuse = payment_block > 0
+    if pay and reuse:
+        print("REFUSED before signing: cannot pay and reuse an eval-cost payment together")
+        return 2
     policy = None
-    if pay:
+    if pay or reuse:
         policy = EvalCostPolicy(
             amount_rao=int(getattr(args, "eval_cost_tao_rao", 1_000_000_000)),
         )
@@ -1460,13 +1472,21 @@ def cmd_chain_submit(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             pay=pay,
             eval_cost_policy=policy,
+            payment_block=payment_block,
+            payment_extrinsic_index=payment_index,
         )
     except (PayloadError, EvalCostError, EvalCostFetchError) as e:
-        print(f"REFUSED before signing: {e}")
+        if isinstance(e, EvalCostCommitError):
+            print(f"REFUSED after eval-cost payment: {e}")
+        else:
+            print(f"REFUSED before signing: {e}")
         return 2
     print(f"content_hash: {res['content_hash']}")
     print(f"payload:      {res['payload']}")
-    if res.get("paid"):
+    payment = res.get("eval_cost_payment") or {}
+    pointer_block = int(res.get("eval_cost_payment_block") or 0)
+    pointer_index = int(res.get("eval_cost_payment_extrinsic_index") or 0)
+    if res.get("eval_cost_tao_rao") is not None:
         print(
             f"eval_cost:    {res.get('eval_cost_tao_rao')} tao-rao "
             f"({res.get('eval_cost_instrument')}) "
@@ -1477,18 +1497,19 @@ def cmd_chain_submit(args: argparse.Namespace) -> int:
             f"issued_block={res.get('eval_cost_issued_block')} "
             f"expires_block={res.get('eval_cost_expires_block')}"
         )
-        payment = res.get("eval_cost_payment") or {}
-        if payment.get("dry_run"):
-            print(
-                "eval_cost payment is quoted only; --dry-run does not transfer TAO."
-            )
-        elif payment.get("submitted"):
-            print(
-                "eval_cost payment: "
-                f"block={payment.get('payment_block')} "
-                f"extrinsic={payment.get('payment_extrinsic_index')}"
-            )
+    if payment.get("reused"):
+        print(
+            "eval_cost payment reused: "
+            f"block={pointer_block} extrinsic={pointer_index}"
+        )
+    elif payment.get("submitted") or pointer_block:
+        print(
+            "eval_cost payment: "
+            f"block={pointer_block} extrinsic={pointer_index}"
+        )
     if args.dry_run:
+        if pay:
+            print("eval_cost payment is quoted only; --dry-run does not transfer TAO.")
         print("DRY RUN — nothing sent. The payload above is what would be committed "
               f"(timelock, reveals after {args.blocks_until_reveal} blocks).")
         return 0
@@ -1496,6 +1517,11 @@ def cmd_chain_submit(args: argparse.Namespace) -> int:
     print(f"set_reveal_commitment submitted={ok} "
           f"(reveals after {args.blocks_until_reveal} blocks; the validator picks it "
           "up on its next pass after the reveal)")
+    if not ok and pointer_block > 0:
+        print(
+            "eval-cost TAO already transferred. Retry the same bundle without --pay: "
+            + unused_eval_cost_retry_flags(pointer_block, pointer_index)
+        )
     return 0 if ok else 1
 
 
@@ -2583,10 +2609,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="transfer the published eval-cost TAO amount to the current subnet owner coldkey, then commit a v2 payment pointer",
     )
     sp.add_argument(
+        "--eval-cost-payment-block",
+        type=int,
+        default=0,
+        help="reuse an already-included unused eval-cost transfer at this block instead of --pay",
+    )
+    sp.add_argument(
+        "--eval-cost-payment-extrinsic-index",
+        type=int,
+        default=0,
+        help="extrinsic index of the unused eval-cost transfer; requires --eval-cost-payment-block",
+    )
+    sp.add_argument(
         "--eval-cost-tao-rao",
         type=int,
         default=1_000_000_000,
-        help="TAO amount in rao to transfer with --pay; default 1000000000 (1 TAO)",
+        help="TAO amount in rao to transfer with --pay or to verify when reusing a payment; default 1000000000 (1 TAO)",
     )
     sp.set_defaults(func=cmd_chain_submit)
 

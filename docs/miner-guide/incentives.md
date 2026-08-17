@@ -6,7 +6,9 @@ operator enables the eval-cost gate, each admitted proposal must also transfer
 the published TAO amount to the current subnet owner coldkey; that transfer is an
 anti-spam admission cost, not a reward.
 `--pay` freezes the quoted amount for about one hour (300 blocks) so the price cannot
-move while the transfer is in flight.
+move while the transfer is in flight. The transfer may precede the reveal; if the
+commit fails, retry the same bundle with the unused payment pointer instead of
+paying again. See [Submitting](submitting.md#step-by-step-commands).
 
 !!! tip "The 30-second answer"
     You submit one optimization for a target in a validator-published evaluation

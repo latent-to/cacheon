@@ -164,7 +164,7 @@ Use the technical guide in this order:
 3. [Kernel ABI](kernel-abi.md)
 4. [Your first kernel](your-first-kernel.md)
 5. [Finding a win](finding-a-win.md)
-6. [Submitting](submitting.md)
+6. [Submitting](submitting.md) — copy-paste chain-submit sequence, including eval-cost
 7. [Diagnostics](diagnostics.md)
 
 Read [Override points](override-points.md), [Dependency patches](dep-patches.md),

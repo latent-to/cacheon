@@ -85,7 +85,9 @@ The evidence classes are intentionally non-substitutable:
 - Optional eval-cost admission (default off) requires a coldkey
   `Balances.transfer_keep_alive` of the published TAO amount to the current
   subnet owner coldkey, bound by a content-hash remark and consumed once. v1
-  quotes freeze that amount for 300 blocks (~1 hour).
+  quotes freeze that amount for 300 blocks (~1 hour). A later reveal of the
+  same bundle may attach an unused payment pointer; intake consumes the pointer
+  only on reserved or deferred admission.
 
 ### Validator recovery archive
 
@@ -684,7 +686,7 @@ The live command inventory is:
 
 ```text
 slots  compat  chain-compat  scan  verify
-chain-package  chain-publish  chain-submit  chain-status  chain-register
+chain-package  chain-publish  chain-eval-cost  chain-submit  chain-status  chain-register
 chain-reservation-status  chain-validate  chain-snapshot  chain-snapshot-verify
 chain-archive-schema3-hold  chain-evaluation-lease
 model-provision  release-verify  release-context
@@ -712,6 +714,7 @@ claim that a live mainnet deployment or receipt exists.
 - [Target catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py)
 - [Hardened fetch](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py)
 - [Miner object-store publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publish.py)
+- [Eval-cost quote and payment](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost.py)
 - [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
 - [Resident screening](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py)
 - [Adaptive resident runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)

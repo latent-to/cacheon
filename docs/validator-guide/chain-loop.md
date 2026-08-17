@@ -353,7 +353,11 @@ The default `IntakePolicy` values are:
 | Finalized-block expiry SLA | 2,880 blocks | Automatically expires eligible unresolved rows and sets the minimum age for explicit expiry |
 | Eval-cost TAO-rao | 0 (off) | Required `transfer_keep_alive` amount per admission; destination is the current subnet owner coldkey; `chain-validate --eval-cost-tao-rao` enables the gate |
 | Eval-cost quote TTL | 300 blocks | Quoted amount stays valid until the transfer is included (~1 hour); later quote versions may change the amount only after this window |
-| Eval-cost payment window | 7,200 blocks | Maximum finalized distance from the transfer to the reveal |
+| Eval-cost payment window | 7,200 blocks | Maximum finalized distance from the transfer to the reveal; unused payments stay reusable until reserved or deferred admission |
+
+A v2 reveal may attach a payment pointer. Intake rebuilds the remark from that
+reveal's hotkey, content hash, and netuid; only that triple can spend the
+pointer. The paying coldkey is not the claimant.
 
 Arena capacity is an additional bound. Its queue age/depth, active-screen,
 active-qualification, cohort, and retry limits are content-bound in the service manifest.

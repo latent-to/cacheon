@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 from cacheon.chain import _extrinsic_outcome
@@ -9,10 +10,13 @@ from cacheon.chain.eval_cost import (
     EvalCostError,
     EvalCostFetchError,
     EvalCostPaymentProof,
+    EvalCostPolicy,
     EvalCostQuote,
     EvalCostRequest,
+    decode_payment_remark,
     encode_payment_remark,
     proof_from_decoded_extrinsic,
+    verify_eval_cost_payment,
 )
 
 
@@ -183,6 +187,60 @@ def read_eval_cost_payment(
         call_args=args,
         events=events,
     )
+
+
+def bind_eval_cost_payment(
+    subtensor,
+    request: EvalCostRequest,
+    *,
+    payment_block: int,
+    payment_extrinsic_index: int,
+) -> EvalCostPaymentProof:
+    """Fetch one included payment and refuse it when it names a different proposal."""
+
+    proof = read_eval_cost_payment(subtensor, payment_block, payment_extrinsic_index)
+    if proof is None:
+        raise EvalCostError("eval-cost payment pointer is not a matching transfer")
+    parsed = decode_payment_remark(proof.remark)
+    if (
+        parsed is None
+        or parsed.get("content_hash") != request.content_hash
+        or parsed.get("hotkey") != request.hotkey
+        or parsed.get("netuid") != request.netuid
+    ):
+        raise EvalCostError("eval-cost payment is bound to a different proposal")
+    return proof
+
+
+def reopen_unused_eval_cost_payment(
+    subtensor,
+    request: EvalCostRequest,
+    *,
+    payment_block: int,
+    payment_extrinsic_index: int,
+    policy: EvalCostPolicy,
+    reveal_block: int,
+) -> EvalCostPaymentProof:
+    """Reopen one included payment and refuse it if this reveal could not spend it."""
+
+    if type(policy) is not EvalCostPolicy:
+        raise EvalCostError("eval-cost policy is not typed")
+    proof = bind_eval_cost_payment(
+        subtensor,
+        request,
+        payment_block=payment_block,
+        payment_extrinsic_index=payment_extrinsic_index,
+    )
+    owner = read_subnet_owner_coldkey(subtensor, request.netuid, block=proof.block)
+    reason = verify_eval_cost_payment(
+        request=request,
+        policy=replace(policy, destination=owner),
+        proof=proof,
+        reveal_block=reveal_block,
+    )
+    if reason:
+        raise EvalCostError(f"eval-cost payment cannot be reused ({reason})")
+    return proof
 
 
 def _inclusion_pointer(result: object, subtensor) -> tuple[int, int]:

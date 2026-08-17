@@ -44,34 +44,181 @@ are currently marked draft and become binding only when an operator announcement
 designates a version. Read the designated terms before signing. Ensure you own
 or can grant the required rights to every submitted source fragment.
 
-Register the miner hotkey first if needed:
+A plain `chain-submit` is hotkey-signed. Paying the eval cost with `--pay` also
+needs the coldkey: it transfers TAO to the current subnet owner coldkey and then
+commits a v2 payload that points at that transfer.
+
+## Step-by-step commands
+
+Set the operator's announced values once. Do not edit `my_bundle` after you
+package or publish it.
+
+```bash
+NET="<NETWORK>"
+NETUID="<NETUID>"
+WALLET="<WALLET>"
+HOTKEY="<HOTKEY>"
+BUNDLE=my_bundle
+URL="https://downloads.example.org/cacheon/my_bundle.tar.gz"
+BLOCKS=10
+```
+
+Use `python -m cacheon.cli` on GPU hosts. Substitute the real HTTPS URL from
+`chain-publish` or from your own host.
+
+### 1. Register the miner hotkey
+
+Skip this if the hotkey is already registered on this netuid. Registration
+needs coldkey authorization.
 
 ```bash
 python -m cacheon.cli chain-register \
-  --netuid <NETUID> --network <NETWORK> \
-  --wallet <WALLET> --hotkey <HOTKEY>
+  --netuid "$NETUID" --network "$NET" \
+  --wallet "$WALLET" --hotkey "$HOTKEY"
 ```
 
-Registration needs coldkey authorization. A plain `chain-submit` is
-hotkey-signed. Paying the eval cost with `--pay` also needs the coldkey: it
-transfers TAO to the current subnet owner coldkey and then commits a v2 payload
-that points at that transfer.
-
-## 1. Freeze and check the bundle
-
-Use an explicit contribution target and source-only contents. Then run the
-development checks appropriate to the target:
+### 2. Check the frozen bundle
 
 ```bash
-python -m cacheon.cli scan my_bundle
-python -m cacheon.cli verify my_bundle --device cuda --dtype bfloat16
+python -m cacheon.cli scan "$BUNDLE"
+python -m cacheon.cli verify "$BUNDLE" --device cuda --dtype bfloat16
 ```
 
-Inspect the tree for credentials, caches, generated binaries, model data,
-machine paths, unsupported licenses, and stale result metadata. `scan` and
-`verify` are diagnostics; they do not pre-approve intake.
+`scan` and `verify` are diagnostics; they do not pre-approve intake. See
+[Bundle checks](#bundle-checks) for what to inspect.
 
-## 2. Publish from the miner's object store
+### 3. Host the archive
+
+Either publish through the miner's S3-compatible bucket:
+
+```bash
+python -m pip install -e ".[object-store]"
+python -m cacheon.cli chain-publish "$BUNDLE" --out dist/my_bundle.tar.gz
+```
+
+Or package and upload the archive yourself:
+
+```bash
+python -m cacheon.cli chain-package "$BUNDLE" --out dist/my_bundle.tar.gz
+```
+
+Copy the printed content hash and the public HTTPS URL. Set `URL` to that
+exact URL. Bucket variables, CDN origins, and fetch limits are under
+[Publish from the miner's object store](#publish-from-the-miners-object-store).
+
+### 4. Dry-run the unpaid payload
+
+```bash
+python -m cacheon.cli chain-submit "$BUNDLE" \
+  --url "$URL" \
+  --netuid "$NETUID" --network "$NET" \
+  --wallet "$WALLET" --hotkey "$HOTKEY" \
+  --blocks-until-reveal "$BLOCKS" \
+  --dry-run
+```
+
+The printed `content_hash` must match the package result. The unpaid payload is
+canonical JSON with exactly three fields:
+
+```json
+{"v":1,"h":"<64-lowercase-hex>","u":"https://.../my_bundle.tar.gz"}
+```
+
+A refused dry-run has not signed or sent anything. The production payload cap
+is 1,024 bytes.
+
+### 5. Submit — eval-cost gate off
+
+If the operator's `eval_cost_tao_rao` is `0` (the code default), commit the
+unpaid payload. Do not pass `--pay`.
+
+```bash
+python -m cacheon.cli chain-submit "$BUNDLE" \
+  --url "$URL" \
+  --netuid "$NETUID" --network "$NET" \
+  --wallet "$WALLET" --hotkey "$HOTKEY" \
+  --blocks-until-reveal "$BLOCKS"
+```
+
+Then skip to [Inspect public chain state](#7-inspect-public-chain-state).
+
+### 6. Submit — eval-cost gate on
+
+If the operator requires a TAO admission transfer, quote, dry-run `--pay`, then
+pay and commit. The destination is the current subnet owner coldkey.
+
+```bash
+python -m cacheon.cli chain-eval-cost --netuid "$NETUID" --network "$NET"
+python -m cacheon.cli chain-submit "$BUNDLE" \
+  --url "$URL" \
+  --netuid "$NETUID" --network "$NET" \
+  --wallet "$WALLET" --hotkey "$HOTKEY" \
+  --blocks-until-reveal "$BLOCKS" \
+  --pay \
+  --dry-run
+```
+
+`--pay --dry-run` does not transfer TAO. The dry-run payload stays v1 because
+there is no inclusion pointer yet. Then pay and commit:
+
+```bash
+python -m cacheon.cli chain-submit "$BUNDLE" \
+  --url "$URL" \
+  --netuid "$NETUID" --network "$NET" \
+  --wallet "$WALLET" --hotkey "$HOTKEY" \
+  --blocks-until-reveal "$BLOCKS" \
+  --pay
+```
+
+A live `--pay` freezes the quoted amount for 300 blocks (~1 hour) until the
+transfer lands, then commits v2. Copy the printed pointer:
+
+```text
+eval_cost payment: block=<BLOCK> extrinsic=<INDEX>
+```
+
+```json
+{"v":2,"h":"<64-lowercase-hex>","u":"https://.../my_bundle.tar.gz","p":{"b":<block>,"i":<extrinsic_index>}}
+```
+
+If the reveal commit fails after the transfer is included, retry **without**
+`--pay`. Only this miner hotkey can spend that pointer, and only for this
+bundle and netuid. There is no refund.
+
+```bash
+python -m cacheon.cli chain-submit "$BUNDLE" \
+  --url "$URL" \
+  --netuid "$NETUID" --network "$NET" \
+  --wallet "$WALLET" --hotkey "$HOTKEY" \
+  --blocks-until-reveal "$BLOCKS" \
+  --eval-cost-payment-block <BLOCK> \
+  --eval-cost-payment-extrinsic-index <INDEX>
+```
+
+### 7. Inspect public chain state
+
+```bash
+python -m cacheon.cli chain-status \
+  --netuid "$NETUID" --network "$NET" \
+  --wallet "$WALLET" --hotkey "$HOTKEY"
+```
+
+`chain-status` shows subnet and revealed-commitment state. It does not read the
+validator's private SQLite intake lifecycle; use the operator's published
+status/receipt surface for later stages.
+
+The SDK encrypts the payload for automatic reveal after the requested timelock.
+This is not the old local salt/round simulation. The finalized reveal position
+provides the consensus arrival order used by intake.
+
+## Bundle checks
+
+Use an explicit contribution target and source-only contents. Then run the
+development checks in [step 2](#2-check-the-frozen-bundle). Inspect the tree for
+credentials, caches, generated binaries, model data, machine paths, unsupported
+licenses, and stale result metadata.
+
+## Publish from the miner's object store
 
 Each miner owns and pays for their own bucket. The validator does not provision
 the bucket, receive the miner's credentials, or use authenticated object-store
@@ -187,83 +334,6 @@ inspectable files, bounded extension metadata, at most five redirects, and one
 60-second absolute DNS/TLS/transfer/extraction deadline. The validator re-hashes
 the safely extracted identity-bearing tree. See
 [fetch.py](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py).
-
-## 3. Dry-run the chain payload
-
-```bash
-python -m cacheon.cli chain-submit my_bundle \
-  --url https://downloads.example.org/cacheon/my_bundle.tar.gz \
-  --netuid <NETUID> --network <NETWORK> \
-  --wallet <WALLET> --hotkey <HOTKEY> \
-  --blocks-until-reveal <BLOCKS> \
-  --dry-run
-```
-
-Check that the printed `content_hash` equals the package result. The unpaid payload is canonical JSON with exactly three fields:
-
-```json
-{"v":1,"h":"<64-lowercase-hex>","u":"https://.../my_bundle.tar.gz"}
-```
-
-When the operator enables the eval-cost gate, quote first. `--pay --dry-run`
-prints the published TAO amount, the current subnet owner destination, and
-one-hour TTL without signing; the dry-run payload stays v1 because there is no
-inclusion pointer yet. A live `--pay` quotes at the current block, freezes that
-amount until the transfer is included (default 300 blocks, about one hour), then
-commits the v2 pointer. `--pay` always resolves the destination from the
-metagraph `owner_coldkey` at payment time.
-
-```bash
-python -m cacheon.cli chain-eval-cost --netuid <NETUID> --network <NETWORK>
-python -m cacheon.cli chain-submit my_bundle \
-  --url https://downloads.example.org/cacheon/my_bundle.tar.gz \
-  --netuid <NETUID> --network <NETWORK> \
-  --wallet <WALLET> --hotkey <HOTKEY> \
-  --blocks-until-reveal <BLOCKS> \
-  --pay \
-  --dry-run
-```
-
-A live `--pay` transfers that TAO amount from the coldkey to the current subnet
-owner, then commits a v2 payload whose `p` pointer locates the transfer.
-Identity remains `h`/`u`:
-
-```json
-{"v":2,"h":"<64-lowercase-hex>","u":"https://.../my_bundle.tar.gz","p":{"b":<block>,"i":<extrinsic_index>}}
-```
-
-The production payload cap is 1,024 bytes. A refused dry run has not signed or
-sent anything.
-
-## 4. Submit the timelock commitment
-
-Run the same command without `--dry-run`. When the operator requires an
-eval-cost transfer, keep `--pay`:
-
-```bash
-python -m cacheon.cli chain-submit my_bundle \
-  --url https://downloads.example.org/cacheon/my_bundle.tar.gz \
-  --netuid <NETUID> --network <NETWORK> \
-  --wallet <WALLET> --hotkey <HOTKEY> \
-  --blocks-until-reveal <BLOCKS> \
-  --pay
-```
-
-The SDK encrypts the payload for automatic reveal after the requested timelock.
-This is not the old local salt/round simulation. The finalized reveal position
-provides the consensus arrival order used by intake.
-
-You can inspect public chain state with:
-
-```bash
-python -m cacheon.cli chain-status \
-  --netuid <NETUID> --network <NETWORK> \
-  --wallet <WALLET> --hotkey <HOTKEY>
-```
-
-`chain-status` shows subnet and revealed-commitment state. It does not read the
-validator's private SQLite intake lifecycle; use the operator's published
-status/receipt surface for later stages.
 
 ## What happens after reveal
 

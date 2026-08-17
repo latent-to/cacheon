@@ -158,14 +158,13 @@ python -m cacheon.cli chain-submit path/to/bundle \
 ```
 
 `chain-submit` re-hashes the local bundle before constructing the payload. Use
-`--dry-run` to print the payload without signing or submitting it. `--pay` quotes
-at the current block (the amount is frozen for 300 blocks, about one hour),
-transfers that TAO amount (coldkey) to the current subnet owner, and commits a
-v2 payment pointer; `--dry-run --pay` prints the quote without transferring.
-Validators act only
-on finalized, valid reveals and independently fetch, extract, and re-hash the hosted
-archive. When the operator sets `--eval-cost-tao-rao` above zero, unpaid v1
-reveals fail admission.
+`--dry-run` to print it without signing. `--pay` transfers the quoted TAO amount
+to the current subnet owner and commits a v2 pointer. If that transfer lands but
+the reveal fails, retry with `--eval-cost-payment-block` and
+`--eval-cost-payment-extrinsic-index` instead of `--pay`. Full commands:
+[Submitting a proposal](../miner-guide/submitting.md#step-by-step-commands).
+When the operator sets `--eval-cost-tao-rao` above zero, unpaid v1 reveals fail
+admission.
 
 ```bash
 python -m cacheon.cli chain-eval-cost --netuid <netuid> --network <network>
@@ -284,7 +283,9 @@ set `1000000000` to require the published 1 TAO `transfer_keep_alive` to the
 current subnet owner coldkey per admission, and
 `--eval-cost-payment-window-blocks` to bound how old that transfer may be relative
 to the reveal. `--eval-cost-quote-ttl-blocks` (default 300, about one hour) is how long a quoted
-amount stays valid until the transfer is included. The audit file is a redacted, fsynced JSONL chronology;
+amount stays valid until the transfer is included. The transfer may precede the
+reveal; unused payments remain reusable until a reserved or deferred admission
+consumes them. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 

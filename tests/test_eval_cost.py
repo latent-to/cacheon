@@ -12,6 +12,7 @@ from cacheon.chain.eval_cost import (
     REASON_MISSING,
     REASON_QUOTE_EXPIRED,
     REASON_WINDOW,
+    EvalCostCommitError,
     EvalCostError,
     EvalCostFetchError,
     EvalCostPaymentProof,
@@ -20,9 +21,10 @@ from cacheon.chain.eval_cost import (
     encode_payment_remark,
     proof_from_decoded_extrinsic,
     quote_eval_cost,
+    unused_eval_cost_retry_flags,
     verify_eval_cost_payment,
 )
-from cacheon.chain.eval_cost_payment import read_subnet_owner_coldkey
+from cacheon.chain.eval_cost_payment import bind_eval_cost_payment, read_subnet_owner_coldkey
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
@@ -430,3 +432,217 @@ def test_valid_payment_is_consumed_once(tmp_path) -> None:
         reopened = store.get(rows[0].reservation_id)
         assert reopened.arrival.payment_block == 8
         assert reopened.arrival.payment_extrinsic_index == 4
+
+
+def test_payment_may_precede_reveal_within_the_window() -> None:
+    request, quote = _quote(payment_window_blocks=7_200, at_block=70)
+    assert (
+        verify_eval_cost_payment(
+            request=request,
+            policy=EvalCostPolicy(
+                amount_rao=10,
+                destination=TREASURY,
+                payment_window_blocks=7_200,
+            ),
+            proof=_proof(remark=encode_payment_remark(request, quote), block=80),
+            reveal_block=80 + 1_000,
+        )
+        == ""
+    )
+
+
+def test_failed_intake_leaves_eval_cost_payment_unused(tmp_path) -> None:
+    failed = FinalizedArrival(
+        hotkey="miner",
+        content_hash=HASH,
+        url="https://example.com/a.tar.gz",
+        block=10,
+        block_hash="0x" + f"{10:064x}",
+        event_index=0,
+        payment_block=8,
+        payment_extrinsic_index=4,
+        invalid_reason="malformed_payload",
+    )
+    retry = FinalizedArrival(
+        hotkey="miner",
+        content_hash=HASH,
+        url="https://example.com/a.tar.gz",
+        block=12,
+        block_hash="0x" + f"{12:064x}",
+        event_index=0,
+        payment_block=8,
+        payment_extrinsic_index=4,
+    )
+    with FinalizedIntakeStore(
+        tmp_path / "private" / "intake.sqlite3",
+        IntakePolicy(**_PAID_POLICY, expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        first = store.reserve_finalized(
+            (failed,),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )[0]
+        assert first.status == "failed"
+        second = store.reserve_finalized(
+            (retry,),
+            finalized_block=12,
+            finalized_block_hash="0x" + f"{12:064x}",
+        )[0]
+        assert second.status == "reserved"
+        assert second.arrival.payment_block == 8
+
+
+class _Hotkey:
+    ss58_address = "miner"
+
+
+class _Wallet:
+    hotkey = _Hotkey()
+
+
+class _OwnerMetagraph:
+    def __init__(self, owner: str, block: int) -> None:
+        self.owner_coldkey = owner
+        self.block = block
+
+
+class _PaymentChain:
+    def __init__(self, remark: str, *, current_block: int = 90) -> None:
+        self._remark = remark
+        self._current = current_block
+        self.substrate = self
+
+    def get_current_block(self) -> int:
+        return self._current
+
+    def get_block_hash(self, block: int) -> str:
+        return f"0x{block:064x}"
+
+    def metagraph(self, netuid, block=None):
+        return _OwnerMetagraph(TREASURY, block)
+
+    def get_block(self, block_hash=None):
+        call = {
+            "address": "coldkey",
+            "call": {
+                "call_module": "Utility",
+                "call_function": "batch_all",
+                "call_args": {
+                    "calls": [
+                        {
+                            "call_module": "Balances",
+                            "call_function": "transfer_keep_alive",
+                            "call_args": {
+                                "dest": TREASURY,
+                                "value": 10,
+                            },
+                        },
+                        {
+                            "call_module": "System",
+                            "call_function": "remark_with_event",
+                            "call_args": {"remark": self._remark},
+                        },
+                    ]
+                },
+            },
+        }
+
+        class _Extrinsic:
+            value = call
+
+        return {"block": {"extrinsics": [{}, {}, {}, {}, _Extrinsic()]}}
+
+    def get_events(self, block_hash=None):
+        return [
+            {
+                "extrinsic_idx": 4,
+                "event": {
+                    "module_id": "Balances",
+                    "event_id": "Transfer",
+                    "attributes": ("coldkey", TREASURY, 10),
+                },
+            }
+        ]
+
+
+def _bundle_request_and_remark():
+    request = EvalCostRequest(
+        netuid=307,
+        hotkey="miner",
+        content_hash=content_hash(_BUNDLE),
+    )
+    quote = quote_eval_cost(
+        request,
+        policy=EvalCostPolicy(amount_rao=10, destination=TREASURY),
+        at_block=70,
+    )
+    return request, encode_payment_remark(request, quote)
+
+
+def test_bind_eval_cost_payment_rejects_a_different_proposal() -> None:
+    _request, remark = _bundle_request_and_remark()
+    chain = _PaymentChain(remark)
+    with pytest.raises(EvalCostError, match="different proposal"):
+        bind_eval_cost_payment(
+            chain,
+            EvalCostRequest(netuid=307, hotkey="miner", content_hash="b" * 64),
+            payment_block=80,
+            payment_extrinsic_index=4,
+        )
+
+
+def test_reuse_binds_an_unused_payment_and_encodes_v2() -> None:
+    request, remark = _bundle_request_and_remark()
+    result = submit_bundle(
+        _PaymentChain(remark),
+        _Wallet(),
+        307,
+        _BUNDLE,
+        "https://example.com/bundles/miner-silu-torch.tar",
+        dry_run=True,
+        payment_block=80,
+        payment_extrinsic_index=4,
+        eval_cost_policy=EvalCostPolicy(amount_rao=10),
+    )
+    assert result["eval_cost_payment"]["reused"] is True
+    assert result["eval_cost_payment_block"] == 80
+    ref = decode_payload(request.hotkey, 100, result["payload"])
+    assert ref is not None
+    assert ref.payment_block == 80
+    assert ref.payment_extrinsic_index == 4
+    assert ref.content_hash == request.content_hash
+
+
+def test_commit_failure_after_pay_preserves_the_unused_pointer(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "cacheon.chain.submit.pay_eval_cost_tao",
+        lambda *_args, **_kwargs: {
+            "submitted": True,
+            "payment_block": 80,
+            "payment_extrinsic_index": 4,
+            "amount_rao": 10,
+            "destination": TREASURY,
+            "issued_block": 70,
+            "expires_block": 370,
+            "remark": "paid",
+        },
+    )
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("commitment timeout")
+
+    monkeypatch.setattr("cacheon.chain.submit.post_reveal_commitment", boom)
+    with pytest.raises(EvalCostCommitError, match="eval-cost-payment-block 80") as caught:
+        submit_bundle(
+            _PaymentChain("unused"),
+            _Wallet(),
+            307,
+            _BUNDLE,
+            "https://example.com/bundles/miner-silu-torch.tar",
+            pay=True,
+            eval_cost_policy=EvalCostPolicy(amount_rao=10, destination=TREASURY),
+        )
+    assert unused_eval_cost_retry_flags(80, 4) in str(caught.value)
+    assert caught.value.payment_block == 80
+    assert caught.value.payment_extrinsic_index == 4

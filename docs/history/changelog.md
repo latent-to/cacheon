@@ -383,7 +383,11 @@ the payment block, not a miner- or operator-supplied wallet. The gate defaults
 off (`eval_cost_tao_rao=0`). Enabling it with
 `chain-validate --eval-cost-tao-rao 1000000000` matches the published 1 TAO
 quote. A quote freezes the amount from issuance through payment for 300 blocks
-(~1 hour). Sealed FIFO/dispatcher configs must include the new
+(~1 hour). Payment may precede the reveal; `chain-submit` can attach an unused
+included transfer with `--eval-cost-payment-block` /
+`--eval-cost-payment-extrinsic-index` instead of `--pay`. Intake consumes the
+pointer only on reserved or deferred admission, so a failed reveal leaves the
+credit unused. Sealed FIFO/dispatcher configs must include the new
 `eval_cost_tao_rao`, `eval_cost_payment_window_blocks`, and
 `eval_cost_quote_ttl_blocks` policy keys.
 

@@ -188,7 +188,9 @@ serving regime. See [Graph evidence](graph-safety.md).
 ## 5. Chain payload, fetch, and publication
 
 If the commitment is not accepted locally, use `chain-submit --dry-run` and
-check the exact HTTPS URL and 64-character lowercase hash.
+check the exact HTTPS URL and 64-character lowercase hash. If `--pay` transferred
+TAO but the reveal commit failed, retry without `--pay` using the unused pointer
+in [Submitting](submitting.md#step-by-step-commands).
 
 After reveal, transport failures divide into two classes:
 

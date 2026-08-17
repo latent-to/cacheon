@@ -67,6 +67,8 @@ reopens evidence but accepts only reviewed integrated source.
 |---|---|
 | Chain-facing commands | [`cli.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py) |
 | Miner S3-compatible publication | [`chain/publish.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publish.py) |
+| Miner commit-reveal submission | [`chain/submit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/submit.py), [`chain/payload.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/payload.py) |
+| Eval-cost quote and payment verify | [`chain/eval_cost.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost.py), [`chain/eval_cost_payment.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost_payment.py) |
 | Finalized intake and SQLite state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
 | Hardened archive fetch | [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py) |
 | Validator loop | [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py) |

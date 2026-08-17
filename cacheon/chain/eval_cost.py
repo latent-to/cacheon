@@ -8,9 +8,12 @@ in the on-chain remark. Later quote versions may inspect
 pointer, or intake consume-once machinery.
 
 The miner pays with ``Balances.transfer_keep_alive`` to the subnet owner
-coldkey at payment time, batched with ``System.remark_with_event``. Validators
-admit a paid reveal only after the remark binds that transfer to this exact
-proposal and the destination matches the owner at the inclusion block.
+coldkey at payment time, batched with ``System.remark_with_event``. The
+transfer may precede the reveal: intake consumes the pointer only when a
+reveal is reserved or deferred, so an unused payment can be attached to a
+later commit of the same proposal. Validators admit a paid reveal only after
+the remark binds that transfer to this exact proposal and the destination
+matches the owner at the inclusion block.
 """
 
 from __future__ import annotations
@@ -56,8 +59,35 @@ class EvalCostError(ValueError):
     """A quote, remark, or payment proof violates the eval-cost contract."""
 
 
+class EvalCostCommitError(EvalCostError):
+    """Reveal commit failed after an eval-cost transfer was already included."""
+
+    def __init__(
+        self,
+        payment_block: int,
+        payment_extrinsic_index: int,
+        cause: BaseException,
+    ) -> None:
+        self.payment_block = payment_block
+        self.payment_extrinsic_index = payment_extrinsic_index
+        super().__init__(
+            "reveal commit failed after eval-cost payment "
+            f"{unused_eval_cost_retry_flags(payment_block, payment_extrinsic_index)}: "
+            f"{cause}"
+        )
+
+
 class EvalCostFetchError(RuntimeError):
     """The chain payment lookup could not be completed; retry the pass."""
+
+
+def unused_eval_cost_retry_flags(payment_block: int, payment_extrinsic_index: int) -> str:
+    """CLI flags that attach one already-included unused eval-cost payment."""
+
+    return (
+        f"--eval-cost-payment-block {payment_block} "
+        f"--eval-cost-payment-extrinsic-index {payment_extrinsic_index}"
+    )
 
 
 def _require_account(value: object, *, field: str) -> str:
