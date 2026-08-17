@@ -49,7 +49,6 @@ tests/test_collective.py
 tests/test_collective_cuda_graph.py
 tests/test_evaluation_coordinator.py
 tests/test_evaluation_lease_operator.py
-tests/test_evidence_store.py
 tests/test_mainnet_screen_dispatcher.py
 tests/test_oci_backend.py
 tests/test_qualification_runner.py
