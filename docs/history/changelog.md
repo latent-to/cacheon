@@ -387,9 +387,10 @@ quote. A quote freezes the amount from issuance through payment for 300 blocks
 included transfer with `--eval-cost-payment-block` /
 `--eval-cost-payment-extrinsic-index` instead of `--pay`. Intake consumes the
 pointer only on reserved or deferred admission, so a failed reveal leaves the
-credit unused. Sealed FIFO/dispatcher configs must include the new
-`eval_cost_tao_rao`, `eval_cost_payment_window_blocks`, and
-`eval_cost_quote_ttl_blocks` policy keys.
+credit unused. These chain-admission settings do not expand the shared sealed
+FIFO/dispatcher `IntakePolicy`. With the gate off, intake does not consume an
+unverified v2 pointer, so disabled-mode traffic cannot poison a future payment
+coordinate.
 
 ## Corrections and retractions
 

@@ -122,21 +122,11 @@ class IntakePolicy:
     max_qualification_retries: int = 3
     max_cohort: int = 8
     expiry_blocks: int = 2_880
-    eval_cost_tao_rao: int = 0
-    eval_cost_payment_window_blocks: int = 7_200
-    eval_cost_quote_ttl_blocks: int = 300
 
     def __post_init__(self) -> None:
-        for field in self.__dataclass_fields__:
-            value = getattr(self, field)
-            if type(value) is not int:
-                raise IntakeError("intake policy bounds must be positive integers")
-            if field == "eval_cost_tao_rao":
-                if value < 0:
-                    raise IntakeError("eval cost amount cannot be negative")
-                continue
-            if value <= 0:
-                raise IntakeError("intake policy bounds must be positive integers")
+        values = tuple(getattr(self, field) for field in self.__dataclass_fields__)
+        if any(type(value) is not int or value <= 0 for value in values):
+            raise IntakeError("intake policy bounds must be positive integers")
         if self.cutoff_blocks >= self.epoch_blocks:
             raise IntakeError("intake cutoff must be smaller than its epoch")
         if self.max_cohort > self.max_pending:
@@ -852,6 +842,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         *,
         finalized_block: int,
         finalized_block_hash: str,
+        eval_cost_amount_tao_rao: int = 0,
     ) -> tuple[IntakeReservation, ...]:
         rows = tuple(arrivals)
         if any(type(row) is not FinalizedArrival for row in rows):
@@ -864,6 +855,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("finalized block is malformed")
         if _BLOCK_HASH.fullmatch(finalized_block_hash or "") is None:
             raise IntakeError("finalized block hash is malformed")
+        if (
+            type(eval_cost_amount_tao_rao) is not int
+            or eval_cost_amount_tao_rao < 0
+        ):
+            raise IntakeError("eval cost amount cannot be negative")
         if any(row.block > finalized_block for row in rows):
             raise IntakeError("unfinalized arrival reached durable intake")
 
@@ -908,12 +904,18 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 status, reason = "reserved", ""
                 if not arrival.valid:
                     status, reason = "failed", arrival.invalid_reason
+                elif eval_cost_amount_tao_rao > 0 and arrival.payment_block == 0:
+                    status, reason = "failed", "missing_eval_cost_payment"
                 elif finalized_block - arrival.block >= self.policy.expiry_blocks:
                     status, reason = "expired", _AUTOMATIC_EXPIRY_REASON
                 elif hotkey_count >= self.policy.max_per_hotkey_epoch:
                     status, reason = "failed", "hotkey_epoch_admission_limit"
-                elif arrival.payment_block > 0 and self._eval_cost_payment_used(
-                    arrival.payment_block, arrival.payment_extrinsic_index
+                elif (
+                    eval_cost_amount_tao_rao > 0
+                    and arrival.payment_block > 0
+                    and self._eval_cost_payment_used(
+                        arrival.payment_block, arrival.payment_extrinsic_index
+                    )
                 ):
                     status, reason = "failed", "eval_cost_payment_used"
                 elif pending >= self.policy.max_pending:
@@ -946,7 +948,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         arrival.payment_extrinsic_index,
                     ),
                 )
-                if status in {"reserved", "deferred"} and arrival.payment_block > 0:
+                if (
+                    eval_cost_amount_tao_rao > 0
+                    and status in {"reserved", "deferred"}
+                    and arrival.payment_block > 0
+                ):
                     self._db.execute(
                         "INSERT INTO eval_cost_payments("
                         "payment_block,payment_extrinsic_index,reservation_id,"
@@ -957,7 +963,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             arrival.reservation_id,
                             arrival.content_hash,
                             arrival.hotkey,
-                            self.policy.eval_cost_tao_rao,
+                            eval_cost_amount_tao_rao,
                         ),
                     )
                 inserted.append(arrival.reservation_id)

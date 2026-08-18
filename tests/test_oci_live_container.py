@@ -4,10 +4,9 @@
 there observes a running container. These tests take the same flag vocabulary
 that ``cacheon.eval.oci_backend.build_runtime_argv`` emits (network, IPC,
 capability, seccomp, user, and bind-mount settings), the packaged seccomp
-profile, and the backend's own ``_mount`` builder, and assert what a real
-container runtime does with them: egress fails closed, read-only binds refuse
-writes, a representative privileged syscall is refused, and the non-root user
-is enforced.
+profile, and the backend's bind-mount builder, and assert what a real container
+runtime does with them: egress fails closed, read-only binds refuse writes, a
+representative privileged syscall is refused, and the non-root user is enforced.
 
 Runs wherever a usable container daemon exists (validator hosts, CI Linux
 runners); skips cleanly elsewhere. Validated live on a 2xB200 validator host,
@@ -27,7 +26,9 @@ from pathlib import Path
 import pytest
 
 _oci_backend = pytest.importorskip("cacheon.eval.oci_backend")
-_mount = _oci_backend._mount
+_bind_mount_arg = getattr(_oci_backend, "build_bind_mount_arg", None)
+if _bind_mount_arg is None:
+    _bind_mount_arg = _oci_backend._mount
 
 IMAGE = (
     "python@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36"
@@ -170,7 +171,11 @@ def test_readonly_bind_refuses_writes_and_the_probe_is_valid(
     )
 
     readonly = _run(
-        [*_BASE_FLAGS, identity, _mount(host_dir, "/bind-probe", readonly=True)],
+        [
+            *_BASE_FLAGS,
+            identity,
+            _bind_mount_arg(host_dir, "/bind-probe", readonly=True),
+        ],
         image=probe_image,
         probe=write_probe,
     )
@@ -180,7 +185,11 @@ def test_readonly_bind_refuses_writes_and_the_probe_is_valid(
     # The writable variant proves the refusal above came from the read-only
     # bind, not from an unrelated failure of the same probe.
     writable = _run(
-        [*_BASE_FLAGS, identity, _mount(host_dir, "/bind-probe", readonly=False)],
+        [
+            *_BASE_FLAGS,
+            identity,
+            _bind_mount_arg(host_dir, "/bind-probe", readonly=False),
+        ],
         image=probe_image,
         probe=write_probe,
     )

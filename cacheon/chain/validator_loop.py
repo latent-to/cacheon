@@ -62,6 +62,7 @@ from cacheon.eval.qualification_intake import (
 
 logger = logging.getLogger("cacheon.chain.validator")
 DEFAULT_INTERVAL_S = 60.0
+_DISABLED_EVAL_COST_POLICY = EvalCostPolicy(amount_rao=0)
 
 
 class IntakeControllerError(RuntimeError):
@@ -92,7 +93,7 @@ def _finalized_arrivals(
     snapshot,
     *,
     netuid: int,
-    policy: IntakePolicy,
+    eval_cost_policy: EvalCostPolicy,
     payment_lookup=None,
     owner_lookup=None,
 ) -> tuple[FinalizedArrival, ...]:
@@ -116,11 +117,11 @@ def _finalized_arrivals(
             )
             continue
         invalid_reason = ""
-        if policy.eval_cost_tao_rao > 0:
+        if eval_cost_policy.amount_rao > 0:
             invalid_reason = _eval_cost_invalid_reason(
                 ref,
                 netuid=netuid,
-                policy=policy,
+                policy=eval_cost_policy,
                 payment_lookup=payment_lookup,
                 owner_lookup=owner_lookup,
             )
@@ -146,7 +147,7 @@ def _eval_cost_invalid_reason(
     ref,
     *,
     netuid: int,
-    policy: IntakePolicy,
+    policy: EvalCostPolicy,
     payment_lookup,
     owner_lookup,
 ) -> str:
@@ -181,10 +182,10 @@ def _eval_cost_invalid_reason(
     return verify_eval_cost_payment(
         request=request,
         policy=EvalCostPolicy(
-            amount_rao=policy.eval_cost_tao_rao,
+            amount_rao=policy.amount_rao,
             destination=owner,
-            payment_window_blocks=policy.eval_cost_payment_window_blocks,
-            quote_ttl_blocks=policy.eval_cost_quote_ttl_blocks,
+            payment_window_blocks=policy.payment_window_blocks,
+            quote_ttl_blocks=policy.quote_ttl_blocks,
         ),
         proof=proof,
         reveal_block=ref.block,
@@ -434,6 +435,7 @@ def run_pass(
     private_root: str | Path,
     publication_root: str | Path,
     policy: IntakePolicy = IntakePolicy(),
+    eval_cost_policy: EvalCostPolicy = _DISABLED_EVAL_COST_POLICY,
     arena_registry: ArenaServiceRegistry | None = None,
     arena_id: str | None = None,
     intake_only: bool = False,
@@ -445,6 +447,8 @@ def run_pass(
     finalized head without rereading or advancing reveal history.
     """
 
+    if type(eval_cost_policy) is not EvalCostPolicy:
+        raise IntakeControllerError("eval-cost policy is not typed")
     if type(intake_only) is not bool or type(retained_only) is not bool:
         raise IntakeControllerError("pass mode flags must be exact booleans")
     if intake_only and retained_only:
@@ -481,7 +485,7 @@ def run_pass(
             arrivals = _finalized_arrivals(
                 snapshot,
                 netuid=netuid,
-                policy=policy,
+                eval_cost_policy=eval_cost_policy,
                 payment_lookup=lambda block, index: read_eval_cost_payment(
                     subtensor, block, index
                 ),
@@ -494,6 +498,7 @@ def run_pass(
                 arrivals,
                 finalized_block=snapshot.finalized_block,
                 finalized_block_hash=snapshot.finalized_block_hash.lower(),
+                eval_cost_amount_tao_rao=eval_cost_policy.amount_rao,
             )
         # Retained-only operation has no reservation transaction in which to
         # apply the finalized-block SLA.  The call is idempotent for normal
@@ -639,6 +644,7 @@ def run_validator(
     private_root: str | Path,
     publication_root: str | Path,
     policy: IntakePolicy = IntakePolicy(),
+    eval_cost_policy: EvalCostPolicy = _DISABLED_EVAL_COST_POLICY,
     arena_registry: ArenaServiceRegistry | None = None,
     arena_id: str | None = None,
     intake_only: bool = False,
@@ -661,6 +667,7 @@ def run_validator(
                 private_root=private_root,
                 publication_root=publication_root,
                 policy=policy,
+                eval_cost_policy=eval_cost_policy,
                 arena_registry=arena_registry,
                 arena_id=arena_id,
                 intake_only=intake_only,

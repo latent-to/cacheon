@@ -1622,19 +1622,19 @@ def cmd_chain_validate(
         _handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         _chain_lg.addHandler(_handler)
-    from cacheon.chain.intake import IntakeError, IntakePolicy
+    from cacheon.chain.eval_cost import EvalCostError, EvalCostPolicy
 
     try:
-        policy = IntakePolicy(
-            eval_cost_tao_rao=int(getattr(args, "eval_cost_tao_rao", 0)),
-            eval_cost_payment_window_blocks=int(
+        eval_cost_policy = EvalCostPolicy(
+            amount_rao=int(getattr(args, "eval_cost_tao_rao", 0)),
+            payment_window_blocks=int(
                 getattr(args, "eval_cost_payment_window_blocks", 7_200)
             ),
-            eval_cost_quote_ttl_blocks=int(
+            quote_ttl_blocks=int(
                 getattr(args, "eval_cost_quote_ttl_blocks", 300)
             ),
         )
-    except IntakeError as exc:
+    except EvalCostError as exc:
         print(f"REFUSED: {exc}")
         return 2
     res = run_validator(
@@ -1643,7 +1643,7 @@ def cmd_chain_validate(
         intake_db=args.intake_db,
         private_root=args.private_root,
         publication_root=args.publication_root,
-        policy=policy,
+        eval_cost_policy=eval_cost_policy,
         arena_registry=injected,
         arena_id=None if args.intake_only else args.arena_id,
         intake_only=args.intake_only,

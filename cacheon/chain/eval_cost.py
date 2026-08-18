@@ -527,7 +527,7 @@ def _tao_transferred_event(
         if not isinstance(record, Mapping):
             continue
         indexed = _as_uint(record.get("extrinsic_idx", record.get("extrinsic_index")))
-        if indexed is not None and indexed != extrinsic_index:
+        if indexed != extrinsic_index:
             continue
         inner = record.get("event", record)
         if not isinstance(inner, Mapping):

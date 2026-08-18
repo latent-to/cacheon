@@ -131,6 +131,11 @@ def submit_bundle(
             blocks_until_reveal=blocks_until_reveal,
             dry_run=dry_run,
         )
+        if resolved_block > 0 and not dry_run and not bool(result.get("submitted")):
+            message = str(
+                result.get("message") or "reveal commitment was not submitted"
+            )
+            raise EvalCostError(message)
     except Exception as exc:
         if resolved_block > 0 and not dry_run:
             raise EvalCostCommitError(resolved_block, resolved_index, exc) from exc

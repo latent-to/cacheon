@@ -351,13 +351,6 @@ The default `IntakePolicy` values are:
 | Transport / qualification attempts | 3 / 3 | Exhaustion produces a retained hold rather than infinite work |
 | Controller cohort | 8 | Bounds fetch, screening, and qualification selection per pass |
 | Finalized-block expiry SLA | 2,880 blocks | Automatically expires eligible unresolved rows and sets the minimum age for explicit expiry |
-| Eval-cost TAO-rao | 0 (off) | Required `transfer_keep_alive` amount per admission; destination is the current subnet owner coldkey; `chain-validate --eval-cost-tao-rao` enables the gate |
-| Eval-cost quote TTL | 300 blocks | Quoted amount stays valid until the transfer is included (~1 hour); later quote versions may change the amount only after this window |
-| Eval-cost payment window | 7,200 blocks | Maximum finalized distance from the transfer to the reveal; unused payments stay reusable until reserved or deferred admission |
-
-A v2 reveal may attach a payment pointer. Intake rebuilds the remark from that
-reveal's hotkey, content hash, and netuid; only that triple can spend the
-pointer. The paying coldkey is not the claimant.
 
 Arena capacity is an additional bound. Its queue age/depth, active-screen,
 active-qualification, cohort, and retry limits are content-bound in the service manifest.
@@ -375,6 +368,19 @@ from that block. Legacy retained evidence with an unknown progress block, includ
 dedicated schema-3 migration hold, remains fail closed for explicit operator disposition.
 This prevents slow reproduction from losing its complete SLA while preventing one old
 PASS from becoming a permanent priority veto.
+
+### Eval-cost admission policy
+
+Eval-cost admission is deliberately separate from the shared `IntakePolicy` used by
+screen and evaluation-lease services. `chain-validate --eval-cost-tao-rao` controls the
+required `transfer_keep_alive` amount and defaults to `0` (off). Quote TTL defaults to
+300 blocks and the payment-to-reveal window defaults to 7,200 blocks.
+
+A v2 reveal may attach a payment pointer. When the gate is enabled, intake rebuilds the
+remark from that reveal's hotkey, content hash, and netuid; only that triple can spend
+the pointer. The paying coldkey is not the claimant. When the gate is disabled, the
+pointer is ignored for payment accounting: unverified coordinates are neither consumed
+nor allowed to pre-claim a future payment.
 
 Discovery proposal identity is checked before screening. A proposal already retained as
 seen or awarded is terminally disposed, and legacy pending duplicates are deduplicated

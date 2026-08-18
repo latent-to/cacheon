@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from cacheon.bundle_hash import content_hash
+from cacheon.chain import mainnet_screen_dispatcher as dispatcher_module
 from cacheon.chain.eval_cost import (
     DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS,
     PUBLISHED_EVAL_COST_TAO_RAO,
@@ -42,7 +43,23 @@ HASH = "a" * 64
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
 TREASURY = "treasury"
 _BUNDLE = Path(__file__).resolve().parent.parent / "examples" / "miner_silu_torch"
-_PAID_POLICY = dict(eval_cost_tao_rao=10)
+_PAID_AMOUNT = 10
+
+
+def test_shared_intake_policy_keeps_the_sealed_dispatch_shape() -> None:
+    fields = (
+        "epoch_blocks",
+        "cutoff_blocks",
+        "max_pending",
+        "max_per_hotkey_epoch",
+        "max_per_target_epoch",
+        "max_transport_retries",
+        "max_qualification_retries",
+        "max_cohort",
+        "expiry_blocks",
+    )
+    assert tuple(IntakePolicy.__dataclass_fields__) == fields
+    assert dispatcher_module._POLICY_FIELDS == frozenset(fields)
 
 
 def _request(**changes) -> EvalCostRequest:
@@ -227,6 +244,41 @@ def test_proof_from_batch_all_and_transfer_event() -> None:
     assert proof.remark == remark
 
 
+def test_payment_proof_refuses_an_unattributed_transfer_event() -> None:
+    request, quote = _quote()
+    proof = proof_from_decoded_extrinsic(
+        block=80,
+        extrinsic_index=4,
+        signer="coldkey",
+        call_module="Utility",
+        call_function="batch_all",
+        call_args={
+            "calls": [
+                {
+                    "call_module": "Balances",
+                    "call_function": "transfer_keep_alive",
+                    "call_args": {"dest": TREASURY, "value": 10},
+                },
+                {
+                    "call_module": "System",
+                    "call_function": "remark_with_event",
+                    "call_args": {"remark": encode_payment_remark(request, quote)},
+                },
+            ]
+        },
+        events=[
+            {
+                "event": {
+                    "module_id": "Balances",
+                    "event_id": "Transfer",
+                    "attributes": ("coldkey", TREASURY, 10),
+                },
+            }
+        ],
+    )
+    assert proof is None
+
+
 def test_proof_from_named_call_arg_lists() -> None:
     request, quote = _quote()
     remark = encode_payment_remark(request, quote)
@@ -383,13 +435,14 @@ def test_unpaid_v1_fails_when_eval_cost_is_required(tmp_path) -> None:
     )
     with FinalizedIntakeStore(
         tmp_path / "private" / "intake.sqlite3",
-        IntakePolicy(**_PAID_POLICY),
+        IntakePolicy(),
         scope=SCOPE,
     ) as store:
         row = store.reserve_finalized(
             (arrival,),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
         )[0]
         assert row.status == "failed"
         assert row.reason == "missing_eval_cost_payment"
@@ -418,13 +471,14 @@ def test_valid_payment_is_consumed_once(tmp_path) -> None:
     )
     with FinalizedIntakeStore(
         tmp_path / "private" / "intake.sqlite3",
-        IntakePolicy(**_PAID_POLICY, expiry_blocks=100),
+        IntakePolicy(expiry_blocks=100),
         scope=SCOPE,
     ) as store:
         rows = store.reserve_finalized(
             (first, second),
             finalized_block=11,
             finalized_block_hash="0x" + f"{11:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
         )
         assert rows[0].status == "reserved"
         assert rows[1].status == "failed"
@@ -432,6 +486,56 @@ def test_valid_payment_is_consumed_once(tmp_path) -> None:
         reopened = store.get(rows[0].reservation_id)
         assert reopened.arrival.payment_block == 8
         assert reopened.arrival.payment_extrinsic_index == 4
+
+
+def test_disabled_gate_does_not_consume_or_poison_payment_pointer(tmp_path) -> None:
+    def arrival(
+        hotkey: str, digest: str, block: int, event_index: int
+    ) -> FinalizedArrival:
+        return FinalizedArrival(
+            hotkey=hotkey,
+            content_hash=digest,
+            url=f"https://example.com/{hotkey}.tar.gz",
+            block=block,
+            block_hash="0x" + f"{block:064x}",
+            event_index=event_index,
+            payment_block=8,
+            payment_extrinsic_index=4,
+        )
+
+    with FinalizedIntakeStore(
+        tmp_path / "private" / "intake.sqlite3",
+        IntakePolicy(expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        free_rows = store.reserve_finalized(
+            (
+                arrival("miner-a", "a" * 64, 10, 0),
+                arrival("miner-b", "b" * 64, 11, 1),
+            ),
+            finalized_block=11,
+            finalized_block_hash="0x" + f"{11:064x}",
+        )
+        assert [row.status for row in free_rows] == ["reserved", "reserved"]
+        assert (
+            store._db.execute(
+                "SELECT COUNT(*) FROM eval_cost_payments"
+            ).fetchone()[0]
+            == 0
+        )
+
+        paid = store.reserve_finalized(
+            (arrival("miner-c", "c" * 64, 12, 0),),
+            finalized_block=12,
+            finalized_block_hash="0x" + f"{12:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )[0]
+        assert paid.status == "reserved"
+        payment = store._db.execute(
+            "SELECT amount_tao_rao FROM eval_cost_payments WHERE "
+            "payment_block=8 AND payment_extrinsic_index=4"
+        ).fetchone()
+        assert payment is not None and payment[0] == _PAID_AMOUNT
 
 
 def test_payment_may_precede_reveal_within_the_window() -> None:
@@ -475,19 +579,21 @@ def test_failed_intake_leaves_eval_cost_payment_unused(tmp_path) -> None:
     )
     with FinalizedIntakeStore(
         tmp_path / "private" / "intake.sqlite3",
-        IntakePolicy(**_PAID_POLICY, expiry_blocks=100),
+        IntakePolicy(expiry_blocks=100),
         scope=SCOPE,
     ) as store:
         first = store.reserve_finalized(
             (failed,),
             finalized_block=10,
             finalized_block_hash="0x" + f"{10:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
         )[0]
         assert first.status == "failed"
         second = store.reserve_finalized(
             (retry,),
             finalized_block=12,
             finalized_block_hash="0x" + f"{12:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
         )[0]
         assert second.status == "reserved"
         assert second.arrival.payment_block == 8
@@ -633,7 +739,9 @@ def test_commit_failure_after_pay_preserves_the_unused_pointer(monkeypatch) -> N
         raise RuntimeError("commitment timeout")
 
     monkeypatch.setattr("cacheon.chain.submit.post_reveal_commitment", boom)
-    with pytest.raises(EvalCostCommitError, match="eval-cost-payment-block 80") as caught:
+    with pytest.raises(
+        EvalCostCommitError, match="eval-cost-payment-block 80"
+    ) as caught:
         submit_bundle(
             _PaymentChain("unused"),
             _Wallet(),
@@ -645,4 +753,40 @@ def test_commit_failure_after_pay_preserves_the_unused_pointer(monkeypatch) -> N
         )
     assert unused_eval_cost_retry_flags(80, 4) in str(caught.value)
     assert caught.value.payment_block == 80
+    assert caught.value.payment_extrinsic_index == 4
+
+
+def test_chain_rejection_after_pay_preserves_the_unused_pointer(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "cacheon.chain.submit.pay_eval_cost_tao",
+        lambda *_args, **_kwargs: {
+            "submitted": True,
+            "payment_block": 80,
+            "payment_extrinsic_index": 4,
+            "amount_rao": 10,
+            "destination": TREASURY,
+            "issued_block": 70,
+            "expires_block": 370,
+            "remark": "paid",
+        },
+    )
+    monkeypatch.setattr(
+        "cacheon.chain.submit.post_reveal_commitment",
+        lambda *_args, **_kwargs: {
+            "submitted": False,
+            "message": "commit rejected on-chain",
+        },
+    )
+
+    with pytest.raises(EvalCostCommitError, match="eval-cost-payment-block 80") as caught:
+        submit_bundle(
+            _PaymentChain("unused"),
+            _Wallet(),
+            307,
+            _BUNDLE,
+            "https://example.com/bundles/miner-silu-torch.tar",
+            pay=True,
+            eval_cost_policy=EvalCostPolicy(amount_rao=10, destination=TREASURY),
+        )
+    assert "commit rejected on-chain" in str(caught.value)
     assert caught.value.payment_extrinsic_index == 4
