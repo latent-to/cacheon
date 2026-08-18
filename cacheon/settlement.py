@@ -586,7 +586,7 @@ class SettlementQualification:
             candidate_stack_digest=arm.challenger.stack_digest,
             candidate_tree_digest=arm.challenger.tree_digest,
             speedup=(
-                report.speed_witness.v6_result()[1]
+                report.speed_witness.accepted_speedup()
                 if resident_accept
                 else report.speedup
             ),

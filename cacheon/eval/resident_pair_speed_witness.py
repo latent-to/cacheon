@@ -195,6 +195,22 @@ class ResidentPairLiveSpeedWitness:
         # projection shares.
         return ResidentSpeedWitness.v6_result(self)
 
+    def always_bookend_result(self):
+        # Same forwarding contract as ``v6_result`` above, for policy v8.
+        # This class does not inherit from ``ResidentSpeedWitness``; it
+        # duck-types it, so every method ``regrade`` can dispatch to must be
+        # forwarded by hand. Omitting one is not a type error at import time,
+        # it is an AttributeError at grade time -- which is how ``v6_result``
+        # came to be missing until ee383116.
+        return ResidentSpeedWitness.always_bookend_result(self)
+
+    def accepted_speedup(self) -> str:
+        # The settled speedup for an accepted resident verdict, dispatched on
+        # the same version boundary ``regrade`` uses. Settlement must not pick
+        # a grading function by hand: v6 arithmetic silently accepts a v8
+        # witness (8 >= 6) and would report a speedup the gate never decided.
+        return ResidentSpeedWitness.accepted_speedup(self)
+
     def to_dict(self) -> dict[str, object]:
         return {
             **{

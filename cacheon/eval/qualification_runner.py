@@ -1035,6 +1035,21 @@ class ResidentSpeedWitness:
             raise QualificationRunnerError(str(exc)) from None
         return QualificationDecision(decision.value), format(verdict.speedup, ".17g")
 
+    def accepted_speedup(self) -> str:
+        """The settled speedup, graded the way this witness's version grades.
+
+        Callers outside qualification (settlement) need the accepted speedup
+        without a calibration authority to regrade against. They must not pick
+        a grading function by hand: ``v6_result`` does not reject a v8 witness
+        -- its guard is ``version < 6`` -- so a hand-picked call would run v6
+        arithmetic over v8 reads and settle a number the gate never decided.
+        This dispatches on the same boundary ``regrade`` does.
+        """
+
+        if self.resident_policy.version >= 8:
+            return self.always_bookend_result()[1]
+        return self.v6_result()[1]
+
     def v6_result(self) -> tuple[QualificationDecision, str]:
         if self.resident_policy.version < 6:
             raise QualificationRunnerError("resident speed witness is not v6")

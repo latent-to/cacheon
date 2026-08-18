@@ -936,6 +936,44 @@ def test_v8_conditioning_regression_fails_a_fast_candidate(tmp_path: Path) -> No
     assert result.regrade(plan) == result.final_verdict
 
 
+def test_v8_settled_speedup_is_not_graded_by_v6_arithmetic(
+    tmp_path: Path,
+) -> None:
+    """Settlement must dispatch on version, not call ``v6_result`` by hand.
+
+    ``v6_result`` does not refuse a v8 witness up front -- its own guard is
+    ``version < 6``. It fails deeper, inside ``v6_grade``, on v6's invariant
+    that a *clear* decision never carries a third read. v8 precommits B-prime,
+    so a clear v8 verdict is exactly the shape v6 calls impossible: settlement
+    reaching for ``v6_result`` raises instead of settling. Native bundles are
+    the only ones v8 ever grades, so this is the CUDA payout path.
+    """
+
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path,
+        (0.90,),
+        policy=_policy_v8(),
+        timed_batches=3,
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+    witness = ResidentSpeedWitness.from_evidence(result, plan)
+    assert witness.resident_policy.version == 8
+
+    # The settled number is the v8 one, and it is a real speedup.
+    assert witness.accepted_speedup() == witness.always_bookend_result()[1]
+    assert float(witness.accepted_speedup()) > 0.0
+
+    # Reaching for v6 by hand does not settle this witness at all.
+    with pytest.raises(QualificationRunnerError, match="clear decision added"):
+        witness.v6_result()
+
+
 def test_v8_evidence_cannot_claim_the_retired_five_arm_schedule(
     tmp_path: Path,
 ) -> None:
