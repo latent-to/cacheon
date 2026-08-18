@@ -1675,7 +1675,7 @@ def cmd_chain_register(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    from cacheon.sandbox import scan_tree
+    from cacheon.sandbox import scan_compilability_path, scan_tree
 
     m = load_manifest(args.bundle)
     print(f"bundle: {m.bundle_id}  abi: {m.abi_version}  ops: {len(m.ops)}")
@@ -1683,9 +1683,22 @@ def cmd_scan(args: argparse.Namespace) -> int:
     for op in m.ops:
         src = resolve_source(args.bundle, op)
         result = scan_path(src)
-        status = "clean" if result.ok else "VIOLATIONS"
+        # Reported separately from the policy scan: a compilability defect means
+        # the bundle is broken, not that it is hostile. Both are fatal to the
+        # submission, and catching the second here saves a miner a full
+        # evaluation cycle that could only ever have ended in FAIL.
+        build = scan_compilability_path(src)
+        if result.ok and build.ok:
+            status = "clean"
+        elif not result.ok:
+            status = "VIOLATIONS"
+        else:
+            status = "WILL NOT COMPILE"
         print(f"  [{status}] {op.slot} <- {op.source}")
         for v in result.violations:
+            print(f"      {v}")
+            rc = 2
+        for v in build.violations:
             print(f"      {v}")
             rc = 2
     # Recursive guard: catch a vendored/extra .py the per-op (entry-only) scan misses, and
