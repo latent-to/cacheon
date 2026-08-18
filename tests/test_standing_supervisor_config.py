@@ -159,17 +159,27 @@ def test_enable_settlement_refused_without_its_finalized_clock(tmp_path: Path) -
         load_standing_config(standing_path)
 
 
-def test_settlement_network_refused_while_settlement_is_disabled(
+def test_settlement_network_may_be_staged_while_settlement_is_disabled(
     tmp_path: Path,
 ) -> None:
-    """A configured endpoint that nothing reads is a lie about what runs."""
+    """A commission stages the endpoint; arming stays a one-field flip.
+
+    Refusing a staged endpoint would force the operator to re-supply it at
+    every epoch, and a per-epoch artifact that must be re-edited by hand is
+    precisely how the 2026-08-16 ``expiry_blocks`` decision was lost twice:
+    edited in place, then orphaned when the next commission regenerated the
+    file from defaults. The builder still installs no stage while the flag is
+    off, so nothing runs that the config does not claim.
+    """
 
     standing_path, raw = _setup(tmp_path)
-    bad = dict(raw)
-    bad["settlement_network"] = "wss://example.invalid"
-    _rewrite(standing_path, bad)
-    with pytest.raises(StandingCpuSupervisorError, match="enable_settlement is false"):
-        load_standing_config(standing_path)
+    row = dict(raw)
+    row["settlement_network"] = "wss://example.invalid"
+    _rewrite(standing_path, row)
+    config = load_standing_config(standing_path)
+    assert config.enable_settlement is False
+    assert config.settlement_network == "wss://example.invalid"
+    assert build_standing_supervisor(config).settle_once is None
 
 
 def test_enable_settlement_with_its_clock_loads(tmp_path: Path) -> None:

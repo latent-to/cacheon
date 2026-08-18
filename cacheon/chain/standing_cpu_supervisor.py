@@ -745,10 +745,12 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
             "enable_settlement requires settlement_network, the finalized-head "
             "endpoint that clocks the settlement cohort"
         )
-    if not enable_settlement and settlement_network:
-        raise StandingCpuSupervisorError(
-            "settlement_network is configured while enable_settlement is false"
-        )
+    # A configured endpoint with the flag off is explicitly allowed, so a
+    # commission can stage the endpoint and arming settlement stays a one-field
+    # flip. Refusing it would push the endpoint back onto the operator at every
+    # epoch, which is exactly how the 2026-08-16 expiry_blocks decision was
+    # lost: a per-epoch artifact edited in place, then orphaned by the next
+    # commission regenerating it from defaults.
 
     stall_timeout_ms = _positive_int(
         row["stall_timeout_ms"], "stall_timeout_ms", maximum=86_400_000
