@@ -215,3 +215,56 @@ def test_real_distributed_receipts_cover_every_nccl_member(tmp_path):
         expected_member_count=2,
     )
     assert ok, detail
+
+
+def test_total_silence_is_typed_as_the_candidate_never_executing(tmp_path):
+    """The one coverage shape that is provably the candidate's own defect.
+
+    ``cacheon/seam.py`` writes the ``active`` receipt from the candidate's own
+    process, through this module, into this same root -- so an active-member
+    check that passes is positive proof the receipt path works. When every
+    execution kind is then empty, the seam loaded, registered the slot, and
+    the candidate never dispatched. Two mainnet bundles hit exactly this on
+    2026-08-18, rode the generic worker-error path, burned three attempts of
+    exclusive 8-GPU time each, and parked with no verdict at all.
+    """
+
+    active = [_active(10, 0, slots=("a",), world_size=1)]
+    with pytest.raises(engine_worker.CandidateNeverExecutedError) as caught:
+        engine_worker._require_execution_completion(
+            str(tmp_path),
+            active_receipts=active,
+            expected_slots=["a"],
+            expected_member_count=1,
+        )
+    # The worker runs in a sealed OCI lifetime, so only the text crosses the
+    # boundary. The marker is the wire contract; a class name or a prose
+    # fragment would be silently broken by any later edit.
+    assert engine_worker.CANDIDATE_NEVER_EXECUTED_MARKER in str(caught.value)
+    assert "completed:0,fallback:0,aot_loaded:0,aot_invoked:0" in str(caught.value)
+
+
+def test_partial_coverage_stays_infrastructure(tmp_path):
+    """Some receipts but not all may never be charged to a candidate.
+
+    A member that died mid-run and a read that raced a peer's write both look
+    like partial coverage. Only total silence is unambiguous, so anything
+    partial keeps the generic type and stays on the retry/hold path.
+    """
+
+    active = [_active(10, 0), _active(11, 1)]
+    _write(
+        tmp_path,
+        "completed",
+        {"slot": "a", "pid": 10, "rank": 0, "world_size": 2},
+        0,
+    )
+    with pytest.raises(engine_worker.CandidateExecutionCoverageError) as caught:
+        engine_worker._require_execution_completion(
+            str(tmp_path),
+            active_receipts=active,
+            expected_slots=["a"],
+            expected_member_count=2,
+        )
+    assert type(caught.value) is engine_worker.CandidateExecutionCoverageError
+    assert engine_worker.CANDIDATE_NEVER_EXECUTED_MARKER not in str(caught.value)
