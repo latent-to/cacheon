@@ -94,6 +94,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "restart_max_backoff_ms": 40,
         "schema": CONFIG_SCHEMA,
         "screen_dispatcher_config": str(screen_config_path),
+        "settlement_network": "",
         "stall_timeout_ms": 120_000,
     }
     standing_path = private / "standing.json"
@@ -135,15 +136,54 @@ def test_enable_weights_refused_until_sealed(tmp_path: Path) -> None:
         load_standing_config(standing_path)
 
 
-def test_enable_settlement_refused_until_sealed(tmp_path: Path) -> None:
+def _rewrite(standing_path: Path, row: dict[str, object]) -> None:
+    standing_path.chmod(0o600)
+    standing_path.write_bytes(spool.spool_canonical_json(row) + b"\n")
+    standing_path.chmod(0o400)
+
+
+def test_enable_settlement_refused_without_its_finalized_clock(tmp_path: Path) -> None:
+    """The flag alone is not the authority: settlement needs a head to read.
+
+    ``_settle_pending`` stamps every cohort lease with the finalized head and
+    refuses a regressed clock, so an endpoint-less settlement stage could not
+    grade at all.  Enabling the flag without ``settlement_network`` is the
+    misconfiguration that used to be spelled "not sealed".
+    """
+
     standing_path, raw = _setup(tmp_path)
     bad = dict(raw)
     bad["enable_settlement"] = True
-    standing_path.chmod(0o600)
-    standing_path.write_bytes(spool.spool_canonical_json(bad) + b"\n")
-    standing_path.chmod(0o400)
-    with pytest.raises(StandingCpuSupervisorError, match="settlement"):
+    _rewrite(standing_path, bad)
+    with pytest.raises(StandingCpuSupervisorError, match="settlement_network"):
         load_standing_config(standing_path)
+
+
+def test_settlement_network_refused_while_settlement_is_disabled(
+    tmp_path: Path,
+) -> None:
+    """A configured endpoint that nothing reads is a lie about what runs."""
+
+    standing_path, raw = _setup(tmp_path)
+    bad = dict(raw)
+    bad["settlement_network"] = "wss://example.invalid"
+    _rewrite(standing_path, bad)
+    with pytest.raises(StandingCpuSupervisorError, match="enable_settlement is false"):
+        load_standing_config(standing_path)
+
+
+def test_enable_settlement_with_its_clock_loads(tmp_path: Path) -> None:
+    """The sealed pair opens, and carries the endpoint the builder will dial."""
+
+    standing_path, raw = _setup(tmp_path)
+    row = dict(raw)
+    row["enable_settlement"] = True
+    row["settlement_network"] = "wss://example.invalid"
+    _rewrite(standing_path, row)
+    config = load_standing_config(standing_path)
+    assert config.enable_settlement is True
+    assert config.settlement_network == "wss://example.invalid"
+    assert config.enable_weights is False
 
 
 def test_backoff_ordering_fail_closed(tmp_path: Path) -> None:
@@ -185,6 +225,42 @@ def test_build_standing_supervisor_omits_weights(tmp_path: Path) -> None:
     assert supervisor.settle_once is None
     assert callable(supervisor.screen_once)
     assert callable(supervisor.qualification_once)
+
+
+def test_enabled_settlement_is_actually_wired_into_the_supervisor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The flag has to reach ``settle_once``, not just survive validation.
+
+    Until 2026-08-18 the composed supervisor passed ``settle_once=None``
+    unconditionally while the loader refused the flag outright, so
+    ``settlement_stage`` -- fully written -- could never run: mainnet screened
+    and qualified for weeks and settled nothing. A loader that accepts the flag
+    without a builder that installs the stage would reproduce exactly that.
+    """
+
+    from cacheon import chain
+
+    dialed: list[str] = []
+
+    def _fake_connect(network: str, **_kwargs: object) -> object:
+        dialed.append(network)
+        return object()
+
+    monkeypatch.setattr(chain, "connect", _fake_connect)
+
+    standing_path, raw = _setup(tmp_path)
+    row = dict(raw)
+    row["enable_settlement"] = True
+    row["settlement_network"] = "wss://example.invalid"
+    settling_path = standing_path.parent / "standing-settling.json"
+    _private_file(settling_path, spool.spool_canonical_json(row) + b"\n")
+
+    supervisor = build_standing_supervisor(load_standing_config(settling_path))
+    assert callable(supervisor.settle_once)
+    assert dialed == ["wss://example.invalid"]
+    # Publication remains a separate authority behind its own flag.
+    assert supervisor.weights_once is None
 
 
 def test_disabled_qualification_gates_the_stage_and_screens_still_claim(

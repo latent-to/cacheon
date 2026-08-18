@@ -52,6 +52,7 @@ _STANDING_CONFIG_FIELDS = frozenset(
         "restart_max_backoff_ms",
         "schema",
         "screen_dispatcher_config",
+        "settlement_network",
         "stall_timeout_ms",
     }
 )
@@ -665,6 +666,7 @@ class StandingSupervisorConfig:
     enable_weights: bool
     enable_settlement: bool
     enable_qualification: bool
+    settlement_network: str
     stall_timeout_s: float
     idle_poll_s: float
     restart_initial_backoff_s: float
@@ -729,10 +731,23 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
             "enable_weights requires a sealed weights authority composition; "
             "keep enable_weights false until the weights stage is attached"
         )
-    if enable_settlement:
+    # Settlement is chain-independent arithmetic over already-durable PASS
+    # pairs, but it is *clocked* by the finalized head: ``_settle_pending``
+    # refuses a regressed clock and stamps the cohort lease with it. That read
+    # is the authority this stage was waiting for, so the flag is only honored
+    # together with the endpoint it reads from. No wallet and no chain write is
+    # involved -- publication stays behind ``enable_weights``.
+    settlement_network = row["settlement_network"]
+    if type(settlement_network) is not str:
+        raise StandingCpuSupervisorError("settlement network is malformed")
+    if enable_settlement and not settlement_network.strip():
         raise StandingCpuSupervisorError(
-            "settlement stage is not sealed in this standing config; "
-            "keep enable_settlement false until its authority exists"
+            "enable_settlement requires settlement_network, the finalized-head "
+            "endpoint that clocks the settlement cohort"
+        )
+    if not enable_settlement and settlement_network:
+        raise StandingCpuSupervisorError(
+            "settlement_network is configured while enable_settlement is false"
         )
 
     stall_timeout_ms = _positive_int(
@@ -763,6 +778,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         enable_weights=enable_weights,
         enable_settlement=enable_settlement,
         enable_qualification=enable_qualification,
+        settlement_network=settlement_network,
         stall_timeout_s=stall_timeout_ms / 1000.0,
         idle_poll_s=idle_poll_ms / 1000.0,
         restart_initial_backoff_s=restart_initial_backoff_ms / 1000.0,
@@ -816,6 +832,27 @@ def build_standing_supervisor(
         qualification_dispatcher.reconcile_parked_holds()
         qualification_once = qualification_dispatcher.dispatch_once
 
+    settle_once = None
+    if config.enable_settlement:
+        from cacheon import chain
+
+        # One long-lived read-only connection for the whole process, the same
+        # shape the intake loop uses. ``retry_forever`` keeps an endpoint blip
+        # from tearing down a supervisor that is mid-qualification; the stage
+        # itself is skipped whenever nothing is pending, so a slow head read
+        # never sits in the screen/qualification path.
+        subtensor = chain.connect(config.settlement_network, retry_forever=True)
+        settle_once = settlement_stage(
+            store_factory=partial(
+                RecoverableFinalizedIntakeStore,
+                screen_config.intake_db,
+                screen_config.policy,
+                scope=screen_config.scope,
+            ),
+            current_block=lambda: chain.read_finalized_head(subtensor)[0],
+            finalized_block_provider=lambda: chain.read_finalized_head(subtensor),
+        )
+
     weights_once = None
     if config.enable_weights:
         # load_standing_config already refuses enable_weights until sealed.
@@ -824,7 +861,7 @@ def build_standing_supervisor(
     return StandingCpuSupervisor(
         screen_once=screen_dispatcher.dispatch_screen_once,
         qualification_once=qualification_once,
-        settle_once=None,
+        settle_once=settle_once,
         weights_once=weights_once,
         stall_timeout_s=config.stall_timeout_s,
     )
