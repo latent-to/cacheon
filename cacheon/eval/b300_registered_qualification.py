@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -81,10 +81,12 @@ from cacheon.eval.qualification_runner import (
     SpeedStageDisposition,
     _planned_prompt_digests,
 )
+from cacheon.eval.resident_screen_lane import screen_swappability
 from cacheon.eval.resident_audit_authority import (
     ResidentAuditExecutionAuthority,
 )
 from cacheon.eval.scoring import marginal_workload_digest
+from cacheon.manifest import load_manifest
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import (
     EvaluationStackManifest,
@@ -533,11 +535,31 @@ class B300RegisteredQualificationFactory:
             inputs.candidate_runtime_resource_policy_digest,
             inputs.candidate_device_configuration_digest,
         )
+        # A candidate that cannot be hot-swapped into a resident engine -- a
+        # CUDA, C++ or PTX bundle, whose kernels must be compiled and linked
+        # into the engine that runs them -- is measured by the two-process
+        # crossover in `crossover_runtime`, not by the pair-native one. That
+        # substrate reads its bookend unconditionally, because the quality
+        # gate's stock-drift control is harvested from the second baseline
+        # read. Version 8 is that schedule; everything swappable keeps the
+        # sealed version. Same predicate the worker routes on, so the plan and
+        # the execution path cannot disagree about which substrate applies.
+        try:
+            swappable = (
+                screen_swappability(load_manifest(candidate.publication.root))
+                is None
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise B300RegisteredQualificationError(
+                f"candidate manifest failed swappability inspection: {exc}"
+            ) from None
         resident_plan = ResidentCrossoverPlan(
             candidate.reservation.selected_delta_digest,
             inputs.resident_baseline_arm,
             candidate_resident_arm,
-            inputs.resident_speed_policy,
+            inputs.resident_speed_policy
+            if swappable
+            else replace(inputs.resident_speed_policy, version=8),
         )
         audit_seed = hashlib.sha256(
             AUDIT_SEED_DOMAIN

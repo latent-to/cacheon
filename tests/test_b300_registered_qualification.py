@@ -541,6 +541,50 @@ def test_registered_plan_accepts_commissioned_resident_policy(
     assert value.resident_speed_plan.policy.version == version
 
 
+def test_native_candidate_is_planned_on_the_two_process_schedule(
+    tmp_path: Path,
+) -> None:
+    """A bundle that cannot be hot-swapped gets the always-bookend schedule.
+
+    A CUDA kernel has to be compiled and linked into the engine that runs it,
+    so it cannot be swapped into a live resident lane -- it is measured by the
+    two-process crossover, whose schedule reads B-prime unconditionally so the
+    quality gate has a stock-drift control to harvest. The sealed commission
+    version serves everything swappable; this routing is what a native bundle
+    needs in order to receive a speed verdict at all.
+    """
+
+    native = _candidate_source(tmp_path / "native-source")
+    (native / "kernels" / "native.cu").write_text(
+        "extern \"C\" __global__ void noop() {}\n"
+    )
+    manifest = (native / "manifest.toml").read_text()
+    (native / "manifest.toml").write_text(
+        manifest.rstrip("\n") + "\ncuda_sources = [\"kernels/native.cu\"]\n"
+    )
+    # Declared CUDA sources require the matching rebuild step; the catalog
+    # refuses the pair otherwise.
+    (native / "rebuild.json").write_text(
+        '{"steps":[{"type":"repo_python","path":"build_cuda_ext.py"}]}\n'
+    )
+    for path in sorted(native.rglob("*")):
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    native.chmod(0o700)
+
+    harness = _harness(tmp_path / "native", source_fixture=native)
+    sealed = harness.inputs.resident_speed_policy
+    value = registered.build_b300_registered_qualification_factory(
+        harness.inputs
+    ).plan_builder(harness.cohort, b"v" * 32)
+
+    assert value.resident_speed_plan is not None
+    planned = value.resident_speed_plan.policy
+    assert planned.version == 8
+    # Only the schedule differs. Every calibrated threshold is the sealed one,
+    # so this is a different read order, not a different bar.
+    assert replace(planned, version=sealed.version) == sealed
+
+
 def test_atomic_fixture_builds_one_registered_plan_with_partitioned_member_evidence(
     tmp_path: Path,
 ) -> None:

@@ -85,7 +85,7 @@ from cacheon.eval.scoring import (
     ChargedExecutionRate, MarginalSpeedProjection, RawSpeedEvidenceError, _projection_digest,
     marginal_workload_digest, project_marginal_speed, score_speedup,
 )
-from cacheon.eval.speed_verdict import resident_speed_roles, v6_grade
+from cacheon.eval.speed_verdict import resident_speed_roles, speed_grade, v6_grade
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes, require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon._strict import require_exact_fields
@@ -1008,6 +1008,33 @@ class ResidentSpeedWitness:
     def has_repeat(self) -> bool:
         return len(self.rates) == 5
 
+    def always_bookend_result(self) -> tuple[QualificationDecision, str]:
+        """Grade the two-process schedule: B, C and B-prime, read unconditionally.
+
+        The pre-v6 branch below asserts an adaptive read shape -- three reads if
+        and only if the first grade was clear -- because there the third read is
+        earned by a close call. Version 8 precommits it (the quality gate takes
+        its stock-drift control from the second baseline read), so there is no
+        adaptive shape to assert: one grade over the whole schedule terminates.
+        """
+
+        if self.resident_policy.version < 8 or len(self.rates) != 3:
+            raise QualificationRunnerError("resident speed witness is not v8")
+        try:
+            verdict, decision = speed_grade(
+                self.resident_policy,
+                [self.rates[0], self.rates[2]],
+                [self.rates[1]],
+                concluding=True,
+            )
+            if self.resident_policy.conditioning_regression(
+                self.rates[0], self.rates[1]
+            ):
+                decision = SpeedStageDecision.FAIL
+        except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
+            raise QualificationRunnerError(str(exc)) from None
+        return QualificationDecision(decision.value), format(verdict.speedup, ".17g")
+
     def v6_result(self) -> tuple[QualificationDecision, str]:
         if self.resident_policy.version < 6:
             raise QualificationRunnerError("resident speed witness is not v6")
@@ -1058,6 +1085,8 @@ class ResidentSpeedWitness:
             or self.workload_digest != context.workload_digest
         ):
             raise QualificationRunnerError("resident speed calibration authority differs")
+        if self.resident_policy.version >= 8:
+            return self.always_bookend_result()
         if self.resident_policy.version >= 6:
             return self.v6_result()
         try:

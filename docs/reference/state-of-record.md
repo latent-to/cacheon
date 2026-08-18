@@ -188,6 +188,33 @@ lane emitted no execution evidence at all — it is launched stock, so the
 one-shot driver's `active`-gated receipt directory was never created for it,
 and registration was the only thing the crossover could observe.
 
+Since **2026-08-18** resident speed policy **version 8** serves candidates that
+cannot be hot-swapped into a loaded engine. A bundle declaring CUDA, C++ or PTX
+sources, AOT artifacts, dependency patches, or engine setup is routed to the
+two-process crossover, which launches its own baseline and candidate engines.
+That substrate refused every version-6 and later policy outright from
+**2026-08-15** (`87944430`) until this change: the conditional-bookend schedule
+landed on the pair-native path and the two-process path was left asserting the
+older one. Affected candidates screened `promote` and then received no speed
+verdict at all — measured on 2026-08-18, bundles declaring CUDA sources took 295
+screen attempts for 3 verdicts (1%) against 580 attempts for 110 verdicts (19%)
+for the rest, with 30 such bundles cycling through requeue at that point.
+
+Version 8 reads B, C and B′ — always three, never more. B′ is precommitted
+rather than earned by a close call because the quality gate harvests its
+stock-drift control from the second baseline read
+(`reference_quality.stock_drift_upper_bound` is its only consumer; the
+candidate-versus-baseline comparison discards it), so a conditional bookend
+would leave a clear PASS with no control. An unconditional read also preserves
+the anti-reroll property versions 6 and 7 enforce. C′ and B″ do not exist under
+version 8, and versions 6 and 7 are refused on this substrate rather than
+silently producing evidence the quality stage cannot use.
+
+The version is selected per candidate when the qualification plan is built, from
+the same swappability predicate the worker routes execution on. The commissioned
+provider policy is unchanged and continues to serve every swappable candidate;
+only the read order differs, and every calibrated threshold is the sealed one.
+
 Since **2026-08-10** measurement-reuse identity is controller-blind: the
 calibration context binds `ReferenceManifest.measured_digest` and no longer
 carries a controller distribution digest, and raw quality bindings match the

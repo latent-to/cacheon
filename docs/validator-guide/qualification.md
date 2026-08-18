@@ -48,11 +48,34 @@ Retained attempts identify the speed policy that created them:
 |---|---|---|
 | v1 | B/C/B′ | Historical byte-compatible authority |
 | v2 | B/C/B′/C′/B″ | Fixed repeat-read authority |
-| v3 | B/C/B′, then C′/B″ only when borderline | Resident adaptive production authority |
+| v3 | B/C/B′, then C′/B″ only when borderline | Resident adaptive authority |
+| v4 | as v3 | Every read graded; bookend invariance decides |
+| v5 | as v3 | Adds the bracket-drift exclusion |
+| v6 | B/C, then B′ only when a legal bookend could reverse it | Conditional bookend |
+| v7 | as v6 | Adds the symmetric baseline swap |
+| v8 | B/C/B′, always three | Two-process substrate for non-swappable candidates |
+
+Versions 6 and 7 belong to the resident pair, where the candidate is hot-swapped
+into a loaded engine. A candidate that cannot be hot-swapped — one declaring CUDA,
+C++ or PTX sources, AOT artifacts, dependency patches, or engine setup — is
+measured by the two-process crossover instead, which launches its own baseline and
+candidate engines. That substrate binds v8 and reads B′ unconditionally: the
+quality gate takes its stock-drift control from the second baseline read, and a
+conditional bookend leaves a clear PASS with no control to harvest. Reading it
+regardless of the outcome also preserves what the conditional versions enforce — a
+read taken regardless of a result cannot be a read taken because of one.
+
+The version is selected per candidate when the qualification plan is built, from
+the same swappability predicate the worker routes execution on, so the plan and
+the execution substrate cannot disagree. Only the read order differs: every
+calibrated threshold is the one the provider sealed.
+
+C′ and B″ are unreachable under v6, v7 and v8. The five-arm bracket survives only
+in v2–v5 evidence.
 
 The legacy constructor default remains v1 so historical serialized evidence reopens
-without reinterpretation. A production arena provider must explicitly bind v3 resident
-authority. Merely changing the policy label does not upgrade old evidence.
+without reinterpretation. A production arena provider must explicitly bind its
+resident authority. Merely changing the policy label does not upgrade old evidence.
 
 ## Resident adaptive timeline
 

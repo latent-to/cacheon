@@ -1,10 +1,29 @@
 """Bounded production speed stage with two resident TP lanes.
 
 Stock and candidate load once on disjoint lanes. GPU work is serialized because
-simultaneous TP4 reads were measured to distort both lanes. The cheap B/C/B-prime
-decision runs first; only a precommitted borderline result adds C-prime/B-double-
-prime. Audit and pristine T are later stages and must not run unless this returns
-PASS.
+simultaneous TP4 reads were measured to distort both lanes. Audit and pristine T
+are later stages and must not run unless this returns PASS.
+
+This module is the substrate for candidates that cannot be hot-swapped into a
+resident engine -- CUDA, C++ and PTX bundles, whose kernels must be compiled and
+linked into the engine that runs them. It refused every version-6 policy
+outright between 2026-08-15 (87944430) and this change, so those bundles
+screened clean and then never received a speed verdict at all.
+
+Its schedule is version 8: B, C and B-prime, always, and nothing beyond them.
+
+B-prime is precommitted here rather than earned by a close call, which is the
+one way this path differs from the pair-native crossover. The reason is the
+quality gate, not the speed gate: `reference_quality.stock_drift_upper_bound`
+harvests its stock-drift control from the second baseline read, and it is the
+only consumer of that read -- the candidate-versus-baseline comparison discards
+it. Versions 6 and 7 read the bookend only when the speed call is close, so a
+clear PASS under them leaves no control to harvest. Reading it unconditionally
+also keeps the anti-reroll property those versions enforce: a read taken
+regardless of the outcome cannot be a read taken because of it.
+
+C-prime and B-double-prime do not exist under version 8. The five-arm bracket
+survives only for versions 5 and earlier, which nothing seals.
 """
 
 from __future__ import annotations
@@ -61,7 +80,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (1, 2, 3, 4, 5, 6, 7)
+            or self.version not in (1, 2, 3, 4, 5, 6, 7, 8)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -210,13 +229,20 @@ class ResidentSpeedPolicy:
             "cacheon.qualification.resident-speed-policy",
             {
                 **self.to_dict(),
+                # The sealed identity states the schedule it was measured under.
+                # Version 8 reads the bookend unconditionally, so it must not
+                # claim the conditional read order that versions 6 and 7 seal.
                 "borderline_band": (
-                    "pod_bookend_invariant"
+                    "invariant_over_reads_taken"
+                    if self.version >= 8
+                    else "pod_bookend_invariant"
                     if self.version >= 6
                     else "one_min_margin_around_required"
                 ),
                 "read_order": (
-                    ["B", "C", "B_prime_if_inconclusive"]
+                    ["B", "C", "B_prime"]
+                    if self.version >= 8
+                    else ["B", "C", "B_prime_if_inconclusive"]
                     if self.version >= 6
                     else ["B", "C", "B_prime", "C_prime", "B_double_prime"]
                 ),
@@ -1030,11 +1056,29 @@ class ResidentCrossoverEvidence:
     completed_monotonic_s: float
 
     def __post_init__(self) -> None:
-        roles = (
-            ("B", "C", "B_prime", "C_prime", "B_double_prime")
-            if self.escalated
-            else ("B", "C", "B_prime")
+        version = (
+            self.policy.version if type(self.policy) is ResidentSpeedPolicy else 0
         )
+        if version >= 8:
+            # Three reads, always. Escalation is unreachable, so evidence that
+            # claims it is malformed rather than merely unusual.
+            roles = ("B", "C", "B_prime")
+            schedule_valid = self.escalated is False
+        elif version >= 6:
+            # A conditional-bookend policy belongs to the pair-native crossover,
+            # which produces ResidentPairCrossoverEvidence. This evidence type
+            # cannot honestly carry one: a clear result under those versions
+            # seals two reads, leaving the quality gate without the stock-drift
+            # control it harvests from the second baseline.
+            roles = ()
+            schedule_valid = False
+        else:
+            roles = (
+                ("B", "C", "B_prime", "C_prime", "B_double_prime")
+                if self.escalated
+                else ("B", "C", "B_prime")
+            )
+            schedule_valid = True
         for field in (
             "plan_digest",
             "selected_delta_digest",
@@ -1047,7 +1091,8 @@ class ResidentCrossoverEvidence:
             except ValueError as exc:
                 raise CrossoverRuntimeError(str(exc)) from None
         if (
-            type(self.policy) is not ResidentSpeedPolicy
+            not schedule_valid
+            or type(self.policy) is not ResidentSpeedPolicy
             or type(self.baseline_execution) is not EngineExecutionEvidence
             or type(self.candidate_execution) is not EngineExecutionEvidence
             or type(self.baseline_quiescence) is not OCIQuiescenceReceipt
@@ -1112,8 +1157,11 @@ class ResidentCrossoverEvidence:
         candidate_rates = tuple(
             row for row in self.rates if row.role.startswith("C")
         )
-        expected_baseline_reads = 3 if self.escalated else 2
-        expected_candidate_reads = 2 if self.escalated else 1
+        # __post_init__ has already pinned the exact role tuple for this policy
+        # version, so the read counts follow from the roles themselves and do
+        # not need a second per-version table to fall out of step with.
+        expected_baseline_reads = len(baseline_rates)
+        expected_candidate_reads = len(candidate_rates)
         _validate_resident_execution(
             self.baseline_execution,
             plan.baseline,
@@ -1133,33 +1181,49 @@ class ResidentCrossoverEvidence:
                 range(0, block * len(rows), block)
             ) or any(_recomputed_rate(row, execution, arm) != row for row in rows):
                 raise CrossoverRuntimeError("resident rate spans do not independently regrade")
-        initial, disposition = speed_grade(
-            plan.policy,
-            [baseline_rates[0], baseline_rates[1]],
-            [candidate_rates[0]],
-            concluding=False,
-        )
-        if plan.policy.conditioning_regression(
-            baseline_rates[0], candidate_rates[0]
-        ):
-            disposition = SpeedStageDecision.FAIL
-        if disposition is None:
-            if not self.escalated:
-                raise CrossoverRuntimeError("borderline resident evidence omitted repeat reads")
+        if plan.policy.version >= 8:
+            # One grade over the whole precommitted schedule. There is no
+            # adaptive read-shape assertion to make: three reads are not a
+            # response to the result, they are the result's entire evidence.
             final, decision = speed_grade(
                 plan.policy,
-                list(baseline_rates),
-                list(candidate_rates),
+                [baseline_rates[0], baseline_rates[1]],
+                [candidate_rates[0]],
                 concluding=True,
             )
             if plan.policy.conditioning_regression(
-                baseline_rates[1], candidate_rates[1]
+                baseline_rates[0], candidate_rates[0]
             ):
                 decision = SpeedStageDecision.FAIL
+            initial = final
         else:
-            if self.escalated:
-                raise CrossoverRuntimeError("clear resident evidence added unsealed reads")
-            final, decision = initial, disposition
+            initial, disposition = speed_grade(
+                plan.policy,
+                [baseline_rates[0], baseline_rates[1]],
+                [candidate_rates[0]],
+                concluding=False,
+            )
+            if plan.policy.conditioning_regression(
+                baseline_rates[0], candidate_rates[0]
+            ):
+                disposition = SpeedStageDecision.FAIL
+            if disposition is None:
+                if not self.escalated:
+                    raise CrossoverRuntimeError("borderline resident evidence omitted repeat reads")
+                final, decision = speed_grade(
+                    plan.policy,
+                    list(baseline_rates),
+                    list(candidate_rates),
+                    concluding=True,
+                )
+                if plan.policy.conditioning_regression(
+                    baseline_rates[1], candidate_rates[1]
+                ):
+                    decision = SpeedStageDecision.FAIL
+            else:
+                if self.escalated:
+                    raise CrossoverRuntimeError("clear resident evidence added unsealed reads")
+                final, decision = initial, disposition
         if (
             self.initial_verdict != initial
             or self.final_verdict != final
@@ -1327,10 +1391,6 @@ def run_resident_crossover_speed(
         or type(model_mount) is not TrustedArenaModelMountReceipt
     ):
         raise CrossoverRuntimeError("resident crossover authorities are not exact")
-    if plan.policy.version >= 6:
-        raise CrossoverRuntimeError(
-            "resident speed policy v6 requires the pair-native crossover"
-        )
     started = float(clock())
     thresholds = (deadline, started)
     if any(
@@ -1347,8 +1407,15 @@ def run_resident_crossover_speed(
     candidate_lane = _lane_digest(candidate_executor, plan.candidate)
     if baseline_lane == candidate_lane:
         raise CrossoverRuntimeError("resident executors reused one lane namespace")
-    baseline_plan = _expanded(plan.baseline.session_plan, 3)
-    candidate_plan = _expanded(plan.candidate.session_plan, 2)
+    if plan.policy.version in (6, 7):
+        raise CrossoverRuntimeError(
+            "conditional-bookend speed policy cannot serve the two-process crossover"
+        )
+    # Version 8 reads B and B-prime on the baseline lane and exactly one C on
+    # the candidate lane; earlier versions may escalate to three and two.
+    always_bookend = plan.policy.version >= 8
+    baseline_plan = _expanded(plan.baseline.session_plan, 2 if always_bookend else 3)
+    candidate_plan = _expanded(plan.candidate.session_plan, 1 if always_bookend else 2)
     schedule = _Schedule()
 
     windowed = plan.policy.version >= 3
@@ -1366,6 +1433,28 @@ def run_resident_crossover_speed(
             )
             schedule.put("B", before)
             candidate = schedule.get("C", deadline=stage_deadline, clock=clock)
+            if always_bookend:
+                bookend = _rate(
+                    "B_prime",
+                    baseline_lane,
+                    controller,
+                    plan.baseline.session_plan,
+                    with_windows=windowed,
+                )
+                schedule.put("B_prime", bookend)
+                final, disposition = speed_grade(
+                    plan.policy, [before, bookend], [candidate], concluding=True
+                )
+                # Conditioning pairs by warmth position: C against B, the cold
+                # first reads. A regression there is a clear FAIL -- the
+                # candidate's unscored work already blew its sealed bound.
+                if plan.policy.conditioning_regression(before, candidate):
+                    disposition = SpeedStageDecision.FAIL
+                schedule.put("initial", final)
+                schedule.put("escalate", False)
+                schedule.put("final", final)
+                schedule.put("decision", disposition)
+                return controller.finish(require_all=False)
             after = _rate(
                 "B_prime",
                 baseline_lane,
@@ -1426,6 +1515,13 @@ def run_resident_crossover_speed(
                     with_windows=windowed,
                 ),
             )
+            if always_bookend:
+                # Stay resident and idle until the baseline lane has finished.
+                # Tearing this CUDA context down while B-prime is charging would
+                # contaminate it -- the same hazard the escalated schedule below
+                # guards by waiting for B_double_prime.
+                schedule.get("decision", deadline=stage_deadline, clock=clock)
+                return controller.finish(require_all=False)
             escalated = schedule.get("escalate", deadline=stage_deadline, clock=clock)
             if escalated is True:
                 schedule.put(
@@ -1505,11 +1601,10 @@ def run_resident_crossover_speed(
         or type(decision) is not SpeedStageDecision
     ):
         raise CrossoverRuntimeError("resident speed grade is incomplete")
-    roles = (
-        ("B", "C", "B_prime", "C_prime", "B_double_prime")
-        if escalated
-        else ("B", "C", "B_prime")
-    )
+    if not always_bookend and escalated:
+        roles = ("B", "C", "B_prime", "C_prime", "B_double_prime")
+    else:
+        roles = ("B", "C", "B_prime")
     rates = tuple(schedule.values[role] for role in roles)
     if any(type(row) is not ResidentReadRate for row in rates):
         raise CrossoverRuntimeError("resident speed rates are incomplete")
