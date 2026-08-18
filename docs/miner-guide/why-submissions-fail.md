@@ -59,11 +59,23 @@ which needs a real `int`. At trace time `D` is a `constexpr` wrapper object, so
 tracing aborts and the kernel is never built. Assigning it first
 (`POW2: tl.constexpr = triton.next_power_of_2(D)`) fails identically.
 
-The fix is the device-side helper — one token:
+There is no device-side replacement to swap in: `triton.language` does not
+export `next_power_of_2`. The fix is a small refactor — compute the bound on the
+host at the launch site and pass it in as its own `tl.constexpr` argument:
 
 ```python
-    col_offsets = tl.arange(0, tl.next_power_of_2(D))
+BLOCK_D = triton.next_power_of_2(D)                    # host, at the launch site
+_kernel[grid](..., D=D, BLOCK_D=BLOCK_D, ...)
+
+@triton.jit
+def _kernel(..., D: tl.constexpr, BLOCK_D: tl.constexpr, ...):
+    col_offsets = tl.arange(0, BLOCK_D)
+    mask = col_offsets < D
 ```
+
+This is the idiom in Triton's official fused-softmax tutorial. `tl.arange`
+requires a compile-time power-of-two bound in any case, so the bound has to be
+computed where real Python integers exist.
 
 Run the bundle checks before submitting. They cost seconds and catch this class
 of failure:

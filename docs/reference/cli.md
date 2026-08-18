@@ -27,6 +27,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
+| `chain-miner-report` | validator operator | read-only private diagnostics | Report every retained submission for one miner hotkey with its stated cause and next step |
 | `chain-evaluation-lease` | validator operator | one-shot evaluation lease transition | Preview, claim, heartbeat, or infrastructure-release store-selected work from sealed file authority |
 | `chain-register` | operator | chain mutation | Burn-register a hotkey and run the SDK preflight |
 | `chain-validate` | validator | production intake | Consume finalized reveals; a deployment may inject qualification services |
@@ -208,6 +209,30 @@ python -m cacheon.cli chain-reservation-status \
 `--content-hash` and `--miner-hotkey` are alternative exact selectors. The command
 refuses either selector when it matches more than one row; use the reservation ID to
 remove that ambiguity. Add `--json` for a machine-readable support record.
+
+### `chain-miner-report`
+
+Answers the question a miner actually asks — what happened to everything I sent —
+which `chain-reservation-status` cannot, because it refuses a selector matching
+more than one row:
+
+```bash
+python -m cacheon.cli chain-miner-report \
+  --intake-db /srv/cacheon/state/intake.sqlite3 \
+  --miner-hotkey <SS58>
+```
+
+Each submission is reported with its typed outcome, the persisted reason code, a
+stated cause, and a next step. Reasons that are not the candidate's fault —
+queue-window expiry and validator-side infrastructure holds — say so explicitly
+rather than reading as a verdict. Add `--json` for the machine-readable record.
+
+The report never derives a decision. A row carrying no typed decision is reported
+as having none. It reads the same durable rows through the same read-only
+snapshot and redaction helpers as `chain-reservation-status`, so the two views
+cannot disagree about a verdict.
+
+### `chain-reservation-status` internals
 
 The command opens the live WAL database read-only and takes one consistent SQLite read
 snapshot. It does not acquire the `FinalizedIntakeStore` process lock, mutate a row, or

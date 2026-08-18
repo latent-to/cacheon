@@ -1583,6 +1583,29 @@ def cmd_chain_reservation_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_miner_report(args: argparse.Namespace) -> int:
+    """Report every retained submission for one hotkey with a stated cause."""
+
+    import json
+
+    from cacheon.chain.miner_feedback import (
+        format_miner_submissions,
+        miner_submissions,
+    )
+    from cacheon.chain.operator_status import OperatorStatusError
+
+    try:
+        value = miner_submissions(args.intake_db, hotkey=args.miner_hotkey)
+    except OperatorStatusError as exc:
+        print(f"MINER REPORT REFUSED: {exc}")
+        return 2
+    if args.json:
+        print(json.dumps(value, separators=(",", ":"), sort_keys=True))
+    else:
+        print(format_miner_submissions(value))
+    return 0
+
+
 def cmd_chain_validate(
     args: argparse.Namespace, *, arena_registry=None
 ) -> int:
@@ -2673,6 +2696,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--json", action="store_true", help="emit canonical compact JSON")
     sp.set_defaults(func=cmd_chain_reservation_status)
+
+    sp = sub.add_parser(
+        "chain-miner-report",
+        help=(
+            "every retained submission for one miner hotkey, each with its typed "
+            "outcome, stated cause, and next step"
+        ),
+    )
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.add_argument("--miner-hotkey", required=True)
+    sp.add_argument("--json", action="store_true", help="emit canonical compact JSON")
+    sp.set_defaults(func=cmd_chain_miner_report)
 
     sp = sub.add_parser(
         "chain-evaluation-lease",
