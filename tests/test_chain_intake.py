@@ -77,6 +77,10 @@ def _store(tmp_path, **policy):
     )
 
 
+def test_default_expiry_preserves_fifo_backlog_for_roughly_sixty_nine_days():
+    assert IntakePolicy().expiry_blocks == 500_000
+
+
 def _fingerprint(
     target: str,
     member: str,

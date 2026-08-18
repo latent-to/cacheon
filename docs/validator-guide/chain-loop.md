@@ -350,14 +350,13 @@ The default `IntakePolicy` values are:
 | Per target / epoch | 64 | Applied after the target is resolved from submitted bytes |
 | Transport / qualification attempts | 3 / 3 | Exhaustion produces a retained hold rather than infinite work |
 | Controller cohort | 8 | Bounds fetch, screening, and qualification selection per pass |
-| Finalized-block expiry SLA | 10,000 blocks | Automatically expires eligible unresolved rows and sets the minimum age for explicit expiry |
+| Finalized-block expiry SLA | 500,000 blocks | Keeps queued work for roughly 69 days before automatic stale-state expiry and sets the minimum age for explicit expiry |
 
-The expiry SLA is only meaningful against the queue's service rate. Qualification
-holds the arena exclusively for the length of a full speed and fidelity campaign, so
-an SLA shorter than the evaluation time a day of arrivals demands expires rows for
-validator occupancy rather than submitter absence. Size it above the daily backlog
-the arena can actually admit, and treat a cohort expiring on this SLA without being
-reached as a capacity fault rather than a miner outcome.
+The expiry SLA is only meaningful against the queue's service rate. The former
+10,000-block bound covered only about 51 reservations at the measured service time and
+expired 178 queued rows without verdicts. The 500,000-block default keeps automatic
+expiry as a last-resort stale-state bound rather than a normal capacity disposition.
+Treat any cohort expiring without being reached as a capacity fault, not a miner outcome.
 
 Arena capacity is an additional bound. Its queue age/depth, active-screen,
 active-qualification, cohort, and retry limits are content-bound in the service manifest.
