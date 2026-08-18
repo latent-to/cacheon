@@ -184,7 +184,10 @@ def scan_path(path: str | Path) -> ScanResult:
 # ``tl.next_power_of_2`` to swap to -- ``triton.language`` does not export one. The
 # fix is to compute the value at the launch site and pass it in as its own
 # ``tl.constexpr`` parameter, as Triton's fused-softmax tutorial does.
-_TRITON_HOST_ONLY = frozenset({"next_power_of_2", "cdiv"})
+# Only ``next_power_of_2`` is listed. ``cdiv`` was here too and was removed: its
+# body is ``(x + y - 1) // y``, which ``tl.constexpr`` supports, so flagging it
+# was an unverified guess. Claim only what a real traceback backs.
+_TRITON_HOST_ONLY = frozenset({"next_power_of_2"})
 
 
 def _is_triton_jit(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -205,15 +208,27 @@ def scan_compilability(source: str, *, filename: str = "<kernel>") -> ScanResult
     bundle is merely broken, which carries a different consequence and must not
     be conflated with an attack.
 
-    This exists because Triton is a JIT: it compiles on first invocation, which
-    on the evaluation path happens only after a resident TP4 pair is fully
-    loaded. A kernel that can never compile therefore costs minutes of GPU per
-    attempt to reject something an AST walk settles instantly, and it does so
-    once per retry. Catching it statically is the difference between a
-    millisecond and a quarter hour.
+    Triton is a JIT: it compiles PER KERNEL, on that kernel's first invocation.
 
-    Findings are candidate-attributable: a defect in the candidate's own kernel
-    is not an infrastructure, baseline, or teardown failure.
+    THIS IS ADVISORY, NOT A VERDICT. Read this before using it as one.
+
+    A finding means "this kernel raises at trace time IF it is ever invoked". It
+    does NOT mean the bundle cannot be evaluated. A bundle may define twenty
+    ``@triton.jit`` kernels and invoke three; a defect in an unreachable one is
+    latent dead code and the bundle measures normally.
+
+    Measured on 330 real mainnet bundles on 2026-08-18: of 85 that provably
+    compiled (they produced a speed verdict or a PASS, so they ran), 39 -- 46% --
+    contained a flagged call in some unreached kernel. Using this scan as a FAIL
+    authority would have failed those 39 honest bundles.
+
+    A sound gate has to attempt real compilation of the kernels actually reached
+    from the manifest's declared entry points, which means executing candidate
+    code and therefore belongs in the sandboxed screen, never here.
+
+    Deliberately separate from :func:`scan_source`. That scan is a security
+    boundary -- its findings mean a bundle is hostile. These mean it contains a
+    broken kernel, which must not be conflated with an attack.
     """
 
     out: list[str] = []

@@ -68,6 +68,54 @@ def launch(out, D):
     assert scan_compilability(source).ok
 
 
+def test_host_side_cdiv_is_not_flagged():
+    """``cdiv`` was flagged on a guess and is not.
+
+    Its body is ``(x + y - 1) // y`` and ``tl.constexpr`` supports that
+    arithmetic, so unlike ``next_power_of_2`` (which needs ``.bit_length()``)
+    there is no traceback backing the claim. Flag only what evidence supports.
+    """
+    source = """
+import triton
+import triton.language as tl
+
+@triton.jit
+def _kernel(out_ptr, n: tl.constexpr):
+    x = triton.cdiv(n, 8)
+"""
+    assert scan_compilability(source).ok
+
+
+def test_a_defect_in_an_unreached_kernel_is_still_reported():
+    """The known limitation, pinned so nobody mistakes this for a verdict.
+
+    Triton compiles per kernel on first invocation, so a broken kernel that is
+    never invoked never compiles and never errors -- the bundle measures fine.
+    This scan cannot see reachability, so it reports the defect anyway. On 330
+    real mainnet bundles that produced a 46% false-positive rate against
+    bundles that provably compiled. Advisory only; a FAIL needs real
+    compilation of the reachable entry points, in the sandboxed screen.
+    """
+    source = """
+import triton
+import triton.language as tl
+
+@triton.jit
+def _live_kernel(out_ptr, D: tl.constexpr, BLOCK: tl.constexpr):
+    x = tl.arange(0, BLOCK)
+
+@triton.jit
+def _never_called(out_ptr, D: tl.constexpr):
+    x = triton.next_power_of_2(D)
+
+def launch(out, D):
+    _live_kernel[(1,)](out, D=D, BLOCK=triton.next_power_of_2(D))
+"""
+    result = scan_compilability(source)
+    assert not result.ok
+    assert "_never_called" in result.violations[0]
+
+
 def test_in_language_builtins_are_allowed_inside_a_kernel():
     source = """
 import triton
@@ -90,11 +138,11 @@ import triton.language as tl
 
 @jit
 def _kernel(out_ptr, D: tl.constexpr):
-    x = triton.cdiv(D, 8)
+    x = triton.next_power_of_2(D)
 """
     result = scan_compilability(source)
     assert not result.ok
-    assert "triton.cdiv()" in result.violations[0]
+    assert "triton.next_power_of_2()" in result.violations[0]
 
 
 def test_decorator_call_form_is_covered():

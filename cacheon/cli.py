@@ -1693,7 +1693,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         elif not result.ok:
             status = "VIOLATIONS"
         else:
-            status = "WILL NOT COMPILE"
+            status = "BROKEN KERNEL"
         print(f"  [{status}] {op.slot} <- {op.source}")
         for v in result.violations:
             print(f"      {v}")
