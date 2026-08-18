@@ -141,7 +141,9 @@ cacheon chain-validate \
 
 This command reads finalized history, reserves new arrivals, performs HTTPS fetch and
 hash verification, and publishes safe immutable copies. It does not need a wallet and
-cannot qualify or settle while `--intake-only` is set.
+cannot qualify or settle while `--intake-only` is set. Eval-cost admission defaults
+off; set `--eval-cost-tao-rao 1000000000` only when the operator requires the
+published 1 TAO transfer.
 
 Interpret the one-pass summary by stage:
 

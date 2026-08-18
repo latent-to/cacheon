@@ -8,6 +8,7 @@ import pytest
 
 from cacheon.chain.payload import (
     MAX_PAYLOAD_BYTES,
+    PAID_PAYLOAD_VERSION,
     PAYLOAD_VERSION,
     PayloadError,
     decode_payload,
@@ -53,6 +54,9 @@ def test_decode_never_raises_on_garbage():
                     '{"h":"' + HASH + '","u":"https://x","v":1}',
                     '{"v":1, "h":"' + HASH + '","u":"https://x"}',
                     '{"v":1,"h":"' + HASH + '","u":"https://x","x":1}',
+                    '{"v":2,"h":"' + HASH + '","u":"https://x"}',
+                    '{"v":2,"h":"' + HASH + '","u":"https://x","p":{"b":0,"i":0}}',
+                    '{"v":2,"h":"' + HASH + '","u":"https://x","p":{"i":1,"b":8}}',
                     "x" * (MAX_PAYLOAD_BYTES + 1)):
         assert decode_payload("hk", 1, garbage) is None
     assert decode_payload("hk", 1, None) is None  # type: ignore[arg-type]
@@ -91,3 +95,11 @@ def test_decode_rejects_invalid_chain_identity_without_coercion():
     assert decode_payload(" hk", 1, wire) is None
     assert decode_payload("hk", True, wire) is None
     assert decode_payload("hk", -1, wire) is None
+
+
+def test_paid_payload_round_trip():
+    data = encode_payload(HASH, "https://example.com/b.tar.gz", payment_block=80, payment_extrinsic_index=4)
+    ref = decode_payload("hk1", 42, data)
+    assert ref is not None
+    assert ref.payment_block == 80 and ref.payment_extrinsic_index == 4
+    assert data.startswith('{"v":%d,' % PAID_PAYLOAD_VERSION)

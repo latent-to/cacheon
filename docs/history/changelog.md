@@ -380,6 +380,28 @@ points installed, and an old evaluator image does not contain the renamed
 `cacheon` worker modules. `HOW_CACHEON_WORKS.md` is the canonical
 compatibility redirect.
 
+## 2026-08-15 — Fixed eval-cost quote and TAO transfer to the subnet owner
+
+Intake can require a miner-paid evaluation cost before a finalized reveal is
+admitted. v1 `quote_eval_cost` returns a published TAO-rao amount and
+ignores submission extras so a later quote can price the specific eval request
+without changing payment verification. Miners optionally transfer that amount
+to the current subnet owner coldkey with a content-hash remark
+(`Balances.transfer_keep_alive`) and commit a v2 payload pointer; validators
+consume the pointer once. The destination is the metagraph `owner_coldkey` at
+the payment block, not a miner- or operator-supplied wallet. The gate defaults
+off (`eval_cost_tao_rao=0`). Enabling it with
+`chain-validate --eval-cost-tao-rao 1000000000` matches the published 1 TAO
+quote. A quote freezes the amount from issuance through payment for 300 blocks
+(~1 hour). Payment may precede the reveal; `chain-submit` can attach an unused
+included transfer with `--eval-cost-payment-block` /
+`--eval-cost-payment-extrinsic-index` instead of `--pay`. Intake consumes the
+pointer only on reserved or deferred admission, so a failed reveal leaves the
+credit unused. These chain-admission settings do not expand the shared sealed
+FIFO/dispatcher `IntakePolicy`. With the gate off, intake does not consume an
+unverified v2 pointer, so disabled-mode traffic cannot poison a future payment
+coordinate.
+
 ## Corrections and retractions
 
 ### MXFP4 throughput claim retracted — 2026-06-07

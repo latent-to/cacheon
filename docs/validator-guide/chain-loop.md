@@ -375,6 +375,19 @@ dedicated schema-3 migration hold, remains fail closed for explicit operator dis
 This prevents slow reproduction from losing its complete SLA while preventing one old
 PASS from becoming a permanent priority veto.
 
+### Eval-cost admission policy
+
+Eval-cost admission is deliberately separate from the shared `IntakePolicy` used by
+screen and evaluation-lease services. `chain-validate --eval-cost-tao-rao` controls the
+required `transfer_keep_alive` amount and defaults to `0` (off). Quote TTL defaults to
+300 blocks and the payment-to-reveal window defaults to 7,200 blocks.
+
+A v2 reveal may attach a payment pointer. When the gate is enabled, intake rebuilds the
+remark from that reveal's hotkey, content hash, and netuid; only that triple can spend
+the pointer. The paying coldkey is not the claimant. When the gate is disabled, the
+pointer is ignored for payment accounting: unverified coordinates are neither consumed
+nor allowed to pre-claim a future payment.
+
 Discovery proposal identity is checked before screening. A proposal already retained as
 seen or awarded is terminally disposed, and legacy pending duplicates are deduplicated
 before lease. Repackaging cannot buy another screen or bounty.
@@ -385,7 +398,8 @@ The controller maps failures according to where authority was lost:
 
 | Point of failure | Stored disposition | Retry behavior |
 |---|---|---|
-| Invalid chain payload, unsafe archive, content-hash mismatch, malformed proposal | `failed` / `FAIL` | None; attributable intake failure |
+| Invalid chain payload, unpaid or invalid eval-cost payment, unsafe archive, content-hash mismatch, malformed proposal | `failed` / `FAIL` | None; attributable intake failure |
+| Eval-cost payment lookup RPC/decode blip | pass aborted; cursor unchanged | Retry the pass; do not fail the miner |
 | Transient HTTPS/DNS or immutable-publication storage fault | `transport_retry` / `NO_DECISION` | Retry until the transport budget, then `held` |
 | Static/build/ABI/graph/serving screen `FAIL` | `failed` / `FAIL` | None under that screen authority |
 | Screen timeout or inconclusive evidence | Retry in the same primary or reproduction lane | Arena screen budget decides retry versus hold |

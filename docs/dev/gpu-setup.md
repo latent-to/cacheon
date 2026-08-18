@@ -160,6 +160,58 @@ registered seam, completed it, and produced the expected output. A rank-local
 fallback would diverge the collective, so the candidate engine must abort
 rather than continue with mixed implementations.
 
+## Live serving activation tier (opt-in)
+
+`tests/test_seam_activation_live.py` proves on demand that an armed bundle
+kernel executes inside the real serving path: it boots a server three times in
+a validator worker image — null-armed baseline, exact-math silu bundle, broken
+silu bundle — and requires the exact bundle to reproduce the baseline
+completion byte-identically while the broken bundle corrupts it. Activation is
+log-silent by design, so this behavioral comparison is the only honest
+detector.
+
+The tier never runs by default, in CI or on GPU hosts. Arm it explicitly:
+
+```bash
+CACHEON_LIVE_SERVE_TESTS=1 \
+CACHEON_SERVE_IMAGE=<worker image ref> \
+CACHEON_SERVE_MODEL=/path/to/small-local-model \
+python -m pytest tests/test_seam_activation_live.py
+```
+
+Optional variables: `CACHEON_SERVE_REPO` (a docker-mountable copy of this
+repository when the checkout itself cannot be bind-mounted; the test verifies
+the copy's source identity against the running checkout before trusting it),
+`CACHEON_SERVE_GPU` (device index, default 0; a comma pair under tp=2,
+default 0,1), `CACHEON_SERVE_TP` (tensor-parallel width, 1 or 2, default 1),
+and `CACHEON_SERVE_BOOT_TIMEOUT_S` (per-boot readiness budget, default 320).
+`CACHEON_SERVE_TP=2` boots every arm with `--tp-size 2`, proving the
+spawn-safe seam arms each tensor-parallel rank process rather than only
+rank 0. Once armed, a missing prerequisite is a loud failure, never a skip.
+Expect roughly ten minutes for the three boots.
+
+## Native toolchain tier (opt-in)
+
+`tests/test_native_toolchain_live.py` is the build smoke for the
+`cutlass.cute.cubin.v1` provider: a deviceless container compiles a minimal
+`@cute.jit` kernel with the validator compiler recipe, then a GPU container
+runs the produced bytes through the production ELF gate and Driver-API
+admission, asserting the loaded kernel is the declared one. It proves
+toolchain compatibility and device loadability; it does not execute the
+sealed prebuild protocol or any slot's numeric contract.
+
+```bash
+CACHEON_LIVE_NATIVE_TESTS=1 \
+CACHEON_SERVE_IMAGE=<worker image ref> \
+python -m pytest tests/test_native_toolchain_live.py
+```
+
+It shares `CACHEON_SERVE_REPO`, `CACHEON_SERVE_GPU`, and adds
+`CACHEON_SERVE_SCRATCH` (a docker-mountable scratch directory, default a
+temporary directory) and `CACHEON_NATIVE_ARCH` (compile architecture,
+default `sm_100a`; it must match the admission device). Expect one to two
+minutes.
+
 ## Complete-engine performance development
 
 Cacheon deliberately exposes no local qualification command. Contributors may profile

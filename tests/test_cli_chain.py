@@ -69,3 +69,23 @@ def test_chain_snapshot_surfaces_are_wallet_free_and_explicit() -> None:
     assert not {"--wallet", "--hotkey", "--model", "--image"} & (
         snapshot_options | verify_options
     )
+
+
+def test_chain_submit_can_reuse_an_unused_eval_cost_payment() -> None:
+    parser = cli.build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    submit = subparsers.choices["chain-submit"]
+    options = {
+        option for action in submit._actions for option in action.option_strings
+    }
+    assert {
+        "--pay",
+        "--dry-run",
+        "--eval-cost-payment-block",
+        "--eval-cost-payment-extrinsic-index",
+        "--eval-cost-tao-rao",
+    } <= options

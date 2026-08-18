@@ -133,7 +133,7 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 | Task | Supported surface |
 |---|---|
 | Inspect slot and SDK compatibility | `cacheon slots`, `cacheon compat`, `cacheon chain-compat` |
-| Publish and submit a proposal | `cacheon chain-publish`, `cacheon chain-submit` |
+| Publish and submit a proposal | `cacheon chain-publish`, `cacheon chain-eval-cost`, `cacheon chain-submit` |
 | Inspect chain state | `cacheon chain-status` |
 | Run bounded finalized public intake | `cacheon chain-validate --intake-only` |
 | Run full referee service | Deployment code calling `run_validator(...)` with an injected registry/provider |

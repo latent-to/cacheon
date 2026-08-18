@@ -20,7 +20,7 @@ slots -> scan -> verify -> chain-package -> host -> chain-submit -> chain-status
 | `verify` | Check a single op/block against its trusted reference; collective slots use distributed verification | Diagnostic |
 | `chain-package` | Produce the deterministic hosted archive and content identity | Submission preparation |
 | HTTPS host | Make the immutable archive available for validator fetch | Transport only |
-| `chain-submit` | Commit the proposal through timelock commit-reveal | Chain intake |
+| `chain-submit` | Commit the proposal through timelock commit-reveal; optional eval-cost `--pay` | Chain intake |
 | `chain-status` | Inspect submission state | Informational |
 
 Local measurements are useful for iteration. They do not select a production arena

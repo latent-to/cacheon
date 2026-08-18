@@ -33,6 +33,16 @@ from cacheon.chain.intake import (
     IntakeReservation,
     IntakeScope,
 )
+from cacheon.chain.eval_cost import (
+    EvalCostFetchError,
+    EvalCostPolicy,
+    EvalCostRequest,
+    verify_eval_cost_payment,
+)
+from cacheon.chain.eval_cost_payment import (
+    read_eval_cost_payment,
+    read_subnet_owner_coldkey,
+)
 from cacheon.chain.payload import decode_payload
 from cacheon.chain.publication import (
     WorkerBundlePublication,
@@ -53,6 +63,7 @@ from cacheon.eval.qualification_intake import (
 
 logger = logging.getLogger("cacheon.chain.validator")
 DEFAULT_INTERVAL_S = 60.0
+_DISABLED_EVAL_COST_POLICY = EvalCostPolicy(amount_rao=0)
 
 
 class IntakeControllerError(RuntimeError):
@@ -79,7 +90,14 @@ class PassResult:
     screens: dict[str, str] = field(default_factory=dict)
 
 
-def _finalized_arrivals(snapshot) -> tuple[FinalizedArrival, ...]:
+def _finalized_arrivals(
+    snapshot,
+    *,
+    netuid: int,
+    eval_cost_policy: EvalCostPolicy,
+    payment_lookup=None,
+    owner_lookup=None,
+) -> tuple[FinalizedArrival, ...]:
     rows: list[FinalizedArrival] = []
     for reveal in snapshot.reveals:
         payload_digest = hashlib.sha256(reveal.data.encode("utf-8")).hexdigest()
@@ -99,6 +117,15 @@ def _finalized_arrivals(snapshot) -> tuple[FinalizedArrival, ...]:
                 )
             )
             continue
+        invalid_reason = ""
+        if eval_cost_policy.amount_rao > 0:
+            invalid_reason = _eval_cost_invalid_reason(
+                ref,
+                netuid=netuid,
+                policy=eval_cost_policy,
+                payment_lookup=payment_lookup,
+                owner_lookup=owner_lookup,
+            )
         rows.append(
             FinalizedArrival(
                 ref.hotkey,
@@ -109,9 +136,61 @@ def _finalized_arrivals(snapshot) -> tuple[FinalizedArrival, ...]:
                 reveal.event_index,
                 0,
                 payload_digest,
+                invalid_reason,
+                ref.payment_block,
+                ref.payment_extrinsic_index,
             )
         )
     return tuple(rows)
+
+
+def _eval_cost_invalid_reason(
+    ref,
+    *,
+    netuid: int,
+    policy: EvalCostPolicy,
+    payment_lookup,
+    owner_lookup,
+) -> str:
+    if ref.payment_block <= 0:
+        return "missing_eval_cost_payment"
+    lookup = payment_lookup or (lambda block, index: None)
+    try:
+        proof = lookup(ref.payment_block, ref.payment_extrinsic_index)
+    except EvalCostFetchError:
+        raise
+    except Exception as exc:
+        raise EvalCostFetchError(
+            f"cannot read eval-cost payment at {ref.payment_block}/{ref.payment_extrinsic_index}: {exc}"
+        ) from exc
+    if proof is None:
+        return "eval_cost_payment_invalid"
+    if owner_lookup is None:
+        raise EvalCostFetchError("eval-cost owner lookup is unavailable")
+    try:
+        owner = owner_lookup(ref.payment_block)
+    except EvalCostFetchError:
+        raise
+    except Exception as exc:
+        raise EvalCostFetchError(
+            f"cannot read subnet owner at payment block {ref.payment_block}: {exc}"
+        ) from exc
+    if not isinstance(owner, str) or not owner:
+        raise EvalCostFetchError("subnet owner coldkey is unavailable")
+    request = EvalCostRequest(
+        netuid=netuid, hotkey=ref.hotkey, content_hash=ref.content_hash
+    )
+    return verify_eval_cost_payment(
+        request=request,
+        policy=EvalCostPolicy(
+            amount_rao=policy.amount_rao,
+            destination=owner,
+            payment_window_blocks=policy.payment_window_blocks,
+            quote_ttl_blocks=policy.quote_ttl_blocks,
+        ),
+        proof=proof,
+        reveal_block=ref.block,
+    )
 
 
 def _fingerprint_private_bundle(root: Path):
@@ -357,6 +436,7 @@ def run_pass(
     private_root: str | Path,
     publication_root: str | Path,
     policy: IntakePolicy = IntakePolicy(),
+    eval_cost_policy: EvalCostPolicy = _DISABLED_EVAL_COST_POLICY,
     arena_registry: ArenaServiceRegistry | None = None,
     arena_id: str | None = None,
     intake_only: bool = False,
@@ -368,6 +448,8 @@ def run_pass(
     finalized head without rereading or advancing reveal history.
     """
 
+    if type(eval_cost_policy) is not EvalCostPolicy:
+        raise IntakeControllerError("eval-cost policy is not typed")
     if type(intake_only) is not bool or type(retained_only) is not bool:
         raise IntakeControllerError("pass mode flags must be exact booleans")
     if intake_only and retained_only:
@@ -401,12 +483,23 @@ def run_pass(
                 after_block=None if cursor is None else cursor[0],
             )
             result = PassResult(snapshot.finalized_block, snapshot.finalized_block_hash)
-            arrivals = _finalized_arrivals(snapshot)
+            arrivals = _finalized_arrivals(
+                snapshot,
+                netuid=netuid,
+                eval_cost_policy=eval_cost_policy,
+                payment_lookup=lambda block, index: read_eval_cost_payment(
+                    subtensor, block, index
+                ),
+                owner_lookup=lambda block: read_subnet_owner_coldkey(
+                    subtensor, netuid, block=block
+                ),
+            )
             result.seen = len(arrivals)
             inserted = store.reserve_finalized(
                 arrivals,
                 finalized_block=snapshot.finalized_block,
                 finalized_block_hash=snapshot.finalized_block_hash.lower(),
+                eval_cost_amount_tao_rao=eval_cost_policy.amount_rao,
             )
         # Retained-only operation has no reservation transaction in which to
         # apply the finalized-block SLA.  The call is idempotent for normal
@@ -555,6 +648,7 @@ def run_validator(
     private_root: str | Path,
     publication_root: str | Path,
     policy: IntakePolicy = IntakePolicy(),
+    eval_cost_policy: EvalCostPolicy = _DISABLED_EVAL_COST_POLICY,
     arena_registry: ArenaServiceRegistry | None = None,
     arena_id: str | None = None,
     intake_only: bool = False,
@@ -577,6 +671,7 @@ def run_validator(
                 private_root=private_root,
                 publication_root=publication_root,
                 policy=policy,
+                eval_cost_policy=eval_cost_policy,
                 arena_registry=arena_registry,
                 arena_id=arena_id,
                 intake_only=intake_only,

@@ -139,7 +139,8 @@ def test_prepare_rejects_relative_symlink_and_unsafe_roots(tmp_path: Path) -> No
         prepare_evidence_root(link)
 
     unsafe = tmp_path / "unsafe"
-    unsafe.mkdir(mode=0o755)
+    unsafe.mkdir()
+    unsafe.chmod(0o755)
     with pytest.raises(EvidenceStoreError, match="owner or mode"):
         prepare_evidence_root(unsafe)
 

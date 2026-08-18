@@ -157,6 +157,8 @@ class FinalizedArrival:
     event_subindex: int = 0
     payload_digest: str = ""
     invalid_reason: str = ""
+    payment_block: int = 0
+    payment_extrinsic_index: int = 0
 
     def __post_init__(self) -> None:
         if (
@@ -167,13 +169,13 @@ class FinalizedArrival:
             or any(char in self.hotkey for char in "\x00\r\n")
         ):
             raise IntakeError("arrival hotkey is malformed")
-        valid_reference = (
+        identified = (
             isinstance(self.content_hash, str)
             and _HASH.fullmatch(self.content_hash) is not None
             and isinstance(self.url, str)
             and bool(self.url)
-            and not self.invalid_reason
         )
+        valid_reference = identified and not self.invalid_reason
         invalid_reference = (
             self.content_hash == ""
             and self.url == ""
@@ -181,7 +183,13 @@ class FinalizedArrival:
             and bool(self.invalid_reason)
             and len(self.invalid_reason) <= 2_048
         )
-        if not (valid_reference or invalid_reference):
+        attributed_invalid = (
+            identified
+            and isinstance(self.invalid_reason, str)
+            and bool(self.invalid_reason)
+            and len(self.invalid_reason) <= 2_048
+        )
+        if not (valid_reference or invalid_reference or attributed_invalid):
             raise IntakeError("arrival payload disposition is malformed")
         if type(self.block) is not int or self.block < 0:
             raise IntakeError("arrival block is malformed")
@@ -190,6 +198,15 @@ class FinalizedArrival:
         for field in ("event_index", "event_subindex"):
             if type(getattr(self, field)) is not int or getattr(self, field) < 0:
                 raise IntakeError(f"arrival {field} is malformed")
+        if (
+            type(self.payment_block) is not int
+            or self.payment_block < 0
+            or type(self.payment_extrinsic_index) is not int
+            or self.payment_extrinsic_index < 0
+        ):
+            raise IntakeError("arrival eval-cost payment pointer is malformed")
+        if self.payment_block == 0 and self.payment_extrinsic_index != 0:
+            raise IntakeError("arrival eval-cost payment pointer is malformed")
         payload_digest = self.payload_digest or canonical_digest(
             _FINALIZED_PAYLOAD_DOMAIN,
             {"content_hash": self.content_hash, "url": self.url},
@@ -655,6 +672,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 status TEXT NOT NULL,
                 updated_block INTEGER NOT NULL
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS eval_cost_payments (
+                payment_block INTEGER NOT NULL,
+                payment_extrinsic_index INTEGER NOT NULL,
+                reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+                content_hash TEXT NOT NULL,
+                hotkey TEXT NOT NULL,
+                amount_tao_rao INTEGER NOT NULL,
+                PRIMARY KEY(payment_block, payment_extrinsic_index)
+            ) STRICT;
             """
         )
         reservation_columns = {
@@ -666,6 +692,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             "screen_status": "TEXT NOT NULL DEFAULT ''",
             "screen_stage_count": "INTEGER NOT NULL DEFAULT 0",
             "screen_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "eval_cost_payment_block": "INTEGER NOT NULL DEFAULT 0",
+            "eval_cost_payment_extrinsic_index": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, declaration in additions.items():
             if name not in reservation_columns:
@@ -819,12 +847,21 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
 
         return self._cursor()
 
+    def _eval_cost_payment_used(self, payment_block: int, payment_extrinsic_index: int) -> bool:
+        row = self._db.execute(
+            "SELECT 1 AS n FROM eval_cost_payments "
+            "WHERE payment_block=? AND payment_extrinsic_index=?",
+            (payment_block, payment_extrinsic_index),
+        ).fetchone()
+        return row is not None
+
     def reserve_finalized(
         self,
         arrivals: Iterable[FinalizedArrival],
         *,
         finalized_block: int,
         finalized_block_hash: str,
+        eval_cost_amount_tao_rao: int = 0,
     ) -> tuple[IntakeReservation, ...]:
         rows = tuple(arrivals)
         if any(type(row) is not FinalizedArrival for row in rows):
@@ -837,6 +874,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("finalized block is malformed")
         if _BLOCK_HASH.fullmatch(finalized_block_hash or "") is None:
             raise IntakeError("finalized block hash is malformed")
+        if (
+            type(eval_cost_amount_tao_rao) is not int
+            or eval_cost_amount_tao_rao < 0
+        ):
+            raise IntakeError("eval cost amount cannot be negative")
         if any(row.block > finalized_block for row in rows):
             raise IntakeError("unfinalized arrival reached durable intake")
 
@@ -881,10 +923,20 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 status, reason = "reserved", ""
                 if not arrival.valid:
                     status, reason = "failed", arrival.invalid_reason
+                elif eval_cost_amount_tao_rao > 0 and arrival.payment_block == 0:
+                    status, reason = "failed", "missing_eval_cost_payment"
                 elif finalized_block - arrival.block >= self.policy.expiry_blocks:
                     status, reason = "expired", _AUTOMATIC_EXPIRY_REASON
                 elif hotkey_count >= self.policy.max_per_hotkey_epoch:
                     status, reason = "failed", "hotkey_epoch_admission_limit"
+                elif (
+                    eval_cost_amount_tao_rao > 0
+                    and arrival.payment_block > 0
+                    and self._eval_cost_payment_used(
+                        arrival.payment_block, arrival.payment_extrinsic_index
+                    )
+                ):
+                    status, reason = "failed", "eval_cost_payment_used"
                 elif pending >= self.policy.max_pending:
                     # GPU/worker backpressure is validator capacity, not a miner
                     # fault.  Retain the finalized arrival in FIFO order and
@@ -894,8 +946,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     pending += 1
                 self._db.execute(
                     "INSERT INTO reservations(reservation_id,block,block_hash,event_index,event_subindex,"
-                    "hotkey,content_hash,url,payload_digest,invalid_reason,admission_epoch,status,reason) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "hotkey,content_hash,url,payload_digest,invalid_reason,admission_epoch,status,reason,"
+                    "eval_cost_payment_block,eval_cost_payment_extrinsic_index) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         arrival.reservation_id,
                         arrival.block,
@@ -910,8 +963,28 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         epoch,
                         status,
                         reason,
+                        arrival.payment_block,
+                        arrival.payment_extrinsic_index,
                     ),
                 )
+                if (
+                    eval_cost_amount_tao_rao > 0
+                    and status in {"reserved", "deferred"}
+                    and arrival.payment_block > 0
+                ):
+                    self._db.execute(
+                        "INSERT INTO eval_cost_payments("
+                        "payment_block,payment_extrinsic_index,reservation_id,"
+                        "content_hash,hotkey,amount_tao_rao) VALUES(?,?,?,?,?,?)",
+                        (
+                            arrival.payment_block,
+                            arrival.payment_extrinsic_index,
+                            arrival.reservation_id,
+                            arrival.content_hash,
+                            arrival.hotkey,
+                            eval_cost_amount_tao_rao,
+                        ),
+                    )
                 inserted.append(arrival.reservation_id)
             cursor_value = json.dumps(
                 [finalized_block, finalized_block_hash], separators=(",", ":")
@@ -939,6 +1012,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             row["hotkey"], row["content_hash"], row["url"], row["block"],
             row["block_hash"], row["event_index"], row["event_subindex"],
             row["payload_digest"], row["invalid_reason"],
+            int(row["eval_cost_payment_block"] or 0),
+            int(row["eval_cost_payment_extrinsic_index"] or 0),
         )
         return IntakeReservation(
             row["reservation_id"], arrival, row["admission_epoch"], row["status"],

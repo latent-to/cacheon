@@ -23,6 +23,7 @@ installed `cacheon` console script resolves to the same parser.
 | `verify` | contributor | local gate | Check declared slot behavior against validator-owned references |
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
 | `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
+| `chain-eval-cost` | contributor | read-only | Print the published eval-cost quote (v1 is a fixed TAO transfer) |
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
@@ -157,9 +158,17 @@ python -m cacheon.cli chain-submit path/to/bundle \
 ```
 
 `chain-submit` re-hashes the local bundle before constructing the payload. Use
-`--dry-run` to print the payload without signing or submitting it. Validators act only
-on finalized, valid reveals and independently fetch, extract, and re-hash the hosted
-archive.
+`--dry-run` to print it without signing. `--pay` transfers the quoted TAO amount
+to the current subnet owner and commits a v2 pointer. If that transfer lands but
+the reveal fails, retry with `--eval-cost-payment-block` and
+`--eval-cost-payment-extrinsic-index` instead of `--pay`. Full commands:
+[Submitting a proposal](../miner-guide/submitting.md#step-by-step-commands).
+When the operator sets `--eval-cost-tao-rao` above zero, unpaid v1 reveals fail
+admission.
+
+```bash
+python -m cacheon.cli chain-eval-cost --netuid <netuid> --network <network>
+```
 
 ### Inspect public chain state
 
@@ -269,7 +278,14 @@ python -m cacheon.cli chain-validate \
 Intake mode persists finalized order, hardened fetch and re-hash results, private
 retention, immutable worker publication, and copy disposition. Storage and loop controls
 are `--intake-db`, `--private-root`, `--publication-root`, `--audit-log`,
-`--interval`, and `--once`. The audit file is a redacted, fsynced JSONL chronology;
+`--interval`, and `--once`. `--eval-cost-tao-rao` defaults to `0` (gate off);
+set `1000000000` to require the published 1 TAO `transfer_keep_alive` to the
+current subnet owner coldkey per admission, and
+`--eval-cost-payment-window-blocks` to bound how old that transfer may be relative
+to the reveal. `--eval-cost-quote-ttl-blocks` (default 300, about one hour) is how long a quoted
+amount stays valid until the transfer is included. The transfer may precede the
+reveal; unused payments remain reusable until a reserved or deferred admission
+consumes them. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 

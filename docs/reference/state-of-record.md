@@ -85,6 +85,12 @@ The evidence classes are intentionally non-substitutable:
 - Replayed discovery proposals are terminally disposed or deduplicated before
   screening. Legacy schema-3 single-PASS migration holds are non-crownable and
   have an evidence-preserving archive command.
+- Optional eval-cost admission (default off) requires a coldkey
+  `Balances.transfer_keep_alive` of the published TAO amount to the current
+  subnet owner coldkey, bound by a content-hash remark and consumed once. v1
+  quotes freeze that amount for 300 blocks (~1 hour). A later reveal of the
+  same bundle may attach an unused payment pointer; intake consumes the pointer
+  only on reserved or deferred admission.
 
 ### Validator recovery archive
 
@@ -657,6 +663,109 @@ This establishes the live test-chain shared-weight path and its journal/readback
 controls for those exact identities. It does not establish independent hosts or
 failure domains, mainnet economics, V2 activation, or unattended operation.
 
+### Hardware suite validation and containment tiers (2026-08-09)
+
+The complete test suite ran twice on a two-B200 staging validator host
+(driver 580.126.20, Python 3.12.3, torch 2.12.0+cu130, triton 3.7.0): once
+beside a resident TP2 serving container holding roughly 168 GiB per device,
+and once on empty devices. Both runs reported identical results — 2,496
+passed, one failed, five environment skips, in roughly five minutes —
+including the families hosted CI cannot execute: the two-device collective
+and CUDA-graph contracts and the Linux `renameat2` publication cases. The
+single failure was a test defect, not a product defect: an
+unwritable-directory probe simulated with permission bits, which a root
+euid overrides; that test now skips under root with the reason recorded.
+
+The public CLI was exercised end to end on the same host as subprocesses:
+`verify` accepted the pure-torch and Triton example bundles on CUDA with
+graph capture and replay engaged, refused both deliberately broken bundles
+with the verdict exit code, kept the infrastructure-error exit distinct
+from the verdict exit for a Triton bundle on a CPU-only environment, and
+verified the collective allreduce example across both devices. The OCI
+containment flag vocabulary was exercised against the host's real
+container daemon: network egress refused, read-only binds refused writes
+with `EROFS`, a representative module-loading syscall refused, the
+packaged seccomp profile accepted at container create, and the non-root
+user identity enforced.
+
+A seam-currency audit ran this repository's compatibility doctor inside
+the launch-lineage staging worker image, against that image's SGLang
+source build `0.0.0.dev1+g56e290315`: every registered seam-table
+chokepoint bound, and every signature, engine-API, and server-argument
+check passed. The single failure was the version pin `0.5.13.post1`
+itself, which is the designed refusal for a non-pinned runtime.
+Chokepoint presence and signature agreement are the compatibility gate's
+own error boundary, not behavioral equivalence.
+
+A live activation demonstration then ran three serving boots of a small
+instruct model inside that image on one device, beside the resident TP2
+server, all with this tree on the interpreter path: a null-armed
+baseline, an armed run carrying the exact-math example bundle for
+`activation.silu_and_mul`, and an armed run carrying its deliberately
+broken variant. The image preloads `cacheon.bootstrap` in every
+interpreter through its installed `.pth`, and the arming chain engaged
+end to end: the exact-math bundle produced byte-identical temperature-0
+output against the baseline, while the broken bundle visibly corrupted
+the generated text — direct evidence that the armed kernel executes
+inside the scheduler's serving path under CUDA graph capture. A
+tensor-parallel variant repeated all three boots across both devices
+(`--tp-size 2`) with the same verdicts: both scheduler ranks armed, the
+exact-math bundle byte-identical, the broken bundle corrupting. Seam
+activation emits no server log lines in this image, so behavioral
+probes, not log inspection, are the working detector; and in this
+image's SGLang build the plugin-framework loader has no call site in
+the serving path, so activation rides the `.pth` bootstrap alone.
+
+The chain-commitment content hash was then pinned as a cross-platform
+golden: `content_hash` over every committed example bundle and stack
+fixture produced byte-identical digests on macOS arm64 / CPython 3.11
+and on the validator host's Linux x86_64 / CPython 3.12, and the matched
+vectors are committed with a test that fails on any future divergence —
+a consensus break or an unreviewed identity epoch, never a routine
+refresh.
+
+These behaviors are retained as standing tests
+(`tests/test_cli_examples_e2e.py`, `tests/test_oci_live_container.py`,
+`tests/test_golden_consensus_vectors.py`) that activate by capability
+probe — CUDA device count and a usable container daemon — and skip
+cleanly elsewhere, so hosted CI keeps the CPU, containment, and golden
+tiers while the GPU tiers re-arm on any future validator host.
+
+The live activation demonstration is additionally codified as a
+repeatable, strictly opt-in tier (`tests/test_seam_activation_live.py`):
+the same three boots — null-armed baseline, exact-math bundle, broken
+bundle — with the byte-identity and corruption verdicts asserted. The
+tier runs nowhere by default, including GPU hosts; it arms only under
+`CACHEON_LIVE_SERVE_TESTS=1` with an operator-supplied worker image and
+model, and once armed it fails loudly on a missing prerequisite rather
+than skipping. It was validated armed on the staging host against the
+launch-lineage worker image. The miner submission pipeline also gained
+offline tests (`tests/test_submit_dry_run.py`): the dry-run path returns
+before any chain object is touched, so the commitment round-trip, the
+plaintext-HTTP refusal, and the 1024-byte chain cap are exercised with
+no wallet and no subtensor.
+
+The native `cutlass.cute.cubin.v1` toolchain gained its first live
+proof (`tests/test_native_toolchain_live.py`, opt-in via
+`CACHEON_LIVE_NATIVE_TESTS=1`): a deviceless container compiled a
+minimal `@cute.jit` kernel under the validator compiler recipe on the
+staging image's cutlass-dsl 4.5.2, and a GPU container accepted the
+produced bytes through the production ELF gate and Driver-API
+admission, resolving exactly the declared kernel. The lane's CPU tests
+exercise its policy code against forged headers and a monkeypatched
+compiler; this tier is the only place genuine compiler output meets the
+gate and a device.
+
+This establishes suite health, the tested verify/containment behaviors,
+the seam-table currency of this tree against that staging image, the
+live seam activation path on it at one and two devices — now
+re-provable on demand — the native toolchain's compile and admission
+path on genuine compiler output, the offline submission wire policy,
+and the platform stability of the chain-commitment content hash. It
+does not establish serving performance, the sealed prebuild protocol,
+slot numeric contracts, qualification or settlement evidence, or any
+crown claim.
+
 ### Incentive evidence
 
 Historical V2 evidence — the deterministic one-campaign load study (semantic
@@ -674,7 +783,7 @@ The live command inventory is:
 
 ```text
 slots  compat  chain-compat  scan  verify
-chain-package  chain-publish  chain-submit  chain-status  chain-register
+chain-package  chain-publish  chain-eval-cost  chain-submit  chain-status  chain-register
 chain-reservation-status  chain-validate  chain-snapshot  chain-snapshot-verify
 chain-archive-schema3-hold  chain-evaluation-lease
 model-provision  release-verify  release-context
@@ -702,6 +811,7 @@ claim that a live mainnet deployment or receipt exists.
 - [Target catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py)
 - [Hardened fetch](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py)
 - [Miner object-store publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publish.py)
+- [Eval-cost quote and payment](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost.py)
 - [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
 - [Resident screening](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py)
 - [Adaptive resident runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)
