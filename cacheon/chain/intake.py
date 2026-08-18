@@ -36,6 +36,7 @@ from cacheon.copy_fingerprint import (
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
+from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
 
 if TYPE_CHECKING:
     from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
@@ -1237,6 +1238,52 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             (bound,),
         )
         return tuple(self._row(row) for row in rows)
+
+    def retire_duplicate_screenables(
+        self, *, service_digest: str, limit: int | None = None
+    ) -> tuple[tuple[str, str], ...]:
+        """Fail screenable rows whose exact bytes already lost under this arena.
+
+        Wiring only; the rule lives in :mod:`cacheon.chain.duplicate_replay`,
+        which documents why identical bytes under an identical arena may inherit
+        a FAIL and why a PASS may not.
+
+        Runs before work is claimed, so a duplicate costs neither a screen nor a
+        qualification. ``screenable`` already excludes rows under an active
+        lease, and ``decide_replay`` refuses the reproduction lane outright.
+        """
+
+        require_sha256_hex(service_digest, field="arena service digest")
+        priors = tuple(
+            PriorVerdict(
+                reservation_id=row["reservation_id"],
+                content_hash=row["content_hash"],
+                arena_service_digest=row["arena_service_digest"],
+                decision=row["decision"],
+                reason=row["reason"],
+            )
+            for row in self._db.execute(
+                "SELECT reservation_id,content_hash,arena_service_digest,decision,"
+                "reason FROM reservations WHERE decision IN ('PASS','FAIL') "
+                "AND arena_service_digest=?",
+                (service_digest,),
+            )
+        )
+        if not priors:
+            return ()
+        retired: list[tuple[str, str]] = []
+        for row in self.screenable(limit=limit):
+            decision = decide_replay(
+                content_hash=row.arrival.content_hash,
+                arena_service_digest=service_digest,
+                screen_lane=row.screen_lane,
+                priors=priors,
+            )
+            if not decision.replay:
+                continue
+            self.mark_failed(row.reservation_id, decision.reason)
+            retired.append((row.reservation_id, decision.reason))
+        return tuple(retired)
 
     def arena_queue_snapshot(self, *, current_block: int):
         from cacheon.arena_service import ArenaQueueSnapshot
