@@ -77,16 +77,19 @@ smallest validator-controlled delta it contributes. Authoritative qualification 
 
 - **B** — the exact incumbent evaluation stack;
 - **C** — the same stack with one registered target replaced;
-- **B′** — an incumbent bookend;
-- **C′/B″** — conditional repeat reads collected only when the frozen
-  escalation policy requires them;
+- **B′** — an incumbent bookend, conditional for a hot-swappable v7 candidate
+  and mandatory for a non-swappable v8 candidate;
 - **A** — a separate eager, untimed sampled-audit role when registered; and
 - **T** — a candidate-free pristine reference that grades sealed trajectories after
   candidate destruction.
 
-Primary and reproduction attempts also exchange incumbent and candidate
-physical-lane roles. A persistent hot-swap screen may route candidates before
-this schedule, but its measurements cannot qualify or settle a contribution.
+The current speed subpolicy is selected from the candidate's manifest features:
+v7 uses the standing resident pair and takes B′ only when B/C cannot decide;
+v8 launches separate baseline and candidate engines and always takes B′.
+C′/B″ survive only in historical v2–v5 evidence. Primary and reproduction
+attempts also exchange incumbent and candidate physical-lane roles. A persistent
+hot-swap screen may route candidates before this schedule, but its measurements
+cannot qualify or settle a contribution.
 
 This separates the **execution unit** (a complete disposable engine) from the
 **economic unit** (one singleton target, atomic target, or bounded discovery

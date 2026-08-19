@@ -199,8 +199,10 @@ review, not a revert switch.
 - Preserve one writer for a validator/database authority.
 - Back up SQLite with WAL-aware tooling and retain every referenced evidence root.
 - Treat policy, campaign, reserve, membership, and activation digests as immutable.
-- Halt on unexplained membership departure or UID reassignment; do not rewrite a
-  historical boundary from a later metagraph snapshot.
+- Treat claimant departure and UID reassignment differently. A currently absent
+  claimant's family share goes to the validator for that tick under the bound
+  projection; unexplained UID reassignment still halts publication. Never rewrite
+  a historical boundary from a later metagraph snapshot.
 - Never repair a hold by deleting journal rows, editing debt, or replacing evidence
   with a summary.
 - Keep evaluator containers separate from wallet and signer authority.

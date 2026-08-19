@@ -110,18 +110,18 @@ before working on an advanced target.
 
 For a registered target, the validator constructs an exact marginal comparison:
 
-- **B**: the opening read from the exact incumbent on the resident baseline lane;
-- **C**: the first read from the one-target-transition candidate on the disjoint
-  resident candidate lane;
-- **B′**: the closing read from the same loaded incumbent;
-- **C′/B″**: conditional repeat reads from those same loaded lanes when the
-  frozen escalation policy requires them;
+- **B**: the opening read from the exact incumbent on the baseline lane;
+- **C**: the read from the one-target-transition candidate on the disjoint
+  candidate lane;
+- **B′**: a second incumbent read, conditional for a hot-swappable v7
+  candidate and mandatory for a non-swappable v8 candidate;
 - **A**: a registered eager, untimed audit role for the candidate delta; and
 - **T**: a candidate-free pristine reference used after candidate teardown.
 
 The candidate does not choose the rest of the stack. The validator materializes
-the exact incumbent and candidate engines, loads each once onto its physical TP
-lane, and serializes the timed reads. Bookending detects drift, A supplies the
+the exact incumbent and candidate engines, selects the v7 standing-pair or v8
+two-process substrate from manifest features, and serializes timed work.
+Bookending detects drift, A supplies the
 registered sampled slot regrade, and T prevents “fast because behavior changed”
 from becoming a win. Static, build, ABI, graph, and abbreviated-serving checks
 are admission screens only; they cannot crown a proposal.

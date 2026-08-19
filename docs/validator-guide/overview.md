@@ -30,7 +30,7 @@ flowchart LR
     Private --> Publication["Immutable worker publication"]
     Publication --> Screen["Resident screen<br/>routing only"]
     Screen --> Arena["Injected arena service<br/>trusted provider"]
-    Arena --> OCI["Resident TP lanes<br/>serialized B/C/B′/(C′/B″)"]
+    Arena --> OCI["Current speed substrate<br/>v7 B/C/[B′] or v8 B/C/B′"]
     OCI --> Audit["Audit-only role"]
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
@@ -81,8 +81,9 @@ The current validator path is deliberately staged:
 5. Copy the private intake tree into an immutable worker publication.
 6. Run registered, non-crownable screens, using the routing-only resident screen for
    swappable candidates and an explicit waiver for non-swappable candidates.
-7. Qualify promoted candidates under adaptive v3 resident crossover: serialized B/C/B′,
-   optional C′/B″ for borderline evidence, then audit and pristine T.
+7. Qualify promoted candidates under the version-3 protocol: v7 resident B/C
+   with B′ only when inconclusive, or v8 two-process B/C/B′, then audit and
+   pristine T.
 8. Require an independent reproduction of the same candidate identity with the exact
    physical TP-lane role swap.
 9. Apply target and evaluation-stack changes in one settlement transaction.
@@ -135,8 +136,11 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 | Inspect slot and SDK compatibility | `cacheon slots`, `cacheon compat`, `cacheon chain-compat` |
 | Publish and submit a proposal | `cacheon chain-publish`, `cacheon chain-eval-cost`, `cacheon chain-submit` |
 | Inspect chain state | `cacheon chain-status` |
+| Inspect private reservation/miner outcomes | `cacheon chain-reservation-status`, `cacheon chain-miner-report` |
+| Grant/list one-use eval-cost make-goods | `cacheon chain-eval-cost-credit` |
 | Run bounded finalized public intake | `cacheon chain-validate --intake-only` |
 | Run full referee service | Deployment code calling `run_validator(...)` with an injected registry/provider |
+| Run the standing screen/qualification/settlement/offer loop | `python -m cacheon.chain.standing_cpu_supervisor --config <SEALED_CONFIG>`; deployment supplies sealed capabilities and transport identities |
 | Publish a private recovery snapshot | `cacheon chain-snapshot` |
 | Verify or stage a recovery snapshot | `cacheon chain-snapshot-verify` |
 | Reconcile legacy V1 rewards | `cacheon set-weights`, optionally `--watch`, in a separate control-plane process |

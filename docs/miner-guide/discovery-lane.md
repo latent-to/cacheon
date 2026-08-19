@@ -169,11 +169,11 @@ proposal digest, policy digest, build-profile digest, and overlay identity. It
 does not add a standing entry to the incumbent evaluation stack.
 
 Candidate execution still uses the validator-owned OCI service, no-egress
-policy, and resource controls. V3 loads the exact incumbent and discovery
-candidate once onto disjoint resident TP lanes, serializes B/C/B′ and
-policy-authorized C′/B″ reads, runs registered eager audit A, tears down
-candidate lifetimes, and then obtains pristine T quality authority. Discovery
-code does not get to choose its own evaluator or report its own score.
+policy, and resource controls. Version-3 qualification materializes the exact
+incumbent and discovery candidate, applies the registered versioned speed
+schedule, runs eager audit A when required, tears down candidate lifetimes, and
+then obtains pristine T quality authority. Discovery code does not get to
+choose its own evaluator or report its own score.
 
 ## Qualification and reward
 
