@@ -6,7 +6,6 @@ from cacheon.eval.count_quality import (
     CountQualityError,
     CountQualityEvidence,
     CountQualityPolicy,
-    CountQualityRegrade,
     CountQualityVerdict,
     score_count_quality,
 )
@@ -51,32 +50,6 @@ def test_regression_threshold_boundary(candidate: int, decision: str) -> None:
 
     assert verdict.decision == decision
     assert verdict.observed_drop == max(0, 62 - candidate)
-
-
-def test_regrade_binds_source_evidence_policy_and_recomputed_verdict() -> None:
-    evidence = _evidence()
-    policy = CountQualityPolicy(regression_threshold_drop=10)
-    verdict = score_count_quality(evidence, policy)
-    regrade = CountQualityRegrade(_digest("c"), evidence, policy, verdict)
-
-    assert regrade.to_dict()["source_result_digest"] == _digest("c")
-    assert len(regrade.digest) == 64
-    assert CountQualityRegrade.from_dict(regrade.to_dict()) == regrade
-    assert CountQualityRegrade.from_dict(regrade.to_dict()).digest == regrade.digest
-
-
-def test_regrade_rejects_a_verdict_from_another_policy() -> None:
-    evidence = _evidence()
-    old_policy = CountQualityPolicy(regression_threshold_drop=1)
-    new_policy = CountQualityPolicy(regression_threshold_drop=10)
-
-    with pytest.raises(CountQualityError, match="does not recompute"):
-        CountQualityRegrade(
-            _digest("c"),
-            evidence,
-            new_policy,
-            score_count_quality(evidence, old_policy),
-        )
 
 
 def test_verdict_cannot_claim_pass_at_the_failure_boundary() -> None:

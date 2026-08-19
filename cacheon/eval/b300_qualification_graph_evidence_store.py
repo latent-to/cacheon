@@ -56,17 +56,6 @@ _LOCK_POLL_SECONDS = 0.01
 _LOG = logging.getLogger(__name__)
 
 
-class B300QualificationGraphPreEntryFailure(Exception):
-    """Compatibility exception that never authorizes an armed-attempt retry."""
-
-    def __init__(self, proof_digest: str) -> None:
-        try:
-            self.proof_digest = require_sha256_hex(proof_digest, field="pre-entry failure proof digest")
-        except (TypeError, ValueError) as exc:
-            raise B300QualificationGraphEvidenceStoreError(str(exc)) from None
-        super().__init__("untrusted pre-entry failure claim")
-
-
 def _digest(value: object, field: str) -> str:
     try:
         return require_sha256_hex(value, field=field)
@@ -945,6 +934,6 @@ class B300QualificationGraphEvidenceStore:
 __all__ = [
     "ATTEMPT_SCHEMA", "B300QualificationGraphAttemptToken", "B300QualificationGraphEvidenceHold",
     "B300QualificationGraphEvidenceStore", "B300QualificationGraphEvidenceStoreError",
-    "B300QualificationGraphGenerationOutput", "B300QualificationGraphPreEntryFailure",
+    "B300QualificationGraphGenerationOutput",
     "GraphArtifactProducer", "INDEX_SCHEMA",
 ]

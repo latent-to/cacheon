@@ -24,7 +24,6 @@ from cacheon.eval.b300_qualification_graph_evidence_store import (
     B300QualificationGraphEvidenceStore,
     B300QualificationGraphEvidenceStoreError,
     B300QualificationGraphGenerationOutput,
-    B300QualificationGraphPreEntryFailure,
 )
 from cacheon.eval.b300_qualification_graph_provider import (
     ARTIFACT_DOMAIN,
@@ -359,7 +358,9 @@ def test_arbitrary_pre_entry_digest_never_authorizes_retry(
     ) -> B300QualificationGraphGenerationOutput:
         nonlocal calls
         calls += 1
-        raise B300QualificationGraphPreEntryFailure(_h("arbitrary-proof"))
+        # A producer may claim any "pre-entry" failure it likes; no exception
+        # type or proof digest is trusted to unarm the attempt.
+        raise RuntimeError(f"untrusted pre-entry failure claim {_h('arbitrary-proof')}")
 
     with pytest.raises(B300QualificationGraphEvidenceHold, match="ambiguous"):
         B300QualificationGraphEvidenceStore(root, policy).probe_once(

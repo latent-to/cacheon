@@ -10,10 +10,6 @@ import pytest
 from cacheon.eval import b300_qualification_capabilities as capabilities
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.qualification import SelectionCommitment
-from cacheon.eval.qualification_runner import (
-    HiddenJudgeBinding,
-    hidden_judge_output_digest,
-)
 
 
 def _h(seed: str) -> str:
@@ -50,81 +46,6 @@ def _teardown(
         (),
         (),
     )
-
-
-def _judge() -> tuple[
-    capabilities.ExactAcceptedTokenSubsequenceJudge,
-    capabilities.AcceptedTokenPrompt,
-]:
-    tasks = tuple(
-        sorted(
-            (
-                capabilities.AcceptedTokenTask(
-                    _h("task:a"), ((7, 8), (11, 12, 13))
-                ),
-                capabilities.AcceptedTokenTask(_h("task:b"), ((21,),)),
-            ),
-            key=lambda row: row.task_digest,
-        )
-    )
-    prompt = capabilities.AcceptedTokenPrompt(_h("prompt"), tasks)
-    corpus, policy = _h("corpus"), _h("task-policy")
-    judge_digest = capabilities.ExactAcceptedTokenSubsequenceJudge.hidden_judge_digest(
-        hidden_corpus_commitment=corpus,
-        hidden_task_policy_digest=policy,
-        prompts=(prompt,),
-    )
-    binding = HiddenJudgeBinding(corpus, judge_digest, policy)
-    return capabilities.ExactAcceptedTokenSubsequenceJudge(binding, (prompt,)), prompt
-
-
-def test_hidden_judge_returns_exact_receipt_for_contiguous_sequences() -> None:
-    judge, prompt = _judge()
-    tasks = tuple(row.task_digest for row in prompt.tasks)
-    output = (99, 7, 8, 100)
-    receipt = judge(
-        prompt_digest=prompt.prompt_digest,
-        output_ids=output,
-        task_digests=tasks,
-    )
-
-    assert receipt.binding_digest == judge.binding.digest
-    assert receipt.prompt_digest == prompt.prompt_digest
-    assert receipt.output_ids_digest == hidden_judge_output_digest(
-        prompt.prompt_digest, output
-    )
-    assert receipt.task_digests == tasks
-    assert receipt.passed == tuple(task.task_digest == _h("task:a") for task in prompt.tasks)
-
-    separated = judge(
-        prompt_digest=prompt.prompt_digest,
-        output_ids=(7, 0, 8),
-        task_digests=tasks,
-    )
-    assert separated.passed == (False, False)
-
-
-def test_hidden_judge_rejects_unsealed_or_reordered_authority() -> None:
-    judge, prompt = _judge()
-    tasks = tuple(row.task_digest for row in prompt.tasks)
-    with pytest.raises(capabilities.B300QualificationCapabilityError, match="task digests"):
-        judge(
-            prompt_digest=prompt.prompt_digest,
-            output_ids=(7, 8),
-            task_digests=tuple(reversed(tasks)),
-        )
-    with pytest.raises(capabilities.B300QualificationCapabilityError, match="not sealed"):
-        judge(prompt_digest=_h("foreign"), output_ids=(), task_digests=tasks)
-    with pytest.raises(capabilities.B300QualificationCapabilityError, match="output IDs"):
-        judge(prompt_digest=prompt.prompt_digest, output_ids=(True,), task_digests=tasks)  # type: ignore[arg-type]
-
-    wrong = HiddenJudgeBinding(
-        judge.binding.hidden_corpus_commitment,
-        _h("substituted-judge"),
-        judge.binding.hidden_task_policy_digest,
-    )
-    with pytest.raises(capabilities.B300QualificationCapabilityError, match="differs"):
-        capabilities.ExactAcceptedTokenSubsequenceJudge(wrong, (prompt,))
 
 
 def test_secret_store_restart_idempotency_isolation_and_sealed_mode(tmp_path: Path) -> None:

@@ -22,11 +22,6 @@ from cacheon.eval.qualification import (
     SelectionEntropyReceipt,
 )
 from cacheon.eval.qualification_intake import GraphShapeObservation, GraphVariantObservation
-from cacheon.eval.qualification_runner import (
-    HiddenJudgeBinding,
-    HiddenJudgeReceipt,
-    hidden_judge_output_digest,
-)
 from cacheon.stack_identity import (
     canonical_digest,
     canonical_json_bytes,
@@ -36,7 +31,6 @@ from cacheon.stack_identity import (
 
 SECRET_SCHEMA = "cacheon.eval.selection-secret-record.v1"
 ENTROPY_SCHEMA = "cacheon.eval.selection-entropy-record.v1"
-HIDDEN_JUDGE_SCHEMA = "cacheon.eval.accepted-token-subsequence-judge.v1"
 RESOLVER_SCHEMA = "cacheon.eval.closed-contribution-source-resolver.v1"
 _MAX_SEALED_BYTES = 16 * 1024 * 1024
 _MAX_SECRET_OR_ENTROPY_BYTES = 4096
@@ -519,154 +513,6 @@ class DurableSelectionEntropyProvider(_PrivateStore):
 
 
 @dataclass(frozen=True)
-class AcceptedTokenTask:
-    task_digest: str
-    accepted_token_subsequences: tuple[tuple[int, ...], ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "task_digest", _digest(self.task_digest, "hidden task"))
-        sequences = tuple(tuple(row) for row in self.accepted_token_subsequences)
-        if (
-            not sequences
-            or sequences != tuple(sorted(set(sequences)))
-            or any(
-                not row or any(type(token) is not int or token < 0 for token in row)
-                for row in sequences
-            )
-        ):
-            raise B300QualificationCapabilityError(
-                "accepted token subsequences must be canonical nonempty token tuples"
-            )
-        object.__setattr__(self, "accepted_token_subsequences", sequences)
-
-    def identity_data(self) -> dict[str, object]:
-        return {
-            "accepted_token_subsequences": [list(row) for row in self.accepted_token_subsequences],
-            "task_digest": self.task_digest,
-        }
-
-
-@dataclass(frozen=True)
-class AcceptedTokenPrompt:
-    prompt_digest: str
-    tasks: tuple[AcceptedTokenTask, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "prompt_digest", _digest(self.prompt_digest, "prompt"))
-        tasks = tuple(self.tasks)
-        if (
-            not tasks
-            or any(type(row) is not AcceptedTokenTask for row in tasks)
-            or tuple(row.task_digest for row in tasks)
-            != tuple(sorted(set(row.task_digest for row in tasks)))
-        ):
-            raise B300QualificationCapabilityError(
-                "accepted-token prompt tasks are not canonical"
-            )
-        object.__setattr__(self, "tasks", tasks)
-
-    def identity_data(self) -> dict[str, object]:
-        return {
-            "prompt_digest": self.prompt_digest,
-            "tasks": [row.identity_data() for row in self.tasks],
-        }
-
-
-class ExactAcceptedTokenSubsequenceJudge:
-    """Exact contiguous-token hidden judge with a self-bound sealed identity."""
-
-    @staticmethod
-    def hidden_judge_digest(
-        *,
-        hidden_corpus_commitment: str,
-        hidden_task_policy_digest: str,
-        prompts: tuple[AcceptedTokenPrompt, ...],
-    ) -> str:
-        corpus = _digest(hidden_corpus_commitment, "hidden corpus commitment")
-        policy = _digest(hidden_task_policy_digest, "hidden task policy")
-        rows = tuple(prompts)
-        if (
-            not rows
-            or any(type(row) is not AcceptedTokenPrompt for row in rows)
-            or tuple(row.prompt_digest for row in rows)
-            != tuple(sorted(set(row.prompt_digest for row in rows)))
-        ):
-            raise B300QualificationCapabilityError(
-                "hidden judge prompts are not canonical and complete"
-            )
-        return canonical_digest(
-            HIDDEN_JUDGE_SCHEMA,
-            {
-                "hidden_corpus_commitment": corpus,
-                "hidden_task_policy_digest": policy,
-                "match_policy": "contiguous-exact-any-v1",
-                "prompts": [row.identity_data() for row in rows],
-            },
-        )
-
-    def __init__(
-        self,
-        binding: HiddenJudgeBinding,
-        prompts: tuple[AcceptedTokenPrompt, ...],
-    ) -> None:
-        if type(binding) is not HiddenJudgeBinding:
-            raise B300QualificationCapabilityError("hidden judge binding is not exact")
-        digest = self.hidden_judge_digest(
-            hidden_corpus_commitment=binding.hidden_corpus_commitment,
-            hidden_task_policy_digest=binding.hidden_task_policy_digest,
-            prompts=prompts,
-        )
-        if digest != binding.hidden_judge_digest:
-            raise B300QualificationCapabilityError(
-                "accepted-token authority differs from its hidden-judge binding"
-            )
-        self.binding = binding
-        self._prompts = {row.prompt_digest: row for row in prompts}
-
-    @staticmethod
-    def _contains(output: tuple[int, ...], accepted: tuple[int, ...]) -> bool:
-        width = len(accepted)
-        return any(
-            output[index : index + width] == accepted
-            for index in range(len(output) - width + 1)
-        )
-
-    def __call__(
-        self,
-        *,
-        prompt_digest: str,
-        output_ids: tuple[int, ...],
-        task_digests: tuple[str, ...],
-    ) -> HiddenJudgeReceipt:
-        prompt_digest = _digest(prompt_digest, "hidden judge prompt")
-        if type(output_ids) is not tuple or any(
-            type(token) is not int or token < 0 for token in output_ids
-        ):
-            raise B300QualificationCapabilityError("hidden judge output IDs are malformed")
-        if type(task_digests) is not tuple:
-            raise B300QualificationCapabilityError("hidden task digests are not exact")
-        prompt = self._prompts.get(prompt_digest)
-        if prompt is None:
-            raise B300QualificationCapabilityError("hidden judge prompt is not sealed")
-        expected = tuple(row.task_digest for row in prompt.tasks)
-        if task_digests != expected:
-            raise B300QualificationCapabilityError(
-                "hidden task digests differ from the sealed prompt"
-            )
-        passed = tuple(
-            any(self._contains(output_ids, accepted) for accepted in task.accepted_token_subsequences)
-            for task in prompt.tasks
-        )
-        return HiddenJudgeReceipt(
-            self.binding.digest,
-            prompt_digest,
-            hidden_judge_output_digest(prompt_digest, output_ids),
-            task_digests,
-            passed,
-        )
-
-
-@dataclass(frozen=True)
 class _SourceSnapshot:
     identity: str
     path: Path
@@ -970,13 +816,10 @@ def structured_focused_graph_facts(
 
 
 __all__ = [
-    "AcceptedTokenPrompt",
-    "AcceptedTokenTask",
     "B300QualificationCapabilityError",
     "ClosedContributionSourceResolver",
     "DurableSelectionEntropyProvider",
     "DurableSelectionSecretStore",
-    "ExactAcceptedTokenSubsequenceJudge",
     "StructuredGraphShapeRecord",
     "StructuredGraphVariantRecord",
     "structured_focused_graph_facts",

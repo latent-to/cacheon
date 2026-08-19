@@ -16,7 +16,6 @@ from cacheon.stack_identity import canonical_digest
 COUNT_QUALITY_POLICY_SCHEMA = "cacheon.count-quality-policy.v1"
 COUNT_QUALITY_EVIDENCE_SCHEMA = "cacheon.count-quality-evidence.v1"
 COUNT_QUALITY_VERDICT_SCHEMA = "cacheon.count-quality-verdict.v1"
-COUNT_QUALITY_REGRADE_SCHEMA = "cacheon.count-quality-regrade.v1"
 COUNT_QUALITY_DECISIONS = frozenset({"PASS", "FAIL"})
 _MAX_TOTAL = 1_000_000
 
@@ -105,23 +104,6 @@ class CountQualityEvidence:
             "total": self.total,
         }
 
-    @classmethod
-    def from_dict(cls, value: object) -> "CountQualityEvidence":
-        raw = _strict(
-            value,
-            frozenset(
-                {
-                    "candidate_correct",
-                    "candidate_observation_digest",
-                    "stock_correct",
-                    "stock_observation_digest",
-                    "total",
-                }
-            ),
-            "count quality evidence",
-        )
-        return cls(**raw)
-
     @property
     def digest(self) -> str:
         return canonical_digest(COUNT_QUALITY_EVIDENCE_SCHEMA, self.to_dict())
@@ -168,23 +150,6 @@ class CountQualityVerdict:
             "regression_threshold_drop": self.regression_threshold_drop,
         }
 
-    @classmethod
-    def from_dict(cls, value: object) -> "CountQualityVerdict":
-        raw = _strict(
-            value,
-            frozenset(
-                {
-                    "decision",
-                    "evidence_digest",
-                    "observed_drop",
-                    "policy_digest",
-                    "regression_threshold_drop",
-                }
-            ),
-            "count quality verdict",
-        )
-        return cls(**raw)
-
     @property
     def digest(self) -> str:
         return canonical_digest(COUNT_QUALITY_VERDICT_SCHEMA, self.to_dict())
@@ -209,67 +174,14 @@ def score_count_quality(
     )
 
 
-@dataclass(frozen=True)
-class CountQualityRegrade:
-    """Append-only link from an immutable source result to a recomputed verdict."""
-
-    source_result_digest: str
-    evidence: CountQualityEvidence
-    policy: CountQualityPolicy
-    verdict: CountQualityVerdict
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "source_result_digest",
-            _digest(self.source_result_digest, "source result digest"),
-        )
-        if (
-            type(self.evidence) is not CountQualityEvidence
-            or type(self.policy) is not CountQualityPolicy
-            or type(self.verdict) is not CountQualityVerdict
-        ):
-            raise CountQualityError("count quality regrade fields must be typed")
-        if self.verdict != score_count_quality(self.evidence, self.policy):
-            raise CountQualityError("count quality regrade verdict does not recompute")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "evidence": self.evidence.to_dict(),
-            "policy": self.policy.to_dict(),
-            "source_result_digest": self.source_result_digest,
-            "verdict": self.verdict.to_dict(),
-        }
-
-    @classmethod
-    def from_dict(cls, value: object) -> "CountQualityRegrade":
-        raw = _strict(
-            value,
-            frozenset({"evidence", "policy", "source_result_digest", "verdict"}),
-            "count quality regrade",
-        )
-        return cls(
-            source_result_digest=raw["source_result_digest"],
-            evidence=CountQualityEvidence.from_dict(raw["evidence"]),
-            policy=CountQualityPolicy.from_dict(raw["policy"]),
-            verdict=CountQualityVerdict.from_dict(raw["verdict"]),
-        )
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(COUNT_QUALITY_REGRADE_SCHEMA, self.to_dict())
-
-
 __all__ = [
     "COUNT_QUALITY_DECISIONS",
     "COUNT_QUALITY_EVIDENCE_SCHEMA",
     "COUNT_QUALITY_POLICY_SCHEMA",
-    "COUNT_QUALITY_REGRADE_SCHEMA",
     "COUNT_QUALITY_VERDICT_SCHEMA",
     "CountQualityError",
     "CountQualityEvidence",
     "CountQualityPolicy",
-    "CountQualityRegrade",
     "CountQualityVerdict",
     "score_count_quality",
 ]
