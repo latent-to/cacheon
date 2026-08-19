@@ -1,0 +1,118 @@
+{
+  "_meta": {
+    "generated_at_commit": "02fc61e1",
+    "purpose": "Refactor D durable-format goldens (synthetic inputs)",
+    "python": "3.11.15"
+  },
+  "families": {
+    "verification_descriptor": {
+      "collective_graph_sequence": {
+        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":16,\"tp_size\":4,\"world_size\":4},\"ordinal\":0},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":32,\"tp_size\":4,\"world_size\":4},\"ordinal\":1}],\"case_kind\":\"collective_graph_sequence\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-d\"}",
+        "digest": "55cab41364f0da4d46e4489cbf84be51a8b86f7ff8c93c50c3e70da25705bc95",
+        "inputs": {
+          "calls": [
+            {
+              "architecture": "sm100",
+              "dtype": "bfloat16",
+              "graph_mode": "capture",
+              "hidden": 4096,
+              "num_tokens": 16,
+              "tp_size": 4,
+              "world_size": 4
+            },
+            {
+              "architecture": "sm100",
+              "dtype": "bfloat16",
+              "graph_mode": "capture",
+              "hidden": 4096,
+              "num_tokens": 32,
+              "tp_size": 4,
+              "world_size": 4
+            }
+          ],
+          "case_kind": "collective_graph_sequence",
+          "slot_id": "collective.all_reduce",
+          "variant_id": "golden-d"
+        }
+      },
+      "collective_single": {
+        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":8,\"tp_size\":4,\"world_size\":4},\"ordinal\":0}],\"case_kind\":\"collective_single\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-b\"}",
+        "digest": "e1d6ba62bac81ee44de24117252651e48182ae4ae233667c2fd7b8dc4050c9a5",
+        "inputs": {
+          "calls": [
+            {
+              "architecture": "sm100",
+              "dtype": "bfloat16",
+              "graph_mode": "capture",
+              "hidden": 4096,
+              "num_tokens": 8,
+              "tp_size": 4,
+              "world_size": 4
+            }
+          ],
+          "case_kind": "collective_single",
+          "slot_id": "collective.all_reduce",
+          "variant_id": "golden-b"
+        }
+      },
+      "collective_temporal_eager": {
+        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":1,\"tp_size\":4,\"world_size\":4},\"ordinal\":0},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":8,\"tp_size\":4,\"world_size\":4},\"ordinal\":1},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":64,\"tp_size\":4,\"world_size\":4},\"ordinal\":2}],\"case_kind\":\"collective_temporal_eager\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-c\"}",
+        "digest": "16fe3027e458d13cff0442ec609927d97aad92b976ba71a068b9045e03daf01b",
+        "inputs": {
+          "calls": [
+            {
+              "architecture": "sm100",
+              "dtype": "bfloat16",
+              "graph_mode": "capture",
+              "hidden": 4096,
+              "num_tokens": 1,
+              "tp_size": 4,
+              "world_size": 4
+            },
+            {
+              "architecture": "sm100",
+              "dtype": "bfloat16",
+              "graph_mode": "capture",
+              "hidden": 4096,
+              "num_tokens": 8,
+              "tp_size": 4,
+              "world_size": 4
+            },
+            {
+              "architecture": "sm100",
+              "dtype": "bfloat16",
+              "graph_mode": "capture",
+              "hidden": 4096,
+              "num_tokens": 64,
+              "tp_size": 4,
+              "world_size": 4
+            }
+          ],
+          "case_kind": "collective_temporal_eager",
+          "slot_id": "collective.all_reduce",
+          "variant_id": "golden-c"
+        }
+      },
+      "ordinary_single": {
+        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"last_dim\":2048,\"num_tokens\":64,\"tp_size\":4,\"world_size\":4},\"ordinal\":0}],\"case_kind\":\"ordinary_single\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"activation.silu_and_mul\",\"variant_id\":\"golden-a\"}",
+        "digest": "a7ef85100096a5fa933a5f431673692d08cdd5d21add809640ef2719b52bcf4a",
+        "inputs": {
+          "calls": [
+            {
+              "architecture": "sm100",
+              "dtype": "bfloat16",
+              "graph_mode": "capture",
+              "last_dim": 2048,
+              "num_tokens": 64,
+              "tp_size": 4,
+              "world_size": 4
+            }
+          ],
+          "case_kind": "ordinary_single",
+          "slot_id": "activation.silu_and_mul",
+          "variant_id": "golden-a"
+        }
+      }
+    }
+  }
+}
