@@ -555,6 +555,17 @@ or composition database. Use one `--journal-db` per signer. Debt-lane offers
 carry the full `DebtWeightPublicationBinding` so follower `weights_ppm` match
 the economic projection.
 
+`set-weights` and `follow-weights` accept a repeatable `--fallback-endpoint`
+(`wss://` URL) that the SDK client fails over to when `--network` is
+unavailable, and that also serves as an archive endpoint when the primary node
+has discarded a requested historical block; `--watch` additionally turns on
+the client's retry-forever reconnect. Every submission stamps the version key
+the chain will accept: `set_weights` reads the subnet's `WeightsVersionKey`
+hyperparameter, takes the maximum of it and the pinned floor, refuses to sign
+when the hyperparameter is unreadable (commit-reveal drops a low key silently),
+and prints one `SET-WEIGHTS-PAYLOAD` line with the exact UID/weight vector to
+stdout.
+
 Provider swap is config-only via `--object-store-provider` /
 `CACHEON_OBJECT_STORE_*`; an environment-only
 `CACHEON_OBJECT_STORE_PROVIDER` is sufficient, while explicit flags take

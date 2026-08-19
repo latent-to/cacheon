@@ -32,8 +32,12 @@ from typing import Optional
 
 logger = logging.getLogger("cacheon.chain")
 
-# Yuma-consensus version stamped on set_weights. A coordinated subnet parameter,
-# bumped deliberately (like PINNED_SGLANG) so every validator agrees.
+# Floor for the version stamped on set_weights. The chain enforces its own
+# WeightsVersionKey hyperparameter: any submission with a lower non-zero key is
+# dropped WITHOUT an error at CR reveal (observed 2026-08-18 on netuid 14:
+# commit at 8874144 revealed cleanly, weights never applied, because we sent 1
+# against the subnet's 29). resolve_weights_version_key() reads the live value
+# and takes the max, so this constant only matters if it ever exceeds chain.
 WEIGHTS_VERSION_KEY = 1
 CHAIN_REVEAL_HISTORY_CAP = 10
 MAX_REVEAL_HISTORY_PAGES = 4_096
@@ -411,17 +415,22 @@ def read_validator_weights(
 # --------------------------------------------------------------------------- #
 
 def connect(network: str = "finney", *, fallback_endpoints: Optional[list[str]] = None,
+            archive_endpoints: Optional[list[str]] = None,
             retry_forever: bool = False):
     """Open a subtensor client. ``network`` is a named network ('finney', 'test') or an
     explicit ``wss://`` endpoint URL. NOTE: the SDK's 'test' alias resolves to
     ``wss://test.finney.opentensor.ai:443`` — pass the URL explicitly if you mean a
     different testnet endpoint. ``fallback_endpoints``/``retry_forever`` enable the
-    SDK's retrying substrate client (auto-reconnect through the fallback list)."""
+    SDK's retrying substrate client (auto-reconnect through the fallback list).
+    ``archive_endpoints`` are used when a lite or short-retention node has
+    discarded the requested historical block."""
     import bittensor as bt
 
     kwargs: dict = {}
     if fallback_endpoints:
         kwargs["fallback_endpoints"] = list(fallback_endpoints)
+    if archive_endpoints:
+        kwargs["archive_endpoints"] = list(archive_endpoints)
     if retry_forever:
         kwargs["retry_forever"] = True
     return bt.Subtensor(network=network, **kwargs)
@@ -1197,6 +1206,21 @@ def read_revealed_commitments(subtensor, netuid: int) -> dict[str, RevealedCommi
     return result
 
 
+def resolve_weights_version_key(subtensor, netuid: int, *,
+                                floor: int = WEIGHTS_VERSION_KEY) -> int:
+    """Version key the chain will actually accept for this subnet.
+
+    Fails closed: commit-reveal gives no rejection signal, so submitting with
+    an unverified key silently burns a full reveal period.
+    """
+    raw = subtensor.get_hyperparameter("WeightsVersionKey", netuid=netuid)
+    if raw is None:
+        raise ChainWeightStateError(
+            f"cannot read WeightsVersionKey hyperparameter for netuid {netuid}"
+        )
+    return max(int(floor), int(raw))
+
+
 def set_weights(subtensor, wallet, netuid: int, weights_by_hotkey: dict[str, float], *,
                 version_key: int = WEIGHTS_VERSION_KEY, dry_run: bool = False,
                 wait_for_inclusion: bool = True, wait_for_finalization: bool = True,
@@ -1211,6 +1235,7 @@ def set_weights(subtensor, wallet, netuid: int, weights_by_hotkey: dict[str, flo
         raise ChainWeightStateError(
             "real weight submission must wait for inclusion and finalization"
         )
+    version_key = resolve_weights_version_key(subtensor, netuid, floor=version_key)
     mg = (
         fetch_metagraph(subtensor, netuid)
         if metagraph_view is None
@@ -1221,6 +1246,36 @@ def set_weights(subtensor, wallet, netuid: int, weights_by_hotkey: dict[str, flo
         logger.warning("set_weights: no on-chain hotkeys to weight (champion deregistered?)")
         return {"submitted": False, "reason": "no eligible uids", "uids": [], "weights": [],
                 "authority_block": mg.block, "authority_block_hash": mg.block_hash}
+    uid_to_hotkey = {
+        int(live_uid): live_hotkey
+        for live_uid, live_hotkey in zip(mg.uids, mg.hotkeys, strict=True)
+    }
+    payload = [
+        {
+            "uid": int(uid),
+            "weight": float(weight),
+            "hotkey": uid_to_hotkey.get(int(uid)),
+        }
+        for uid, weight in zip(uids, weights, strict=True)
+    ]
+    logger.info(
+        "set_weights netuid=%s version_key=%s block=%s uids=%s weights=%s rows=%s",
+        netuid,
+        version_key,
+        mg.block,
+        uids,
+        weights,
+        payload,
+    )
+    # follow-weights / set-weights watch do not always attach cacheon.chain
+    # handlers (bittensor resets third-party loggers to CRITICAL). Print so
+    # the exact chain payload is in the process stdout.
+    print(
+        "SET-WEIGHTS-PAYLOAD "
+        f"netuid={netuid} version_key={version_key} block={mg.block} "
+        f"uids={uids} weights={weights} rows={payload}",
+        flush=True,
+    )
     if dry_run:
         logger.info("DRY RUN set_weights netuid=%s version_key=%s uids=%s weights=%s",
                     netuid, version_key, uids, weights)

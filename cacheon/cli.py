@@ -178,7 +178,7 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
     wallet = None if args.dry_run else public_wallet
 
     try:
-        subtensor = chain.connect(args.network)
+        subtensor = _connect_chain_from_args(args)
         target = chain.resolve_subnet_owner_burn_target(subtensor, args.netuid)
     except chain.ChainWeightStateError:
         raise
@@ -288,6 +288,32 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
     return 0 if result.status in {"dry_run", "confirmed", "pending"} else 2
 
 
+def _connect_chain_from_args(args: argparse.Namespace):
+    """Connect with optional backup endpoints for failover and historical reads."""
+
+    from cacheon import chain
+
+    fallbacks = [
+        item.strip()
+        for item in (getattr(args, "fallback_endpoints", None) or ())
+        if isinstance(item, str) and item.strip()
+    ]
+    network = args.network
+    archives = list(fallbacks)
+    if isinstance(network, str) and network.startswith("wss://") and network not in archives:
+        archives.insert(0, network)
+    # Pass only non-default options so chain.connect keeps its plain
+    # single-argument contract for callers (and test doubles) without them.
+    options: dict[str, object] = {}
+    if fallbacks:
+        options["fallback_endpoints"] = fallbacks
+    if archives:
+        options["archive_endpoints"] = archives
+    if bool(getattr(args, "watch", False)):
+        options["retry_forever"] = True
+    return chain.connect(network, **options)
+
+
 def _cmd_set_weights_once(args: argparse.Namespace) -> int:
     from cacheon import chain
     from cacheon.chain.intake import (
@@ -340,7 +366,7 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         # A hold release needs only the local journal plus public authority
         # identity.  Do not retain a signer-capable object on that path.
         wallet = None if args.release_hold else public_wallet
-    subtensor = chain.connect(args.network)
+    subtensor = _connect_chain_from_args(args)
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
     policy = EmissionsPolicyManifest(
         args.half_life_blocks,
@@ -786,7 +812,7 @@ def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
     if not 1 <= skew <= 600:
         raise SystemExit("--max-skew-seconds must be between 1 and 600")
     wallet = _wallet_from_args(args)
-    subtensor = chain.connect(args.network)
+    subtensor = _connect_chain_from_args(args)
     expected_authority = (args.expected_authority or "").strip()
     if not expected_authority:
         owner = chain.resolve_subnet_owner_burn_target(subtensor, args.netuid)
@@ -2152,6 +2178,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--netuid", type=int, required=True)
     sp.add_argument("--network", default="finney",
                     help="named network or an explicit wss:// endpoint URL")
+    sp.add_argument(
+        "--fallback-endpoint",
+        action="append",
+        default=None,
+        dest="fallback_endpoints",
+        help=(
+            "backup wss:// endpoint if --network is unavailable or has discarded "
+            "historical state; repeatable"
+        ),
+    )
     sp.add_argument("--wallet", default="default")
     sp.add_argument("--hotkey", default="default")
     sp.add_argument(
@@ -2472,6 +2508,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--network",
         default="finney",
         help="named network or an explicit wss:// endpoint URL",
+    )
+    sp.add_argument(
+        "--fallback-endpoint",
+        action="append",
+        default=None,
+        dest="fallback_endpoints",
+        help=(
+            "backup wss:// endpoint if --network is unavailable or has discarded "
+            "historical state; repeatable"
+        ),
     )
     sp.add_argument("--wallet", default="default")
     sp.add_argument("--hotkey", default="default")
