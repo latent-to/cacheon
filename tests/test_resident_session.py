@@ -553,7 +553,6 @@ class TestResidentOuterSession:
             frame_message,
             preflight_message,
             ready_message,
-            swap_evidence_message,
             validate_batch_request,
             validate_init,
             validate_preflight_accept,

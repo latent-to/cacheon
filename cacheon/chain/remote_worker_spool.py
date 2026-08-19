@@ -944,7 +944,7 @@ def verify_heartbeat(
         "worker heartbeat adapter start count",
         minimum=0,
     )
-    failures = require_int(
+    require_int(
         value["consecutive_adapter_failures"],
         "worker heartbeat consecutive adapter failures",
         minimum=0,

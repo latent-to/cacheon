@@ -26,15 +26,11 @@ source, or output path.  All filesystem coordinates come from one closed
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import shutil
 import sys
-import tarfile
-import tempfile
 import traceback
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
