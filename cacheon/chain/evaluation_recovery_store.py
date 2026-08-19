@@ -1109,38 +1109,6 @@ class EvaluationRecoveryStoreMixin:
         self._cap_systemic_releases(lease)
         return lease
 
-    def release_reviewed_legacy_screen_only_recovery(
-        self,
-        recovery: EvaluationRecovery,
-        *,
-        disposition: object,
-        current_block: int,
-    ) -> EvaluationLease:
-        """Release one reviewed legacy screen-only HOLD; never resume its request."""
-
-        from cacheon.chain.held_recovery_disposition import (
-            HeldRecoveryDispositionError,
-            ReviewedLegacyScreenOnlyDisposition,
-        )
-
-        if type(recovery) is not EvaluationRecovery or type(
-            disposition
-        ) is not ReviewedLegacyScreenOnlyDisposition:
-            raise _intake_error("reviewed legacy recovery release is forbidden")
-        plan = self.reopen_recovery_request_plan(recovery)
-        events = self.evaluation_recovery_events(recovery)
-        try:
-            reason = disposition.require_exact_store_state(recovery, plan, events)
-        except HeldRecoveryDispositionError as exc:
-            raise _intake_error(f"reviewed legacy recovery release is forbidden: {exc}")
-        return self._release_recovery(
-            recovery,
-            current_block=current_block,
-            reason=reason,
-            release_phase=RecoveryPhase.REQUEST_READY,
-            allow_expired=True,
-        )
-
     def _release_recovery(
         self,
         recovery: EvaluationRecovery,

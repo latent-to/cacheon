@@ -108,21 +108,6 @@ def reviewed_legacy_screen_only_reason_digests(
     return fields[0], fields[1]
 
 
-def reviewed_legacy_screen_only_release_reason(
-    *, held_reason_digest: str, disposition_digest: str
-) -> str:
-    """Bind a release event to the prior HELD reason and reviewed disposition."""
-
-    require_sha256_hex(held_reason_digest, field="held recovery reason digest")
-    require_sha256_hex(disposition_digest, field="reviewed disposition digest")
-    return (
-        REVIEWED_LEGACY_SCREEN_ONLY_REASON_PREFIX
-        + held_reason_digest
-        + ":"
-        + disposition_digest
-    )
-
-
 def evaluation_recovery_id(lease: EvaluationLease) -> str:
     if type(lease) is not EvaluationLease or lease.stage != "qualification":
         raise EvaluationRecoveryError(
@@ -454,6 +439,5 @@ __all__ = [
     "evaluation_recovery_event_id",
     "evaluation_recovery_id",
     "reviewed_legacy_screen_only_reason_digests",
-    "reviewed_legacy_screen_only_release_reason",
     "valid_evaluation_recovery_event_transition",
 ]

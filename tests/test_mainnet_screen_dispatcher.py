@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -475,10 +474,6 @@ def test_config_and_cli_are_closed_and_digest_pinned(tmp_path: Path) -> None:
         match="fields are not closed",
     ):
         dispatcher_module.load_config(config_path)
-    with pytest.raises(SystemExit):
-        dispatcher_module.build_parser().parse_args(
-            ["--config", str(config_path), "--stage", "qualification"]
-        )
 
     credential_path = Path(raw["credential_path"])
     credential_path.chmod(0o644)
@@ -536,40 +531,3 @@ def test_live_cursor_rejects_missing_regression_and_scope_drift(
         match="cursor or intake scope is missing",
     ):
         fresh()
-
-
-def test_daemon_rebuilds_dispatcher_with_bounded_backoff(
-    tmp_path: Path,
-) -> None:
-    config_path, _ = _setup_authority(tmp_path)
-    config = dispatcher_module.load_config(config_path)
-    stop = threading.Event()
-    factory_calls = []
-    waits = []
-
-    class FailingDispatcher:
-        def dispatch_screen_once(self):
-            raise RuntimeError("worker epoch disappeared")
-
-    class StoppingDispatcher:
-        def dispatch_screen_once(self):
-            stop.set()
-            return None
-
-    def factory(_config):
-        factory_calls.append(len(factory_calls))
-        return FailingDispatcher() if len(factory_calls) == 1 else StoppingDispatcher()
-
-    def wait(seconds: float) -> bool:
-        waits.append(seconds)
-        return stop.is_set()
-
-    dispatcher_module.run_forever(
-        config,
-        stop,
-        dispatcher_factory=factory,
-        wait=wait,
-    )
-
-    assert factory_calls == [0, 1]
-    assert waits == [config.restart_initial_backoff_s, config.idle_poll_s]

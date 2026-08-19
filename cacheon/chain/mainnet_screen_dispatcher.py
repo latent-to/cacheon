@@ -1,10 +1,11 @@
-"""Standing CPU dispatcher for finalized, FIFO, remote screen work.
+"""Sealed config and builder for finalized, FIFO, remote screen dispatch.
 
 The intake-only validator remains the sole chain reader and durable cursor
-advancer.  This process reopens that cursor read-only for every coordinator
-operation, claims exactly one durable screen lease, and hands the resulting
-typed request to the authenticated spool transport.  Qualification is not an
-operation exposed by this daemon.
+advancer.  The dispatcher built here reopens that cursor read-only for every
+coordinator operation, claims exactly one durable screen lease, and hands the
+resulting typed request to the authenticated spool transport.  Its only
+production consumer is ``cacheon.chain.standing_cpu_supervisor``, which owns
+the process loop; qualification is not an operation exposed here.
 
 There is deliberately no provider import, command, argv, shell, environment,
 or candidate-selected execution surface.  ``ArenaService`` still requires a
@@ -14,15 +15,11 @@ execution methods always fail closed if local code reaches them.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
-import signal
 import sqlite3
-import sys
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, NoReturn
@@ -41,7 +38,6 @@ from cacheon.arena_service import (
 )
 from cacheon.chain.evaluation_coordinator import (
     EvaluationCoordinator,
-    EvaluationRun,
     WorkerReadiness,
 )
 from cacheon.chain.intake import IntakePolicy, IntakeScope
@@ -56,7 +52,6 @@ from cacheon.chain.remote_worker_registration import verify_registration
 from cacheon.chain.remote_worker_spool import (
     MAX_JOB_SECONDS,
     load_json,
-    spool_canonical_json,
 )
 from cacheon.chain.ssh_worker_transport import (
     DurableSpoolAuthenticatedWorkerTransport,
@@ -687,109 +682,3 @@ def build_dispatcher(
         transport=transport,
         credential=transport.credential,
     )
-
-
-def _event(event: str, config: DispatcherConfig, **fields: object) -> None:
-    payload = {
-        "config_digest": config.digest,
-        "event": event,
-        "schema": "cacheon-mainnet-screen-dispatcher-event-v1",
-        "time_unix": int(time.time()),
-        **fields,
-    }
-    sys.stdout.buffer.write(spool_canonical_json(payload) + b"\n")
-    sys.stdout.buffer.flush()
-
-
-def run_forever(
-    config: DispatcherConfig,
-    stop: threading.Event,
-    *,
-    dispatcher_factory: Callable[[DispatcherConfig], Any] = build_dispatcher,
-    wait: Callable[[float], bool] | None = None,
-) -> None:
-    """Drain screen FIFO forever, rebuilding authority after bounded failures."""
-
-    if type(config) is not DispatcherConfig or not isinstance(stop, threading.Event):
-        raise MainnetScreenDispatcherError("daemon authority is not exactly typed")
-    waiter = stop.wait if wait is None else wait
-    backoff = config.restart_initial_backoff_s
-    dispatcher = None
-    while not stop.is_set():
-        try:
-            if dispatcher is None:
-                dispatcher = dispatcher_factory(config)
-                _event("dispatcher_ready", config)
-            run = dispatcher.dispatch_screen_once()
-            if run is not None and type(run) is not EvaluationRun:
-                raise MainnetScreenDispatcherError(
-                    "screen dispatcher returned an untyped result"
-                )
-        except Exception as exc:
-            dispatcher = None
-            _event(
-                "dispatcher_restart",
-                config,
-                backoff_ms=int(backoff * 1000),
-                error=str(exc)[:2048],
-                error_type=type(exc).__name__,
-            )
-            if waiter(backoff):
-                break
-            backoff = min(config.restart_max_backoff_s, backoff * 2.0)
-            continue
-
-        backoff = config.restart_initial_backoff_s
-        if run is None:
-            if waiter(config.idle_poll_s):
-                break
-            continue
-        _event(
-            "screen_completed",
-            config,
-            disposition=run.disposition,
-            lease_id=run.lease.lease_id,
-            reservation_ids=list(run.lease.reservation_ids),
-            result_digest=run.envelope.digest,
-        )
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="absolute path to one closed cacheon-mainnet-screen-dispatcher-config-v1 JSON file",
-    )
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        config = load_config(args.config)
-    except Exception as exc:
-        print(f"MAINNET-SCREEN-DISPATCHER-ERROR: {exc}", file=sys.stderr)
-        return 2
-
-    stop = threading.Event()
-
-    def request_stop(_signum: int, _frame: object) -> None:
-        stop.set()
-
-    signal.signal(signal.SIGINT, request_stop)
-    signal.signal(signal.SIGTERM, request_stop)
-    _event("daemon_started", config)
-    try:
-        run_forever(config, stop)
-    except KeyboardInterrupt:
-        stop.set()
-    except Exception as exc:
-        print(f"MAINNET-SCREEN-DISPATCHER-ERROR: {exc}", file=sys.stderr)
-        return 2
-    _event("daemon_stopped", config)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -16,7 +16,6 @@ from cacheon.chain.standing_cpu_supervisor import (
     build_standing_supervisor,
     load_standing_config,
     main,
-    refuse_terminal_reclaim,
 )
 from cacheon.stack_identity import canonical_digest, sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -299,10 +298,3 @@ def test_disabled_qualification_gates_the_stage_and_screens_still_claim(
 def test_main_returns_2_on_missing_config(tmp_path: Path) -> None:
     missing = tmp_path / "missing.json"
     assert main(["--config", str(missing)]) == 2
-
-
-def test_terminal_reclaim_still_refused() -> None:
-    with pytest.raises(StandingCpuSupervisorError, match="refuses to reclaim"):
-        refuse_terminal_reclaim("expired")
-    with pytest.raises(StandingCpuSupervisorError, match="refuses to reclaim"):
-        refuse_terminal_reclaim("failed")

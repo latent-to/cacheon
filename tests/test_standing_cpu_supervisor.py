@@ -19,8 +19,6 @@ from cacheon.chain.standing_cpu_supervisor import (
     StandingCpuSupervisorError,
     SupervisorPhase,
     SupervisorStageResult,
-    build_fifo_queue_table,
-    refuse_terminal_reclaim,
     run_forever,
     settlement_stage,
     weights_stage,
@@ -168,13 +166,6 @@ def test_exception_fails_closed_without_mapping_to_requeue() -> None:
         supervisor.tick()
     assert supervisor.status().phase is SupervisorPhase.FAILED
     assert supervisor.status().last_disposition == "stage_error"
-
-
-def test_refuse_terminal_reclaim() -> None:
-    for status in ("failed", "expired", "qualified"):
-        with pytest.raises(StandingCpuSupervisorError, match="refuses to reclaim"):
-            refuse_terminal_reclaim(status)
-    refuse_terminal_reclaim("published")  # non-terminal is fine
 
 
 def test_run_forever_resumes_same_request_across_restart() -> None:
@@ -462,29 +453,3 @@ def test_settlement_and_weights_stages_wire_into_supervisor() -> None:
     assert result.disposition == "confirmed"
 
     assert weights_stage(publish=lambda: None)() is None
-
-
-def test_fifo_queue_table_keeps_historical_terminals_out_of_active_columns() -> None:
-    table = build_fifo_queue_table(
-        status_counts={
-            "reserved": 2,
-            "published": 1,
-            "screening": 1,
-            "promoted": 1,
-            "qualifying": 2,
-            "qualified": 3,
-            "expired": 105,
-            "failed": 20,
-        },
-        hold=1,
-        settled=2,
-        incentivized=1,
-        weight_published=1,
-    )
-    assert table.pending == 3
-    assert table.screening == 1
-    assert table.qualifying == 3
-    assert table.miner_pass == 3
-    assert table.miner_fail == 0
-    assert table.historical_terminal == 125
-    assert table.to_dict()["schema"] == "cacheon-standing-fifo-queue-table-v1"

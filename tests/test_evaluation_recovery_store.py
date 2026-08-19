@@ -18,7 +18,6 @@ from cacheon.chain.evaluation_recovery import (
     RecoveryPhase,
     RecoveryResolution,
     reviewed_legacy_screen_only_reason_digests,
-    reviewed_legacy_screen_only_release_reason,
 )
 from cacheon.chain.evaluation_lease_operator import (
     FifoLeaseConfig,
@@ -54,12 +53,11 @@ PROFILES = (
 
 
 def test_reviewed_legacy_release_reason_is_closed_and_digest_bound():
+    # The one retained historical row on mainnet carries this exact shape; the
+    # writer was retired, the reader must keep reopening the row.
     held = _h("held-reason")
     disposition = _h("reviewed-disposition")
-    reason = reviewed_legacy_screen_only_release_reason(
-        held_reason_digest=held,
-        disposition_digest=disposition,
-    )
+    reason = f"operator_reviewed_legacy_screen_only:v1:{held}:{disposition}"
     assert reviewed_legacy_screen_only_reason_digests(reason) == (
         held,
         disposition,

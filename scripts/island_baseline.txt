@@ -1,3 +1,2 @@
 # Known production modules without a reachable consumer. Shrink by wiring,
 # declaring in cacheon/capability_manifest.py, or deleting; growth requires review.
-cacheon.eval.standing_controls

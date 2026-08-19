@@ -38,7 +38,6 @@ STATUS_SCHEMA = "cacheon-standing-cpu-supervisor-status-v1"
 EVENT_SCHEMA = "cacheon-standing-cpu-supervisor-event-v1"
 CONFIG_SCHEMA = "cacheon-standing-supervisor-config-v1"
 CONFIG_DOMAIN = "cacheon.chain.standing-supervisor-config.v1"
-_TERMINAL_CLAIM_STATUSES = frozenset({"failed", "expired", "qualified"})
 _STANDING_CONFIG_FIELDS = frozenset(
     {
         "enable_qualification",
@@ -394,98 +393,6 @@ class StandingCpuSupervisor:
             last_disposition=None,
         )
         return self._status
-
-
-@dataclass(frozen=True)
-class FifoQueueTable:
-    """Running table for fresh resubmissions only (handoff §10).
-
-    Historical ``expired`` / ``failed`` terminal rows are reported separately and
-    are never counted as pending/screening/qualifying work.
-    """
-
-    pending: int
-    screening: int
-    qualifying: int
-    hold: int
-    miner_pass: int
-    miner_fail: int
-    settled: int
-    incentivized: int
-    weight_published: int
-    historical_terminal: int = 0
-
-    def __post_init__(self) -> None:
-        for name in self.__dataclass_fields__:
-            value = getattr(self, name)
-            if type(value) is not int or isinstance(value, bool) or value < 0:
-                raise StandingCpuSupervisorError(f"fifo table field {name} is malformed")
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "historical_terminal": self.historical_terminal,
-            "hold": self.hold,
-            "incentivized": self.incentivized,
-            "miner_fail": self.miner_fail,
-            "miner_pass": self.miner_pass,
-            "pending": self.pending,
-            "qualifying": self.qualifying,
-            "schema": "cacheon-standing-fifo-queue-table-v1",
-            "screening": self.screening,
-            "settled": self.settled,
-            "weight_published": self.weight_published,
-        }
-
-
-def build_fifo_queue_table(
-    *,
-    status_counts: dict[str, int],
-    hold: int = 0,
-    settled: int = 0,
-    incentivized: int = 0,
-    weight_published: int = 0,
-) -> FifoQueueTable:
-    """Project intake status counts into the handoff running table.
-
-    Terminal historical rows (``expired``, ``failed``) contribute only to
-    ``historical_terminal`` — never to the active FIFO columns.
-    """
-
-    if type(status_counts) is not dict:
-        raise StandingCpuSupervisorError("status_counts must be a dict")
-    pending = int(status_counts.get("reserved", 0)) + int(
-        status_counts.get("published", 0)
-    ) + int(status_counts.get("deferred", 0))
-    screening = int(status_counts.get("screening", 0))
-    qualifying = int(status_counts.get("qualifying", 0)) + int(
-        status_counts.get("promoted", 0)
-    )
-    miner_pass = int(status_counts.get("qualified", 0))
-    miner_fail = 0  # fresh FAIL only; historical failed rows stay historical
-    historical = int(status_counts.get("expired", 0)) + int(
-        status_counts.get("failed", 0)
-    )
-    return FifoQueueTable(
-        pending=pending,
-        screening=screening,
-        qualifying=qualifying,
-        hold=hold,
-        miner_pass=miner_pass,
-        miner_fail=miner_fail,
-        settled=settled,
-        incentivized=incentivized,
-        weight_published=weight_published,
-        historical_terminal=historical,
-    )
-
-
-def refuse_terminal_reclaim(status: str) -> None:
-    """Fail closed if a caller attempts to treat a terminal row as claimable work."""
-
-    if status in _TERMINAL_CLAIM_STATUSES:
-        raise StandingCpuSupervisorError(
-            f"standing supervisor refuses to reclaim terminal status {status!r}"
-        )
 
 
 def settlement_stage(
@@ -929,17 +836,14 @@ __all__ = [
     "CONFIG_SCHEMA",
     "EVENT_SCHEMA",
     "STATUS_SCHEMA",
-    "FifoQueueTable",
     "StandingCpuSupervisor",
     "StandingCpuSupervisorError",
     "StandingSupervisorConfig",
     "SupervisorPhase",
     "SupervisorStageResult",
     "SupervisorStatus",
-    "build_fifo_queue_table",
     "build_standing_supervisor",
     "load_standing_config",
-    "refuse_terminal_reclaim",
     "run_forever",
     "settlement_stage",
     "weights_stage",

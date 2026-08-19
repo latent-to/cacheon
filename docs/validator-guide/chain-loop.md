@@ -309,21 +309,22 @@ wrappers supply every installed path as an explicit argument; active
 endpoints, credentials, sealed configs, and tmux composition stay in the
 private operations tree.
 
-## Standing screen dispatcher
+## Standing CPU supervisor
 
-`python -m cacheon.chain.mainnet_screen_dispatcher --config <path>` is the
-standing CPU daemon over those pieces. One sealed, closed, owner-controlled
-config file supplies every authority: intake scope and policy, the arena
-service manifest, worker readiness, the registration and credential paths,
-and the digests they must match. The daemon reopens the intake-only
-validator's durable finalized cursor read-only — rejecting scope drift,
-regression, and hash changes — claims exactly one durable screen lease at a
-time, and hands the typed request to the authenticated spool transport.
-Qualification is not an exposed operation, and the required `ArenaService`
-provider slot is filled by a digest-exact remote-only proxy whose execution
-methods always fail closed. Dispatcher faults tear down the constructed
-authority and rebuild it under bounded exponential backoff; every lifecycle
-event is one canonical-JSON line on stdout.
+`python -m cacheon.chain.standing_cpu_supervisor --config <path>` is the
+standing CPU daemon over those pieces. Its sealed, closed, owner-controlled
+config names the screen-dispatcher config (`chain/mainnet_screen_dispatcher.py`
+supplies the config schema and the dispatcher builder) and the
+recoverable-qualification authorities to compose, and optionally the settlement
+network. The screen stage reopens the intake-only validator's durable finalized
+cursor read-only — rejecting scope drift, regression, and hash changes — claims
+exactly one durable screen lease at a time, and hands the typed request to the
+authenticated spool transport. The required `ArenaService` provider slot is
+filled by a digest-exact remote-only proxy whose execution methods always fail
+closed. The qualification stage resumes the same durable request across
+restarts rather than restarting the experiment. Stage faults tear down the
+constructed authority and rebuild it under bounded exponential backoff; every
+status change is one canonical-JSON line on stdout.
 
 ## Durable reservation states
 
