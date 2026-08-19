@@ -53,10 +53,26 @@ The atomic target owns and displaces both
 active alongside the atomic target. This prevents one semantic change from
 creating duplicate permanent reward titles.
 
-Catalog registration defines identity and admission; it does not by itself
-prove that a serving seam is installed. The `attention.msa_block_score`
-decode-side integration is non-installing unless the pinned runtime exposes a
-stable registered chokepoint. See [State of record](state-of-record.md) for
+Catalog registration defines identity; it does not by itself prove that a
+serving seam is installed or that the arena model ever reaches the chokepoint.
+That operational question is owned by the separate servability policy
+(`cacheon/target_servability.py`), which intake admission enforces
+fail-closed: a reveal against an unservable target is rejected immediately
+with reason `unservable_target:<target_id>` rather than published toward an
+evaluation it can only lose. Servability has two independent checks:
+
+1. Derived from the seam table: every member slot of the target must be
+   served by at least one registered seam adapter. The
+   `attention.msa_block_score` decode-side integration is a non-installing
+   stub, so that target fails this check today.
+2. A hand-audited deny-list for targets whose adapter installs but whose
+   chokepoint the live arena model structurally never calls. `norm.rmsnorm`
+   is currently listed: MiniMax-M3 instantiates `GemmaRMSNorm`, a sibling
+   class of `RMSNorm`, at every norm site.
+
+Unservable targets deliberately stay registered so catalog and stack digests,
+historical claims, and copy fingerprints remain stable; servability is
+admission policy, not identity. See [State of record](state-of-record.md) for
 validated adapter coverage.
 
 ## Resolution

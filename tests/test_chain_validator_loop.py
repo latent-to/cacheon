@@ -423,6 +423,38 @@ def test_deterministically_unpublishable_submission_is_not_retried(
         assert row.reason.startswith("publication_source:")
 
 
+def test_unservable_target_is_rejected_before_publication(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    (root / "kernels").mkdir(parents=True)
+    (root / "manifest.toml").write_text(
+        'bundle_id = "test"\n'
+        'abi_version = "cacheon-op-abi-v0"\n\n'
+        '[[ops]]\n'
+        'slot = "norm.rmsnorm"\n'
+        'source = "kernels/k.py"\n'
+        'entry = "rmsnorm"\n'
+        'dtypes = ["float32"]\n'
+    )
+    (root / "kernels/k.py").write_text(
+        "def rmsnorm(x, weight, out, eps):\n    out.copy_(x)\n"
+    )
+    for directory in (root, root / "kernels"):
+        directory.chmod(0o700)
+    for file in (root / "manifest.toml", root / "kernels/k.py"):
+        file.chmod(0o600)
+    digest = content_hash(root)
+    snapshot = _snapshot([("miner", encode_payload(digest, "https://example.com/a"))])
+    result, calls, options = _run(tmp_path, monkeypatch, snapshot, {digest: root})
+
+    assert calls == [digest]
+    assert len(result.published) == 0
+    assert len(result.rejected) == 1
+    with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
+        row = store.all()[0]
+        assert row.status == "failed"
+        assert row.reason == "unservable_target:norm.rmsnorm"
+
+
 def test_reformatted_later_delta_is_copy_without_any_weight_edge(tmp_path, monkeypatch):
     first = _bundle(
         tmp_path / "first",
