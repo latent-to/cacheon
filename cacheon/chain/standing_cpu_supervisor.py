@@ -544,17 +544,6 @@ _private_directory = partial(sealed_config.private_directory, error=StandingCpuS
 _positive_int = partial(sealed_config.positive_int, error=StandingCpuSupervisorError)
 
 
-def _positive_float(value: object, label: str) -> float:
-    if (
-        type(value) is bool
-        or type(value) not in (int, float)
-        or not math.isfinite(float(value))
-        or float(value) <= 0
-    ):
-        raise StandingCpuSupervisorError(f"{label} must be a positive finite duration")
-    return float(value)
-
-
 def _exact_bool(value: object, label: str) -> bool:
     if type(value) is not bool:
         raise StandingCpuSupervisorError(f"{label} must be a boolean")

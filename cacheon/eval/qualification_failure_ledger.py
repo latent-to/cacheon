@@ -81,31 +81,3 @@ def record_qualification_failure(
         return True
     except Exception:  # noqa: BLE001 - diagnostics must never fail a verdict
         return False
-
-
-def read_failure(destination: str | os.PathLike[str], failure_digest: str) -> dict | None:
-    """Answer "why did this bundle reach no verdict?" for one digest.
-
-    Returns the most recent matching row, so a digest seen repeatedly reports
-    its latest occurrence rather than its first.
-    """
-
-    found: dict | None = None
-    try:
-        with Path(destination).open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if (
-                    type(row) is dict
-                    and row.get("failure_digest") == failure_digest
-                ):
-                    found = row
-    except OSError:
-        return None
-    return found
