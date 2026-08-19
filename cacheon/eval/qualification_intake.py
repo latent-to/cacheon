@@ -44,6 +44,8 @@ from cacheon.eval.qualification_runner import (
     QualificationStageExit,
     QualificationRunnerError,
     STAGE_EXIT_SCHEMA,
+    STAGE_EXIT_SCHEMA_V2,
+    STAGE_EXIT_SCHEMA_V3,
     SpeedStageDisposition,
     qualification_authority_digest,
     reopen_causal_qualification,
@@ -53,9 +55,13 @@ from cacheon.eval.qualification_runner import (
 from cacheon.eval.oci_backend import OCIBackendError
 from cacheon.eval.oci_outer_session import (
     OuterSessionProcessError,
-    OuterSessionWorkerError,
 )
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
+from cacheon.eval.qualification_failure_ledger import record_qualification_failure
 from cacheon.eval.marginal_runtime import CandidateArmWorkerError
+from cacheon.eval.resident_pair_quality_lifecycle import (
+    ResidentPairMarginalLifecycleEvidence,
+)
 from cacheon.eval.scoring import RawSpeedEvidenceError
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
@@ -691,7 +697,7 @@ class QualificationIntakeBatch:
 
 
 def _failure_digest(manifest: QualificationAuthorityManifest, exc: BaseException) -> str:
-    return canonical_digest(
+    digest = canonical_digest(
         "cacheon.qualification.intake-failure",
         {
             "authority_manifest_digest": manifest.digest,
@@ -699,6 +705,29 @@ def _failure_digest(manifest: QualificationAuthorityManifest, exc: BaseException
             "message": str(exc)[:4096],
         },
     )
+    # The digest binds the failure text but does not carry it, and the batch
+    # crosses the trust boundary carrying only NO_DECISION plus this digest.
+    # Without an operator-readable copy on the worker side, a non-verdict is
+    # undiagnosable: on 2026-08-15 six reservations parked with reason
+    # "qualification_runner" and the cause could not be read back from any
+    # retained artifact.  Emit the text to the worker log only -- widening the
+    # wire schema is what broke two consumers earlier the same day.
+    import sys
+
+    print(
+        "CACHEON-QUALIFICATION-INTAKE-FAILURE: "
+        f"authority={manifest.digest[:16]} failure={digest[:16]} "
+        f"{type(exc).__name__}: {str(exc)[:2048]}",
+        flush=True,
+        file=sys.stderr,
+    )
+    # A rotating log answers this for as long as it happens to survive. The
+    # ledger keeps the digest -> why mapping durably, so a miner asking why a
+    # bundle reached no verdict has an answer that outlives the log.
+    record_qualification_failure(
+        failure_digest=digest, authority_digest=manifest.digest, exc=exc
+    )
+    return digest
 
 
 def _retry_plan(
@@ -750,6 +779,34 @@ def _no_decision_batch(
     )
 
 
+def _settlement_projection(
+    reservation,
+    prepared,
+    report,
+    authority,
+    attempt_ref,
+    attempt,
+):
+    if report.decision is not QualificationDecision.PASS:
+        return None
+    from cacheon.settlement import SettlementQualification
+
+    return SettlementQualification.from_qualification(
+        reservation_digest=reservation.reservation_digest,
+        finalized_block=reservation.finalized_block,
+        event_index=reservation.finalized_event_index,
+        event_subindex=reservation.finalized_event_subindex,
+        hotkey=reservation.hotkey,
+        target_id=reservation.target_id,
+        members=reservation.target_members,
+        prepared=prepared,
+        report=report,
+        authority=authority,
+        attempt_ref=attempt_ref,
+        attempt=attempt,
+    )
+
+
 def run_qualification_intake(
     factory: QualificationPlanFactory,
     *,
@@ -758,34 +815,110 @@ def run_qualification_intake(
     entropy_provider,
     hidden_judge,
     deadline: float,
+    continuation_store: QualificationContinuationStore | None = None,
+    request_digest: str | None = None,
+    prebuilt_plan: CausalQualificationInput | None = None,
+    resident_pair_lifecycle: ResidentPairMarginalLifecycleEvidence | None = None,
 ) -> QualificationIntakeBatch:
-    """Run, reopen, and project one finalized cohort without settlement authority."""
+    """Run, reopen, and project one finalized cohort without settlement authority.
+
+    With a ``continuation_store``, durable speed/quality/final products are
+    written and consumed at the runner's sealed boundaries.  A continuation
+    error is a HOLD: it deliberately escapes the NO_DECISION retry mapping
+    below, because retrying could re-execute an already-durable expensive
+    stage.
+    """
 
     if type(factory) is not QualificationPlanFactory:
         raise QualificationIntakeError("qualification factory is not exactly typed")
+    if continuation_store is not None and type(continuation_store) is not (
+        QualificationContinuationStore
+    ):
+        raise QualificationIntakeError("continuation store is not exactly typed")
+    if (continuation_store is None) != (request_digest is None):
+        raise QualificationIntakeError(
+            "continuation store requires one exact authenticated request digest"
+        )
+    if request_digest is not None:
+        request_digest = _digest(request_digest, "authenticated request digest")
+    if (
+        (
+            prebuilt_plan is not None
+            and type(prebuilt_plan) is not CausalQualificationInput
+        )
+        or (
+            resident_pair_lifecycle is not None
+            and (
+                prebuilt_plan is None
+                or type(resident_pair_lifecycle)
+                is not ResidentPairMarginalLifecycleEvidence
+            )
+        )
+    ):
+        raise QualificationIntakeError(
+            "prebuilt qualification intake authorities are not exact"
+        )
     manifest = factory.manifest
     try:
-        value = factory.build()
+        value = prebuilt_plan if prebuilt_plan is not None else factory.build()
+        if prebuilt_plan is not None:
+            observed = QualificationAuthorityManifest.seal(
+                value,
+                reservations=manifest.reservations,
+                selection_secret_reference=manifest.selection_secret_reference,
+            )
+            if observed != manifest:
+                raise QualificationIntakeError(
+                    "prebuilt qualification authority differs"
+                )
         if value.speed_stage_disposition is not SpeedStageDisposition.TERMINAL:
             raise QualificationIntakeError(
                 "economic qualification cannot use calibration speed continuation"
             )
     except (QualificationIntakeError, QualificationRunnerError, OSError) as exc:
         return _no_decision_batch(manifest, exc, reason="qualification_plan")
-    try:
-        reference = run_causal_qualification(
-            value,
-            executor=executor,
-            resident_baseline_executor=resident_baseline_executor,
-            entropy_provider=entropy_provider,
-            hidden_judge=hidden_judge,
-            deadline=deadline,
+    continuation = None
+    if continuation_store is not None:
+        continuation = continuation_store.scope(
+            request_digest=request_digest,
+            authority_digest=qualification_authority_digest(value),
+            source_digest=value.prepared.source.digest,
         )
+    try:
+        runner_kwargs = {
+            "executor": executor,
+            "resident_baseline_executor": resident_baseline_executor,
+            "entropy_provider": entropy_provider,
+            "hidden_judge": hidden_judge,
+            "deadline": deadline,
+            "continuation": continuation,
+        }
+        if resident_pair_lifecycle is not None:
+            runner_kwargs.update(
+                {
+                    "resident_baseline_executor": None,
+                    "resident_pair_lifecycle": resident_pair_lifecycle,
+                }
+            )
+        reference = run_causal_qualification(value, **runner_kwargs)
         if type(reference) is not EvidenceArtifactRef:
             raise QualificationIntakeError("qualification runner returned no typed artifact")
-        if reference.schema == STAGE_EXIT_SCHEMA:
-            terminal = reopen_qualification_stage_exit(
-                value.evidence_root, reference, expected=value
+        if reference.schema in {
+            STAGE_EXIT_SCHEMA,
+            STAGE_EXIT_SCHEMA_V2,
+            STAGE_EXIT_SCHEMA_V3,
+        }:
+            terminal = (
+                reopen_qualification_stage_exit(
+                    value.evidence_root,
+                    reference,
+                    expected=value,
+                    resident_pair_lifecycle=resident_pair_lifecycle,
+                )
+                if resident_pair_lifecycle is not None
+                else reopen_qualification_stage_exit(
+                    value.evidence_root, reference, expected=value
+                )
             )
             if (
                 type(terminal) is not QualificationStageExit
@@ -799,6 +932,13 @@ def run_qualification_intake(
                     "qualification stage exit differs from intake authority"
                 )
             reservation = manifest.reservations[0]
+            settlement_qualification = (
+                _settlement_projection(
+                    reservation, value.prepared.candidates[0], terminal,
+                    manifest, reference, value,
+                )
+                if terminal.decision is QualificationDecision.PASS else None
+            )
             outcome = QualificationIntakeOutcome(
                 reservation.reservation_digest,
                 reservation.selected_delta_digest,
@@ -808,6 +948,7 @@ def run_qualification_intake(
                 terminal.decision is QualificationDecision.NO_DECISION,
                 attempt_artifact_sha256=reference.sha256,
                 report_digest=terminal.digest,
+                settlement_qualification=settlement_qualification,
             )
             retry_plan = None
             if terminal.decision is QualificationDecision.NO_DECISION:
@@ -825,8 +966,17 @@ def run_qualification_intake(
             return QualificationIntakeBatch(
                 manifest.digest, (outcome,), reference, retry_plan
             )
-        attempt = reopen_causal_qualification(
-            value.evidence_root, reference, expected=value
+        attempt = (
+            reopen_causal_qualification(
+                value.evidence_root,
+                reference,
+                expected=value,
+                resident_pair_lifecycle=resident_pair_lifecycle,
+            )
+            if resident_pair_lifecycle is not None
+            else reopen_causal_qualification(
+                value.evidence_root, reference, expected=value
+            )
         )
     except RawSpeedEvidenceError as exc:
         return _no_decision_batch(manifest, exc, reason="raw_speed_evidence")
@@ -848,10 +998,6 @@ def run_qualification_intake(
                 "candidate worker identity differs from intake authority"
             ) from exc
         return _no_decision_batch(manifest, exc, reason="candidate_worker")
-    except OuterSessionWorkerError as exc:
-        # Raw worker errors can come from B/B-prime or pristine T.  They are
-        # shared-authority failures, never evidence against a candidate arm.
-        return _no_decision_batch(manifest, exc, reason="outer_session_worker")
     except OCIBackendError as exc:
         return _no_decision_batch(manifest, exc, reason="oci_backend")
     except QualificationRunnerError as exc:
@@ -892,27 +1038,13 @@ def run_qualification_intake(
             or report.selected_delta_digest != reservation.selected_delta_digest
         ):
             raise QualificationIntakeError("qualification report order differs")
-        settlement_qualification = None
-        if (
-            report.decision is QualificationDecision.PASS
-            and prepared_candidates
-        ):
-            from cacheon.settlement import SettlementQualification
-
-            settlement_qualification = SettlementQualification.from_qualification(
-                reservation_digest=reservation.reservation_digest,
-                finalized_block=reservation.finalized_block,
-                event_index=reservation.finalized_event_index,
-                event_subindex=reservation.finalized_event_subindex,
-                hotkey=reservation.hotkey,
-                target_id=reservation.target_id,
-                members=reservation.target_members,
-                prepared=prepared_candidates[index],
-                report=report,
-                authority=manifest,
-                attempt_ref=reference,
-                attempt=attempt,
+        settlement_qualification = (
+            _settlement_projection(
+                reservation, prepared_candidates[index], report,
+                manifest, reference, attempt,
             )
+            if prepared_candidates else None
+        )
         outcomes.append(
             QualificationIntakeOutcome(
                 reservation.reservation_digest,

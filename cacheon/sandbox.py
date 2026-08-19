@@ -173,6 +173,100 @@ def scan_path(path: str | Path) -> ScanResult:
     return scan_source(p.read_text(encoding="utf-8"), filename=p.name)
 
 
+# Triton exposes some helpers twice: a host-side Python function under ``triton``
+# and, where one exists, an in-language builtin under ``triton.language``. The
+# host-side form operates on real Python values. Inside a ``@triton.jit`` body it
+# is handed ``tl.constexpr`` wrapper objects instead, so it fails at TRACE time.
+#
+# ``triton.next_power_of_2`` is the observed case: it reaches ``(n-1).bit_length()``
+# and raises ``AttributeError("'constexpr' object has no attribute 'bit_length'")``,
+# surfaced as ``triton.compiler.errors.CompilationError``. Note there is no
+# ``tl.next_power_of_2`` to swap to -- ``triton.language`` does not export one. The
+# fix is to compute the value at the launch site and pass it in as its own
+# ``tl.constexpr`` parameter, as Triton's fused-softmax tutorial does.
+# Only ``next_power_of_2`` is listed. ``cdiv`` was here too and was removed: its
+# body is ``(x + y - 1) // y``, which ``tl.constexpr`` supports, so flagging it
+# was an unverified guess. Claim only what a real traceback backs.
+_TRITON_HOST_ONLY = frozenset({"next_power_of_2"})
+
+
+def _is_triton_jit(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for decorator in node.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Attribute) and target.attr == "jit":
+            return True
+        if isinstance(target, ast.Name) and target.id == "jit":
+            return True
+    return False
+
+
+def scan_compilability(source: str, *, filename: str = "<kernel>") -> ScanResult:
+    """Report kernel defects that make Triton compilation fail at trace time.
+
+    Deliberately separate from :func:`scan_source`. That scan is a security
+    boundary — its findings mean a bundle is hostile. These findings mean a
+    bundle is merely broken, which carries a different consequence and must not
+    be conflated with an attack.
+
+    Triton is a JIT: it compiles PER KERNEL, on that kernel's first invocation.
+
+    THIS IS ADVISORY, NOT A VERDICT. Read this before using it as one.
+
+    A finding means "this kernel raises at trace time IF it is ever invoked". It
+    does NOT mean the bundle cannot be evaluated. A bundle may define twenty
+    ``@triton.jit`` kernels and invoke three; a defect in an unreachable one is
+    latent dead code and the bundle measures normally.
+
+    Measured on 330 real mainnet bundles on 2026-08-18: of 85 that provably
+    compiled (they produced a speed verdict or a PASS, so they ran), 39 -- 46% --
+    contained a flagged call in some unreached kernel. Using this scan as a FAIL
+    authority would have failed those 39 honest bundles.
+
+    A sound gate has to attempt real compilation of the kernels actually reached
+    from the manifest's declared entry points, which means executing candidate
+    code and therefore belongs in the sandboxed screen, never here.
+
+    Deliberately separate from :func:`scan_source`. That scan is a security
+    boundary -- its findings mean a bundle is hostile. These mean it contains a
+    broken kernel, which must not be conflated with an attack.
+    """
+
+    out: list[str] = []
+    try:
+        tree = ast.parse(source, filename=filename)
+    except SyntaxError as exc:
+        return ScanResult(ok=False, violations=(f"{filename}: syntax error: {exc}",))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not _is_triton_jit(node):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in _TRITON_HOST_ONLY
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "triton"
+            ):
+                out.append(
+                    f"{filename}:{inner.lineno}: host-side triton.{func.attr}() "
+                    f"called inside @triton.jit '{node.name}'; at trace time its "
+                    f"argument is a tl.constexpr and compilation fails. Compute it "
+                    f"at the launch site and pass it in as a tl.constexpr parameter"
+                )
+
+    return ScanResult(ok=not out, violations=tuple(out))
+
+
+def scan_compilability_path(path: str | Path) -> ScanResult:
+    p = Path(path)
+    return scan_compilability(p.read_text(encoding="utf-8"), filename=p.name)
+
+
 # Suffixes that are never allowed in a bundle tree, declared or not: compiled/binary
 # artifacts that copy_fingerprint's import-closure walk cannot see and that scan_source
 # cannot inspect. A miner cannot launder one of these past the scan by "declaring" it as

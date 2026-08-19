@@ -310,10 +310,9 @@ class SettlementQualification:
         if self.resident_lane_orientation is not None and (
             type(self.resident_lane_orientation) is not ResidentLaneOrientation
             or self.lane != "registered"
-            or self.audit_policy is None
         ):
             raise SettlementError(
-                "resident lane orientation requires one audited registered qualification"
+                "resident lane orientation requires one registered qualification"
             )
         if (
             self.resident_lane_orientation is not None
@@ -430,11 +429,14 @@ class SettlementQualification:
         from cacheon.eval.qualification import QualificationDecision
         from cacheon.eval.qualification_intake import QualificationAuthorityManifest
         from cacheon.eval.qualification_runner import (
+            CausalQualificationInput,
             CandidateQualificationReport,
             CohortQualificationAttempt,
             DiscoveryCandidateQualificationReport,
             DiscoveryQualificationAttempt,
+            QualificationStageExit,
             ResidentSpeedWitness,
+            STAGE_EXIT_SCHEMA_V3,
         )
         from cacheon.stack_plan import MarginalArmPlan
 
@@ -454,7 +456,21 @@ class SettlementQualification:
             raise SettlementError("authority does not bind exactly one reservation")
         reservation = reservations[0]
         arm = prepared.arm
-        if type(arm) is MarginalArmPlan:
+        resident_accept = type(report) is QualificationStageExit
+        if resident_accept:
+            if (
+                type(arm) is not MarginalArmPlan
+                or type(attempt) is not CausalQualificationInput
+                or attempt.prepared.candidates != (prepared,)
+                or attempt_ref.schema != STAGE_EXIT_SCHEMA_V3
+                or report.stage != "resident_accept"
+                or type(report.speed_witness) is not ResidentSpeedWitness
+                or report.resident_pair_closure is None
+                or arm.transition.target_id != target_id
+            ):
+                raise SettlementError("resident acceptance projection is not exact")
+            lane, manifest = "registered", arm.candidate
+        elif type(arm) is MarginalArmPlan:
             lane = "registered"
             if (
                 type(report) is not CandidateQualificationReport
@@ -485,12 +501,43 @@ class SettlementQualification:
             raise SettlementError("qualification arm is unsupported")
         if authority.lane != lane:
             raise SettlementError("qualification authority lane differs from its arm")
-        if (
-            attempt.authority_digest != authority.authority_digest
-            or attempt.commitment.digest != authority.commitment_digest
-            or sum(row.digest == report.digest for row in attempt.reports) != 1
-        ):
-            raise SettlementError("qualification attempt differs from its authority/report")
+        if resident_accept:
+            closure = report.resident_pair_closure
+            if (
+                len(authority.reservations) != 1
+                or report.authority_digest != authority.authority_digest
+                or report.source_digest != attempt.prepared.source.digest
+                or report.selected_delta_digest != arm.selected_delta_digest
+                or report.speed_witness.candidate_launch_digest != prepared.launch.digest
+                or attempt.commitment.digest != authority.commitment_digest
+            ):
+                raise SettlementError(
+                    "resident acceptance differs from its plan or authority"
+                )
+            selection_evidence_digest = closure.count_result.digest
+            audit_evidence_digest = (
+                _LEGACY_AUDIT_EVIDENCE_DIGEST
+                if report.audit_witness is None
+                else report.audit_witness.digest
+            )
+        else:
+            if (
+                attempt.authority_digest != authority.authority_digest
+                or attempt.commitment.digest != authority.commitment_digest
+                or sum(row.digest == report.digest for row in attempt.reports) != 1
+            ):
+                raise SettlementError(
+                    "qualification attempt differs from its authority/report"
+                )
+            selection_evidence_digest = canonical_digest(
+                "cacheon.settlement.selection-evidence",
+                {
+                    "commitment_digest": attempt.commitment.digest,
+                    "entropy_digest": attempt.entropy.digest,
+                    "selection_digest": attempt.selection.digest,
+                },
+            )
+            audit_evidence_digest = report.audit_evidence_digest
         resident_witness = (
             report.speed_witness
             if type(report.speed_witness) is ResidentSpeedWitness
@@ -499,7 +546,7 @@ class SettlementQualification:
         if resident_witness is not None and (
             lane != "registered"
             or len(authority.reservations) != 1
-            or len(attempt.reports) != 1
+            or (not resident_accept and len(attempt.reports) != 1)
         ):
             raise SettlementError(
                 "resident crossover settlement requires one registered candidate"
@@ -515,14 +562,6 @@ class SettlementQualification:
             or authority.candidate_deltas.count(arm.selected_delta_digest) != 1
         ):
             raise SettlementError("qualification selected-delta identity differs")
-        selection_evidence_digest = canonical_digest(
-            "cacheon.settlement.selection-evidence",
-            {
-                "commitment_digest": attempt.commitment.digest,
-                "entropy_digest": attempt.entropy.digest,
-                "selection_digest": attempt.selection.digest,
-            },
-        )
         return cls(
             lane=lane,
             arena_digest=arm.incumbent.arena_digest,
@@ -546,14 +585,24 @@ class SettlementQualification:
             incumbent_tree_digest=arm.baseline_before.tree_digest,
             candidate_stack_digest=arm.challenger.stack_digest,
             candidate_tree_digest=arm.challenger.tree_digest,
-            speedup=report.speedup,
+            speedup=(
+                report.speed_witness.accepted_speedup()
+                if resident_accept
+                else report.speedup
+            ),
             incumbent_manifest=arm.incumbent,
             proposal_digest=(arm.proposal_digest if lane == "discovery" else ""),
             candidate_manifest=manifest,
             speed_evidence_policy_digest=report.speed_witness.policy.digest,
-            audit_control_digest=report.audit_witness.policy.control.digest,
-            audit_policy=report.audit_witness.policy,
-            audit_evidence_digest=report.audit_evidence_digest,
+            audit_control_digest=(
+                _LEGACY_AUDIT_CONTROL_DIGEST
+                if report.audit_witness is None
+                else report.audit_witness.policy.control.digest
+            ),
+            audit_policy=(
+                None if report.audit_witness is None else report.audit_witness.policy
+            ),
+            audit_evidence_digest=audit_evidence_digest,
             resident_lane_orientation=resident_lane_orientation,
         )
 
@@ -611,6 +660,11 @@ class SettlementQualification:
 
     @classmethod
     def from_dict(cls, value: object) -> "SettlementQualification":
+        # ``to_dict`` serializes three optional groups independently: the
+        # speed policy digest, the audit triple, and the resident lane
+        # orientation.  Accept exactly the shapes it can emit; a resident
+        # acceptance without an audit witness carries the orientation and no
+        # audit fields.
         fields_v4 = set(cls.__dataclass_fields__)
         fields_v3 = fields_v4 - {"resident_lane_orientation"}
         audit_fields = {
@@ -622,7 +676,7 @@ class SettlementQualification:
         fields_v1 = fields_v2 - {"speed_evidence_policy_digest"}
         if type(value) is not dict or frozenset(value) not in {
             frozenset(fields_v1), frozenset(fields_v2), frozenset(fields_v3),
-            frozenset(fields_v4),
+            frozenset(fields_v4), frozenset(fields_v4 - audit_fields),
         }:
             raise SettlementError("settlement qualification fields do not match")
         row = dict(value)
@@ -752,9 +806,18 @@ class SettlementCandidate:
         reproduction: SettlementQualification,
     ) -> "SettlementCandidate":
         candidate = cls(primary, reproduction)
+        # ``__post_init__`` already refuses a mixed audited/auditless pair and
+        # requires an exact physical lane swap whenever orientation is present.
+        # A resident acceptance pair (v6 speed PASS on both lane orientations)
+        # carries no audit witness; the enforced swap is its reproduction
+        # defense.  Any other auditless pair is legacy history and cannot
+        # become a new candidate.
         if (
             candidate.primary.audit_policy is None
             or candidate.reproduction.audit_policy is None
+        ) and (
+            candidate.primary.resident_lane_orientation is None
+            or candidate.reproduction.resident_lane_orientation is None
         ):
             raise SettlementError(
                 "new settlement candidate requires two audited qualifications"

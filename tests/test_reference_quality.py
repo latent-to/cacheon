@@ -43,6 +43,7 @@ from cacheon.eval.reference_quality import (
     raw_trajectory_projection_digest,
     reopen_reference_quality_evidence,
     score_reference_quality,
+    stock_drift_upper_bound,
     target_nll_from_f32,
 )
 from cacheon.stack_identity import canonical_json_bytes
@@ -53,7 +54,7 @@ def _digest(character: str) -> str:
 
 
 def _context() -> CalibrationContext:
-    return CalibrationContext(*[character * 64 for character in "123456789ab"])
+    return CalibrationContext(*[character * 64 for character in "123456789a"])
 
 
 def _calibration(*, status: str = "frozen", z: str = "0.000001") -> CalibrationManifest:
@@ -163,6 +164,36 @@ def test_stock_control_drift_is_no_decision_not_candidate_failure() -> None:
     assert verdict.decision == "NO_DECISION"
     assert "mean_nll.stock_drift" in verdict.overlapping_metrics
     assert not verdict.failed_metrics
+
+
+def test_stock_drift_projection_uses_the_scored_per_prompt_statistic() -> None:
+    deltas = (
+        4.760551929473877, 0.9824128150939941, 7.046918869018555, 0.0,
+        2.533411979675293, 6.290788769721985, 6.711379528045654,
+        0.08474969863891602, 0.0, 0.0, 0.21335887908935547,
+        0.3959672451019287, 0.9893853664398193, 23.225655555725098,
+        22.339792251586914, 2.4457502365112305,
+    )
+    calibration = _calibration(z="2")
+
+    def rollout(value: float) -> RolloutQualityEvidence:
+        text = format(value, ".17g")
+        return RolloutQualityEvidence(
+            TeacherNLLEvidence(1, text, text, 0),
+            RolloutKLEvidence(1, "0", "0", "0", 0, "0"),
+            HiddenTaskEvidence("1", 1),
+        )
+
+    evidence = _evidence(calibration, tuple(
+        PromptQualityEvidence(
+            f"{index + 1:064x}", rollout(delta), rollout(delta), rollout(0.0), 1, 1,
+        )
+        for index, delta in enumerate(deltas)
+    ))
+    policy = MetricCalibration("worst_nll", "lower", "10", "10")
+    assert stock_drift_upper_bound(evidence, policy, "2") == pytest.approx(
+        8.594552802349563, rel=0, abs=1e-15
+    )
 
 
 def test_hidden_task_floor_is_an_external_failure() -> None:

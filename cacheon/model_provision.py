@@ -262,6 +262,15 @@ def _discover(
     return tuple(sorted(files, key=lambda item: item.path)), tuple(sorted(snapshot))
 
 
+def _require_public_read_only(snapshot: tuple[tuple[str, tuple[int, ...]], ...]) -> None:
+    for path, values in snapshot:
+        mode = values[_STAT_FIELDS.index("st_mode")]
+        permissions = stat.S_IMODE(mode)
+        allowed = permissions == 0o555 if stat.S_ISDIR(mode) else permissions in {0o444, 0o555}
+        if not allowed:
+            raise ModelProvisionError(f"model path is not public read-only: {path}")
+
+
 def _hash_file(item: _DiscoveredFile) -> ModelFileRecord:
     if _NOFOLLOW is None:
         raise ModelProvisionError("this platform lacks O_NOFOLLOW")
@@ -294,10 +303,12 @@ def _hash_file(item: _DiscoveredFile) -> ModelFileRecord:
         os.close(fd)
 
 
-def _build_receipt(root: Path, *, workers: int) -> ModelProvisionReceipt:
+def _build_receipt(root: Path, *, workers: int, require_public_read_only: bool = False) -> ModelProvisionReceipt:
     if type(workers) is not int or not 1 <= workers <= 64:
         raise ModelProvisionError("workers must be an integer in [1, 64]")
     discovered, before = _discover(root)
+    if require_public_read_only:
+        _require_public_read_only(before)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         records = tuple(sorted(executor.map(_hash_file, discovered), key=lambda item: item.path))
     after_files, after = _discover(root)
@@ -481,6 +492,7 @@ def reopen_model_provision(
     *,
     expected_content_digest: str | None = None,
     expected_receipt_digest: str | None = None,
+    require_public_read_only: bool = False,
     workers: int = 8,
 ) -> ProvisionedModel:
     """Reopen a retained receipt and re-hash the complete model tree against it."""
@@ -496,7 +508,9 @@ def reopen_model_provision(
         expected_receipt_digest, field="expected_receipt_digest"
     ):
         raise ModelProvisionError("model receipt does not match expected_receipt_digest")
-    observed = _build_receipt(root, workers=workers)
+    if type(require_public_read_only) is not bool:
+        raise ModelProvisionError("require_public_read_only must be a boolean")
+    observed = _build_receipt(root, workers=workers, require_public_read_only=require_public_read_only)
     if observed != receipt:
         raise ModelProvisionError("model tree does not match its retained provision receipt")
     return ProvisionedModel(receipt, path)

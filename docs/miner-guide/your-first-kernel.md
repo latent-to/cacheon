@@ -71,6 +71,44 @@ scan. Fix every reported item. A clean scan does not make code safe or
 crownable; production still fetches, republishes, builds, and runs the proposal
 inside validator-owned isolation.
 
+`scan` also reports broken Triton kernels, marked `[BROKEN KERNEL]`, and exits
+non-zero. **Run it before every submission.**
+
+Triton is a JIT and compiles *per kernel, on that kernel's first invocation*. A
+report means the kernel raises at trace time **if it is ever invoked**. If it is
+never reached it is latent dead code and your bundle still evaluates — so this
+is a warning about your kernel, not a prediction that your bundle fails. Fix it
+regardless: a kernel that crashes the moment a shape reaches it is a defect
+waiting for the workload that triggers it.
+
+The most common instance is calling a host-side Triton helper from inside a
+`@triton.jit` body:
+
+```python
+@triton.jit
+def _kernel(out_ptr, D: tl.constexpr):
+    col_offsets = tl.arange(0, triton.next_power_of_2(D))   # fails to compile
+```
+
+At trace time `D` is a `tl.constexpr` wrapper object, not a Python `int`, so the
+host-side helper raises and compilation aborts. There is no in-language
+replacement to swap to — `triton.language` does not export `next_power_of_2`.
+Compute the value at the launch site and pass it in as its own `tl.constexpr`
+parameter:
+
+```python
+@triton.jit
+def _kernel(out_ptr, D: tl.constexpr, BLOCK_D: tl.constexpr):
+    col_offsets = tl.arange(0, BLOCK_D)
+    mask = col_offsets < D
+
+BLOCK_D = triton.next_power_of_2(D)          # host, at the launch site
+_kernel[grid](out, D=D, BLOCK_D=BLOCK_D)
+```
+
+`tl.arange` requires a compile-time power-of-two bound in any case, so passing it
+as a `constexpr` argument is the required shape rather than a workaround.
+
 ## 4. Verify the callable contract
 
 ```bash

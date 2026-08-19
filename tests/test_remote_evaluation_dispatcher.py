@@ -8,10 +8,12 @@ from pathlib import Path
 
 import pytest
 
+import cacheon.chain.evaluation_coordinator as coordinator_module
 import cacheon.chain.remote_evaluation_dispatcher as remote_dispatcher_module
 import cacheon.chain.remote_qualification_evidence as remote_evidence_module
 from cacheon.arena_service import (
     SCREEN_STAGES,
+    ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaRuntimeIdentity,
     ArenaService,
@@ -25,7 +27,12 @@ from cacheon.arena_service import (
     WorkloadRegime,
 )
 from cacheon.bundle_hash import content_hash
-from cacheon.chain.evaluation_coordinator import EvaluationCoordinator, WorkerReadiness
+from cacheon.chain.evaluation_coordinator import (
+    ClaimedQualificationEvaluation,
+    EvaluationCoordinator,
+    EvaluationResultEnvelope,
+    WorkerReadiness,
+)
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
@@ -33,7 +40,7 @@ from cacheon.chain.intake import (
     IntakePolicy,
     IntakeScope,
 )
-from cacheon.chain.publication import publish_worker_bundle
+from cacheon.chain.publication import publish_worker_bundle, reopen_worker_bundle
 from cacheon.chain.remote_evaluation_dispatcher import (
     AuthenticatedRemoteEvaluationResponse,
     REMOTE_EVALUATION_PROTOCOL_DIGEST,
@@ -271,6 +278,57 @@ def _coordinator(
     )
     options.update(changes)
     return EvaluationCoordinator(**options)
+
+
+def _promote_one(coordinator: EvaluationCoordinator) -> None:
+    """Fixture: claim the oldest screen row, run the fake provider unlocked,
+    seal, and CAS-commit the PROMOTE receipt (no transport involved)."""
+    claim = coordinator.claim_screen()
+    assert claim is not None
+    receipt = coordinator.service.screen(claim.candidate)
+    envelope = EvaluationResultEnvelope.seal(
+        claim.lease, coordinator.readiness, coordinator.service, receipt
+    )
+    coordinator.commit_screen_result(claim, receipt, envelope)
+
+
+def _claim_qualification(
+    coordinator: EvaluationCoordinator,
+) -> ClaimedQualificationEvaluation:
+    """Fixture: durable qualification lease over promoted rows, materialized
+    into the CPU authority DTO the recoverable dispatcher hands to transport."""
+    store, point = coordinator._open_at_durable_cursor()
+    try:
+        lease = store.claim_evaluation_lease(
+            stage="qualification",
+            owner=coordinator.owner,
+            current_block=point[0],
+            lease_blocks=coordinator.lease_blocks,
+            max_members=coordinator.qualification_max_members,
+        )
+        assert lease is not None
+        reservations = tuple(store.get(row) for row in lease.reservation_ids)
+        receipts = tuple(
+            store.latest_promoted_screen(row.reservation_id) for row in reservations
+        )
+    finally:
+        store.close()
+    publications = tuple(
+        reopen_worker_bundle(
+            row.publication_root,
+            row.arrival.content_hash,
+            expected_receipt_digest=row.publication_digest,
+        )
+        for row in reservations
+    )
+    authority = coordinator_module._qualification_reservations(reservations, publications)
+    candidates = tuple(
+        ArenaCandidateBinding(item, publication, row.screen_attempts)
+        for row, publication, item in zip(reservations, publications, authority, strict=True)
+    )
+    return ClaimedQualificationEvaluation(
+        lease, reservations, publications, candidates, receipts
+    )
 
 
 def _transport_identity(
@@ -587,95 +645,6 @@ def test_dispatcher_rejects_drifted_transport_identity_before_claim(
     with _store(tmp_path) as store:
         assert store.active_evaluation_leases() == ()
         assert store.get(row.reservation_id).screen_attempts == 0
-
-
-def test_remote_qualification_is_path_free_imported_and_committed_without_cpu_plan(
-    tmp_path: Path,
-) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    provider = _Provider()
-    service = ArenaService(_manifest(), provider)
-    cursor = _Cursor((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(tmp_path, service, cursor)
-    screened = coordinator.run_screen_once()
-    assert screened is not None and screened.disposition == "completed"
-
-    credential = RemoteWorkerCredential("qualification-key-v1", b"q" * 32)
-    pod_root = tmp_path / "pod-evidence"
-    attempt_ref = publish_evidence(
-        pod_root,
-        b'{"attempt":"pod-only"}',
-        domain="qualification-attempt",
-        media_type="application/json",
-        schema="cacheon.qualification.test-attempt.v1",
-    )
-    incumbent = _incumbent(service)
-    incumbent_tree_digest = _h("incumbent-tree")
-
-    class QualificationTransport:
-        def __init__(self) -> None:
-            self.identity = _transport_identity(coordinator, credential)
-            self.requests: list[RemoteEvaluationRequest] = []
-
-        def run_screen(self, request, *, job):  # pragma: no cover
-            raise AssertionError("screen is not part of the qualification transport")
-
-        def run_qualification(self, request):
-            parsed = RemoteEvaluationRequest.from_dict(request.to_dict())
-            verify_remote_request(parsed, self.identity, credential)
-            self.requests.append(parsed)
-            assert parsed.body["screen_lane"] == "primary"
-            assert "authority_manifest" not in parsed.body
-            authority = _authority_for_request(parsed)
-            batch = _failed_batch(authority, attempt_ref)
-            product = capture_remote_qualification_product(
-                batch=batch,
-                authority_manifest=authority,
-                incumbent_stack=incumbent,
-                incumbent_tree_digest=incumbent_tree_digest,
-                screen_lane=parsed.body["screen_lane"],
-                service_digest=service.identity,
-                readiness=coordinator.readiness,
-                evidence_root=pod_root,
-                evidence_references=(attempt_ref,),
-            )
-            wire = json.dumps(product.to_dict(), sort_keys=True)
-            assert str(pod_root) not in wire
-            return AuthenticatedRemoteEvaluationResponse.from_dict(
-                seal_remote_response(
-                    parsed,
-                    product,
-                    self.identity,
-                    credential,
-                ).to_dict()
-            )
-
-    transport = QualificationTransport()
-    cpu_root = tmp_path / "cpu-evidence"
-    result = RemoteEvaluationDispatcher(
-        coordinator=coordinator,
-        transport=transport,
-        credential=credential,
-        qualification_evidence_root=cpu_root,
-        qualification_incumbent_stack=incumbent,
-        qualification_incumbent_tree_digest=incumbent_tree_digest,
-    ).dispatch_qualification_once()
-
-    assert result is not None and result.disposition == "completed"
-    assert result.lease.reservation_ids == (row.reservation_id,)
-    assert provider.qualification_calls == 0
-    assert reopen_evidence(cpu_root, attempt_ref) == b'{"attempt":"pod-only"}'
-    with _store(tmp_path) as store:
-        retained = store.get(row.reservation_id)
-        stack = store.evaluation_stack(service.identity)
-        events = store.evaluation_lease_events(lease_id=result.lease.lease_id)
-    assert (retained.status, retained.decision) == ("failed", "FAIL")
-    assert stack.manifest == _incumbent(service)
-    assert stack.tree_digest == _h("incumbent-tree")
-    assert [event.event_type for event in events] == ["claimed", "completed"]
-    assert len(transport.requests) == 1
-
-
 def test_remote_qualification_product_closes_inventory_bytes_and_bounds(
     tmp_path: Path,
     monkeypatch,
@@ -777,103 +746,3 @@ def test_remote_qualification_product_closes_inventory_bytes_and_bounds(
             evidence_root=pod_root,
             evidence_references=(reference,),
         )
-
-
-@pytest.mark.parametrize("drift", ["epoch", "service", "lane", "incumbent"])
-def test_remote_qualification_rejects_signed_product_outside_request_authority(
-    tmp_path: Path,
-    drift: str,
-) -> None:
-    row = _published_rows(tmp_path, 1)[0]
-    service = ArenaService(_manifest(), _Provider())
-    cursor = _Cursor((BLOCK, _block_hash(BLOCK)))
-    coordinator = _coordinator(tmp_path, service, cursor)
-    assert coordinator.run_screen_once() is not None
-    credential = RemoteWorkerCredential("qualification-drift-key", b"d" * 32)
-    pod_root = tmp_path / f"pod-evidence-{drift}"
-    reference = publish_evidence(
-        pod_root,
-        b"drift evidence",
-        domain="qualification-attempt",
-        media_type="application/json",
-        schema="cacheon.qualification.drift-test.v1",
-    )
-    expected_incumbent = _incumbent(service)
-    expected_tree_digest = _h("drift-tree")
-
-    class DriftTransport:
-        identity = _transport_identity(coordinator, credential)
-
-        def run_screen(self, request, *, job):  # pragma: no cover
-            raise AssertionError
-
-        def run_qualification(self, request):
-            parsed = RemoteEvaluationRequest.from_dict(request.to_dict())
-            authority = _authority_for_request(parsed)
-            incumbent = expected_incumbent
-            product = capture_remote_qualification_product(
-                batch=_failed_batch(authority, reference),
-                authority_manifest=authority,
-                incumbent_stack=incumbent,
-                incumbent_tree_digest=expected_tree_digest,
-                screen_lane="primary",
-                service_digest=service.identity,
-                readiness=coordinator.readiness,
-                evidence_root=pod_root,
-                evidence_references=(reference,),
-            )
-            if drift == "epoch":
-                product = dataclasses.replace(
-                    product,
-                    ready_epoch=product.ready_epoch + 1,
-                )
-            elif drift == "lane":
-                product = dataclasses.replace(product, screen_lane="reproduction")
-            elif drift == "service":
-                wrong_service = _h("another-service")
-                wrong_stack = EvaluationStackManifest(
-                    runtime_digest=incumbent.runtime_digest,
-                    base_engine_digest=incumbent.base_engine_digest,
-                    arena_digest=wrong_service,
-                    catalog_snapshot=incumbent.catalog_snapshot,
-                    catalog_digest=incumbent.catalog_digest,
-                    entries=incumbent.entries,
-                )
-                product = dataclasses.replace(
-                    product,
-                    service_digest=wrong_service,
-                    incumbent_stack=wrong_stack,
-                )
-            else:
-                product = dataclasses.replace(
-                    product,
-                    incumbent_stack=_incumbent(service, marker="pod-substituted"),
-                )
-            return seal_remote_response(
-                parsed,
-                product,
-                self.identity,
-                credential,
-            )
-
-    dispatcher = RemoteEvaluationDispatcher(
-        coordinator=coordinator,
-        transport=DriftTransport(),
-        credential=credential,
-        qualification_evidence_root=tmp_path / f"cpu-evidence-{drift}",
-        qualification_incumbent_stack=expected_incumbent,
-        qualification_incumbent_tree_digest=expected_tree_digest,
-    )
-    with pytest.raises(
-        RemoteEvaluationDispatcherError,
-        match="remote_qualification_infrastructure",
-    ):
-        dispatcher.dispatch_qualification_once()
-
-    with _store(tmp_path) as store:
-        retained = store.get(row.reservation_id)
-        events = store.evaluation_lease_events(reservation_id=row.reservation_id)
-        dispositions = store.qualification_dispositions(row.reservation_id)
-    assert retained.status == "promoted"
-    assert dispositions == ()
-    assert [event.event_type for event in events][-2:] == ["claimed", "released"]

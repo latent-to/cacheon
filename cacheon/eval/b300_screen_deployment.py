@@ -50,7 +50,6 @@ from cacheon.eval.b300_arena_provider import (
     B300ResidentScreenFactory,
     B300ResidentScreenLifetime,
     B300ScreenDeploymentAuthorities,
-    b300_executor_role_policy_digest,
     b300_arena_provider_digest,
 )
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
@@ -89,7 +88,10 @@ from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
 from cacheon.eval.oci_resident_session import ResidentSessionPlan
 from cacheon.eval.oci_session_protocol import EngineSessionConfig, SlotAuditPolicy
-from cacheon.eval.qualification_runner import HiddenJudgeBinding
+from cacheon.eval.b300_screen_qualification_bridge import (
+    B300ScreenQualificationBridgeError,
+    derive_b300_screen_qualification,
+)
 from cacheon.eval.resident_queue import ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
@@ -100,6 +102,7 @@ from cacheon.eval.runtime_preflight import (
     HOST_RECEIPT_SCHEMA,
     RuntimePreflightReceipt,
 )
+from cacheon.eval.screen_quant_policy import slot_quant_requirements
 from cacheon.seams import SEAM_ADAPTERS
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 from cacheon.stack_manifest import (
@@ -121,7 +124,7 @@ ARCHITECTURE = "sm103"
 GPU_COUNT = 4
 TP_SIZE = 4
 DEFAULT_OUTPUT_ROOT = Path("/data/cacheon-b300/remote-worker/commissioned")
-DEFAULT_DOCKER = "/usr/bin/docker"
+_MODEL_QUANTIZATION = "modelopt_fp4"
 
 
 class B300ScreenDeploymentError(RuntimeError):
@@ -436,6 +439,7 @@ def _backend_config(
     preflight: RuntimePreflightReceipt,
     *,
     executor_id: str,
+    runtime_seed_root: Path | None = None,
 ) -> OCIBackendConfig:
     runtime = _runtime_policy(preflight)
     return OCIBackendConfig(
@@ -446,6 +450,7 @@ def _backend_config(
             seccomp_profile=_seccomp_path(),
             executor_id=executor_id,
             policy=_prebuild_policy(runtime),
+            runtime_seed_root=runtime_seed_root,
         ),
         runtime,
         NativeArtifactLimits(),
@@ -458,8 +463,14 @@ def _build_executor(
     device_policy: DeviceStatePolicy,
     *,
     executor_id: str = "b300-screen",
+    runtime_seed_root: Path | None = None,
 ) -> OCIEngineExecutor:
-    config = _backend_config(root, preflight, executor_id=executor_id)
+    config = _backend_config(
+        root,
+        preflight,
+        executor_id=executor_id,
+        runtime_seed_root=runtime_seed_root,
+    )
     manager = OCIProcessManager(
         docker_binary=config.prebuild.docker_binary,
         recovery_root=config.prebuild.recovery_root,
@@ -505,7 +516,7 @@ def _engine_config(
         "cuda_graph_backend_prefill": "disabled",
         "kv_cache_dtype": "auto",
         "page_size": 128,
-        "quantization": "modelopt_fp4",
+        "quantization": _MODEL_QUANTIZATION,
         "trust_remote_code": True,
     }
     if "arfusion" in bindings:
@@ -583,6 +594,8 @@ class _CommissionedInputs:
     resident_factory_digest: str
     resident_resource_ids: tuple[str, ...]
     declared_qualification: B300DeclaredQualificationAuthorities
+    qualification_commission: dict[str, object] | None
+    runtime_seed_root: Path | None = None
 
 
 class _CommissionedScreenPlanResolver:
@@ -1032,15 +1045,20 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
         inputs.preflight,
         inputs.device_policy,
         executor_id="b300-screen-build",
+        runtime_seed_root=inputs.runtime_seed_root,
     )
     resident_executor = _build_executor(
         inputs.root,
         inputs.preflight,
         inputs.device_policy,
         executor_id="b300-screen-resident",
+        runtime_seed_root=inputs.runtime_seed_root,
     )
     resolver = _CommissionedScreenPlanResolver(inputs, build_executor, catalog)
-    static = B300StaticScreenAdapter(catalog)
+    static = B300StaticScreenAdapter(
+        catalog,
+        required_slot_quant=slot_quant_requirements(_MODEL_QUANTIZATION),
+    )
     pipeline = B300BuildABIGraphScreenAdapter(
         catalog=catalog,
         executor=build_executor,
@@ -1383,6 +1401,15 @@ def _derive_inputs(
 
     source = _mapping(ready.get("source"), "READY source")
     runtime_root = _mapping(ready.get("runtime"), "READY runtime")
+    # Current-pod commissions bind the exact runtime seed as runtime.path.
+    # The earlier Lium bootstrap schema carried the same path in a structured
+    # runtime_seed field, so accept that representation when replaying one.
+    seed_value = ready.get("runtime_seed")
+    if seed_value is None:
+        seed_value = runtime_root.get("path")
+    elif type(seed_value) is dict:
+        seed_value = seed_value.get("path")
+    runtime_seed_root = _absolute_path(seed_value, "READY runtime seed")
     controller_distribution_digest = _digest(
         source.get("tree_digest"), "READY source tree digest"
     )
@@ -1412,11 +1439,10 @@ def _derive_inputs(
     )
     batches = _prompt_batches(prompt)
     catalog = default_target_catalog()
+    # Calibration is qualification evidence bound by the sealed deployment
+    # payload.  It cannot be part of the screen resolver identity: its context
+    # names the arena manifest, whose provider identity names this resolver.
     policy_facts = {
-        "calibration_package_sha256": authority_refs["calibration_package"]["sha256"],
-        "calibration_projection_sha256": authority_refs[
-            "calibration_projection_receipt"
-        ]["sha256"],
         "catalog_digest": catalog.digest,
         "controller_distribution_digest": controller_distribution_digest,
         "device_execution_sha256": authority_refs["device_execution"]["sha256"],
@@ -1431,7 +1457,7 @@ def _derive_inputs(
         "worker_distribution_digest": runtime.worker_distribution_digest,
     }
     plan_resolver_digest = canonical_digest(
-        "cacheon.eval.b300-screen-plan-resolver.v1", policy_facts
+        "cacheon.eval.b300-screen-plan-resolver.v2", policy_facts
     )
     evidence_policy_digest = canonical_digest(
         "cacheon.eval.b300-screen-evidence-policy.v1",
@@ -1453,55 +1479,18 @@ def _derive_inputs(
         },
     )
 
-    qualification_builder_digest = _digest(
-        authority.get("qualification_builder_digest"),
-        "qualification builder digest",
-    )
-    hidden_binding = HiddenJudgeBinding(
-        prompt_identity["hidden_corpus_commitment"],
-        prompt_identity["hidden_judge_digest"],
-        prompt_identity["hidden_task_policy_digest"],
-    )
-    qualification_policy_digest = canonical_digest(
-        "cacheon.eval.b300-declared-qualification-policy.v1",
-        {
-            "builder_digest": qualification_builder_digest,
-            "calibration_package_sha256": authority_refs[
-                "calibration_package"
-            ]["sha256"],
-            "calibration_projection_sha256": authority_refs[
-                "calibration_projection_receipt"
-            ]["sha256"],
-            "hidden_judge_binding_digest": hidden_binding.digest,
-            "prompt_authority_sha256": prompt_identity["sha256"],
-        },
-    )
-    candidate_config = _backend_config(
-        root, preflight, executor_id="b300-qualification-candidate"
-    )
-    baseline_config = _backend_config(
-        root, preflight, executor_id="b300-qualification-resident"
-    )
-    declared = B300DeclaredQualificationAuthorities(
-        qualification_policy_digest=qualification_policy_digest,
-        qualification_builder_digest=qualification_builder_digest,
-        candidate_executor_policy_digest=b300_executor_role_policy_digest(
-            candidate_config, role="candidate"
-        ),
-        resident_baseline_executor_policy_digest=b300_executor_role_policy_digest(
-            baseline_config, role="resident_baseline"
-        ),
-        lane_pair=qualification_lane_pair,
-        entropy_provider_digest=canonical_digest(
-            "cacheon.eval.b300-declared-entropy-provider.v1",
-            {"selection_policy_digest": prompt_identity["selection_policy_digest"]},
-        ),
-        hidden_judge_binding_digest=hidden_binding.digest,
-        deadline_policy_digest=canonical_digest(
-            "cacheon.eval.b300-declared-deadline-policy.v1",
-            {"maximum_seconds": 14_400, "source": "lease-bounded-monotonic"},
-        ),
-    )
+    try:
+        declared, qualification_commission = derive_b300_screen_qualification(
+            authority=authority,
+            prompt_identity=prompt_identity,
+            catalog=catalog,
+            lane_pair=qualification_lane_pair,
+            backend_config_factory=lambda executor_id: _backend_config(
+                root, preflight, executor_id=executor_id
+            ),
+        )
+    except B300ScreenQualificationBridgeError as exc:
+        raise B300ScreenDeploymentError(str(exc)) from None
     return _CommissionedInputs(
         root=root,
         ready=ready,
@@ -1523,6 +1512,8 @@ def _derive_inputs(
         resident_factory_digest=resident_factory_digest,
         resident_resource_ids=("b300-resident-screen-lane",),
         declared_qualification=declared,
+        qualification_commission=qualification_commission,
+        runtime_seed_root=runtime_seed_root,
     )
 
 
@@ -1631,10 +1622,6 @@ def _authority_inputs(
     )
 
 
-def _declared_to_dict(value: B300DeclaredQualificationAuthorities) -> dict[str, object]:
-    return value.to_dict()
-
-
 def _deployment_payload(inputs: _CommissionedInputs) -> dict[str, object]:
     ready_lane = _mapping(inputs.ready.get("lane"), "READY lane")
     return {
@@ -1642,9 +1629,7 @@ def _deployment_payload(inputs: _CommissionedInputs) -> dict[str, object]:
             key: dict(value) for key, value in sorted(inputs.authority_refs.items())
         },
         "controller_distribution_digest": inputs.controller_distribution_digest,
-        "declared_qualification": _declared_to_dict(
-            inputs.declared_qualification
-        ),
+        "declared_qualification": inputs.declared_qualification.to_dict(),
         "device_configuration_digest": (
             inputs.device_policy.configuration_sha256
         ),
@@ -1844,16 +1829,17 @@ def _canonical_artifact(path: Path, field: str) -> dict[str, object]:
     return value
 
 
-def build_commissioned_b300_screen_worker(
+def replay_commissioned_screen_composition(
     registration: dict[str, object],
     ready_receipt: dict[str, object],
-) -> B300MainnetWorker:
-    """Reopen the fixed commissioned artifacts and build one screen worker.
+) -> tuple[_CommissionedInputs, _Composition, WorkerReadiness]:
+    """Replay the fixed commissioned artifacts into one live composition.
 
     ``registration`` and ``ready_receipt`` come from the fixed authenticated
     transport codec.  They select no local paths: this function reopens only
     the three fixed commissioned filenames and the SHA-bound authority refs
-    inside the commissioned deployment artifact.
+    inside the commissioned deployment artifact.  The caller owns the returned
+    composition and must close it.
     """
 
     if type(registration) is not dict or type(ready_receipt) is not dict:
@@ -1940,7 +1926,38 @@ def build_commissioned_b300_screen_worker(
             raise B300ScreenDeploymentError(
                 "registration differs from commissioned service, READY, or TP4 lane"
             )
-        worker = _CommissionedB300ScreenWorker(composition, readiness)
+        result = (inputs, composition, readiness)
+        composition = None
+        return result
+    finally:
+        if composition is not None:
+            composition.close()
+
+
+def commissioned_screen_worker_from_composition(
+    composition: _Composition,
+    readiness: WorkerReadiness,
+) -> B300MainnetWorker:
+    """Adopt one replayed composition as the commissioned screen worker."""
+
+    if type(composition) is not _Composition or type(readiness) is not WorkerReadiness:
+        raise B300ScreenDeploymentError(
+            "commissioned worker adoption inputs are not exact"
+        )
+    return _CommissionedB300ScreenWorker(composition, readiness)
+
+
+def build_commissioned_b300_screen_worker(
+    registration: dict[str, object],
+    ready_receipt: dict[str, object],
+) -> B300MainnetWorker:
+    """Reopen the fixed commissioned artifacts and build one screen worker."""
+
+    _inputs, composition, readiness = replay_commissioned_screen_composition(
+        registration, ready_receipt
+    )
+    try:
+        worker = commissioned_screen_worker_from_composition(composition, readiness)
         composition = None
         return worker
     finally:
@@ -1990,8 +2007,10 @@ __all__ = [
     "MATERIALIZATION_SCHEMA",
     "READINESS_FILE",
     "build_commissioned_b300_screen_worker",
+    "commissioned_screen_worker_from_composition",
     "main",
     "materialize_b300_screen_identities",
+    "replay_commissioned_screen_composition",
 ]
 
 

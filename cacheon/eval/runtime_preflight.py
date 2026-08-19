@@ -65,9 +65,12 @@ _PACKAGE_NAMES = (
     "triton",
 )
 
+# `index` instead of direct field access: Docker 29 renders image Config as a
+# plain map and errors on absent keys (e.g. Volumes when the Dockerfile never
+# declared one); `index` yields null there, and older Docker behaves the same.
 _INSPECT_FORMAT = (
     '--format={"Id":{{json .Id}},"RepoDigests":{{json .RepoDigests}},'
-    '"Volumes":{{json .Config.Volumes}},"Os":{{json .Os}},'
+    '"Volumes":{{json (index .Config "Volumes")}},"Os":{{json .Os}},'
     '"Architecture":{{json .Architecture}}}'
 )
 
@@ -464,7 +467,7 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
-def _bounded_argv_runner(
+def bounded_argv_runner(
     argv: tuple[str, ...],
     *,
     timeout_s: float,
@@ -527,6 +530,9 @@ def _bounded_argv_runner(
         stdout=bytes(buffers["stdout"]),
         stderr=bytes(buffers["stderr"]),
     )
+
+
+_bounded_argv_runner = bounded_argv_runner
 
 
 def _strict_json(raw: bytes, *, max_bytes: int, label: str) -> object:
@@ -763,7 +769,7 @@ def _platform_digest(
 def _run_runtime_preflight(
     config: RuntimePreflightConfig,
     *,
-    runner: Runner = _bounded_argv_runner,
+    runner: Runner = bounded_argv_runner,
     clock: Callable[[], float] = time.monotonic,
     process_manager: OCIProcessManager | None = None,
 ) -> RuntimePreflightReceipt:
@@ -1046,7 +1052,7 @@ def run_runtime_preflight(
     config: RuntimePreflightConfig,
     *,
     process_manager: OCIProcessManager | None = None,
-    runner: Runner = _bounded_argv_runner,
+    runner: Runner = bounded_argv_runner,
     clock: Callable[[], float] = time.monotonic,
 ) -> RuntimePreflightReceipt:
     """Run the production preflight under a durable OCI process lease."""
@@ -1069,7 +1075,7 @@ def _run_runtime_preflight_unleased_for_test(
     clock: Callable[[], float] = time.monotonic,
 ) -> RuntimePreflightReceipt:
     """Exercise receipt validation with a scripted runner; never a production API."""
-    if runner is _bounded_argv_runner:
+    if runner is bounded_argv_runner:
         raise RuntimePreflightError("unleased test preflight requires a scripted runner")
     return _run_runtime_preflight(config, runner=runner, clock=clock)
 
@@ -1084,5 +1090,6 @@ __all__ = [
     "RuntimePreflightReceipt",
     "WORKER_DIGEST_SCHEMA",
     "WORKER_DISTRIBUTION",
+    "bounded_argv_runner",
     "run_runtime_preflight",
 ]

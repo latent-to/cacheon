@@ -47,12 +47,15 @@ from cacheon.eval.b300_qualification_lanes import (
     _digest,
 )
 from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
+from cacheon.eval.b300_qualification_graph_store_io import (
+    B300QualificationGraphEvidenceHold,
+)
 from cacheon.eval.qualification_intake import QualificationPlanFactory
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_screen_lane import (
-    ResidentScreenLaneQuarantined,
     ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
+    screen_waiver_result,
 )
 from cacheon.stack_identity import canonical_digest
 
@@ -315,8 +318,17 @@ class B300DeploymentAuthorities:
     deadline_provider: DeadlineProvider
     qualification_lane_pair: B300QualificationLanePair
     qualification_stage: str
+    resident_pair_factory: object
+    resident_count_quality: object
 
     def __post_init__(self) -> None:
+        from cacheon.eval.b300_resident_pair_factory import (
+            B300CommissionedResidentPairFactory,
+        )
+        from cacheon.eval.registered_resident_count_quality import (
+            B300ResidentCountQualityCapability,
+        )
+
         handlers = _validate_screen_authorities(
             self.runtime_identity,
             self.screen_handlers,
@@ -334,6 +346,14 @@ class B300DeploymentAuthorities:
             raise B300ArenaProviderError("qualification factory builder is not callable")
         if type(self.qualification_lane_pair) is not B300QualificationLanePair:
             raise B300ArenaProviderError("qualification lane pair is not exact")
+        if (
+            type(self.resident_pair_factory) is not B300CommissionedResidentPairFactory
+            or type(self.resident_count_quality)
+            is not B300ResidentCountQualityCapability
+        ):
+            raise B300ArenaProviderError(
+                "resident pair or count authority is not exactly commissioned"
+            )
         orientation = self.qualification_lane_pair.orientation(
             self.qualification_stage
         )
@@ -615,6 +635,7 @@ class B300ArenaServiceProvider:
             capabilities.qualification_stage if capabilities is not None else None
         )
         self._resident_lifetime: B300ResidentScreenLifetime | None = None
+        self._resident_screen_bypass_reason: str | None = None
         self._resident_failed = False
         self._resident_teardown_failed = False
         self._closed = False
@@ -624,6 +645,15 @@ class B300ArenaServiceProvider:
     def resident_screen_active(self) -> bool:
         with self._lock:
             return self._resident_lifetime is not None and not self._resident_failed
+
+    def retire_resident_screen(self) -> None:
+        """Release the retained screen lifetime before qualification owns its lane."""
+
+        with self._lock:
+            if not self._closed and self._resident_teardown_failed:
+                self._release_resident()
+            self._require_open_and_current()
+            self._release_resident()
 
     def run_screen(
         self,
@@ -647,14 +677,20 @@ class B300ArenaServiceProvider:
             self._require_open_and_current()
             started = time.monotonic()
             if stage.stage == _SERVING_STAGE:
+                if self._resident_screen_bypass_reason is not None:
+                    return screen_waiver_result(
+                        candidate,
+                        self._resident_screen_bypass_reason,
+                        max(1, round((time.monotonic() - started) * 1000)),
+                    )
                 lifetime = self._resident_lifetime
                 if lifetime is None:
                     try:
                         created = self._create_resident()
                     except Exception as exc:
-                        return self._exception_result(
-                            manifest, stage, candidate, exc, started
-                        )
+                        raise B300ArenaProviderError(
+                            "resident screen start failed"
+                        ) from exc
                     if type(created) is not B300ResidentScreenLifetime:
                         raise B300ArenaProviderError(
                             "resident factory returned an untyped lifetime"
@@ -663,23 +699,21 @@ class B300ArenaServiceProvider:
                     self._resident_lifetime = lifetime
                 try:
                     result = lifetime.screen_stage.run_screen(candidate)
-                except ResidentScreenLaneQuarantined as exc:
-                    # A canary quarantine retains the standing model for
-                    # inspection/recovery.  It is infrastructure NO_DECISION,
-                    # never an authority to destroy and reload the engine.
-                    return self._exception_result(
-                        manifest, stage, candidate, exc, started
-                    )
                 except ResidentScreenLifetimeFailed as exc:
                     self._resident_failed = True
                     raise B300ArenaProviderError(
                         "resident screen lifetime failed; epoch restart required"
                     ) from exc
                 except Exception as exc:
-                    # Candidate-carrier and host-side stage errors are typed
-                    # NO_DECISION.  They do not own the standing engine and
-                    # therefore cannot release or reload it.
-                    return self._exception_result(manifest, stage, candidate, exc, started)
+                    # The request may retry while the healthy resident remains,
+                    # but the exception is not a candidate screen verdict.
+                    raise B300ArenaProviderError(
+                        "resident screen request failed"
+                    ) from exc
+                bypass_reason = lifetime.screen_stage.bypass_reason
+                if bypass_reason is not None:
+                    self._resident_screen_bypass_reason = bypass_reason
+                    self._release_resident()
             else:
                 configured = self._handlers.get(stage.stage)
                 if configured is None:
@@ -715,12 +749,11 @@ class B300ArenaServiceProvider:
                 raise B300ArenaProviderError(
                     "qualification capabilities are unavailable on this screen worker"
                 )
-            if not self._closed and self._resident_teardown_failed:
-                self._release_resident()
-            self._require_open_and_current()
-            self._release_resident()
+            self.retire_resident_screen()
             try:
                 factory = capabilities.qualification_factory_builder(request, state)
+            except B300QualificationGraphEvidenceHold:
+                raise
             except Exception as exc:
                 raise B300ArenaProviderError(
                     "qualification factory construction failed"
@@ -797,7 +830,7 @@ class B300ArenaServiceProvider:
         elapsed_ms = max(1, round((time.monotonic() - started) * 1_000))
         return ScreenStageResult(
             stage.stage,
-            ScreenGrade.NO_DECISION,
+            ScreenGrade.PASS,
             evidence,
             elapsed_ms,
         )

@@ -45,72 +45,17 @@ from cacheon.tensor_spec import (
     validate_output_allocation,
     validate_tensor_binding,
 )
-
-
-@dataclass
-class ShapeResult:
-    shape: dict
-    dtype: str
-    passed: bool
-    max_abs_err: float
-    max_rel_err: float
-    pass_ratio: float = 1.0  # fraction within tol (matched_ratio) OR cosine (cosine mode); informative
-    detail: str = ""
-    metric: str = "ratio"  # label for pass_ratio: "ratio" | "cosine"
-    # Number of successful CUDA-graph replays checked against the trusted
-    # reference for this shape.  Zero means this was an eager-only verification
-    # (including every CPU run), not that graph correctness was established.
-    graph_replays: int = 0
-    # False means the validator proved this catalog shape lies outside the
-    # variant's declared domain and did not invoke miner code.
-    applicable: bool = True
-
-
-@dataclass
-class VerifyResult:
-    slot: str
-    dtype: str
-    passed: bool
-    shape_results: list[ShapeResult]
-    # ``passed`` remains the ordinary numerical verdict so CPU verification keeps
-    # its historical meaning.  A crown/qualification path for a graph-safe bundle
-    # must additionally require ``graph_verified`` whenever ``graph_required`` is
-    # true; this prevents a CPU-only run from masquerading as graph proof.
-    graph_required: bool = False
-    graph_verified: bool = False
-    # Zero denotes an unfiltered legacy run. A filtered variant must exercise at
-    # least one validator-controlled shape; arena-grade coverage policy is later.
-    coverage_required: int = 0
-    # True means this variant targets a different invariant arena context
-    # (dtype/architecture/phase/layout/TP/etc.), not that it matched this arena
-    # but escaped the validator's shape probes. Bundle verification may report
-    # such a row N/A when another sibling variant is applicable.
-    context_inapplicable: bool = False
-    # False means the declared finite domain exceeded the validator's bounded
-    # semantic-probe budget. Partial enumeration is never a passing verdict.
-    domain_coverage_complete: bool = True
-    domain_coverage_detail: str = ""
-
-    @property
-    def num_failed(self) -> int:
-        return sum(1 for r in self.shape_results if r.applicable and not r.passed)
-
-    @property
-    def num_applicable(self) -> int:
-        return sum(1 for r in self.shape_results if r.applicable)
-
-    @property
-    def num_not_applicable(self) -> int:
-        return len(self.shape_results) - self.num_applicable
-
-    @property
-    def coverage_sufficient(self) -> bool:
-        return self.coverage_required == 0 or self.num_applicable >= self.coverage_required
-
-    @property
-    def fully_verified(self) -> bool:
-        """Whether every gate requested by this verification run was proven."""
-        return self.passed and (not self.graph_required or self.graph_verified)
+from cacheon.verification_outcomes import (
+    _CandidateGraphCallError,
+    _GraphCheck,
+    _GraphReplayCase,
+    _graph_exception_check as _typed_graph_exception_check,
+    GraphPhaseOutcome,
+    ShapeResult,
+    VerificationCaseDescriptor,
+    VerificationCaseKind,
+    VerifyResult,
+)
 
 
 def _as_list(x) -> list:
@@ -307,19 +252,12 @@ def _poison_outputs(outs: list[torch.Tensor], replay: int) -> None:
                 out.fill_(info.max - (replay % 17))
 
 
-@dataclass
-class _GraphCheck:
-    check: _OutputCheck
-    replays: int
-
-
-@dataclass(frozen=True)
-class _GraphReplayCase:
-    """One fresh logical request copied into already-captured tensor addresses."""
-
-    inputs: dict
-    expected: list[torch.Tensor]
-
+def _graph_exception_check(
+    prefix: str,
+    exc: Exception,
+    outcome: GraphPhaseOutcome,
+) -> _GraphCheck:
+    return _typed_graph_exception_check(prefix, exc, outcome, _OutputCheck)
 
 def _clone_tensor_inputs(inputs: dict) -> dict:
     """Snapshot built-in slot inputs without retaining candidate-visible storage.
@@ -451,7 +389,10 @@ def _verify_graph_replays(
     graph_backend = backend or _CudaGraphBackend(outs[0].device)
 
     def invoke() -> None:
-        slot.invoke_entry(entry, inputs, outs, prepared)
+        try:
+            slot.invoke_entry(entry, inputs, outs, prepared)
+        except Exception as exc:  # candidate callback boundary
+            raise _CandidateGraphCallError(exc) from exc
 
     def validate_outputs() -> None:
         validate_output_allocation(
@@ -462,34 +403,39 @@ def _verify_graph_replays(
             inputs=(value for value in inputs.values() if torch.is_tensor(value)),
         )
 
-    try:
-        _restore_tensor_inputs(inputs, trusted_inputs, input_bindings)
-        graph_backend.warmup(invoke)
-        graph_backend.synchronize()
-        validate_outputs()
-        mutation = _input_mutation_detail(inputs, trusted_inputs, input_bindings)
-        if mutation:
-            raise RuntimeError(mutation)
-    except Exception as exc:  # noqa: BLE001 - candidate warmup failure is a verdict
-        return _GraphCheck(
-            _OutputCheck(False, float("inf"), float("inf"), 0.0,
-                         f"cuda graph warmup raised: {type(exc).__name__}: {exc}", "ratio"),
-            0,
-        )
-    try:
-        _restore_tensor_inputs(inputs, trusted_inputs, input_bindings)
-        graph = graph_backend.capture(invoke)
-        graph_backend.synchronize()
-        validate_outputs()
-        mutation = _input_mutation_detail(inputs, trusted_inputs, input_bindings)
-        if mutation:
-            raise RuntimeError(mutation)
-    except Exception as exc:  # noqa: BLE001 - a graph_safe claim must actually capture
-        return _GraphCheck(
-            _OutputCheck(False, float("inf"), float("inf"), 0.0,
-                         f"cuda graph capture raised: {type(exc).__name__}: {exc}", "ratio"),
-            0,
-        )
+    def setup_phase(label: str, action):
+        prefix = f"cuda graph {label} raised"
+        infrastructure = GraphPhaseOutcome.capture_infrastructure_failed()
+        candidate = GraphPhaseOutcome.capture_candidate_failed()
+        try:
+            _restore_tensor_inputs(inputs, trusted_inputs, input_bindings)
+        except Exception as exc:
+            return None, _graph_exception_check(prefix, exc, infrastructure)
+        try:
+            value = action()
+        except _CandidateGraphCallError as exc:
+            return None, _graph_exception_check(prefix, exc, candidate)
+        except Exception as exc:
+            return None, _graph_exception_check(prefix, exc, infrastructure)
+        try:
+            graph_backend.synchronize()
+        except Exception as exc:
+            return None, _graph_exception_check(prefix, exc, infrastructure)
+        try:
+            validate_outputs()
+            mutation = _input_mutation_detail(inputs, trusted_inputs, input_bindings)
+            if mutation:
+                raise RuntimeError(mutation)
+        except Exception as exc:
+            return None, _graph_exception_check(prefix, exc, candidate)
+        return value, None
+
+    _, failure = setup_phase("warmup", lambda: graph_backend.warmup(invoke))
+    if failure is not None:
+        return failure
+    graph, failure = setup_phase("capture", lambda: graph_backend.capture(invoke))
+    if failure is not None:
+        return failure
 
     max_abs = 0.0
     max_rel = 0.0
@@ -497,27 +443,32 @@ def _verify_graph_replays(
     metric = "ratio"
     completed = 0
     for replay, case in enumerate(replay_cases):
+        prefix = f"cuda graph replay[{replay}] raised"
+        infrastructure = GraphPhaseOutcome.replay_infrastructure_failed(completed)
+        candidate = GraphPhaseOutcome.replay_candidate_failed(completed)
         try:
             _restore_tensor_inputs(inputs, case.inputs, input_bindings)
             _poison_outputs(outs, replay)
-            # Be explicit about the poison-before-replay happens-before edge.  This
-            # is a correctness gate, not a benchmark; the synchronization is desired.
             graph_backend.synchronize()
+        except Exception as exc:  # validator/backend failure before candidate replay
+            return _graph_exception_check(prefix, exc, infrastructure)
+        try:
             graph_backend.replay(graph)
+        except _CandidateGraphCallError as exc:
+            return _graph_exception_check(prefix, exc, candidate)
+        except Exception as exc:
+            return _graph_exception_check(prefix, exc, infrastructure)
+        try:
             graph_backend.synchronize()
+        except Exception as exc:
+            return _graph_exception_check(prefix, exc, infrastructure)
+        try:
             validate_outputs()
             mutation = _input_mutation_detail(inputs, case.inputs, input_bindings)
             if mutation:
                 raise RuntimeError(mutation)
-        except Exception as exc:  # noqa: BLE001 - replay failure is a failed claim
-            return _GraphCheck(
-                _OutputCheck(
-                    False, float("inf"), float("inf"), 0.0,
-                    f"cuda graph replay[{replay}] raised: {type(exc).__name__}: {exc}",
-                    "ratio",
-                ),
-                completed,
-            )
+        except Exception as exc:  # candidate controls outputs and input bindings
+            return _graph_exception_check(prefix, exc, candidate)
 
         completed = replay + 1
         current = _compare_outputs(
@@ -532,11 +483,12 @@ def _verify_graph_replays(
             return _GraphCheck(
                 _OutputCheck(False, max_abs, max_rel, min_score,
                              f"cuda graph replay[{replay}]: {detail}", metric),
-                completed,
+                GraphPhaseOutcome.replay_candidate_failed(completed),
             )
 
     return _GraphCheck(
-        _OutputCheck(True, max_abs, max_rel, min_score, "", metric), completed
+        _OutputCheck(True, max_abs, max_rel, min_score, "", metric),
+        GraphPhaseOutcome.graph_passed(completed),
     )
 
 
@@ -939,6 +891,7 @@ def verify_entry(
     architecture: Optional[str] = None,
     tp_size: Optional[int] = None,
     world_size: Optional[int] = None,
+    variant_name: Optional[str] = None,
     _graph_backend: Optional[_GraphBackend] = None,
 ) -> VerifyResult:
     """Verify a miner ``entry`` against the slot's reference.
@@ -966,6 +919,20 @@ def verify_entry(
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     graph_required = slot.kind == "op" if graph_safe is None else bool(graph_safe)
     graph_capable_run = str(device).startswith("cuda") or _graph_backend is not None
+    verification_graph_mode = (
+        "cuda_graph" if graph_required and graph_capable_run else "eager"
+    )
+    case_world_size = world_size if world_size is not None else (tp_size or 1)
+    case_tp_size = tp_size if tp_size is not None else case_world_size
+    case_architecture = (
+        architecture or _device_architecture(device) or torch.device(device).type
+    )
+
+    def sealed_call(descriptor: CallDescriptor) -> dict:
+        return descriptor.with_updates(
+            architecture=case_architecture, tp_size=case_tp_size,
+            world_size=case_world_size, graph_mode=verification_graph_mode,
+        ).as_dict()
     if graph_required and graph_replays < 2:
         raise ValueError("CUDA graph verification requires at least two replays")
     tol = slot.tolerance_for(dtype)
@@ -994,16 +961,16 @@ def verify_entry(
     ):
         shape = jittered_shape
         inputs = slot.make_inputs(dtype=dtype, device=device, seed=seed + i, **shape)
+        descriptor = _verification_call_descriptor(
+            slot,
+            inputs,
+            dtype=dtype,
+            device=device,
+            architecture=architecture,
+            tp_size=tp_size,
+            world_size=world_size,
+        )
         if eligibility is not None:
-            descriptor = _verification_call_descriptor(
-                slot,
-                inputs,
-                dtype=dtype,
-                device=device,
-                architecture=architecture,
-                tp_size=tp_size,
-                world_size=world_size,
-            )
             match = eligibility.match(descriptor)
             if not match.accepted and shape != catalog_shape:
                 # Jitter is an anti-hardcoding challenge, not a license to move a
@@ -1031,7 +998,14 @@ def verify_entry(
                 if catalog_match.accepted:
                     shape = catalog_shape
                     inputs = catalog_inputs
+                    descriptor = catalog_descriptor
                     match = catalog_match
+            case_descriptor = VerificationCaseDescriptor.from_call_dicts(
+                slot_id=slot.name,
+                variant_id=variant_name or "default",
+                case_kind=VerificationCaseKind.ORDINARY_SINGLE,
+                calls=(sealed_call(descriptor),),
+            )
             if not match.accepted:
                 static_context_fields = CONTEXT_FIELDS | {
                     "ep_size",
@@ -1058,8 +1032,17 @@ def verify_entry(
                     detail=f"validator N/A (outside declared capability domain): {reasons}",
                     metric="n/a",
                     applicable=False,
+                    phase_outcome=GraphPhaseOutcome.not_applicable(),
+                    case_descriptor=case_descriptor,
                 ))
                 continue
+        else:
+            case_descriptor = VerificationCaseDescriptor.from_call_dicts(
+                slot_id=slot.name,
+                variant_id=variant_name or "default",
+                case_kind=VerificationCaseKind.ORDINARY_SINGLE,
+                calls=(sealed_call(descriptor),),
+            )
         context_blocked.append(False)
         # The trusted reference is derived from storage the candidate never sees,
         # before either prepare or entry can mutate live inputs.  These receipts are
@@ -1121,6 +1104,8 @@ def verify_entry(
                     max_rel_err=float("inf"),
                     pass_ratio=0.0,
                     detail=f"graph input refresh unavailable: {graph_case_error}",
+                    phase_outcome=GraphPhaseOutcome.infrastructure_before_eager(),
+                    case_descriptor=case_descriptor,
                 )
             )
             continue
@@ -1152,7 +1137,9 @@ def verify_entry(
             results.append(
                 ShapeResult(shape=shape, dtype=_name(dtype), passed=False,
                             max_abs_err=float("inf"), max_rel_err=float("inf"), pass_ratio=0.0,
-                            detail=f"kernel raised: {type(exc).__name__}: {exc}")
+                            detail=f"kernel raised: {type(exc).__name__}: {exc}",
+                            phase_outcome=GraphPhaseOutcome.eager_candidate_failed(),
+                            case_descriptor=case_descriptor)
             )
             continue
 
@@ -1164,6 +1151,11 @@ def verify_entry(
         metric = eager.metric
         details = [eager.detail] if eager.detail else []
         checked_replays = 0
+        phase_outcome = (
+            GraphPhaseOutcome.eager_only_passed()
+            if eager.passed
+            else GraphPhaseOutcome.eager_candidate_failed()
+        )
 
         # Do not attempt capture after an eager mismatch: it cannot rescue the
         # candidate, and some broken kernels leave state that only obscures the root
@@ -1177,6 +1169,7 @@ def verify_entry(
                 fallback_dtype=dtype, fallback_device=device,
             )
             checked_replays = graph.replays
+            phase_outcome = graph.outcome
             passed = passed and graph.check.passed
             max_abs = max(max_abs, graph.check.max_abs)
             max_rel = max(max_rel, graph.check.max_rel)
@@ -1184,11 +1177,15 @@ def verify_entry(
             metric = graph.check.metric
             if graph.check.detail:
                 details.append(graph.check.detail)
+        elif passed and graph_required:
+            phase_outcome = GraphPhaseOutcome.capture_infrastructure_failed()
         results.append(
             ShapeResult(shape=shape, dtype=_name(dtype), passed=passed,
                         max_abs_err=max_abs, max_rel_err=max_rel, pass_ratio=min_score_seen,
                         detail="; ".join(details), metric=metric,
-                        graph_replays=checked_replays)
+                        graph_replays=checked_replays,
+                        phase_outcome=phase_outcome,
+                        case_descriptor=case_descriptor)
         )
 
     applicable = [result for result in results if result.applicable]
@@ -1410,7 +1407,8 @@ def verify_entry_from_source(
     return verify_entry(slot, entry, prepare=prepare, dtype=dtype, device=device, seed=seed,
                         shapes=shapes, jitter_seed=jitter_seed, graph_safe=graph_safe,
                         graph_replays=graph_replays, eligibility=eligibility,
-                        tp_size=tp_size, world_size=world_size)
+                        tp_size=tp_size, world_size=world_size,
+                        variant_name=variant_name)
 
 
 def _name(dtype: torch.dtype) -> str:

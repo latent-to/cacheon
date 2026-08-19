@@ -23,6 +23,7 @@ from cacheon.registry import Eligibility  # noqa: E402
 from cacheon.verify_collective import (  # noqa: E402
     _MAX_VERDICT_BYTES,
     _RankVerdict,
+    _VERDICT_VERSION,
     _direct_aot_collective_callables,
     _init_rank_process_group,
     _rank_barrier,
@@ -31,6 +32,13 @@ from cacheon.verify_collective import (  # noqa: E402
     _write_rank_verdict,
     CollectiveVerdictError,
     verify_collective,
+)
+from cacheon.verification_outcomes import (  # noqa: E402
+    GraphPhaseOutcome,
+    PhaseDisposition,
+    VerificationCaseDescriptor,
+    VerificationCaseKind,
+    conservative_phase_aggregate,
 )
 
 ALLREDUCE_BUNDLE = "examples/miner_allreduce_torch/kernels/all_reduce.py"
@@ -138,6 +146,9 @@ def test_allreduce_faithful_passes_gloo_cpu():
     res = verify_collective(slot, ALLREDUCE_BUNDLE, "all_reduce",
                             world_size=2, backend="gloo", device="cpu", seed=0)
     assert res.passed, "\n".join(f"{r.shape}: {r.detail}" for r in res.shape_results)
+    assert all(row.phase_outcome == GraphPhaseOutcome.eager_only_passed()
+               for row in res.shape_results)
+    assert all(row.case_descriptor is not None for row in res.shape_results)
 
 
 def test_collective_cpu_verify_does_not_claim_graph_proof():
@@ -147,6 +158,12 @@ def test_collective_cpu_verify_does_not_claim_graph_proof():
     assert not res.graph_verified
     assert not res.fully_verified
     assert all(result.graph_replays == 0 for result in res.shape_results)
+    assert all(
+        result.phase_outcome.capture is PhaseDisposition.INFRASTRUCTURE_FAILED
+        and not result.phase_outcome.observation_complete
+        and not result.phase_outcome.failure_is_candidate_attributable
+        for result in res.shape_results
+    )
 
 
 def test_non_reducing_kernel_fails_gloo_cpu(tmp_path):
@@ -230,6 +247,14 @@ def test_collective_dtype_and_topology_are_truthful():
     assert result.passed, result.shape_results[0].detail
     assert result.dtype == "float64"
     assert all(row.dtype == "float64" for row in result.shape_results)
+    case = result.shape_results[0].case_descriptor
+    assert case is not None
+    assert case.case_kind is VerificationCaseKind.COLLECTIVE_SINGLE
+    call = dict(case.calls[0])
+    assert call["dtype"] == "float64"
+    assert call["architecture"] == "cpu"
+    assert call["tp_size"] == 2 and call["world_size"] == 2
+    assert call["graph_mode"] == "eager"
 
     with pytest.raises(ValueError, match="world_size >= 2"):
         _verify(world_size=1)
@@ -237,6 +262,46 @@ def test_collective_dtype_and_topology_are_truthful():
         _verify(tp_size=4)
     with pytest.raises(ValueError, match="floating torch dtype"):
         _verify(dtype_name="int32")
+
+
+def test_collective_temporal_descriptor_commits_explicit_sequence_order():
+    result = _verify(
+        shapes=[
+            {"num_tokens": 2, "hidden": 8},
+            {"num_tokens": 5, "hidden": 8},
+        ]
+    )
+    temporal = [
+        row.case_descriptor
+        for row in result.shape_results
+        if row.case_descriptor is not None
+        and row.case_descriptor.case_kind
+        is VerificationCaseKind.COLLECTIVE_TEMPORAL_EAGER
+    ]
+    assert len(temporal) == 1
+    case = temporal[0]
+    assert len(case.calls) > 2
+    observed_order = tuple(dict(call)["num_tokens"] for call in case.calls)
+    assert observed_order[:3] == (5, 2, 5)
+    rotated_calls = case.calls[1:] + case.calls[:1]
+    rebound = VerificationCaseDescriptor(
+        case.slot_id,
+        case.variant_id,
+        case.case_kind,
+        rotated_calls,
+    )
+    assert rebound.digest != case.digest
+    mismatched = list(case.calls)
+    changed = dict(mismatched[1])
+    changed["architecture"] = "different-architecture"
+    mismatched[1] = tuple(sorted(changed.items()))
+    with pytest.raises(ValueError, match="disagree on sealed execution context"):
+        VerificationCaseDescriptor(
+            case.slot_id,
+            case.variant_id,
+            case.case_kind,
+            tuple(mismatched),
+        )
 
 
 def test_collective_eligibility_routes_off_context_to_na_before_import(tmp_path):
@@ -298,6 +363,10 @@ def test_collective_verify_watchdog_terminates_hung_ranks(tmp_path):
 
     assert not result.passed
     assert "timed out" in result.shape_results[0].detail
+    outcome = result.shape_results[0].phase_outcome
+    assert outcome.eager is PhaseDisposition.INFRASTRUCTURE_FAILED
+    assert not outcome.observation_complete
+    assert not outcome.failure_is_candidate_attributable
     assert time.monotonic() - started < 20
 
 
@@ -335,9 +404,12 @@ def test_collective_valid_json_cannot_hide_nonzero_worker_exit(tmp_path):
     assert "worker" in result.shape_results[0].detail
 
 
-def _valid_verdict(*, rank=0, world_size=2):
+def _valid_verdict(
+    *, rank=0, world_size=2, phase_outcome=None, version=_VERDICT_VERSION
+):
+    outcome = phase_outcome or GraphPhaseOutcome.graph_passed(3)
     return _RankVerdict(
-        version=1,
+        version=version,
         rank=rank,
         world_size=world_size,
         passed=True,
@@ -346,7 +418,8 @@ def _valid_verdict(*, rank=0, world_size=2):
         detail="",
         metric="ratio",
         error=None,
-        graph_replays=3,
+        graph_replays=outcome.replay_count,
+        phase_outcome=outcome,
     )
 
 
@@ -369,6 +442,111 @@ def test_collective_rank_verdict_round_trip(tmp_path):
     ) == expected
 
 
+def test_collective_rank_verdict_rejects_legacy_and_mixed_wire(tmp_path):
+    new_path = tmp_path / "rank0.json"
+    old_path = tmp_path / "rank1.json"
+    new_identity = _precreated(new_path)
+    old_identity = _precreated(old_path)
+    _write_rank_verdict(new_path, _valid_verdict(rank=0), new_identity)
+    legacy = _valid_verdict(rank=1, version=1)
+    _write_rank_verdict(old_path, legacy, old_identity)
+
+    assert _read_rank_verdict(
+        new_path,
+        expected_rank=0,
+        expected_world_size=2,
+        expected_identity=new_identity,
+    ).version == _VERDICT_VERSION
+    with pytest.raises(CollectiveVerdictError):
+        _read_rank_verdict(
+            old_path,
+            expected_rank=1,
+            expected_world_size=2,
+            expected_identity=old_identity,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda phase: {**phase, "capture": "UNKNOWN"},
+        lambda phase: {**phase, "replay_count": 2},
+        lambda phase: {**phase, "replay": "CANDIDATE_FAILED"},
+        lambda phase: {key: value for key, value in phase.items() if key != "eager"},
+        lambda phase: {**phase, "observation_complete": 1},
+    ],
+)
+def test_collective_rank_verdict_rejects_malformed_typed_phase(tmp_path, mutate):
+    path = tmp_path / "rank0.json"
+    identity = _precreated(path)
+    _write_rank_verdict(path, _valid_verdict(), identity)
+    value = json.loads(path.read_text())
+    value["phase_outcome"] = mutate(value["phase_outcome"])
+    path.write_text(json.dumps(value, separators=(",", ":")))
+
+    with pytest.raises(CollectiveVerdictError):
+        _read_rank_verdict(
+            path,
+            expected_rank=0,
+            expected_world_size=2,
+            expected_identity=identity,
+        )
+
+
+def test_collective_phase_aggregation_is_causal_and_conservative():
+    missing = conservative_phase_aggregate(
+        (GraphPhaseOutcome.graph_passed(3),), expected_count=2
+    )
+    assert missing.eager is PhaseDisposition.INFRASTRUCTURE_FAILED
+    assert not missing.observation_complete
+    assert not missing.failure_is_candidate_attributable
+
+    replay_disagreement = conservative_phase_aggregate(
+        (
+            GraphPhaseOutcome.graph_passed(3),
+            GraphPhaseOutcome.replay_candidate_failed(2),
+        ),
+        expected_count=2,
+    )
+    assert replay_disagreement.eager_passed
+    assert replay_disagreement.capture_succeeded
+    assert replay_disagreement.replay is PhaseDisposition.CANDIDATE_FAILED
+    assert replay_disagreement.replay_count == 2
+    assert replay_disagreement.failure_is_candidate_attributable
+
+    eager_precedes_replay = conservative_phase_aggregate(
+        (
+            GraphPhaseOutcome.eager_candidate_failed(),
+            GraphPhaseOutcome.replay_candidate_failed(1),
+        ),
+        expected_count=2,
+    )
+    assert eager_precedes_replay.eager is PhaseDisposition.CANDIDATE_FAILED
+    assert eager_precedes_replay.replay is PhaseDisposition.NOT_RUN
+
+    count_disagreement = conservative_phase_aggregate(
+        (
+            GraphPhaseOutcome.graph_passed(2),
+            GraphPhaseOutcome.graph_passed(3),
+        ),
+        expected_count=2,
+    )
+    assert count_disagreement.replay is PhaseDisposition.INFRASTRUCTURE_FAILED
+    assert count_disagreement.replay_count == 2
+    assert not count_disagreement.failure_is_candidate_attributable
+
+    mixed_infrastructure = conservative_phase_aggregate(
+        (
+            GraphPhaseOutcome.replay_candidate_failed(1),
+            GraphPhaseOutcome.replay_infrastructure_failed(1),
+        ),
+        expected_count=2,
+    )
+    assert mixed_infrastructure.replay is PhaseDisposition.INFRASTRUCTURE_FAILED
+    assert not mixed_infrastructure.observation_complete
+    assert not mixed_infrastructure.failure_is_candidate_attributable
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -383,7 +561,7 @@ def test_collective_rank_verdict_rejects_malformed_json(tmp_path, mutation):
     identity = _precreated(path)
     payload = json.dumps(
         {
-            "version": 1,
+            "version": _VERDICT_VERSION,
             "rank": 0,
             "world_size": 2,
             "passed": True,
@@ -393,6 +571,13 @@ def test_collective_rank_verdict_rejects_malformed_json(tmp_path, mutation):
             "metric": "ratio",
             "error": None,
             "graph_replays": 3,
+            "phase_outcome": {
+                "eager": "PASSED",
+                "capture": "PASSED",
+                "replay": "PASSED",
+                "replay_count": 3,
+                "observation_complete": True,
+            },
         },
         separators=(",", ":"),
     )

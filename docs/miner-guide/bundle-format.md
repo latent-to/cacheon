@@ -157,9 +157,11 @@ Each `[[ops]]` row describes one implementation:
 | `aot_exports` | sealed compiler exports, semantic bindings, specializations, lifecycle steps, and complete device plans |
 | `artifact_resources` | miner-named but validator-allocated workspace, prepared storage, or engine state |
 
-`bundle_id` must be a simple non-empty identifier, and the component ABI is
-exactly `cacheon-op-abi-v0`. Since 2026-08-03 this identifier follows the
-Cacheon protocol vocabulary; the pre-rename spelling is refused.
+`bundle_id` must be a simple non-empty identifier, and newly authored bundles
+must use the component ABI `cacheon-op-abi-v0`. Validators retain a reader-only
+compatibility path for the exact hash-bound `optima-op-abi-v0` spelling in
+already-finalized pre-cutover bundles. The submitted bytes are never rewritten;
+all other spellings are refused.
 
 Unknown op keys are preserved as extra data, but that does not make them
 meaningful or allowed by target policy.

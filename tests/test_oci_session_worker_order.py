@@ -14,6 +14,7 @@ import pytest
 
 from cacheon.eval import engine_worker as engine_policy
 from cacheon.eval import oci_session_worker as worker
+from cacheon.eval.engine_worker import CandidateExecutionCoverageError
 from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     EVIDENCE_MAGIC,
@@ -23,6 +24,7 @@ from cacheon.eval.oci_session_protocol import (
     MAX_INIT_BYTES,
     EngineSessionConfig,
     RuntimePreflightFacts,
+    SlotAuditPolicy,
     batch_request,
     frame_message,
     make_init,
@@ -30,6 +32,7 @@ from cacheon.eval.oci_session_protocol import (
     parse_frame_bytes,
     preflight_accept_message,
     validate_batch_request,
+    validate_audit_evidence,
 )
 from cacheon.eval.reference_protocol import (
     EVIDENCE_MAGIC as REFERENCE_EVIDENCE_MAGIC,
@@ -554,6 +557,141 @@ def test_open_ended_worker_returns_only_exact_binary_batch_evidence(monkeypatch)
         except OSError:
             pass
         os.close(output_read)
+
+
+def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
+    monkeypatch, capsys
+):
+    config = _config()
+    session, launch = "6" * 32, _digest("a")
+    policy = SlotAuditPolicy(
+        "c" * 32, 250_000, 32, ("moe.fused_experts_reduce",), config.tp_size
+    )
+    _bind_init(monkeypatch, config, launch)
+    request_row = batch_request(
+        session_id=session,
+        launch_digest=launch,
+        request_id="7" * 32,
+        nonce="8" * 32,
+        batch_index=0,
+        prompts=("prompt",),
+        max_new_tokens=2,
+        top_logprobs_num=1,
+        temperature=0.0,
+    )
+    request = validate_batch_request(request_row)
+    init = frame_message(
+        make_init(
+            config,
+            session_id=session,
+            launch_digest=launch,
+            expected_engine_config_digest=config.digest,
+            audit_policy=policy,
+        ),
+        max_bytes=MAX_INIT_BYTES,
+    )
+    input_fd, output_read, output_write = _session_fds(
+        init
+        + _accept_frame(config, session=session, launch=launch)
+        + frame_message(request_row, max_bytes=MAX_BATCH_REQUEST_BYTES)
+    )
+
+    class Engine:
+        def generate(self, **_kwargs):
+            return {
+                "output_ids": [11, 12],
+                "meta_info": {
+                    "output_top_logprobs": [
+                        [[-0.25, 11, None]],
+                        [[-0.5, 12, None]],
+                    ]
+                },
+            }
+
+    monkeypatch.setattr(
+        worker,
+        "_validate_live_preflight",
+        lambda _config, *, launch_digest: (
+            _facts(config, launch_digest),
+            SimpleNamespace(root="tree"),
+        ),
+    )
+
+    @contextlib.contextmanager
+    def engine_session(_config, _tree, *, audit_policy):
+        assert audit_policy == policy
+
+        def fail_completion(*_args, **_kwargs):
+            raise CandidateExecutionCoverageError("completed coverage 0/1")
+
+        monkeypatch.setattr(
+            engine_policy, "_require_execution_completion", fail_completion
+        )
+
+        def complete():
+            engine_policy._complete_candidate_execution(
+                "receipts",
+                active_receipts=[],
+                expected_slots=["moe.fused_experts_reduce"],
+                expected_member_count=config.tp_size,
+                audit_policy=policy,
+            )
+
+        yield SimpleNamespace(
+            engine=Engine(),
+            require_completion=complete,
+            collect_audit_receipts=lambda: (),
+        )
+
+    monkeypatch.setattr(worker, "_engine_session", engine_session)
+    try:
+        assert worker.run_session(input_fd=input_fd, output_fd=output_write) == 1
+        os.close(output_write)
+        assert parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )["type"] == "preflight"
+        assert parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )["type"] == "ready"
+        evidence = _read_frame(output_read)
+        assert evidence[:4] == EVIDENCE_MAGIC
+        assert parse_evidence_frame_bytes(evidence, request=request).observed_tokens == 2
+        audit = parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )
+        assert validate_audit_evidence(
+            audit, request=request, policy=policy
+        ) == ()
+        terminal = parse_frame_bytes(
+            _read_frame(output_read), max_bytes=MAX_CONTROL_BYTES
+        )
+        assert terminal["type"] == "session_error"
+        assert terminal["stage"] == "batch"
+        assert "completed coverage 0/1" in capsys.readouterr().err
+    finally:
+        os.close(input_fd)
+        try:
+            os.close(output_write)
+        except OSError:
+            pass
+        os.close(output_read)
+
+
+def test_candidate_coverage_failure_remains_hard_error_outside_audit(monkeypatch):
+    def fail_completion(*_args, **_kwargs):
+        raise CandidateExecutionCoverageError("completed coverage 0/1")
+
+    monkeypatch.setattr(
+        engine_policy, "_require_execution_completion", fail_completion
+    )
+    with pytest.raises(CandidateExecutionCoverageError, match="coverage 0/1"):
+        engine_policy._complete_candidate_execution(
+            "receipts",
+            active_receipts=[],
+            expected_slots=["moe.fused_experts_reduce"],
+            expected_member_count=4,
+            audit_policy=None,
+        )
 
 
 def test_reference_worker_serves_ordered_requests_from_one_pristine_engine(monkeypatch):

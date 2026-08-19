@@ -11,6 +11,7 @@ oracle.
 | Typed slot verification | Fast ABI, output-layout, numerical, applicability, and graph preflight | No |
 | Contributor-controlled model A/B or in-engine audit | Development feedback and integration diagnosis | No |
 | Registered audit-only role | Exact slot × TP-rank live-call evidence graded by the trusted host | Yes, when the arena policy requires it |
+| Registered fixed-stock exact-count gate | Candidate-only hidden-task generation compared with one sealed stock observation | Yes, when the registered profile selects it |
 | Pristine T over sealed timed trajectories | Candidate-free, retained production quality evidence | Yes, as one required part of qualification |
 
 ## Slot verification
@@ -125,6 +126,21 @@ resident speed executors are quiescent and the required audit stage completes. T
 The controller then regrades raw evidence under the frozen metric policy. Candidate C
 does not choose prompts, support tokens, thresholds, or the hidden judge. Incumbent B′ is
 also untrusted and is never substituted for T.
+
+## Fixed-stock exact-count profiles
+
+A registered profile may instead bind one retained stock observation and an exact-count
+regression policy. The stock artifact contains every ordered output-token sequence and
+its hidden-judge receipt, but no trusted aggregate score. Commissioning seals the
+artifact reference, observation digest, prompt/generation/admission envelope, and policy;
+runtime reopening rehashes the bytes and rejudges every retained row before comparing it
+with the candidate.
+
+Candidate evaluation uses the already-resident lanes at the profile's sealed admission
+width. It does not rerun stock for each bundle. A missing, foreign, or envelope-mismatched
+stock artifact is infrastructure and stops qualification; a configured historical score
+is not a substitute for reopenable evidence. Only an intact candidate generation whose
+hidden judge runs successfully can produce a quality PASS or FAIL.
 
 ## Calibration
 

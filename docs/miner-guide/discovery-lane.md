@@ -228,7 +228,8 @@ profile, preserves serving behavior, or improves performance.
 Before submitting, confirm that the operator has enabled discovery intake and
 published the exact build profile you request. Package and submit the proposal
 through the same content-addressed HTTPS timelock path described in
-[Submitting](submitting.md):
+[Submitting](submitting.md#step-by-step-commands), including `--pay` when the
+operator enables eval-cost.
 
 ```bash
 python -m cacheon.cli chain-package my_discovery \

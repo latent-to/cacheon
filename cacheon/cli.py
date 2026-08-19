@@ -178,7 +178,7 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
     wallet = None if args.dry_run else public_wallet
 
     try:
-        subtensor = chain.connect(args.network)
+        subtensor = _connect_chain_from_args(args)
         target = chain.resolve_subnet_owner_burn_target(subtensor, args.netuid)
     except chain.ChainWeightStateError:
         raise
@@ -288,6 +288,32 @@ def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
     return 0 if result.status in {"dry_run", "confirmed", "pending"} else 2
 
 
+def _connect_chain_from_args(args: argparse.Namespace):
+    """Connect with optional backup endpoints for failover and historical reads."""
+
+    from cacheon import chain
+
+    fallbacks = [
+        item.strip()
+        for item in (getattr(args, "fallback_endpoints", None) or ())
+        if isinstance(item, str) and item.strip()
+    ]
+    network = args.network
+    archives = list(fallbacks)
+    if isinstance(network, str) and network.startswith("wss://") and network not in archives:
+        archives.insert(0, network)
+    # Pass only non-default options so chain.connect keeps its plain
+    # single-argument contract for callers (and test doubles) without them.
+    options: dict[str, object] = {}
+    if fallbacks:
+        options["fallback_endpoints"] = fallbacks
+    if archives:
+        options["archive_endpoints"] = archives
+    if bool(getattr(args, "watch", False)):
+        options["retry_forever"] = True
+    return chain.connect(network, **options)
+
+
 def _cmd_set_weights_once(args: argparse.Namespace) -> int:
     from cacheon import chain
     from cacheon.chain.intake import (
@@ -340,7 +366,7 @@ def _cmd_set_weights_once(args: argparse.Namespace) -> int:
         # A hold release needs only the local journal plus public authority
         # identity.  Do not retain a signer-capable object on that path.
         wallet = None if args.release_hold else public_wallet
-    subtensor = chain.connect(args.network)
+    subtensor = _connect_chain_from_args(args)
     scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
     policy = EmissionsPolicyManifest(
         args.half_life_blocks,
@@ -767,7 +793,20 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
+def _close_chain_quietly(subtensor: object) -> None:
+    """Best-effort close of a subtensor client whose connection may be dead."""
+
+    close = getattr(subtensor, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - the socket is already gone
+            pass
+
+
+def _cmd_follow_weights_once(
+    args: argparse.Namespace, subtensor: object | None = None
+) -> int:
     from cacheon import chain
     from cacheon.chain.intake import (
         FinalizedIntakeStore,
@@ -786,7 +825,8 @@ def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
     if not 1 <= skew <= 600:
         raise SystemExit("--max-skew-seconds must be between 1 and 600")
     wallet = _wallet_from_args(args)
-    subtensor = chain.connect(args.network)
+    if subtensor is None:
+        subtensor = _connect_chain_from_args(args)
     expected_authority = (args.expected_authority or "").strip()
     if not expected_authority:
         owner = chain.resolve_subnet_owner_burn_target(subtensor, args.netuid)
@@ -851,10 +891,20 @@ def cmd_follow_weights(args: argparse.Namespace) -> int:
 
     logger = logging.getLogger("cacheon.chain.weight_share")
     failures = 0
+    # One chain client for the whole watch session. Dialing a fresh client per
+    # pass leaked one websocket (and its keepalive thread) every interval; a
+    # node blip then failed all of them at once (2026-08-19: 96 keepalive
+    # tracebacks in three minutes on mainnet). Re-dial only after a failed
+    # pass, when the connection is the likeliest casualty.
+    subtensor = None
     while True:
         try:
-            status = _cmd_follow_weights_once(args)
+            if subtensor is None:
+                subtensor = _connect_chain_from_args(args)
+            status = _cmd_follow_weights_once(args, subtensor)
         except Exception as exc:
+            _close_chain_quietly(subtensor)
+            subtensor = None
             if getattr(exc, "retryable", True) is False:
                 raise
             failures += 1
@@ -866,6 +916,7 @@ def cmd_follow_weights(args: argparse.Namespace) -> int:
         else:
             failures = 0
             if status not in {0, 3}:
+                _close_chain_quietly(subtensor)
                 return status
         time.sleep(float(interval) * (1 + min(failures, 5)))
 
@@ -1363,28 +1414,212 @@ def cmd_chain_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
+    from cacheon.chain.eval_cost import (
+        EvalCostPolicy,
+        EvalCostRequest,
+        quote_eval_cost,
+    )
+    from cacheon.chain.eval_cost_payment import (
+        current_eval_cost_block,
+        read_subnet_owner_coldkey,
+    )
+
+    request = EvalCostRequest(
+        netuid=args.netuid,
+        hotkey=args.hotkey or "query",
+        content_hash=args.content_hash or "",
+        target_id=args.target_id or "",
+    )
+    destination = ""
+    at_block = 0
+    network = str(getattr(args, "network", "") or "")
+    if network:
+        from cacheon import chain
+        from cacheon.chain.eval_cost import EvalCostFetchError
+
+        try:
+            subtensor = chain.connect(network)
+            at_block = current_eval_cost_block(subtensor)
+            destination = read_subnet_owner_coldkey(
+                subtensor, args.netuid, block=at_block
+            )
+        except EvalCostFetchError as exc:
+            print(f"REFUSED: {exc}")
+            return 2
+    quote = quote_eval_cost(
+        request,
+        policy=EvalCostPolicy(
+            amount_rao=int(
+                getattr(
+                    args,
+                    "eval_cost_tao_rao",
+                    1_000_000_000,
+                )
+            ),
+            destination=destination,
+        ),
+        at_block=at_block,
+    )
+    print(f"version:      {quote.version}")
+    print(f"netuid:       {quote.netuid}")
+    print(f"asset:        {quote.asset}")
+    print(f"instrument:   {quote.instrument}")
+    print(f"amount_rao:   {quote.amount_rao}")
+    print(
+        f"destination:  {quote.destination or 'current subnet owner coldkey (resolved at payment)'}"
+    )
+    print(f"quote_ttl:    {quote.expires_block - quote.issued_block} blocks")
+    print(
+        "v1 quote ignores submission extras and stays valid through payment if "
+        "the transfer is included within the TTL of issuance. chain-submit --pay "
+        "quotes at the current block and transfers that frozen TAO amount to the "
+        "current subnet owner coldkey."
+    )
+    return 0
+
+
+def cmd_chain_eval_cost_credit(args: argparse.Namespace) -> int:
+    from cacheon.chain.eval_cost_credit import (
+        grant_eval_cost_credit,
+        list_eval_cost_credits,
+    )
+    from cacheon.chain.intake import IntakeError
+
+    if args.list:
+        try:
+            credits = list_eval_cost_credits(args.intake_db, hotkey=args.hotkey)
+        except IntakeError as exc:
+            print(f"REFUSED: {exc}")
+            return 2
+        if not credits:
+            print("no eval-cost credits recorded")
+            return 0
+        for credit in credits:
+            state = (
+                f"spent by {credit.reservation_id[:16]} at block {credit.spent_block}"
+                if credit.spent
+                else "unspent"
+            )
+            line = (
+                f"{credit.credit_id[:16]}  {credit.hotkey}  "
+                f"{credit.amount_tao_rao} rao  {credit.granted_at}  {state}"
+            )
+            if credit.note:
+                line += f"  # {credit.note}"
+            print(line)
+        return 0
+    if not args.hotkey:
+        print("REFUSED: --hotkey is required to grant a credit")
+        return 2
+    try:
+        credit_id = grant_eval_cost_credit(
+            args.intake_db,
+            hotkey=args.hotkey,
+            coldkey=args.coldkey,
+            amount_tao_rao=args.amount_tao_rao,
+            note=args.note,
+        )
+    except IntakeError as exc:
+        print(f"REFUSED: {exc}")
+        return 2
+    print(f"credit_id:      {credit_id}")
+    print(f"hotkey:         {args.hotkey}")
+    if args.coldkey:
+        print(f"coldkey:        {args.coldkey}")
+    print(f"amount_tao_rao: {args.amount_tao_rao}")
+    if args.note:
+        print(f"note:           {args.note}")
+    print(
+        "The next fee-gated reveal from this hotkey that carries no payment "
+        "pointer is admitted against this credit: the miner re-submits with a "
+        "plain chain-submit (no --pay, no payment pointer)."
+    )
+    return 0
+
+
 def cmd_chain_submit(args: argparse.Namespace) -> int:
+    from cacheon.chain.eval_cost import (
+        EvalCostCommitError,
+        EvalCostError,
+        EvalCostFetchError,
+        EvalCostPolicy,
+        unused_eval_cost_retry_flags,
+    )
     from cacheon.chain.payload import PayloadError
     from cacheon.chain.submit import submit_bundle
 
     from cacheon import chain
 
     subtensor = wallet = None
+    pay = bool(getattr(args, "pay", False))
+    payment_block = int(getattr(args, "eval_cost_payment_block", 0) or 0)
+    payment_index = int(getattr(args, "eval_cost_payment_extrinsic_index", 0) or 0)
+    reuse = payment_block > 0
+    if pay and reuse:
+        print("REFUSED before signing: cannot pay and reuse an eval-cost payment together")
+        return 2
+    policy = None
+    if pay or reuse:
+        policy = EvalCostPolicy(
+            amount_rao=int(getattr(args, "eval_cost_tao_rao", 1_000_000_000)),
+        )
     if not args.dry_run:
         import bittensor as bt
 
         subtensor = chain.connect(args.network)
         wallet = bt.Wallet(name=args.wallet, hotkey=args.hotkey)
+    elif pay:
+        subtensor = chain.connect(args.network)
     try:
-        res = submit_bundle(subtensor, wallet, args.netuid, args.bundle, args.url,
-                            blocks_until_reveal=args.blocks_until_reveal,
-                            dry_run=args.dry_run)
-    except PayloadError as e:
-        print(f"REFUSED before signing: {e}")
+        res = submit_bundle(
+            subtensor,
+            wallet,
+            args.netuid,
+            args.bundle,
+            args.url,
+            blocks_until_reveal=args.blocks_until_reveal,
+            dry_run=args.dry_run,
+            pay=pay,
+            eval_cost_policy=policy,
+            payment_block=payment_block,
+            payment_extrinsic_index=payment_index,
+        )
+    except (PayloadError, EvalCostError, EvalCostFetchError) as e:
+        if isinstance(e, EvalCostCommitError):
+            print(f"REFUSED after eval-cost payment: {e}")
+        else:
+            print(f"REFUSED before signing: {e}")
         return 2
     print(f"content_hash: {res['content_hash']}")
     print(f"payload:      {res['payload']}")
+    payment = res.get("eval_cost_payment") or {}
+    pointer_block = int(res.get("eval_cost_payment_block") or 0)
+    pointer_index = int(res.get("eval_cost_payment_extrinsic_index") or 0)
+    if res.get("eval_cost_tao_rao") is not None:
+        print(
+            f"eval_cost:    {res.get('eval_cost_tao_rao')} tao-rao "
+            f"({res.get('eval_cost_instrument')}) "
+            f"to {res.get('eval_cost_destination')}"
+        )
+        print(
+            "eval_cost quote: "
+            f"issued_block={res.get('eval_cost_issued_block')} "
+            f"expires_block={res.get('eval_cost_expires_block')}"
+        )
+    if payment.get("reused"):
+        print(
+            "eval_cost payment reused: "
+            f"block={pointer_block} extrinsic={pointer_index}"
+        )
+    elif payment.get("submitted") or pointer_block:
+        print(
+            "eval_cost payment: "
+            f"block={pointer_block} extrinsic={pointer_index}"
+        )
     if args.dry_run:
+        if pay:
+            print("eval_cost payment is quoted only; --dry-run does not transfer TAO.")
         print("DRY RUN — nothing sent. The payload above is what would be committed "
               f"(timelock, reveals after {args.blocks_until_reveal} blocks).")
         return 0
@@ -1392,6 +1627,11 @@ def cmd_chain_submit(args: argparse.Namespace) -> int:
     print(f"set_reveal_commitment submitted={ok} "
           f"(reveals after {args.blocks_until_reveal} blocks; the validator picks it "
           "up on its next pass after the reveal)")
+    if not ok and pointer_block > 0:
+        print(
+            "eval-cost TAO already transferred. Retry the same bundle without --pay: "
+            + unused_eval_cost_retry_flags(pointer_block, pointer_index)
+        )
     return 0 if ok else 1
 
 
@@ -1453,6 +1693,29 @@ def cmd_chain_reservation_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_miner_report(args: argparse.Namespace) -> int:
+    """Report every retained submission for one hotkey with a stated cause."""
+
+    import json
+
+    from cacheon.chain.miner_feedback import (
+        format_miner_submissions,
+        miner_submissions,
+    )
+    from cacheon.chain.operator_status import OperatorStatusError
+
+    try:
+        value = miner_submissions(args.intake_db, hotkey=args.miner_hotkey)
+    except OperatorStatusError as exc:
+        print(f"MINER REPORT REFUSED: {exc}")
+        return 2
+    if args.json:
+        print(json.dumps(value, separators=(",", ":"), sort_keys=True))
+    else:
+        print(format_miner_submissions(value))
+    return 0
+
+
 def cmd_chain_validate(
     args: argparse.Namespace, *, arena_registry=None
 ) -> int:
@@ -1492,12 +1755,28 @@ def cmd_chain_validate(
         _handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         _chain_lg.addHandler(_handler)
+    from cacheon.chain.eval_cost import EvalCostError, EvalCostPolicy
+
+    try:
+        eval_cost_policy = EvalCostPolicy(
+            amount_rao=int(getattr(args, "eval_cost_tao_rao", 0)),
+            payment_window_blocks=int(
+                getattr(args, "eval_cost_payment_window_blocks", 7_200)
+            ),
+            quote_ttl_blocks=int(
+                getattr(args, "eval_cost_quote_ttl_blocks", 300)
+            ),
+        )
+    except EvalCostError as exc:
+        print(f"REFUSED: {exc}")
+        return 2
     res = run_validator(
         subtensor,
         args.netuid,
         intake_db=args.intake_db,
         private_root=args.private_root,
         publication_root=args.publication_root,
+        eval_cost_policy=eval_cost_policy,
         arena_registry=injected,
         arena_id=None if args.intake_only else args.arena_id,
         intake_only=args.intake_only,
@@ -1642,6 +1921,7 @@ def cmd_chain_evaluation_lease(args: argparse.Namespace) -> int:
             lease_id=getattr(args, "lease_id", None),
             reason=getattr(args, "reason", None),
             result_digest=getattr(args, "result_digest", ""),
+            authority_path=getattr(args, "authority", None),
         )
     except (FifoLeaseError, IntakeError, OSError) as exc:
         print(f"chain-evaluation-lease: {exc}", file=sys.stderr)
@@ -1674,7 +1954,7 @@ def cmd_chain_register(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    from cacheon.sandbox import scan_tree
+    from cacheon.sandbox import scan_compilability_path, scan_tree
 
     m = load_manifest(args.bundle)
     print(f"bundle: {m.bundle_id}  abi: {m.abi_version}  ops: {len(m.ops)}")
@@ -1682,9 +1962,22 @@ def cmd_scan(args: argparse.Namespace) -> int:
     for op in m.ops:
         src = resolve_source(args.bundle, op)
         result = scan_path(src)
-        status = "clean" if result.ok else "VIOLATIONS"
+        # Reported separately from the policy scan: a compilability defect means
+        # the bundle is broken, not that it is hostile. Both are fatal to the
+        # submission, and catching the second here saves a miner a full
+        # evaluation cycle that could only ever have ended in FAIL.
+        build = scan_compilability_path(src)
+        if result.ok and build.ok:
+            status = "clean"
+        elif not result.ok:
+            status = "VIOLATIONS"
+        else:
+            status = "BROKEN KERNEL"
         print(f"  [{status}] {op.slot} <- {op.source}")
         for v in result.violations:
+            print(f"      {v}")
+            rc = 2
+        for v in build.violations:
             print(f"      {v}")
             rc = 2
     # Recursive guard: catch a vendored/extra .py the per-op (entry-only) scan misses, and
@@ -1908,8 +2201,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Commands by workflow:\n"
             "  develop a kernel (miner) ... slots, scan, verify\n"
             "  submit on-chain (miner) .... chain-register, chain-package,\n"
-            "                               chain-publish, chain-submit, chain-status\n"
-            "  referee + settlement ....... chain-validate, chain-snapshot\n"
+            "                               chain-publish, chain-eval-cost,\n"
+            "                               chain-submit, chain-status\n"
+            "  referee + settlement ....... chain-validate, chain-snapshot,\n"
+            "                               chain-eval-cost-credit\n"
             "  environment checks ......... compat, chain-compat\n"
             "\n"
             "New to Cacheon? Start with docs/MINER_GUIDE.md."
@@ -1968,6 +2263,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--netuid", type=int, required=True)
     sp.add_argument("--network", default="finney",
                     help="named network or an explicit wss:// endpoint URL")
+    sp.add_argument(
+        "--fallback-endpoint",
+        action="append",
+        default=None,
+        dest="fallback_endpoints",
+        help=(
+            "backup wss:// endpoint if --network is unavailable or has discarded "
+            "historical state; repeatable"
+        ),
+    )
     sp.add_argument("--wallet", default="default")
     sp.add_argument("--hotkey", default="default")
     sp.add_argument(
@@ -2289,6 +2594,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="finney",
         help="named network or an explicit wss:// endpoint URL",
     )
+    sp.add_argument(
+        "--fallback-endpoint",
+        action="append",
+        default=None,
+        dest="fallback_endpoints",
+        help=(
+            "backup wss:// endpoint if --network is unavailable or has discarded "
+            "historical state; repeatable"
+        ),
+    )
     sp.add_argument("--wallet", default="default")
     sp.add_argument("--hotkey", default="default")
     sp.add_argument(
@@ -2421,6 +2736,66 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_chain_publish)
 
+    sp = sub.add_parser(
+        "chain-eval-cost",
+        help="miner: print the published eval-cost quote (v1 is a fixed TAO transfer)",
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument("--hotkey", default="", help="miner hotkey ss58; unused by the v1 quote")
+    sp.add_argument("--content-hash", default="", help="proposal hash; unused by the v1 quote")
+    sp.add_argument("--target-id", default="", help="registered target; unused by the v1 quote")
+    sp.add_argument(
+        "--network",
+        default="",
+        help="named network or wss:// endpoint; when set, print the current subnet owner coldkey",
+    )
+    sp.add_argument(
+        "--eval-cost-tao-rao",
+        type=int,
+        default=1_000_000_000,
+        help="quoted TAO amount in rao; default 1000000000 (1 TAO) is the published v1 quote",
+    )
+    sp.set_defaults(func=cmd_chain_eval_cost)
+
+    sp = sub.add_parser(
+        "chain-eval-cost-credit",
+        help="operator: grant one artificial eval-cost credit so a hotkey can "
+             "submit once without paying, or --list recorded credits",
+    )
+    sp.add_argument(
+        "--intake-db",
+        required=True,
+        help="path to the validator intake sqlite database",
+    )
+    sp.add_argument(
+        "--hotkey",
+        default="",
+        help="miner hotkey ss58 the credit admits (required to grant)",
+    )
+    sp.add_argument(
+        "--coldkey",
+        default="",
+        help="miner coldkey ss58, recorded for audit only",
+    )
+    sp.add_argument(
+        "--amount-tao-rao",
+        type=int,
+        default=1_000_000_000,
+        help="fee amount the credit stands in for, recorded for audit "
+             "(default 1000000000, 1 TAO)",
+    )
+    sp.add_argument(
+        "--note",
+        default="",
+        help="why the credit was granted (audit trail)",
+    )
+    sp.add_argument(
+        "--list",
+        action="store_true",
+        help="list credits (optionally filtered by --hotkey) instead of granting",
+    )
+    sp.set_defaults(func=cmd_chain_eval_cost_credit)
+
     sp = sub.add_parser("chain-submit",
                         help="miner: commit a bundle (hash + fetch URL) on-chain via "
                              "timelock commit-reveal")
@@ -2435,6 +2810,29 @@ def build_parser() -> argparse.ArgumentParser:
                     help="timelock length; the payload is unreadable until then")
     sp.add_argument("--dry-run", action="store_true",
                     help="build + print the payload, do NOT sign or submit")
+    sp.add_argument(
+        "--pay",
+        action="store_true",
+        help="transfer the published eval-cost TAO amount to the current subnet owner coldkey, then commit a v2 payment pointer",
+    )
+    sp.add_argument(
+        "--eval-cost-payment-block",
+        type=int,
+        default=0,
+        help="reuse an already-included unused eval-cost transfer at this block instead of --pay",
+    )
+    sp.add_argument(
+        "--eval-cost-payment-extrinsic-index",
+        type=int,
+        default=0,
+        help="extrinsic index of the unused eval-cost transfer; requires --eval-cost-payment-block",
+    )
+    sp.add_argument(
+        "--eval-cost-tao-rao",
+        type=int,
+        default=1_000_000_000,
+        help="TAO amount in rao to transfer with --pay or to verify when reusing a payment; default 1000000000 (1 TAO)",
+    )
     sp.set_defaults(func=cmd_chain_submit)
 
     sp = sub.add_parser("chain-status",
@@ -2470,6 +2868,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_chain_reservation_status)
 
     sp = sub.add_parser(
+        "chain-miner-report",
+        help=(
+            "every retained submission for one miner hotkey, each with its typed "
+            "outcome, stated cause, and next step"
+        ),
+    )
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.add_argument("--miner-hotkey", required=True)
+    sp.add_argument("--json", action="store_true", help="emit canonical compact JSON")
+    sp.set_defaults(func=cmd_chain_miner_report)
+
+    sp = sub.add_parser(
         "chain-evaluation-lease",
         help="run one sealed, one-shot evaluation-lease store operation",
     )
@@ -2483,6 +2893,11 @@ def build_parser() -> argparse.ArgumentParser:
     released.add_argument("lease_id")
     released.add_argument("--reason", required=True)
     released.add_argument("--result-digest", default="")
+    requeue_expired = lease_ops.add_parser(
+        "requeue-expired",
+        help="readmit one sealed validator-downtime cohort with a fresh SLA window",
+    )
+    requeue_expired.add_argument("--authority", required=True)
     sp.set_defaults(func=cmd_chain_evaluation_lease)
 
     sp = sub.add_parser("chain-validate",
@@ -2508,6 +2923,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--interval", type=float, default=60.0, help="seconds between passes")
     sp.add_argument("--once", action="store_true", help="single pass, then exit")
+    sp.add_argument(
+        "--eval-cost-tao-rao",
+        type=int,
+        default=0,
+        help="required TAO transfer amount per admission; 0 disables the gate; 1000000000 (1 TAO) matches the published v1 quote; destination is the current subnet owner coldkey",
+    )
+    sp.add_argument(
+        "--eval-cost-payment-window-blocks",
+        type=int,
+        default=7200,
+        help="max finalized blocks between the transfer and the reveal (default 7200)",
+    )
+    sp.add_argument(
+        "--eval-cost-quote-ttl-blocks",
+        type=int,
+        default=300,
+        help="blocks a quoted amount stays valid until the transfer is included (default 300, ~1 hour)",
+    )
     sp.set_defaults(func=cmd_chain_validate)
 
     sp = sub.add_parser(

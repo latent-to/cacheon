@@ -163,22 +163,45 @@ def _advance(
         )
 
 
-def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
-    service = _h("service")
+def _screen(
+    store: FinalizedIntakeStore,
+    reservation_id: str,
+    *,
+    service: str,
+    decision: PromotionDecision,
+) -> None:
     active = store.begin_screen(reservation_id, service_digest=service)
-    candidate = _h(f"candidate:{reservation_id}:{active.screen_attempts}")
+    candidate = _h(f"candidate:{reservation_id}:{active.screen_attempts}:{service[:8]}")
+    if decision is PromotionDecision.PROMOTE:
+        results = tuple(
+            ScreenStageResult(stage, ScreenGrade.PASS, _h(stage), 1)
+            for stage in SCREEN_STAGES
+        )
+    else:
+        # HOLD/RETRY terminate on the first stage with NO_DECISION.
+        results = (
+            ScreenStageResult(
+                SCREEN_STAGES[0], ScreenGrade.NO_DECISION, _h("nd"), 1
+            ),
+        )
     receipt = ArenaScreenReceipt(
         service,
         candidate,
         active.screen_attempts,
-        tuple(
-            ScreenStageResult(stage, ScreenGrade.PASS, _h(stage), 1)
-            for stage in SCREEN_STAGES
-        ),
-        PromotionDecision.PROMOTE,
+        results,
+        decision,
     )
     store.apply_screen_receipt(
         reservation_id, candidate_digest=candidate, receipt=receipt
+    )
+
+
+def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
+    _screen(
+        store,
+        reservation_id,
+        service=_h("service"),
+        decision=PromotionDecision.PROMOTE,
     )
 
 
@@ -195,6 +218,7 @@ def test_config_and_tracked_cli_are_closed(tmp_path: Path, capsys) -> None:
         ["claim"],
         ["heartbeat", "a" * 64],
         ["release", "a" * 64, "--reason", "worker_unavailable"],
+        ["requeue-expired", "--authority", "/tmp/requeue-authority.json"],
     )
     for suffix in parsed:
         args = parser.parse_args(
@@ -369,6 +393,225 @@ def test_canonical_failed_and_expired_rows_are_not_claimed(tmp_path: Path) -> No
     assert operator.claim(config)["lease"]["members"][0]["reservation_id"] == (
         current.reservation_id
     )
+
+
+def test_sealed_downtime_requeue_restores_phase_and_one_bounded_sla(
+    tmp_path: Path,
+) -> None:
+    policy = IntakePolicy(max_cohort=4, expiry_blocks=5)
+    database = _new_database(tmp_path, policy=policy)
+    published, promoted = _published_rows(
+        database,
+        ("profile.screen", "profile.qualification"),
+        policy=policy,
+    )
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        _promote(store, promoted.reservation_id)
+    _advance(database, BLOCK + 5, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert {
+            store.get(published.reservation_id).status,
+            store.get(promoted.reservation_id).status,
+        } == {"expired"}
+
+    authority = _seal(
+        tmp_path / "downtime-requeue.json",
+        {
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "retained_result_reservation_ids": [_h("retained-result")],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    config_path, _ = _config(
+        tmp_path,
+        database,
+        policy=policy,
+        stage="qualification",
+        lease_blocks=3,
+    )
+    config = operator.load_config(config_path)
+    result = operator.requeue_expired(config, authority)
+    assert [item["status"] for item in result["requeued"]] == [
+        "published",
+        "promoted",
+    ]
+    assert operator.preview(config)["reservation_ids"] == [promoted.reservation_id]
+
+    _advance(database, BLOCK + 9, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert store.expire_stale(current_block=BLOCK + 9) == ()
+    _advance(database, BLOCK + 10, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert {
+            store.get(published.reservation_id).status,
+            store.get(promoted.reservation_id).status,
+        } == {"expired"}
+
+    # One refresh is admitted after the cohort re-expires under the automatic
+    # SLA (operator fault / mismatched window); a third attempt fails closed.
+    refresh_authority = _seal(
+        tmp_path / "downtime-requeue-refresh.json",
+        {
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "retained_result_reservation_ids": [_h("retained-result-refresh")],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    refreshed = operator.requeue_expired(config, refresh_authority)
+    assert [item["status"] for item in refreshed["requeued"]] == [
+        "published",
+        "promoted",
+    ]
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert store.get(published.reservation_id).reason == (
+            "validator_downtime_requeued_refresh"
+        )
+    _advance(database, BLOCK + 15, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert {
+            store.get(published.reservation_id).status,
+            store.get(promoted.reservation_id).status,
+        } == {"expired"}
+    with pytest.raises(IntakeError, match="budget is already consumed"):
+        operator.requeue_expired(config, refresh_authority)
+
+    # Owner-escalated repeat: only an authority explicitly carrying
+    # allow_repeat_refresh reopens a consumed budget; the flag must be a
+    # real boolean.
+    malformed_repeat = _seal(
+        tmp_path / "downtime-requeue-repeat-malformed.json",
+        {
+            "allow_repeat_refresh": "yes",
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "retained_result_reservation_ids": [_h("retained-result-repeat")],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    with pytest.raises(operator.FifoLeaseError, match="must be boolean"):
+        operator.requeue_expired(config, malformed_repeat)
+    repeat_authority = _seal(
+        tmp_path / "downtime-requeue-repeat.json",
+        {
+            "allow_repeat_refresh": True,
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [published.reservation_id, promoted.reservation_id],
+            "retained_result_reservation_ids": [_h("retained-result-repeat")],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    repeated = operator.requeue_expired(config, repeat_authority)
+    assert [item["status"] for item in repeated["requeued"]] == [
+        "published",
+        "promoted",
+    ]
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert store.get(published.reservation_id).reason == (
+            "validator_downtime_requeued_refresh"
+        )
+
+
+def test_downtime_requeue_restores_midscreen_and_rotated_promote(
+    tmp_path: Path,
+) -> None:
+    """Mid-screen hold/retry drop back to published; a promote that was
+    rescreened under a new service identity (two append-only promote
+    dispositions) still restores from the live receipt."""
+
+    policy = IntakePolicy(max_cohort=4, expiry_blocks=5)
+    database = _new_database(tmp_path, policy=policy)
+    held, retried, rotated = _published_rows(
+        database,
+        ("profile.hold", "profile.retry", "profile.rotated"),
+        policy=policy,
+    )
+    old_service = _h("retired-service")
+    live_service = _h("live-service")
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        _screen(
+            store,
+            held.reservation_id,
+            service=live_service,
+            decision=PromotionDecision.HOLD,
+        )
+        _screen(
+            store,
+            retried.reservation_id,
+            service=live_service,
+            decision=PromotionDecision.RETRY,
+        )
+        _screen(
+            store,
+            rotated.reservation_id,
+            service=old_service,
+            decision=PromotionDecision.PROMOTE,
+        )
+        store.demote_promoted_for_rescreen(
+            rotated.reservation_id, reason="service_rotated"
+        )
+        _screen(
+            store,
+            rotated.reservation_id,
+            service=live_service,
+            decision=PromotionDecision.PROMOTE,
+        )
+        assert store.get(held.reservation_id).screen_status == "hold"
+        assert store.get(retried.reservation_id).screen_status == "retry"
+        assert (
+            store._db.execute(
+                "SELECT COUNT(*) AS n FROM arena_screen_dispositions "
+                "WHERE reservation_id=? AND decision='promote'",
+                (rotated.reservation_id,),
+            ).fetchone()["n"]
+            == 2
+        )
+
+    _advance(database, BLOCK + 5, policy=policy)
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        assert {
+            store.get(held.reservation_id).status,
+            store.get(retried.reservation_id).status,
+            store.get(rotated.reservation_id).status,
+        } == {"expired"}
+
+    authority = _seal(
+        tmp_path / "midscreen-requeue.json",
+        {
+            "reason": "validator_worker_unavailable",
+            "reservation_ids": [
+                held.reservation_id,
+                retried.reservation_id,
+                rotated.reservation_id,
+            ],
+            "retained_result_reservation_ids": [],
+            "schema": operator.REQUEUE_AUTHORITY_SCHEMA,
+        },
+    )
+    config_path, _ = _config(
+        tmp_path,
+        database,
+        policy=policy,
+        stage="qualification",
+        lease_blocks=3,
+    )
+    result = operator.requeue_expired(operator.load_config(config_path), authority)
+    assert [item["status"] for item in result["requeued"]] == [
+        "published",
+        "published",
+        "promoted",
+    ]
+    with FinalizedIntakeStore(database, policy, scope=SCOPE) as store:
+        held_row = store.get(held.reservation_id)
+        retried_row = store.get(retried.reservation_id)
+        rotated_row = store.get(rotated.reservation_id)
+        assert (held_row.status, held_row.screen_status) == ("published", "")
+        assert (retried_row.status, retried_row.screen_status) == ("published", "")
+        assert (rotated_row.status, rotated_row.screen_status) == (
+            "promoted",
+            "promote",
+        )
 
 
 def test_lock_retry_is_exact_bounded_and_preserves_one_lease(

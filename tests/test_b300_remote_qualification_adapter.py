@@ -11,6 +11,7 @@ import pytest
 
 import cacheon.eval.b300_remote_qualification_adapter as adapter_module
 import tests.test_b300_qualification_deployment as deployment_fixtures
+import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.chain.evaluation_coordinator import (
     EvaluationResultEnvelope,
     EvaluationRun,
@@ -26,18 +27,23 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     seal_remote_request,
     verify_remote_request,
 )
+from cacheon.chain.remote_qualification_hold import (
+    RemoteQualificationHoldReason,
+    verify_remote_qualification_hold_request,
+)
 from cacheon.eval.b300_mainnet_worker import B300RemoteQualificationRun
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
     B300QualificationDeployment,
-    B300RegisteredProfileAuthority,
     compose_b300_qualification_deployment,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from cacheon.eval.oci_backend import OCIBackendConfig, OCIEngineExecutor
+from cacheon.eval.oci_outer_session import OuterSessionWorkerError
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
@@ -125,23 +131,25 @@ def _construction(
 ) -> B300QualificationConstructionAuthority:
     runtime = deployment_fixtures._runtime()
     catalog, incumbent = deployment_fixtures._incumbent(runtime, _h("arena"))
-    profile = B300RegisteredProfileAuthority(
-        deployment_fixtures.TARGET,
-        catalog.target_spec_digest(deployment_fixtures.TARGET),
-        _h("profile-resolver"),
-        lambda _candidate, _prepared: object(),
+    builder_source = _h("builder-source")
+    evidence_root = tmp_path / "evidence"
+    count_quality = authority_fixtures._resident_count_quality(
+        catalog,
+        evidence_root,
     )
     return B300QualificationConstructionAuthority(
         catalog=catalog,
-        profiles=(profile,),
+        profiles=deployment_fixtures._profiles(catalog, builder_source),
         incumbent_stack=incumbent,
         incumbent_tree_digest=_h("incumbent-tree"),
         pristine_stack=incumbent,
         pristine_tree_digest=_h("pristine-tree"),
-        evidence_root=tmp_path / "evidence",
+        evidence_root=evidence_root,
         evidence_policy_digest=_h("evidence-policy"),
-        builder_source_digest=_h("builder-source"),
+        builder_source_digest=builder_source,
         selection_store_digest=_h("selection-store"),
+        resident_count_quality_builder_digest=_h("resident-count-quality-builder"),
+        resident_count_quality=count_quality,
         secret_loader=lambda _reference: b"s" * 32,
         plan_builder=lambda _cohort, _secret: object(),
         entropy_provider_digest=_h("entropy-provider"),
@@ -168,7 +176,7 @@ def _bind_construction(
 
 
 @pytest.fixture
-def configured(tmp_path: Path):
+def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     construction = _construction(tmp_path)
     candidate_executor = _executor(tmp_path, role="candidate", lane="A")
     baseline_executor = _executor(tmp_path, role="resident-baseline", lane="B")
@@ -187,12 +195,20 @@ def configured(tmp_path: Path):
         construction,
         manifest,
     )
+    resident_pair_factory, pair_executors = (
+        authority_fixtures._resident_pair_factory(
+            tmp_path / "pair",
+            monkeypatch,
+            manifest.digest,
+        )
+    )
     deployment = compose_b300_qualification_deployment(
         manifest=manifest,
         screen_authorities=screen,
         construction=construction,
         candidate_executor=candidate_executor,
         resident_baseline_executor=baseline_executor,
+        resident_pair_factory=resident_pair_factory,
         screen_lane="primary",
     )
     readiness = _readiness(deployment)
@@ -204,6 +220,7 @@ def configured(tmp_path: Path):
         construction,
         readiness,
         resolver,
+        QualificationContinuationStore(tmp_path / "continuation"),
     )
     result = _Configured(
         deployment,
@@ -212,7 +229,7 @@ def configured(tmp_path: Path):
         candidate,
         receipt,
         adapter,
-        (candidate_executor, baseline_executor),
+        (candidate_executor, baseline_executor, *pair_executors),
     )
     yield result
     for executor in result.executors:
@@ -320,9 +337,21 @@ def _patch_worker_result(
     reference: EvidenceArtifactRef,
     *,
     drift_lease: bool = False,
-) -> None:
-    def run(self, lease, candidates, receipts, *, screen_lane):
+) -> list[tuple[object, str]]:
+    calls: list[tuple[object, str]] = []
+
+    def run(
+        self,
+        lease,
+        candidates,
+        receipts,
+        *,
+        screen_lane,
+        continuation_store,
+        request_digest,
+    ):
         del receipts
+        calls.append((continuation_store, request_digest))
         candidate = candidates[0]
         manifest = _authority(candidate)
         outcome = QualificationIntakeOutcome(
@@ -360,6 +389,7 @@ def _patch_worker_result(
         "run_remote_qualification",
         run,
     )
+    return calls
 
 
 def test_success_captures_every_typed_batch_reference_without_paths(
@@ -374,9 +404,10 @@ def test_success_captures_every_typed_batch_reference_without_paths(
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
     )
-    _patch_worker_result(monkeypatch, configured, reference)
+    calls = _patch_worker_result(monkeypatch, configured, reference)
 
-    product = configured.adapter.run(_request(configured))
+    request = _request(configured)
+    product = configured.adapter.run(request)
 
     assert product.evidence_inventory == (reference,)
     assert product.evidence[0].payload == payload
@@ -385,6 +416,32 @@ def test_success_captures_every_typed_batch_reference_without_paths(
     assert product.incumbent_stack == configured.construction.incumbent_stack
     assert str(configured.candidate.publication.root) not in str(product.to_dict())
     assert str(configured.construction.evidence_root) not in str(product.to_dict())
+    assert calls == [(configured.adapter.continuation_store, request.digest)]
+
+
+def test_worker_control_error_is_an_exact_terminal_hold(
+    configured: _Configured,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = "audit_execute: RuntimeError: exact retained worker failure"
+
+    def fail(*_args, **_kwargs):
+        raise OuterSessionWorkerError(message)
+
+    monkeypatch.setattr(
+        adapter_module.B300MainnetWorker,
+        "run_remote_qualification",
+        fail,
+    )
+    request = _request(configured)
+
+    product = configured.adapter.run(request)
+
+    assert product.reason is RemoteQualificationHoldReason.QUALIFICATION_WORKER_ERROR
+    assert product.failure_type == "OuterSessionWorkerError"
+    assert product.failure_message == message
+    assert product.schema_version == 2
+    verify_remote_qualification_hold_request(product, request)
 
 
 def test_publication_identity_and_configured_root_substitution_fail_closed(
@@ -421,6 +478,7 @@ def test_publication_identity_and_configured_root_substitution_fail_closed(
         configured.construction,
         configured.readiness,
         resolver,
+        configured.adapter.continuation_store,
     )
     with pytest.raises(
         adapter_module.B300RemoteQualificationAdapterError,
@@ -552,6 +610,7 @@ def test_adapter_rejects_construction_and_ready_authority_drift(
             ),
             configured.readiness,
             configured.adapter.publications,
+            configured.adapter.continuation_store,
         )
     with pytest.raises(
         adapter_module.B300RemoteQualificationAdapterError,
@@ -562,6 +621,7 @@ def test_adapter_rejects_construction_and_ready_authority_drift(
             configured.construction,
             replace(configured.readiness, workload_digest=_h("drifted-workload")),
             configured.adapter.publications,
+            configured.adapter.continuation_store,
         )
 
 
@@ -582,4 +642,37 @@ def test_publication_resolver_is_canonical_and_path_bound(
     assert isinstance(configured.candidate.publication, WorkerBundlePublication)
     assert str(configured.candidate.publication.root) not in str(
         configured.candidate.publication.to_dict()
+    )
+
+
+def test_commission_adapter_for_canonicalizes_cohort_order(
+    configured: _Configured,
+    tmp_path: Path,
+) -> None:
+    """Cohort wire order is arrival order; adapter_for must digest-sort it.
+
+    Mainnet 2026-08-15: every 4-member cohort was refused pre-resident because
+    the commission handed FIFO-ordered publications to the canonical resolver.
+    A singleton tuple is trivially sorted, so no single-candidate path could
+    catch this.
+    """
+
+    from cacheon.eval.b300_remote_worker_adapter import (
+        B300RemoteQualificationCommission,
+    )
+
+    second = deployment_fixtures._bundle(tmp_path / "cohort-second", 11).publication
+    rows = (configured.candidate.publication, second)
+    unsorted_rows = tuple(sorted(rows, key=lambda row: row.digest, reverse=True))
+    commission = B300RemoteQualificationCommission(
+        configured.deployment,
+        configured.construction,
+        configured.readiness,
+    )
+    derived = commission.adapter_for(
+        unsorted_rows,
+        configured.adapter.continuation_store,
+    )
+    assert derived.publications.publications == tuple(
+        sorted(rows, key=lambda row: row.digest)
     )

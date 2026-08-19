@@ -94,6 +94,7 @@ def _apply_pending_swap(model_runner: object, control_dir: str) -> None:
     generation, bundle = command
     if generation <= _applied_generation:
         return
+    prior_generation = _applied_generation
     rank = getattr(model_runner, "tp_rank", "unknown")
     started = time.perf_counter()
     ack: dict[str, object] = {
@@ -102,7 +103,34 @@ def _apply_pending_swap(model_runner: object, control_dir: str) -> None:
         "pid": os.getpid(),
     }
     try:
-        from cacheon import seam
+        from cacheon import receipts, seam
+
+        # Execution evidence for the resident lane is established here, at the
+        # only moment it can be: the lane is launched stock, so the one-shot
+        # driver mints it no receipt directory, and it would otherwise serve
+        # every candidate of its life with receipts disabled — which is exactly
+        # how a bundle that never dispatched a kernel was recorded as a PASS
+        # (2026-08-16). Receipts are also once-per-slot-per-root, so the scope
+        # must advance with the generation or only the lane's first candidate
+        # would ever emit anything.
+        #
+        # This swap closes the previous generation: that scope's receipts are
+        # final now, and this rank has finished writing its own, so counting
+        # them here is race-free against peer ranks sharing the root. They ride
+        # home on this ack, which the worker already gathers from every rank.
+        # Failure here must not wedge a swap, so it is best effort — and an
+        # unobservable count reports as absent, never as zero.
+        try:
+            receipts.set_root(os.path.join(control_dir, "receipts"))
+            ack["prior_generation"] = prior_generation
+            ack["prior_receipts"] = (
+                receipts.counts_for_scope(prior_generation, pid=os.getpid())
+                if prior_generation >= 0
+                else {}
+            )
+            ack["receipt_scope"] = receipts.set_scope(generation)
+        except Exception:  # noqa: BLE001 - diagnostics never break an engine
+            logger.exception("cacheon: receipt scope failed at generation %s", generation)
 
         result = seam.swap_resident_bundle(bundle)
         ack.update(result)

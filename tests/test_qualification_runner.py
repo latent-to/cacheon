@@ -11,6 +11,7 @@ import pytest
 
 import cacheon.eval.qualification_runner as runner
 from cacheon.eval.device_state import DeviceStateReceipt, DeviceStateSample
+from cacheon.eval.qualification import declared_qualification_entropy_digest
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
 from cacheon.eval.oci_backend import OCIBackendError, OCIEngineExecutor
 from cacheon.eval.oci_outer_session import OuterSessionWorkerError
@@ -273,7 +274,6 @@ class _Harness:
         self.executor.manager = SimpleNamespace(clock=lambda: 3.5)
         before, after = _quiescence(1, 3.0), _quiescence(2, 6.0)
         quiescence_count = 0
-
         @contextmanager
         def transaction(_executor):
             self.calls.append("transaction.enter")
@@ -281,7 +281,6 @@ class _Harness:
                 yield _executor
             finally:
                 self.calls.append("transaction.exit")
-
         def prove_quiescent(_executor):
             nonlocal quiescence_count
             quiescence_count += 1
@@ -289,8 +288,9 @@ class _Harness:
             if fail_pre_t_quiescence and quiescence_count == 1:
                 raise runner.QualificationRunnerError("pre-T quiescence failed")
             return before if quiescence_count == 1 else after
-
-        def execute_reference(_executor, _launch, _binding, _mount, plan, *, deadline):
+        def execute_reference(
+            _executor, _launch, _binding, _mount, plan, *, deadline, completion_sink=None
+        ):
             del deadline
             assert plan is not getattr(self.value, "resident_audit_plan", None)
             self.calls.append("reference")
@@ -327,7 +327,7 @@ class _Harness:
                     4.2, 5.0, 1, (sample,),
                 ),
             )
-            return SimpleNamespace(
+            evidence = SimpleNamespace(
                 launch_digest=reference.pristine_launch_digest,
                 runtime_identity=SimpleNamespace(
                     runtime_digest=_d("reference-runtime"),
@@ -344,23 +344,22 @@ class _Harness:
                 session=session,
                 device_receipts=receipts,
             )
-
+            if completion_sink is not None:
+                completion_sink(evidence)
+            return evidence
         monkeypatch.setattr(OCIEngineExecutor, "exclusive_transaction", transaction)
         monkeypatch.setattr(OCIEngineExecutor, "prove_quiescent", prove_quiescent)
         monkeypatch.setattr(OCIEngineExecutor, "execute_reference", execute_reference)
-
         def prevalidate(_value, *_args, **_kwargs):
             self.calls.append("prevalidate")
             return self.calibration, self.grades
-
         monkeypatch.setattr(runner, "_validate_pre_execution", prevalidate)
         monkeypatch.setattr(
             runner,
             "run_marginal_lifecycle",
             lambda *_args, **_kwargs: self.calls.append("lifecycle") or self.lifecycle,
         )
-
-        def run_audits(value, _lifecycle, **_kwargs):
+        def run_audits(value, _lifecycle, *, completion_sink=None, **_kwargs):
             self.calls.append("audit")
             witnesses = {}
             for index, (authority, prepared, policy, decision) in enumerate(
@@ -400,7 +399,8 @@ class _Harness:
                 assert passed == (decision is QualificationDecision.PASS)
                 witness = runner.AuditWitness(
                     authority.selected_delta_digest,
-                    prepared.launch.digest,
+                    getattr(getattr(value, "resident_audit_plan", None), "launch",
+                            prepared.launch).digest,
                     _d(f"audit-execution-{index}"),
                     f"{900 + index:032x}",
                     value.expected_runtime_resource_policy_digest,
@@ -410,6 +410,8 @@ class _Harness:
                     detail,
                 )
                 witnesses[authority.selected_delta_digest] = witness
+            if completion_sink is not None:
+                completion_sink(witnesses, 2.5)
             return witnesses, 2.5
 
         monkeypatch.setattr(runner, "_run_slot_audits", run_audits)
@@ -710,7 +712,7 @@ def _install_resident_runner_path(
     assert len(harness.value.candidates) == 1
     harness.value.speed_evidence_policy = runner.SpeedEvidencePolicy.resident()
     harness.value.resident_audit_plan = SimpleNamespace(
-        authority="resident-audit-only"
+        launch=SimpleNamespace(digest=_d("resident-audit-launch"))
     )
     harness.resident_speed_plans = []
     harness.value.resident_speed_plan = SimpleNamespace(
@@ -866,10 +868,13 @@ def _install_resident_runner_path(
         published_stage_exits.append(result)
         return stage_reference
 
-    def reopen_stage(root, reference, *, expected):
+    def reopen_stage(root, reference, *, expected, resident_pair_lifecycle=None):
         assert root is harness.value.evidence_root
         assert reference == stage_reference
         assert expected is harness.value
+        assert resident_pair_lifecycle is None or isinstance(
+            resident_pair_lifecycle, FakeResidentLifecycle
+        )
         assert len(published_stage_exits) == 1
         harness.calls.append("stage.reopen")
         return published_stage_exits[0]
@@ -1818,6 +1823,45 @@ def test_audit_witness_canonicalizes_raw_protocol_floats_and_reopens() -> None:
         runner.AuditWitness.from_dict(spelling_tamper)
 
 
+def test_audit_witness_grades_policy_bound_empty_receipts_as_fail() -> None:
+    policy = runner.SlotAuditPolicy(
+        "a" * 32,
+        250_000,
+        32,
+        ("moe.fused_experts_reduce",),
+        4,
+    )
+    execution = runner.EngineExecutionEvidence(
+        "cacheon.oci-engine-execution.v1",
+        _d("empty-audit-launch"),
+        SimpleNamespace(),
+        _d("empty-audit-preflight"),
+        _d("empty-audit-model"),
+        _d("empty-audit-runtime-policy"),
+        SimpleNamespace(build_spec_digest=_d("empty-audit-build")),
+        _d("empty-audit-publication"),
+        _d("empty-audit-argv"),
+        (),
+        (),
+        SimpleNamespace(
+            audit_policy_digest=policy.digest,
+            audit_receipts=(),
+            session_id="3" * 32,
+        ),
+    )
+
+    witness = runner.AuditWitness.from_execution(
+        execution,
+        selected_delta_digest=_d("empty-audit-delta"),
+        policy=policy,
+    )
+
+    assert witness.decision is QualificationDecision.FAIL
+    assert witness.receipts == ()
+    assert witness.detail == "no audit receipts (need >= 32 audited calls)"
+    assert runner.AuditWitness.from_dict(witness.to_dict()) == witness
+
+
 def test_audit_witness_host_regrade_does_not_import_torch(monkeypatch) -> None:
     """The trusted controller is intentionally lean and has no worker torch."""
     import sys
@@ -2240,7 +2284,7 @@ def _typed_resident_qualification_input(
         _d(f"typed-resident-{candidate_lane}-device-configuration"),
     )
     calibration_context = CalibrationContext(
-        reference.digest,
+        reference.measured_digest,
         reference.arena_digest,
         reference.runtime_digest,
         reference.base_engine_digest,
@@ -2250,7 +2294,6 @@ def _typed_resident_qualification_input(
         reference.logical_hardware_digest,
         reference.workload_digest,
         requirement.binding.verification_policy_digest,
-        reference.controller_distribution_digest,
     )
     calibration = replace(
         calibration_manifest(),
@@ -2308,7 +2351,9 @@ def _typed_resident_qualification_input(
     commitment = SelectionCommitment.seal(
         source_plan_digest=prepared.source.digest,
         reference_manifest=reference,
-        entropy_source_digest=reference.selection_policy_digest,
+        entropy_source_digest=declared_qualification_entropy_digest(
+            reference.selection_policy_digest
+        ),
         prompt_digests=runner._planned_prompt_digests(prepared),
         select_count=2,
         secret=secret,
@@ -2320,13 +2365,20 @@ def _typed_resident_qualification_input(
         (requirement.binding.members[0].slot_id,),
         prepared.baseline_session_plan.engine_config.tp_size,
     )
-    resident_audit_plan = replace(
+    audit_prompt = candidate.session_plan.prompt_batches[0][0]
+    resident_audit_plan = runner.ResidentAuditExecutionAuthority.derive(
+        candidate.launch,
+        candidate.binding.launch_binding,
         candidate.session_plan,
-        prompt_batches=(
-            *candidate.session_plan.prompt_batches,
-            candidate.session_plan.prompt_batches[-1],
-        ),
         audit_policy=audit_policy,
+        prompt_batches=tuple(
+            (audit_prompt,) for _ in range(audit_policy.minimum_calls + 1)
+        ),
+        max_new_tokens=2,
+        top_logprobs_num=1,
+        executor_namespace_digest=resident_plan.candidate.executor_namespace_digest,
+        runtime_resource_policy_digest=resident_plan.candidate.runtime_resource_policy_digest,
+        device_configuration_digest=resident_plan.candidate.device_configuration_digest,
     )
     return runner.CausalQualificationInput(
         prepared=prepared,
@@ -2381,7 +2433,7 @@ def test_typed_resident_input_derives_calibration_from_candidate_reference(
         != plan.candidate.launch.resource_policy_digest
     )
     assert value.calibration_context == runner.CalibrationContext(
-        reference.digest,
+        reference.measured_digest,
         reference.arena_digest,
         reference.runtime_digest,
         reference.base_engine_digest,
@@ -2391,7 +2443,6 @@ def test_typed_resident_input_derives_calibration_from_candidate_reference(
         reference.logical_hardware_digest,
         reference.workload_digest,
         verification_policy.verification_policy_digest,
-        reference.controller_distribution_digest,
     )
     assert reference.logical_hardware_digest == plan.candidate.launch.hardware.digest
     assert reference.workload_digest == runner.marginal_workload_digest(
@@ -2494,39 +2545,6 @@ def test_typed_resident_input_accepts_exact_swapped_lane_authority(
     )
 
 
-def test_resident_audit_plan_is_distinct_and_bound_by_authority(
-    tmp_path: Path,
-) -> None:
-    value = _typed_resident_qualification_input(tmp_path)
-    audit_plan = value.resident_audit_plan
-    assert audit_plan is not None
-    assert audit_plan.audit_policy == value.audit_policies[0]
-    assert runner.marginal_workload_digest(audit_plan) != runner.marginal_workload_digest(
-        value.prepared.candidates[0].session_plan
-    )
-
-    changed_plan = replace(
-        audit_plan,
-        prompt_batches=(*audit_plan.prompt_batches, audit_plan.prompt_batches[-1]),
-    )
-    changed = replace(value, resident_audit_plan=changed_plan)
-    assert runner.qualification_authority_digest(changed) != (
-        runner.qualification_authority_digest(value)
-    )
-
-    with pytest.raises(
-        runner.QualificationRunnerError,
-        match="resident audit plan differs",
-    ):
-        replace(
-            value,
-            resident_audit_plan=replace(
-                value.prepared.candidates[0].session_plan,
-                audit_policy=value.audit_policies[0],
-            ),
-        )
-
-
 def test_calibration_speed_continuation_is_exact_and_authority_bound(
     tmp_path: Path,
 ) -> None:
@@ -2556,8 +2574,8 @@ def test_resident_slot_audit_executes_the_sealed_audit_only_plan(
     tmp_path: Path,
 ) -> None:
     value = _typed_resident_qualification_input(tmp_path)
-    audit_plan = value.resident_audit_plan
-    assert audit_plan is not None
+    audit = value.resident_audit_plan
+    assert audit is not None
     timed_baseline = SimpleNamespace(session=SimpleNamespace(session_id="a" * 32))
     timed_candidate = SimpleNamespace(session=SimpleNamespace(session_id="b" * 32))
     lifecycle = object.__new__(runner.ResidentMarginalLifecycleEvidence)
@@ -2567,21 +2585,45 @@ def test_resident_slot_audit_executes_the_sealed_audit_only_plan(
         SimpleNamespace(
             baseline_execution=timed_baseline,
             candidate_execution=timed_candidate,
+            baseline_quiescence=SimpleNamespace(observed_monotonic_s=7.0),
+            candidate_quiescence=SimpleNamespace(observed_monotonic_s=8.0),
         ),
     )
     execution = SimpleNamespace(
+        launch_digest=audit.launch.digest,
         session=SimpleNamespace(session_id="c" * 32),
         resource_policy_digest=value.expected_runtime_resource_policy_digest,
-        device_receipts=(SimpleNamespace(completed_monotonic_s=9.0),),
+        device_receipts=(
+            SimpleNamespace(started_monotonic_s=8.5, completed_monotonic_s=9.0),
+        ),
     )
 
     class CapturingExecutor:
         def __init__(self) -> None:
             self.plans: list[object] = []
+            self.manager = SimpleNamespace(
+                namespace_digest=audit.executor_namespace_digest
+            )
+            self.config = SimpleNamespace(
+                runtime=SimpleNamespace(
+                    digest=audit.runtime_resource_policy_digest
+                ),
+                prebuild=SimpleNamespace(
+                    policy=SimpleNamespace(
+                        resource_policy_digest=audit.launch.resource_policy_digest
+                    )
+                ),
+            )
+            physical = audit.binding.physical_hardware
+            self.device_policy = SimpleNamespace(
+                physical_gpu_ids=tuple(map(int, physical.physical_gpu_ids)),
+                configuration_sha256=audit.device_configuration_digest,
+                policy_sha256=physical.device_policy_digest,
+            )
 
         def execute(self, launch, binding, mount, plan, *, deadline):
-            assert launch is value.prepared.candidates[0].launch
-            assert binding is value.prepared.candidates[0].binding.launch_binding
+            assert launch is audit.launch
+            assert binding is audit.binding
             assert mount is value.model_mount
             assert deadline == 10.0
             self.plans.append(plan)
@@ -2601,6 +2643,30 @@ def test_resident_slot_audit_executes_the_sealed_audit_only_plan(
         staticmethod(from_execution),
     )
     executor = CapturingExecutor()
+    expected_namespace = executor.manager.namespace_digest
+    executor.manager.namespace_digest = _d("foreign-audit-namespace")
+    with pytest.raises(
+        runner.QualificationRunnerError, match="commissioned authority"
+    ):
+        runner._run_slot_audits(
+            value, lifecycle, executor=executor, deadline=10.0
+        )
+    assert executor.plans == []
+    executor.manager.namespace_digest = expected_namespace
+    execution.device_receipts[0].started_monotonic_s = 7.5
+    with pytest.raises(runner.QualificationRunnerError, match="preceded retirement"):
+        runner._run_slot_audits(
+            value, lifecycle, executor=executor, deadline=10.0
+        )
+    executor.plans.clear()
+    execution.device_receipts[0].started_monotonic_s = 8.5
+    execution.session.session_id = "a" * 32
+    with pytest.raises(runner.QualificationRunnerError, match="reused a pair role"):
+        runner._run_slot_audits(
+            value, lifecycle, executor=executor, deadline=10.0
+        )
+    executor.plans.clear()
+    execution.session.session_id = "c" * 32
     witnesses, completed = runner._run_slot_audits(
         value,
         lifecycle,
@@ -2608,30 +2674,7 @@ def test_resident_slot_audit_executes_the_sealed_audit_only_plan(
         deadline=10.0,
     )
 
-    assert executor.plans == [audit_plan]
+    assert executor.plans == [audit.plan]
     assert executor.plans[0] is not value.prepared.candidates[0].session_plan
     assert witnesses == {value.candidates[0].selected_delta_digest: witness}
     assert completed == 9.0
-
-
-def test_resident_audit_plan_is_not_used_by_speed_or_pristine_t(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS,),
-    )
-    baseline, _stage_reference, _exits = _install_resident_runner_path(
-        monkeypatch,
-        harness,
-        speed_decision=QualificationDecision.PASS,
-        escalated=False,
-    )
-    audit_plan = harness.value.resident_audit_plan
-
-    _run_resident_harness(harness, baseline)
-
-    assert harness.resident_speed_plans == [harness.value.resident_speed_plan]
-    assert audit_plan not in harness.resident_speed_plans
-    assert len(harness.reference_session_plans) == 1
-    assert harness.reference_session_plans[0] is not audit_plan

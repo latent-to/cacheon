@@ -14,14 +14,10 @@ the durable lease without consuming an attempt.
 
 from __future__ import annotations
 
-import contextlib
 import fcntl
-import io
 import os
 import shutil
-import stat
 import subprocess
-import tarfile
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -31,12 +27,23 @@ from typing import Any
 
 from cacheon.chain.evaluation_coordinator import ClaimedScreenEvaluation
 from cacheon.chain.evaluation_leases import EvaluationLease
-from cacheon.chain.publication import WorkerBundlePublication, reopen_worker_bundle
 from cacheon.chain.remote_evaluation_dispatcher import (
     AuthenticatedRemoteEvaluationResponse,
     RemoteEvaluationDispatcherError,
     RemoteEvaluationRequest,
     verify_remote_request,
+)
+from cacheon.chain.remote_worker_artifact_recovery import publication_archive
+from cacheon.chain.remote_worker_request_plan import (
+    PlannedQualificationObservation,
+    QualificationPrepublicationProof,
+    QualificationRecoveryHold,
+    QualificationRequestPlan,
+    create_qualification_request_plan,
+    inspect_planned_qualification as inspect_qualification_plan,
+    materialize_planned_qualification as materialize_qualification_plan,
+    prove_planned_qualification_prepublication as prove_qualification_plan,
+    publish_planned_qualification as publish_qualification_plan,
 )
 from cacheon.chain.remote_worker_registration import (
     registration_credential,
@@ -45,9 +52,7 @@ from cacheon.chain.remote_worker_registration import (
     verify_registration,
 )
 from cacheon.chain.remote_worker_spool import (
-    MAX_ARTIFACT_BYTES,
     MAX_JOB_SECONDS,
-    NATIVE_ARTIFACT_MANIFEST,
     SAFE_ID,
     append_event,
     artifact_for_role,
@@ -65,7 +70,6 @@ from cacheon.chain.remote_worker_spool import (
     safe_extract,
     spool_canonical_json,
     strict_json_object,
-    tar_info,
     verify_adapter_result,
     verify_heartbeat,
     verify_result_ready,
@@ -73,7 +77,6 @@ from cacheon.chain.remote_worker_spool import (
     write_local_no_decision,
     RemoteWorkerError,
 )
-from cacheon.stack_identity import sha256_hex
 
 
 DEFAULT_POLL_SECONDS = 5
@@ -330,6 +333,37 @@ def remote_heartbeat(
     return verify_heartbeat(strict_json_object(output), registration, max_age)
 
 
+def _observe_worker_hold(
+    previous_state: str | None,
+    heartbeat: Mapping[str, Any],
+    spool_root: Path,
+    registration: Mapping[str, Any],
+) -> str | None:
+    """Track pod hold states without ever exiting the relay.
+
+    ``epoch_failed`` (legacy latch) and ``adapter_cooldown`` are worker-side
+    conditions; the relay's job is transport, and the pod's ``accept-request``
+    and ``pull-result`` verbs keep working through both.  Exiting here is what
+    turned one adapter fault into a dead dispatcher and a stalled spool on
+    mainnet 2026-08-10.  One event per transition keeps the spool log quiet.
+    """
+    state = heartbeat["state"]
+    if state not in ("epoch_failed", "adapter_cooldown"):
+        return None
+    if state != previous_state:
+        append_event(
+            spool_root,
+            "dispatcher_worker_cooldown",
+            adapter_start_count=heartbeat["adapter_start_count"],
+            consecutive_adapter_failures=heartbeat[
+                "consecutive_adapter_failures"
+            ],
+            worker_epoch=registration["worker_epoch"],
+            worker_state=state,
+        )
+    return state
+
+
 def cpu_serve(
     *,
     registration_path: Path,
@@ -360,6 +394,7 @@ def cpu_serve(
         append_event(
             spool_root, "dispatcher_started", worker_epoch=registration["worker_epoch"]
         )
+        worker_hold_state: str | None = None
         while True:
             if not registration_is_current(registration, current_registration_path):
                 append_event(
@@ -370,17 +405,9 @@ def cpu_serve(
                 return
             try:
                 heartbeat = remote_heartbeat(registration, site, max_heartbeat_age)
-                if heartbeat["state"] == "epoch_failed":
-                    append_event(
-                        spool_root,
-                        "dispatcher_epoch_failed",
-                        adapter_start_count=heartbeat["adapter_start_count"],
-                        consecutive_adapter_failures=heartbeat[
-                            "consecutive_adapter_failures"
-                        ],
-                        worker_epoch=registration["worker_epoch"],
-                    )
-                    return
+                worker_hold_state = _observe_worker_hold(
+                    worker_hold_state, heartbeat, spool_root, registration
+                )
                 queue = iter_queue(
                     outbox, registration, identity=identity, credential=credential
                 )
@@ -454,122 +481,6 @@ def cpu_serve(
             except RemoteWorkerError as exc:
                 append_event(spool_root, "dispatcher_retry", error=str(exc)[:1024])
             time.sleep(poll_seconds)
-
-
-def publication_archive(publication: object, destination: Path) -> None:
-    """Copy one exact WorkerBundlePublication into a path-free worker archive."""
-
-    if type(publication) is not WorkerBundlePublication:
-        fail("screen transport requires an exact WorkerBundlePublication")
-    root = publication.root
-    if root.is_symlink() or not root.is_dir():
-        fail("worker publication root is unavailable or symlinked")
-    try:
-        reopened = reopen_worker_bundle(
-            root,
-            publication.content_hash,
-            expected_publication_digest=publication.publication_digest,
-            expected_receipt_digest=publication.digest,
-        )
-    except Exception as exc:
-        fail(f"worker publication cannot be reopened before transport: {exc}")
-    if reopened.to_dict() != publication.to_dict():
-        fail("reopened worker publication differs before transport")
-
-    def stable_bytes(path: Path, *, size: int | None, sha256: str | None) -> bytes:
-        before = path.lstat()
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or stat.S_ISLNK(before.st_mode)
-            or before.st_nlink != 1
-            or stat.S_IMODE(before.st_mode) != 0o444
-            or before.st_size < 0
-            or (size is not None and before.st_size != size)
-        ):
-            fail("worker publication file shape differs during transport")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
-        try:
-            opened = os.fstat(descriptor)
-            if (
-                opened.st_dev != before.st_dev
-                or opened.st_ino != before.st_ino
-                or opened.st_mode != before.st_mode
-                or opened.st_nlink != before.st_nlink
-                or opened.st_size != before.st_size
-            ):
-                fail("worker publication file changed while opening")
-            chunks: list[bytes] = []
-            remaining = before.st_size
-            while remaining:
-                chunk = os.read(descriptor, min(4 << 20, remaining))
-                if not chunk:
-                    fail("worker publication file was truncated")
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            if os.read(descriptor, 1):
-                fail("worker publication file grew during transport")
-            after = os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
-        data = b"".join(chunks)
-        if (
-            after.st_dev != before.st_dev
-            or after.st_ino != before.st_ino
-            or after.st_mode != before.st_mode
-            or after.st_nlink != before.st_nlink
-            or after.st_size != before.st_size
-            or after.st_mtime_ns != before.st_mtime_ns
-            or (sha256 is not None and sha256_hex(data) != sha256)
-        ):
-            fail("worker publication bytes differ from retained inventory")
-        return data
-
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{destination.name}.", dir=destination.parent
-    )
-    os.close(descriptor)
-    try:
-        manifest = (
-            spool_canonical_json(
-                {
-                    "publication": publication.to_dict(),
-                    "schema": "cacheon-remote-worker-publication-v1",
-                }
-            )
-            + b"\n"
-        )
-        with tarfile.open(temporary, "w") as archive:
-            archive.addfile(
-                tar_info("publication.json", len(manifest)), io.BytesIO(manifest)
-            )
-            native_manifest = stable_bytes(
-                root / NATIVE_ARTIFACT_MANIFEST, size=None, sha256=None
-            )
-            if len(native_manifest) > 16 << 20:
-                fail("worker publication native manifest exceeds its hard bound")
-            archive.addfile(
-                tar_info(f"bundle/{NATIVE_ARTIFACT_MANIFEST}", len(native_manifest)),
-                io.BytesIO(native_manifest),
-            )
-            for row in publication.files:
-                relative = Path(row.path)
-                if relative.is_absolute() or ".." in relative.parts:
-                    fail("worker publication inventory contains an unsafe path")
-                path = root.joinpath(*relative.parts)
-                data = stable_bytes(path, size=row.size, sha256=row.sha256)
-                archive.addfile(
-                    tar_info(f"bundle/{relative.as_posix()}", len(data)),
-                    io.BytesIO(data),
-                )
-        if Path(temporary).stat().st_size > MAX_ARTIFACT_BYTES:
-            fail("worker publication archive exceeds transport limit")
-        os.chmod(temporary, 0o400)
-        os.replace(temporary, destination)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            os.unlink(temporary)
 
 
 class DurableSpoolAuthenticatedWorkerTransport:
@@ -717,7 +628,9 @@ class DurableSpoolAuthenticatedWorkerTransport:
         except RemoteWorkerError as exc:
             raise RemoteEvaluationDispatcherError(str(exc)) from exc
 
-    def run_qualification(self, request):
+    def _with_qualification_artifacts(self, request, operation):
+        """Rebuild exact path-free inputs and invoke one non-network operation."""
+
         if type(request) is not RemoteEvaluationRequest or request.stage != "qualification":
             raise RemoteEvaluationDispatcherError(
                 "spool qualification transport requires an exact qualification request"
@@ -727,61 +640,138 @@ class DurableSpoolAuthenticatedWorkerTransport:
             raise RemoteEvaluationDispatcherError(
                 "spool qualification publication authority is not configured"
             )
+        verify_remote_request(request, self.identity, self.credential)
+        publications = tuple(resolver(request))
+        candidates = request.body["candidates"]
+        if (
+            type(candidates) is not list
+            or not candidates
+            or len(publications) != len(candidates)
+            or any(type(row) is not dict for row in candidates)
+            or any(
+                publication.to_dict() != row["publication"]
+                for publication, row in zip(publications, candidates, strict=True)
+            )
+        ):
+            raise RemoteEvaluationDispatcherError(
+                "resolved qualification publications differ from authenticated work"
+            )
+        if len({row.publication_digest for row in publications}) != len(publications):
+            raise RemoteEvaluationDispatcherError(
+                "qualification cohort carries duplicate candidate publications"
+            )
+        scratch = Path(
+            tempfile.mkdtemp(prefix=".qualification.", dir=self.spool_root / "state")
+        )
         try:
-            verify_remote_request(request, self.identity, self.credential)
-            self._require_dispatcher_liveness()
-            publications = tuple(resolver(request))
-            if len(publications) != 1:
-                raise RemoteEvaluationDispatcherError(
-                    "resident-v3 qualification transport requires one publication"
-                )
-            publication = publications[0]
-            candidates = request.body["candidates"]
-            if (
-                type(candidates) is not list
-                or len(candidates) != 1
-                or type(candidates[0]) is not dict
-                or publication.to_dict() != candidates[0]["publication"]
-            ):
-                raise RemoteEvaluationDispatcherError(
-                    "resolved qualification publication differs from authenticated work"
-                )
-            scratch = Path(
-                tempfile.mkdtemp(
-                    prefix=".qualification.", dir=self.spool_root / "state"
-                )
-            )
-            try:
-                wire_path = scratch / "qualification-request.json"
-                atomic_json(wire_path, request.to_dict(), mode=0o400)
-                publication_path = scratch / "candidate-publication.tar"
+            wire_path = scratch / "qualification-request.json"
+            atomic_json(wire_path, request.to_dict(), mode=0o400)
+            carriers: list[tuple[str, Path]] = []
+            for index, publication in enumerate(publications):
+                publication_path = scratch / f"candidate-publication-{index}.tar"
                 publication_archive(publication, publication_path)
-                lease = EvaluationLease(
-                    request.lease_id,
-                    request.generation,
-                    request.stage,
-                    request.owner,
-                    request.members,
-                    request.claimed_block,
-                    request.initial_expires_block,
-                    request.initial_expires_block,
-                )
-                request_id, job_dir = enqueue_request(
-                    self.registration,
-                    self._lease_dict(lease),
-                    (
-                        ("qualification_payload", wire_path),
-                        ("candidate_publication", publication_path),
-                    ),
-                    self.spool_root / "outbox",
-                    deadline_seconds=self.response_timeout_seconds,
-                    identity=self.identity,
-                    credential=self.credential,
-                )
-            finally:
-                shutil.rmtree(scratch, ignore_errors=True)
-            return self._await_completed_result(
-                request_id, job_dir, stage="qualification"
+                carriers.append(("candidate_publication", publication_path))
+            lease = EvaluationLease(
+                request.lease_id,
+                request.generation,
+                request.stage,
+                request.owner,
+                request.members,
+                request.claimed_block,
+                request.initial_expires_block,
+                request.initial_expires_block,
             )
-        except RemoteWorkerError as exc:
-            raise RemoteEvaluationDispatcherError(str(exc)) from exc
+            return operation(
+                lease,
+                (("qualification_payload", wire_path), *carriers),
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+    def plan_qualification_request(self, request) -> QualificationRequestPlan:
+        """Derive one plan; do not materialize or publish its carrier."""
+
+        return self._with_qualification_artifacts(
+            request,
+            lambda lease, artifacts: create_qualification_request_plan(
+                self.registration,
+                lease,
+                request,
+                artifacts,
+                deadline_seconds=self.response_timeout_seconds,
+                identity=self.identity,
+                credential=self.credential,
+            ),
+        )
+
+    def materialize_planned_qualification(
+        self, plan: QualificationRequestPlan, request: RemoteEvaluationRequest
+    ) -> PlannedQualificationObservation:
+        return self._with_qualification_artifacts(
+            request,
+            lambda _lease, artifacts: materialize_qualification_plan(
+                plan,
+                artifacts,
+                self.spool_root / "outbox",
+                self.spool_root / "results",
+                self.registration,
+                identity=self.identity,
+                credential=self.credential,
+            ),
+        )
+
+    def inspect_planned_qualification(
+        self, plan: QualificationRequestPlan
+    ) -> PlannedQualificationObservation:
+        return inspect_qualification_plan(
+            plan,
+            self.spool_root / "outbox",
+            self.spool_root / "results",
+            self.registration,
+            identity=self.identity,
+            credential=self.credential,
+        )
+
+    def prove_planned_qualification_prepublication(
+        self, plan: QualificationRequestPlan
+    ) -> QualificationPrepublicationProof:
+        return prove_qualification_plan(
+            plan,
+            self.spool_root / "outbox",
+            self.spool_root / "results",
+            self.registration,
+            identity=self.identity,
+            credential=self.credential,
+        )
+
+    def publish_planned_qualification(
+        self, plan: QualificationRequestPlan
+    ) -> PlannedQualificationObservation:
+        return publish_qualification_plan(
+            plan,
+            self.spool_root / "outbox",
+            self.spool_root / "results",
+            self.registration,
+            identity=self.identity,
+            credential=self.credential,
+        )
+
+    def resume_planned_qualification(
+        self, plan: QualificationRequestPlan
+    ) -> AuthenticatedRemoteEvaluationResponse:
+        observed = self.inspect_planned_qualification(plan)
+        if observed.response is not None:
+            return observed.response
+        if observed.state == "result_ready":
+            raise RemoteEvaluationDispatcherError(
+                f"remote qualification infrastructure: {observed.failure_code}"
+            )
+        if observed.state != "request_ready" or observed.carrier_path is None:
+            raise QualificationRecoveryHold(
+                "request_not_published",
+                plan.request_id,
+                "resume requires the exact published carrier",
+            )
+        return self._await_completed_result(
+            plan.request_id, observed.carrier_path, stage="qualification"
+        )

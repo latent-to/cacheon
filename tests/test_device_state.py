@@ -11,12 +11,15 @@ from cacheon.eval.device_state import (
     DeviceStateClockError,
     DeviceStateConfigurationError,
     DeviceStateEnvelopeError,
+    DeviceStateEnvelopeTimeoutError,
     DeviceStateGuard,
     DeviceStateParseError,
     DeviceStatePolicy,
     DeviceStatePolicyError,
     DeviceStateTimeoutError,
     GPUConfiguration,
+    GPUProcess,
+    GPUTelemetry,
     NVIDIA_SMI,
     provision_gpu_configurations,
     validate_device_state_policy,
@@ -509,6 +512,151 @@ def test_active_conditioning_requires_consecutive_pinned_envelope_samples():
     assert receipt.samples[-1].telemetry[0].gpu_utilization_percent == 99
 
 
+class StallingRunner(ScriptedRunner):
+    """A runner whose nvidia-smi overruns its command window on chosen calls."""
+
+    def __init__(self, *args, stall_calls=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stall_calls = frozenset(stall_calls)
+        self.attempts = 0
+
+    def __call__(self, argv: tuple[str, ...], *, timeout_s: float) -> CommandResult:
+        self.attempts += 1
+        if self.attempts in self.stall_calls:
+            raise DeviceStateTimeoutError(
+                "host nvidia-smi command exceeded its absolute deadline"
+            )
+        return super().__call__(argv, timeout_s=timeout_s)
+
+
+def _active_conditioning_script(policy):
+    active = "\n".join(
+        (
+            "# gpu pid type sm mem enc dec command",
+            "0 501 C 90 40 - - rank0",
+            "1 502 C 90 40 - - rank1",
+        )
+    ) + "\n"
+    conditioned = _gpu_output(
+        policy,
+        pstate="P0",
+        current_graphics_clock_mhz=210,
+        gpu_utilization=99,
+        memory_utilization=99,
+    )
+    return conditioned, active
+
+
+def test_active_conditioning_survives_a_transient_telemetry_command_timeout():
+    # A host nvidia-smi that overruns its 10s command window says nothing about
+    # the device envelope, but propagating it ended a session that had already
+    # paid for its model load -- and the caller then laundered the infrastructure
+    # failure into a `no_decision` grade.
+    policy = _policy(required_consecutive_idle_samples=2)
+    clock = FakeClock()
+    conditioned, active = _active_conditioning_script(policy)
+    runner = StallingRunner(
+        [conditioned], [active], clock=clock, stall_calls=(3,)
+    )
+
+    receipt = _guard(policy, runner=runner, clock=clock).condition_active(
+        "launch-stall", deadline=clock.value + 10
+    )
+
+    # One conditioned sample, the stall, then the consecutive run restarts and
+    # completes: the stalled query contributes no sample and no verdict.
+    assert [sample.active_envelope_passed for sample in receipt.samples] == [
+        True,
+        True,
+        True,
+    ]
+    assert runner.attempts == 7
+    # Each pass waits a polling interval rather than spinning on the driver.
+    assert clock.value == pytest.approx(103.0)
+
+
+def test_active_conditioning_fails_closed_when_telemetry_stays_wedged():
+    policy = _policy(required_consecutive_idle_samples=2)
+    clock = FakeClock()
+    conditioned, active = _active_conditioning_script(policy)
+    runner = StallingRunner(
+        [conditioned], [active], clock=clock, stall_calls=range(1, 1_000)
+    )
+
+    with pytest.raises(DeviceStateEnvelopeTimeoutError) as excinfo:
+        _guard(policy, runner=runner, clock=clock).condition_active(
+            "launch-wedged-active", deadline=clock.value + 10
+        )
+
+    # Retrying a transient stall must not turn a wedged driver into a pass: the
+    # bounded conditioning window is still what ends the attempt.
+    assert "did not satisfy the active post-warmup envelope" in str(excinfo.value)
+    assert clock.value == pytest.approx(110.0)
+    # It retried rather than dying on the first stall, and stayed bounded.
+    assert 1 < runner.attempts <= policy.maximum_samples
+
+
+def test_active_conditioning_spans_a_warmup_longer_than_the_drain_budget():
+    # The mainnet B300 commission died here three times: `drain_timeout_s` is
+    # 180s, the final warmup batch runs longer than that, and the observation
+    # was charging an externally gated wait against the drain budget. The
+    # receipt it failed with was 278 passing samples, 0 command problems, and
+    # released=False -- the gate was never unhappy, it just ran out of a budget
+    # that was never meant to cover a warmup.
+    policy = _policy(
+        required_consecutive_idle_samples=2,
+        poll_interval_s=1.0,
+        drain_timeout_s=10.0,
+    )
+    clock = FakeClock()
+    active = "\n".join(
+        (
+            "# gpu pid type sm mem enc dec command",
+            "0 501 C 90 40 - - rank0",
+            "1 502 C 90 40 - - rank1",
+        )
+    ) + "\n"
+    conditioned = _gpu_output(
+        policy,
+        pstate="P0",
+        current_graphics_clock_mhz=210,
+        gpu_utilization=0,
+        memory_utilization=0,
+    )
+    runner = ScriptedRunner([conditioned], [active], clock=clock)
+    released = False
+    waits = 0
+
+    def is_released():
+        return released
+
+    def wait_for_release(timeout_s: float) -> bool:
+        nonlocal released, waits
+        waits += 1
+        clock.value += timeout_s  # the warmup batch is still running
+        if clock.value >= 220.0:  # releases 120s in, 12x the drain budget
+            released = True
+        return released
+
+    receipt = _guard(policy, runner=runner, clock=clock).condition_active(
+        "launch-long-warmup",
+        "final-warmup-conditioning",
+        deadline=clock.value + 600,
+        release=is_released,
+        wait_for_release=wait_for_release,
+    )
+
+    assert receipt.release_sample_index == 2
+    assert len(receipt.samples) == 3
+    assert receipt.samples[-1].active_envelope_passed
+    # It waited well past drain_timeout_s instead of failing at it...
+    assert clock.value >= 220.0
+    # ...and it blocked on the boundary rather than spending a telemetry
+    # sample per wakeup, which is what exhausts the sample budget in practice.
+    assert waits >= 100
+    assert len(runner.calls) == 6
+
+
 def test_active_conditioning_pre_query_cancel_consumes_no_command_or_sequence():
     policy = _policy(required_consecutive_idle_samples=2)
     clock = FakeClock()
@@ -794,3 +942,60 @@ def test_malformed_process_monitor_and_clock_regression_fail_closed():
     clock.value -= 100
     with pytest.raises(DeviceStateClockError):
         guard.after_launch("launch-b")
+
+
+def _capture_telemetry(
+    physical_id: int, *, gpu_util: int = 0, memory_util: int = 0, temperature: int = 40
+) -> GPUTelemetry:
+    return GPUTelemetry(
+        physical_id=physical_id,
+        uuid=_gpu(physical_id).uuid,
+        pstate="P0",
+        temperature_c=temperature,
+        gpu_utilization_percent=gpu_util,
+        memory_utilization_percent=memory_util,
+        current_graphics_clock_mhz=300,
+        current_memory_clock_mhz=405,
+        power_draw_mw=200_000,
+    )
+
+
+def test_capture_envelope_admits_a_quiescent_retained_pair_and_nothing_else() -> None:
+    """Graph capture must not demand an idle lane, but must still reject work.
+
+    Demanding the idle envelope forced a full engine retire+reload per bundle,
+    because a retained pair holds a process on every selected GPU by design.
+    Exactly one state changes verdict here; every rejection the idle envelope
+    made for a real reason is still a rejection.
+    """
+
+    guard = DeviceStateGuard(_policy())
+    telemetry = (_capture_telemetry(0), _capture_telemetry(1))
+    resident = (
+        GPUProcess(0, 111, "C", "python3"),
+        GPUProcess(1, 222, "C", "python3"),
+    )
+
+    # The one intended change: loaded and quiescent is capture-safe, not idle.
+    assert guard._capture_verdict(telemetry, resident)[0] is True
+    assert guard._idle_verdict(telemetry, resident)[0] is False
+
+    # A cold lane is untouched -- _ready_envelope_verdict alone would reject it
+    # for having no process on every GPU, which would break a cold start.
+    assert guard._capture_verdict(telemetry, ())[0] is True
+    assert guard._idle_verdict(telemetry, ())[0] is True
+
+    busy = (_capture_telemetry(0, gpu_util=97, memory_util=60), _capture_telemetry(1))
+    hot = (_capture_telemetry(0, temperature=99), _capture_telemetry(1))
+    assert guard._capture_verdict(busy, resident)[0] is False
+    assert guard._capture_verdict(hot, resident)[0] is False
+    assert guard._capture_verdict(telemetry, resident[:1])[0] is False
+    assert guard._capture_verdict(
+        telemetry, (GPUProcess(0, 111, "G", "Xorg"), GPUProcess(1, 222, "C", "python3"))
+    )[0] is False
+
+
+def test_drain_rejects_an_unknown_envelope() -> None:
+    guard = DeviceStateGuard(_policy())
+    with pytest.raises(DeviceStatePolicyError):
+        guard._drain(launch_id="x", phase="pre", deadline=None, envelope="anything")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal
 
 import pytest
 
@@ -319,7 +320,86 @@ def test_resident_reproduction_requires_exact_physical_lane_role_swap() -> None:
         )
 
 
-def test_resident_lane_orientation_is_registered_audited_and_nonoverlapping() -> None:
+def test_auditless_resident_acceptance_round_trips_exact_wire_shape() -> None:
+    """A v6 resident acceptance carries orientation and no audit witness.
+
+    This is the exact production shape that wedged mainnet request
+    ``0fb58834…`` on 2026-08-15: ``to_dict`` omitted the audit triple while
+    emitting ``resident_lane_orientation`` and ``from_dict`` refused it.
+    """
+
+    catalog = default_target_catalog()
+    candidate = _candidate(
+        _stack(catalog), _ref(catalog, MSA, "resident"), catalog, label="resident"
+    )
+    orientation = _resident_orientation()
+    fields = SettlementQualification.__dataclass_fields__  # type: ignore[attr-defined]
+    auditless = replace(
+        candidate.primary,
+        speed_evidence_policy_digest=orientation.speed_evidence_policy_digest,
+        resident_lane_orientation=orientation,
+        audit_control_digest=fields["audit_control_digest"].default,
+        audit_policy=None,
+        audit_evidence_digest=fields["audit_evidence_digest"].default,
+    )
+    wire = auditless.to_dict()
+    assert "resident_lane_orientation" in wire
+    assert not {"audit_policy", "audit_control_digest", "audit_evidence_digest"} & set(wire)
+    reopened = SettlementQualification.from_dict(wire)
+    assert reopened == auditless
+    assert reopened.digest == auditless.digest
+
+
+def test_auditless_resident_pair_becomes_settlement_candidate() -> None:
+    """Two auditless resident acceptances on swapped lanes form a candidate.
+
+    Exact production shape of mainnet reservation ``87982705…`` on
+    2026-08-15: primary and lane-swapped reproduction both PASS without an
+    audit witness; ``from_reproductions`` must accept the pair, while an
+    auditless pair without lane orientation stays legacy-only.
+    """
+
+    catalog = default_target_catalog()
+    candidate = _candidate(
+        _stack(catalog), _ref(catalog, MSA, "resident"), catalog, label="resident"
+    )
+    fields = SettlementQualification.__dataclass_fields__  # type: ignore[attr-defined]
+    auditless = {
+        "audit_control_digest": fields["audit_control_digest"].default,
+        "audit_policy": None,
+        "audit_evidence_digest": fields["audit_evidence_digest"].default,
+    }
+    primary_orientation = _resident_orientation()
+    reproduction_orientation = _resident_orientation("lane-b", "lane-a")
+    primary = replace(
+        candidate.primary,
+        speed_evidence_policy_digest=primary_orientation.speed_evidence_policy_digest,
+        resident_lane_orientation=primary_orientation,
+        **auditless,
+    )
+    reproduction = replace(
+        candidate.reproduction,
+        speed_evidence_policy_digest=(
+            reproduction_orientation.speed_evidence_policy_digest
+        ),
+        resident_lane_orientation=reproduction_orientation,
+        **auditless,
+    )
+    pair = SettlementCandidate.from_reproductions(primary, reproduction)
+    assert pair.primary.audit_policy is None
+    assert pair.reproduction.audit_policy is None
+    assert SettlementCandidate.from_dict(pair.to_dict()) == pair
+    assert pair.speedup == min(primary.speedup, reproduction.speedup, key=Decimal)
+    with pytest.raises(SettlementError, match="requires two audited"):
+        SettlementCandidate.from_reproductions(
+            replace(primary, resident_lane_orientation=None,
+                    speed_evidence_policy_digest=candidate.primary.speed_evidence_policy_digest),
+            replace(reproduction, resident_lane_orientation=None,
+                    speed_evidence_policy_digest=candidate.reproduction.speed_evidence_policy_digest),
+        )
+
+
+def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
     with pytest.raises(SettlementError, match="reused one physical TP lane"):
         _resident_orientation("lane-a", "lane-a")
     with pytest.raises(SettlementError, match="all-zero"):
@@ -332,7 +412,7 @@ def test_resident_lane_orientation_is_registered_audited_and_nonoverlapping() ->
 
     catalog = default_target_catalog()
     discovery = _discovery(_stack(catalog), label="resident-discovery")
-    with pytest.raises(SettlementError, match="audited registered"):
+    with pytest.raises(SettlementError, match="registered qualification"):
         replace(
             discovery.primary,
             resident_lane_orientation=_resident_orientation(),

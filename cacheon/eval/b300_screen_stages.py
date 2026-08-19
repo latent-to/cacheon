@@ -92,6 +92,7 @@ from cacheon.manifest import (
     load_manifest,
 )
 from cacheon.rebuild import RebuildError
+from cacheon.registry import eligibility_from_metadata
 from cacheon.sandbox import scan_tree
 from cacheon.stack_identity import (
     canonical_digest,
@@ -328,20 +329,70 @@ def _validate_static_candidate(
 class B300StaticScreenAdapter:
     """Exact static stage over immutable publication bytes and a sealed catalog."""
 
-    def __init__(self, catalog: TargetCatalog) -> None:
-        if type(catalog) is not TargetCatalog:
+    def __init__(
+        self,
+        catalog: TargetCatalog,
+        *,
+        required_slot_quant: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        requirements = tuple(required_slot_quant)
+        if (
+            type(catalog) is not TargetCatalog
+            or type(required_slot_quant) is not tuple
+            or any(
+                type(row) is not tuple
+                or len(row) != 2
+                or any(not isinstance(value, str) or not value for value in row)
+                for row in requirements
+            )
+        ):
             raise B300ScreenStagesError("static screen catalog is not exact")
+        if requirements != tuple(sorted(set(requirements))):
+            raise B300ScreenStagesError("static screen quant policy is not canonical")
+        try:
+            for slot, _quant in requirements:
+                catalog.require(slot)
+        except TargetCatalogError as exc:
+            raise B300ScreenStagesError(
+                "static screen quant policy names an unknown target"
+            ) from exc
         self.catalog = catalog
         self._catalog_digest = catalog.digest
+        self._required_slot_quant = requirements
         self.identity_digest = canonical_digest(
             STATIC_SCREEN_SCHEMA,
             {
                 "catalog_digest": catalog.digest,
                 "recursive_policy": "cacheon.sandbox.scan_tree",
+                "required_slot_quant": [list(row) for row in requirements],
                 "source_inspection": "cacheon.engine_tree.inspect_contribution",
                 "worker_publication": "cacheon.chain.worker-bundle-publication",
             },
         )
+
+    def _quant_mismatch(
+        self,
+        inspected: InspectedContribution,
+        target_members: tuple[str, ...],
+    ) -> tuple[str, str] | None:
+        metadata = dict(inspected.metadata)
+        for slot, required_quant in self._required_slot_quant:
+            if slot not in target_members:
+                continue
+            variants = inspected.manifest.ops_for(slot)
+            if not variants:
+                continue
+            accepts = False
+            for operation in variants:
+                raw = None if operation.metadata is None else metadata[operation.metadata]
+                value = None if raw is None else json.loads(raw.decode("utf-8"))
+                eligibility = eligibility_from_metadata(
+                    value, operation.dtypes, operation.architectures
+                )
+                accepts = accepts or required_quant in eligibility.quant
+            if not accepts:
+                return slot, required_quant
+        return None
 
     def handler(self) -> B300ScreenStageHandler:
         return B300ScreenStageHandler(
@@ -410,6 +461,21 @@ class B300StaticScreenAdapter:
                 authority_digest=self.identity_digest,
                 started=started,
                 facts={"exception_type": type(exc).__name__},
+            )
+        mismatch = self._quant_mismatch(
+            inspected, candidate.reservation.target_members
+        )
+        if mismatch is not None:
+            slot, required_quant = mismatch
+            return _stage_result(
+                manifest=manifest,
+                candidate=candidate,
+                stage="static",
+                grade=ScreenGrade.FAIL,
+                reason="static_runtime_quant_mismatch",
+                authority_digest=self.identity_digest,
+                started=started,
+                facts={"required_quant": required_quant, "slot": slot},
             )
         return _stage_result(
             manifest=manifest,

@@ -33,8 +33,8 @@ def _context(suffix: str = "") -> CalibrationContext:
     characters = "123456789abcdef"
     values = [character * 64 for character in characters]
     if suffix:
-        values[10] = suffix * 64
-    return CalibrationContext(*values[:11])
+        values[9] = suffix * 64
+    return CalibrationContext(*values[:10])
 
 
 def _controls() -> tuple[CalibrationControl, ...]:

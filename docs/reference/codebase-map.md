@@ -67,6 +67,8 @@ reopens evidence but accepts only reviewed integrated source.
 |---|---|
 | Chain-facing commands | [`cli.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/cli.py) |
 | Miner S3-compatible publication | [`chain/publish.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publish.py) |
+| Miner commit-reveal submission | [`chain/submit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/submit.py), [`chain/payload.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/payload.py) |
+| Eval-cost quote and payment verify | [`chain/eval_cost.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost.py), [`chain/eval_cost_payment.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost_payment.py) |
 | Finalized intake and SQLite state | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py) |
 | Hardened archive fetch | [`chain/fetch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py) |
 | Validator loop | [`chain/validator_loop.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py) |
@@ -76,7 +78,8 @@ reopens evidence but accepts only reviewed integrated source.
 | CPU SSH shuttle and spool transport | [`chain/ssh_worker_transport.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/ssh_worker_transport.py) |
 | Pod worker service | [`chain/remote_worker_pod_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_worker_pod_service.py) |
 | Remote transport CLI composition | [`chain/remote_worker_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_worker_service.py) |
-| Standing screen dispatch daemon | [`chain/mainnet_screen_dispatcher.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/mainnet_screen_dispatcher.py) |
+| Standing CPU supervisor daemon | [`chain/standing_cpu_supervisor.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/standing_cpu_supervisor.py) |
+| Screen dispatch config and builder | [`chain/mainnet_screen_dispatcher.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/mainnet_screen_dispatcher.py) |
 | B300 pod evaluation adapter | [`eval/b300_remote_worker_adapter.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_worker_adapter.py) |
 | Redacted chain journal | [`chain/audit_log.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py) |
 | Private validator snapshot/restore | [`chain/archive.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py) |
@@ -90,7 +93,6 @@ reopens evidence but accepts only reviewed integrated source.
 | Remote qualification evidence products | [`chain/remote_qualification_evidence.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_qualification_evidence.py) |
 | Remote qualification adapter | [`eval/b300_remote_qualification_adapter.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_qualification_adapter.py) |
 | Standing resident-pair lifecycle | [`eval/resident_evaluation_pair.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_evaluation_pair.py) |
-| Standing controls contract | [`eval/standing_controls.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/standing_controls.py) |
 | Bundle and committed-source identity | [`bundle_hash.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bundle_hash.py) |
 | Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py) |
 | OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py) |

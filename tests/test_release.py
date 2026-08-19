@@ -89,7 +89,7 @@ def _reference(manifest, model) -> ReferenceManifest:
 def _calibration(reference: ReferenceManifest) -> CalibrationManifest:
     return CalibrationManifest(
         context=CalibrationContext(
-            reference.digest,
+            reference.measured_digest,
             reference.arena_digest,
             reference.runtime_digest,
             reference.base_engine_digest,
@@ -99,7 +99,6 @@ def _calibration(reference: ReferenceManifest) -> CalibrationManifest:
             reference.logical_hardware_digest,
             reference.workload_digest,
             _d("verification-policy"),
-            reference.controller_distribution_digest,
         ),
         algorithm_id="teacher-familywise-v1",
         status="frozen",

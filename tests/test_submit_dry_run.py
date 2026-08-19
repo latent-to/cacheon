@@ -14,6 +14,10 @@ from pathlib import Path
 import pytest
 
 from cacheon.bundle_hash import content_hash
+from cacheon.chain.eval_cost import (
+    EvalCostError,
+    EvalCostPolicy,
+)
 from cacheon.chain.payload import MAX_PAYLOAD_BYTES, PayloadError, decode_payload
 from cacheon.chain.submit import submit_bundle
 
@@ -48,3 +52,42 @@ def test_dry_run_refuses_a_payload_over_the_chain_cap() -> None:
     oversized = "https://example.com/" + "a" * MAX_PAYLOAD_BYTES
     with pytest.raises(PayloadError):
         submit_bundle(None, None, 1, _BUNDLE, oversized, dry_run=True)
+
+
+def test_dry_run_reuses_an_unused_payment_pointer_as_v2() -> None:
+    result = submit_bundle(
+        None,
+        None,
+        307,
+        _BUNDLE,
+        _URL,
+        dry_run=True,
+        payment_block=80,
+        payment_extrinsic_index=4,
+    )
+    assert result["dry_run"] is True
+    assert result["paid"] is True
+    assert result["eval_cost_payment"]["reused"] is True
+    assert result["eval_cost_payment_block"] == 80
+    assert result["eval_cost_payment_extrinsic_index"] == 4
+    ref = decode_payload("dry-run", 7, result["payload"])
+    assert ref is not None
+    assert ref.payment_block == 80
+    assert ref.payment_extrinsic_index == 4
+    assert '"v":2' in result["payload"]
+
+
+def test_dry_run_refuses_pay_together_with_reuse() -> None:
+    with pytest.raises(EvalCostError, match="cannot pay and reuse"):
+        submit_bundle(
+            None,
+            None,
+            307,
+            _BUNDLE,
+            _URL,
+            dry_run=True,
+            pay=True,
+            eval_cost_policy=EvalCostPolicy(amount_rao=10, destination="treasury"),
+            payment_block=80,
+            payment_extrinsic_index=4,
+        )

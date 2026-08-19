@@ -290,3 +290,25 @@ def test_width_zero_request_and_evidence_round_trip():
             SESSION, LAUNCH, PLAN, REQUEST, NONCE, 7, 2, 0,
             (ReferencePromptInput("6" * 64, "first prompt", (_role(), role(10), role(20))),),
         )
+
+
+def test_production_qualification_shape_stays_admissible():
+    # The mainnet capability source seals select_count=8, tokens_per_prompt=256,
+    # topk_width=0 (teacher-NLL-only). Plan construction refuses any
+    # qualification whose worst-case derived-logprob demand exceeds
+    # MAX_DERIVED_LOGPROBS, so the sealed shape must stay admissible or no
+    # production plan can ever seal.
+    select_count, tokens_per_prompt, topk_width = 8, 256, 0
+    union = min(protocol.MAX_SUPPORT_UNION, tokens_per_prompt * topk_width)
+    derived = (
+        select_count * len(protocol.ROLE_NAMES) * tokens_per_prompt * union
+    )
+    assert derived <= protocol.MAX_DERIVED_LOGPROBS
+    # The variant that broke 2026-08-10 commissioning must stay refused: a
+    # topk-16 re-enable computes 25,165,824 > 2**24 and can never seal.
+    poisoned_union = min(protocol.MAX_SUPPORT_UNION, tokens_per_prompt * 16)
+    poisoned = (
+        select_count * len(protocol.ROLE_NAMES) * tokens_per_prompt
+        * poisoned_union
+    )
+    assert poisoned > protocol.MAX_DERIVED_LOGPROBS

@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,42 @@ from typing import Any, Iterator
 
 
 logger = logging.getLogger("cacheon.eval.engine-worker")
+
+
+CANDIDATE_NEVER_EXECUTED_MARKER = "cacheon-candidate-never-executed.v1"
+
+
+class CandidateExecutionCoverageError(RuntimeError):
+    """The active candidate failed its positive execution-evidence contract."""
+
+
+class CandidateNeverExecutedError(CandidateExecutionCoverageError):
+    """The receipt path provably worked and the candidate still never ran.
+
+    This is the one coverage shape that is a fact about the *candidate* rather
+    than the infrastructure, and the distinction rests on evidence rather than
+    on inference:
+
+    ``cacheon/seam.py`` writes the ``active`` receipt from the candidate's own
+    process, through this same module, into this same root. The caller has
+    already required those receipts and validated that every expected member
+    reported the expected slot set. So when the seam loaded, registered the
+    target slot, and successfully wrote into the root -- and then *every*
+    execution kind is empty, completed and fallback alike -- the path is sound
+    and the candidate simply never dispatched. A miner whose kernel registers a
+    slot it never serves has a broken bundle, not a broken validator.
+
+    Partial coverage stays :class:`CandidateExecutionCoverageError`. Some
+    receipts but not all can be a member that died mid-run or a read that raced
+    a write, and neither may be charged to a candidate.
+
+    Observed on mainnet 2026-08-18: two native-rebuild bundles
+    (``norm.rmsnorm``, ``attention.msa_block_score``) each reported
+    ``completed:0,fallback:0,aot_loaded:0,aot_invoked:0`` behind a passing
+    active-member check, burned their full retry budget as
+    ``qualification_worker_error``, and parked with no verdict -- while the
+    miners had paid a submission cost for a decision they never received.
+    """
 
 
 def _truthy_env(name: str) -> bool:
@@ -229,14 +266,23 @@ def _require_execution_completion(
             f"observed_receipts=completed:{len(completed)},fallback:{len(fallbacks)},"
             f"aot_loaded:{len(aot_loaded)},aot_invoked:{len(aot_invoked)}"
         )
-        raise RuntimeError(
+        message = (
             "candidate engine run failed execution coverage: "
             + detail
             + "; "
             + observed
         )
+        # Total silence, behind an active-member check that already passed, is
+        # the candidate's own defect: the seam wrote ``active`` into this very
+        # root, so the path works and nothing dispatched. Anything partial is
+        # ambiguous and stays infrastructure.
+        if not (completed or fallbacks or aot_loaded or aot_invoked):
+            raise CandidateNeverExecutedError(
+                message + "; " + CANDIDATE_NEVER_EXECUTED_MARKER
+            )
+        raise CandidateExecutionCoverageError(message)
     if aot_invoked and not aot_loaded:
-        raise RuntimeError(
+        raise CandidateExecutionCoverageError(
             "candidate engine run has sealed CuTe AOT use evidence without "
             "matching load evidence"
         )
@@ -249,11 +295,11 @@ def _require_execution_completion(
             }
         )
         if not aot_slots:
-            raise RuntimeError(
+            raise CandidateExecutionCoverageError(
                 "candidate engine run has malformed CuTe AOT load evidence"
             )
         if not set(aot_slots).issubset(expected_slots):
-            raise RuntimeError(
+            raise CandidateExecutionCoverageError(
                 "candidate engine run loaded sealed CuTe AOT for an inactive slot"
             )
         loaded_passed, loaded_detail = receipts.completed_gate(
@@ -263,7 +309,7 @@ def _require_execution_completion(
             expected_member_count=expected_member_count,
         )
         if not loaded_passed:
-            raise RuntimeError(
+            raise CandidateExecutionCoverageError(
                 "candidate engine run failed sealed CuTe AOT load coverage: "
                 + loaded_detail
             )
@@ -274,12 +320,42 @@ def _require_execution_completion(
             expected_member_count=expected_member_count,
         )
         if not aot_passed:
-            raise RuntimeError(
+            raise CandidateExecutionCoverageError(
                 "candidate engine run failed sealed CuTe AOT use coverage: "
                 + aot_detail
             )
         detail += "; sealed CuTe AOT " + loaded_detail + "; " + aot_detail
     return detail
+
+
+def _complete_candidate_execution(
+    receipt_dir: str,
+    *,
+    active_receipts: list[dict],
+    expected_slots: list[str],
+    expected_member_count: int,
+    audit_policy: object | None,
+) -> None:
+    """Keep missing execution terminal only inside the independent audit role."""
+
+    try:
+        _require_execution_completion(
+            receipt_dir,
+            active_receipts=active_receipts,
+            expected_slots=expected_slots,
+            expected_member_count=expected_member_count,
+        )
+    except CandidateExecutionCoverageError as exc:
+        if audit_policy is None:
+            raise
+        # The host audit gate grades an empty policy-bound receipt set FAIL.
+        # This module is the file bind-mounted into the sealed OCI image, so the
+        # conversion must live here rather than in the image-owned session loop.
+        print(
+            f"CACHEON-AUDIT-CANDIDATE-FAIL: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -398,11 +474,12 @@ def isolated_engine_session(
 
                 def complete() -> None:
                     if active:
-                        _require_execution_completion(
+                        _complete_candidate_execution(
                             receipt_dir,
                             active_receipts=active_receipts,
                             expected_slots=expected_slots,
                             expected_member_count=expected_members,
+                            audit_policy=audit_policy,
                         )
 
                 def collect_audits() -> list[dict]:

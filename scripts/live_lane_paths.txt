@@ -13,8 +13,8 @@
 
 # Current live-lane branch namespace; retire with the mainnet merge.
 branch codex/*
-docs/reference/cli.md
-cacheon/cli.py
+branch ops/*
+branch ops-fifo-green-*
 cacheon/manifest.py
 cacheon/verify.py
 cacheon/verify_collective.py
@@ -22,7 +22,6 @@ cacheon/chain/audit_log.py
 cacheon/chain/evaluation_coordinator.py
 cacheon/chain/evaluation_lease_*
 cacheon/chain/evaluation_leases.py
-cacheon/chain/intake.py
 cacheon/chain/mainnet_screen_dispatcher.py
 cacheon/chain/operator_status.py
 cacheon/chain/remote_evaluation_dispatcher.py
@@ -52,7 +51,6 @@ tests/test_collective.py
 tests/test_collective_cuda_graph.py
 tests/test_evaluation_coordinator.py
 tests/test_evaluation_lease_operator.py
-tests/test_evidence_store.py
 tests/test_mainnet_screen_dispatcher.py
 tests/test_oci_backend.py
 tests/test_qualification_runner.py

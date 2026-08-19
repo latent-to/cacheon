@@ -619,3 +619,50 @@ def test_event_reader_recomputes_canonical_identity(tmp_path):
         )
         with pytest.raises(IntakeError, match="event identity"):
             store.evaluation_lease_events(lease_id=lease.lease_id)
+
+
+def test_systemic_release_cap_parks_reservation_held(tmp_path):
+    with _store(tmp_path) as store:
+        row = _published_rows(store, 1)[0]
+        clock = 10
+        for round_number in (1, 2, 3):
+            _advance(store, clock)
+            lease = store.claim_evaluation_lease(
+                stage="screen", owner="worker-a", current_block=clock
+            )
+            assert lease is not None, f"round {round_number} could not claim"
+            _advance(store, clock + 1)
+            store.release_evaluation_lease(
+                lease,
+                current_block=clock + 1,
+                reason="systemic_qualification:worker_dead",
+            )
+            clock += 2
+            retained = store.get(row.reservation_id)
+            if round_number < 3:
+                assert retained.status == "published"
+            else:
+                assert retained.status == "held"
+                assert retained.reason == "systemic_release_cap:3"
+        _advance(store, clock)
+        assert store.claim_evaluation_lease(
+            stage="screen", owner="worker-a", current_block=clock
+        ) is None
+
+
+def test_non_systemic_releases_never_trip_the_cap(tmp_path):
+    with _store(tmp_path) as store:
+        row = _published_rows(store, 1)[0]
+        clock = 10
+        for _ in range(4):
+            _advance(store, clock)
+            lease = store.claim_evaluation_lease(
+                stage="screen", owner="worker-a", current_block=clock
+            )
+            assert lease is not None
+            _advance(store, clock + 1)
+            store.release_evaluation_lease(
+                lease, current_block=clock + 1, reason="operator_release"
+            )
+            clock += 2
+        assert store.get(row.reservation_id).status == "published"

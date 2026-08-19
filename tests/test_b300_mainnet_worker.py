@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.b300_mainnet_worker as worker_module
+import tests.test_b300_sealed_qualification_commission as authority_fixtures
 from cacheon.arena_service import (
     SCREEN_STAGES,
     ArenaCandidateBinding,
@@ -39,6 +40,7 @@ from cacheon.chain.evaluation_coordinator import (
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.intake import FinalizedArrival, IntakeReservation
 from cacheon.chain.publication import publish_worker_bundle
+from cacheon.chain.remote_qualification_hold import RemoteQualificationHoldReason
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
@@ -55,6 +57,9 @@ from cacheon.eval.b300_mainnet_worker import (
     B300MainnetWorkerError,
     B300RemoteQualificationRun,
 )
+from cacheon.eval.b300_qualification_graph_gate import (
+    B300QualificationGraphGateHold,
+)
 from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
@@ -63,6 +68,7 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.qualification import QualificationDecision
+from cacheon.eval.qualification_continuation import QualificationContinuationStore
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
@@ -161,7 +167,7 @@ def _gpu(index: int) -> GPUConfiguration:
 
 
 @pytest.fixture
-def executor_factory(tmp_path: Path):
+def executor_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     executors: list[OCIEngineExecutor] = []
     sequence = 0
 
@@ -202,6 +208,8 @@ def executor_factory(tmp_path: Path):
         executors.append(executor)
         return executor
 
+    create.managed_executors = executors
+    create.monkeypatch = monkeypatch
     yield create
     for executor in executors:
         executor.manager.close()
@@ -300,6 +308,19 @@ def _authorities(tmp_path: Path, executor_factory):
             "B", baseline_executor.device_policy
         ),
     )
+    authority_index = len(executor_factory.managed_executors)
+    resident_pair_factory, pair_executors = (
+        authority_fixtures._resident_pair_factory(
+            tmp_path / f"resident-pair-{authority_index}",
+            executor_factory.monkeypatch,
+            _h(f"resident-pair-placeholder-{authority_index}"),
+        )
+    )
+    executor_factory.managed_executors.extend(pair_executors)
+    resident_count_quality = authority_fixtures._resident_count_quality(
+        authority_fixtures.default_target_catalog(),
+        tmp_path / f"count-evidence-{authority_index}",
+    )
     authorities = B300DeploymentAuthorities(
         runtime_identity=_runtime(),
         screen_handlers=handlers,
@@ -320,6 +341,16 @@ def _authorities(tmp_path: Path, executor_factory):
         deadline_provider=lambda _request, _state: time.monotonic() + 600.0,
         qualification_lane_pair=lane_pair,
         qualification_stage="primary",
+        resident_pair_factory=resident_pair_factory,
+        resident_count_quality=resident_count_quality,
+    )
+    manifest = _manifest(authorities)
+    authorities = dataclasses.replace(
+        authorities,
+        resident_pair_factory=authority_fixtures._rebind_resident_pair_factory(
+            resident_pair_factory,
+            manifest.digest,
+        ),
     )
     return authorities, resident, builder
 
@@ -573,7 +604,7 @@ def _systemic_batch(factory: QualificationPlanFactory) -> QualificationIntakeBat
     )
 
 
-def test_screen_job_runs_all_real_provider_stages_and_seals_result(
+def test_remote_screen_runs_all_real_provider_stages_and_seals_result(
     tmp_path: Path,
     executor_factory,
 ) -> None:
@@ -583,7 +614,8 @@ def test_screen_job_runs_all_real_provider_stages_and_seals_result(
     claim = _screen_claim(tmp_path / "candidate", manifest)
     worker = B300MainnetWorker(manifest, authorities, readiness)
     try:
-        result = worker.run(claim)
+        # The path-free remote DTO needs no CPU intake reservation.
+        result = worker.run_remote_screen(claim.lease, claim.candidate)
 
         assert type(result) is EvaluationRun
         assert result.lease is claim.lease
@@ -591,6 +623,8 @@ def test_screen_job_runs_all_real_provider_stages_and_seals_result(
         assert type(result.envelope) is EvaluationResultEnvelope
         assert tuple(row.stage for row in result.payload.results) == SCREEN_STAGES
         assert result.payload.decision is PromotionDecision.PROMOTE
+        assert result.payload.candidate_digest == claim.candidate.digest
+        assert result.envelope.payload_digest == result.payload.digest
         assert resident.created == 1
         result.envelope.verify(claim.lease, readiness, worker.service, result.payload)
     finally:
@@ -598,68 +632,36 @@ def test_screen_job_runs_all_real_provider_stages_and_seals_result(
     assert resident.closed == 1
 
 
-def test_remote_screen_dto_needs_no_cpu_intake_reservation(
-    tmp_path: Path,
-    executor_factory,
-) -> None:
-    authorities, resident, _builder = _authorities(tmp_path, executor_factory)
-    manifest = _manifest(authorities)
-    readiness = _readiness(manifest, authorities)
-    claim = _screen_claim(tmp_path / "candidate", manifest)
-    worker = B300MainnetWorker(manifest, authorities, readiness)
-    try:
-        result = worker.run_remote_screen(claim.lease, claim.candidate)
-    finally:
-        worker.close()
+def _fake_gate_fail(monkeypatch, batch_for):
+    """Route the remote path through a graph-gate FAIL carrying ``batch_for(factory)``.
 
-    assert type(result) is EvaluationRun
-    assert result.lease is claim.lease
-    assert result.payload.candidate_digest == claim.candidate.digest
-    assert result.envelope.payload_digest == result.payload.digest
-    assert resident.closed == 1
+    The worker binds gate result types by module global, so a test-local FAIL
+    shape reaches the same ``_validate_batch`` / disposition lines production
+    takes after a real graph-only FAIL, without a real graph exit artifact.
+    """
 
+    @dataclasses.dataclass(frozen=True)
+    class FakeGateFail:
+        plan: object
+        factory: object
+        batch: QualificationIntakeBatch
+        supporting_evidence_refs: tuple = ()
 
-def test_qualification_uses_only_sealed_work_and_releases_systemic_batch(
-    tmp_path: Path,
-    executor_factory,
-    monkeypatch,
-) -> None:
-    authorities, resident, builder = _authorities(tmp_path, executor_factory)
-    manifest = _manifest(authorities)
-    readiness = _readiness(manifest, authorities)
-    claim = _qualification_claim(tmp_path / "cohort", manifest)
-    calls = []
+    sentinel_plan = object()
+    gate_calls = []
 
-    def run(factory, **kwargs):
-        calls.append((factory, kwargs))
-        assert type(factory) is QualificationPlanFactory
-        assert kwargs["executor"] is authorities.executor
-        assert kwargs["resident_baseline_executor"] is authorities.resident_baseline_executor
-        assert kwargs["entropy_provider"] is authorities.entropy_provider
-        assert kwargs["hidden_judge"] is authorities.hidden_judge
-        assert kwargs["deadline"] > time.monotonic()
-        return _systemic_batch(factory)
+    def fake_gate(factory, plan, *, evidence_root, candidates, authenticated_request_digest):
+        assert plan is sentinel_plan
+        gate_calls.append(factory)
+        return FakeGateFail(plan, factory, batch_for(factory))
 
-    monkeypatch.setattr(worker_module, "run_qualification_intake", run)
-    worker = B300MainnetWorker(manifest, authorities, readiness)
-    try:
-        result = worker.run(claim)
-
-        assert type(result.payload) is QualificationIntakeBatch
-        assert result.disposition == "released"
-        assert result.envelope.payload_kind == "qualification_intake_batch"
-        assert tuple(row.reservation_digest for row in result.payload.outcomes) == (
-            claim.lease.reservation_ids
-        )
-        assert len(calls) == 1
-        assert builder.calls[0][1] is None
-        assert resident.created == 0
-        result.envelope.verify(claim.lease, readiness, worker.service, result.payload)
-    finally:
-        worker.close()
+    monkeypatch.setattr(QualificationPlanFactory, "build", lambda self: sentinel_plan)
+    monkeypatch.setattr(worker_module, "B300QualificationGraphGateFail", FakeGateFail)
+    monkeypatch.setattr(worker_module, "run_b300_qualification_graph_gate", fake_gate)
+    return gate_calls
 
 
-def test_remote_qualification_is_path_free_lane_bound_and_returns_authority(
+def test_remote_qualification_releases_systemic_gate_fail_batch(
     tmp_path: Path,
     executor_factory,
     monkeypatch,
@@ -668,41 +670,77 @@ def test_remote_qualification_is_path_free_lane_bound_and_returns_authority(
     manifest = _manifest(authorities)
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
-    calls = []
-
-    def run(factory, **kwargs):
-        calls.append((factory, kwargs))
-        return _systemic_batch(factory)
-
-    monkeypatch.setattr(worker_module, "run_qualification_intake", run)
+    gate_calls = _fake_gate_fail(monkeypatch, _systemic_batch)
+    intake_calls = []
+    monkeypatch.setattr(
+        worker_module,
+        "run_qualification_intake",
+        lambda *args, **kwargs: intake_calls.append((args, kwargs)),
+    )
     worker = B300MainnetWorker(manifest, authorities, readiness)
+    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
     try:
         result = worker.run_remote_qualification(
             claim.lease,
             claim.candidates,
             claim.screen_receipts,
             screen_lane="primary",
+            continuation_store=QualificationContinuationStore(tmp_path / "continuation"),
+            request_digest=_h("remote-request"),
         )
 
         assert type(result) is B300RemoteQualificationRun
-        assert result.screen_lane == "primary"
-        assert result.run.lease is claim.lease
+        assert type(result.run.payload) is QualificationIntakeBatch
         assert result.run.disposition == "released"
-        assert result.run.payload.authority_manifest_digest == (
-            result.authority_manifest.digest
-        )
-        assert result.authority_manifest.reservations == tuple(
-            row.reservation for row in claim.candidates
-        )
+        assert result.run.envelope.payload_kind == "qualification_intake_batch"
+        assert tuple(
+            row.reservation_digest for row in result.run.payload.outcomes
+        ) == claim.lease.reservation_ids
+        assert result.authority_manifest is gate_calls[0].manifest
+        assert len(gate_calls) == 1 and intake_calls == []
         assert builder.calls[0][1] is None
-        assert len(calls) == 1
         assert resident.created == 0
         result.run.envelope.verify(
-            claim.lease,
-            readiness,
-            worker.service,
-            result.run.payload,
+            claim.lease, readiness, worker.service, result.run.payload
         )
+    finally:
+        worker.close()
+
+
+def test_remote_qualification_without_graph_root_returns_authenticated_hold(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch,
+) -> None:
+    authorities, resident, builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(authorities)
+    readiness = _readiness(manifest, authorities)
+    claim = _qualification_claim(tmp_path / "cohort", manifest)
+    calls = []
+
+    def run(factory, **kwargs):
+        calls.append((factory, kwargs))
+        return _systemic_batch(factory)
+
+    monkeypatch.setattr(worker_module, "run_qualification_intake", run)
+    worker = B300MainnetWorker(manifest, authorities, readiness)
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
+    try:
+        result = worker.run_remote_qualification(
+            claim.lease,
+            claim.candidates,
+            claim.screen_receipts,
+            screen_lane="primary",
+            continuation_store=continuation,
+            request_digest=request_digest,
+        )
+
+        assert type(result) is B300QualificationGraphGateHold
+        assert result.reason is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
+        assert builder.calls[0][1] is None
+        assert calls == []
+        assert resident.created == 0
     finally:
         worker.close()
 
@@ -716,13 +754,28 @@ def test_remote_qualification_refuses_lane_or_cohort_drift(
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
     worker = B300MainnetWorker(manifest, authorities, readiness)
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
     try:
+        with pytest.raises(
+            B300MainnetWorkerError, match="authenticated request digest"
+        ):
+            worker.run_remote_qualification(
+                claim.lease,
+                claim.candidates,
+                claim.screen_receipts,
+                screen_lane="primary",
+                continuation_store=continuation,
+                request_digest=None,
+            )
         with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
             worker.run_remote_qualification(
                 claim.lease,
                 claim.candidates,
                 claim.screen_receipts,
                 screen_lane="reproduction",
+                continuation_store=continuation,
+                request_digest=request_digest,
             )
         with pytest.raises(B300MainnetWorkerError, match="exact promoted cohort"):
             worker.run_remote_qualification(
@@ -730,6 +783,8 @@ def test_remote_qualification_refuses_lane_or_cohort_drift(
                 tuple(reversed(claim.candidates)),
                 claim.screen_receipts,
                 screen_lane="primary",
+                continuation_store=continuation,
+                request_digest=request_digest,
             )
     finally:
         worker.close()
@@ -758,11 +813,14 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
         qualification_stage="reproduction",
     )
     assert b300_arena_provider_digest(reproduction) == manifest.provider_digest
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
 
+    intake_calls = []
     monkeypatch.setattr(
         worker_module,
         "run_qualification_intake",
-        lambda factory, **_kwargs: _systemic_batch(factory),
+        lambda *args, **kwargs: intake_calls.append((args, kwargs)),
     )
     worker = B300MainnetWorker(manifest, reproduction, readiness)
     try:
@@ -773,15 +831,130 @@ def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
                 claim.candidates,
                 claim.screen_receipts,
                 screen_lane="primary",
+                continuation_store=continuation,
+                request_digest=request_digest,
             )
         result = worker.run_remote_qualification(
             claim.lease,
             claim.candidates,
             claim.screen_receipts,
             screen_lane="reproduction",
+            continuation_store=continuation,
+            request_digest=request_digest,
         )
-        assert result.screen_lane == "reproduction"
-        assert result.run.disposition == "released"
+        assert type(result) is B300QualificationGraphGateHold
+        assert result.reason is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
+        assert intake_calls == []
+    finally:
+        worker.close()
+
+
+def test_remote_qualification_retires_released_pair_and_retries_plan_build(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch,
+) -> None:
+    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(authorities)
+    readiness = _readiness(manifest, authorities)
+    claim = _qualification_claim(tmp_path / "cohort", manifest)
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
+
+    build_calls: list[object] = []
+    sentinel_plan = object()
+
+    def flaky_build(self):
+        build_calls.append(self)
+        if len(build_calls) == 1:
+            raise worker_module.B300QualificationGraphEvidenceHold(
+                "capture devices busy"
+            )
+        return sentinel_plan
+
+    gate_hold = worker_module.qualification_graph_gate_hold(
+        RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
+        authenticated_request_digest=request_digest,
+        authority_context_digest=manifest.digest,
+        code=worker_module.B300QualificationGraphHoldCode.RAW_EVIDENCE_INCOMPLETE,
+    )
+    gate_calls = []
+
+    def fake_gate(factory, plan, *, evidence_root, candidates, authenticated_request_digest):
+        assert plan is sentinel_plan
+        gate_calls.append(factory)
+        return gate_hold
+
+    monkeypatch.setattr(QualificationPlanFactory, "build", flaky_build)
+    monkeypatch.setattr(
+        worker_module, "run_b300_qualification_graph_gate", fake_gate
+    )
+    worker = B300MainnetWorker(manifest, authorities, readiness)
+    retires = []
+    monkeypatch.setattr(
+        worker._resident_pair_factory,
+        "retire_released_pair",
+        lambda: retires.append(True) or True,
+        raising=False,
+    )
+    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
+    try:
+        result = worker.run_remote_qualification(
+            claim.lease,
+            claim.candidates,
+            claim.screen_receipts,
+            screen_lane="primary",
+            continuation_store=continuation,
+            request_digest=request_digest,
+        )
+
+        assert result is gate_hold
+        assert len(build_calls) == 2
+        assert retires == [True]
+        assert len(gate_calls) == 1
+    finally:
+        worker.close()
+
+
+def test_remote_qualification_holds_when_no_released_pair_can_be_retired(
+    tmp_path: Path,
+    executor_factory,
+    monkeypatch,
+) -> None:
+    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
+    manifest = _manifest(authorities)
+    readiness = _readiness(manifest, authorities)
+    claim = _qualification_claim(tmp_path / "cohort", manifest)
+    continuation = QualificationContinuationStore(tmp_path / "continuation")
+    request_digest = _h("remote-request")
+
+    build_calls: list[object] = []
+
+    def busy_build(self):
+        build_calls.append(self)
+        raise worker_module.B300QualificationGraphEvidenceHold(
+            "capture devices busy"
+        )
+
+    monkeypatch.setattr(QualificationPlanFactory, "build", busy_build)
+    worker = B300MainnetWorker(manifest, authorities, readiness)
+    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
+    try:
+        result = worker.run_remote_qualification(
+            claim.lease,
+            claim.candidates,
+            claim.screen_receipts,
+            screen_lane="primary",
+            continuation_store=continuation,
+            request_digest=request_digest,
+        )
+
+        assert type(result) is B300QualificationGraphGateHold
+        assert (
+            result.reason
+            is RemoteQualificationHoldReason.GRAPH_EVIDENCE_UNAVAILABLE
+        )
+        assert len(build_calls) == 1
     finally:
         worker.close()
 
@@ -796,7 +969,7 @@ def test_qualification_refuses_result_that_reorders_leased_cohort(
     readiness = _readiness(manifest, authorities)
     claim = _qualification_claim(tmp_path / "cohort", manifest)
 
-    def reordered(factory, **_kwargs):
+    def reordered(factory):
         batch = _systemic_batch(factory)
         failure = batch.retry_plan.failure_digest
         outcomes = tuple(reversed(batch.outcomes))
@@ -812,29 +985,26 @@ def test_qualification_refuses_result_that_reorders_leased_cohort(
             ),
         )
 
-    monkeypatch.setattr(worker_module, "run_qualification_intake", reordered)
+    _fake_gate_fail(monkeypatch, reordered)
     worker = B300MainnetWorker(manifest, authorities, readiness)
+    worker._bind_remote_qualification_graph_gate_root(tmp_path / "graph-root")
     try:
         with pytest.raises(B300MainnetWorkerError, match="exact leased cohort"):
-            worker.run(claim)
+            worker.run_remote_qualification(
+                claim.lease,
+                claim.candidates,
+                claim.screen_receipts,
+                screen_lane="primary",
+                continuation_store=QualificationContinuationStore(
+                    tmp_path / "continuation"
+                ),
+                request_digest=_h("remote-request"),
+            )
     finally:
         worker.close()
 
 
-def test_worker_refuses_untyped_jobs_and_has_no_dynamic_dispatch_surface(
-    tmp_path: Path,
-    executor_factory,
-) -> None:
-    authorities, _resident, _builder = _authorities(tmp_path, executor_factory)
-    manifest = _manifest(authorities)
-    readiness = _readiness(manifest, authorities)
-    worker = B300MainnetWorker(manifest, authorities, readiness)
-    try:
-        with pytest.raises(B300MainnetWorkerError, match="not exactly typed"):
-            worker.run(object())
-    finally:
-        worker.close()
-
+def test_worker_has_no_dynamic_dispatch_surface() -> None:
     source = inspect.getsource(worker_module)
     for forbidden in (
         "importlib",

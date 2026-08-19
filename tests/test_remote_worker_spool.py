@@ -12,6 +12,7 @@ import pytest
 
 from cacheon.arena_service import ArenaService
 from cacheon.chain import remote_worker_registration as registration_module
+from cacheon.chain import remote_qualification_hold as remote_hold
 from cacheon.chain import remote_worker_spool as spool
 from cacheon.chain.remote_evaluation_dispatcher import (
     REMOTE_EVALUATION_PROTOCOL_DIGEST,
@@ -261,6 +262,46 @@ def test_spool_screen_request_and_response_are_exact_authenticated_authority(
     )
     assert [row[1]["request_id"] for row in queue] == [request_id]
     coordinator._release(claim.lease, reason="test_cleanup")
+
+
+def test_spool_completed_payload_stage_algebra_is_exact_and_closed(
+    tmp_path: Path,
+) -> None:
+    (
+        coordinator,
+        claim,
+        service,
+        _credential,
+        _identity,
+        _registration,
+        request,
+        _request_id,
+        _job_dir,
+    ) = _screen_authority(tmp_path)
+    receipt = service.screen(claim.candidate)
+    hold = remote_hold.RemoteQualificationHoldProduct(
+        request_digest="1" * 64,
+        service_identity=request.service_identity,
+        service_digest="2" * 64,
+        worker_readiness_digest="3" * 64,
+        ready_receipt_digest="4" * 64,
+        ready_epoch=1,
+        screen_lane="primary",
+        reservation_digests=("5" * 64,),
+        selected_delta_digests=("6" * 64,),
+        candidate_digests=("7" * 64,),
+        reason=remote_hold.RemoteQualificationHoldReason.GRAPH_EVIDENCE_INCOMPLETE,
+    )
+    try:
+        assert remote_hold.is_exact_remote_stage_payload(receipt, "screen")
+        assert remote_hold.is_exact_remote_stage_payload(hold, "qualification")
+        assert not remote_hold.is_exact_remote_stage_payload(receipt, "qualification")
+        assert not remote_hold.is_exact_remote_stage_payload(hold, "screen")
+        assert not remote_hold.is_exact_remote_stage_payload(object(), "screen")
+        assert not remote_hold.is_exact_remote_stage_payload(object(), "qualification")
+        assert not remote_hold.is_exact_remote_stage_payload(receipt, "unknown")
+    finally:
+        coordinator._release(claim.lease, reason="test_cleanup")
 
 
 def test_spool_rejects_forged_request_hmac(tmp_path: Path) -> None:

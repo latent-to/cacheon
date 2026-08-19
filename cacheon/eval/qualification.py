@@ -1032,6 +1032,32 @@ class ReferenceManifest(_Canonical):
         for item in fields(self):
             object.__setattr__(self, item.name, _digest(getattr(self, item.name), item.name))
 
+    # Controller-sensitive fields: the controller distribution digest names
+    # the orchestration code revision, and the pristine launch digest embeds
+    # it again through the launch spec. Neither describes the measured
+    # system; both change on every controller commit.
+    _MEASURED_EXCLUDED: ClassVar[frozenset[str]] = frozenset(
+        {"controller_distribution_digest", "pristine_launch_digest"}
+    )
+
+    @property
+    def measured_digest(self) -> str:
+        """Identity of the measured system, blind to controller revisions.
+
+        Calibration and evidence reuse bind to this digest so a controller
+        code fix never invalidates sealed measurement authorities. The full
+        manifest digest (which still pins the controller) remains the
+        provenance record; matching uses measured identity only.
+        """
+        return canonical_digest(
+            "cacheon.qualification.reference-manifest-measured",
+            {
+                name: value
+                for name, value in self.to_dict().items()
+                if name not in self._MEASURED_EXCLUDED
+            },
+        )
+
     @classmethod
     def from_pristine(
         cls,
@@ -1236,6 +1262,24 @@ class DiscoveryQualificationProfile(_Canonical):
             reference=ReferenceManifest.from_dict,
             required_quality_metrics=lambda rows: tuple(_array(rows, "quality metrics")),
         )
+
+
+def declared_qualification_entropy_digest(selection_policy_digest: str) -> str:
+    """The declared entropy identity for one sealed selection policy.
+
+    Both the commitment sealed before execution and the durable entropy
+    provider must name exactly this domain-separated identity; the provider
+    compares them at first entropy use.
+    """
+
+    return canonical_digest(
+        "cacheon.eval.b300-declared-entropy-provider.v1",
+        {
+            "selection_policy_digest": _digest(
+                selection_policy_digest, "selection policy digest"
+            )
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -1464,15 +1508,22 @@ def _trajectory_rows(lifecycle: object):
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
     from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
     from cacheon.eval.oci_session_protocol import PromptEvidence
+    from cacheon.eval.resident_pair_quality_lifecycle import (
+        ResidentPairMarginalLifecycleEvidence,
+    )
     from cacheon.eval.scoring import marginal_workload_digest
 
     if type(lifecycle) not in {
         MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
     }:
         raise QualificationError("trajectory lifecycle is not typed")
     plan = lifecycle.prepared.baseline_session_plan
-    if type(lifecycle) is ResidentMarginalLifecycleEvidence:
+    if type(lifecycle) in {
+        ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
+    }:
         batch_sets = tuple(
             lifecycle.role_batches(role) for role in lifecycle.role_names
         )
@@ -1530,15 +1581,22 @@ def _quality_leg_lifecycle(lifecycle: object, candidate_read: int):
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
     from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
+    from cacheon.eval.resident_pair_quality_lifecycle import (
+        ResidentPairMarginalLifecycleEvidence,
+    )
 
     if type(lifecycle) not in {
         MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
     }:
         raise QualificationError("quality lifecycle is not typed")
     if type(candidate_read) is not int or candidate_read not in (1, 2):
         raise QualificationError("candidate read must be exactly 1 or 2")
-    if type(lifecycle) is ResidentMarginalLifecycleEvidence:
+    if type(lifecycle) in {
+        ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
+    }:
         try:
             return lifecycle.quality_leg(candidate_read)
         except (TypeError, ValueError, RuntimeError) as exc:
@@ -1599,10 +1657,14 @@ def candidate_lifecycle_digest(
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
     from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
+    from cacheon.eval.resident_pair_quality_lifecycle import (
+        ResidentPairMarginalLifecycleEvidence,
+    )
 
     if type(lifecycle) not in {
         MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
+        ResidentPairMarginalLifecycleEvidence,
     }:
         raise QualificationError("candidate lifecycle is not typed")
     candidates = tuple(
@@ -1613,6 +1675,26 @@ def candidate_lifecycle_digest(
     if len(candidates) != 1:
         raise QualificationError("candidate lifecycle is absent or ambiguous")
     candidate = candidates[0]
+    if type(lifecycle) is ResidentPairMarginalLifecycleEvidence:
+        return canonical_digest(
+            "cacheon.qualification.candidate-lifecycle.resident-pair-v1",
+            {
+                "arm_digest": candidate.arm.digest,
+                "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
+                "count_result_digest": (
+                    None
+                    if lifecycle.count_result is None
+                    else lifecycle.count_result.digest
+                ),
+                "crossover_evidence_digest": lifecycle.crossover.digest,
+                "crossover_plan_digest": lifecycle.plan.digest,
+                "retirement_digest": lifecycle.retirement.digest,
+                "selected_delta_digest": _digest(
+                    selected_delta_digest, "selected delta"
+                ),
+                "source_digest": lifecycle.source.digest,
+            },
+        )
     if type(lifecycle) is ResidentMarginalLifecycleEvidence:
         return canonical_digest(
             "cacheon.qualification.candidate-lifecycle.resident-v1",
@@ -2087,7 +2169,7 @@ def validate_quality_binding(
         if not grade_discovery_execution(graph_requirement, lifecycle).execution_passed:
             raise QualificationError("discovery execution authority did not pass")
     expected_calibration_context = CalibrationContext(
-        profile.reference.digest,
+        profile.reference.measured_digest,
         profile.reference.arena_digest,
         profile.reference.runtime_digest,
         profile.reference.base_engine_digest,
@@ -2097,7 +2179,6 @@ def validate_quality_binding(
         profile.reference.logical_hardware_digest,
         profile.reference.workload_digest,
         calibration_policy,
-        profile.reference.controller_distribution_digest,
     )
     lifecycle_digest = candidate_lifecycle_digest(
         lifecycle, selected_delta_digest=selected_delta_digest
@@ -2116,7 +2197,10 @@ def validate_quality_binding(
         commitment.source_plan_digest != lifecycle.source.digest
         or commitment.reference_manifest_digest != profile.reference.digest
         or commitment.workload_digest != profile.reference.workload_digest
-        or commitment.entropy_source_digest != profile.reference.selection_policy_digest
+        or commitment.entropy_source_digest
+        != declared_qualification_entropy_digest(
+            profile.reference.selection_policy_digest
+        )
         or commitment.prompt_digests != lifecycle_prompt_digests(lifecycle)
         or selection.sealed_cohort_trajectory_digest != cohort_trajectory_digest(lifecycle)
         or binding.selected_trajectory_digest != selected_trajectory_digest(
@@ -2144,7 +2228,7 @@ def validate_quality_binding(
         != _digest(reference_request_sha256, "T request SHA-256")
         or t_session.reference_manifest_digest != profile.reference.digest
         or t_session.launch_digest != profile.reference.pristine_launch_digest
-        or binding.reference_manifest_digest != profile.reference.digest
+        or binding.reference_manifest_digest != profile.reference.measured_digest
         or binding.calibration_digest != profile.calibration_digest
         or calibration.digest != profile.calibration_digest
         or calibration.context != expected_calibration_context

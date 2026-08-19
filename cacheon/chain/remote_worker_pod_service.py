@@ -7,11 +7,12 @@ and answering status verbs over the pinned SSH channel.  All filesystem
 coordinates come from one closed :class:`PodPaths`; nothing here selects a
 command, module, environment, or output path from request content.
 
-Epoch failure policy: a command-level adapter failure after the resident
-worker was entered is epoch-fatal on its first occurrence.  The service parks
-in an ``epoch_failed`` heartbeat state instead of silently restarting the
-adapter, so a transport or candidate fault can never cause an avoidable
-resident-model unload or spend another miner request on an unproven engine.
+Epoch failure policy: bounded consecutive command-level adapter failures park
+the service in an ``adapter_cooldown`` heartbeat state, after which exactly
+one fresh adapter boot is authorized at the evented cooldown boundary.  A
+transport or candidate fault therefore never causes an avoidable
+resident-model unload or a permanently frozen epoch; a still-live resident
+engine is retried in place, and only a dead adapter is ever replaced.
 """
 
 from __future__ import annotations
@@ -30,6 +31,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from cacheon.chain.execution_disposition import (
+    PRE_RESIDENT_REQUEUE_FAILURES,
+    infrastructure_result_payload,
+)
 from cacheon.chain.remote_worker_registration import (
     PodPaths,
     registration_credential,
@@ -37,7 +42,14 @@ from cacheon.chain.remote_worker_registration import (
     verify_fixed_adapter,
     verify_pod_registration,
 )
+from cacheon.chain.remote_worker_execution_marker import (
+    RESIDENT_ENTRY_MARKER,
+    RemoteWorkerExecutionMarkerError,
+    reopen_resident_entry,
+)
 from cacheon.chain.remote_worker_spool import (
+    ADAPTER_COOLDOWN_INITIAL_SECONDS,
+    ADAPTER_COOLDOWN_MAX_SECONDS,
     ALLOWED_FAILURE_CODES,
     HEX64,
     MAX_ARCHIVE_BYTES,
@@ -66,6 +78,11 @@ from cacheon.chain.remote_worker_spool import (
     verify_adapter_result,
     verify_request,
     RemoteWorkerError,
+)
+from cacheon.eval.native_artifact import (
+    NativeArtifactError,
+    NativeArtifactRaceError,
+    _rename_noreplace,
 )
 from cacheon.stack_identity import sha256_hex
 
@@ -100,7 +117,7 @@ def adapter_environment(
 
 
 def infrastructure_result(
-    request: Mapping[str, Any], result_root: Path, failure_code: str
+    request: Mapping[str, Any], result_root: Path, failure_code: str, *, credential=None
 ) -> None:
     if failure_code not in ALLOWED_FAILURE_CODES:
         fail("pod failure code is not registered")
@@ -109,11 +126,7 @@ def infrastructure_result(
     blobs.mkdir(mode=0o700)
     payload = (
         spool_canonical_json(
-            {
-                "failure_code": failure_code,
-                "request_id": request["request_id"],
-                "state": "no_decision",
-            }
+            infrastructure_result_payload(request, failure_code, credential)
         )
         + b"\n"
     )
@@ -190,6 +203,97 @@ def publish_result(
     )
 
 
+RECOVERY_HOLD_REASONS = frozenset(
+    {
+        "ambiguous_temporary_results",
+        "invalid_final_result",
+        "invalid_resident_entry_marker",
+        "invalid_temporary_entry",
+        "invalid_temporary_product",
+        "missing_temporary_result",
+        "partial_temporary_result",
+        "promotion_collision",
+        "promotion_durability_failure",
+        "promotion_failure",
+        "resident_entry_failure",
+        "results_root_invalid",
+    }
+)
+PRE_RESIDENT_FAILURES = PRE_RESIDENT_REQUEUE_FAILURES
+
+
+def recovery_hold(paths: PodPaths, request_id: str, reason: str) -> None:
+    """Record one closed operational reason, then leave the job processing."""
+
+    if reason not in RECOVERY_HOLD_REASONS:
+        fail("interrupted result recovery hold reason is not registered")
+    append_event(
+        paths.root,
+        "recovery_hold",
+        reason=reason,
+        request_id=request_id,
+        state="processing",
+    )
+    fail(f"interrupted result recovery held: {reason}")
+
+
+def require_pre_resident_failure(
+    paths: PodPaths,
+    result_root: Path,
+    request: Mapping[str, Any],
+    failure: str,
+) -> None:
+    """Return only when cleanup is proven to precede resident entry."""
+
+    marker_path = result_root / RESIDENT_ENTRY_MARKER
+    try:
+        marker_path.lstat()
+    except FileNotFoundError:
+        marker_present = False
+    except OSError:
+        recovery_hold(paths, request["request_id"], "invalid_resident_entry_marker")
+    else:
+        marker_present = True
+    if marker_present:
+        try:
+            reopen_resident_entry(result_root, request)
+        except RemoteWorkerExecutionMarkerError:
+            recovery_hold(paths, request["request_id"], "invalid_resident_entry_marker")
+        recovery_hold(paths, request["request_id"], "resident_entry_failure")
+    if failure not in PRE_RESIDENT_FAILURES:
+        recovery_hold(paths, request["request_id"], "resident_entry_failure")
+
+
+def interrupted_temporary_result(
+    paths: PodPaths, results: Path, request_id: str
+) -> Path:
+    """Select only one exact ``.<request-id>.<decimal-pid>`` directory."""
+
+    if results.is_symlink() or (results.exists() and not results.is_dir()):
+        recovery_hold(paths, request_id, "results_root_invalid")
+    if not results.exists():
+        recovery_hold(paths, request_id, "missing_temporary_result")
+    prefix = f".{request_id}."
+    matches: list[Path] = []
+    try:
+        candidates = results.glob(f"{prefix}[0-9]*")
+        for candidate in candidates:
+            suffix = candidate.name[len(prefix) :]
+            if not suffix or not suffix.isascii() or not suffix.isdigit():
+                continue
+            matches.append(candidate)
+            if len(matches) > 1:
+                recovery_hold(paths, request_id, "ambiguous_temporary_results")
+    except OSError:
+        recovery_hold(paths, request_id, "results_root_invalid")
+    if not matches:
+        recovery_hold(paths, request_id, "missing_temporary_result")
+    temporary = matches[0]
+    if temporary.is_symlink() or not temporary.is_dir():
+        recovery_hold(paths, request_id, "invalid_temporary_entry")
+    return temporary
+
+
 def recover_interrupted(
     registration: Mapping[str, Any],
     paths: PodPaths,
@@ -212,8 +316,83 @@ def recover_interrupted(
             credential=credential,
         )
         result_root = results / request["request_id"]
-        if not result_root.exists():
-            infrastructure_result(request, result_root, "pod_service_restart")
+        result_present = result_root.is_symlink() or result_root.exists()
+        if result_present:
+            if result_root.is_symlink() or not result_root.is_dir():
+                recovery_hold(paths, request["request_id"], "invalid_final_result")
+            try:
+                verify_adapter_result(
+                    load_json(result_root / "result.json"),
+                    result_root,
+                    request,
+                    registration,
+                    request_root=job,
+                    identity=identity,
+                    credential=credential,
+                )
+            except (OSError, RemoteWorkerError):
+                recovery_hold(paths, request["request_id"], "invalid_final_result")
+        else:
+            temporary = interrupted_temporary_result(paths, results, request["request_id"])
+            result_json = temporary / "result.json"
+            response_json = temporary / "response.json"
+            has_result = result_json.is_symlink() or result_json.exists()
+            has_response = response_json.is_symlink() or response_json.exists()
+            if not has_result and not has_response:
+                recovery_hold(paths, request["request_id"], "partial_temporary_result")
+            try:
+                if has_result:
+                    verify_adapter_result(
+                        load_json(result_json),
+                        temporary,
+                        request,
+                        registration,
+                        request_root=job,
+                        identity=identity,
+                        credential=credential,
+                    )
+                else:
+                    finalize_adapter_response(
+                        request,
+                        job,
+                        temporary,
+                        identity=identity,
+                        credential=credential,
+                    )
+                    verify_adapter_result(
+                        load_json(result_json),
+                        temporary,
+                        request,
+                        registration,
+                        request_root=job,
+                        identity=identity,
+                        credential=credential,
+                    )
+            except (OSError, RemoteWorkerError):
+                recovery_hold(
+                    paths, request["request_id"], "invalid_temporary_product"
+                )
+            if result_root.is_symlink() or result_root.exists():
+                recovery_hold(paths, request["request_id"], "promotion_collision")
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                results_fd = os.open(results, flags)
+            except OSError:
+                recovery_hold(paths, request["request_id"], "results_root_invalid")
+            try:
+                try:
+                    _rename_noreplace(results_fd, temporary.name, results_fd, result_root.name)
+                except NativeArtifactRaceError:
+                    recovery_hold(paths, request["request_id"], "promotion_collision")
+                except NativeArtifactError:
+                    recovery_hold(paths, request["request_id"], "promotion_failure")
+                try:
+                    os.fsync(results_fd)
+                except OSError:
+                    recovery_hold(paths, request["request_id"], "promotion_durability_failure")
+            finally:
+                os.close(results_fd)
         publish_result(
             registration,
             request,
@@ -265,6 +444,7 @@ class PersistentAdapterProcess:
         self.log_handle: io.BufferedWriter | None = None
         self.start_count = 0
         self.consecutive_failures = 0
+        self.restart_permitted = False
 
     @property
     def alive(self) -> bool:
@@ -275,6 +455,20 @@ class PersistentAdapterProcess:
         if type(completed) is not bool:
             fail("adapter completion state is not boolean")
         self.consecutive_failures = 0 if completed else self.consecutive_failures + 1
+
+    def permit_restart(self) -> None:
+        """Clear the failure burst at an explicit cooldown boundary.
+
+        A dead adapter is only ever replaced here, never mid-request, so a
+        replacement boot is always an evented operator-visible decision.  A
+        still-live resident model is left untouched; resume simply retries
+        against the commissioned engine.
+        """
+        self.consecutive_failures = 0
+        if self.alive:
+            return
+        self.close()
+        self.restart_permitted = True
 
     def _heartbeat(self, request_id: str | None, state: str) -> None:
         atomic_json(
@@ -384,8 +578,9 @@ class PersistentAdapterProcess:
         request_id = request["request_id"]
         process = self.process
         if process is None:
-            if self.start_count:
+            if self.start_count and not self.restart_permitted:
                 return "adapter_exit_nonzero"
+            self.restart_permitted = False
             if not self._start(deadline=deadline, request_id=request_id):
                 return "adapter_start_failed"
             process = self.process
@@ -557,8 +752,9 @@ def run_adapter(
         if owns_process:
             process.close()
     if failure is not None:
+        require_pre_resident_failure(paths, temporary, request, failure)
         shutil.rmtree(temporary, ignore_errors=True)
-        infrastructure_result(request, temporary, failure)
+        infrastructure_result(request, temporary, failure, credential=credential)
     else:
         try:
             finalize_adapter_response(
@@ -578,10 +774,53 @@ def run_adapter(
                 credential=credential,
             )
         except RemoteWorkerError:
-            shutil.rmtree(temporary, ignore_errors=True)
-            infrastructure_result(request, temporary, "adapter_result_invalid")
+            require_pre_resident_failure(
+                paths, temporary, request, "adapter_result_invalid"
+            )
+            fail("invalid adapter result escaped resident-entry hold")
     os.replace(temporary, final)
     return final
+
+
+def adapter_cooldown(
+    adapter_process: PersistentAdapterProcess,
+    registration: Mapping[str, Any],
+    paths: PodPaths,
+    *,
+    cooldown_seconds: int,
+    poll_seconds: int,
+    clock=time.time,
+    sleep=time.sleep,
+) -> int:
+    """Park through one bounded cooldown, then authorize one adapter boot.
+
+    Replaces the permanent ``epoch_failed`` latch: the pod stays registered
+    and heartbeating, resumes on its own, and doubles the cooldown up to a
+    cap so a persistent fault degrades to a slow evented retry instead of a
+    frozen epoch.  Returns the next cooldown duration.
+    """
+    append_event(
+        paths.root,
+        "adapter_cooldown_started",
+        adapter_start_count=adapter_process.start_count,
+        consecutive_adapter_failures=adapter_process.consecutive_failures,
+        cooldown_seconds=cooldown_seconds,
+        worker_epoch=registration["worker_epoch"],
+    )
+    resume_at = clock() + cooldown_seconds
+    while clock() < resume_at:
+        verify_pod_registration(paths)
+        adapter_process._heartbeat(None, "adapter_cooldown")
+        sleep(poll_seconds)
+    adapter_process.permit_restart()
+    append_event(
+        paths.root,
+        "adapter_cooldown_resumed",
+        adapter_start_count=adapter_process.start_count,
+        cooldown_seconds=cooldown_seconds,
+        worker_epoch=registration["worker_epoch"],
+    )
+    return min(ADAPTER_COOLDOWN_MAX_SECONDS, cooldown_seconds * 2)
 
 
 def pod_serve(
@@ -624,6 +863,7 @@ def pod_serve(
             heartbeat_seconds=heartbeat_seconds,
             adapter_arguments=adapter_arguments,
         )
+        cooldown_seconds = ADAPTER_COOLDOWN_INITIAL_SECONDS
         try:
             while True:
                 verify_pod_registration(paths)
@@ -655,14 +895,16 @@ def pod_serve(
                         credential=credential,
                     )
                     # A typed request-local refusal leaves the commissioned
-                    # adapter and resident model healthy.  Every other adapter
-                    # failure is epoch-fatal on its first occurrence.
+                    # adapter and resident model healthy.  Other adapter
+                    # failures count toward the bounded cooldown threshold.
                     adapter_process.record_result(
                         completed=(
                             result_row["state"] == "completed"
                             or result_row["failure_code"] == "adapter_request_failed"
                         )
                     )
+                    if adapter_process.consecutive_failures == 0:
+                        cooldown_seconds = ADAPTER_COOLDOWN_INITIAL_SECONDS
                     publish_result(
                         registration,
                         request,
@@ -681,23 +923,13 @@ def pod_serve(
                         adapter_process.consecutive_failures
                         >= MAX_CONSECUTIVE_ADAPTER_FAILURES
                     ):
-                        append_event(
-                            paths.root,
-                            "resident_epoch_failed",
-                            adapter_start_count=adapter_process.start_count,
-                            consecutive_adapter_failures=(
-                                adapter_process.consecutive_failures
-                            ),
-                            worker_epoch=registration["worker_epoch"],
+                        cooldown_seconds = adapter_cooldown(
+                            adapter_process,
+                            registration,
+                            paths,
+                            cooldown_seconds=cooldown_seconds,
+                            poll_seconds=poll_seconds,
                         )
-                        # Fail the epoch closed without tearing down a still-
-                        # live resident model.  A human may inspect or recover
-                        # the epoch; this service never turns a candidate or
-                        # transport failure into an avoidable model unload.
-                        while True:
-                            verify_pod_registration(paths)
-                            adapter_process._heartbeat(None, "epoch_failed")
-                            time.sleep(poll_seconds)
                 time.sleep(poll_seconds)
         finally:
             adapter_process.close()

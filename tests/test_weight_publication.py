@@ -74,6 +74,10 @@ class Chain:
     def get_block_hash(self, block):
         return "0x" + f"{block:064x}"
 
+    def get_hyperparameter(self, param_name, netuid=None, block=None):
+        assert param_name == "WeightsVersionKey"
+        return 29
+
     def set_weights(self, **kwargs):
         self.submit_calls += 1
         self.submit_options.append(

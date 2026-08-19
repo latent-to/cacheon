@@ -147,6 +147,7 @@ nav:
       - Finding an improvement: miner-guide/finding-a-win.md
       - Example bundles: miner-guide/examples.md
       - Submit on-chain: miner-guide/submitting.md
+      - Why submissions fail: miner-guide/why-submissions-fail.md
       - Troubleshooting: miner-guide/diagnostics.md
       - Discovery lane: miner-guide/discovery-lane.md
       - Override points: miner-guide/override-points.md

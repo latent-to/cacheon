@@ -1,10 +1,11 @@
-"""Standing CPU dispatcher for finalized, FIFO, remote screen work.
+"""Sealed config and builder for finalized, FIFO, remote screen dispatch.
 
 The intake-only validator remains the sole chain reader and durable cursor
-advancer.  This process reopens that cursor read-only for every coordinator
-operation, claims exactly one durable screen lease, and hands the resulting
-typed request to the authenticated spool transport.  Qualification is not an
-operation exposed by this daemon.
+advancer.  The dispatcher built here reopens that cursor read-only for every
+coordinator operation, claims exactly one durable screen lease, and hands the
+resulting typed request to the authenticated spool transport.  Its only
+production consumer is ``cacheon.chain.standing_cpu_supervisor``, which owns
+the process loop; qualification is not an operation exposed here.
 
 There is deliberately no provider import, command, argv, shell, environment,
 or candidate-selected execution surface.  ``ArenaService`` still requires a
@@ -14,16 +15,11 @@ execution methods always fail closed if local code reaches them.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
-import signal
 import sqlite3
-import stat
-import sys
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, NoReturn
@@ -42,23 +38,27 @@ from cacheon.arena_service import (
 )
 from cacheon.chain.evaluation_coordinator import (
     EvaluationCoordinator,
-    EvaluationRun,
     WorkerReadiness,
 )
 from cacheon.chain.intake import IntakePolicy, IntakeScope
+from cacheon.chain.publication import reopen_worker_bundle
+from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteEvaluationDispatcher,
+    RemoteEvaluationDispatcherError,
+    RemoteEvaluationRequest,
 )
 from cacheon.chain.remote_worker_registration import verify_registration
 from cacheon.chain.remote_worker_spool import (
     MAX_JOB_SECONDS,
     load_json,
-    spool_canonical_json,
 )
 from cacheon.chain.ssh_worker_transport import (
     DurableSpoolAuthenticatedWorkerTransport,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
+from functools import partial
+from cacheon.chain import sealed_config
 
 CONFIG_SCHEMA = "cacheon-mainnet-screen-dispatcher-config-v1"
 CONFIG_DOMAIN = "cacheon.chain.mainnet-screen-dispatcher-config.v1"
@@ -117,17 +117,10 @@ def _closed(value: object, fields: frozenset[str], label: str) -> dict[str, Any]
     return value
 
 
-def _positive_int(
-    value: object,
-    label: str,
-    *,
-    maximum: int | None = None,
-) -> int:
-    if type(value) is not int or value <= 0 or (
-        maximum is not None and value > maximum
-    ):
-        raise MainnetScreenDispatcherError(f"{label} is outside its integer bounds")
-    return value
+_absolute_path = partial(sealed_config.absolute_path, error=MainnetScreenDispatcherError)
+_authority_file = partial(sealed_config.authority_file, error=MainnetScreenDispatcherError)
+_private_directory = partial(sealed_config.private_directory, error=MainnetScreenDispatcherError)
+_positive_int = partial(sealed_config.positive_int, error=MainnetScreenDispatcherError)
 
 
 def _digest(value: object, label: str) -> str:
@@ -135,50 +128,6 @@ def _digest(value: object, label: str) -> str:
         return require_sha256_hex(value, field=label)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:
         raise MainnetScreenDispatcherError(str(exc)) from None
-
-
-def _absolute_path(value: object, label: str) -> Path:
-    if (
-        not isinstance(value, str)
-        or not value
-        or "\x00" in value
-        or not Path(value).is_absolute()
-    ):
-        raise MainnetScreenDispatcherError(f"{label} must be an absolute path")
-    return Path(value)
-
-
-def _authority_file(path: Path, label: str, *, secret: bool = False) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise MainnetScreenDispatcherError(f"{label} is unavailable: {exc}") from None
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or stat.S_ISLNK(info.st_mode)
-        or info.st_nlink != 1
-        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
-        or (secret and stat.S_IMODE(info.st_mode) & 0o077)
-        or (not secret and stat.S_IMODE(info.st_mode) & 0o022)
-    ):
-        qualifier = "owner-only regular file" if secret else "owner-controlled regular file"
-        raise MainnetScreenDispatcherError(f"{label} must be an {qualifier}")
-
-
-def _private_directory(path: Path, label: str) -> None:
-    try:
-        info = path.lstat()
-    except OSError as exc:
-        raise MainnetScreenDispatcherError(f"{label} is unavailable: {exc}") from None
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or stat.S_ISLNK(info.st_mode)
-        or stat.S_IMODE(info.st_mode) != 0o700
-        or (hasattr(os, "geteuid") and info.st_uid != os.geteuid())
-    ):
-        raise MainnetScreenDispatcherError(
-            f"{label} must be an owner-controlled mode-0700 directory"
-        )
 
 
 def _manifest_from_dict(value: object) -> ArenaServiceManifest:
@@ -558,8 +507,110 @@ def _registration(config: DispatcherConfig) -> dict[str, Any]:
     return registration
 
 
-def build_dispatcher(config: DispatcherConfig) -> RemoteEvaluationDispatcher:
-    """Construct the exact CPU coordinator and durable spool adapter."""
+def make_qualification_publication_resolver(
+    *,
+    intake_db: Path,
+    policy: IntakePolicy,
+    scope: IntakeScope,
+    store_factory: Callable[..., Any],
+) -> Callable[[object], tuple[Any, ...]]:
+    """Reopen intake-backed publications for one sealed qualification request.
+
+    Mirrors recoverable qualification claim reopen: briefly open the same store
+    factory/policy/scope, reopen each candidate publication from the durable
+    intake row, and require an exact match against the authenticated wire
+    publication. Never invents a publication.
+    """
+
+    if not callable(store_factory):
+        raise MainnetScreenDispatcherError("store_factory is not callable")
+
+    def resolve(request: object) -> tuple[Any, ...]:
+        if type(request) is not RemoteEvaluationRequest or request.stage != "qualification":
+            raise RemoteEvaluationDispatcherError(
+                "qualification publication resolver requires an exact qualification request"
+            )
+        candidates = request.body.get("candidates")
+        if type(candidates) is not list or not candidates:
+            raise RemoteEvaluationDispatcherError(
+                "qualification publication resolver candidates are malformed"
+            )
+        snapshots: list[tuple[object, str, str, dict[str, object]]] = []
+        store = store_factory(intake_db, policy, scope=scope)
+        try:
+            for candidate in candidates:
+                if type(candidate) is not dict:
+                    raise RemoteEvaluationDispatcherError(
+                        "qualification publication resolver candidate is malformed"
+                    )
+                reservation_value = candidate.get("reservation")
+                wire_publication = candidate.get("publication")
+                if (
+                    type(reservation_value) is not dict
+                    or "reservation_digest" not in reservation_value
+                    or type(wire_publication) is not dict
+                ):
+                    raise RemoteEvaluationDispatcherError(
+                        "qualification publication resolver candidate authority is malformed"
+                    )
+                try:
+                    reservation_digest = require_sha256_hex(
+                        reservation_value["reservation_digest"],
+                        field="reservation_digest",
+                    )
+                    row = store.get(reservation_digest)
+                    snapshots.append(
+                        (
+                            row.publication_root,
+                            row.arrival.content_hash,
+                            row.publication_digest,
+                            wire_publication,
+                        )
+                    )
+                except RemoteEvaluationDispatcherError:
+                    raise
+                except Exception as exc:
+                    raise RemoteEvaluationDispatcherError(
+                        "qualification publication authority could not be read from intake"
+                    ) from exc
+        finally:
+            store.close()
+
+        publications = []
+        for root, content_hash, publication_digest, wire_publication in snapshots:
+            try:
+                publication = reopen_worker_bundle(
+                    root,
+                    content_hash,
+                    expected_receipt_digest=publication_digest,
+                )
+            except Exception as exc:
+                raise RemoteEvaluationDispatcherError(
+                    "qualification publication could not be reopened from intake"
+                ) from exc
+            if publication.to_dict() != wire_publication:
+                raise RemoteEvaluationDispatcherError(
+                    "resolved qualification publication differs from authenticated work"
+                )
+            publications.append(publication)
+        return tuple(publications)
+
+    return resolve
+
+
+def build_dispatcher(
+    config: DispatcherConfig,
+    *,
+    store_factory: Callable[..., Any] | None = None,
+) -> RemoteEvaluationDispatcher:
+    """Construct the exact CPU coordinator and durable spool adapter.
+
+    The default is the recovery-capable finalized intake store because recovery
+    triggers are durable while their authorizing SQLite function is
+    connection-local. Reopening a commissioned database with the base store can
+    therefore fail even during a screen-only lease mutation. Tests may inject
+    another exact factory explicitly.
+    """
 
     registration = _registration(config)
     provider = RemoteOnlyArenaProvider(config.manifest.provider_digest)
@@ -569,25 +620,48 @@ def build_dispatcher(config: DispatcherConfig) -> RemoteEvaluationDispatcher:
     # Do not advertise a reconstructed dispatcher until the independently
     # advancing intake authority has a present, correctly scoped live cursor.
     cursor()
-    coordinator = EvaluationCoordinator(
+    resolved_store_factory: Callable[..., Any] = (
+        RecoverableFinalizedIntakeStore
+        if store_factory is None
+        else store_factory
+    )
+    if not callable(resolved_store_factory):
+        raise MainnetScreenDispatcherError("store_factory is not callable")
+    coordinator_kwargs: dict[str, Any] = {
+        "intake_db": config.intake_db,
+        "policy": config.policy,
+        "scope": config.scope,
+        "service": service,
+        "readiness": config.readiness,
+        "owner": config.owner,
+        "advance_finalized_cursor": cursor,
+        "lease_blocks": config.lease_blocks,
+        # The v3 execution core is a one-candidate contract: the deployment
+        # factory refuses multi-candidate requests (B300QualificationCohort,
+        # "resident v3 qualification requires one submitted bundle") while the
+        # arena manifest still advertises capacity.max_cohort_size > 1. Claim
+        # singletons until the cohort fan-out exists at that boundary; retire
+        # this pin in the same change that implements it.
+        "qualification_max_members": 1,
+        "heartbeat_interval_s": config.heartbeat_interval_s,
+        "heartbeat_join_timeout_s": config.heartbeat_join_timeout_s,
+        "lock_attempts": config.lock_attempts,
+        "lock_retry_delay_s": config.lock_retry_delay_s,
+        "store_factory": resolved_store_factory,
+    }
+    coordinator = EvaluationCoordinator(**coordinator_kwargs)
+    qualification_publication_resolver = make_qualification_publication_resolver(
         intake_db=config.intake_db,
         policy=config.policy,
         scope=config.scope,
-        service=service,
-        readiness=config.readiness,
-        owner=config.owner,
-        advance_finalized_cursor=cursor,
-        lease_blocks=config.lease_blocks,
-        heartbeat_interval_s=config.heartbeat_interval_s,
-        heartbeat_join_timeout_s=config.heartbeat_join_timeout_s,
-        lock_attempts=config.lock_attempts,
-        lock_retry_delay_s=config.lock_retry_delay_s,
+        store_factory=resolved_store_factory,
     )
     try:
         transport = DurableSpoolAuthenticatedWorkerTransport(
             registration_path=config.registration_path,
             spool_root=config.spool_root,
             credential_path=config.credential_path,
+            qualification_publication_resolver=qualification_publication_resolver,
             response_timeout_seconds=config.response_timeout_seconds,
             poll_seconds=config.transport_poll_seconds,
         )
@@ -608,109 +682,3 @@ def build_dispatcher(config: DispatcherConfig) -> RemoteEvaluationDispatcher:
         transport=transport,
         credential=transport.credential,
     )
-
-
-def _event(event: str, config: DispatcherConfig, **fields: object) -> None:
-    payload = {
-        "config_digest": config.digest,
-        "event": event,
-        "schema": "cacheon-mainnet-screen-dispatcher-event-v1",
-        "time_unix": int(time.time()),
-        **fields,
-    }
-    sys.stdout.buffer.write(spool_canonical_json(payload) + b"\n")
-    sys.stdout.buffer.flush()
-
-
-def run_forever(
-    config: DispatcherConfig,
-    stop: threading.Event,
-    *,
-    dispatcher_factory: Callable[[DispatcherConfig], Any] = build_dispatcher,
-    wait: Callable[[float], bool] | None = None,
-) -> None:
-    """Drain screen FIFO forever, rebuilding authority after bounded failures."""
-
-    if type(config) is not DispatcherConfig or not isinstance(stop, threading.Event):
-        raise MainnetScreenDispatcherError("daemon authority is not exactly typed")
-    waiter = stop.wait if wait is None else wait
-    backoff = config.restart_initial_backoff_s
-    dispatcher = None
-    while not stop.is_set():
-        try:
-            if dispatcher is None:
-                dispatcher = dispatcher_factory(config)
-                _event("dispatcher_ready", config)
-            run = dispatcher.dispatch_screen_once()
-            if run is not None and type(run) is not EvaluationRun:
-                raise MainnetScreenDispatcherError(
-                    "screen dispatcher returned an untyped result"
-                )
-        except Exception as exc:
-            dispatcher = None
-            _event(
-                "dispatcher_restart",
-                config,
-                backoff_ms=int(backoff * 1000),
-                error=str(exc)[:2048],
-                error_type=type(exc).__name__,
-            )
-            if waiter(backoff):
-                break
-            backoff = min(config.restart_max_backoff_s, backoff * 2.0)
-            continue
-
-        backoff = config.restart_initial_backoff_s
-        if run is None:
-            if waiter(config.idle_poll_s):
-                break
-            continue
-        _event(
-            "screen_completed",
-            config,
-            disposition=run.disposition,
-            lease_id=run.lease.lease_id,
-            reservation_ids=list(run.lease.reservation_ids),
-            result_digest=run.envelope.digest,
-        )
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="absolute path to one closed cacheon-mainnet-screen-dispatcher-config-v1 JSON file",
-    )
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        config = load_config(args.config)
-    except Exception as exc:
-        print(f"MAINNET-SCREEN-DISPATCHER-ERROR: {exc}", file=sys.stderr)
-        return 2
-
-    stop = threading.Event()
-
-    def request_stop(_signum: int, _frame: object) -> None:
-        stop.set()
-
-    signal.signal(signal.SIGINT, request_stop)
-    signal.signal(signal.SIGTERM, request_stop)
-    _event("daemon_started", config)
-    try:
-        run_forever(config, stop)
-    except KeyboardInterrupt:
-        stop.set()
-    except Exception as exc:
-        print(f"MAINNET-SCREEN-DISPATCHER-ERROR: {exc}", file=sys.stderr)
-        return 2
-    _event("daemon_stopped", config)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -36,6 +36,8 @@ from cacheon.copy_fingerprint import (
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
+from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
+from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
 
 if TYPE_CHECKING:
     from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
@@ -62,7 +64,14 @@ _AUTOMATICALLY_EXPIRABLE = (
     "reproduction_pending", "held", "no_decision",
 )
 _AUTOMATIC_EXPIRY_REASON = "finalized_block_sla_expired"
+_VALIDATOR_DOWNTIME_REQUEUE_REASON = "validator_downtime_requeued"
+# One refresh of the SLA anchor after a prior validator-downtime requeue
+# re-expired (operator/SLA mismatch).  A third attempt still fails closed.
+_VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON = "validator_downtime_requeued_refresh"
 _SCHEMA3_MIGRATION_HOLD_REASON = "schema3_reproduction_required"
+# Durable "this row spent its automatic retry budget" mark. See
+# FinalizedIntakeStore.mark_hold_retry_exhausted.
+_EXHAUSTED_HOLD_SUFFIX = ":retry_budget_exhausted"
 _SCHEMA3_ARCHIVE_REASON_PREFIX = "schema3_archived@"
 
 # These domain separators are durable protocol identifiers, not product-facing
@@ -121,7 +130,12 @@ class IntakePolicy:
     max_transport_retries: int = 3
     max_qualification_retries: int = 3
     max_cohort: int = 8
-    expiry_blocks: int = 2_880
+    # FIFO work should receive a verdict, not expire because evaluator service
+    # time exceeded a daily capacity estimate. At the measured ~39 minutes per
+    # reservation, the former 10,000-block (~33-hour) bound covered only about
+    # 51 rows and 178 queued rows expired without verdicts. 500,000 blocks is
+    # roughly 69 days: still a stale-state bound, no longer a routine outcome.
+    expiry_blocks: int = 500_000
 
     def __post_init__(self) -> None:
         values = tuple(getattr(self, field) for field in self.__dataclass_fields__)
@@ -144,6 +158,8 @@ class FinalizedArrival:
     event_subindex: int = 0
     payload_digest: str = ""
     invalid_reason: str = ""
+    payment_block: int = 0
+    payment_extrinsic_index: int = 0
 
     def __post_init__(self) -> None:
         if (
@@ -154,13 +170,13 @@ class FinalizedArrival:
             or any(char in self.hotkey for char in "\x00\r\n")
         ):
             raise IntakeError("arrival hotkey is malformed")
-        valid_reference = (
+        identified = (
             isinstance(self.content_hash, str)
             and _HASH.fullmatch(self.content_hash) is not None
             and isinstance(self.url, str)
             and bool(self.url)
-            and not self.invalid_reason
         )
+        valid_reference = identified and not self.invalid_reason
         invalid_reference = (
             self.content_hash == ""
             and self.url == ""
@@ -168,7 +184,13 @@ class FinalizedArrival:
             and bool(self.invalid_reason)
             and len(self.invalid_reason) <= 2_048
         )
-        if not (valid_reference or invalid_reference):
+        attributed_invalid = (
+            identified
+            and isinstance(self.invalid_reason, str)
+            and bool(self.invalid_reason)
+            and len(self.invalid_reason) <= 2_048
+        )
+        if not (valid_reference or invalid_reference or attributed_invalid):
             raise IntakeError("arrival payload disposition is malformed")
         if type(self.block) is not int or self.block < 0:
             raise IntakeError("arrival block is malformed")
@@ -177,6 +199,15 @@ class FinalizedArrival:
         for field in ("event_index", "event_subindex"):
             if type(getattr(self, field)) is not int or getattr(self, field) < 0:
                 raise IntakeError(f"arrival {field} is malformed")
+        if (
+            type(self.payment_block) is not int
+            or self.payment_block < 0
+            or type(self.payment_extrinsic_index) is not int
+            or self.payment_extrinsic_index < 0
+        ):
+            raise IntakeError("arrival eval-cost payment pointer is malformed")
+        if self.payment_block == 0 and self.payment_extrinsic_index != 0:
+            raise IntakeError("arrival eval-cost payment pointer is malformed")
         payload_digest = self.payload_digest or canonical_digest(
             _FINALIZED_PAYLOAD_DOMAIN,
             {"content_hash": self.content_hash, "url": self.url},
@@ -532,6 +563,12 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 ON reservations(block, event_index, event_subindex, hotkey, content_hash);
             CREATE INDEX IF NOT EXISTS reservations_status
                 ON reservations(status, admission_epoch, block, event_index, event_subindex);
+            CREATE TABLE IF NOT EXISTS reservation_sla_resets (
+                reservation_id TEXT PRIMARY KEY REFERENCES reservations(reservation_id),
+                reset_block INTEGER NOT NULL CHECK(reset_block>=0),
+                authority_digest TEXT NOT NULL,
+                reason TEXT NOT NULL
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS qualification_dispositions (
                 reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
                 attempt_index INTEGER NOT NULL,
@@ -636,8 +673,18 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 status TEXT NOT NULL,
                 updated_block INTEGER NOT NULL
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS eval_cost_payments (
+                payment_block INTEGER NOT NULL,
+                payment_extrinsic_index INTEGER NOT NULL,
+                reservation_id TEXT NOT NULL REFERENCES reservations(reservation_id),
+                content_hash TEXT NOT NULL,
+                hotkey TEXT NOT NULL,
+                amount_tao_rao INTEGER NOT NULL,
+                PRIMARY KEY(payment_block, payment_extrinsic_index)
+            ) STRICT;
             """
         )
+        self._db.executescript(EVAL_COST_CREDITS_DDL)
         reservation_columns = {
             row["name"] for row in self._db.execute("PRAGMA table_info(reservations)")
         }
@@ -647,6 +694,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             "screen_status": "TEXT NOT NULL DEFAULT ''",
             "screen_stage_count": "INTEGER NOT NULL DEFAULT 0",
             "screen_attempts": "INTEGER NOT NULL DEFAULT 0",
+            "eval_cost_payment_block": "INTEGER NOT NULL DEFAULT 0",
+            "eval_cost_payment_extrinsic_index": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, declaration in additions.items():
             if name not in reservation_columns:
@@ -731,7 +780,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     def _recover_interrupted(self) -> None:
         with self._transaction():
             self._db.execute(
-                "UPDATE reservations SET status='held', decision='NO_DECISION', "
+                "UPDATE reservations SET status='held', decision='', "
                 "reason='controller_restart_during_' || status "
                 "WHERE status IN ('fetching','qualifying')"
             )
@@ -800,12 +849,30 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
 
         return self._cursor()
 
+    def _eval_cost_payment_used(self, payment_block: int, payment_extrinsic_index: int) -> bool:
+        row = self._db.execute(
+            "SELECT 1 AS n FROM eval_cost_payments "
+            "WHERE payment_block=? AND payment_extrinsic_index=?",
+            (payment_block, payment_extrinsic_index),
+        ).fetchone()
+        return row is not None
+
+    def _unspent_eval_cost_credit(self, hotkey: str) -> str:
+        row = self._db.execute(
+            "SELECT credit_id FROM eval_cost_credits "
+            "WHERE hotkey=? AND reservation_id='' "
+            "ORDER BY granted_at, credit_id LIMIT 1",
+            (hotkey,),
+        ).fetchone()
+        return "" if row is None else row["credit_id"]
+
     def reserve_finalized(
         self,
         arrivals: Iterable[FinalizedArrival],
         *,
         finalized_block: int,
         finalized_block_hash: str,
+        eval_cost_amount_tao_rao: int = 0,
     ) -> tuple[IntakeReservation, ...]:
         rows = tuple(arrivals)
         if any(type(row) is not FinalizedArrival for row in rows):
@@ -818,6 +885,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("finalized block is malformed")
         if _BLOCK_HASH.fullmatch(finalized_block_hash or "") is None:
             raise IntakeError("finalized block hash is malformed")
+        if (
+            type(eval_cost_amount_tao_rao) is not int
+            or eval_cost_amount_tao_rao < 0
+        ):
+            raise IntakeError("eval cost amount cannot be negative")
         if any(row.block > finalized_block for row in rows):
             raise IntakeError("unfinalized arrival reached durable intake")
 
@@ -860,12 +932,43 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     (epoch, arrival.hotkey),
                 ).fetchone()["n"]
                 status, reason = "reserved", ""
-                if not arrival.valid:
+                # An operator-granted credit substitutes for exactly one
+                # missing payment; every other invalid_reason keeps its
+                # verdict, and a cited (even invalid) payment pointer is
+                # never rescued.
+                credit_id = ""
+                if (
+                    eval_cost_amount_tao_rao > 0
+                    and arrival.payment_block == 0
+                    and (
+                        arrival.valid
+                        or arrival.invalid_reason == "missing_eval_cost_payment"
+                    )
+                ):
+                    credit_id = self._unspent_eval_cost_credit(arrival.hotkey)
+                if not arrival.valid and not (
+                    credit_id
+                    and arrival.invalid_reason == "missing_eval_cost_payment"
+                ):
                     status, reason = "failed", arrival.invalid_reason
+                elif (
+                    eval_cost_amount_tao_rao > 0
+                    and arrival.payment_block == 0
+                    and not credit_id
+                ):
+                    status, reason = "failed", "missing_eval_cost_payment"
                 elif finalized_block - arrival.block >= self.policy.expiry_blocks:
                     status, reason = "expired", _AUTOMATIC_EXPIRY_REASON
                 elif hotkey_count >= self.policy.max_per_hotkey_epoch:
                     status, reason = "failed", "hotkey_epoch_admission_limit"
+                elif (
+                    eval_cost_amount_tao_rao > 0
+                    and arrival.payment_block > 0
+                    and self._eval_cost_payment_used(
+                        arrival.payment_block, arrival.payment_extrinsic_index
+                    )
+                ):
+                    status, reason = "failed", "eval_cost_payment_used"
                 elif pending >= self.policy.max_pending:
                     # GPU/worker backpressure is validator capacity, not a miner
                     # fault.  Retain the finalized arrival in FIFO order and
@@ -875,8 +978,9 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     pending += 1
                 self._db.execute(
                     "INSERT INTO reservations(reservation_id,block,block_hash,event_index,event_subindex,"
-                    "hotkey,content_hash,url,payload_digest,invalid_reason,admission_epoch,status,reason) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "hotkey,content_hash,url,payload_digest,invalid_reason,admission_epoch,status,reason,"
+                    "eval_cost_payment_block,eval_cost_payment_extrinsic_index) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         arrival.reservation_id,
                         arrival.block,
@@ -891,8 +995,44 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         epoch,
                         status,
                         reason,
+                        arrival.payment_block,
+                        arrival.payment_extrinsic_index,
                     ),
                 )
+                if (
+                    eval_cost_amount_tao_rao > 0
+                    and status in {"reserved", "deferred"}
+                    and arrival.payment_block > 0
+                ):
+                    self._db.execute(
+                        "INSERT INTO eval_cost_payments("
+                        "payment_block,payment_extrinsic_index,reservation_id,"
+                        "content_hash,hotkey,amount_tao_rao) VALUES(?,?,?,?,?,?)",
+                        (
+                            arrival.payment_block,
+                            arrival.payment_extrinsic_index,
+                            arrival.reservation_id,
+                            arrival.content_hash,
+                            arrival.hotkey,
+                            eval_cost_amount_tao_rao,
+                        ),
+                    )
+                elif (
+                    eval_cost_amount_tao_rao > 0
+                    and status in {"reserved", "deferred"}
+                    and credit_id
+                ):
+                    # Mirror payment semantics: consumed only by an admitted
+                    # row, inside the same transaction that peeked it.
+                    spent = self._db.execute(
+                        "UPDATE eval_cost_credits SET reservation_id=?, "
+                        "spent_block=? WHERE credit_id=? AND reservation_id=''",
+                        (arrival.reservation_id, finalized_block, credit_id),
+                    )
+                    if spent.rowcount != 1:
+                        raise IntakeError(
+                            "eval-cost credit disappeared during admission"
+                        )
                 inserted.append(arrival.reservation_id)
             cursor_value = json.dumps(
                 [finalized_block, finalized_block_hash], separators=(",", ":")
@@ -920,6 +1060,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             row["hotkey"], row["content_hash"], row["url"], row["block"],
             row["block_hash"], row["event_index"], row["event_subindex"],
             row["payload_digest"], row["invalid_reason"],
+            int(row["eval_cost_payment_block"] or 0),
+            int(row["eval_cost_payment_extrinsic_index"] or 0),
         )
         return IntakeReservation(
             row["reservation_id"], arrival, row["admission_epoch"], row["status"],
@@ -1014,7 +1156,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             reservation_id,
             {"fetching"},
             "held" if exhausted else "transport_retry",
-            "NO_DECISION",
+            "",
             "transport_retry_limit" if exhausted else reason,
         )
 
@@ -1112,7 +1254,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "promoted", "qualifying", "reproduction_pending", "no_decision",
             },
             "held",
-            "NO_DECISION",
+            "",
             reason,
         )
 
@@ -1215,6 +1357,52 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             (bound,),
         )
         return tuple(self._row(row) for row in rows)
+
+    def retire_duplicate_screenables(
+        self, *, service_digest: str, limit: int | None = None
+    ) -> tuple[tuple[str, str], ...]:
+        """Fail screenable rows whose exact bytes already lost under this arena.
+
+        Wiring only; the rule lives in :mod:`cacheon.chain.duplicate_replay`,
+        which documents why identical bytes under an identical arena may inherit
+        a FAIL and why a PASS may not.
+
+        Runs before work is claimed, so a duplicate costs neither a screen nor a
+        qualification. ``screenable`` already excludes rows under an active
+        lease, and ``decide_replay`` refuses the reproduction lane outright.
+        """
+
+        require_sha256_hex(service_digest, field="arena service digest")
+        priors = tuple(
+            PriorVerdict(
+                reservation_id=row["reservation_id"],
+                content_hash=row["content_hash"],
+                arena_service_digest=row["arena_service_digest"],
+                decision=row["decision"],
+                reason=row["reason"],
+            )
+            for row in self._db.execute(
+                "SELECT reservation_id,content_hash,arena_service_digest,decision,"
+                "reason FROM reservations WHERE decision IN ('PASS','FAIL') "
+                "AND arena_service_digest=?",
+                (service_digest,),
+            )
+        )
+        if not priors:
+            return ()
+        retired: list[tuple[str, str]] = []
+        for row in self.screenable(limit=limit):
+            decision = decide_replay(
+                content_hash=row.arrival.content_hash,
+                arena_service_digest=service_digest,
+                screen_lane=row.screen_lane,
+                priors=priors,
+            )
+            if not decision.replay:
+                continue
+            self.mark_failed(row.reservation_id, decision.reason)
+            retired.append((row.reservation_id, decision.reason))
+        return tuple(retired)
 
     def arena_queue_snapshot(self, *, current_block: int):
         from cacheon.arena_service import ArenaQueueSnapshot
@@ -1321,7 +1509,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
                 decision, reason = "", "screen_retry"
             else:
-                status, decision, reason = "held", "NO_DECISION", "screen_held"
+                status, decision, reason = "held", "", "screen_held"
             self._db.execute(
                 "UPDATE reservations SET status=?,screen_status=?,screen_stage_count=?,"
                 "decision=?,reason=? WHERE reservation_id=?",
@@ -1329,6 +1517,39 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     status, receipt.decision.value, len(receipt.results),
                     decision, reason, reservation_id,
                 ),
+            )
+        return self.get(reservation_id)
+
+    def demote_promoted_for_rescreen(
+        self, reservation_id: str, *, reason: str
+    ) -> "IntakeReservation":
+        """Return one promoted reservation to the screen queue.
+
+        A promoted row carries a screen receipt bound to the service identity
+        that produced it. Once that identity is retired the receipt can no
+        longer authorize qualification, and because the qualification selector
+        is deterministic it would otherwise re-pick the same unusable head for
+        as long as the row stays promoted. Demotion re-enters the row in the
+        screen FIFO so a fresh receipt is produced under the live identity.
+        Retained screen dispositions are append-only and are not disturbed."""
+
+        if type(reason) is not str or not reason or len(reason) > 64:
+            raise IntakeError("rescreen reason is malformed")
+        with self._transaction():
+            row = self.get(reservation_id)
+            if row.status != "promoted" or row.screen_status != "promote":
+                raise IntakeError("only a promoted reservation may be rescreened")
+            # Mirrors the screen-retry disposition, which is the proven inverse
+            # of promotion and keeps the reproduction lane in its own queue.
+            status = (
+                "reproduction_pending"
+                if row.screen_lane == "reproduction"
+                else "published"
+            )
+            self._db.execute(
+                "UPDATE reservations SET status=?,screen_status='',decision='',"
+                "reason=? WHERE reservation_id=?",
+                (status, reason, reservation_id),
             )
         return self.get(reservation_id)
 
@@ -1478,6 +1699,26 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             "failed",
             "FAIL",
             f"copy_of:{predecessor.reservation_id}",
+        )
+
+    def mark_reference_copy(
+        self, reservation_id: str, reference_name: str
+    ) -> IntakeReservation:
+        """Demote an authoritative copy of a validator-published bundle."""
+
+        if not isinstance(reference_name, str) or not re.fullmatch(
+            r"[A-Za-z0-9._-]{1,80}", reference_name
+        ):
+            raise IntakeError("validator reference name is malformed")
+        return self._transition(
+            reservation_id,
+            {
+                "published", "screening", "promoted", "qualifying",
+                "reproduction_pending", "qualified", "held", "no_decision",
+            },
+            "failed",
+            "FAIL",
+            f"copy_of:validator_reference:{reference_name}",
         )
 
     def mark_qualifying(
@@ -1809,7 +2050,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         (
                             status,
                             "" if status in {"published", "reproduction_pending"}
-                            else "NO_DECISION",
+                            else "",
                             reason, group, position, reservation_id,
                         ),
                     )
@@ -3013,6 +3254,171 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         return self.get(reservation_id)
 
+    def requeue_validator_downtime_expired(
+        self,
+        reservation_ids: tuple[str, ...],
+        *,
+        authority_digest: str,
+        current_block: int,
+        allow_repeat_refresh: bool = False,
+    ) -> tuple[IntakeReservation, ...]:
+        """Readmit an exact validator-expired cohort with one fresh SLA window.
+
+        Original arrival fields remain immutable and therefore continue to own
+        FIFO ordering.  The one-row reset authority only changes the SLA anchor.
+        A reservation may use the initial recovery once; if it then re-expires
+        under automatic SLA (operator fault / mismatched window), exactly one
+        refresh of that anchor is admitted before the budget fails closed.
+        """
+
+        if (
+            type(reservation_ids) is not tuple
+            or not reservation_ids
+            or len(set(reservation_ids)) != len(reservation_ids)
+        ):
+            raise IntakeError("validator downtime requeue cohort is malformed")
+        try:
+            require_sha256_hex(
+                authority_digest, field="validator downtime requeue authority"
+            )
+        except (TypeError, ValueError) as exc:
+            raise IntakeError(str(exc)) from None
+        self._require_evaluation_clock(current_block)
+        restored: list[tuple[str, str, str]] = []
+        with self._transaction():
+            rows = tuple(self.get(reservation_id) for reservation_id in reservation_ids)
+            for row in rows:
+                self._require_evaluation_mutation_authority(row.reservation_id)
+                if (
+                    row.status != "expired"
+                    or row.reason != _AUTOMATIC_EXPIRY_REASON
+                ):
+                    raise IntakeError(
+                        "only an automatic validator-SLA expiry may be requeued"
+                    )
+                prior = self._db.execute(
+                    "SELECT reason FROM reservation_sla_resets WHERE reservation_id=?",
+                    (row.reservation_id,),
+                ).fetchone()
+                if prior is None:
+                    reset_reason = _VALIDATOR_DOWNTIME_REQUEUE_REASON
+                elif prior["reason"] == _VALIDATOR_DOWNTIME_REQUEUE_REASON:
+                    # First requeue already burned; admit one refresh after
+                    # the cohort re-expired under the automatic SLA again.
+                    reset_reason = _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON
+                elif (
+                    allow_repeat_refresh
+                    and prior["reason"]
+                    == _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON
+                ):
+                    # Owner-escalated repeat: every prior window burned while
+                    # the validator itself was down. Only an authority that
+                    # explicitly carries the escalation reopens the window;
+                    # the default budget stays fail-closed.
+                    reset_reason = _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON
+                else:
+                    raise IntakeError(
+                        "validator downtime requeue budget is already consumed"
+                    )
+                if self._db.execute(
+                    "SELECT 1 FROM evaluation_lease_members WHERE reservation_id=? "
+                    "AND active=1",
+                    (row.reservation_id,),
+                ).fetchone() is not None:
+                    raise IntakeError(
+                        "validator downtime requeue conflicts with an active lease"
+                    )
+                # Promote restore keys off the live receipt: after a service-
+                # identity rotation a row may carry an older promote under the
+                # retired service plus a fresh promote under the live one
+                # (append-only dispositions).  Require the latest promote to
+                # match the reservation's arena_service_digest.
+                if row.screen_status == "promote":
+                    latest = self._db.execute(
+                        "SELECT decision,service_digest FROM arena_screen_dispositions "
+                        "WHERE reservation_id=? ORDER BY attempt_index DESC LIMIT 1",
+                        (row.reservation_id,),
+                    ).fetchone()
+                    if (
+                        latest is None
+                        or latest["decision"] != "promote"
+                        or not row.arena_service_digest
+                        or latest["service_digest"] != row.arena_service_digest
+                    ):
+                        raise IntakeError(
+                            "validator downtime requeue screen authority is incomplete"
+                        )
+                    status = "promoted"
+                    clear_screen = False
+                elif (
+                    row.screen_status == ""
+                    and row.publication_digest
+                    and row.publication_root
+                ):
+                    status = "published"
+                    clear_screen = False
+                elif (
+                    row.screen_status in ("hold", "retry")
+                    and row.publication_digest
+                    and row.publication_root
+                ):
+                    # Mid-screen when the SLA expired: drop back to the
+                    # pre-screen published queue so screening starts fresh.
+                    # Disposition history stays append-only.
+                    status = "published"
+                    clear_screen = True
+                else:
+                    raise IntakeError(
+                        "validator downtime requeue cannot restore this pipeline phase"
+                    )
+                restored.append(
+                    (row.reservation_id, status, reset_reason, clear_screen)
+                )
+            for reservation_id, _status, reset_reason, _clear in restored:
+                if reset_reason == _VALIDATOR_DOWNTIME_REQUEUE_REASON:
+                    self._db.execute(
+                        "INSERT INTO reservation_sla_resets(reservation_id,"
+                        "reset_block,authority_digest,reason) VALUES(?,?,?,?)",
+                        (
+                            reservation_id,
+                            current_block,
+                            authority_digest,
+                            reset_reason,
+                        ),
+                    )
+                else:
+                    self._db.execute(
+                        "UPDATE reservation_sla_resets SET reset_block=?,"
+                        "authority_digest=?,reason=? WHERE reservation_id=?",
+                        (
+                            current_block,
+                            authority_digest,
+                            reset_reason,
+                            reservation_id,
+                        ),
+                    )
+            for reservation_id, status, reset_reason, clear_screen in restored:
+                if clear_screen:
+                    self._db.execute(
+                        "UPDATE reservations SET status=?,screen_status='',"
+                        "screen_stage_count=0,decision='',reason=?,"
+                        "retry_group_digest='',retry_position=0,"
+                        "qualification_authority_digest='',"
+                        "qualification_authority_json='',"
+                        "qualification_evidence_digest='' WHERE reservation_id=?",
+                        (status, reset_reason, reservation_id),
+                    )
+                else:
+                    self._db.execute(
+                        "UPDATE reservations SET status=?,decision='',reason=?,"
+                        "retry_group_digest='',retry_position=0,"
+                        "qualification_authority_digest='',"
+                        "qualification_authority_json='',"
+                        "qualification_evidence_digest='' WHERE reservation_id=?",
+                        (status, reset_reason, reservation_id),
+                    )
+        return tuple(self.get(reservation_id) for reservation_id in reservation_ids)
+
     def _transition(
         self,
         reservation_id: str,
@@ -3075,7 +3481,8 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             f"r.status IN ({placeholders}) AND r.reason!=? AND NOT EXISTS ("
             "SELECT 1 FROM evaluation_lease_members AS em WHERE "
             "em.reservation_id=r.reservation_id AND em.active=1) AND ("
-            "(r.block<=? AND NOT EXISTS ("
+            "(COALESCE((SELECT s.reset_block FROM reservation_sla_resets AS s "
+            "WHERE s.reservation_id=r.reservation_id),r.block)<=? AND NOT EXISTS ("
             "SELECT 1 FROM settlement_qualifications AS q "
             "WHERE q.reservation_id=r.reservation_id)) OR EXISTS ("
             "SELECT 1 FROM settlement_qualifications AS q "
@@ -3227,6 +3634,58 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
             if reservation_update.rowcount != 1 or candidate_update.rowcount != 1:
                 raise IntakeError("schema3 migration hold changed during archival")
+        return self.get(reservation_id)
+
+    def auto_requeueable_holds(self, *, limit: int = 64) -> tuple[str, ...]:
+        """Held rows parked by a bounded evaluation hold, oldest arrival first.
+
+        An evaluation hold records that the stage produced no PASS/FAIL
+        evidence -- worker infrastructure loss, a non-verdict batch, or a
+        systemic release cap.  Both producers document ``release_hold`` as the
+        reopen path (``_cap_systemic_releases`` and
+        ``commit_remote_qualification_hold``), and on an autonomous validator
+        no operator is there to call it, so every such park is a permanent
+        queue leak.  Transport-retry limits, screen holds, and the schema3
+        migration hold are authority fences, not evaluation holds; they are
+        never listed here and ``release_hold`` refuses the last one outright.
+        """
+
+        if type(limit) is not int or isinstance(limit, bool) or limit < 1:
+            raise IntakeError("hold reconciliation limit is invalid")
+        rows = self._db.execute(
+            "SELECT reservation_id FROM reservations WHERE status='held' AND ("
+            "reason LIKE 'remote_qualification_hold:%' OR "
+            "reason LIKE 'systemic_release_cap:%' OR "
+            "reason LIKE 'auto_requeue_attempt_%') "
+            "AND reason NOT LIKE ? "
+            "ORDER BY block,event_index,event_subindex,hotkey,content_hash "
+            "LIMIT ?",
+            (f"%{_EXHAUSTED_HOLD_SUFFIX}", limit),
+        ).fetchall()
+        return tuple(row["reservation_id"] for row in rows)
+
+    def mark_hold_retry_exhausted(self, reservation_id: str) -> IntakeReservation:
+        """Stamp a held row that burned its whole automatic retry budget.
+
+        Attempt counts are in-memory and a supervisor restart forgets them, so
+        without a durable mark ``auto_requeueable_holds`` hands the same stuck
+        row a fresh budget on every respawn -- and with a watchdog respawning
+        the supervisor that is an unbounded loop, not a bounded retry.  A
+        stamped row stays held for an operator, which is the correct end state
+        once the bounded budget is genuinely spent.
+        """
+
+        with self._transaction():
+            row = self.get(reservation_id)
+            if row.status != "held":
+                raise IntakeError("only a held reservation may be marked retry-exhausted")
+            if row.reason.endswith(_EXHAUSTED_HOLD_SUFFIX):
+                return row
+            self._db.execute(
+                "UPDATE reservations SET reason=? "
+                "WHERE reservation_id=? AND status='held'",
+                (f"{row.reason}{_EXHAUSTED_HOLD_SUFFIX}", reservation_id),
+            )
         return self.get(reservation_id)
 
     def release_hold(self, reservation_id: str, *, reason: str) -> IntakeReservation:

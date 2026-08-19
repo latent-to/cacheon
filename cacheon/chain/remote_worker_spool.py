@@ -47,6 +47,7 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     reopen_remote_response,
     verify_remote_request,
 )
+from cacheon.chain import remote_qualification_hold as remote_hold
 from cacheon.stack_identity import (
     StackIdentityError,
     canonical_digest,
@@ -171,10 +172,16 @@ MAX_ARTIFACTS = 64
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 5 * 1024 * 1024 * 1024
 MAX_JOB_SECONDS = 4 * 60 * 60
-# A command-level adapter failure means the standing engine is no longer a
-# proven service.  Fail the epoch on the first such event; never spend another
-# miner request silently booting a replacement model.
-MAX_CONSECUTIVE_ADAPTER_FAILURES = 1
+# A command-level adapter failure means the standing engine may no longer be a
+# proven service.  Bounded consecutive failures park the pod in an explicit,
+# evented cooldown that authorizes exactly one fresh adapter boot on resume,
+# instead of latching the epoch failed until a human restart (observed on
+# mainnet 2026-08-10: threshold one turned a single qualification boot race
+# into a frozen epoch and a dead relay).  A request-local refusal still never
+# counts, and a still-live resident model is never torn down.
+MAX_CONSECUTIVE_ADAPTER_FAILURES = 3
+ADAPTER_COOLDOWN_INITIAL_SECONDS = 60
+ADAPTER_COOLDOWN_MAX_SECONDS = 900
 NATIVE_ARTIFACT_MANIFEST = ".cacheon-native-artifact.json"
 
 
@@ -505,8 +512,8 @@ def verify_request(
         "screen_payload" if lease["stage"] == "screen" else "qualification_payload"
     )
     artifacts = verify_artifacts(value["artifacts"], root, allow_output_roles=False)
-    if sum(item["role"] == "candidate_publication" for item in artifacts) != 1:
-        fail("request must retain exactly one candidate publication")
+    # Carrier counts are enforced at consumption: screens via artifact_for_role,
+    # qualification cohorts via pairwise checks at both transport endpoints.
     if sum(item["role"] == expected_kind for item in artifacts) != 1:
         fail("request must retain exactly one stage payload")
     wire = authenticated_wire_request(
@@ -785,12 +792,9 @@ def verify_adapter_result(
         payload = reopen_remote_response(typed_request, response, identity, credential)
     except RemoteEvaluationDispatcherError as exc:
         fail(f"authenticated adapter response is invalid: {exc}")
-    expected_payload = (
-        "ArenaScreenReceipt"
-        if request["lease"]["stage"] == "screen"
-        else "RemoteQualificationProduct"
-    )
-    if type(payload).__name__ != expected_payload:
+    if not remote_hold.is_exact_remote_stage_payload(
+        payload, request["lease"]["stage"]
+    ):
         fail("completed response is not the exact stage payload")
     return value
 
@@ -940,7 +944,7 @@ def verify_heartbeat(
         "worker heartbeat adapter start count",
         minimum=0,
     )
-    failures = require_int(
+    require_int(
         value["consecutive_adapter_failures"],
         "worker heartbeat consecutive adapter failures",
         minimum=0,
@@ -948,8 +952,6 @@ def verify_heartbeat(
     )
     if value["adapter_alive"] and starts == 0:
         fail("worker heartbeat reports an unstarted live adapter")
-    if value["state"] == "epoch_failed" and failures < MAX_CONSECUTIVE_ADAPTER_FAILURES:
-        fail("worker heartbeat failed epoch lacks its failure threshold")
     return value
 
 

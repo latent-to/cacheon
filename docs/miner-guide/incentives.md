@@ -1,7 +1,14 @@
 # How miners earn rewards
 
 Cacheon does not reward the act of uploading a kernel. It rewards a measured
-improvement that survives independent reproduction and settlement.
+improvement that survives independent reproduction and settlement. When the
+operator enables the eval-cost gate, each admitted proposal must also transfer
+the published TAO amount to the current subnet owner coldkey; that transfer is an
+anti-spam admission cost, not a reward.
+`--pay` freezes the quoted amount for about one hour (300 blocks) so the price cannot
+move while the transfer is in flight. The transfer may precede the reveal; if the
+commit fails, retry the same bundle with the unused payment pointer instead of
+paying again. See [Submitting](submitting.md#step-by-step-commands).
 
 !!! tip "The 30-second answer"
     You submit one optimization for a target in a validator-published evaluation
@@ -65,7 +72,8 @@ The stages have different meanings:
 | Crown settled | Settlement selected the proposal and recorded its crown and reward claim together | The claim is eligible under the active policy |
 | Weight publication confirmed | The intended recipients and weight values were read back from finalized chain state within the verifier tolerance | Cacheon's projection is realized; token income remains network-dependent |
 | Crown retired or neutralized | The standing claim is no longer active | V1 standing credit stops |
-| Active claimant becomes ineligible or evidence cannot reopen | Reward authority cannot be projected safely | Publication is held; the missing share is not redistributed |
+| Active claimant is absent from the metagraph | The claim stays active; that tick's allocated share cannot be paid to the miner | That family's ppm is burned to the validator hotkey; other families keep their ppm |
+| Evidence cannot reopen | Reward authority cannot be projected safely | Publication is held; the missing share is not redistributed |
 
 Passing twice makes a proposal eligible for settlement; it does not guarantee a
 win. Settlement rechecks the evidence and compares competing proposals for the
@@ -160,9 +168,11 @@ V1 is relative rather than fixed:
 
 If live legacy discovery claims exist, they share a separately configured,
 bounded discovery pool; otherwise that capacity remains with standing claims.
-An invalid target set, missing evidence, or an ineligible active claimant prevents
-the complete projection. Submission or readback failure leaves publication
-pending or held. Neither path silently assigns a missing share elsewhere.
+An invalid target set or missing evidence prevents the complete projection. An
+active claimant absent from the metagraph does not: that family's allocated
+share is burned to the validator hotkey for the tick, and other families keep
+the ppm they would have received. Submission or readback failure leaves
+publication pending or held.
 
 ### A simplified V1 example
 
@@ -190,7 +200,8 @@ At minimum:
 - the proposal's finalized block and, under V1, its age;
 - other live standing and discovery claims;
 - whether a newer crown replaces the contribution;
-- whether the claimant hotkey remains eligible in the bound metagraph;
+- whether the claimant hotkey remains eligible in the bound metagraph, or that
+  tick's allocated share is burned to the validator;
 - whether the validator publishes and confirms the calculated vector; and
 - Bittensor's consensus, subnet emission, and chain mechanics after publication.
 

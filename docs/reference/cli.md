@@ -23,9 +23,12 @@ installed `cacheon` console script resolves to the same parser.
 | `verify` | contributor | local gate | Check declared slot behavior against validator-owned references |
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
 | `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
+| `chain-eval-cost` | contributor | read-only | Print the published eval-cost quote (v1 is a fixed TAO transfer) |
+| `chain-eval-cost-credit` | validator operator | private intake mutation | Grant (or list) one artificial eval-cost credit admitting one unpaid reveal from a hotkey |
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
+| `chain-miner-report` | validator operator | read-only private diagnostics | Report every retained submission for one miner hotkey with its stated cause and next step |
 | `chain-evaluation-lease` | validator operator | one-shot evaluation lease transition | Preview, claim, heartbeat, or infrastructure-release store-selected work from sealed file authority |
 | `chain-register` | operator | chain mutation | Burn-register a hotkey and run the SDK preflight |
 | `chain-validate` | validator | production intake | Consume finalized reveals; a deployment may inject qualification services |
@@ -157,9 +160,17 @@ python -m cacheon.cli chain-submit path/to/bundle \
 ```
 
 `chain-submit` re-hashes the local bundle before constructing the payload. Use
-`--dry-run` to print the payload without signing or submitting it. Validators act only
-on finalized, valid reveals and independently fetch, extract, and re-hash the hosted
-archive.
+`--dry-run` to print it without signing. `--pay` transfers the quoted TAO amount
+to the current subnet owner and commits a v2 pointer. If that transfer lands but
+the reveal fails, retry with `--eval-cost-payment-block` and
+`--eval-cost-payment-extrinsic-index` instead of `--pay`. Full commands:
+[Submitting a proposal](../miner-guide/submitting.md#step-by-step-commands).
+When the operator sets `--eval-cost-tao-rao` above zero, unpaid v1 reveals fail
+admission.
+
+```bash
+python -m cacheon.cli chain-eval-cost --netuid <netuid> --network <network>
+```
 
 ### Inspect public chain state
 
@@ -185,6 +196,46 @@ registration first, then runs the SDK preflight.
 
 ## Validator commands
 
+### `chain-eval-cost-credit`
+
+Grant one artificial eval-cost credit: the next fee-gated reveal from the
+granted hotkey that arrives **without** a payment pointer is admitted exactly
+as if a submission payment had been consumed. Use it as a make-good when a
+paid submission died for a validator-side reason (for example, a paid row
+expired under validator backpressure, which does not release the consumed
+payment).
+
+```bash
+python -m cacheon.cli chain-eval-cost-credit \
+  --intake-db /srv/cacheon/state/intake.sqlite3 \
+  --hotkey <miner-hotkey-ss58> \
+  --coldkey <miner-coldkey-ss58> \
+  --note "reservation <id>: expired under validator backpressure"
+```
+
+After granting, the miner re-submits with a plain `chain-submit` — no `--pay`
+and no payment pointer. Semantics:
+
+- One credit admits exactly one reveal; a second unpaid reveal fails
+  `missing_eval_cost_payment` as usual. Credits are matched by hotkey, oldest
+  grant first; `--coldkey` and `--note` are recorded for audit only.
+- A credit is consumed only when the reveal is actually admitted (`reserved`
+  or `deferred`). A reveal that fails for any other reason (malformed payload,
+  hotkey epoch limit, ...) leaves the credit unspent.
+- A credit never rescues a reveal that cited a payment pointer: an invalid or
+  already-used payment keeps its verdict.
+- Safe to run while `chain-validate` is live. The command writes through its
+  own SQLite connection and never takes the intake controller lock; the credit
+  is claimed inside the controller's own admission transaction.
+
+Audit the trail with `--list` (optionally filtered by `--hotkey`); spent
+credits print the consuming reservation and block:
+
+```bash
+python -m cacheon.cli chain-eval-cost-credit \
+  --intake-db /srv/cacheon/state/intake.sqlite3 --list
+```
+
 ### `chain-reservation-status`
 
 Run this command on the CPU validator host while `chain-validate` is running:
@@ -199,6 +250,30 @@ python -m cacheon.cli chain-reservation-status \
 `--content-hash` and `--miner-hotkey` are alternative exact selectors. The command
 refuses either selector when it matches more than one row; use the reservation ID to
 remove that ambiguity. Add `--json` for a machine-readable support record.
+
+### `chain-miner-report`
+
+Answers the question a miner actually asks — what happened to everything I sent —
+which `chain-reservation-status` cannot, because it refuses a selector matching
+more than one row:
+
+```bash
+python -m cacheon.cli chain-miner-report \
+  --intake-db /srv/cacheon/state/intake.sqlite3 \
+  --miner-hotkey <SS58>
+```
+
+Each submission is reported with its typed outcome, the persisted reason code, a
+stated cause, and a next step. Reasons that are not the candidate's fault —
+queue-window expiry and validator-side infrastructure holds — say so explicitly
+rather than reading as a verdict. Add `--json` for the machine-readable record.
+
+The report never derives a decision. A row carrying no typed decision is reported
+as having none. It reads the same durable rows through the same read-only
+snapshot and redaction helpers as `chain-reservation-status`, so the two views
+cannot disagree about a verdict.
+
+### `chain-reservation-status` internals
 
 The command opens the live WAL database read-only and takes one consistent SQLite read
 snapshot. It does not acquire the `FinalizedIntakeStore` process lock, mutate a row, or
@@ -269,7 +344,14 @@ python -m cacheon.cli chain-validate \
 Intake mode persists finalized order, hardened fetch and re-hash results, private
 retention, immutable worker publication, and copy disposition. Storage and loop controls
 are `--intake-db`, `--private-root`, `--publication-root`, `--audit-log`,
-`--interval`, and `--once`. The audit file is a redacted, fsynced JSONL chronology;
+`--interval`, and `--once`. `--eval-cost-tao-rao` defaults to `0` (gate off);
+set `1000000000` to require the published 1 TAO `transfer_keep_alive` to the
+current subnet owner coldkey per admission, and
+`--eval-cost-payment-window-blocks` to bound how old that transfer may be relative
+to the reveal. `--eval-cost-quote-ttl-blocks` (default 300, about one hour) is how long a quoted
+amount stays valid until the transfer is included. The transfer may precede the
+reveal; unused payments remain reusable until a reserved or deferred admission
+consumes them. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 
@@ -513,6 +595,17 @@ signer-only journal, so a V2 follower does not need the evaluator's settlement
 or composition database. Use one `--journal-db` per signer. Debt-lane offers
 carry the full `DebtWeightPublicationBinding` so follower `weights_ppm` match
 the economic projection.
+
+`set-weights` and `follow-weights` accept a repeatable `--fallback-endpoint`
+(`wss://` URL) that the SDK client fails over to when `--network` is
+unavailable, and that also serves as an archive endpoint when the primary node
+has discarded a requested historical block; `--watch` additionally turns on
+the client's retry-forever reconnect. Every submission stamps the version key
+the chain will accept: `set_weights` reads the subnet's `WeightsVersionKey`
+hyperparameter, takes the maximum of it and the pinned floor, refuses to sign
+when the hyperparameter is unreadable (commit-reveal drops a low key silently),
+and prints one `SET-WEIGHTS-PAYLOAD` line with the exact UID/weight vector to
+stdout.
 
 Provider swap is config-only via `--object-store-provider` /
 `CACHEON_OBJECT_STORE_*`; an environment-only

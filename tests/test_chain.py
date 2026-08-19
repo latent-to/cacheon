@@ -38,8 +38,10 @@ class _MockMetagraph:
 
 class _MockSubtensor:
     def __init__(self, *, hotkeys, commitments=None, revealed=None, block=100,
-                 registered=None, events=None, weight_rows=None, last_updates=None):
+                 registered=None, events=None, weight_rows=None, last_updates=None,
+                 weights_version=29):
         self._hotkeys = list(hotkeys)
+        self._weights_version = weights_version
         self._commitments = dict(commitments or {})
         self._revealed = dict(revealed or {})  # hotkey -> ((block, data), ...)
         self._block = block
@@ -121,6 +123,10 @@ class _MockSubtensor:
             "wait_for_finalization": wait_for_finalization,
         })
         return True
+
+    def get_hyperparameter(self, param_name, netuid=None, block=None):
+        assert param_name == "WeightsVersionKey"
+        return self._weights_version
 
     def is_hotkey_registered(self, *, hotkey_ss58, netuid):
         return hotkey_ss58 in self._registered
@@ -253,19 +259,40 @@ def test_set_weights_dry_run_does_not_submit():
     assert st.set_weights_calls == []  # nothing went to chain
 
 
-def test_set_weights_submits_with_version_key():
-    st = _MockSubtensor(hotkeys=["a", "b"])
+def test_set_weights_submits_with_chain_version_key():
+    # The chain drops (without error) any CR reveal whose version_key is below
+    # the subnet's WeightsVersionKey, so the live hyperparameter must win over
+    # our pinned floor (observed on netuid 14, 2026-08-18).
+    st = _MockSubtensor(hotkeys=["a", "b"], weights_version=29)
     res = chain.set_weights(st, wallet=object(), netuid=1, weights_by_hotkey={"b": 1.0})
     assert res["submitted"] is True
     assert st.set_weights_calls == [
         {
             "uids": [1],
             "weights": [1.0],
-            "version_key": chain.WEIGHTS_VERSION_KEY,
+            "version_key": 29,
             "wait_for_inclusion": True,
             "wait_for_finalization": True,
         }
     ]
+
+
+def test_set_weights_floor_wins_over_stale_chain_version():
+    st = _MockSubtensor(hotkeys=["a", "b"], weights_version=0)
+    res = chain.set_weights(
+        st, wallet=object(), netuid=1, weights_by_hotkey={"b": 1.0}, version_key=7
+    )
+    assert res["submitted"] is True
+    assert st.set_weights_calls[0]["version_key"] == 7
+
+
+def test_set_weights_refuses_unreadable_chain_version_key():
+    # Fail closed: commit-reveal returns no rejection signal, so a guessed
+    # version key can silently burn an entire reveal period.
+    st = _MockSubtensor(hotkeys=["a", "b"], weights_version=None)
+    with pytest.raises(chain.ChainWeightStateError, match="WeightsVersionKey"):
+        chain.set_weights(st, wallet=object(), netuid=1, weights_by_hotkey={"b": 1.0})
+    assert st.set_weights_calls == []
 
 
 def test_set_weights_refuses_nonfinal_submission_mode_before_signing():

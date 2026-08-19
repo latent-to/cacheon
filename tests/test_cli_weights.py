@@ -143,6 +143,10 @@ class _Subtensor:
         assert block == 0
         return SCOPE.genesis_hash
 
+    def get_hyperparameter(self, param_name, netuid=None, block=None):
+        assert param_name == "WeightsVersionKey"
+        return 29
+
 
 def _install_chain_readback(monkeypatch) -> None:
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())

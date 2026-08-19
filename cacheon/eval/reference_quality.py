@@ -732,6 +732,29 @@ def _bounds(values: list[float], z: float) -> tuple[float, float, float]:
     if any(not math.isfinite(value) for value in result):
         raise ReferenceQualityError("computed quality bound is nonfinite")
     return result
+
+
+def stock_drift_upper_bound(
+    evidence: ReferenceQualityEvidence,
+    policy: MetricCalibration,
+    familywise_z: str,
+) -> float:
+    """Return the exact per-prompt stock statistic used by the quality gate."""
+
+    if type(evidence) is not ReferenceQualityEvidence:
+        raise ReferenceQualityError("quality evidence is not typed")
+    if type(policy) is not MetricCalibration or policy.name not in _METRICS:
+        raise ReferenceQualityError(
+            "quality calibration metric is not exact or supported"
+        )
+    z = float(decimal_value(_decimal(familywise_z, "familywise z", Decimal(10))))
+    triplets = [_metric(prompt, policy) for prompt in evidence.prompts]
+    return _bounds(
+        [abs(baseline - control) for baseline, _candidate, control in triplets],
+        z,
+    )[2]
+
+
 def _mean_nll(prompts: tuple[PromptQualityEvidence, ...]) -> str:
     total = sum(prompt.candidate.teacher_nll.token_count for prompt in prompts)
     nll = _sumd([decimal_value(prompt.candidate.teacher_nll.nll_sum) for prompt in prompts])
@@ -767,11 +790,12 @@ def score_reference_quality(
         raise ReferenceQualityError("familywise z is nonfinite or outside (0, 10]")
     for policy in calibration.quality_metrics:
         triplets = [_metric(prompt, policy) for prompt in evidence.prompts]
-        stock = [abs(baseline - control) for baseline, _candidate, control in triplets]
         regressions = ([candidate - baseline for baseline, candidate, _control in triplets]
                        if policy.direction == "lower" else
                        [baseline - candidate for baseline, candidate, _control in triplets])
-        if _bounds(stock, z)[2] > float(decimal_value(policy.stock_envelope)):
+        if stock_drift_upper_bound(
+            evidence, policy, calibration.familywise_z
+        ) > float(decimal_value(policy.stock_envelope)):
             overlap.add(f"{policy.name}.stock_drift")
             continue
         low, high = _bounds(regressions, z)[1:]
@@ -802,6 +826,6 @@ __all__ = [
     "RolloutQualityEvidence", "TeacherNLLEvidence", "TokenProbability",
     "SUPPORT_POLICY_ID", "distribution_from_f32_logprobs", "hidden_task_plan_digest",
     "retained_support_policy_digest", "reopen_reference_quality_evidence",
-    "score_reference_quality",
+    "score_reference_quality", "stock_drift_upper_bound",
     "target_nll_from_f32",
 ]

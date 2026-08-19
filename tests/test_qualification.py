@@ -14,6 +14,7 @@ from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_DOMAIN,
     GRAPH_EVIDENCE_MEDIA_TYPE,
     GRAPH_EVIDENCE_SCHEMA,
+    declared_qualification_entropy_digest,
     DiscoveryExecutionGrade,
     DiscoveryExecutionRequirement,
     DiscoveryQualificationProfile,
@@ -1105,7 +1106,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
     calibration = replace(
         calibration,
         context=CalibrationContext(
-            reference.digest,
+            reference.measured_digest,
             reference.arena_digest,
             reference.runtime_digest,
             reference.base_engine_digest,
@@ -1115,7 +1116,6 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
             reference.logical_hardware_digest,
             reference.workload_digest,
             requirement.binding.verification_policy_digest,
-            reference.controller_distribution_digest,
         ),
     )
     profile = QualificationProfile(
@@ -1126,7 +1126,9 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
     prompts = lifecycle_prompt_digests(lifecycle)
     commitment = SelectionCommitment.seal(
         source_plan_digest=lifecycle.source.digest, reference_manifest=reference,
-        entropy_source_digest=reference.selection_policy_digest,
+        entropy_source_digest=declared_qualification_entropy_digest(
+            reference.selection_policy_digest
+        ),
         prompt_digests=prompts, select_count=2, secret=b"s" * 32,
     )
     entropy = SelectionEntropyReceipt(
@@ -1253,7 +1255,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         },
     )
     binding = ReferenceQualityRawBinding(
-        identity_digest, reference.digest, calibration.digest, selection.digest,
+        identity_digest, reference.measured_digest, calibration.digest, selection.digest,
         lifecycle_digest, selected_trajectory_digest(
             lifecycle, selected_delta_digest=delta,
             selected_prompt_digests=selection.selected_prompt_digests,
@@ -1388,12 +1390,11 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
     calibration = replace(
         calibration,
         context=CalibrationContext(
-            reference.digest, reference.arena_digest, reference.runtime_digest,
+            reference.measured_digest, reference.arena_digest, reference.runtime_digest,
             reference.base_engine_digest, reference.model_revision_digest,
             reference.model_manifest_digest, reference.model_content_digest,
             reference.logical_hardware_digest, reference.workload_digest,
             requirement.binding.verification_policy_digest,
-            reference.controller_distribution_digest,
         ),
         quality_metrics=tuple(
             row for row in calibration.quality_metrics
@@ -1408,7 +1409,9 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
     prompts = lifecycle_prompt_digests(lifecycle)
     commitment = SelectionCommitment.seal(
         source_plan_digest=lifecycle.source.digest, reference_manifest=reference,
-        entropy_source_digest=reference.selection_policy_digest,
+        entropy_source_digest=declared_qualification_entropy_digest(
+            reference.selection_policy_digest
+        ),
         prompt_digests=prompts, select_count=2, secret=b"s" * 32,
     )
     entropy = SelectionEntropyReceipt(
@@ -1516,7 +1519,7 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         selected_delta_digest=delta,
     )
     binding = ReferenceQualityRawBinding(
-        identity_digest, reference.digest, calibration.digest, selection.digest,
+        identity_digest, reference.measured_digest, calibration.digest, selection.digest,
         lifecycle_digest, selected_trajectory_digest(
             lifecycle, selected_delta_digest=delta,
             selected_prompt_digests=selection.selected_prompt_digests,

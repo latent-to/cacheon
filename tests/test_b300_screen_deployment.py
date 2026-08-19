@@ -279,6 +279,50 @@ def test_materialize_and_replay_exact_service_identity(
         deployment.build_commissioned_b300_screen_worker(registration, ready)
 
 
+def test_calibration_authority_does_not_create_service_identity_cycle(
+    tmp_path: Path,
+) -> None:
+    case_a = tmp_path / "a"
+    case_b = tmp_path / "b"
+    case_a.mkdir()
+    case_b.mkdir()
+    paths_a, gpus_a, _ready_a = _case(case_a)
+    paths_b, gpus_b, _ready_b = _case(case_b)
+    calibration_b = paths_b["calibration_package"]
+    calibration_b.chmod(0o600)
+    calibration_sha = _write(
+        calibration_b,
+        {"schema": "cacheon-calibration-v1", "generation": 2},
+    )
+    authority_b = paths_b["authority_config"]
+    authority_value = json.loads(authority_b.read_text())
+    authority_value["calibration"]["package_sha256"] = calibration_sha
+    authority_b.chmod(0o600)
+    _write(authority_b, authority_value)
+
+    result_a = deployment.materialize_b300_screen_identities(
+        **paths_a,
+        gpu_provisioner=lambda selected, *, deadline: gpus_a,
+    )
+    result_b = deployment.materialize_b300_screen_identities(
+        **paths_b,
+        gpu_provisioner=lambda selected, *, deadline: gpus_b,
+    )
+
+    assert result_a["service_digest"] == result_b["service_digest"]
+    deployment_a = json.loads(
+        (paths_a["output_root"] / deployment.DEPLOYMENT_FILE).read_text()
+    )
+    deployment_b = json.loads(
+        (paths_b["output_root"] / deployment.DEPLOYMENT_FILE).read_text()
+    )
+    assert deployment_a["plan_resolver_digest"] == deployment_b["plan_resolver_digest"]
+    assert (
+        deployment_a["authorities"]["calibration_package"]["sha256"]
+        != deployment_b["authorities"]["calibration_package"]["sha256"]
+    )
+
+
 def test_materializer_rejects_mutated_sealed_prompt(tmp_path: Path) -> None:
     paths, gpus, _ready = _case(tmp_path)
     prompt = paths["prompt_authority"]
@@ -322,7 +366,9 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
     try:
         source = tmp_path / "candidate-source"
         shutil.copytree(
-            Path(__file__).parents[1] / "examples" / "miner_silu_torch",
+            Path(__file__).parents[1]
+            / "examples"
+            / "miner_moe_fused_experts_reduce_torch",
             source,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
@@ -353,6 +399,12 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
             publication,
             1,
         )
+        static_result = composition.authorities.screen_handlers[0].run_screen(
+            composition.manifest,
+            composition.manifest.screens.stages[0],
+            candidate,
+        )
+        assert static_result.grade.value == "fail"
         plan = composition.pipeline._plan_resolver(  # noqa: SLF001 - exact deployment seam
             composition.manifest, candidate
         )

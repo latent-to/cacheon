@@ -19,12 +19,9 @@ The isolated executor and pristine reference arm own external qualification.
 
 from __future__ import annotations
 
-import json
 import math
 import os
-import stat
 import tempfile
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -51,140 +48,23 @@ from cacheon.verify import (
     _poison_outputs,
     _restore_tensor_inputs,
 )
-
-
-_VERDICT_VERSION = 1
-_MAX_VERDICT_BYTES = 64 * 1024
-_MAX_DETAIL_CHARS = 4096
-_MAX_ERROR_CHARS = 16 * 1024
-_VERDICT_FIELDS = frozenset({
-    "version", "rank", "world_size", "passed", "score", "max_abs",
-    "detail", "metric", "error", "graph_replays",
-})
-_VERDICT_METRICS = frozenset({"ratio", "cosine", "overlap"})
-
-
-class CollectiveVerdictError(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True)
-class _RankVerdict:
-    version: int
-    rank: int
-    world_size: int
-    passed: bool
-    score: float
-    max_abs: float | None
-    detail: str
-    metric: str
-    error: str | None
-    graph_replays: int
-
-
-def _number(value: Any, lo: float, hi: float | None = None, *, integer=False):
-    valid_type = type(value) is int if integer else (
-        isinstance(value, (int, float)) and not isinstance(value, bool)
-    )
-    number = value if integer else float(value) if valid_type else float("nan")
-    if (not valid_type or not math.isfinite(number) or number < lo
-            or (hi is not None and number > hi)):
-        raise CollectiveVerdictError("numeric field is outside its permitted range")
-    return number
-
-
-def _regular_identity(path: Path) -> tuple[int, int]:
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode):
-        raise CollectiveVerdictError("verdict destination is not a regular file")
-    return int(info.st_dev), int(info.st_ino)
-
-
-def _bound_fd(path: Path, flags: int, identity: tuple[int, int]):
-    fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
-    info = os.fstat(fd)
-    if (not stat.S_ISREG(info.st_mode)
-            or (int(info.st_dev), int(info.st_ino)) != identity):
-        os.close(fd)
-        raise CollectiveVerdictError("verdict destination inode changed or is not regular")
-    return fd, info
-
-
-def _write_rank_verdict(
-    path: Path, verdict: _RankVerdict, expected_identity: tuple[int, int]
-) -> None:
-    body = json.dumps(
-        asdict(verdict), sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
-    if not body or len(body) > _MAX_VERDICT_BYTES:
-        raise CollectiveVerdictError("rank verdict exceeds the wire-size limit")
-    fd, _ = _bound_fd(path, os.O_WRONLY | os.O_TRUNC, expected_identity)
-    with os.fdopen(fd, "wb") as stream:
-        if stream.write(body) != len(body):
-            raise CollectiveVerdictError("short verdict write")
-        stream.flush()
-        os.fsync(stream.fileno())
-
-
-def _reject_constant(value: str) -> None:
-    raise CollectiveVerdictError(f"non-finite JSON constant {value!r} is forbidden")
-
-
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    if len({key for key, _ in pairs}) != len(pairs):
-        raise CollectiveVerdictError("duplicate JSON key")
-    return dict(pairs)
-
-
-def _read_rank_verdict(
-    path: Path,
-    *,
-    expected_rank: int,
-    expected_world_size: int,
-    expected_identity: tuple[int, int],
-) -> _RankVerdict:
-    if _regular_identity(path) != expected_identity:
-        raise CollectiveVerdictError("verdict destination inode changed")
-    fd, info = _bound_fd(path, os.O_RDONLY, expected_identity)
-    size = int(info.st_size)
-    if not 1 <= size <= _MAX_VERDICT_BYTES:
-        os.close(fd)
-        raise CollectiveVerdictError(f"verdict size {size} is outside the limit")
-    try:
-        with os.fdopen(fd, "rb") as stream:
-            raw = stream.read(_MAX_VERDICT_BYTES + 1)
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object,
-                           parse_constant=_reject_constant)
-    except (CollectiveVerdictError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise CollectiveVerdictError(f"invalid verdict JSON: {exc}") from exc
-    if not isinstance(value, dict) or set(value) != _VERDICT_FIELDS:
-        raise CollectiveVerdictError("verdict fields do not match the exact schema")
-    version = _number(value["version"], 1, 1, integer=True)
-    rank = _number(value["rank"], 0, expected_world_size - 1, integer=True)
-    world_size = _number(value["world_size"], 1, integer=True)
-    if rank != expected_rank or world_size != expected_world_size:
-        raise CollectiveVerdictError("rank identity mismatch")
-    passed = value["passed"]
-    if type(passed) is not bool:
-        raise CollectiveVerdictError("passed must be a boolean")
-    score = _number(value["score"], -1.0, 1.0)
-    max_abs = None if value["max_abs"] is None else _number(value["max_abs"], 0.0)
-    detail = value["detail"]
-    if not isinstance(detail, str) or len(detail) > _MAX_DETAIL_CHARS:
-        raise CollectiveVerdictError("detail must be a bounded string")
-    metric = value["metric"]
-    if metric not in _VERDICT_METRICS:
-        raise CollectiveVerdictError(f"unsupported verdict metric {metric!r}")
-    error = value["error"]
-    if error is not None and (
-        not isinstance(error, str) or len(error) > _MAX_ERROR_CHARS
-    ):
-        raise CollectiveVerdictError("error must be null or a bounded string")
-    graph_replays = _number(value["graph_replays"], 0, 64, integer=True)
-    if passed and (error is not None or max_abs is None):
-        raise CollectiveVerdictError("passing verdict has missing output or an error")
-    return _RankVerdict(version, rank, world_size, passed, score, max_abs, detail,
-                        metric, error, graph_replays)
+from cacheon.verification_outcomes import (
+    _MAX_ERROR_CHARS,
+    _MAX_VERDICT_BYTES as _MAX_VERDICT_BYTES,
+    _CandidateCollectivePhaseError,
+    _match_detail,
+    _RankVerdict,
+    _VERDICT_VERSION,
+    _read_rank_verdict,
+    _regular_identity,
+    _write_rank_verdict,
+    _terminate_processes,
+    CollectiveVerdictError,
+    GraphPhaseOutcome,
+    VerificationCaseDescriptor,
+    VerificationCaseKind,
+    conservative_phase_aggregate,
+)
 
 
 def _collective_descriptor(
@@ -231,36 +111,6 @@ def _collective_descriptor(
         world_size=world_size,
         dimensions=dimensions,
     )
-
-
-def _match_detail(match) -> str:
-    return "; ".join(
-        f"{m.field} {m.reason}: expected {m.expected}"
-        + ("" if m.actual is None else f", got {m.actual!r}")
-        for m in match.mismatches
-    )
-
-
-def _terminate_processes(processes, *, grace_s: float = 5.0) -> None:
-    import signal
-    import time
-
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        for process in processes:
-            if not process.is_alive() or process.pid is None:
-                continue
-            try:
-                if os.getpgid(process.pid) == process.pid:
-                    os.killpg(process.pid, sig)
-                elif sig == signal.SIGTERM:
-                    process.terminate()
-                else:
-                    process.kill()
-            except OSError:
-                process.terminate() if sig == signal.SIGTERM else process.kill()
-        deadline = time.monotonic() + grace_s
-        for process in processes:
-            process.join(max(0.0, deadline - time.monotonic()))
 
 
 def _direct_aot_collective_callables(
@@ -356,6 +206,7 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
         "metric": "ratio",
         "error": None,
         "graph_replays": 0,
+        "phase_outcome": GraphPhaseOutcome.unobserved(),
     }
     initialized = False
     graph_capture_attempted = False
@@ -388,9 +239,22 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 if os.environ.get("CACHEON_PREBUILT_ARTIFACTS") == "1"
                 else "all"
             )
+            # Rank 0 must reach this barrier even when its build fails.
+            # A pre-barrier raise strands every other rank in the barrier
+            # while rank 0 blocks in teardown; the parent then times the
+            # whole group out and the real exception is never reported
+            # (measured live on the B300 pod, 2026-08-10). Joining first
+            # lets the peers hit the same deterministic error themselves,
+            # so all ranks report it and the case fails fast.
+            rank0_build_error: BaseException | None = None
             if rank == 0:
-                apply_rebuild_plan(bundle_path, phase=rebuild_phase)
+                try:
+                    apply_rebuild_plan(bundle_path, phase=rebuild_phase)
+                except BaseException as exc:  # noqa: BLE001 - re-raised below
+                    rank0_build_error = exc
             _rank_barrier(dist, rank=rank, device=device)
+            if rank0_build_error is not None:
+                raise rank0_build_error
             if rank != 0:
                 apply_rebuild_plan(bundle_path, phase=rebuild_phase)
             from cacheon.artifact_runtime import resolve_direct_artifact_entry
@@ -415,6 +279,17 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 slot, direct_entry, prepare_name=prepare_name
             )
         else:
+            # Overlay-materialized bundles route the entry through a shim that
+            # imports the tree-rooted delta package absolutely; the bundle root
+            # must be importable in this rank or the shim load dies with
+            # ModuleNotFoundError. Appended, never inserted, so nothing in a
+            # bundle can shadow a real package.
+            if bundle_path:
+                import sys
+
+                bundle_root = os.path.abspath(str(bundle_path))
+                if bundle_root not in sys.path:
+                    sys.path.append(bundle_root)
             module = load_module(source_path)
             entry = callable_from(module, entry_name)
             prepare_fn = callable_from(module, prepare_name) if prepare_name else None
@@ -519,12 +394,15 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 and slot.invoke_prepare is not None
                 and prepare_key not in prepared_cache
             ):
-                prepared = slot.invoke_prepare(prepare_fn, inputs)
-                mutation = _input_mutation_detail(
-                    inputs, trusted_inputs, input_bindings
-                )
-                if mutation:
-                    raise RuntimeError(f"prepare {mutation}")
+                try:
+                    prepared = slot.invoke_prepare(prepare_fn, inputs)
+                    mutation = _input_mutation_detail(
+                        inputs, trusted_inputs, input_bindings
+                    )
+                    if mutation:
+                        raise RuntimeError(f"prepare {mutation}")
+                except Exception as exc:
+                    raise _CandidateCollectivePhaseError("eager", exc) from exc
                 prepared_cache[prepare_key] = (prepared, static_inputs)
 
             # Validator-owned output buffer(s). Single-output slots keep the original
@@ -540,7 +418,11 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
             outs = allocation.outputs
             out_arg = outs[0] if len(outs) == 1 else outs
 
-            invoke(entry, inputs, out_arg, dist.group.WORLD, prepared)  # miner fills the buffers
+            try:
+                invoke(entry, inputs, out_arg, dist.group.WORLD, prepared)
+            except Exception as exc:
+                raise _CandidateCollectivePhaseError("eager", exc) from exc
+
             def validate_outputs():
                 validate_output_allocation(
                     output_contract,
@@ -552,73 +434,92 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                     ),
                 )
 
-            validate_outputs()
+            try:
+                validate_outputs()
+                if verify_graph:
+                    mutation = _input_mutation_detail(
+                        inputs, trusted_inputs, input_bindings
+                    )
+                    if mutation:
+                        raise RuntimeError(mutation)
+            except Exception as exc:
+                raise _CandidateCollectivePhaseError("eager", exc) from exc
 
             if verify_graph:
                 # Snapshot eager output before warmup/capture overwrite the same
                 # validator-owned buffers. The clone is ordered after the candidate
                 # on the same stream.
-                output_sets = [("eager", [out.detach().clone() for out in outs])]
+                output_sets = [
+                    ("eager", None, [out.detach().clone() for out in outs])
+                ]
                 graph_capture_attempted = True
                 graph_backend = _CudaGraphBackend(outs[0].device)
+                callback_phase = "capture"
+                callback_replays = 0
 
                 def graph_invoke():
-                    invoke(entry, inputs, out_arg, dist.group.WORLD, prepared)
+                    try:
+                        invoke(entry, inputs, out_arg, dist.group.WORLD, prepared)
+                    except Exception as exc:
+                        raise _CandidateCollectivePhaseError(
+                            callback_phase, exc, callback_replays
+                        ) from exc
 
-                try:
-                    graph_backend.synchronize()
-                    mutation = _input_mutation_detail(
-                        inputs, trusted_inputs, input_bindings
+                def validate_candidate_graph_state(phase: str, replay_count: int = 0):
+                    try:
+                        validate_outputs()
+                        mutation = _input_mutation_detail(
+                            inputs, trusted_inputs, input_bindings
+                        )
+                        if mutation:
+                            raise RuntimeError(mutation)
+                    except Exception as exc:
+                        raise _CandidateCollectivePhaseError(
+                            phase, exc, replay_count
+                        ) from exc
+
+                graph_backend.synchronize()
+                mutation = _input_mutation_detail(
+                    inputs, trusted_inputs, input_bindings
+                )
+                if mutation:
+                    raise _CandidateCollectivePhaseError(
+                        "capture", RuntimeError(mutation)
                     )
-                    if mutation:
-                        raise RuntimeError(mutation)
-                    _restore_tensor_inputs(inputs, trusted_inputs, input_bindings)
-                    graph_backend.warmup(graph_invoke)
-                    graph_backend.synchronize()
-                    validate_outputs()
-                    mutation = _input_mutation_detail(
-                        inputs, trusted_inputs, input_bindings
-                    )
-                    if mutation:
-                        raise RuntimeError(mutation)
-                    _restore_tensor_inputs(inputs, trusted_inputs, input_bindings)
-                    graph = graph_backend.capture(graph_invoke)
-                    graph_backend.synchronize()
-                    validate_outputs()
-                    mutation = _input_mutation_detail(
-                        inputs, trusted_inputs, input_bindings
-                    )
-                    if mutation:
-                        raise RuntimeError(mutation)
-                except Exception as exc:  # noqa: BLE001 - false graph_safe claim
-                    raise RuntimeError(
-                        f"cuda graph capture failed for {slot.name}: "
-                        f"{type(exc).__name__}: {exc}"
-                    ) from exc
+                _restore_tensor_inputs(inputs, trusted_inputs, input_bindings)
+                graph_backend.warmup(graph_invoke)
+                graph_backend.synchronize()
+                validate_candidate_graph_state("capture")
+                _restore_tensor_inputs(inputs, trusted_inputs, input_bindings)
+                graph = graph_backend.capture(graph_invoke)
+                graph_backend.synchronize()
+                validate_candidate_graph_state("capture")
                 checked_sets = [
-                    ("eager", output_sets[0][1], trusted_inputs)
+                    ("eager", None, output_sets[0][2], trusted_inputs)
                 ]
                 for replay, logical in enumerate(replay_inputs):
+                    callback_phase = "replay"
+                    callback_replays = replay
+                    _restore_tensor_inputs(inputs, logical, input_bindings)
+                    _poison_outputs(outs, replay)
+                    graph_backend.synchronize()
+                    graph_backend.replay(graph)
+                    graph_backend.synchronize()
                     try:
-                        _restore_tensor_inputs(inputs, logical, input_bindings)
-                        _poison_outputs(outs, replay)
-                        graph_backend.synchronize()
-                        graph_backend.replay(graph)
-                        graph_backend.synchronize()
                         validate_outputs()
                         mutation = _input_mutation_detail(
                             inputs, logical, input_bindings
                         )
                         if mutation:
                             raise RuntimeError(mutation)
-                    except Exception as exc:  # noqa: BLE001 - every replay is required
-                        raise RuntimeError(
-                            f"cuda graph replay[{replay}] failed for {slot.name}: "
-                            f"{type(exc).__name__}: {exc}"
+                    except Exception as exc:
+                        raise _CandidateCollectivePhaseError(
+                            "replay", exc, replay
                         ) from exc
                     checked_sets.append(
                         (
-                            f"cuda graph replay[{replay}]",
+                            "replay",
+                            replay,
                             [out.detach().clone() for out in outs],
                             logical,
                         )
@@ -626,7 +527,7 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                 output_sets = checked_sets
                 verdict["graph_replays"] = graph_replays
             else:
-                output_sets = [("eager", outs, trusted_inputs)]
+                output_sets = [("eager", None, outs, trusted_inputs)]
 
             # Retain the complete allocation so future declared workspaces cannot
             # be reclaimed before comparison/replay finishes.
@@ -647,6 +548,9 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
         # math (collective_finish) if it does local work after the sum (residual add /
         # norm). No finish -> the sum IS the single expected output (bare all-reduce).
         passed, max_abs, score, detail, metric = True, 0.0, 1.0, "", "ratio"
+        eager_passed = True
+        replay_passed = True
+        failed_replay_count = graph_replays
         for (
             si,
             step,
@@ -661,8 +565,10 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                     inputs, trusted_inputs, input_bindings
                 )
                 if mutation:
-                    raise RuntimeError(mutation)
-            for output_label, checked_outs, reference_inputs in output_sets:
+                    raise _CandidateCollectivePhaseError(
+                        "eager", RuntimeError(mutation)
+                    )
+            for output_phase, replay_ordinal, checked_outs, reference_inputs in output_sets:
                 # Trusted local math never consumes miner-prepared state. It runs
                 # only on the pre-candidate snapshot, then the validator-owned group
                 # performs the fp32 cross-rank reference reduce.
@@ -682,20 +588,69 @@ def _rank_worker(rank, world_size, backend, init_method, slot_name, source_path,
                     checked_outs, list(refs), tol=tol, correctness=slot.correctness
                 )
                 passed = passed and current.passed
+                if output_phase == "eager":
+                    eager_passed = eager_passed and current.passed
+                else:
+                    replay_passed = replay_passed and current.passed
+                    if not current.passed:
+                        failed_replay_count = min(
+                            failed_replay_count, int(replay_ordinal) + 1
+                        )
                 max_abs = max(max_abs, current.max_abs)
                 score = min(score, current.min_score)
                 metric = current.metric
                 if not current.passed and not detail:
                     prefix = f"step {si} {step}: " if len(steps) > 1 else ""
+                    output_label = (
+                        "eager"
+                        if output_phase == "eager"
+                        else f"cuda graph replay[{replay_ordinal}]"
+                    )
                     detail = (
                         f"{prefix}{output_label}: "
                         f"{current.detail or 'output mismatch'}"
                     )
-        verdict.update(passed=passed, score=score, max_abs=max_abs,
-                       detail=detail, metric=metric)
-    except BaseException:  # noqa: BLE001 - report any failure as a fail
+        if not eager_passed:
+            phase_outcome = GraphPhaseOutcome.eager_candidate_failed()
+        elif verify_graph and not replay_passed:
+            phase_outcome = GraphPhaseOutcome.replay_candidate_failed(
+                failed_replay_count
+            )
+        elif verify_graph:
+            phase_outcome = GraphPhaseOutcome.graph_passed(graph_replays)
+        elif graph_safe and device != "cuda" and run_mode != "temporal_eager":
+            phase_outcome = GraphPhaseOutcome.capture_infrastructure_failed()
+        else:
+            phase_outcome = GraphPhaseOutcome.eager_only_passed()
+        verdict.update(
+            passed=passed,
+            score=score,
+            max_abs=max_abs,
+            detail=detail,
+            metric=metric,
+            graph_replays=phase_outcome.replay_count,
+            phase_outcome=phase_outcome,
+        )
+    except _CandidateCollectivePhaseError as exc:
         import traceback
+
         verdict["error"] = traceback.format_exc()[-_MAX_ERROR_CHARS:]
+        if exc.phase == "eager":
+            phase_outcome = GraphPhaseOutcome.eager_candidate_failed()
+        elif exc.phase == "capture":
+            phase_outcome = GraphPhaseOutcome.capture_candidate_failed()
+        else:
+            phase_outcome = GraphPhaseOutcome.replay_candidate_failed(
+                exc.replay_count
+            )
+        verdict["graph_replays"] = phase_outcome.replay_count
+        verdict["phase_outcome"] = phase_outcome
+    except BaseException:  # noqa: BLE001 - ambiguous worker/validator failure
+        import traceback
+
+        verdict["error"] = traceback.format_exc()[-_MAX_ERROR_CHARS:]
+        verdict["graph_replays"] = 0
+        verdict["phase_outcome"] = GraphPhaseOutcome.infrastructure_before_eager()
     finally:
         if verdict["max_abs"] is not None and not math.isfinite(verdict["max_abs"]):
             verdict["max_abs"] = None
@@ -817,6 +772,43 @@ def verify_collective(
     if jitter_seed is not None:
         test_shapes = _jitter_shapes(catalog_shapes, jitter_seed)
 
+    def _case_descriptor(shape_or_seq, run_mode: str) -> VerificationCaseDescriptor:
+        kinds = {
+            "single": VerificationCaseKind.COLLECTIVE_SINGLE,
+            "temporal_eager": VerificationCaseKind.COLLECTIVE_TEMPORAL_EAGER,
+            "graph_sequence": VerificationCaseKind.COLLECTIVE_GRAPH_SEQUENCE,
+        }
+        case_kind = kinds[run_mode]
+        sequence = (
+            list(shape_or_seq)
+            if isinstance(shape_or_seq, (list, tuple))
+            else [shape_or_seq]
+        )
+        graph_case = bool(
+            graph_safe
+            and device == "cuda"
+            and run_mode in {"single", "graph_sequence"}
+        )
+        calls = tuple(
+            _collective_descriptor(
+                shape,
+                slot_name=slot.name,
+                dtype_name=dtype_name,
+                device=device,
+                graph_safe=graph_case,
+                model_key=model_key,
+                architecture=architecture or ("cpu" if device == "cpu" else None),
+                world_size=world_size,
+            ).as_dict()
+            for shape in sequence
+        )
+        return VerificationCaseDescriptor.from_call_dicts(
+            slot_id=slot.name,
+            variant_id=variant_name or "default",
+            case_kind=case_kind,
+            calls=calls,
+        )
+
     def _spawn_and_collect(
         shape_or_seq,
         label: dict,
@@ -824,6 +816,7 @@ def verify_collective(
         *,
         run_mode: str = "single",
     ) -> ShapeResult:
+        case_descriptor = _case_descriptor(shape_or_seq, run_mode)
         with tempfile.TemporaryDirectory(prefix="cacheon_collective_") as rd:
             init_method = f"file://{os.path.join(rd, 'pg_store')}"
             verdict_identities: list[tuple[int, int]] = []
@@ -890,7 +883,11 @@ def verify_collective(
                                max_abs_err=float("inf"), max_rel_err=float("inf"),
                                pass_ratio=0.0,
                                detail=(f"no valid rank verdicts (spawn={spawn_err}; "
-                                       f"wire={wire_detail})"))
+                                       f"wire={wire_detail})"),
+                               phase_outcome=(
+                                   GraphPhaseOutcome.infrastructure_before_eager()
+                               ),
+                               case_descriptor=case_descriptor)
         rank_errs = [verdict for verdict in verdicts if verdict.error]
         passed = (
             spawn_err is None
@@ -898,6 +895,13 @@ def verify_collective(
             and not verdict_errors
             and not rank_errs
             and all(verdict.passed for verdict in verdicts)
+        )
+        phase_outcome = conservative_phase_aggregate(
+            (verdict.phase_outcome for verdict in verdicts),
+            expected_count=world_size,
+            infrastructure_failure=bool(
+                spawn_err is not None or verdict_errors or len(verdicts) != world_size
+            ),
         )
         worst = min(verdicts, key=lambda verdict: verdict.score)
         detail = ""
@@ -930,7 +934,9 @@ def verify_collective(
             pass_ratio=worst.score,
             detail=detail,
             metric=worst.metric,
-            graph_replays=min(verdict.graph_replays for verdict in verdicts),
+            graph_replays=phase_outcome.replay_count,
+            phase_outcome=phase_outcome,
+            case_descriptor=case_descriptor,
         )
 
     results: list[ShapeResult] = []
@@ -966,6 +972,8 @@ def verify_collective(
                     ),
                     metric="n/a",
                     applicable=False,
+                    phase_outcome=GraphPhaseOutcome.not_applicable(),
+                    case_descriptor=_case_descriptor(shape, "single"),
                 )
             )
             continue
@@ -1005,6 +1013,8 @@ def verify_collective(
                         ),
                         metric="n/a",
                         applicable=False,
+                        phase_outcome=GraphPhaseOutcome.not_applicable(),
+                        case_descriptor=_case_descriptor(shape, "single"),
                     )
                 )
                 continue

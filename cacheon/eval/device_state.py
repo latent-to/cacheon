@@ -1069,13 +1069,50 @@ class DeviceStateGuard:
             return False, "; ".join(violations)[:4096]
         return True, "loaded engine is quiescent in the pinned active configuration"
 
+    def _capture_verdict(
+        self,
+        telemetry: tuple[GPUTelemetry, ...],
+        processes: tuple[GPUProcess, ...],
+    ) -> tuple[bool, str]:
+        """Graph capture tolerates a retained engine, never foreign work.
+
+        Capture demanded the idle envelope, which no retained pair can satisfy:
+        the pair deliberately holds a process on every selected GPU.  So every
+        hand-off retired the pair, captured, and reloaded it -- paying a full
+        engine load per bundle to satisfy a precondition capture does not
+        actually need.  Capture writes no timed measurement; what would corrupt
+        it is another workload competing for the device, not the pinned engine
+        it is about to capture against.
+
+        Both safe states are accepted and nothing else.  With no processes this
+        is exactly the previous idle verdict, so a cold lane is unaffected --
+        important because ``_ready_envelope_verdict`` alone would reject a cold
+        start for having no process on every GPU.  With the pair resident it is
+        the same quiescence bar that already gates *timed* measurement after
+        release, and capture is strictly less sensitive than a timed run.
+        """
+
+        if not processes:
+            return self._idle_verdict(telemetry, processes)
+        return self._ready_envelope_verdict(telemetry, processes)
+
     def _drain(
-        self, *, launch_id: str, phase: str, deadline: float | None
+        self,
+        *,
+        launch_id: str,
+        phase: str,
+        deadline: float | None,
+        envelope: str = "idle",
     ) -> DeviceStateReceipt:
         if not isinstance(launch_id, str) or _LABEL.fullmatch(launch_id) is None:
             raise DeviceStatePolicyError("launch_id must be a simple 1..128 character identifier")
         if phase not in {"pre", "post"}:
             raise DeviceStatePolicyError("device receipt phase must be 'pre' or 'post'")
+        if envelope not in {"idle", "capture"}:
+            raise DeviceStatePolicyError(
+                "device drain envelope must be 'idle' or 'capture'"
+            )
+        verdict = self._idle_verdict if envelope == "idle" else self._capture_verdict
         started = self._now()
         if started < self._last_receipt_completed:
             raise DeviceStateClockError("device receipt order is not monotonic")
@@ -1114,7 +1151,7 @@ class DeviceStateGuard:
             sampled_at = self._now()
             if sampled_at > local_deadline:
                 raise DeviceStateTimeoutError("device sample completed after its deadline")
-            idle, reason = self._idle_verdict(telemetry, processes)
+            idle, reason = verdict(telemetry, processes)
             samples.append(
                 DeviceStateSample(sampled_at, telemetry, processes, idle, reason)
             )
@@ -1145,8 +1182,8 @@ class DeviceStateGuard:
                 break
             self._sleep(min(float(self.policy.poll_interval_s), remaining))
         raise DeviceStateTimeoutError(
-            "selected GPUs did not satisfy the idle envelope before the bounded "
-            f"drain ended: {last_reason}"
+            f"selected GPUs did not satisfy the {envelope} envelope before the "
+            f"bounded drain ended: {last_reason}"
         )
 
     def before_launch(
@@ -1162,6 +1199,32 @@ class DeviceStateGuard:
         """Drain and attest the exact selected GPUs after one launch."""
 
         return self._drain(launch_id=launch_id, phase="post", deadline=deadline)
+
+    def before_capture(
+        self, launch_id: str, *, deadline: float | None = None
+    ) -> DeviceStateReceipt:
+        """Attest the selected GPUs before a graph capture launch.
+
+        Accepts a cold lane or a quiescent retained engine; see
+        ``_capture_verdict``.  Never used to admit a timed measurement.
+        """
+
+        return self._drain(
+            launch_id=launch_id, phase="pre", deadline=deadline, envelope="capture"
+        )
+
+    def after_capture(
+        self, launch_id: str, *, deadline: float | None = None
+    ) -> DeviceStateReceipt:
+        """Attest the selected GPUs after a graph capture launch.
+
+        The retained engine is still loaded here by design, so the post drain
+        must accept it for the same reason the pre drain does.
+        """
+
+        return self._drain(
+            launch_id=launch_id, phase="post", deadline=deadline, envelope="capture"
+        )
 
     def condition_active(
         self,
@@ -1207,7 +1270,6 @@ class DeviceStateGuard:
         started = self._now()
         if started < self._last_receipt_completed:
             raise DeviceStateClockError("device receipt order is not monotonic")
-        local_deadline = started + float(self.policy.drain_timeout_s)
         if deadline is not None:
             if (
                 isinstance(deadline, bool)
@@ -1217,7 +1279,20 @@ class DeviceStateGuard:
                 raise DeviceStatePolicyError(
                     "deadline must be an absolute finite monotonic value"
                 )
-            local_deadline = min(local_deadline, float(deadline))
+        # `drain_timeout_s` bounds waiting for GPUs to fall idle, which is a
+        # fast operation. It is the wrong bound for a wait the caller gates on
+        # an external boundary: a final warmup batch legitimately runs for
+        # minutes, and charging it against the drain budget kills the session
+        # mid-warmup. When a release callback is supplied the boundary is the
+        # terminator and the caller's own deadline is the backstop -- which is
+        # the deadline `boundary()` already refuses to let anyone else change.
+        drain_bound = started + float(self.policy.drain_timeout_s)
+        if release is not None and deadline is not None:
+            local_deadline = float(deadline)
+        elif deadline is not None:
+            local_deadline = min(drain_bound, float(deadline))
+        else:
+            local_deadline = drain_bound
         if local_deadline <= started:
             raise DeviceStateTimeoutError(
                 "active device conditioning started after its deadline"
@@ -1229,6 +1304,8 @@ class DeviceStateGuard:
         released = release is None
         release_sample_index: int | None = 0 if release is None else None
         last_reason = "no active telemetry sample completed"
+        last_command_failure = ""
+        command_failures = 0
 
         def release_now() -> bool:
             assert release is not None
@@ -1270,6 +1347,64 @@ class DeviceStateGuard:
             self._last_receipt_completed = completed
             return receipt
 
+        def wait_before_next_sample(post_release: bool) -> bool:
+            """Sleep one polling interval. False once the window is spent."""
+
+            remaining = local_deadline - self._now()
+            if remaining <= 0:
+                return False
+            delay = min(
+                float(
+                    self.policy.ready_poll_interval_s
+                    if post_release else self.policy.poll_interval_s
+                ),
+                remaining,
+            )
+            if release is not None and not released and wait_for_release is not None:
+                try:
+                    wait_for_release(delay)
+                except BaseException as exc:  # noqa: BLE001 - trusted callback
+                    raise DeviceStatePolicyError(
+                        f"active-conditioning release wait failed: {exc}"
+                    ) from None
+            else:
+                self._sleep(delay)
+            return True
+
+        def wait_for_boundary() -> bool:
+            """Block on the final-warmup boundary. False if the window ends.
+
+            Once the required consecutive pre-release run is proven, sampling
+            again before the boundary proves nothing further, and at a 0.05s
+            poll interval it exhausts the sample budget long before a warmup
+            that runs for minutes completes.
+            """
+
+            nonlocal released, release_sample_index
+            assert release is not None and wait_for_release is not None
+            while True:
+                if cancel is not None and cancel():
+                    raise DeviceStateCancelledError(
+                        "active device observation cancelled by the controller"
+                    )
+                remaining = local_deadline - self._now()
+                if remaining <= 0:
+                    return False
+                try:
+                    signalled = bool(
+                        wait_for_release(
+                            min(remaining, float(self.policy.poll_interval_s))
+                        )
+                    )
+                except BaseException as exc:  # noqa: BLE001 - trusted callback
+                    raise DeviceStatePolicyError(
+                        f"active-conditioning release wait failed: {exc}"
+                    ) from None
+                if signalled or release_now():
+                    released = True
+                    release_sample_index = len(samples)
+                    return True
+
         for _ in range(self.policy.maximum_samples):
             if cancel is not None and cancel():
                 raise DeviceStateCancelledError(
@@ -1284,7 +1419,27 @@ class DeviceStateGuard:
                             "final warmup ended before the required consecutive "
                             "pre-release active samples were observed"
                         )
-            telemetry, processes = self._query(deadline=local_deadline)
+            try:
+                telemetry, processes = self._query(deadline=local_deadline)
+            except DeviceStateTimeoutError as exc:
+                # Same standing as the drain loop: a live query holds a short
+                # command window so a wedged driver cannot eat the bracket, and
+                # a command that overruns it says nothing about the envelope.
+                # Retrying is what keeps a transient host-telemetry stall from
+                # ending a session that has already paid for its model load.
+                # The consecutive pre-release run cannot span the gap, so it
+                # restarts; a genuinely wedged query still exhausts the bounded
+                # conditioning window and fails closed below.
+                # Do NOT overwrite last_reason: once the window is spent every
+                # query gets a near-zero budget and reports as a command
+                # timeout, which would bury the envelope reason that actually
+                # explains the failure.
+                command_failures += 1
+                last_command_failure = str(exc)
+                consecutive = 0
+                if not wait_before_next_sample(release is not None and released):
+                    break
+                continue
             if cancel is not None and cancel():
                 raise DeviceStateCancelledError(
                     "active device observation cancelled by the controller"
@@ -1333,6 +1488,10 @@ class DeviceStateGuard:
                     return released_receipt(post_release_ready_samples=0)
             elif not released:
                 consecutive = consecutive + 1 if active_passed else 0
+                if consecutive >= required and wait_for_release is not None:
+                    if not wait_for_boundary():
+                        break
+                    continue
             else:
                 if not active_passed:
                     raise DeviceStateEnvelopeError(
@@ -1341,26 +1500,20 @@ class DeviceStateGuard:
                     )
                 if passed:
                     return released_receipt(post_release_ready_samples=1)
-            remaining = local_deadline - self._now()
-            if remaining <= 0:
+            if not wait_before_next_sample(post_release):
                 break
-            delay = min(
-                float(
-                    self.policy.ready_poll_interval_s
-                    if post_release else self.policy.poll_interval_s
-                ),
-                remaining,
-            )
-            if release is not None and not released and wait_for_release is not None:
-                try:
-                    wait_for_release(delay)
-                except BaseException as exc:  # noqa: BLE001 - trusted callback
-                    raise DeviceStatePolicyError(
-                        f"active-conditioning release wait failed: {exc}"
-                    ) from None
-            else:
-                self._sleep(delay)
+        # Say which of the two very different failures this was. Reporting only
+        # a command timeout here sent one bringup chasing nvidia-smi latency
+        # twice while the real cause was the envelope never being satisfied.
         raise DeviceStateEnvelopeTimeoutError(
             "selected GPUs did not satisfy the active post-warmup envelope before "
-            f"the bounded conditioning window ended: {last_reason}"
+            f"the bounded conditioning window ended after {self._now() - started:.1f}s: "
+            f"{len(samples)} sample(s) taken, {consecutive}/{required} consecutive, "
+            f"released={released}; last envelope reason: {last_reason}"
+            + (
+                f"; {command_failures} telemetry command failure(s), last: "
+                f"{last_command_failure}"
+                if command_failures
+                else ""
+            )
         )

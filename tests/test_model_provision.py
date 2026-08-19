@@ -158,6 +158,42 @@ def test_reopen_rehashes_the_complete_tree(tmp_path: Path, mutation: str) -> Non
         reopen_model_provision(model, published.receipt_path, workers=2)
 
 
+@pytest.mark.parametrize("kind", ["directory", "file"])
+def test_reopen_can_require_public_read_only_model_tree(
+    tmp_path: Path, kind: str
+) -> None:
+    model = tmp_path / "model"
+    receipts = tmp_path / "receipts"
+    model.mkdir()
+    receipts.mkdir()
+    _tree(model)
+    published = provision_model(model, receipts, workers=1)
+    for directory in (model, model / "weights"):
+        directory.chmod(0o555)
+    for path in model.rglob("*"):
+        if path.is_file():
+            path.chmod(0o444)
+    assert (
+        reopen_model_provision(
+            model,
+            published.receipt_path,
+            require_public_read_only=True,
+            workers=1,
+        )
+        == published
+    )
+    (model / "weights" if kind == "directory" else model / "config.json").chmod(
+        0o700 if kind == "directory" else 0o400
+    )
+    with pytest.raises(ModelProvisionError, match="public read-only"):
+        reopen_model_provision(
+            model,
+            published.receipt_path,
+            require_public_read_only=True,
+            workers=1,
+        )
+
+
 @pytest.mark.parametrize("attack", ["symlink", "hardlink", "noncanonical"])
 def test_reopen_rejects_unsafe_or_noncanonical_publication(
     tmp_path: Path, attack: str

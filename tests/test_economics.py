@@ -260,12 +260,13 @@ def test_projection_holds_if_any_active_family_is_not_exact(mutation: str) -> No
         project_rewards(_policy(), catalog, stack, _context(), claims)
 
 
-def test_missing_live_hotkey_holds_but_expired_discovery_does_not() -> None:
+def test_missing_live_hotkey_burns_its_share_to_the_validator() -> None:
     catalog = _catalog()
     stack = _stack(catalog, ("slot.a",))
     standing = _claim(stack, "slot.a", "ghost", 1_100_000)
-    with pytest.raises(EconomicsError, match="left the metagraph"):
-        project_rewards(_policy(), catalog, stack, _context(), (standing,))
+    result = project_rewards(_policy(), catalog, stack, _context(), (standing,))
+    assert result.standing[0].hotkey == "ghost"
+    assert result.weights_by_hotkey == {"validator": WEIGHT_PPM}
 
     standing = replace(standing, hotkey="alice")
     expired = _discovery(hotkey="ghost", block=100)
@@ -274,6 +275,52 @@ def test_missing_live_hotkey_holds_but_expired_discovery_does_not() -> None:
     )
     assert result.expired_discovery_claims == (expired.digest,)
     assert result.weights_by_hotkey == {"alice": WEIGHT_PPM}
+
+
+def test_present_families_keep_their_ppm_when_an_absent_share_is_burned() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog)
+    alice = _claim(stack, "slot.a", "alice", 1_100_000)
+    present = project_rewards(
+        _policy(),
+        catalog,
+        stack,
+        _context(),
+        (alice, _claim(stack, "slot.b", "bob", 1_200_000, evidence="7")),
+    )
+    burned = project_rewards(
+        _policy(),
+        catalog,
+        stack,
+        _context(),
+        (alice, _claim(stack, "slot.b", "ghost", 1_200_000, evidence="7")),
+    )
+    assert present.weights_by_hotkey == {"alice": 333_333, "bob": 666_667}
+    assert burned.weights_by_hotkey == {"alice": 333_333, "validator": 666_667}
+    assert burned.standing[1].hotkey == "ghost"
+
+
+def test_missing_live_discovery_hotkey_burns_only_its_bounty_share() -> None:
+    catalog = _catalog()
+    stack = _stack(catalog)
+    standing = (
+        _claim(stack, "slot.a", "alice", 1_100_000),
+        _claim(stack, "slot.b", "bob", 1_200_000, evidence="7"),
+    )
+    discoveries = (
+        _discovery("carol", 1, proposal="5", evidence="6"),
+        _discovery("ghost", 3, proposal="8", evidence="9"),
+    )
+    result = project_rewards(
+        _policy(), catalog, stack, _context(), standing, discoveries
+    )
+    assert result.weights_by_hotkey == {
+        "alice": 266_667,
+        "bob": 533_333,
+        "carol": 50_000,
+        "validator": 150_000,
+    }
+    assert result.discovery[1].hotkey == "ghost"
 
 
 def test_live_discovery_claims_share_only_the_bounded_pool() -> None:

@@ -674,8 +674,8 @@ class OCIAttachedClient:
 
     The transport layer may use only the byte streams; pipe EOF is its liveness
     signal. It cannot replace the lease-aware cleanup sequence. ``finalize`` and ``abort``
-    have identical process/container cleanup authority; normal completion discards
-    the diagnostic artifact while exceptional teardown retains its sealed receipt.
+    have identical process/container cleanup authority, and both retain the
+    bounded diagnostic artifact.
     """
 
     def __init__(
@@ -1513,8 +1513,19 @@ class OCIProcessManager:
         client._closed = True
 
     def finalize_attached(self, client: OCIAttachedClient) -> None:
-        """Normal host teardown after the caller consumed its final exact response."""
-        self._close_attached(client, retain_stderr_artifact=False)
+        """Normal host teardown after the caller consumed its final exact response.
+
+        The bounded stderr artifact is retained here too. Retention used to key
+        on the *process* exit status, so a clean exit discarded its log — and a
+        qualification HOLD is exactly a clean exit: the container ran fine and
+        the evaluation merely declined to decide. That made the one outcome
+        which most needs a diagnostic the one guaranteed not to have one. On
+        2026-08-16 a 23-minute ``resident_evidence_unavailable`` hold left both
+        lane diagnostics directories empty and could not be attributed to a
+        specific guard at all. Retention is bounded per lease by
+        ``ATTACHED_STDERR_ARTIFACT_MAX_BYTES``.
+        """
+        self._close_attached(client, retain_stderr_artifact=True)
 
     def abort_attached(self, client: OCIAttachedClient) -> None:
         """Exceptional host teardown; cleanup authority is identical to finalize."""

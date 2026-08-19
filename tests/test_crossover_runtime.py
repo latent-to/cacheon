@@ -232,6 +232,7 @@ def _rig(
     policy: ResidentSpeedPolicy | None = None,
     timed_batches: int = 1,
     candidate_conditioning: float = 0.1,
+    baseline_durations: tuple[float, ...] = (1.0, 1.0, 1.0),
 ):
     left_case = _case(tmp_path / "left")
     right_case = _case(tmp_path / "right")
@@ -340,7 +341,7 @@ def _rig(
     _install_fake_execution(
         baseline_executor,
         lane="left",
-        durations=(1.0, 1.0, 1.0),
+        durations=baseline_durations,
         trace=trace,
         trace_lock=trace_lock,
         active_count=active_count,
@@ -800,6 +801,221 @@ def test_policy_v3_serialization_is_version_dependent() -> None:
         _policy_v3(max_conditioning_slowdown=2.5)
     with pytest.raises(CrossoverRuntimeError, match="require resident speed policy v3"):
         replace(legacy, max_conditioning_slowdown=1.25)
+
+
+# --- version 8: the two-process substrate ---------------------------------
+#
+# This path serves candidates that cannot be hot-swapped into a resident
+# engine: a CUDA, C++ or PTX kernel has to be compiled and linked into the
+# engine that runs it, so it needs its own launched process rather than a swap
+# into a live one. Between 2026-08-15 (87944430) and this change the path
+# refused every version-6 policy outright, so those bundles screened clean and
+# never received a speed verdict at all.
+#
+# Version 8 is B, C, B-prime -- always three, never more. B-prime is
+# precommitted rather than earned by a close call because the quality gate
+# harvests its stock-drift control from the second baseline read.
+
+
+def _policy_v8(**overrides) -> ResidentSpeedPolicy:
+    return replace(_policy_v3(**overrides), version=8)
+
+
+@pytest.mark.parametrize(
+    ("candidate_duration", "expected_decision"),
+    (
+        (1.02, SpeedStageDecision.FAIL),
+        (0.90, SpeedStageDecision.PASS),
+    ),
+)
+def test_v8_reads_exactly_b_c_and_the_bookend(
+    tmp_path: Path,
+    candidate_duration: float,
+    expected_decision: SpeedStageDecision,
+) -> None:
+    plan, baseline, candidate, mount, trace, overlap = _rig(
+        tmp_path,
+        (candidate_duration,),
+        policy=_policy_v8(),
+        timed_batches=3,
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+
+    assert result.decision is expected_decision
+    assert not result.escalated
+    assert tuple(row.role for row in result.rates) == ("B", "C", "B_prime")
+    # Two baseline reads, one candidate read; four batches per read.
+    assert len(result.baseline_execution.session.batches) == 8
+    assert len(result.candidate_execution.session.batches) == 4
+    assert not overlap[0]
+    # The candidate lane stays resident until the baseline lane is finished; a
+    # CUDA context torn down alongside a charging baseline read contaminates it.
+    assert trace.index("right:close") > trace.index("left:7")
+    assert result.regrade(plan) == result.final_verdict
+    witness = ResidentSpeedWitness.from_evidence(result, plan)
+    assert ResidentSpeedWitness.from_dict(witness.to_dict()) == witness
+    # The witness must reach the live decision from the sealed reads alone.
+    # This is the seam the two-process path was missing: v6_result asserts a
+    # conditional read shape and would reject an unconditional bookend.
+    assert witness.always_bookend_result()[0].value == expected_decision.value
+
+
+def test_v8_reads_the_bookend_even_when_the_call_is_not_close(
+    tmp_path: Path,
+) -> None:
+    # 2x is far outside any band a bookend could reverse. It is still read,
+    # because the quality gate's stock-drift control comes from it: the read is
+    # owed to the next stage, not to this one's uncertainty.
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path, (0.5,), policy=_policy_v8(), timed_batches=3
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+
+    assert result.decision is SpeedStageDecision.PASS
+    assert tuple(row.role for row in result.rates) == ("B", "C", "B_prime")
+    assert result.final_verdict.speedup == pytest.approx(2.0, rel=1e-9)
+
+
+def test_v8_bookend_can_convict_a_borderline_candidate(tmp_path: Path) -> None:
+    # The baseline drifts 2% between B and B-prime, which raises the required
+    # margin above what the candidate cleared against B alone. The bookend is
+    # what decides -- the whole reason it is read for the speed verdict too.
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path,
+        (0.99,),
+        policy=_policy_v8(),
+        timed_batches=3,
+        baseline_durations=(1.0, 1.02, 1.0),
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+
+    assert result.decision is SpeedStageDecision.FAIL
+    assert tuple(row.role for row in result.rates) == ("B", "C", "B_prime")
+    assert not result.escalated
+    assert result.regrade(plan) == result.final_verdict
+
+
+def test_v8_conditioning_regression_fails_a_fast_candidate(tmp_path: Path) -> None:
+    # Decodes 10% faster, prefills at 2x the baseline: a real regression a
+    # decode-only gate would crown.
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path,
+        (0.90,),
+        policy=_policy_v8(),
+        timed_batches=3,
+        candidate_conditioning=0.2,
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+
+    assert result.decision is SpeedStageDecision.FAIL
+    assert result.final_verdict.passed_speedup  # the speed number alone passed
+    assert result.regrade(plan) == result.final_verdict
+
+
+def test_v8_settled_speedup_is_not_graded_by_v6_arithmetic(
+    tmp_path: Path,
+) -> None:
+    """Settlement must dispatch on version, not call ``v6_result`` by hand.
+
+    ``v6_result`` does not refuse a v8 witness up front -- its own guard is
+    ``version < 6``. It fails deeper, inside ``v6_grade``, on v6's invariant
+    that a *clear* decision never carries a third read. v8 precommits B-prime,
+    so a clear v8 verdict is exactly the shape v6 calls impossible: settlement
+    reaching for ``v6_result`` raises instead of settling. Native bundles are
+    the only ones v8 ever grades, so this is the CUDA payout path.
+    """
+
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path,
+        (0.90,),
+        policy=_policy_v8(),
+        timed_batches=3,
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+    witness = ResidentSpeedWitness.from_evidence(result, plan)
+    assert witness.resident_policy.version == 8
+
+    # The settled number is the v8 one, and it is a real speedup.
+    assert witness.accepted_speedup() == witness.always_bookend_result()[1]
+    assert float(witness.accepted_speedup()) > 0.0
+
+    # Reaching for v6 by hand does not settle this witness at all.
+    with pytest.raises(QualificationRunnerError, match="clear decision added"):
+        witness.v6_result()
+
+
+def test_v8_evidence_cannot_claim_the_retired_five_arm_schedule(
+    tmp_path: Path,
+) -> None:
+    plan, baseline, candidate, mount, _trace, _overlap = _rig(
+        tmp_path, (0.90,), policy=_policy_v8(), timed_batches=3
+    )
+    result = run_resident_crossover_speed(
+        plan,
+        baseline_executor=baseline,
+        candidate_executor=candidate,
+        model_mount=mount,
+        deadline=time.monotonic() + 60,
+    )
+    # C-prime and B-double-prime do not exist under v8. Sealed evidence that
+    # claims the escalated schedule is malformed, not merely unusual.
+    with pytest.raises(CrossoverRuntimeError, match="evidence is malformed"):
+        replace(result, escalated=True, exit_reason="borderline_pass")
+
+
+@pytest.mark.parametrize("version", (6, 7))
+def test_conditional_bookend_policies_cannot_serve_this_substrate(
+    tmp_path: Path, version: int
+) -> None:
+    # v6/v7 read the bookend only when the speed call is close, so a clear PASS
+    # under them seals two reads and leaves the quality gate with no stock-drift
+    # control to harvest. They belong to the pair-native crossover; refuse them
+    # here rather than produce evidence the next stage cannot use.
+    plan, baseline, candidate, mount, trace, _overlap = _rig(
+        tmp_path,
+        (0.9,),
+        policy=replace(_policy_v3(), version=version),
+        timed_batches=3,
+    )
+    with pytest.raises(CrossoverRuntimeError, match="conditional-bookend"):
+        run_resident_crossover_speed(
+            plan,
+            baseline_executor=baseline,
+            candidate_executor=candidate,
+            model_mount=mount,
+            deadline=time.monotonic() + 60,
+        )
+    assert trace == []
 
 
 def test_v3_crossover_scores_window_medians_and_retains_windows(

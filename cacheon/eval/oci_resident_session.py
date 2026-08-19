@@ -49,6 +49,10 @@ from cacheon.eval.oci_session_protocol import (
     validate_ready,
     validate_swap_evidence,
 )
+from cacheon.eval.resident_execution_evidence import (
+    UNOBSERVED_EVIDENCE,
+    ResidentExecutionEvidence,
+)
 from cacheon.stack_identity import require_sha256_hex
 
 
@@ -175,6 +179,15 @@ class SwapReceipt:
     slots: tuple[str, ...]
     requested_at: float
     completed_at: float
+    # Execution evidence for the generation this swap closed, and the rank group
+    # it had to cover. Carried here because a swap is the only moment at which a
+    # generation's receipts are final: nothing more can run under a scope once
+    # the lane has swapped away from it.
+    # Defaulted to UNOBSERVED so that any construction which does not supply
+    # real evidence fails closed: an unobserved swap can never prove execution,
+    # so a caller that forgets these gets a hold, never a free pass.
+    execution: ResidentExecutionEvidence = UNOBSERVED_EVIDENCE
+    expected_ranks: int = 1
 
     def __post_init__(self) -> None:
         if (
@@ -184,6 +197,14 @@ class SwapReceipt:
             or self.generation < 1
         ):
             raise OuterSessionInfrastructureError("swap receipt ordering is invalid")
+        if type(self.execution) is not ResidentExecutionEvidence:
+            raise OuterSessionInfrastructureError(
+                "swap receipt execution evidence is not exactly typed"
+            )
+        if type(self.expected_ranks) is not int or self.expected_ranks < 1:
+            raise OuterSessionInfrastructureError(
+                "swap receipt rank group is invalid"
+            )
         if self.bundle_digest is not None:
             try:
                 require_sha256_hex(self.bundle_digest, field="swap bundle digest")
@@ -431,7 +452,7 @@ class ResidentOuterSession:
                 deadline=swap_deadline,
             )
             try:
-                slots = validate_swap_evidence(
+                slots, prior_generation, prior_ranks = validate_swap_evidence(
                     _control_or_error(
                         self.transport,
                         session_id=self.session_id,
@@ -455,6 +476,8 @@ class ResidentOuterSession:
                 slots,
                 requested_at,
                 completed_at,
+                ResidentExecutionEvidence(prior_generation, prior_ranks),
+                self.plan.engine_config.tp_size,
             )
             self.swap_receipts.append(receipt)
             self.active_generation = request.generation

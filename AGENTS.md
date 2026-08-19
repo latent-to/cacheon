@@ -95,6 +95,16 @@ suite.
   outcome, exact file ownership, explicit forbidden actions, applicable
   product invariants, and exact acceptance tests. Review its output or diff
   before accepting it; delegation is not approval.
+- No change merges without naming its consumer and its casualty. The consumer
+  is the real entrypoint that exercises the new code in the same diff. The
+  casualty is the implementation or operator action it supersedes, which must
+  be deleted in the same diff or have a named retirement trigger. Use the
+  explicit phrase "supersedes nothing" only when that is genuinely true. A
+  change or subagent output that can name neither is a proposal, not an
+  increment.
+- Every delegation and handoff must state its consumer, casualty, and net-LOC
+  budget or accounting. Delegation is not accretion: the primary agent deletes
+  down to budget or rejects the proposal before integration.
 - A writing agent may own multiple explicitly listed files when they form one
   bounded implementation unit. It must state its implementation hypotheses
   before editing and name the evidence that would falsify each one. Its handoff
@@ -104,6 +114,16 @@ suite.
   stale state, partial failure, restart/idempotency, concurrency, time bounds,
   and untested assumptions. The primary agent must inspect the diff and
   independently rerun the acceptance tests before accepting it.
+- Before adding a production module, search for and name its authoritative
+  production owner and callsite. Test-only imports do not prove integration;
+  parallel or provisional implementations must be wired into that owner or
+  removed before the pull request is ready.
+- A durable fence or state machine must execute transactionally inside, or be
+  called by, the production authority that owns the mutation. A standalone
+  model plus tests is not a production fence.
+- A security-sensitive private or dynamic factory must have a sealed production
+  caller that authenticates its authority. Remove factory loaders that exist
+  only behind tests or unsealed configuration.
 - Never use destructive synchronization such as `rsync --delete` for recovery,
   handoff, snapshot, or deployment work. Use a new destination and verify the
   copied manifest before considering any separately authorized cleanup.
@@ -245,6 +265,20 @@ contributor and subagent:
   fences that are not wired are dead on arrival — wire them or drop them.
 - Write the doc or kill the surface: an undocumented new command, flag, or
   schema is a deletion candidate, not a TODO.
+- Every change pays for itself. A change that adds production lines deletes
+  bloat in the same change, or its summary states plainly that no deletion was
+  available and names what will be deleted next. Report added and deleted
+  lines separately; a single net figure hides accretion.
+- Two consecutive additive changes with no deletion is a stopped-plan
+  condition. Stop and find the dead surface — importerless modules, orphaned
+  untracked files, superseded scripts, wrappers nothing can enable. Not
+  finding any is a reason to look harder, not a licence to continue.
+- Before adding a module, search for the one that already does this. A
+  near-duplicate under a new name is the most expensive addition there is,
+  because it doubles the surface that must later be reconciled.
+- A passing test suite is a floor, not evidence. For runtime behavior the
+  claim is carried by the system executing on real hardware; cite the run,
+  not the suite.
 
 ## Persistence
 

@@ -95,6 +95,79 @@ CONTAINER_TREE = "/cacheon/engine-tree"
 CONTAINER_MODEL = "/cacheon/input/model"
 CONTAINER_ARTIFACT_BASE = "/cacheon/native-artifacts"
 CONTAINER_CACHE = "/cacheon/runtime-cache"
+
+
+def _seed_runtime_cache(
+    seed_root: Path,
+    cache_root: Path,
+    *,
+    uid: int,
+    gid: int,
+    max_bytes: int,
+) -> None:
+    """Install the sealed FMHA cache into the path consumed by MInfer.
+
+    Every lease mounts an empty tmpfs cache, so each boot recompiles runtime
+    JIT artifacts; concurrent TP ranks then race the same output path and a
+    torn write kills the session (observed 2026-08-10: four ranks sharing one
+    HOME half-wrote the minfer fmha_sm100 plan .so — "file too short").
+    Seeding the cache from a validator-owned tree removes the compile
+    entirely. The supplied root begins with ``plan/`` and the compiled
+    variants; MInfer consumes it below ``HOME/.cache/minfer/fmha_sm100``.
+    Keeping the installed tree read-only prevents ranks from falling back to
+    concurrent publication in the shared cache. A planless or file-free seed
+    is refused here, at lease time: sealing it read-only anyway makes the
+    first JIT compile kill the session mid-evaluation (observed 2026-08-13:
+    an empty seed sealed 0o555 crashed lane-b on ``mkdir .../plan``).
+    """
+    if (
+        not seed_root.is_absolute()
+        or seed_root.is_symlink()
+        or not seed_root.is_dir()
+    ):
+        raise OCIBackendError("runtime seed root is not a trusted directory")
+    plan_root = seed_root / "plan"
+    if plan_root.is_symlink() or not plan_root.is_dir():
+        raise OCIBackendError("runtime seed tree lacks its plan/ subtree")
+    target_root = cache_root / "home" / ".cache" / "minfer" / "fmha_sm100"
+    if target_root.exists() or target_root.is_symlink():
+        raise OCIBackendError("fresh runtime cache already holds FMHA state")
+    for parent in (
+        cache_root / "home",
+        cache_root / "home" / ".cache",
+        cache_root / "home" / ".cache" / "minfer",
+    ):
+        parent.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(parent, 0o700)
+        os.chown(parent, uid, gid)
+    target_root.mkdir(mode=0o700)
+    copied = 0
+    copied_files = 0
+    copied_directories = [target_root]
+    for row in sorted(seed_root.rglob("*")):
+        target = target_root.joinpath(row.relative_to(seed_root))
+        if row.is_symlink():
+            raise OCIBackendError("runtime seed tree holds a symlink")
+        if row.is_dir():
+            target.mkdir(mode=0o700, exist_ok=True)
+            os.chown(target, uid, gid)
+            copied_directories.append(target)
+            continue
+        if not row.is_file():
+            raise OCIBackendError("runtime seed tree holds a non-regular file")
+        copied += row.stat().st_size
+        copied_files += 1
+        if copied > max_bytes:
+            raise OCIBackendError("runtime seed tree exceeds the cache budget")
+        shutil.copyfile(row, target)
+        os.chmod(target, 0o444)
+        os.chown(target, uid, gid)
+    if copied_files == 0:
+        raise OCIBackendError("runtime seed tree holds no files")
+    for target in sorted(
+        copied_directories, key=lambda path: len(path.parts), reverse=True
+    ):
+        os.chmod(target, 0o555)
 CONTAINER_ENGINE_WORKER_POLICY = (
     "/usr/local/lib/python3.12/dist-packages/cacheon/eval/engine_worker.py"
 )
@@ -480,7 +553,7 @@ class OCIBackendConfig:
             )
 
 
-def _copy_seccomp(source: Path, destination: Path, *, expected_digest: str) -> None:
+def stage_seccomp_profile(source: Path, destination: Path, *, expected_digest: str) -> None:
     expected = _digest(expected_digest, field="seccomp_policy_digest")
     try:
         if source.is_symlink():
@@ -520,7 +593,7 @@ def _copy_seccomp(source: Path, destination: Path, *, expected_digest: str) -> N
         raise OCIBackendError(f"cannot stage seccomp profile: {exc}") from None
 
 
-def _mount(source: Path, destination: str, *, readonly: bool) -> str:
+def build_bind_mount_arg(source: Path, destination: str, *, readonly: bool) -> str:
     root, _ = _reopen_directory(source, field="OCI mount source")
     suffix = ",readonly" if readonly else ""
     return (
@@ -721,13 +794,13 @@ def build_runtime_argv(
         # installed bootstrap directory read-only so the worker's existing
         # fail-closed mount check remains true without making the rest of the
         # image filesystem read-only.
-        _mount(site_bootstrap, CONTAINER_SITE_BOOTSTRAP, readonly=True),
-        _mount(model_root, CONTAINER_MODEL, readonly=True),
-        _mount(resolved.materialized_tree_root, CONTAINER_TREE, readonly=True),
-        _mount(publication.root, artifact_destination, readonly=True),
-        _mount(cache_root, CONTAINER_CACHE, readonly=False),
+        build_bind_mount_arg(site_bootstrap, CONTAINER_SITE_BOOTSTRAP, readonly=True),
+        build_bind_mount_arg(model_root, CONTAINER_MODEL, readonly=True),
+        build_bind_mount_arg(resolved.materialized_tree_root, CONTAINER_TREE, readonly=True),
+        build_bind_mount_arg(publication.root, artifact_destination, readonly=True),
+        build_bind_mount_arg(cache_root, CONTAINER_CACHE, readonly=False),
         *(
-            (_mount(swap_intake_root, CONTAINER_SWAP_INTAKE_PATH, readonly=True),)
+            (build_bind_mount_arg(swap_intake_root, CONTAINER_SWAP_INTAKE_PATH, readonly=True),)
             if swap_intake_root is not None
             else ()
         ),
@@ -1226,7 +1299,7 @@ class OCIEngineExecutor:
             )
             cache_root = lease.mount_paths[0]
             seccomp_copy = lease.stage_paths[0]
-            _copy_seccomp(
+            stage_seccomp_profile(
                 self.config.prebuild.seccomp_profile,
                 seccomp_copy,
                 expected_digest=launch.seccomp_policy_digest,
@@ -1240,6 +1313,14 @@ class OCIEngineExecutor:
                 gid=self.config.runtime.gid,
                 executable=True,
             )
+            if self.config.prebuild.runtime_seed_root is not None:
+                _seed_runtime_cache(
+                    self.config.prebuild.runtime_seed_root,
+                    cache_root,
+                    uid=self.config.runtime.uid,
+                    gid=self.config.runtime.gid,
+                    max_bytes=self.config.runtime.cache_bytes,
+                )
             resolved = resolve_engine_launch(launch, binding)
             model_root = mount.reopen()
             publication = reopen_native_artifact(
@@ -1509,6 +1590,9 @@ class OCIEngineExecutor:
         plan: ReferenceSessionPlan,
         *,
         deadline: float,
+        completion_sink: (
+            Callable[[PristineReferenceExecutionEvidence], None] | None
+        ) = None,
     ) -> PristineReferenceExecutionEvidence:
         """Launch a separate empty-stack T and return only its raw transcript."""
 
@@ -1561,7 +1645,7 @@ class OCIEngineExecutor:
                 raise OCIBackendError("reference runtime returned malformed raw evidence")
             receipts = (raw.pre_receipt, raw.post_receipt)
             _validate_reference_device_receipts(receipts, launch_id=raw.launch_id)
-            return PristineReferenceExecutionEvidence(
+            evidence = PristineReferenceExecutionEvidence(
                 "cacheon.oci-pristine-reference-execution.v1",
                 launch.digest,
                 identity,
@@ -1575,6 +1659,9 @@ class OCIEngineExecutor:
                 receipts,
                 raw.value,
             )
+            if completion_sink is not None:
+                completion_sink(evidence)
+            return evidence
         finally:
             self._lock.release()
 
@@ -1883,8 +1970,10 @@ __all__ = [
     "ResidentEngineExecutionEvidence",
     "ResidentSessionDriver",
     "TrustedArenaModelMountReceipt",
+    "build_bind_mount_arg",
     "build_runtime_argv",
     "expected_runtime_preflight",
     "runtime_identity_from_preflight",
+    "stage_seccomp_profile",
     "stage_swap_bundle",
 ]

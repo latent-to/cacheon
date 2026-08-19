@@ -48,11 +48,34 @@ Retained attempts identify the speed policy that created them:
 |---|---|---|
 | v1 | B/C/B′ | Historical byte-compatible authority |
 | v2 | B/C/B′/C′/B″ | Fixed repeat-read authority |
-| v3 | B/C/B′, then C′/B″ only when borderline | Resident adaptive production authority |
+| v3 | B/C/B′, then C′/B″ only when borderline | Resident adaptive authority |
+| v4 | as v3 | Every read graded; bookend invariance decides |
+| v5 | as v3 | Adds the bracket-drift exclusion |
+| v6 | B/C, then B′ only when a legal bookend could reverse it | Conditional bookend |
+| v7 | as v6 | Adds the symmetric baseline swap |
+| v8 | B/C/B′, always three | Two-process substrate for non-swappable candidates |
+
+Versions 6 and 7 belong to the resident pair, where the candidate is hot-swapped
+into a loaded engine. A candidate that cannot be hot-swapped — one declaring CUDA,
+C++ or PTX sources, AOT artifacts, dependency patches, or engine setup — is
+measured by the two-process crossover instead, which launches its own baseline and
+candidate engines. That substrate binds v8 and reads B′ unconditionally: the
+quality gate takes its stock-drift control from the second baseline read, and a
+conditional bookend leaves a clear PASS with no control to harvest. Reading it
+regardless of the outcome also preserves what the conditional versions enforce — a
+read taken regardless of a result cannot be a read taken because of one.
+
+The version is selected per candidate when the qualification plan is built, from
+the same swappability predicate the worker routes execution on, so the plan and
+the execution substrate cannot disagree. Only the read order differs: every
+calibrated threshold is the one the provider sealed.
+
+C′ and B″ are unreachable under v6, v7 and v8. The five-arm bracket survives only
+in v2–v5 evidence.
 
 The legacy constructor default remains v1 so historical serialized evidence reopens
-without reinterpretation. A production arena provider must explicitly bind v3 resident
-authority. Merely changing the policy label does not upgrade old evidence.
+without reinterpretation. A production arena provider must explicitly bind its
+resident authority. Merely changing the policy label does not upgrade old evidence.
 
 ## Resident adaptive timeline
 
@@ -189,6 +212,34 @@ An unexpected exception is not evidence of candidate guilt. The intake projectio
 recognized plan, runner, and raw-speed authority failures into typed failure products and
 retry plans. Other controller exceptions are contained by the pass loop and recovered
 conservatively on restart.
+
+### Resident execution evidence
+
+A resident lane is launched stock and acquires candidates by hot-swap, so registering a
+slot is the only thing a swap by itself proves. Registration is not execution: a bundle
+can load, register its slot, capture, and then never dispatch, and such a run still
+produces a complete speed number.
+
+Each swap therefore reports per-rank execution evidence for the generation it closes —
+the scope is final only once the lane has swapped away from it. A resident candidate leg
+is graded only when every rank of the group completed the candidate under exactly the
+activation generation. A rank that fell back to the trusted baseline, or failed to load
+the bundle, does not count as having executed it.
+
+The reported count is a tri-state, and the states carry different authority:
+
+| Reported | Meaning | Decision |
+|---|---|---|
+| Unobserved | The evidence path itself is unusable | `NO_DECISION` |
+| Observed, short of the rank group | The candidate did not execute on every rank | Not a `PASS` |
+| Observed, complete | Execution is proven for that generation | Speed evidence may be graded |
+
+Unobserved is never read as zero. Absent evidence is an infrastructure fault and may not
+be converted into a candidate verdict.
+
+This evidence is written from inside the candidate's own process. It closes accidental
+non-invocation; it is not proof against a deliberate forger, for which complete-engine
+isolation and external qualification remain the boundary.
 
 ## Independent reproduction
 
@@ -333,14 +384,6 @@ evidence policy. Deployment composition currently commissions the standing pair
 outside the tracked qualification path; wiring it into tracked commissioning is
 part of the qualification-activation work, and the module must not be treated as
 removable in the meantime.
-
-A sealed standing-evaluation config binds one closed, lane-independent controls
-identity through `eval/standing_controls.py`: exactly three SHA-256 identity
-digests plus the integer `maximum_bookend_drift_ppm`, which must equal the
-version-3 resident speed policy's `max_noise` expressed exactly in parts per
-million. Primary and reproduction stages must bind byte-identical controls, and
-a config with a missing key, an extra key, or a drift bound that disagrees with
-the sealed speed policy is rejected before any GPU work is scheduled.
 
 ## Nonclaims
 

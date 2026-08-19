@@ -34,6 +34,25 @@ def _swap(index: int = 0, generation: int = 1, digest: str | None = DIGEST) -> S
     )
 
 
+def _evidence(
+    request: SwapRequest,
+    slots: tuple[str, ...],
+    *,
+    rank_count: int = 4,
+    prior_generation: int = -1,
+    prior_execution_ranks: int = -1,
+) -> dict:
+    """Swap evidence defaulting to "nothing observed", the fail-closed state."""
+
+    return swap_evidence_message(
+        request=request,
+        slots=slots,
+        rank_count=rank_count,
+        prior_generation=prior_generation,
+        prior_execution_ranks=prior_execution_ranks,
+    )
+
+
 class TestSwapProtocol:
     def test_round_trip(self) -> None:
         message = swap_request(
@@ -70,25 +89,58 @@ class TestSwapProtocol:
 
     def test_evidence_round_trip(self) -> None:
         request = _swap()
-        message = swap_evidence_message(
-            request=request, slots=("moe.fused_experts",), rank_count=4
+        message = _evidence(request, ("moe.fused_experts",))
+        slots, prior_generation, prior_ranks = validate_swap_evidence(
+            message, request=request, expected_rank_count=4
         )
-        slots = validate_swap_evidence(message, request=request, expected_rank_count=4)
         assert slots == ("moe.fused_experts",)
+        assert (prior_generation, prior_ranks) == (-1, -1)
+
+    def test_evidence_carries_the_closed_generation_execution_count(self) -> None:
+        request = _swap(index=1, generation=3)
+        message = _evidence(
+            request,
+            ("moe.fused_experts",),
+            prior_generation=2,
+            prior_execution_ranks=4,
+        )
+        _, prior_generation, prior_ranks = validate_swap_evidence(
+            message, request=request, expected_rank_count=4
+        )
+        assert (prior_generation, prior_ranks) == (2, 4)
+
+    @pytest.mark.parametrize(
+        "prior_generation, prior_execution_ranks",
+        [
+            (3, 4),  # a swap cannot close the generation it opens
+            (9, 4),  # nor one that has not happened yet
+            (-2, 4),  # below the unobserved sentinel
+            (2, 5),  # more ranks executed than the group holds
+            (2, -2),  # below the unobserved sentinel
+        ],
+    )
+    def test_evidence_rejects_impossible_execution_counts(
+        self, prior_generation: int, prior_execution_ranks: int
+    ) -> None:
+        request = _swap(index=1, generation=3)
+        message = _evidence(
+            request,
+            ("moe.fused_experts",),
+            prior_generation=prior_generation,
+            prior_execution_ranks=prior_execution_ranks,
+        )
+        with pytest.raises(SessionProtocolError):
+            validate_swap_evidence(message, request=request, expected_rank_count=4)
 
     def test_evidence_binds_rank_count(self) -> None:
         request = _swap()
-        message = swap_evidence_message(
-            request=request, slots=("moe.fused_experts",), rank_count=4
-        )
+        message = _evidence(request, ("moe.fused_experts",))
         with pytest.raises(SessionProtocolError):
             validate_swap_evidence(message, request=request, expected_rank_count=8)
 
     def test_evidence_binds_generation(self) -> None:
         request = _swap()
-        message = swap_evidence_message(
-            request=request, slots=("moe.fused_experts",), rank_count=4
-        )
+        message = _evidence(request, ("moe.fused_experts",))
         other = _swap(index=1, generation=2)
         with pytest.raises(SessionProtocolError):
             validate_swap_evidence(message, request=other, expected_rank_count=4)
@@ -96,26 +148,20 @@ class TestSwapProtocol:
     def test_stock_evidence_must_be_slotless(self) -> None:
         request = _swap(digest=None)
         with pytest.raises(SessionProtocolError):
-            swap_evidence_message(
-                request=request, slots=("moe.fused_experts",), rank_count=4
-            )
-        message = swap_evidence_message(request=request, slots=(), rank_count=4)
+            _evidence(request, ("moe.fused_experts",))
+        message = _evidence(request, ())
         assert validate_swap_evidence(
             message, request=request, expected_rank_count=4
-        ) == ()
+        ) == ((), -1, -1)
 
     def test_bundle_evidence_must_register_slots(self) -> None:
         request = _swap()
         with pytest.raises(SessionProtocolError):
-            swap_evidence_message(request=request, slots=(), rank_count=4)
+            _evidence(request, ())
 
     def test_evidence_rejects_unsorted_slots(self) -> None:
         request = _swap()
-        message = swap_evidence_message(
-            request=request,
-            slots=("a.one", "b.two"),
-            rank_count=4,
-        )
+        message = _evidence(request, ("a.one", "b.two"))
         message["slots"] = ["b.two", "a.one"]
         with pytest.raises(SessionProtocolError):
             validate_swap_evidence(message, request=request, expected_rank_count=4)
@@ -128,14 +174,26 @@ class TestWorkerSwapApplication:
         return str(control)
 
     def _ack_all(
-        self, control: str, generation: int, *, tp: int = 2, slots=("s.one",)
+        self,
+        control: str,
+        generation: int,
+        *,
+        tp: int = 2,
+        slots=("s.one",),
+        prior_generation: int | None = None,
+        completed: int = 1,
+        fallback: int = 0,
     ) -> None:
         for rank in range(tp):
-            (Path(control) / f"ack.rank{rank}.json").write_text(
-                json.dumps(
-                    {"generation": generation, "ok": True, "slots": list(slots)}
-                )
-            )
+            row = {"generation": generation, "ok": True, "slots": list(slots)}
+            if prior_generation is not None:
+                row["prior_generation"] = prior_generation
+                row["prior_receipts"] = {
+                    "completed": completed,
+                    "fallback": fallback,
+                    "load_failed": 0,
+                }
+            (Path(control) / f"ack.rank{rank}.json").write_text(json.dumps(row))
 
     def test_stock_swap_writes_command_and_collects_acks(self, tmp_path) -> None:
         from cacheon.eval import oci_session_worker as worker
@@ -148,10 +206,12 @@ class TestWorkerSwapApplication:
                 self._ack_all(control, request.generation, slots=())
                 return True
 
-        slots = worker._apply_resident_swap(
+        slots, execution = worker._apply_resident_swap(
             Engine(), request, control_dir=control, tp_size=2
         )
         assert slots == ()
+        # Acks without execution fields are unobservable, never an implied zero.
+        assert not execution.observed
         command = json.loads((Path(control) / "command.json").read_text())
         assert command == {"bundle": None, "generation": 1}
 
@@ -201,10 +261,11 @@ class TestWorkerSwapApplication:
                 self._ack_all(control, request.generation, slots=("s.one",))
                 return True
 
-        slots = worker._apply_resident_swap(
+        slots, execution = worker._apply_resident_swap(
             Engine(), request, control_dir=control, tp_size=2
         )
         assert slots == ("s.one",)
+        assert not execution.observed
         command = json.loads((Path(control) / "command.json").read_text())
         assert command["bundle"].endswith(digest)
 
@@ -281,10 +342,12 @@ class TestWorkerSwapApplication:
 
         monkeypatch.setattr(worker, "_RESIDENT_FLUSH_RETRY_SECONDS", 0.0)
         monkeypatch.setattr(worker, "_RESIDENT_ACK_POLL_SECONDS", 0.0)
-        slots = worker._apply_resident_swap(
+        slots, execution = worker._apply_resident_swap(
             Engine(), request, control_dir=control, tp_size=2
         )
         assert slots == ()
+        # Acks without execution fields are unobservable, never an implied zero.
+        assert not execution.observed
         assert calls["n"] >= 2
 
 
@@ -490,7 +553,6 @@ class TestResidentOuterSession:
             frame_message,
             preflight_message,
             ready_message,
-            swap_evidence_message,
             validate_batch_request,
             validate_init,
             validate_preflight_accept,
@@ -552,9 +614,7 @@ class TestResidentOuterSession:
                     )
                     self.outbox.append(
                         frame_message(
-                            swap_evidence_message(
-                                request=request, slots=slots, rank_count=2
-                            ),
+                            _evidence(request, slots, rank_count=2),
                             max_bytes=1 << 16,
                         )
                     )

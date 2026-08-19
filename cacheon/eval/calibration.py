@@ -109,7 +109,6 @@ class CalibrationContext:
     logical_hardware_digest: str
     workload_digest: str
     verification_policy_digest: str
-    controller_distribution_digest: str
 
     def __post_init__(self) -> None:
         for field in self.__dataclass_fields__:

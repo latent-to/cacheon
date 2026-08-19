@@ -51,6 +51,13 @@ from cacheon.chain.remote_qualification_evidence import (
     qualification_batch_to_dict,
     remote_qualification_product_to_dict,
 )
+from cacheon.chain.remote_qualification_hold import (
+    RemoteEvaluationResponsePayload,
+    RemoteQualificationHoldProduct,
+    remote_qualification_hold_from_dict,
+    remote_qualification_hold_to_dict,
+    verify_remote_qualification_hold_request,
+)
 from cacheon.eval.qualification_intake import (
     QualificationReservation,
 )
@@ -70,9 +77,13 @@ _AUTH_TAG = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_PROTOCOL_BODY_BYTES = 64 << 20
 
 REMOTE_EVALUATION_PROTOCOL_DIGEST = canonical_digest(
-    "cacheon.chain.remote-evaluation-protocol.v2",
+    "cacheon.chain.remote-evaluation-protocol.v3",
     {
         "operations": ["screen", "qualification"],
+        "qualification_payloads": [
+            "remote_qualification_product",
+            "remote_qualification_hold",
+        ],
         "qualification_product": {
             "authority_manifest": True,
             "cpu_evidence_import": True,
@@ -92,7 +103,6 @@ def _identifier(value: object, field_name: str) -> str:
         raise RemoteEvaluationDispatcherError(f"{field_name} is malformed")
     return value
 
-
 def _canonical_object(value: bytes, label: str) -> dict[str, object]:
     if type(value) is not bytes or not value or len(value) > _MAX_PROTOCOL_BODY_BYTES:
         raise RemoteEvaluationDispatcherError(f"{label} bytes are outside protocol bounds")
@@ -103,7 +113,6 @@ def _canonical_object(value: bytes, label: str) -> dict[str, object]:
     if type(decoded) is not dict or canonical_json_bytes(decoded) != value:
         raise RemoteEvaluationDispatcherError(f"{label} is not a canonical object")
     return decoded
-
 
 def _mac(secret: bytes, domain: bytes, digest: str) -> str:
     return hmac.new(secret, domain + b"\0" + digest.encode("ascii"), hashlib.sha256).hexdigest()
@@ -132,7 +141,6 @@ class RemoteWorkerCredential:
                 "secret_sha256": sha256_hex(self.secret),
             },
         )
-
 
 @dataclass(frozen=True)
 class RemoteWorkerTransportIdentity:
@@ -209,7 +217,6 @@ class RemoteWorkerTransportIdentity:
         return canonical_digest(
             "cacheon.chain.remote-worker-transport-identity.v1", self.to_dict()
         )
-
 
 @dataclass(frozen=True)
 class RemoteEvaluationRequest:
@@ -404,7 +411,6 @@ class RemoteEvaluationRequest:
             raise RemoteEvaluationDispatcherError("remote request identity differs")
         return request
 
-
 @dataclass(frozen=True)
 class AuthenticatedRemoteEvaluationResponse:
     """Canonical worker response authenticated against its exact request."""
@@ -438,11 +444,17 @@ class AuthenticatedRemoteEvaluationResponse:
             type(self.ready_epoch) is not int
             or self.ready_epoch < 0
             or self.stage not in {"screen", "qualification"}
-            or self.payload_kind
-            != (
-                "arena_screen_receipt"
-                if self.stage == "screen"
-                else "remote_qualification_product"
+            or (
+                self.stage == "screen"
+                and self.payload_kind != "arena_screen_receipt"
+            )
+            or (
+                self.stage == "qualification"
+                and self.payload_kind
+                not in {
+                    "remote_qualification_product",
+                    "remote_qualification_hold",
+                }
             )
             or type(self.schema_version) is not int
             or self.schema_version != _SCHEMA_VERSION
@@ -539,12 +551,6 @@ class AuthenticatedWorkerTransport(Protocol):
         job: ClaimedScreenEvaluation,
     ) -> AuthenticatedRemoteEvaluationResponse: ...
 
-    def run_qualification(
-        self,
-        request: RemoteEvaluationRequest,
-    ) -> AuthenticatedRemoteEvaluationResponse: ...
-
-
 def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
     if type(payload) is ArenaScreenReceipt:
         return "arena_screen_receipt", canonical_json_bytes(payload.to_dict()), payload.digest
@@ -554,8 +560,13 @@ def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
             canonical_json_bytes(remote_qualification_product_to_dict(payload)),
             payload.digest,
         )
+    if type(payload) is RemoteQualificationHoldProduct:
+        return (
+            "remote_qualification_hold",
+            canonical_json_bytes(remote_qualification_hold_to_dict(payload)),
+            payload.digest,
+        )
     raise RemoteEvaluationDispatcherError("remote response payload is not exactly typed")
-
 
 def _validate_request_body(stage: str, value: dict[str, object]) -> None:
     if stage == "screen":
@@ -658,7 +669,6 @@ def _validate_request_body(stage: str, value: dict[str, object]) -> None:
             raise RemoteEvaluationDispatcherError("qualification request provenance differs")
         reservations.append(reservation)
 
-
 def _request_body_reservation_ids(
     stage: str,
     value: dict[str, object],
@@ -678,7 +688,6 @@ def _request_body_reservation_ids(
         raise RemoteEvaluationDispatcherError(
             "remote request reservation projection is invalid"
         ) from exc
-
 
 def _publication_wire_digest(value: object) -> str:
     fields = {
@@ -730,7 +739,6 @@ def _publication_wire_digest(value: object) -> str:
         },
     )
 
-
 def _validate_screen_policy(value: object) -> None:
     if type(value) is not dict or set(value) != {"crownable", "stages"}:
         raise RemoteEvaluationDispatcherError("screen request policy is not closed")
@@ -749,7 +757,6 @@ def _validate_screen_policy(value: object) -> None:
         ):
             raise RemoteEvaluationDispatcherError("screen request stage is malformed")
 
-
 def _request_body_for_screen(
     coordinator: EvaluationCoordinator,
     claim: ClaimedScreenEvaluation,
@@ -764,7 +771,6 @@ def _request_body_for_screen(
         "screen_policy": coordinator.service.manifest.screens.to_dict(),
         "service_digest": coordinator.service.identity,
     }
-
 
 def _request_body_for_qualification(
     coordinator: EvaluationCoordinator,
@@ -790,7 +796,6 @@ def _request_body_for_qualification(
         "screen_lane": claim.screen_lane,
         "service_digest": coordinator.service.identity,
     }
-
 
 def seal_remote_request(
     lease: EvaluationLease,
@@ -842,7 +847,6 @@ def seal_remote_request(
         auth_tag=_mac(credential.secret, _REQUEST_AUTH_DOMAIN, request.digest),
     )
 
-
 def verify_remote_request(
     request: RemoteEvaluationRequest,
     transport_identity: RemoteWorkerTransportIdentity,
@@ -870,10 +874,9 @@ def verify_remote_request(
     ):
         raise RemoteEvaluationDispatcherError("remote request authentication failed")
 
-
 def seal_remote_response(
     request: RemoteEvaluationRequest,
-    payload: ArenaScreenReceipt | RemoteQualificationProduct,
+    payload: RemoteEvaluationResponsePayload,
     transport_identity: RemoteWorkerTransportIdentity,
     credential: RemoteWorkerCredential,
 ) -> AuthenticatedRemoteEvaluationResponse:
@@ -900,13 +903,12 @@ def seal_remote_response(
         auth_tag=_mac(credential.secret, _RESPONSE_AUTH_DOMAIN, response.digest),
     )
 
-
 def reopen_remote_response(
     request: RemoteEvaluationRequest,
     response: AuthenticatedRemoteEvaluationResponse,
     transport_identity: RemoteWorkerTransportIdentity,
     credential: RemoteWorkerCredential,
-) -> ArenaScreenReceipt | RemoteQualificationProduct:
+) -> RemoteEvaluationResponsePayload:
     """Authenticate bytes, then independently reopen the exact typed result."""
 
     if (
@@ -932,11 +934,11 @@ def reopen_remote_response(
         )
     ):
         raise RemoteEvaluationDispatcherError("remote response authentication failed")
-    payload: ArenaScreenReceipt | RemoteQualificationProduct
+    payload: RemoteEvaluationResponsePayload
     if response.stage == "screen":
         payload = _screen_receipt_from_dict(response.payload)
         observed_digest = payload.digest
-    else:
+    elif response.payload_kind == "remote_qualification_product":
         payload = remote_qualification_product_from_dict(response.payload)
         if (
             payload.service_digest != request.body["service_digest"]
@@ -953,6 +955,10 @@ def reopen_remote_response(
             raise RemoteEvaluationDispatcherError(
                 "remote qualification product differs from its request authority"
             )
+        observed_digest = payload.digest
+    else:
+        payload = remote_qualification_hold_from_dict(response.payload)
+        verify_remote_qualification_hold_request(payload, request)
         observed_digest = payload.digest
     if observed_digest != response.payload_digest:
         raise RemoteEvaluationDispatcherError("remote typed result digest differs")
@@ -980,9 +986,7 @@ class RemoteEvaluationDispatcher:
         identity = getattr(transport, "identity", None)
         if type(identity) is not RemoteWorkerTransportIdentity:
             raise RemoteEvaluationDispatcherError("remote transport has no exact identity")
-        if not callable(getattr(transport, "run_screen", None)) or not callable(
-            getattr(transport, "run_qualification", None)
-        ):
+        if not callable(getattr(transport, "run_screen", None)):
             raise RemoteEvaluationDispatcherError("remote transport is not closed and typed")
         if (
             identity.service_digest != coordinator.service.identity
@@ -1068,7 +1072,6 @@ class RemoteEvaluationDispatcher:
 
     def dispatch_screen_once(self) -> EvaluationRun | None:
         """Claim the exact FIFO screen row, invoke remotely, and CAS-commit."""
-
         self._validate_live_transport()
         claim = self.coordinator.claim_screen()
         if claim is None:
@@ -1121,110 +1124,6 @@ class RemoteEvaluationDispatcher:
         self.coordinator.commit_screen_result(claim, receipt, envelope)
         return EvaluationRun(lease, envelope, receipt, "completed")
 
-    def dispatch_qualification_once(self) -> EvaluationRun | None:
-        """Claim one FIFO cohort, invoke remotely, and commit or requeue it."""
-
-        if (
-            self.qualification_evidence_root is None
-            or self.qualification_incumbent_stack is None
-            or self.qualification_incumbent_tree_digest is None
-        ):
-            raise RemoteEvaluationDispatcherError(
-                "remote qualification authority is not configured"
-            )
-        self._validate_live_transport()
-        claim = self.coordinator.claim_qualification()
-        if claim is None:
-            return None
-        heartbeat = _LeaseHeartbeat(self.coordinator, claim.lease)
-        try:
-            heartbeat.start()
-        except BaseException as exc:
-            self._release_after_remote_error(
-                claim.lease,
-                reason="remote_qualification_heartbeat_start",
-                cause=exc,
-            )
-        try:
-            request = seal_remote_request(
-                claim.lease,
-                self.coordinator.readiness,
-                self.coordinator.service.manifest.service_id,
-                self.transport_identity,
-                self.credential,
-                _request_body_for_qualification(self.coordinator, claim),
-            )
-            response = self.transport.run_qualification(request)
-            product = reopen_remote_response(
-                request, response, self.transport_identity, self.credential
-            )
-            if type(product) is not RemoteQualificationProduct:
-                raise RemoteEvaluationDispatcherError(
-                    "remote qualification returned another payload type"
-                )
-            if (
-                product.incumbent_stack != self.qualification_incumbent_stack
-                or product.incumbent_tree_digest
-                != self.qualification_incumbent_tree_digest
-            ):
-                raise RemoteEvaluationDispatcherError(
-                    "remote qualification changed the CPU-owned incumbent"
-                )
-            batch = product.batch
-            if not self.coordinator._systemic(batch):
-                import_remote_qualification_evidence(
-                    product,
-                    self.qualification_evidence_root,
-                )
-        except BaseException as exc:
-            lease, heartbeat_error = heartbeat.stop()
-            self._release_after_remote_error(
-                lease,
-                reason="remote_qualification_infrastructure",
-                cause=heartbeat_error or exc,
-            )
-        lease, heartbeat_error = heartbeat.stop()
-        claim = replace(claim, lease=lease)
-        envelope = EvaluationResultEnvelope.seal(
-            lease, self.coordinator.readiness, self.coordinator.service, batch
-        )
-        if heartbeat_error is not None:
-            self._release_after_remote_error(
-                lease,
-                reason="remote_qualification_heartbeat",
-                cause=heartbeat_error,
-                result_digest=envelope.digest,
-            )
-        if self.coordinator._systemic(batch):
-            reasons = ",".join(sorted({row.reason for row in batch.outcomes}))
-            self.coordinator._release(
-                lease,
-                reason=f"systemic_qualification:{reasons}",
-                result_digest=envelope.digest,
-            )
-            return EvaluationRun(lease, envelope, batch, "released")
-        assert self.qualification_evidence_root is not None
-        self.coordinator.commit_remote_qualification_result(
-            claim,
-            authority_manifest=product.authority_manifest,
-            incumbent_stack=product.incumbent_stack,
-            incumbent_tree_digest=product.incumbent_tree_digest,
-            batch=batch,
-            envelope=envelope,
-            evidence_root=self.qualification_evidence_root,
-            evidence_inventory=product.evidence_inventory,
-        )
-        return EvaluationRun(lease, envelope, batch, "completed")
-
-    def dispatch_once(self, stage: str) -> EvaluationRun | None:
-        """Dispatch one typed stage for a supervised standing CPU loop."""
-
-        if stage == "screen":
-            return self.dispatch_screen_once()
-        if stage == "qualification":
-            return self.dispatch_qualification_once()
-        raise RemoteEvaluationDispatcherError("remote evaluation stage is unsupported")
-
 
 __all__ = [
     "AuthenticatedRemoteEvaluationResponse",
@@ -1234,7 +1133,9 @@ __all__ = [
     "RemoteEvaluationDispatcher",
     "RemoteEvaluationDispatcherError",
     "RemoteEvaluationRequest",
+    "RemoteEvaluationResponsePayload",
     "RemoteQualificationProduct",
+    "RemoteQualificationHoldProduct",
     "RemoteWorkerCredential",
     "RemoteWorkerTransportIdentity",
     "capture_remote_qualification_product",
@@ -1243,6 +1144,8 @@ __all__ = [
     "qualification_batch_to_dict",
     "remote_qualification_product_from_dict",
     "remote_qualification_product_to_dict",
+    "remote_qualification_hold_from_dict",
+    "remote_qualification_hold_to_dict",
     "reopen_remote_response",
     "seal_remote_request",
     "seal_remote_response",

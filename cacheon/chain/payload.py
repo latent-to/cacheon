@@ -1,8 +1,11 @@
 """Strict on-chain submission references for finalized validator intake.
 
-Production payloads are exact three-field JSON objects and may name only a
-canonical HTTPS URL.  ``file://`` exists behind separate test-only functions so
-an on-chain value can never select local files or plaintext HTTP.
+Production payloads are exact JSON objects. Version 1 names a content hash
+and a canonical HTTPS URL. Version 2 adds a compact eval-cost payment pointer
+``{"b":block,"i":extrinsic_index}``. Identity remains ``h``/``u``; the pointer
+only locates the transfer that paid for this reveal. ``file://`` exists behind
+separate test-only functions so an on-chain value can never select local files
+or plaintext HTTP.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger("cacheon.chain.payload")
 
 PAYLOAD_VERSION = 1
+PAID_PAYLOAD_VERSION = 2
 MAX_PAYLOAD_BYTES = 1024
 ALLOWED_URL_SCHEMES = ("https",)
 _TEST_ONLY_URL_SCHEMES = ("https", "file")
@@ -34,6 +38,8 @@ class SubmissionRef:
     content_hash: str
     url: str
     block: int
+    payment_block: int = 0
+    payment_extrinsic_index: int = 0
 
 
 def _url_allowed(url: object, *, schemes: tuple[str, ...]) -> bool:
@@ -62,32 +68,83 @@ def _url_allowed(url: object, *, schemes: tuple[str, ...]) -> bool:
     return False
 
 
-def _encode_payload(content_hash: str, url: str, *, schemes: tuple[str, ...]) -> str:
+def _payment_pointer(payment_block: int, payment_extrinsic_index: int) -> dict[str, int] | None:
+    if payment_block == 0 and payment_extrinsic_index == 0:
+        return None
+    if (
+        type(payment_block) is not int
+        or payment_block <= 0
+        or type(payment_extrinsic_index) is not int
+        or payment_extrinsic_index < 0
+    ):
+        raise PayloadError("eval-cost payment pointer is malformed")
+    return {"b": payment_block, "i": payment_extrinsic_index}
+
+
+def _encode_payload(
+    content_hash: str,
+    url: str,
+    *,
+    schemes: tuple[str, ...],
+    payment_block: int = 0,
+    payment_extrinsic_index: int = 0,
+) -> str:
     if _HASH_RE.fullmatch(content_hash or "") is None:
         raise PayloadError(
             f"content_hash must be 64 lowercase hex chars, got {content_hash!r}"
         )
     if not _url_allowed(url, schemes=schemes):
         raise PayloadError(f"url must be canonical and use one of {schemes}, got {url!r}")
-    data = json.dumps(
-        {"v": PAYLOAD_VERSION, "h": content_hash, "u": url},
-        separators=(",", ":"),
-    )
+    pointer = _payment_pointer(payment_block, payment_extrinsic_index)
+    if pointer is None:
+        body: dict[str, object] = {"v": PAYLOAD_VERSION, "h": content_hash, "u": url}
+    else:
+        body = {
+            "v": PAID_PAYLOAD_VERSION,
+            "h": content_hash,
+            "u": url,
+            "p": pointer,
+        }
+    data = json.dumps(body, separators=(",", ":"))
     if len(data.encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise PayloadError(f"payload exceeds the {MAX_PAYLOAD_BYTES}-byte chain cap")
     return data
 
 
-def encode_payload(content_hash: str, url: str) -> str:
+def encode_payload(
+    content_hash: str,
+    url: str,
+    *,
+    payment_block: int = 0,
+    payment_extrinsic_index: int = 0,
+) -> str:
     """Encode one production, HTTPS-only submission reference."""
 
-    return _encode_payload(content_hash, url, schemes=ALLOWED_URL_SCHEMES)
+    return _encode_payload(
+        content_hash,
+        url,
+        schemes=ALLOWED_URL_SCHEMES,
+        payment_block=payment_block,
+        payment_extrinsic_index=payment_extrinsic_index,
+    )
 
 
-def encode_payload_for_testing(content_hash: str, url: str) -> str:
+def encode_payload_for_testing(
+    content_hash: str,
+    url: str,
+    *,
+    payment_block: int = 0,
+    payment_extrinsic_index: int = 0,
+) -> str:
     """Encode a hermetic-test reference which may additionally use ``file://``."""
 
-    return _encode_payload(content_hash, url, schemes=_TEST_ONLY_URL_SCHEMES)
+    return _encode_payload(
+        content_hash,
+        url,
+        schemes=_TEST_ONLY_URL_SCHEMES,
+        payment_block=payment_block,
+        payment_extrinsic_index=payment_extrinsic_index,
+    )
 
 
 def _decode_payload(
@@ -126,20 +183,11 @@ def _decode_payload(
     ):
         logger.warning("payload from %s: not canonical JSON; ignored", hotkey)
         return None
-    if (
-        not isinstance(obj, dict)
-        or set(obj) != {"v", "h", "u"}
-        or type(obj.get("v")) is not int
-        or obj.get("v") != PAYLOAD_VERSION
-        or json.dumps(
-            {"v": obj.get("v"), "h": obj.get("h"), "u": obj.get("u")},
-            separators=(",", ":"),
-        )
-        != data
-    ):
+    parsed = _parse_payload_object(obj, data)
+    if parsed is None:
         logger.warning("payload from %s: schema/version/encoding mismatch; ignored", hotkey)
         return None
-    content_hash, url = obj["h"], obj["u"]
+    content_hash, url, payment_block, payment_extrinsic_index = parsed
     if not isinstance(content_hash, str) or _HASH_RE.fullmatch(content_hash) is None:
         logger.warning("payload from %s: bad content hash; ignored", hotkey)
         return None
@@ -158,7 +206,54 @@ def _decode_payload(
     ):
         logger.warning("payload contains an invalid hotkey identity; ignored")
         return None
-    return SubmissionRef(hotkey, content_hash, url, block)
+    return SubmissionRef(
+        hotkey, content_hash, url, block,
+        payment_block, payment_extrinsic_index,
+    )
+
+
+def _parse_payload_object(
+    obj: object, data: str
+) -> tuple[str, str, int, int] | None:
+    if not isinstance(obj, dict) or type(obj.get("v")) is not int:
+        return None
+    version = obj["v"]
+    if version == PAYLOAD_VERSION:
+        if set(obj) != {"v", "h", "u"}:
+            return None
+        encoded = json.dumps(
+            {"v": obj.get("v"), "h": obj.get("h"), "u": obj.get("u")},
+            separators=(",", ":"),
+        )
+        if encoded != data:
+            return None
+        return obj["h"], obj["u"], 0, 0
+    if version == PAID_PAYLOAD_VERSION:
+        if set(obj) != {"v", "h", "u", "p"}:
+            return None
+        pointer = obj.get("p")
+        if (
+            not isinstance(pointer, dict)
+            or set(pointer) != {"b", "i"}
+            or type(pointer.get("b")) is not int
+            or pointer["b"] <= 0
+            or type(pointer.get("i")) is not int
+            or pointer["i"] < 0
+        ):
+            return None
+        encoded = json.dumps(
+            {
+                "v": obj.get("v"),
+                "h": obj.get("h"),
+                "u": obj.get("u"),
+                "p": {"b": pointer["b"], "i": pointer["i"]},
+            },
+            separators=(",", ":"),
+        )
+        if encoded != data:
+            return None
+        return obj["h"], obj["u"], pointer["b"], pointer["i"]
+    return None
 
 
 def decode_payload(hotkey: str, block: int, data: object) -> SubmissionRef | None:

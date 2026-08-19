@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import multiprocessing
 import os
 import stat
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -29,14 +31,55 @@ def _target(root: Path, reference: EvidenceArtifactRef) -> Path:
     return root / reference.domain / reference.sha256[:2] / reference.sha256
 
 
-def _publish(root: Path, payload: bytes = b"sealed evidence") -> EvidenceArtifactRef:
+def _publish(
+    root: Path,
+    payload: bytes = b"sealed evidence",
+    *,
+    deadline: float | None = None,
+) -> EvidenceArtifactRef:
     return publish_evidence(
         root,
         payload,
         domain=DOMAIN,
         media_type=MEDIA,
         schema=SCHEMA,
+        deadline=deadline,
     )
+
+
+def _crash_publish(root: str, payload: bytes, phase: str) -> None:
+    import cacheon.eval.evidence_store as store
+
+    def crash(found: str) -> None:
+        if found == phase:
+            os._exit(31)
+
+    store._publication_boundary = crash
+    _publish(Path(root), payload)
+
+
+def _concurrent_publish(root: str, payload: bytes, start, results) -> None:
+    try:
+        if not start.wait(10):
+            raise RuntimeError("publication start gate timed out")
+        reference = _publish(Path(root), payload)
+        results.put(("ok", reference.to_dict()))
+    except BaseException as exc:
+        results.put(("error", repr(exc)))
+
+
+def _hold_publication_lock(root: str, payload: bytes, ready, release) -> None:
+    import cacheon.eval.evidence_store as store
+
+    reference = EvidenceArtifactRef(
+        DOMAIN, hashlib.sha256(payload).hexdigest(), len(payload), MEDIA, SCHEMA
+    )
+    evidence_root = prepare_evidence_root(Path(root))
+    store._target(evidence_root, reference, create=True)
+    lock, _stage, _staging = store._staging_paths(evidence_root, reference)
+    with store._publication_lock(lock, deadline=None):
+        ready.set()
+        release.wait(10)
 
 
 def test_reference_is_strict_and_round_trips() -> None:
@@ -96,7 +139,8 @@ def test_prepare_rejects_relative_symlink_and_unsafe_roots(tmp_path: Path) -> No
         prepare_evidence_root(link)
 
     unsafe = tmp_path / "unsafe"
-    unsafe.mkdir(mode=0o755)
+    unsafe.mkdir()
+    unsafe.chmod(0o755)
     with pytest.raises(EvidenceStoreError, match="owner or mode"):
         prepare_evidence_root(unsafe)
 
@@ -134,6 +178,40 @@ def test_publish_enforces_type_and_size_caps(tmp_path: Path) -> None:
     reference = _publish(root, b"xx")
     with pytest.raises(EvidenceStoreError, match="reference exceeds"):
         reopen_evidence(root, reference, max_bytes=1)
+
+
+def test_publish_deadline_is_exact_finite_and_future(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    with pytest.raises(EvidenceStoreError, match="finite absolute monotonic float"):
+        _publish(root, deadline=1)  # type: ignore[arg-type]
+    with pytest.raises(EvidenceStoreError, match="deadline expired"):
+        _publish(root, deadline=time.monotonic() - 1.0)
+
+
+def test_held_publication_lock_respects_absolute_deadline(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    payload = b"deadline-bound evidence"
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_publication_lock,
+        args=(str(root), payload, ready, release),
+    )
+    process.start()
+    try:
+        assert ready.wait(10)
+        started = time.monotonic()
+        with pytest.raises(EvidenceStoreError, match="deadline expired"):
+            _publish(root, payload, deadline=started + 0.12)
+        elapsed = time.monotonic() - started
+        assert 0.10 <= elapsed < 0.40
+    finally:
+        release.set()
+        process.join(10)
+    assert process.exitcode == 0
+    reference = _publish(root, payload, deadline=time.monotonic() + 1.0)
+    assert reopen_evidence(root, reference) == payload
 
 
 def test_canonical_json_is_convenience_not_semantic_authority(tmp_path: Path) -> None:
@@ -238,20 +316,212 @@ def test_reopen_rejects_path_escape_through_store_symlink(tmp_path: Path) -> Non
         reopen_evidence(alias, reference)
 
 
-def test_atomic_publish_failure_leaves_no_partial_artifact(
+def test_atomic_publish_failure_preserves_only_reusable_non_authoritative_stage(
     tmp_path: Path, monkeypatch
 ) -> None:
     import cacheon.eval.evidence_store as store
 
     root = tmp_path / "evidence"
+    payload = b"sealed evidence"
+    real_rename = store._atomic_rename_noreplace
+    calls = 0
 
-    def fail(*_args, **_kwargs):
-        raise OSError("injected rename failure")
+    def fail_target_rename(source: Path, target: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected rename failure")
+        real_rename(source, target)
 
-    monkeypatch.setattr(store.os, "link", fail)
+    monkeypatch.setattr(store, "_atomic_rename_noreplace", fail_target_rename)
     with pytest.raises(EvidenceStoreError, match="cannot publish"):
+        _publish(root, payload)
+    reference = EvidenceArtifactRef(
+        DOMAIN, hashlib.sha256(payload).hexdigest(), len(payload), MEDIA, SCHEMA
+    )
+    assert not os.path.lexists(_target(root, reference))
+    stages = list((root / ".staging" / DOMAIN).glob("*.stage"))
+    assert len(stages) == 1 and stages[0].read_bytes() == payload
+
+    assert _publish(root, payload) == reference
+    assert reopen_evidence(root, reference) == payload
+    assert not list((root / ".staging" / DOMAIN).glob("*.stage"))
+
+
+def test_staging_cleanup_error_does_not_mask_publication_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import cacheon.eval.evidence_store as store
+
+    root = tmp_path / "evidence"
+    real_unlink = Path.unlink
+
+    def fail_rename(_source: Path, _target_path: Path) -> None:
+        raise OSError("primary rename failure")
+
+    def fail_work_cleanup(path: Path, *args, **kwargs) -> None:
+        if ".tmp." in path.name:
+            raise OSError("secondary cleanup failure")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(store, "_atomic_rename_noreplace", fail_rename)
+    monkeypatch.setattr(Path, "unlink", fail_work_cleanup)
+    with pytest.raises(EvidenceStoreError, match="primary rename failure"):
         _publish(root)
-    assert not any(path.is_file() for path in root.rglob("*"))
+
+
+def test_descriptor_close_error_does_not_mask_staging_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import cacheon.eval.evidence_store as store
+
+    payload = b"close-error evidence"
+    reference = EvidenceArtifactRef(
+        DOMAIN, hashlib.sha256(payload).hexdigest(), len(payload), MEDIA, SCHEMA
+    )
+    stage = tmp_path / "stage"
+    real_close = store._close_descriptor
+
+    def fail_write(_descriptor: int, _view) -> int:
+        raise OSError("primary write failure")
+
+    def close_then_fail(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("secondary close failure")
+
+    monkeypatch.setattr(store.os, "write", fail_write)
+    monkeypatch.setattr(store, "_close_descriptor", close_then_fail)
+    with pytest.raises(EvidenceStoreError, match="primary write failure"):
+        store._write_stage(stage, payload, reference)
+
+
+@pytest.mark.parametrize(
+    "phase",
+    (
+        "staged_temp_created",
+        "rename_complete_before_directory_fsync",
+        "directory_fsync_complete",
+    ),
+)
+def test_real_process_crash_boundaries_republish_without_cleanup(
+    tmp_path: Path, phase: str
+) -> None:
+    root = tmp_path / phase
+    payload = f"crash:{phase}".encode()
+    context = multiprocessing.get_context("spawn")
+    process = context.Process(
+        target=_crash_publish,
+        args=(str(root), payload, phase),
+    )
+    process.start()
+    process.join(15)
+    assert process.exitcode == 31
+
+    reference = _publish(root, payload)
+    assert reopen_evidence(root, reference) == payload
+    target = _target(root, reference)
+    assert target.lstat().st_nlink == 1
+    assert stat.S_IMODE(target.lstat().st_mode) == 0o400
+    assert not list((root / ".staging" / DOMAIN).glob("*.stage"))
+
+
+def test_concurrent_same_payload_publishers_converge(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    payload = b"same exact concurrent evidence"
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    results = context.Queue()
+    processes = [
+        context.Process(
+            target=_concurrent_publish,
+            args=(str(root), payload, start, results),
+        )
+        for _ in range(4)
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    for process in processes:
+        process.join(15)
+    assert [process.exitcode for process in processes] == [0, 0, 0, 0]
+    rows = [results.get(timeout=2) for _ in processes]
+    assert {status for status, _value in rows} == {"ok"}
+    references = [EvidenceArtifactRef.from_dict(value) for _status, value in rows]
+    assert len(set(references)) == 1
+    reference = references[0]
+    assert reopen_evidence(root, reference) == payload
+    assert _target(root, reference).lstat().st_nlink == 1
+    assert not list((root / ".staging" / DOMAIN).glob("*.stage"))
+
+
+def test_publish_rejects_divergent_or_unsafe_existing_target(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    payload = b"expected bytes"
+    reference = _publish(root, payload)
+    target = _target(root, reference)
+    target.chmod(0o600)
+    target.write_bytes(b"different byte")
+    target.chmod(0o400)
+    with pytest.raises(EvidenceStoreError, match="digest mismatch"):
+        _publish(root, payload)
+    assert target.read_bytes() == b"different byte"
+
+    target.chmod(0o600)
+    target.unlink()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_bytes(payload)
+    target.symlink_to(elsewhere)
+    with pytest.raises(EvidenceStoreError, match="unsafe shape"):
+        _publish(root, payload)
+    assert target.is_symlink()
+
+
+def test_unsafe_non_authoritative_stage_cannot_poison_canonical_target(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "evidence"
+    payload = b"canonical evidence wins"
+    reference = _publish(root, payload)
+    stage = root / ".staging" / DOMAIN / f"{reference.sha256}.stage"
+    elsewhere = tmp_path / "untrusted-stage"
+    elsewhere.write_bytes(b"not authoritative")
+    stage.symlink_to(elsewhere)
+
+    assert _publish(root, payload) == reference
+    assert reopen_evidence(root, reference) == payload
+    assert stage.is_symlink()
+
+
+def test_hardlinked_existing_artifact_fails_closed(tmp_path: Path) -> None:
+    # The former link-before-unlink publication window was drained from every
+    # retained evidence root; a multiply-linked target is now simply unsafe.
+    root = tmp_path / "evidence"
+    payload = b"legacy exact bytes"
+    reference = _publish(root, payload)
+    target = _target(root, reference)
+    peer = target.with_name(f".{target.name}.tmp.1234.{'a' * 32}")
+    os.link(target, peer)
+    assert target.lstat().st_nlink == 2
+    with pytest.raises(EvidenceStoreError, match="unsafe shape"):
+        _publish(root, payload)
+    assert target.lstat().st_nlink == 2
+    assert peer.exists()
+
+
+def test_same_payload_in_second_domain_has_independent_path(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    payload = b"domain-neutral bytes"
+    first = _publish(root, payload)
+    second = publish_evidence(
+        root,
+        payload,
+        domain="quality.audit",
+        media_type=MEDIA,
+        schema=SCHEMA,
+    )
+    assert first.sha256 == second.sha256
+    assert first.domain != second.domain
+    assert reopen_evidence(root, first) == reopen_evidence(root, second) == payload
 
 
 def test_reopen_requires_exact_reference_type(tmp_path: Path) -> None:

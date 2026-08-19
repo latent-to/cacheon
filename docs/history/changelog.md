@@ -352,6 +352,16 @@ re-sealed the model provision receipt, republished the launch bundle under the
 new prefix, and sealed a fresh mainnet mission. Nothing had been committed
 on-chain under the retired vocabulary.
 
+## 2026-08-04 — Finalized manifest compatibility restored
+
+Mainnet intake revalidation found finalized bundle commitments carrying the
+pre-cutover `optima-op-abi-v0` manifest spelling. Because rewriting those bytes
+would change their content identity, the manifest reader restored one exact,
+hash-pinned compatibility spelling while continuing to emit
+`cacheon-op-abi-v0` for every new bundle. The exception is reader-only: it does
+not restore legacy environment variables, headers, digest domains, schemas, or
+transport dialects, and it does not normalize or mutate submitted bytes.
+
 ## 2026-07-31 — Cacheon product and package rename
 
 The public product, Python package and module, CLI, environment-variable, and
@@ -369,6 +379,28 @@ re-attested evaluator/OCI images. Installing `cacheon-harness` over an editable
 points installed, and an old evaluator image does not contain the renamed
 `cacheon` worker modules. `HOW_CACHEON_WORKS.md` is the canonical
 compatibility redirect.
+
+## 2026-08-15 — Fixed eval-cost quote and TAO transfer to the subnet owner
+
+Intake can require a miner-paid evaluation cost before a finalized reveal is
+admitted. v1 `quote_eval_cost` returns a published TAO-rao amount and
+ignores submission extras so a later quote can price the specific eval request
+without changing payment verification. Miners optionally transfer that amount
+to the current subnet owner coldkey with a content-hash remark
+(`Balances.transfer_keep_alive`) and commit a v2 payload pointer; validators
+consume the pointer once. The destination is the metagraph `owner_coldkey` at
+the payment block, not a miner- or operator-supplied wallet. The gate defaults
+off (`eval_cost_tao_rao=0`). Enabling it with
+`chain-validate --eval-cost-tao-rao 1000000000` matches the published 1 TAO
+quote. A quote freezes the amount from issuance through payment for 300 blocks
+(~1 hour). Payment may precede the reveal; `chain-submit` can attach an unused
+included transfer with `--eval-cost-payment-block` /
+`--eval-cost-payment-extrinsic-index` instead of `--pay`. Intake consumes the
+pointer only on reserved or deferred admission, so a failed reveal leaves the
+credit unused. These chain-admission settings do not expand the shared sealed
+FIFO/dispatcher `IntakePolicy`. With the gate off, intake does not consume an
+unverified v2 pointer, so disabled-mode traffic cannot poison a future payment
+coordinate.
 
 ## Corrections and retractions
 

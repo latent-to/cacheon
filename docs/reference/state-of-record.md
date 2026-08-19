@@ -27,11 +27,14 @@ Snapshot date: **2026-07-31**
 The public product, Python package, CLI, environment-variable, HTTP-header,
 and protocol-identity names formerly branded Optima are now Cacheon
 (`cacheon` / `CACHEON` / `X-Cacheon-*` / `cacheon.*` digest domains /
-`cacheon-op-abi-v0`). Since 2026-08-03 the Cacheon vocabulary is the only
-accepted identity: the shared-weight transport reads a single strict Cacheon
-dialect, pre-rename `optima.*` identifiers are refused fail-closed, and
-domain-stamped digests (model provision, weight projections, intake scope)
-rotated with the vocabulary. `HOW_CACHEON_WORKS.md` redirects to the canonical
+`cacheon-op-abi-v0`). Since 2026-08-03 new publications and every mutable
+protocol surface use the Cacheon vocabulary: the shared-weight transport reads
+a single strict Cacheon dialect, other pre-rename `optima.*` identifiers are
+refused fail-closed, and domain-stamped digests (model provision, weight
+projections, intake scope) rotated with the vocabulary. One reader-only
+exception preserves the exact hash-bound `optima-op-abi-v0` manifest spelling
+for already-finalized bundles; readers do not rewrite its committed bytes.
+`HOW_CACHEON_WORKS.md` redirects to the canonical
 architecture documentation. The rename does not alter kernels, timed
 evaluation arithmetic, or crown/settlement formulas. File and line counts describe the accompanying
 change set; they are not quality metrics. The suite is
@@ -82,6 +85,12 @@ The evidence classes are intentionally non-substitutable:
 - Replayed discovery proposals are terminally disposed or deduplicated before
   screening. Legacy schema-3 single-PASS migration holds are non-crownable and
   have an evidence-preserving archive command.
+- Optional eval-cost admission (default off) requires a coldkey
+  `Balances.transfer_keep_alive` of the published TAO amount to the current
+  subnet owner coldkey, bound by a content-hash remark and consumed once. v1
+  quotes freeze that amount for 300 blocks (~1 hour). A later reveal of the
+  same bundle may attach an unused payment pointer; intake consumes the pointer
+  only on reserved or deferred admission.
 
 ### Validator recovery archive
 
@@ -104,6 +113,22 @@ The evidence classes are intentionally non-substitutable:
   checking SQLite, worker receipts/content hashes, evidence references, and audit
   structure. The object store is neither the live database nor the live evidence
   filesystem, and restore never overwrites live state.
+
+### Qualification continuation recovery (2026-08-09)
+
+Resident qualification now commits completed eager-audit and pristine-T evidence
+to the existing fsynced continuation records before the producer returns. A crash
+after that commit reopens the durable result without entering the evaluator again.
+An armed evaluator with no completion record still holds fail closed; the CPU
+contracts do not establish recovery before any host byte becomes durable or prove
+the behavior on B300 hardware.
+
+### Fresh-pod model reopening (2026-08-09)
+
+Deployment commissioning can require a provisioned model tree to be publicly
+readable and read-only while it reopens the canonical receipt, complete file
+inventory, and actual file bytes. This is a local fail-closed input check; it
+does not establish that a paid OCI lifetime has mounted or executed that model.
 
 ### Slots, targets, and direct artifacts
 
@@ -154,7 +179,85 @@ not qualification evidence.
 
 ### Resident adaptive qualification
 
-Production providers select qualification policy version 3:
+Since **2026-08-16** resident speed policy **version 7** swaps both arms. Under
+version 6 and earlier only the candidate lane took a swap, which handed the
+candidate role a measured advantage on identical work: a bundle audited
+`aot_invoked:0` read 0.9–2.7% fast in the C role across six runs and both
+physical orientations, of which position explained 0.117% and the physical lane
+none. Under version 7 the baseline takes a stock-to-stock swap of its own, so
+neither role is measured unswapped. Version 7 also gates a resident candidate
+leg on per-rank execution evidence: a swap reports the execution count for the
+generation it closes, and a leg is graded only when every rank of the group
+completed the candidate under exactly the activation generation. Unobserved
+evidence is `NO_DECISION`, never a candidate verdict. Before this the resident
+lane emitted no execution evidence at all — it is launched stock, so the
+one-shot driver's `active`-gated receipt directory was never created for it,
+and registration was the only thing the crossover could observe.
+
+Since **2026-08-18** resident speed policy **version 8** serves candidates that
+cannot be hot-swapped into a loaded engine. A bundle declaring CUDA, C++ or PTX
+sources, AOT artifacts, dependency patches, or engine setup is routed to the
+two-process crossover, which launches its own baseline and candidate engines.
+That substrate refused every version-6 and later policy outright from
+**2026-08-15** (`87944430`) until this change: the conditional-bookend schedule
+landed on the pair-native path and the two-process path was left asserting the
+older one. Affected candidates screened `promote` and then received no speed
+verdict at all — measured on 2026-08-18, bundles declaring CUDA sources took 295
+screen attempts for 3 verdicts (1%) against 580 attempts for 110 verdicts (19%)
+for the rest, with 30 such bundles cycling through requeue at that point.
+
+Version 8 reads B, C and B′ — always three, never more. B′ is precommitted
+rather than earned by a close call because the quality gate harvests its
+stock-drift control from the second baseline read
+(`reference_quality.stock_drift_upper_bound` is its only consumer; the
+candidate-versus-baseline comparison discards it), so a conditional bookend
+would leave a clear PASS with no control. An unconditional read also preserves
+the anti-reroll property versions 6 and 7 enforce. C′ and B″ do not exist under
+version 8, and versions 6 and 7 are refused on this substrate rather than
+silently producing evidence the quality stage cannot use.
+
+The version is selected per candidate when the qualification plan is built, from
+the same swappability predicate the worker routes execution on. The commissioned
+provider policy is unchanged and continues to serve every swappable candidate;
+only the read order differs, and every calibrated threshold is the sealed one.
+
+Since **2026-08-10** measurement-reuse identity is controller-blind: the
+calibration context binds `ReferenceManifest.measured_digest` and no longer
+carries a controller distribution digest, and raw quality bindings match the
+same measured reference identity (`EngineLaunchSpec` exposes the analogous
+`measured_digest`). Full manifest and launch digests remain the provenance
+record — pristine T-session witnesses and per-run receipts still pin the
+exact controller — but sealed calibration and durable measurement
+authorities now survive controller-code revisions instead of being
+invalidated by every commit. Calibration packages sealed under the earlier
+eleven-field context shape do not parse under this contract and are resealed
+from their durable inputs, not re-measured.
+
+Providers commissioned on **2026-08-10** sealed resident speed policy
+**version 4**: every timed read is graded (the version-3 mid-run
+window-scatter refusal is retired as verdict control flow), window scatter is
+carried as recorded fitness evidence under an advisory bound, and the speed
+verdict is decided by bookend invariance — a candidate fails when it loses
+against its most favorable bookend, passes when it clears the requirement
+against its least favorable one, and an undecidable spread terminates as
+`FAIL` (`valid_not_faster`) because a crown requires demonstrated
+improvement. Retained version-1..3 evidence regrades under its own sealed
+arithmetic; cross-version splicing remains refused. The adaptive lane
+choreography below is unchanged from version 3.
+
+Since **2026-08-10** the sealable range also includes resident speed policy
+**version 5**, which adds the bracket-drift ruling: when the flanking
+baseline brackets disagree beyond the sealed noise ceiling, the earliest
+bracket is the only comparison baseline — the drifted later brackets are
+excluded — and the candidate is graded against B alone under version 4's
+terminating arithmetic. Bracket drift therefore resolves to a decision at
+the initial grade instead of escalating or re-queueing. Sealed version-4
+evidence continues to regrade under bookend invariance without the
+exclusion. The current commission constructor selects version 5
+prospectively for the next provider registration; already sealed version-4
+providers and evidence keep their original policy identity.
+
+Production providers previously selected qualification policy version 3:
 
 1. two isolated resident TP lanes are assigned incumbent and candidate roles;
 2. speed begins with B/C/B′;
@@ -680,7 +783,7 @@ The live command inventory is:
 
 ```text
 slots  compat  chain-compat  scan  verify
-chain-package  chain-publish  chain-submit  chain-status  chain-register
+chain-package  chain-publish  chain-eval-cost  chain-submit  chain-status  chain-register
 chain-reservation-status  chain-validate  chain-snapshot  chain-snapshot-verify
 chain-archive-schema3-hold  chain-evaluation-lease
 model-provision  release-verify  release-context
@@ -708,6 +811,7 @@ claim that a live mainnet deployment or receipt exists.
 - [Target catalog](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py)
 - [Hardened fetch](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py)
 - [Miner object-store publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publish.py)
+- [Eval-cost quote and payment](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost.py)
 - [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
 - [Resident screening](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py)
 - [Adaptive resident runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)

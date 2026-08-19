@@ -309,21 +309,40 @@ wrappers supply every installed path as an explicit argument; active
 endpoints, credentials, sealed configs, and tmux composition stay in the
 private operations tree.
 
-## Standing screen dispatcher
+## Standing CPU supervisor
 
-`python -m cacheon.chain.mainnet_screen_dispatcher --config <path>` is the
-standing CPU daemon over those pieces. One sealed, closed, owner-controlled
-config file supplies every authority: intake scope and policy, the arena
-service manifest, worker readiness, the registration and credential paths,
-and the digests they must match. The daemon reopens the intake-only
-validator's durable finalized cursor read-only — rejecting scope drift,
-regression, and hash changes — claims exactly one durable screen lease at a
-time, and hands the typed request to the authenticated spool transport.
-Qualification is not an exposed operation, and the required `ArenaService`
-provider slot is filled by a digest-exact remote-only proxy whose execution
-methods always fail closed. Dispatcher faults tear down the constructed
-authority and rebuild it under bounded exponential backoff; every lifecycle
-event is one canonical-JSON line on stdout.
+`python -m cacheon.chain.standing_cpu_supervisor --config <path>` is the
+standing CPU daemon over those pieces. Its sealed, closed, owner-controlled
+config names the screen-dispatcher config (`chain/mainnet_screen_dispatcher.py`
+supplies the config schema and the dispatcher builder) and the
+recoverable-qualification authorities to compose, and optionally the settlement
+network. The screen stage reopens the intake-only validator's durable finalized
+cursor read-only — rejecting scope drift, regression, and hash changes — claims
+exactly one durable screen lease at a time, and hands the typed request to the
+authenticated spool transport. The required `ArenaService` provider slot is
+filled by a digest-exact remote-only proxy whose execution methods always fail
+closed. The qualification stage resumes the same durable request across
+restarts rather than restarting the experiment. Stage faults tear down the
+constructed authority and rebuild it under bounded exponential backoff; every
+status change is one canonical-JSON line on stdout.
+
+`enable_weights` installs the eval-side weight-offer push stage
+(`chain/standing_weights_stage.py`) and requires `weights_stage_config`, an
+absolute path to a second sealed, closed, owner-controlled file with schema
+`cacheon-standing-weights-config-v1` and exactly these fields: `network`
+(explicit `wss://` finalized-head reader), `fallback_endpoint` (empty or
+`wss://`), `push_url` (`http(s)` serve-weights offer endpoint),
+`push_credentials` (owner-only path to the push credential set),
+`attribution_hotkey`, `half_life_blocks`, `discovery_lifetime_blocks`,
+`discovery_pool_ppm`, `refresh_blocks`, and `burn_hotkey`. Every
+`refresh_blocks` the stage reads the finalized head and metagraph, reopens the
+intake store, and pushes the current V1 offer: the real projection whenever an
+active reward claim, a crowned arena, or an activated composition exists;
+otherwise the full-pool burn offer to `burn_hotkey` when that field is set, or
+the builder's crownless refusal as a stage error when it is empty. The stage
+never signs; the serve-weights lane owns readback and the follow-weights
+signer decides what reaches the chain. Naming `weights_stage_config` while
+`enable_weights` is false is refused, as is the reverse.
 
 ## Durable reservation states
 
@@ -350,7 +369,13 @@ The default `IntakePolicy` values are:
 | Per target / epoch | 64 | Applied after the target is resolved from submitted bytes |
 | Transport / qualification attempts | 3 / 3 | Exhaustion produces a retained hold rather than infinite work |
 | Controller cohort | 8 | Bounds fetch, screening, and qualification selection per pass |
-| Finalized-block expiry SLA | 2,880 blocks | Automatically expires eligible unresolved rows and sets the minimum age for explicit expiry |
+| Finalized-block expiry SLA | 500,000 blocks | Keeps queued work for roughly 69 days before automatic stale-state expiry and sets the minimum age for explicit expiry |
+
+The expiry SLA is only meaningful against the queue's service rate. The former
+10,000-block bound covered only about 51 reservations at the measured service time and
+expired 178 queued rows without verdicts. The 500,000-block default keeps automatic
+expiry as a last-resort stale-state bound rather than a normal capacity disposition.
+Treat any cohort expiring without being reached as a capacity fault, not a miner outcome.
 
 Arena capacity is an additional bound. Its queue age/depth, active-screen,
 active-qualification, cohort, and retry limits are content-bound in the service manifest.
@@ -369,6 +394,19 @@ dedicated schema-3 migration hold, remains fail closed for explicit operator dis
 This prevents slow reproduction from losing its complete SLA while preventing one old
 PASS from becoming a permanent priority veto.
 
+### Eval-cost admission policy
+
+Eval-cost admission is deliberately separate from the shared `IntakePolicy` used by
+screen and evaluation-lease services. `chain-validate --eval-cost-tao-rao` controls the
+required `transfer_keep_alive` amount and defaults to `0` (off). Quote TTL defaults to
+300 blocks and the payment-to-reveal window defaults to 7,200 blocks.
+
+A v2 reveal may attach a payment pointer. When the gate is enabled, intake rebuilds the
+remark from that reveal's hotkey, content hash, and netuid; only that triple can spend
+the pointer. The paying coldkey is not the claimant. When the gate is disabled, the
+pointer is ignored for payment accounting: unverified coordinates are neither consumed
+nor allowed to pre-claim a future payment.
+
 Discovery proposal identity is checked before screening. A proposal already retained as
 seen or awarded is terminally disposed, and legacy pending duplicates are deduplicated
 before lease. Repackaging cannot buy another screen or bounty.
@@ -379,7 +417,8 @@ The controller maps failures according to where authority was lost:
 
 | Point of failure | Stored disposition | Retry behavior |
 |---|---|---|
-| Invalid chain payload, unsafe archive, content-hash mismatch, malformed proposal | `failed` / `FAIL` | None; attributable intake failure |
+| Invalid chain payload, unpaid or invalid eval-cost payment, unsafe archive, content-hash mismatch, malformed proposal | `failed` / `FAIL` | None; attributable intake failure |
+| Eval-cost payment lookup RPC/decode blip | pass aborted; cursor unchanged | Retry the pass; do not fail the miner |
 | Transient HTTPS/DNS or immutable-publication storage fault | `transport_retry` / `NO_DECISION` | Retry until the transport budget, then `held` |
 | Static/build/ABI/graph/serving screen `FAIL` | `failed` / `FAIL` | None under that screen authority |
 | Screen timeout or inconclusive evidence | Retry in the same primary or reproduction lane | Arena screen budget decides retry versus hold |
