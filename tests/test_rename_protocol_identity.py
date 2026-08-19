@@ -22,10 +22,6 @@ from cacheon.artifact_identity import (
 from cacheon.artifact_provider import CUTE_CUBIN_PATCHER_ID
 from cacheon.chain.publish import DEFAULT_BUNDLE_KEY_PREFIX
 from cacheon.cuda_cubin import CUDA_CUBIN_ABI_SCHEMA, CUDA_CUBIN_CONTRACT_SCHEMA
-from cacheon.discovery import (
-    DISCOVERY_ABI_VERSION,
-    DISCOVERY_OVERLAY_SCHEMA,
-)
 from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_MEDIA_TYPE,
     GRAPH_EVIDENCE_SCHEMA,
@@ -52,8 +48,6 @@ def test_protocol_and_runtime_abi_vocabulary_is_cacheon() -> None:
     assert DEVICE_ARTIFACT_ADMISSION_SCHEMA == "cacheon.device-artifact-admission.v1"
     assert CUDA_CUBIN_ABI_SCHEMA == "cacheon.cuda-cubin-abi.v1"
     assert CUDA_CUBIN_CONTRACT_SCHEMA == "cacheon.cuda-cubin-contract.v1"
-    assert DISCOVERY_ABI_VERSION == "cacheon-discovery-abi-v1"
-    assert DISCOVERY_OVERLAY_SCHEMA == "cacheon.discovery-overlay.v1"
     assert GRAPH_EVIDENCE_MEDIA_TYPE == "application/vnd.cacheon.graph-verification+json"
     assert GRAPH_EVIDENCE_SCHEMA == "cacheon.qualification.graph-raw-evidence.v1"
     assert SESSION_SCHEMA == "cacheon-isolated-engine-session-v1"

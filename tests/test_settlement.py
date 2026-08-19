@@ -5,7 +5,6 @@ from decimal import Decimal
 
 import pytest
 
-from cacheon.discovery import DiscoveryArmPlan
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.settlement import (
@@ -159,73 +158,6 @@ def _candidate(
         speedup=("1.04" if speedup == "1.05" else speedup),
     )
     return SettlementCandidate.from_reproductions(primary, reproduction)
-
-
-def _discovery(
-    incumbent: EvaluationStackManifest, *, label: str = "d", block: int = 10
-) -> SettlementCandidate:
-    arm = DiscoveryArmPlan.create(
-        incumbent=incumbent,
-        incumbent_tree_digest=_h("incumbent-tree"),
-        candidate_tree_digest=_h(f"discovery-tree:{label}"),
-        proposal_digest=_h(f"proposal:{label}"),
-        policy_digest=_h("discovery-policy"),
-        build_profile_digest=_h("build-profile"),
-        overlay_identity_digest=_h(f"overlay:{label}"),
-    )
-    audit_slots = ("sglang.inference.v1",)
-    primary_audit = _audit_policy(f"primary:{label}", audit_slots)
-    primary = SettlementQualification(
-        lane="discovery",
-        arena_digest=incumbent.arena_digest,
-        reservation_digest=_h(f"reservation:{label}"),
-        finalized_block=block,
-        event_index=0,
-        event_subindex=0,
-        hotkey=f"miner-{label}",
-        target_id="sglang.inference.v1",
-        members=("sglang.inference.v1",),
-        selected_delta_digest=arm.selected_delta_digest,
-        qualification_authority_digest=_h(f"authority:{label}"),
-        qualification_plan_digest=_h(f"plan-authority:{label}"),
-        qualification_attempt_digest=_h(f"attempt:{label}"),
-        qualification_report_digest=_h(f"report:{label}"),
-        selection_commitment_digest=_h(f"selection-commitment:{label}"),
-        selection_secret_commitment_digest=_h(f"selection-secret:{label}"),
-        selection_evidence_digest=_h(f"selection-evidence:{label}"),
-        arm_digest=arm.digest,
-        incumbent_stack_digest=arm.baseline_before.stack_digest,
-        incumbent_tree_digest=arm.baseline_before.tree_digest,
-        candidate_stack_digest=arm.challenger.stack_digest,
-        candidate_tree_digest=arm.challenger.tree_digest,
-        speedup="1.03",
-        incumbent_manifest=incumbent,
-        proposal_digest=arm.proposal_digest,
-        audit_control_digest=primary_audit.control.digest,
-        audit_policy=primary_audit,
-        audit_evidence_digest=_h(f"audit-evidence:{label}"),
-    )
-    reproduction_audit = _audit_policy(f"reproduction:{label}", audit_slots)
-    return SettlementCandidate.from_reproductions(
-        primary,
-        replace(
-            primary,
-            qualification_authority_digest=_h(f"reproduction-authority:{label}"),
-            qualification_plan_digest=_h(f"reproduction-plan-authority:{label}"),
-            qualification_attempt_digest=_h(f"reproduction-attempt:{label}"),
-            qualification_report_digest=_h(f"reproduction-report:{label}"),
-            selection_commitment_digest=_h(
-                f"reproduction-selection-commitment:{label}"
-            ),
-            selection_secret_commitment_digest=_h(
-                f"reproduction-selection-secret:{label}"
-            ),
-            selection_evidence_digest=_h(f"reproduction-selection-evidence:{label}"),
-            audit_policy=reproduction_audit,
-            audit_evidence_digest=_h(f"reproduction-audit-evidence:{label}"),
-            speedup="1.02",
-        ),
-    )
 
 
 def test_candidate_json_round_trip_and_digest_are_canonical() -> None:
@@ -411,13 +343,6 @@ def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
         )
 
     catalog = default_target_catalog()
-    discovery = _discovery(_stack(catalog), label="resident-discovery")
-    with pytest.raises(SettlementError, match="registered qualification"):
-        replace(
-            discovery.primary,
-            resident_lane_orientation=_resident_orientation(),
-        )
-
     candidate = _candidate(
         _stack(catalog), _ref(catalog, MSA, "resident-policy"), catalog,
         label="resident-policy",
@@ -680,21 +605,6 @@ def test_stale_candidate_holds_without_stack_change() -> None:
     assert plan.before == plan.after
     assert [row.event_type for row in plan.events] == [SettlementEventType.HOLD]
     assert plan.events[0].reason == "stale_incumbent"
-
-
-def test_discovery_pass_only_creates_bounty_and_never_changes_stack() -> None:
-    catalog = default_target_catalog()
-    incumbent = _stack(catalog)
-    candidate = _discovery(incumbent)
-    plan = plan_settlement(
-        (candidate,), current_manifest=incumbent,
-        current_tree_digest=_h("incumbent-tree"),
-    )
-    assert plan.transition is None
-    assert plan.winner_candidate_digest == ""
-    assert [row.event_type for row in plan.events] == [
-        SettlementEventType.DISCOVERY_BOUNTY
-    ]
 
 
 def test_nonoverlapping_loser_is_held_for_requalification() -> None:

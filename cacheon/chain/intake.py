@@ -1282,30 +1282,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             status, decision, reason = "published", "", ""
             if count >= self.policy.max_per_target_epoch:
                 status, reason = "failed", "target_epoch_admission_limit"
-            if delta_fingerprint.product_kind == "discovery":
-                awarded = self._db.execute(
-                    "SELECT 1 FROM ("
-                    "SELECT proposal_digest FROM discovery_bounty_claims UNION "
-                    "SELECT proposal_digest FROM incentive_discovery_wins"
-                    ") WHERE proposal_digest=? LIMIT 1",
-                    (delta_fingerprint.exact_payload_digest,),
-                ).fetchone()
-                predecessor = next(
-                    (
-                        prior
-                        for prior in self.all()
-                        if prior.arrival.arrival_key < row.arrival.arrival_key
-                        and prior.delta_fingerprint is not None
-                        and prior.delta_fingerprint.product_kind == "discovery"
-                        and prior.delta_fingerprint.exact_payload_digest
-                        == delta_fingerprint.exact_payload_digest
-                    ),
-                    None,
-                )
-                if awarded is not None:
-                    status, decision, reason = "failed", "FAIL", "already_awarded"
-                elif predecessor is not None:
-                    status, decision, reason = "failed", "FAIL", "duplicate_proposal"
             self._db.execute(
                 "UPDATE reservations SET status=?,target_id=?,target_members_json=?,delta_fingerprint_json=?,"
                 "publication_digest=?,publication_root=?,decision=?,reason=? WHERE reservation_id=?",
@@ -2331,42 +2307,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             blockers.append(row.reservation_id)
         return tuple(blockers)
 
-    def _dispose_duplicate_discovery_candidates(self) -> None:
-        """Terminally dispose legacy/recovered proposal replays before leasing."""
-
-        awarded = {
-            row["proposal_digest"]
-            for row in self._db.execute(
-                "SELECT proposal_digest FROM discovery_bounty_claims UNION "
-                "SELECT proposal_digest FROM incentive_discovery_wins"
-            )
-        }
-        seen: set[str] = set()
-        rows = tuple(
-            self._db.execute(
-                "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
-                "FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
-                "WHERE sc.status='pending' "
-                "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
-            )
-        )
-        for row in rows:
-            candidate = self._settlement_candidate(row)
-            if candidate.lane != "discovery":
-                continue
-            proposal = candidate.proposal_digest
-            if proposal in awarded or proposal in seen:
-                self._db.execute(
-                    "UPDATE settlement_candidates SET status='duplicate_proposal',"
-                    "lease_id='',lease_expires_block=0,reason=? WHERE reservation_id=? "
-                    "AND status='pending'",
-                    (
-                        "already_awarded" if proposal in awarded else "duplicate_proposal",
-                        candidate.reservation_digest,
-                    ),
-                )
-            seen.add(proposal)
-
     def has_pending_settlement(self) -> bool:
         """Return whether retained settlement work may currently be leased."""
 
@@ -2424,7 +2364,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "AND lease_expires_block<=?",
                 (current_block,),
             )
-            self._dispose_duplicate_discovery_candidates()
             pending = tuple(
                 self._db.execute(
                     "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
@@ -2499,7 +2438,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     ) -> EvaluationStackState:
         """Atomically commit one independently planned retained-evidence disposition."""
 
-        from cacheon.economics import DiscoveryBountyClaim, StandingRewardClaim, WEIGHT_PPM
+        from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
         from cacheon.settlement import (
             SettlementEvidence,
             SettlementEventType,
@@ -2575,35 +2514,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             } != set(by_digest):
                 raise IntakeError("settlement lease is stale or incomplete")
 
-            awarded_proposals = {
-                row["proposal_digest"]
-                for row in self._db.execute(
-                    "SELECT proposal_digest FROM discovery_bounty_claims UNION "
-                    "SELECT proposal_digest FROM incentive_discovery_wins"
-                )
-            }
-            duplicate_digests = {
-                candidate.digest
-                for candidate in lease.candidates
-                if candidate.lane == "discovery"
-                and candidate.proposal_digest in awarded_proposals
-            }
-            commit_candidates = tuple(
-                candidate
-                for candidate in lease.candidates
-                if candidate.digest not in duplicate_digests
-            )
-            commit_plan = (
-                plan
-                if not duplicate_digests
-                else plan_settlement(
-                    commit_candidates,
-                    current_manifest=lease.stack.manifest,
-                    current_tree_digest=lease.stack.tree_digest,
-                    initial_event_sequence=lease.initial_event_sequence,
-                    previous_event_digest=lease.previous_event_digest,
-                )
-            )
+            commit_plan = plan
 
             # Retire/neutralize old families before installing the winner family.
             for event in commit_plan.events:
@@ -2617,9 +2528,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         (event.digest, lease.stack.arena_digest, event.target_id),
                     )
 
-            disposition: dict[str, str] = {
-                digest: "duplicate_proposal" for digest in duplicate_digests
-            }
+            disposition: dict[str, str] = {}
             for event in commit_plan.events:
                 candidate = by_digest[event.candidate_digest]
                 event_json = json.dumps(
@@ -2641,35 +2550,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
                 if event.event_type is SettlementEventType.HOLD:
                     disposition[candidate.digest] = "held"
-                elif event.event_type is SettlementEventType.DISCOVERY_BOUNTY:
-                    speedup_ppm = int(
-                        (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
-                            rounding=ROUND_FLOOR
-                        )
-                    )
-                    claim = DiscoveryBountyClaim(
-                        candidate.proposal_digest,
-                        evidence_by_candidate[candidate.digest].digest,
-                        candidate.hotkey,
-                        max(1, speedup_ppm - WEIGHT_PPM),
-                        candidate.finalized_block,
-                    )
-                    self._db.execute(
-                        "INSERT INTO discovery_bounty_claims(claim_digest,proposal_digest,"
-                        "claim_json,status,event_id) VALUES(?,?,?,?,?)",
-                        (
-                            claim.digest,
-                            claim.proposal_digest,
-                            json.dumps(
-                                claim.to_dict(),
-                                separators=(",", ":"),
-                                sort_keys=True,
-                            ),
-                            "active",
-                            event.digest,
-                        ),
-                    )
-                    disposition[candidate.digest] = "discovery_bounty"
                 elif event.event_type is SettlementEventType.CROWN:
                     assert candidate.candidate_manifest is not None
                     contribution = candidate.candidate_manifest.entries[candidate.target_id]

@@ -48,19 +48,12 @@ def _reservation(index: int, delta: str | None = None) -> intake.QualificationRe
     )
 
 
-def _fake_plan(monkeypatch, *, count: int = 2, discovery: bool = False):
+def _fake_plan(monkeypatch, *, count: int = 2):
     class FakePlan:
         pass
 
-    class FakeDiscovery:
-        pass
-
     monkeypatch.setattr(intake, "CausalQualificationInput", FakePlan)
-    if discovery:
-        monkeypatch.setattr(intake, "DiscoveryArmPlan", FakeDiscovery)
-        source = FakeDiscovery()
-    else:
-        source = SimpleNamespace()
+    source = SimpleNamespace()
     source.digest = _d("source")
     plan = FakePlan()
     plan.selection_secret = b"s" * 32
@@ -700,44 +693,6 @@ def test_factory_infrastructure_failure_is_typed_no_decision(
     )
     assert result.retry_plan is not None
     assert result.retry_plan.strategy == "bisect"
-
-
-def test_discovery_is_singleton_and_shared_failure_requeues_without_bisection(
-    monkeypatch,
-) -> None:
-    plan, manifest = _fake_plan(monkeypatch, count=1, discovery=True)
-    monkeypatch.setattr(
-        intake,
-        "run_causal_qualification",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            QualificationRunnerError("discovery T failed")
-        ),
-    )
-
-    result = intake.run_qualification_intake(
-        _factory(plan, manifest),
-        executor=object(),
-        entropy_provider=lambda *_args: None,
-        hidden_judge=lambda **_kwargs: None,
-        deadline=100.0,
-    )
-    assert manifest.lane == "discovery"
-    assert result.retry_plan is not None
-    assert result.retry_plan.strategy == "requeue"
-    assert result.retry_plan.reservation_groups == (
-        (manifest.reservations[0].reservation_digest,),
-    )
-
-    with pytest.raises(intake.QualificationIntakeError, match="reservations"):
-        intake.QualificationAuthorityManifest(
-            "discovery",
-            manifest.authority_digest,
-            manifest.source_digest,
-            manifest.commitment_digest,
-            manifest.selection_secret_reference,
-            (_d("delta-a"), _d("delta-b")),
-            (_reservation(0, _d("delta-a")), _reservation(1, _d("delta-b"))),
-        )
 
 
 def test_outcomes_and_batches_cannot_claim_evidence_free_pass() -> None:

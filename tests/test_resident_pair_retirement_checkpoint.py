@@ -1014,7 +1014,7 @@ def test_real_v4_attempt_restarts_and_imports_through_cpu_semantic_reopen(
             entropy_observed=base + 2.5, selection=selection,
             requests=(request,), plan=SimpleNamespace(digest=_h("cpu-v4-t-plan")),
             reference_execution=execution, teardown_after=after,
-            t_pre=pre, t_post=post, discovery_grades={})
+            t_pre=pre, t_post=post)
 
     monkeypatch.setattr(runner_module, "run_continuation_quality_stage", stage)
     monkeypatch.setattr(runner_module, "request_sha256", lambda row: row.sha256)
