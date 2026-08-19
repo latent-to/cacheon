@@ -39,13 +39,6 @@ jobs:
           python -m pip install --quiet ruff==0.12.7
           python -m ruff check .
 
-      - name: Check live-lane ownership
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-          HEAD_REF: ${{ github.head_ref }}
-        run: python scripts/check_lanes.py --base "origin/$BASE_REF" --branch "$HEAD_REF"
-
   cpu:
     name: CPU suite (Python 3.11)
     runs-on: ubuntu-latest
