@@ -13,6 +13,8 @@
 
 # Current live-lane branch namespace; retire with the mainnet merge.
 branch codex/*
+branch ops/*
+branch ops-fifo-green-*
 cacheon/manifest.py
 cacheon/verify.py
 cacheon/verify_collective.py
