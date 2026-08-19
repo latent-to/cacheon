@@ -42,7 +42,7 @@ registered target or crown authority.
 
 An arena may require a sealed audit plan after the resident speed stage. This is not the
 candidate-side mechanism above. The audit role has its own plan and runtime identity,
-executes outside the charged B/C/B′/(C′/B″) reads, and emits an exact slot × TP-rank/PID
+executes outside the charged, versioned speed reads, and emits an exact slot × TP-rank/PID
 witness. Trusted-host regrading checks expected rank coverage, unique processes, minimum
 call counts, and retained violations or protocol errors without importing PyTorch.
 
@@ -64,7 +64,7 @@ session, the isolated engine worker maps that authority into two process-local c
   rather than deadlocking on rank-divergent sampling.
 
 The worker leaves both values empty when no audit policy is present. Charged
-B/C/B′/(C′/B″) sessions therefore have no audit sampling or audit receipt and retain
+Timed speed sessions therefore have no audit sampling or audit receipt and retain
 their sealed graph configuration. The audit-only session is eager and untimed; the
 worker disables CUDA graphs for that role. An unexpected audit receipt in a charged
 candidate session is a protocol error.
@@ -99,7 +99,7 @@ policy, and runtime identities. Retain the following controls:
    independently.
 2. Run the registered residual-drop sabotage candidate through the same audit path. Its
    typed audit witness must make the aggregate qualification a nonretryable failure.
-3. Inspect every charged B/C/B′/(C′/B″) session. Both audit environment values must be
+3. Inspect every charged speed session. Both audit environment values must be
    empty, no audit receipt may appear, and the charged result must retain the graph mode
    sealed by its speed plan.
 4. In copies of the retained artifacts, remove or alter one slot/rank receipt and alter

@@ -230,6 +230,13 @@ deployment's log-retention policy until typed failure-artifact retention and arc
 indexing cover every infrastructure path. The command makes that gap visible; it does
 not claim the gap is closed.
 
+For support across every retained submission by one miner, use
+`chain-miner-report --miner-hotkey <HOTKEY>`. It composes the same privacy-safe
+reservation facts with duplicate-replay history and prints the stated cause and
+next action for each row. It does not infer candidate blame from status text and
+cannot recover failure bytes that were retained only by digest. See the
+[CLI reference](../reference/cli.md#chain-miner-report).
+
 The private recovery mirror is also outside the live transaction path:
 
 ```bash
@@ -301,12 +308,15 @@ resident model. Transport, pod, and adapter failures surface as
 infrastructure `no_decision` records that release the durable lease without
 consuming an evaluation attempt.
 
-The tracked B300 pod adapter executes screen work through the commissioned
-screen deployment; it refuses a qualification request as a typed pre-resident
-infrastructure failure because the qualification entrypoint requires
-deployment authorities the screen commission does not carry. Deployment
-wrappers supply every installed path as an explicit argument; active
-endpoints, credentials, sealed configs, and tmux composition stay in the
+The tracked B300 adapter has two closed construction modes. Screen-only mode
+executes through the commissioned screen deployment and refuses qualification
+before resident work. Persistent `--serve` mode may additionally load one
+digest-exact qualification-capabilities factory; it then constructs the shared
+commissioned B300 service, resolves each authenticated promoted cohort, and
+executes remote qualification through the same READY-bound worker and durable
+continuation store. One-shot mode cannot commission qualification. Deployment
+wrappers supply every installed path as an explicit argument; active endpoints,
+credentials, sealed capability bytes, and process composition stay in the
 private operations tree.
 
 ## Standing CPU supervisor
@@ -325,6 +335,13 @@ closed. The qualification stage resumes the same durable request across
 restarts rather than restarting the experiment. Stage faults tear down the
 constructed authority and rebuild it under bounded exponential backoff; every
 status change is one canonical-JSON line on stdout.
+
+`enable_settlement` installs the transactional settlement stage. When enabled,
+`settlement_network` must name the finalized-head endpoint used to clock lease
+and commit; the stage refreshes that clock immediately before each stateful
+boundary and never opens a wallet. A commission may stage a nonempty
+`settlement_network` while the flag remains false so arming is a reviewed
+one-field change; enabling settlement with an empty endpoint is refused.
 
 `enable_weights` installs the eval-side weight-offer push stage
 (`chain/standing_weights_stage.py`) and requires `weights_stage_config`, an
@@ -377,6 +394,15 @@ expired 178 queued rows without verdicts. The 500,000-block default keeps automa
 expiry as a last-resort stale-state bound rather than a normal capacity disposition.
 Treat any cohort expiring without being reached as a capacity fault, not a miner outcome.
 
+An exact cohort that expired because the validator worker was unavailable can be
+readmitted with `chain-evaluation-lease requeue-expired --authority <SEALED_JSON>`.
+The closed authority binds the reservation IDs, retained-result IDs, and the
+fixed `validator_worker_unavailable` reason. The store restores each row to its
+durable `published` or `promoted` lane and grants a fresh finalized-block SLA
+without deleting history. The bounded refresh budget fails closed; an
+owner-escalated repeat must be explicit in a newly sealed authority. This is not
+a generic expiry undo.
+
 Arena capacity is an additional bound. Its queue age/depth, active-screen,
 active-qualification, cohort, and retry limits are content-bound in the service manifest.
 Changing either policy changes operational behavior and should be reviewed and recorded;
@@ -406,6 +432,15 @@ remark from that reveal's hotkey, content hash, and netuid; only that triple can
 the pointer. The paying coldkey is not the claimant. When the gate is disabled, the
 pointer is ignored for payment accounting: unverified coordinates are neither consumed
 nor allowed to pre-claim a future payment.
+
+An operator can grant one artificial make-good with
+`chain-eval-cost-credit`. The oldest unspent credit for that hotkey admits one
+otherwise-unpaid reveal and is consumed inside the same admission transaction.
+Other admission failures leave it unspent, and a reveal that cites a payment
+pointer must pass ordinary payment verification instead of falling back to a
+credit. Credit grants are private validator mutations with an audit note, not a
+miner-controlled payment token; see the
+[CLI reference](../reference/cli.md#chain-eval-cost-credit).
 
 Discovery proposal identity is checked before screening. A proposal already retained as
 seen or awarded is terminally disposed, and legacy pending duplicates are deduplicated

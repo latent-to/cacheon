@@ -223,12 +223,12 @@ The canonical [performance-development procedure](../validator-guide/running-eva
 defines the required inputs and local result record; no repository command materializes
 this complete-engine bracket.
 
-Production v3 qualification materializes the exact incumbent and candidate engines
-through an injected arena service, loads each once onto a disjoint resident TP lane,
-and serializes B/C/B′ plus policy-authorized C′/B″ reads. It then runs registered
-eager audit A, tears down candidate lifetimes, and obtains candidate-free pristine T
-quality evidence. A contributor-controlled model run cannot substitute for that
-authority.
+Production version-3 qualification materializes the exact incumbent and
+candidate engines through an injected arena service and selects current v7
+resident B/C/[B′] or v8 two-process B/C/B′ from candidate features. It then
+runs registered eager audit A, tears down candidate lifetimes, and obtains
+candidate-free pristine T quality evidence. A contributor-controlled model run
+cannot substitute for that authority.
 
 ## From component proof to arena proof
 

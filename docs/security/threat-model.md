@@ -63,12 +63,12 @@ proves registered measurement, not safe production source.
 | Proposal changes after commit | Content hash is checked after extraction and again across immutable publication | Hash does not establish authorship, license, or safety |
 | Candidate imports or patches trusted controller | Controller parses candidate as data and never imports candidate Python/native; complete engine runs in a separate OCI worker | A container/kernel/runtime escape can cross the boundary |
 | Candidate exfiltrates model/evidence | Runtime has no network, read-only root, exact read-only mounts, private cache tmpfs, bounded protocol; prebuild has no model/GPU/network/home/wallet | GPU/driver side channels, co-tenancy, host compromise, and undiscovered runtime flaws remain possible |
-| Candidate tampers with timer or role | Host assigns physical resident lanes and B/C/B′[/C′/B″] roles, owns clocks, validates bounded raw batches/token counts, observes device state, and controls teardown; a reproduction must exchange lane roles | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
+| Candidate tampers with timer or role | Host assigns physical lanes and the exact v7 B/C/[B′] or v8 B/C/B′ roles, owns clocks, validates bounded raw batches/token counts, observes device state, and controls teardown; a reproduction must exchange lane roles | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
 | Candidate fakes quality | Any required audit is collected in a separate eager/untimed role and host-regraded; candidate speed lifetimes are destroyed before candidate-free pristine T teacher-forces sealed trajectories | Reference bugs, audit sampling limits, and finite hidden-work coverage remain possible |
 | Candidate behaves only on known shapes/prompts | Post-commit selection, hidden work, typed graph requirements, and registered decode/long-prefill mixture | Workload overfitting cannot be eliminated; corpora and regimes need ongoing governance |
-| Candidate exploits noise | Frozen adaptive B/C/B′ then optional C′/B″ schedule, maximum-noise threshold, `NO_DECISION`, physical-lane-swapped reproduction, and lower reproduced speedup | Hardware drift and cross-validator variance remain operational concerns |
+| Candidate exploits noise | Frozen v7 invariant B/C bounds with conditional B′ or precommitted v8 B/C/B′, v5+ bracket-drift exclusion, physical-lane-swapped reproduction, and lower reproduced speedup | Hardware drift, boot-state outliers, cross-validator variance, and a record-only resident execution gate remain operational concerns |
 | Candidate hangs or exhausts resources | Stage deadlines, CPU/memory/PID/file/shm/tmpfs bounds, cohort admission, retry budgets, forced container cleanup, durable leases | A GPU/driver hang may require host reset; sustained spam can still consume bounded capacity |
-| Unpaid or replayed intake spam | Optional eval-cost gate (`eval_cost_tao_rao`, default off): one `transfer_keep_alive` to the subnet owner coldkey, remarked to one hotkey + content hash + netuid, consume-once on reserved or deferred admission | The gate does not meter GPU work after admission. A stolen miner hotkey can spend that hotkey's unused pointer. There is no refund; unused credit is admission-only. A different hotkey or bundle cannot attach the pointer |
+| Unpaid or replayed intake spam | Optional eval-cost gate (`eval_cost_tao_rao`, default off): one `transfer_keep_alive` to the subnet owner coldkey, remarked to one hotkey + content hash + netuid, consume-once on reserved or deferred admission; a private operator may grant one audited artificial credit for one unpaid reveal | The gate does not meter GPU work after admission. A stolen miner hotkey can spend that hotkey's unused pointer. There is no refund. A credit is a privileged local bypass and must be audited; it is hotkey-scoped, oldest-first, consumed only on admission, and never rescues an invalid payment pointer |
 | Candidate persists into later work | Ephemeral containers, read-only mounts, private tmpfs/cache, lease-scoped resources, restart recovery, post-run quiescence checks | Host/container-runtime compromise can persist beyond these controls |
 | Copy/front-run attack | Native timelock, finalized event priority, submitted-delta exact/normalized/containment fingerprints | Obfuscated or independently convergent implementations may evade or collide; structural similarity is advisory |
 | State replay or partial settlement | Chain-scoped single-writer SQLite, durable cursor/statuses, content-addressed evidence, lease generations, atomic settlement | Disk loss, privileged database edits, and faulty backup/restore are operator risks |
@@ -100,10 +100,12 @@ Concrete attacker stories help reviewers test the composition of controls:
 ### “I will make stock code look like my acceleration”
 
 The candidate tries to remain ineligible or fail and rely on fallback while the server
-still answers. Pre-selection stock routing is allowed for ordinary availability, but
-strict qualification requires candidate selection plus positive `fired`/`completed`
-coverage and treats selected-path fallback as invalid evidence. End-to-end host timing is
-bound to the exact candidate launch identity.
+still answers. Pre-selection stock routing is allowed for ordinary availability.
+Direct-artifact and one-shot qualification require positive execution coverage and treat
+selected-path fallback as invalid evidence. Pair-native hot-swap execution counts are
+minted per generation but remain record-only at the PR #95 merge, so they expose rather
+than mechanically close this abuse case until the live re-arm criterion is met.
+End-to-end host timing is bound to the exact candidate launch identity.
 
 ### “I will grade outputs that I know how to game”
 

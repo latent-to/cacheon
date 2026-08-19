@@ -112,18 +112,18 @@ build products, model assets, and launch controls.
 The authoritative bracket is:
 
 ```text
-incumbent = exact incumbent engine, loaded once on the resident baseline lane
-candidate = same stack with exactly the selected target delta, loaded once on
-            the disjoint resident candidate lane
-B → C → B′ [→ C′ → B″] = serialized timed reads; repeats are conditional
+incumbent = exact incumbent engine on the assigned baseline lane
+candidate = same stack with exactly the selected target delta on the disjoint lane
+v7 = B → C [→ B′ only when B/C cannot decide], on the standing pair
+v8 = B → C → B′ unconditionally, with separate engine processes
 A = registered eager, untimed candidate audit
 T = candidate-free pristine quality reference after candidate teardown
 ```
 
 Changing a backend, graph flag, prompt mix, topology, or engine option only in C
 does not measure a component delta. Ad hoc developer launches may expose such
-controls for diagnosis, but authoritative qualification binds the complete v3
-resident speed, audit A, and pristine T plan from the validator's stack,
+controls for diagnosis, but authoritative qualification binds the complete
+version-3 speed, audit A, and pristine T plan from the validator's stack,
 qualification, and reference manifests.
 
 The repository implementations are
@@ -187,9 +187,11 @@ independently reproduced validator qualification can crown the proposal.
 - A first production PASS becomes `reproduction_pending`, not crowned.
 
 Also distinguish failure from uncertainty. A consistently slower C or a quality
-regression is a candidate `FAIL`; revise the source and create a new identity. Disagreeing
-B/B′ bookends, missing evidence, or infrastructure faults can be `NO_DECISION`; they do
-not justify changing the math until the operator's receipt identifies a candidate fault.
+regression is a candidate `FAIL`; revise the source and create a new identity.
+Missing evidence or infrastructure faults can be `NO_DECISION`. Current v5+
+production policy retains excessive later-bracket drift, excludes the later
+bracket, and decides from adjacent C/B instead of automatically returning a
+non-answer. None of these outcomes justify changing the math after observing it.
 
 The [MiniMax-M3 results](../results/minimax-m3.md) show how profiling identified
 fused collective boundaries. Those measurements do not substitute for

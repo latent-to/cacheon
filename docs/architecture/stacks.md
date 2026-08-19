@@ -34,7 +34,7 @@ The reference does not compete on speed and is not the incumbent B′. This prev
 |---|---:|---:|---:|
 | Hostile proposal entries allowed | Yes | No | No |
 | Bound to one arena | Yes | No | Quality profile |
-| Timed | B/C/B′ | Release checks only | Never |
+| Timed | Versioned B/C/[B′] speed work | Release checks only | Never |
 | Can update after a crown | Transactionally | No | No |
 | Can be served as product | No | Yes, after signed publication | No |
 
@@ -77,15 +77,15 @@ flowchart TB
     E["Frozen EvaluationStackManifest E"]
     I["Materialize exact incumbent engine once"]
     C["Materialize one-target-transition candidate engine once"]
-    L0["Resident baseline lane<br/>B → B′ (→ B″ when required)"]
-    L1["Disjoint resident candidate lane<br/>C (→ C′ when required)"]
+    L0["Baseline physical lane<br/>B → [B′]"]
+    L1["Disjoint candidate physical lane<br/>C"]
     A["A: separate eager, untimed candidate audit"]
     T["T: pristine ReferenceManifest"]
 
     E --> I
     E --> C
-    I -->|"load once"| L0
-    C -->|"load once"| L1
+    I -->|"v7 resident or v8 request process"| L0
+    C -->|"v7 resident or v8 request process"| L1
     L0 -->|"serialized host-timed reads"| V["Qualification verdict"]
     L1 -->|"serialized host-timed reads + sealed trajectory"| V
     C --> A
@@ -110,10 +110,10 @@ Suppose incumbent manifest `E0` contains targets `activation.silu_and_mul = A` a
 Planning produces:
 
 ```text
-incumbent = materialize(E0)                         # A + R0; load once on baseline lane
-candidate = materialize(replace(E0, rmsnorm, R1))  # A + R1; load once on candidate lane
-B/B′[/B″] = serialized reads from incumbent        # opening, closing, optional repeat
-C[/C′]    = serialized reads from candidate        # initial and optional repeat
+incumbent = materialize(E0)                         # A + R0 on baseline lane
+candidate = materialize(replace(E0, rmsnorm, R1))  # A + R1 on candidate lane
+v7        = B, C, then B′ only if B/C cannot decide
+v8        = B, C, B′ unconditionally
 A         = separate eager, untimed candidate audit
 T         = materialize(pristine reference)        # neither proposal is a grading oracle
 ```
@@ -138,10 +138,12 @@ The routing screen may amortize a frozen incumbent across a chain-ordered cohort
 - candidate order is derived from committed authority rather than network arrival;
 - shared screen brackets remain routing evidence only;
 - each promoted candidate receives a fresh authoritative qualification whose
-  B/B′ bookends and optional B″ repeat are the exact incumbent;
+  policy-required B and B′ reads are the exact incumbent;
 - the retained qualification evidence binds each candidate to its own selected
   delta and physical-lane role assignment;
-- drift outside the registered envelope yields `NO_DECISION` for the affected authority.
+- drift and missing authority are handled only by the sealed speed-policy version;
+  current v5+ later-bracket drift uses the registered exclusion rule, while
+  unauthenticated evidence yields `NO_DECISION`.
 
 Cohorting is a scheduling optimization, not an economic change. Direct AOT,
 dependency-patch, native-rebuild, and setup-hook contributions are not
@@ -183,10 +185,11 @@ Materialized source is only one part of a running engine. The launch authority a
 - bounded host/worker protocol and evidence keys.
 
 The controller prepares these inputs before timed execution. Production
-qualification binds two isolated resident TP lanes and serializes GPU work
-across them. Its adaptive schedule begins with B/C/B′ and may add C′/B″ under
-the frozen escalation policy. Independent reproduction must exchange the
-physical incumbent and candidate lane roles.
+qualification binds two isolated physical TP lanes and serializes GPU work
+across them. Current v7 uses the standing resident pair for B/C and takes B′
+only when needed; current v8 uses separate engine processes and always takes
+B/C/B′. Independent reproduction must exchange the physical incumbent and
+candidate lane roles.
 
 A separate
 no-GPU/no-network prebuild OCI compiles registered native products and publishes

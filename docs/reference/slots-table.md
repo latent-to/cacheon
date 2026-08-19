@@ -90,8 +90,8 @@ Correctness is layered deliberately:
 1. the slot verifier checks the registered tensor contract;
 2. graph replay checks that dynamic inputs are refreshed and outputs are
    actually rewritten;
-3. load-once, disjoint-lane resident B/C/B′ reads, with conditional C′/B″,
-   measure the exact marginal substitution;
+3. the current v7 resident B/C schedule (B′ only when needed) or v8
+   two-process B/C/B′ schedule measures the exact marginal substitution;
 4. registered eager audit A checks sampled slot behavior outside charged reads;
 5. after candidate teardown, pristine T grades sealed trajectories without
    candidate code present; and

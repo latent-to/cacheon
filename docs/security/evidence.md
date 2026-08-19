@@ -71,7 +71,7 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 | Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm/cohort plans |
 | Arena | Service manifest, capacity decision, ordered screen-stage evidence and receipt |
 | Launch | Runtime preflight, model mount, native build/publication, hardware/resource/seccomp identity |
-| Execution | Durable v3 `ResidentSpeedWitness` with B/C/B′ and, when escalated, C′/B″ resident-read rates; physical-lane roles and richer session/device observations are validated against the frozen plan. Legacy v1/v2 attempts retain `SpeedWitness` charged-rate rows |
+| Execution | Versioned `ResidentSpeedWitness` rows (current v7 B/C with optional B′ or current v8 B/C/B′), physical-lane roles, and the richer session/device observations validated against the frozen plan. The pair-native per-generation execution count is retained but record-only at the PR #95 merge. Legacy v1/v2 attempts retain `SpeedWitness` charged-rate rows |
 | Slot audit | Bounded raw eager/untimed candidate facts, exact slot × rank/process coverage, canonical decimal receipt identity, and trusted-host grade when the plan registers an audit requirement |
 | Graph | Member, variant, shape, capture, and replay observations |
 | Selection | Pre-execution commitment, post-commit entropy, secret reveal, selected prompts, sealed trajectory digest |
@@ -111,9 +111,9 @@ desired verdict:
 1. Reopen the chain-scoped reservation and immutable publication.
 2. Reopen the exact target catalog, stack/tree, launch, model, and native identities.
 3. Authenticate each evidence artifact by domain, schema, size, and digest.
-4. Validate the required three- or five-leg `ChargedExecutionRate` sequence,
-   physical-lane roles, counts, and intervals, then regrade speed under frozen
-   calibration.
+4. Validate the exact schedule required by the witness version (including
+   current v7 B/C/[B′] and v8 B/C/B′), physical-lane roles, counts, and
+   intervals, then regrade speed under frozen calibration.
 5. Regrade graph observations against the frozen requirement.
 6. When the registered plan requires slot audit, reopen the bounded raw audit
    facts, verify exact slot × rank/process coverage, and reproduce the
@@ -140,7 +140,7 @@ different evidence claims.
 
 [`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py)
 emits sampled comparison facts for supported live dispatch seams. Production
-qualification keeps those facts out of charged B/C/B′[/C′/B″] roles and obtains them from
+qualification keeps those facts out of charged B/C/[B′] roles and obtains them from
 a separate eager, untimed candidate role. [`cacheon/audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 grades the bounded facts without importing Torch, requires the exact registered slot ×
 TP-rank/process coverage, and rejects malformed, duplicate, or unexpected coverage.
@@ -161,9 +161,9 @@ commitment, and selection digests differ. The references may share one
 content-addressed store root. For each attempt they then:
 
 1. reopen each report's versioned speed evidence—`SpeedWitness` for legacy v1/v2
-   or `ResidentSpeedWitness` for v3—verify the required fixed or adaptive
-   three-or-five-read schedule, and, for v3, confirm that reproduction exchanges
-   the incumbent and candidate physical-lane roles;
+   or `ResidentSpeedWitness` for the version-3 family—verify its exact historical
+   or current schedule, and confirm that reproduction exchanges the incumbent
+   and candidate physical-lane roles when required;
 2. verify retained conditioning/timed/charged token counts, intervals, sums, and the witness
    projection digest;
 3. recompute aggregate rates, baseline drift, escalation decision, and candidate

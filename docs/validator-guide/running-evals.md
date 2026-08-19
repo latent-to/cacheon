@@ -9,7 +9,7 @@ not provide a local qualification substitute.
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
 | `verify` | Do applicable variants satisfy the registered component ABI, reference, and graph checks? | Local component diagnostic |
 | Arena screen | Can the exact materialized delta pass static, build, ABI, graph, and abbreviated-serving routing gates? | Promotion eligibility only |
-| Resident B/C (+ B′ only when inconclusive) + audit/T qualification | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
+| Current v7 resident B/C (+ B′ only when inconclusive) or v8 two-process B/C/B′ + audit/T | Does the exact marginal delta clear execution, adaptive speed, audit, and pristine-quality policy? | One qualification decision |
 | Independent reproduction | Do two separately bound PASS attempts reopen and agree? | Settlement prerequisite |
 
 The static arena screen also rejects a candidate whose declared eligibility cannot
@@ -33,6 +33,13 @@ rejects symlinks, binary artifacts, undeclared executable material, and files ou
 benign metadata allowlist. It scans an extracted bundle tree, not a transport archive.
 Archive extraction and resource limits belong to finalized intake. A clean result is
 defense in depth, not a sandbox or a correctness proof.
+
+The CLI additionally reports a separate Triton compilability heuristic and exits
+2 on a finding. That heuristic sees syntax inside every `@triton.jit` body but
+cannot prove the body is reachable; an unused broken kernel and the declared
+live kernel look the same statically. It is useful miner feedback, not economic
+authority. A production compile `FAIL` requires the reachable entry to fail in
+the sandboxed build/execution path.
 
 ## Component verification
 
@@ -123,9 +130,10 @@ contributor-controlled run cannot provide
 finalized intake identity, validator-owned materialization, hidden work, frozen
 calibration, no-egress worker authority, or a validator-bound durable attempt with its
 aggregate speed witness and referenced graph/quality/T products. The production attempt
-keeps two isolated TP lanes resident, serializes B/C/B′ and policy-authorized C′/B″,
-validates richer raw frames and device state, and runs a distinct audit-only role before
-pristine T. Those raw frames are not serialized into `CohortQualificationAttempt`. A
+uses two isolated physical TP lanes, serializes current v7 B/C/[B′] or v8
+B/C/B′, validates richer raw frames and device state, and runs a distinct
+audit-only role before pristine T. Those raw frames are not serialized into
+`CohortQualificationAttempt`. A
 local run cannot provide the required second PASS, exact physical-lane swap, or its
 digest-distinctness products.
 

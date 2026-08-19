@@ -29,11 +29,12 @@ lock file.
 The attempts must use distinct qualification authority and evidence. The candidate's
 settlement speedup is the lower of the two measured speedups.
 
-Each resident v3 attempt runs resident B/C/B′, conditional C′/B″, registered
-eager audit A, then pristine T. For reproduction, the baseline and candidate
-physical TP-lane orientations must exact-swap. The speed-policy and
-settlement-control digests remain equal; fresh process names on the same lane
-orientation do not satisfy independence.
+Each production version-3 attempt runs its sealed speed subpolicy — current v7
+resident B/C with conditional B′ or current v8 two-process B/C/B′ — followed by
+registered eager audit A and pristine T when required. For reproduction, the
+baseline and candidate physical TP-lane orientations must exact-swap. The
+speed-policy and settlement-control digests remain equal; fresh process names
+on the same lane orientation do not satisfy independence.
 
 Settlement planning is pure: it receives typed candidates plus the exact current
 `EvaluationStackManifest` and tree digest. It reads no database, chain, wallet, or mutable
@@ -475,7 +476,7 @@ retained design intent and the reserved durable schema are described in
 | Lease expires or store/journal head advances | Commit aborts; expired lease returns pending | Reopen authority and obtain a new lease generation |
 | Either PASS evidence root cannot reopen | No settlement and no reward projection | Restore exact content-addressed bytes or retain hold |
 | Transaction fails mid-plan | SQLite rollback; no partial events/claims/stack | Diagnose, then rerun against unchanged authority |
-| Active claim hotkey leaves metagraph | Entire projection refused | Resolve validator-set policy; never redistribute implicitly |
+| Valid active claimant is absent from the metagraph | That family's allocated ppm is sent to the validator hotkey for this tick; other family allocations remain unchanged | Investigate membership; if the claimant returns, the next projection pays its then-current decayed share |
 | Initial projection is stale, post-read is unavailable, block/`last_update` chronology is impossible, or recipient/vector readback differs | Projection is rejected or publication is held | Refresh authority and reconcile again; do not infer a general membership-churn comparison that the reconciler does not perform |
 | SDK returns an unsuccessful response without raising | `submitted=False`; authoritative readback still governs the journal | Inspect the response and chain state; do not convert lack of an exception into success |
 | SDK says submitted, readback absent | `pending`, then `held` at deadline | Inspect chain/extrinsic; preserve journal and append reviewed release if appropriate |

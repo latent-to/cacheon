@@ -380,6 +380,30 @@ points installed, and an old evaluator image does not contain the renamed
 `cacheon` worker modules. `HOW_CACHEON_WORKS.md` is the canonical
 compatibility redirect.
 
+## 2026-08-19 — PR #95 closes the tracked unattended mainnet path
+
+[PR #95](https://github.com/latent-to/cacheon/pull/95) merged the tracked
+production consumers for the standing finalized-intake loop. The CPU supervisor
+now composes durable FIFO screen and qualification leases, authenticated remote
+spool transport, restart-safe continuation, settlement, and a wallet-free
+weight-offer stage. The persistent B300 adapter can construct screen and
+qualification from one READY-bound commissioned service; screen-only and
+one-shot modes continue to refuse qualification.
+
+The merge also introduced current speed policies v7 and v8. Hot-swappable
+candidates use the standing resident pair with symmetric recapture and B′ only
+when B/C is inconclusive. Non-swappable candidates use a separate two-process
+substrate and always collect B/C/B′. Historical v1–v5 evidence remains
+reopenable under its own schedule and arithmetic.
+
+Chain operations gained long-lived FIFO expiry, byte-identical terminal replay,
+typed per-miner diagnostics, one-use eval-cost make-good credits, live
+`WeightsVersionKey` stamping, endpoint failover, and deterministic routing of an
+absent claimant's share to the validator for that tick. The merge commit did not
+deploy itself: the running mainnet cohort still used explicit frozen source
+directories at merge time. Dated runtime evidence and its unresolved limits are
+recorded in the [State of record](../reference/state-of-record.md).
+
 ## 2026-08-15 — Fixed eval-cost quote and TAO transfer to the subnet owner
 
 Intake can require a miner-paid evaluation cost before a finalized reveal is
