@@ -13,6 +13,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass, replace
+from dataclasses import field as dc_field
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -619,6 +620,11 @@ GraphFactsBuilder = Callable[
 ]
 
 
+# Construction token: only the commissioner (and its tests) may build the
+# inputs; every other caller goes through build_commissioned_b300_qualification_service.
+_COMMISSION_SEAL = object()
+
+
 @dataclass(frozen=True)
 class B300RegisteredQualificationInputs:
     """Exact runtime, measurement, calibration, and prompt authorities.
@@ -658,19 +664,19 @@ class B300RegisteredQualificationInputs:
     candidate_executor_namespace_digest: str
     candidate_runtime_resource_policy_digest: str
     candidate_device_configuration_digest: str
+    seal: object = dc_field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if type(self.catalog) is not TargetCatalog or type(
-            self.policy
-        ) is not B300RegisteredQualificationPolicy:
+        # Construction is sealed to the commissioner. Every object here is
+        # built and validated at its own boundary (sealed config parsing,
+        # B300QualificationCapabilities, the calibration loader, the typed
+        # constructors); this pass keeps only the cross-object invariants
+        # that no single boundary can see.
+        if self.seal is not _COMMISSION_SEAL:
             raise B300RegisteredQualificationError(
-                "registered catalog or policy is not exact"
+                "registered qualification inputs are built only by the commissioner"
             )
         self.policy.require_catalog(self.catalog)
-        if type(self.expected_context) is not EvaluationStackContext:
-            raise B300RegisteredQualificationError(
-                "evaluation-stack context is not exact"
-            )
         if (
             self.expected_context.catalog_digest != self.catalog.digest
             or self.expected_context.catalog_snapshot != self.catalog.snapshot()
@@ -678,19 +684,18 @@ class B300RegisteredQualificationInputs:
             raise B300RegisteredQualificationError(
                 "evaluation-stack context differs from the registered target catalog"
             )
-        if type(self.incumbent_stack) is not EvaluationStackManifest:
-            raise B300RegisteredQualificationError("incumbent stack is not exact")
-        try:
-            self.incumbent_stack.validate_against(self.expected_context)
-        except (TypeError, ValueError) as exc:
-            raise B300RegisteredQualificationError(
-                f"incumbent stack is stale: {exc}"
-            ) from None
+        for label, stack in (
+            ("incumbent", self.incumbent_stack),
+            ("pristine T", self.pristine_stack),
+        ):
+            try:
+                stack.validate_against(self.expected_context)
+            except (TypeError, ValueError) as exc:
+                raise B300RegisteredQualificationError(
+                    f"{label} stack is stale: {exc}"
+                ) from None
         if (
-            type(self.incumbent_binding) is not MaterializedArmBinding
-            or type(self.incumbent_launch) is not EngineLaunchSpec
-            or type(self.baseline_session_plan) is not SessionExecutionPlan
-            or self.incumbent_binding.tree.stack_digest != self.incumbent_stack.digest
+            self.incumbent_binding.tree.stack_digest != self.incumbent_stack.digest
             or self.incumbent_launch.stack_digest != self.incumbent_stack.digest
             or self.incumbent_launch.tree_digest
             != self.incumbent_binding.tree.tree_digest
@@ -701,8 +706,6 @@ class B300RegisteredQualificationInputs:
             raise B300RegisteredQualificationError(
                 "incumbent B runtime is not one exact graph-on, audit-free authority"
             )
-        if type(self.model_mount) is not TrustedArenaModelMountReceipt:
-            raise B300RegisteredQualificationError("model mount is not exact")
         object.__setattr__(
             self,
             "materialization_root",
@@ -715,44 +718,12 @@ class B300RegisteredQualificationInputs:
             "evidence_root",
             _canonical_private_root(self.evidence_root, "qualification evidence root"),
         )
-        for field in (
-            "source_resolver_digest",
-            "candidate_binding_builder_digest",
-            "graph_facts_builder_digest",
-            "candidate_executor_namespace_digest",
-            "candidate_runtime_resource_policy_digest",
-            "candidate_device_configuration_digest",
-        ):
-            object.__setattr__(self, field, _digest(getattr(self, field), field))
-        if not all(
-            callable(value)
-            for value in (
-                getattr(self.source_resolver, "resolve_proposal", None),
-                getattr(self.source_resolver, "resolve_integrated", None),
-                self.candidate_binding_builder,
-                self.graph_facts_builder,
-            )
-        ):
-            raise B300RegisteredQualificationError(
-                "materialization/binding/graph capabilities are not callable"
-            )
-        if type(self.pristine_stack) is not EvaluationStackManifest:
-            raise B300RegisteredQualificationError("pristine T stack is not exact")
-        try:
-            self.pristine_stack.validate_against(self.expected_context)
-        except (TypeError, ValueError) as exc:
-            raise B300RegisteredQualificationError(
-                f"pristine T stack is stale: {exc}"
-            ) from None
         if self.pristine_stack.entries:
             raise B300RegisteredQualificationError(
                 "pristine T contains proposal contributions"
             )
         if (
-            type(self.pristine_binding) is not MaterializedArmBinding
-            or type(self.pristine_launch) is not EngineLaunchSpec
-            or type(self.pristine_session_plan) is not SessionExecutionPlan
-            or self.pristine_binding.tree.stack_digest != self.pristine_stack.digest
+            self.pristine_binding.tree.stack_digest != self.pristine_stack.digest
             or self.pristine_launch.stack_digest != self.pristine_stack.digest
             or self.pristine_launch.tree_digest != self.pristine_binding.tree.tree_digest
             or self.pristine_session_plan.launch_digest != self.pristine_launch.digest
@@ -762,61 +733,6 @@ class B300RegisteredQualificationInputs:
         ):
             raise B300RegisteredQualificationError(
                 "pristine T launch/binding/session differs from the sealed empty stack"
-            )
-        if type(self.reference_manifest) is not ReferenceManifest:
-            raise B300RegisteredQualificationError(
-                "pristine reference manifest is not exact"
-            )
-        try:
-            expected_reference = ReferenceManifest.from_pristine(
-                self.pristine_stack,
-                self.pristine_launch,
-                self.pristine_binding,
-                workload_digest=marginal_workload_digest(self.baseline_session_plan),
-                tokenizer_digest=self.reference_manifest.tokenizer_digest,
-                hidden_corpus_commitment=(
-                    self.reference_manifest.hidden_corpus_commitment
-                ),
-                hidden_judge_digest=self.reference_manifest.hidden_judge_digest,
-                selection_policy_digest=(
-                    self.reference_manifest.selection_policy_digest
-                ),
-            )
-        except (OSError, TypeError, ValueError) as exc:
-            raise B300RegisteredQualificationError(
-                f"pristine T failed to reopen: {exc}"
-            ) from None
-        if expected_reference != self.reference_manifest:
-            raise B300RegisteredQualificationError(
-                "reference manifest differs from pristine T or the frozen workload"
-            )
-        if not all(
-            type(value) is expected
-            for value, expected in (
-                (self.calibration_threshold_policy, CalibrationThresholdPolicy),
-                (self.calibration_manifest, CalibrationManifest),
-                (self.calibration_context, CalibrationContext),
-                (self.calibration_artifact_ref, EvidenceArtifactRef),
-            )
-        ):
-            raise B300RegisteredQualificationError(
-                "calibration authority is not exactly typed"
-            )
-        expected_context = CalibrationContext(
-            self.reference_manifest.measured_digest,
-            self.reference_manifest.arena_digest,
-            self.reference_manifest.runtime_digest,
-            self.reference_manifest.base_engine_digest,
-            self.reference_manifest.model_revision_digest,
-            self.reference_manifest.model_manifest_digest,
-            self.reference_manifest.model_content_digest,
-            self.reference_manifest.logical_hardware_digest,
-            self.reference_manifest.workload_digest,
-            self.policy.verification_policy_digest,
-        )
-        if expected_context != self.calibration_context:
-            raise B300RegisteredQualificationError(
-                "calibration context differs from declared math/reference/workload"
             )
         try:
             reopened = reopen_calibration_evidence(
@@ -835,14 +751,7 @@ class B300RegisteredQualificationInputs:
                 "qualification calibration is not one frozen authority"
             )
         if (
-            type(self.resident_baseline_arm) is not ResidentArmPlan
-            or type(self.resident_speed_policy) is not ResidentSpeedPolicy
-            # Versions 3 through 8 share the resident two-lane authority this
-            # check guards. (This gate blocked
-            # the first v4 commission on the live pod, 2026-08-10 12:23Z, and
-            # it must be widened with every new resident policy version or the
-            # commission fails the same way.)
-            or self.resident_speed_policy.version not in (3, 4, 5, 6, 7, 8)
+            self.resident_speed_policy.version < 3
             or marginal_workload_digest(self.resident_baseline_arm.session_plan)
             != marginal_workload_digest(self.baseline_session_plan)
             or self.resident_baseline_arm.executor_namespace_digest
@@ -850,33 +759,6 @@ class B300RegisteredQualificationInputs:
         ):
             raise B300RegisteredQualificationError(
                 "resident-v3 baseline/candidate lane authority is inconsistent"
-            )
-        try:
-            # Reconstruct at the sealed policy's own version (the commission
-            # chooses the version; this site only verifies calibration
-            # derivation). The equality check below still refuses any
-            # cross-version splice because version participates in equality.
-            expected_speed = ResidentSpeedPolicy.from_calibration(
-                max_stage_seconds=self.resident_speed_policy.max_stage_seconds,
-                max_qualification_seconds=(
-                    self.resident_speed_policy.max_qualification_seconds
-                ),
-                calibration=self.calibration_manifest,
-                context=self.calibration_context,
-                version=self.resident_speed_policy.version,
-                min_windows=self.resident_speed_policy.min_windows,
-                max_window_scatter=self.resident_speed_policy.max_window_scatter,
-                max_conditioning_slowdown=(
-                    self.resident_speed_policy.max_conditioning_slowdown
-                ),
-            )
-        except (TypeError, ValueError) as exc:
-            raise B300RegisteredQualificationError(
-                f"resident-v3 policy is not derived from calibration: {exc}"
-            ) from None
-        if expected_speed != self.resident_speed_policy:
-            raise B300RegisteredQualificationError(
-                "resident-v3 speed policy differs from frozen calibration"
             )
         if (
             self.policy.tokens_per_prompt

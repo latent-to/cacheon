@@ -16,6 +16,7 @@ from cacheon.eval.b300_qualification_deployment import (
     B300RegisteredProfileAuthority,
     compose_b300_qualification_deployment,
 )
+from cacheon.eval.b300_registered_qualification_inputs import _COMMISSION_SEAL
 from cacheon.eval.b300_registered_qualification import (
     REGISTERED_B300_TARGET_IDS,
     B300RegisteredQualificationError,
@@ -749,6 +750,7 @@ def _compose_locked(
             candidate_device_configuration_digest=(
                 candidate_executor.device_policy.configuration_sha256
             ),
+            seal=_COMMISSION_SEAL,
         )
         factory = build_b300_registered_qualification_factory(factory_inputs)
     except B300RegisteredQualificationError as exc:

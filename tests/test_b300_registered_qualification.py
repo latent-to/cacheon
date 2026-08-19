@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.b300_registered_qualification as registered
+import cacheon.eval.b300_registered_qualification_inputs as inputs_module
 import cacheon.eval.b300_qualification_deployment as qualification_deployment
 from cacheon.arena_service import (
     SCREEN_STAGES,
@@ -398,6 +399,7 @@ def _harness(
         candidate_device_configuration_digest=_h(
             "resident-candidate-device-configuration"
         ),
+        seal=inputs_module._COMMISSION_SEAL,
     )
     factory = registered.build_b300_registered_qualification_factory(inputs)
     candidate = _candidate(tmp_path / "publication", source_fixture)
@@ -866,6 +868,25 @@ def test_corrupt_graph_store_state_becomes_typed_hold(
     factory = registered.build_b300_registered_qualification_factory(inputs)
     with pytest.raises(B300QualificationGraphEvidenceHold, match="unauthenticated"):
         factory.plan_builder(harness.cohort, b"h" * 32)
+
+
+def test_inputs_are_built_only_by_the_commissioner(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    unsealed = {
+        name: getattr(harness.inputs, name)
+        for name in harness.inputs.__dataclass_fields__
+        if name != "seal"
+    }
+    with pytest.raises(
+        registered.B300RegisteredQualificationError,
+        match="built only by the commissioner",
+    ):
+        registered.B300RegisteredQualificationInputs(**unsealed)
+    with pytest.raises(
+        registered.B300RegisteredQualificationError,
+        match="built only by the commissioner",
+    ):
+        registered.B300RegisteredQualificationInputs(**unsealed, seal=object())
 
 
 def test_blocker_inventory_names_only_missing_commissioning_authorities() -> None:
