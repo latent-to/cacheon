@@ -37,7 +37,12 @@ credit      = floor(improvement * h / (h + a))
 
 Retirement or neutralization removes standing credit. A stale, incompatible,
 missing, or unreopenable active crown holds the complete projection; its share is
-not silently redistributed.
+not silently redistributed. An active claimant absent from the bound metagraph
+does not hold the vector: that family's allocated standing or live-discovery
+share is published to the validator hotkey for this tick. Other families keep the
+ppm they would have received if the claimant were still registered. If the
+hotkey returns, the next projection pays it again at the then-current decayed
+credit.
 
 A discovery qualification can create one non-renewable bounded claim. It does not
 install an evaluation-stack contribution or create a standing family. Duplicate

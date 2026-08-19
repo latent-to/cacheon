@@ -606,8 +606,6 @@ def project_global_rewards(
                 or claim.contribution_digest != contribution.digest
             ):
                 raise EconomicsError(f"standing claim for {target_id!r} is stale or incompatible")
-            if claim.hotkey not in eligible:
-                raise EconomicsError(f"standing hotkey for {target_id!r} left the metagraph")
             credit = claim.credit_at(context.current_block, policy)
             family_credits.append(
                 StandingFamilyCredit(
@@ -619,7 +617,17 @@ def project_global_rewards(
                     credit,
                 )
             )
-            standing_by_hotkey[claim.hotkey] = standing_by_hotkey.get(claim.hotkey, 0) + credit
+            # Keep the claim and family audit on the original miner. If they
+            # left the metagraph, burn this tick's allocated share to the
+            # validator rather than hold the vector or re-slice other families.
+            recipient = (
+                claim.hotkey
+                if claim.hotkey in eligible
+                else context.validator_hotkey
+            )
+            standing_by_hotkey[recipient] = (
+                standing_by_hotkey.get(recipient, 0) + credit
+            )
     if not any(standing_by_hotkey.values()):
         raise EconomicsError("all standing crown credit has decayed to zero")
 
@@ -637,13 +645,16 @@ def project_global_rewards(
     discovery_by_hotkey: dict[str, int] = {}
     for claim in sorted(discoveries, key=lambda row: row.digest):
         if claim.live_at(context.current_block, policy):
-            if claim.hotkey not in eligible:
-                raise EconomicsError("a live discovery hotkey left the metagraph")
             live.append(
                 DiscoveryBountyCredit(claim.digest, claim.hotkey, claim.bounty_units)
             )
-            discovery_by_hotkey[claim.hotkey] = (
-                discovery_by_hotkey.get(claim.hotkey, 0) + claim.bounty_units
+            recipient = (
+                claim.hotkey
+                if claim.hotkey in eligible
+                else context.validator_hotkey
+            )
+            discovery_by_hotkey[recipient] = (
+                discovery_by_hotkey.get(recipient, 0) + claim.bounty_units
             )
         else:
             expired.append(claim.digest)

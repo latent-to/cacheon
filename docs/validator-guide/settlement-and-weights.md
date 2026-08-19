@@ -159,9 +159,11 @@ then binds:
 - an exact, positive integer-ppm vector satisfying the normative
   [Legacy V1](../reference/emissions-policy.md#legacy-v1) total.
 
-If an active family is stale, incompatible, missing, unreopenable, or assigned to a
-hotkey absent from the metagraph, the complete projection is held. Its share is never
-silently redistributed.
+If an active family is stale, incompatible, missing, or unreopenable, the complete
+projection is held. Its share is never silently redistributed. If the claimant
+hotkey is absent from the bound metagraph, that family's allocated share is
+published to the validator hotkey for this tick; other families keep the ppm they
+would have received if the claimant were still registered.
 
 Projection starts from an exact finalized metagraph context. Immediately before signing,
 the reconciler refreshes finalized authority. A later finalized height is acceptable only
