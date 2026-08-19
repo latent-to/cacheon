@@ -311,8 +311,7 @@ pinned public key. Release construction, signing, registry publication, and serv
 launch are reviewed programmatic deployment APIs, not public CLI commands.
 
 Do not call the validator commissioned merely because unit and slice tests pass. The
-release plane requires the complete
-[publication checklist](../engine/release-workflow.md#publication-checklist): clean-wheel
+serving plane requires the complete publication checklist: clean-wheel
 closure, provider-specific native proof, builder-authenticated reproducible OCI outputs,
 closed effective serving policy, serving at the approved topology, and bound serve
 receipts. The evaluation plane separately requires a reviewed production

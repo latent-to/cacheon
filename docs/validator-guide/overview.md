@@ -274,4 +274,3 @@ Security assumptions and residual risks are detailed in
 - [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
 - [Arena service contract](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py)
 - [Settlement planner](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
-- [Release implementation](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py)

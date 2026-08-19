@@ -66,7 +66,7 @@ See [Product model](product-model.md) for the authority and lifecycle of each ob
 | Engine construction | Deterministic source closure, namespacing, native build identity, isolated OCI execution | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py), [`eval/engine_launch.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/engine_launch.py), [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py) |
 | Qualification | Registered routing-only resident screen; two-lane adaptive B/C/B′[/C′/B″] speed; eager audit; pristine T; retained evidence | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py), [`eval/resident_screen_lane.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
 | Chain authority | Finalized ordering, immutable publication, state transitions, settlement, legacy V1 projection, and publication journals | [`chain/intake.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py), [`settlement.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py), [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py) |
-| Product release | Integration review, model sealing, signed artifacts, reproducible container identity, fail-closed serving | [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py), [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py), [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_runtime.py) |
+| Integration | Integration review and model sealing | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py), [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py) |
 
 ## Trust model
 
@@ -129,7 +129,7 @@ The authoritative path is:
 `scan` and `verify` are contributor diagnostics. Matched A/B profiling on
 contributor-controlled hardware may test a performance mechanism, but none of these paths
 can mint production crown authority. See [Evaluation pipeline](pipeline.md) for the
-detailed state machine and [Releases](releases.md) for the ship boundary.
+detailed state machine.
 
 ## Design acceptance tests
 
@@ -149,6 +149,5 @@ The architecture is preserving its product boundary when all of the following re
 - [Stacks and manifests](stacks.md)
 - [Evaluation pipeline](pipeline.md)
 - [SGLang seam](seam.md)
-- [Release architecture](releases.md)
 - [Current state of record](../reference/state-of-record.md)
 - [Normative product model](product-model.md)

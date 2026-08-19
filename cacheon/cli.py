@@ -88,41 +88,6 @@ def cmd_model_provision(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_release_verify(args: argparse.Namespace) -> int:
-    from cacheon.release import reopen_release
-
-    release = reopen_release(
-        args.release_root,
-        expected_descriptor_digest=args.descriptor_digest,
-        expected_public_key=args.expected_public_key,
-    )
-    print(json.dumps(
-        {
-            "descriptor_digest": release.descriptor.digest,
-            "engine_tree_digest": release.descriptor.engine_tree_digest,
-            "public_key": release.signature.public_key,
-            "release_tree_digest": release.release_tree_digest,
-        },
-        sort_keys=True,
-    ))
-    return 0
-
-
-def cmd_release_context(args: argparse.Namespace) -> int:
-    from cacheon.release import container_context, reopen_release
-
-    release = reopen_release(
-        args.release_root,
-        expected_descriptor_digest=args.descriptor_digest,
-        expected_public_key=args.expected_public_key,
-    )
-    result = container_context(
-        release, args.destination, expected_public_key=args.expected_public_key
-    )
-    print(result)
-    return 0
-
-
 def _cmd_burn_to_subnet_owner_once(args: argparse.Namespace) -> int:
     """Operator bootstrap: journaled full-pool publication to the owner burn sink."""
 
@@ -2235,25 +2200,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--expected-content-digest")
     sp.add_argument("--workers", type=int, default=4)
     sp.set_defaults(func=cmd_model_provision)
-
-    sp = sub.add_parser(
-        "release-verify",
-        help="reopen and verify a signed chain-independent Cacheon Engine release",
-    )
-    sp.add_argument("release_root")
-    sp.add_argument("--expected-public-key", required=True)
-    sp.add_argument("--descriptor-digest")
-    sp.set_defaults(func=cmd_release_verify)
-
-    sp = sub.add_parser(
-        "release-context",
-        help="materialize a deterministic OCI build context from a verified release",
-    )
-    sp.add_argument("release_root")
-    sp.add_argument("destination")
-    sp.add_argument("--expected-public-key", required=True)
-    sp.add_argument("--descriptor-digest")
-    sp.set_defaults(func=cmd_release_context)
 
     sp = sub.add_parser(
         "set-weights",

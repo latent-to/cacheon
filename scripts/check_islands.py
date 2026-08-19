@@ -50,8 +50,6 @@ ALLOWLIST_PREFIXES = (
     "cacheon.arena_assets",
     # sitecustomize injected into validator-owned OCI lifetimes.
     "cacheon.eval.oci_site",
-    # Documented public engine-release API surface.
-    "cacheon.release_host",
     # Seam adapters registered by short stem in cacheon/seams.py rows.
     "cacheon.integrations",
 )

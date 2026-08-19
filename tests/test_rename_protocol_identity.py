@@ -115,26 +115,6 @@ def test_serialized_native_names_and_cryptographic_salts_are_cacheon() -> None:
     assert b"cacheon.oci-namespace.v1\\0" in oci_process
 
 
-def test_signed_release_evidence_vocabulary_is_cacheon() -> None:
-    source = (ROOT / "cacheon" / "release.py").read_text(encoding="utf-8")
-
-    for marker in (
-        '"creators": ["Tool: cacheon-release-v1"]',
-        '"documentNamespace": "urn:cacheon:engine-release:"',
-        '"name": "Cacheon Engine "',
-        '"name": "cacheon-engine-tree"',
-        '"name": "cacheon-native-artifact"',
-        '"buildType": "https://cacheon.engine/build/v1"',
-        '"id": "https://cacheon.engine/builder/v1"',
-        '"uri": "cacheon:model-provision-receipt"',
-        '"uri": "cacheon:native-artifact"',
-    ):
-        assert marker in source
-
-    assert 'RUNTIME_DISTRIBUTION = "cacheon-engine"' in source
-    assert "import cacheon.bootstrap" in source
-
-
 def test_retired_name_is_absent_from_shipping_source() -> None:
     """No spelling of the retired name survives in package or bundle source."""
 

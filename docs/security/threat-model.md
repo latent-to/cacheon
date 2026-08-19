@@ -198,4 +198,3 @@ Security status should be stated as “implemented under these assumptions,” n
 - [Shared-weight gateway](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weight_share.py)
 - [Shared-weight push authentication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weight_push_auth.py)
 - [Object-store adapters](https://github.com/latent-to/cacheon/blob/main/cacheon/object_store.py)
-- [Release host](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py)

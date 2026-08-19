@@ -20,7 +20,7 @@ flowchart LR
     Q --> S["settlement + evaluation stack"]
     S --> W["emissions + weight journal"]
     Q --> R["integration review"]
-    R --> E["Engine tree + signed release"]
+    R --> E["Engine tree"]
     N --> Q
     N --> E
 ```
@@ -29,8 +29,7 @@ The local branch is useful to contributors but cannot crown anything. The
 intake, arena, qualification, settlement, and weight branch owns hostile
 evaluation and economic state. A sealed direct artifact enters qualification
 through the registered prebuild/runtime boundary; after integration review, its
-sealed native publication may also be bound into a release. The release branch
-reopens evidence but accepts only reviewed integrated source.
+sealed native publication is bound to the reviewed integrated source.
 
 ## Contribution contract
 
@@ -112,15 +111,12 @@ reopens evidence but accepts only reviewed integrated source.
 | Reserved V2 durable schema | [`chain/reserved_schema.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py) |
 | Copy and attribution evidence | [`copy_fingerprint.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/copy_fingerprint.py) |
 
-## Engine integration and release
+## Engine integration
 
 | Area | Primary source |
 |---|---|
 | Deterministic Engine tree | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) |
 | Model provisioning | [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py) |
-| Release evidence/signing/publication | [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py) |
-| Release runtime verification | [`release_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_runtime.py) |
-| Container host policy | [`release_host.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py) |
 
 ## Compatibility and discovery
 
@@ -173,11 +169,13 @@ different durable states.
 
 ### “What exactly ships?”
 
-Follow `stack_manifest.py` into `engine_tree.py`, `model_provision.py`, and
-`release.py`. The release manifest accepts only `IntegratedContributionRef`
-objects. The selected payload remains bound to its crowned digest; later
-materialization owns deterministic module namespaces and packaging. Finally,
-`release_runtime.py` and `release_host.py` enforce consumer and host policy.
+Follow `stack_manifest.py` into `engine_tree.py` and `model_provision.py`.
+The selected payload remains bound to its crowned digest; later
+materialization owns deterministic module namespaces and packaging. The
+signed chain-independent release product (`release.py`, `release_runtime.py`,
+`release_host.py`, `release-verify`/`release-context`) was removed on
+2026-08-19: no release has ever been produced or consumed, and the subnet does
+not need it to run.
 
 ## State and evidence locations
 
@@ -190,7 +188,6 @@ materialization owns deterministic module namespaces and packaging. Finally,
 | Settlement and weight state | Chain-scoped SQLite controller | Transactional single-writer state plus projection-linked intent/status journal; live readback vectors are not serialized |
 | Validator recovery snapshot | Private S3-compatible object store | Consistent SQLite image plus database-referenced publications/evidence, redacted journal, and explicit sealed inputs under a closed digest-bound manifest; staged restore never replaces live state |
 | Integrated source | Reviewed source control | Full reviewed commit plus selected-payload and attribution digests |
-| Engine release | Release publication root | Descriptor-addressed signed tree reopened under an expected public key |
 
 Paths are deliberately not identities. A local directory name, URL, database
 row number, or registry tag cannot replace the corresponding digest-bound

@@ -32,9 +32,9 @@ subnet control plane from the hostile-code referee, giving readers three
 cooperating surfaces with different trust boundaries.
 
 <div class="cacheon-grid" markdown>
-<a class="cacheon-card" href="engine/overview/">
+<a class="cacheon-card" href="engine/integration/">
 <strong>Cacheon Engine</strong>
-<span>The chain-independent release contract: reviewed source, pinned runtime, sealed model identity, and signed authority.</span>
+<span>Integration review: how a reproduced crown becomes ordinary reviewed source, and how model bytes are provisioned.</span>
 </a>
 <a class="cacheon-card" href="architecture/pipeline/">
 <strong>The referee</strong>
@@ -102,7 +102,7 @@ copying them.
 | Write a Triton, CuTeDSL, or Python reference kernel | [Miner guide](miner-guide/overview.md) |
 | Validate the repository locally without a GPU | [Local quickstart](get-started/quickstart.md) |
 | Deploy intake, an arena provider, and qualification workers | [Validator guide](validator-guide/overview.md) |
-| Understand or verify the Engine release contract | [Cacheon Engine](engine/overview.md) |
+| Integrate a reproduced crown into reviewed source | [Cacheon Engine](engine/integration.md) |
 | Audit trust boundaries and failure behavior | [Security model](security/threat-model.md) |
 | Check what is implemented, measured, and still unproven | [State of record](reference/state-of-record.md) |
 

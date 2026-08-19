@@ -820,4 +820,3 @@ claim that a live mainnet deployment or receipt exists.
 - [Settlement](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
 - [Legacy publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
 - [Reserved V2 schema](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
-- [Release construction](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py)
