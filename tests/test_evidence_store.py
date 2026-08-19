@@ -492,32 +492,20 @@ def test_unsafe_non_authoritative_stage_cannot_poison_canonical_target(
     assert stage.is_symlink()
 
 
-def test_exact_legacy_hardlink_window_recovers_but_ambiguity_fails_closed(
-    tmp_path: Path,
-) -> None:
+def test_hardlinked_existing_artifact_fails_closed(tmp_path: Path) -> None:
+    # The former link-before-unlink publication window was drained from every
+    # retained evidence root; a multiply-linked target is now simply unsafe.
     root = tmp_path / "evidence"
     payload = b"legacy exact bytes"
     reference = _publish(root, payload)
     target = _target(root, reference)
-    old_temporary = target.with_name(
-        f".{target.name}.tmp.1234.{'a' * 32}"
-    )
-    os.link(target, old_temporary)
+    peer = target.with_name(f".{target.name}.tmp.1234.{'a' * 32}")
+    os.link(target, peer)
     assert target.lstat().st_nlink == 2
-
-    assert _publish(root, payload) == reference
-    assert not old_temporary.exists()
-    assert target.lstat().st_nlink == 1
-    assert reopen_evidence(root, reference) == payload
-
-    first = target.with_name(f".{target.name}.tmp.1234.{'b' * 32}")
-    second = target.with_name(f".{target.name}.tmp.1234.{'c' * 32}")
-    os.link(target, first)
-    os.link(target, second)
-    with pytest.raises(EvidenceStoreError, match="unsafe shape|ambiguous"):
+    with pytest.raises(EvidenceStoreError, match="unsafe shape"):
         _publish(root, payload)
-    assert target.lstat().st_nlink == 3
-    assert first.exists() and second.exists()
+    assert target.lstat().st_nlink == 2
+    assert peer.exists()
 
 
 def test_same_payload_in_second_domain_has_independent_path(tmp_path: Path) -> None:

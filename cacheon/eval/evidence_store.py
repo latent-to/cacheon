@@ -341,7 +341,6 @@ def _read_sealed(
     reference: EvidenceArtifactRef,
     *,
     limit: int,
-    links: int = 1,
     label: str = "evidence artifact",
 ) -> bytes:
     try:
@@ -351,7 +350,7 @@ def _read_sealed(
     if (
         stat.S_ISLNK(before.st_mode)
         or not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != links
+        or before.st_nlink != 1
         or before.st_uid != os.geteuid()
         or stat.S_IMODE(before.st_mode) != 0o400
         or before.st_size != reference.size
@@ -401,84 +400,6 @@ def _read_sealed(
     return payload
 
 
-def _recover_old_hardlink_window(
-    target: Path,
-    reference: EvidenceArtifactRef,
-    payload: bytes,
-    *,
-    limit: int,
-) -> bool:
-    """Recover only the exact former link-before-unlink crash state."""
-
-    try:
-        target_info = target.lstat()
-    except OSError as exc:
-        raise EvidenceStoreError(f"cannot inspect legacy evidence publication: {exc}") from None
-    if target_info.st_nlink != 2:
-        return False
-    try:
-        entries = tuple(target.parent.iterdir())
-    except OSError as exc:
-        raise EvidenceStoreError(f"cannot inspect legacy evidence publication: {exc}") from None
-    pattern = re.compile(
-        rf"^\.{re.escape(reference.sha256)}\.tmp\.[1-9][0-9]*\.[0-9a-f]{{32}}$"
-    )
-    candidates = tuple(path for path in entries if pattern.fullmatch(path.name))
-    if len(candidates) != 1:
-        raise EvidenceStoreError("legacy evidence publication state is ambiguous")
-    temporary = candidates[0]
-    try:
-        temporary_info = temporary.lstat()
-    except OSError as exc:
-        raise EvidenceStoreError(f"legacy evidence publication is unavailable: {exc}") from None
-    exact_shape = (
-        stat.S_ISREG(target_info.st_mode)
-        and not stat.S_ISLNK(target_info.st_mode)
-        and stat.S_ISREG(temporary_info.st_mode)
-        and not stat.S_ISLNK(temporary_info.st_mode)
-        and (target_info.st_dev, target_info.st_ino)
-        == (temporary_info.st_dev, temporary_info.st_ino)
-        and target_info.st_nlink == temporary_info.st_nlink == 2
-        and target_info.st_uid == temporary_info.st_uid == os.geteuid()
-        and stat.S_IMODE(target_info.st_mode)
-        == stat.S_IMODE(temporary_info.st_mode)
-        == 0o400
-        and target_info.st_size == temporary_info.st_size == reference.size
-    )
-    if not exact_shape:
-        raise EvidenceStoreError("legacy evidence publication state is unsafe")
-    if _read_sealed(target, reference, limit=limit, links=2) != payload:
-        raise EvidenceStoreError("legacy evidence publication bytes differ")
-    if _read_sealed(
-        temporary,
-        reference,
-        limit=limit,
-        links=2,
-        label="legacy staged evidence artifact",
-    ) != payload:
-        raise EvidenceStoreError("legacy staged evidence bytes differ")
-    try:
-        final_info = temporary.lstat()
-        final_target = target.lstat()
-        stable = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_uid", "st_size")
-        if (
-            any(
-                getattr(final_info, field) != getattr(temporary_info, field)
-                for field in stable
-            )
-            or any(
-                getattr(final_target, field) != getattr(target_info, field)
-                for field in stable
-            )
-        ):
-            raise EvidenceStoreError("legacy evidence publication changed before recovery")
-        temporary.unlink()
-    except OSError as exc:
-        raise EvidenceStoreError(f"cannot recover legacy evidence publication: {exc}") from None
-    _fsync_dir(target.parent)
-    return True
-
-
 def _accept_existing(
     target: Path,
     reference: EvidenceArtifactRef,
@@ -486,7 +407,6 @@ def _accept_existing(
     *,
     limit: int,
 ) -> None:
-    _recover_old_hardlink_window(target, reference, payload, limit=limit)
     if _read_sealed(target, reference, limit=limit) != payload:
         raise EvidenceStoreError("existing evidence is not an exact duplicate")
     _fsync_dir(target.parent)
