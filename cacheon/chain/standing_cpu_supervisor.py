@@ -849,6 +849,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # ``python -m`` executes this file as ``__main__``. The weights stage
+    # imports this module by its canonical name at composition time; without
+    # this alias that import loads a second copy whose SupervisorStageResult
+    # and StandingCpuSupervisorError are different classes, and every landed
+    # push is then rejected as "an untyped product" (mainnet, 2026-08-19).
+    sys.modules.setdefault("cacheon.chain.standing_cpu_supervisor", sys.modules[__name__])
     raise SystemExit(main())
 
 
