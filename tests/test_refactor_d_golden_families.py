@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -74,8 +75,21 @@ from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
     B300QualificationGraphEvidenceStoreError,
 )
+from cacheon.eval.continuation_codec import ContinuationCodec, ContinuationCodecError
+from cacheon.eval.count_quality import (
+    CountQualityEvidence,
+    CountQualityPolicy,
+    score_count_quality,
+)
 from cacheon.eval.qualification_intake import QualificationReservation
-from cacheon.stack_identity import canonical_digest
+from cacheon.eval.registered_resident_count_quality import (
+    RegisteredResidentCountQualityResult,
+)
+from cacheon.eval.resident_count_quality import (
+    ResidentCountQualityError,
+    ResidentCountQualityResult,
+)
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
 
 def _h(label: str) -> str:
@@ -450,7 +464,94 @@ def test_graph_store_refuses_an_index_without_a_terminal_record() -> None:
             store.reopen(binding, deadline=_deadline())
 
 
+# --------------------------------------------------------------------------- #
+# count_closure: RegisteredResidentCountQualityResult (the count result nested
+# in resident_count stage exits and resident-pair closures) through the same
+# ContinuationCodec root qualification_runner registers for it
+# (cacheon/eval/registered_resident_count_quality.py, continuation_codec.py).
+# --------------------------------------------------------------------------- #
+
+COUNT_CLOSURE_INPUTS: dict[str, dict[str, Any]] = {
+    "pass": {"stock_correct": 8, "candidate_correct": 8, "total": 10, "threshold_drop": 1},
+    "fail": {"stock_correct": 8, "candidate_correct": 6, "total": 10, "threshold_drop": 1},
+}
+
+
+def _count_result(inputs: dict[str, Any]) -> ResidentCountQualityResult:
+    policy = CountQualityPolicy(regression_threshold_drop=int(inputs["threshold_drop"]))
+    evidence = CountQualityEvidence(
+        stock_observation_digest=_h("stock-observation"),
+        candidate_observation_digest=_h("candidate-observation"),
+        stock_correct=int(inputs["stock_correct"]),
+        candidate_correct=int(inputs["candidate_correct"]),
+        total=int(inputs["total"]),
+    )
+    return ResidentCountQualityResult(
+        stock_observation_digest=evidence.stock_observation_digest,
+        candidate_observation_digest=evidence.candidate_observation_digest,
+        evidence=evidence,
+        policy=policy,
+        verdict=score_count_quality(evidence, policy),
+    )
+
+
+def _registered(inputs: dict[str, Any]) -> RegisteredResidentCountQualityResult:
+    count = _count_result(inputs)
+    return RegisteredResidentCountQualityResult(
+        target_id="golden-target",
+        catalog_digest=_h("catalog"),
+        target_spec_digest=_h("target-spec"),
+        profile_digest=_h("profile"),
+        execution_envelope_digest=_h("envelope"),
+        execution_plan_digest=_h("plan"),
+        pair_binding_digest=_h("pair-binding"),
+        candidate_bundle_digest=_h("candidate-bundle"),
+        raw_execution_evidence_digest=_h("raw-execution"),
+        fixed_stock_authority_digest=_h("stock-authority"),
+        stock_observation_digest=count.stock_observation_digest,
+        candidate_observation_digest=count.candidate_observation_digest,
+        policy_digest=count.policy.digest,
+        count_quality_result_digest=count.digest,
+        count_quality_result=count,
+    )
+
+
+def build_count_closure(inputs: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
+    registered = _registered(inputs)
+    codec = ContinuationCodec((RegisteredResidentCountQualityResult,))
+    encoded = codec.encode(registered)
+    raw = canonical_json_bytes(encoded)
+    decoded = codec.decode(json.loads(raw.decode("utf-8")))
+    assert decoded == registered and decoded.digest == registered.digest
+    return raw, registered.digest, {
+        "codec_type": encoded["type"],
+        "decision": registered.count_quality_result.verdict.decision,
+        "count_result_digest": registered.count_quality_result.digest,
+    }
+
+
+def test_count_result_refuses_a_stale_verdict() -> None:
+    passing = _count_result(COUNT_CLOSURE_INPUTS["pass"])
+    failing_evidence = _count_result(COUNT_CLOSURE_INPUTS["fail"]).evidence
+    with pytest.raises(ResidentCountQualityError):
+        ResidentCountQualityResult(
+            stock_observation_digest=failing_evidence.stock_observation_digest,
+            candidate_observation_digest=failing_evidence.candidate_observation_digest,
+            evidence=failing_evidence,
+            policy=passing.policy,
+            verdict=passing.verdict,
+        )
+
+
+def test_count_closure_codec_refuses_a_foreign_type_key() -> None:
+    codec = ContinuationCodec((RegisteredResidentCountQualityResult,))
+    encoded = codec.encode(_registered(COUNT_CLOSURE_INPUTS["pass"]))
+    with pytest.raises(ContinuationCodecError, match="not a registered codec root"):
+        codec.decode({"type": "not.a.registered.Root", "value": encoded["value"]})
+
+
 FAMILIES: dict[str, tuple[dict[str, dict[str, Any]], Any]] = {
     "request_plan": (REQUEST_PLAN_INPUTS, build_request_plan),
     "graph_store": (GRAPH_STORE_INPUTS, build_graph_store),
+    "count_closure": (COUNT_CLOSURE_INPUTS, build_count_closure),
 }

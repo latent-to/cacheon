@@ -1,10 +1,42 @@
 {
   "_meta": {
-    "generated_at_commit": "fd299cae",
+    "generated_at_commit": "c04c9196",
     "purpose": "Refactor D durable-format goldens (synthetic inputs)",
     "python": "3.11.15"
   },
   "families": {
+    "count_closure": {
+      "fail": {
+        "canonical": "{\"type\":\"cacheon.eval.registered_resident_count_quality.RegisteredResidentCountQualityResult\",\"value\":{\"candidate_bundle_digest\":\"9840f40ce082e0186e4ed17444bfca2d005a4014993cb1212ca544d220e515fb\",\"candidate_observation_digest\":\"5ef7baff1e2e951f06d1371dc418a631c5586b9eb0bb3af24cb257fdac8633a1\",\"catalog_digest\":\"652f55016243bf1b9f1bbea46d5749ef892dbe394e46de9d66ab1aacf0b4af57\",\"count_quality_result\":{\"candidate_observation_digest\":\"5ef7baff1e2e951f06d1371dc418a631c5586b9eb0bb3af24cb257fdac8633a1\",\"evidence\":{\"candidate_correct\":6,\"candidate_observation_digest\":\"5ef7baff1e2e951f06d1371dc418a631c5586b9eb0bb3af24cb257fdac8633a1\",\"stock_correct\":8,\"stock_observation_digest\":\"d68cf9184ba70e5d042384765b459a77da8fb2f62cef587133f5cbe1545fafca\",\"total\":10},\"policy\":{\"regression_threshold_drop\":1},\"stock_observation_digest\":\"d68cf9184ba70e5d042384765b459a77da8fb2f62cef587133f5cbe1545fafca\",\"verdict\":{\"decision\":\"FAIL\",\"evidence_digest\":\"8c0268cac9a82b2a316505ffdcb10a77490f0e6b4e2cde359aee69e86f699996\",\"observed_drop\":2,\"policy_digest\":\"1d0ae093328aac892b75deb325b5cd9b1b8095b7f9037508ae83c3cf46f09497\",\"regression_threshold_drop\":1}},\"count_quality_result_digest\":\"aa2d968f982aba6553dbbb575ae186b47a4c8d07b414c3b5ed4ab0fccb3c1c13\",\"execution_envelope_digest\":\"4c503ca67761e5c4aaecfe996244c25d8c0b40902d1085c85b4468bd567548c6\",\"execution_plan_digest\":\"64879f7d6b960a01909762d911a32d4582c20010c5641ee90278b644a9e3b525\",\"fixed_stock_authority_digest\":\"5dbd4c2415937cb07b531a4ff15dc5a9e00aa0a3bd6a3cbdad4c589989c7f19c\",\"pair_binding_digest\":\"658cefc373668748ea8a98acc835d89783c6ba466d545c922359d0ad3cd51846\",\"policy_digest\":\"1d0ae093328aac892b75deb325b5cd9b1b8095b7f9037508ae83c3cf46f09497\",\"profile_digest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"raw_execution_evidence_digest\":\"39c56a67137fdd808033b5f974e4deff1b603e3fa989c511e7ff356d63ed32e3\",\"stock_observation_digest\":\"d68cf9184ba70e5d042384765b459a77da8fb2f62cef587133f5cbe1545fafca\",\"target_id\":\"golden-target\",\"target_spec_digest\":\"67121430b0b4e33992534096a4a3d973c6829354c4f412fbbadd6f0d99e815da\"}}",
+        "digest": "3480c79a0ddc03e524cf8d91b8b2d0b9a2f61fc6bded18a761a221a5594cfe7d",
+        "extras": {
+          "codec_type": "cacheon.eval.registered_resident_count_quality.RegisteredResidentCountQualityResult",
+          "count_result_digest": "aa2d968f982aba6553dbbb575ae186b47a4c8d07b414c3b5ed4ab0fccb3c1c13",
+          "decision": "FAIL"
+        },
+        "inputs": {
+          "candidate_correct": 6,
+          "stock_correct": 8,
+          "threshold_drop": 1,
+          "total": 10
+        }
+      },
+      "pass": {
+        "canonical": "{\"type\":\"cacheon.eval.registered_resident_count_quality.RegisteredResidentCountQualityResult\",\"value\":{\"candidate_bundle_digest\":\"9840f40ce082e0186e4ed17444bfca2d005a4014993cb1212ca544d220e515fb\",\"candidate_observation_digest\":\"5ef7baff1e2e951f06d1371dc418a631c5586b9eb0bb3af24cb257fdac8633a1\",\"catalog_digest\":\"652f55016243bf1b9f1bbea46d5749ef892dbe394e46de9d66ab1aacf0b4af57\",\"count_quality_result\":{\"candidate_observation_digest\":\"5ef7baff1e2e951f06d1371dc418a631c5586b9eb0bb3af24cb257fdac8633a1\",\"evidence\":{\"candidate_correct\":8,\"candidate_observation_digest\":\"5ef7baff1e2e951f06d1371dc418a631c5586b9eb0bb3af24cb257fdac8633a1\",\"stock_correct\":8,\"stock_observation_digest\":\"d68cf9184ba70e5d042384765b459a77da8fb2f62cef587133f5cbe1545fafca\",\"total\":10},\"policy\":{\"regression_threshold_drop\":1},\"stock_observation_digest\":\"d68cf9184ba70e5d042384765b459a77da8fb2f62cef587133f5cbe1545fafca\",\"verdict\":{\"decision\":\"PASS\",\"evidence_digest\":\"24fc88806177a936d4efc0853876fc1bdcdf28f7d57e465b3767dd8a5fcb65e6\",\"observed_drop\":0,\"policy_digest\":\"1d0ae093328aac892b75deb325b5cd9b1b8095b7f9037508ae83c3cf46f09497\",\"regression_threshold_drop\":1}},\"count_quality_result_digest\":\"3e69bce1ac0462251eab5c03330238359870dcd8bf79d44c46459f7d4560f65b\",\"execution_envelope_digest\":\"4c503ca67761e5c4aaecfe996244c25d8c0b40902d1085c85b4468bd567548c6\",\"execution_plan_digest\":\"64879f7d6b960a01909762d911a32d4582c20010c5641ee90278b644a9e3b525\",\"fixed_stock_authority_digest\":\"5dbd4c2415937cb07b531a4ff15dc5a9e00aa0a3bd6a3cbdad4c589989c7f19c\",\"pair_binding_digest\":\"658cefc373668748ea8a98acc835d89783c6ba466d545c922359d0ad3cd51846\",\"policy_digest\":\"1d0ae093328aac892b75deb325b5cd9b1b8095b7f9037508ae83c3cf46f09497\",\"profile_digest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"raw_execution_evidence_digest\":\"39c56a67137fdd808033b5f974e4deff1b603e3fa989c511e7ff356d63ed32e3\",\"stock_observation_digest\":\"d68cf9184ba70e5d042384765b459a77da8fb2f62cef587133f5cbe1545fafca\",\"target_id\":\"golden-target\",\"target_spec_digest\":\"67121430b0b4e33992534096a4a3d973c6829354c4f412fbbadd6f0d99e815da\"}}",
+        "digest": "32762e230e515d21b5f4b0555cf50c7cd74f14d2b73d6b4c3551f0097c01e039",
+        "extras": {
+          "codec_type": "cacheon.eval.registered_resident_count_quality.RegisteredResidentCountQualityResult",
+          "count_result_digest": "3e69bce1ac0462251eab5c03330238359870dcd8bf79d44c46459f7d4560f65b",
+          "decision": "PASS"
+        },
+        "inputs": {
+          "candidate_correct": 8,
+          "stock_correct": 8,
+          "threshold_drop": 1,
+          "total": 10
+        }
+      }
+    },
     "graph_store": {
       "armed": {
         "canonical": "{\"binding\":{\"candidate_binding_digest\":\"10bff7eb46f7e73df974ec6d356896ba8e0428bf81244662103f67be410ceead\",\"materialized_stack_digest\":\"fa48a849b6703b939bb611636b0afbc9c00ac3ca9cee4b3430bfb20d1caee38e\",\"materialized_tree_digest\":\"72d1bede86e2011435e57842489fa0d38ebc9fdab45ed5918ee19f0daec0bd35\",\"native_build_spec_digest\":\"78310cb1357149e220c646b5255b1b3fc1042f0488ef34f9370fbad6c87e9c1a\",\"prepared_arm_digest\":\"3383ab5ced1f0e45b2a6517dbec97711be531e69a6ca95b63108d830971c621c\",\"prepared_contribution_digest\":\"96c05d1351e2f566c9f63cbcca6f45b00a6045a464f95798e79fb92628b40152\",\"prepared_launch_digest\":\"82f4f494bf3d8e38df6bfbc678a88f3a1e3e8e0c6efb59c32c4d02251e581c2e\",\"publication_address_digest\":\"a07c3b94eedeab9c0cc204913856bca99df1e6107efc504ca1f5dfb670a055ea\",\"publication_content_hash\":\"f398e4858debb0c2a3db7be797cb2f211c9a272a7b15f6ccf06b015736b75f6d\",\"publication_digest\":\"74dae7c77e8350109e77ea15a25e22f12725b9d10d936c93d7ca43b5b05aaf80\",\"publication_receipt_digest\":\"4392d16b45457e7d85efb0582114c265a7a0f0601966a40dbab06ff013e062e8\",\"reservation_digest\":\"d09eac6ad0a3d206726b8087f5e6fc233e3262bb47e24eb907c1bfeb3aa3713b\",\"reservation_identity_digest\":\"d7bd37d23765caca8bbb45525eb88d71e36e4fa295cb35da1809c9d6b721f5bf\",\"screen_attempt\":1,\"selected_delta_digest\":\"78daadcba15c6e3935e4532812927ee8ac68d31a5e3bc39c29426ee9a1e58c61\",\"target_id\":\"golden-target\",\"target_members\":[\"member-a\"],\"target_spec_digest\":\"0a2dc981a195694a82f4cc122c17ccbccef47181e564ccf86aa0c0a42f4bd862\",\"trusted_tree_identity_digest\":\"18d858b9e1dcac68be90f2fe9f21e2ab2a082ceee81085a93dda568dee1b1072\"},\"binding_digest\":\"d6cd9f8e42d873d0f42f152977ea2350bede3aa850b46087070dc09c756e7a6d\",\"generation\":1,\"generation_nonce\":\"abababababababababababababababababababababababababababababababab\",\"record_type\":\"armed\",\"schema\":\"cacheon.eval.b300-qualification-graph-evidence-attempt.v2\",\"verification_policy_digest\":\"306084695f22e1da5c699742e158715e42c8709056a05ab5bc2a18fac567df70\"}",
