@@ -177,6 +177,11 @@ transfer lands, then commits v2. Copy the printed pointer:
 eval_cost payment: block=<BLOCK> extrinsic=<INDEX>
 ```
 
+If the validator operator granted you a fee credit (a make-good after a
+validator-side failure of a paid submission), submit as in the gate-off flow:
+plain `chain-submit` with no `--pay` and no payment pointer. The credit admits
+that one reveal.
+
 ```json
 {"v":2,"h":"<64-lowercase-hex>","u":"https://.../my_bundle.tar.gz","p":{"b":<block>,"i":<extrinsic_index>}}
 ```

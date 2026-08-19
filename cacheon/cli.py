@@ -1454,6 +1454,65 @@ def cmd_chain_eval_cost(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain_eval_cost_credit(args: argparse.Namespace) -> int:
+    from cacheon.chain.eval_cost_credit import (
+        grant_eval_cost_credit,
+        list_eval_cost_credits,
+    )
+    from cacheon.chain.intake import IntakeError
+
+    if args.list:
+        try:
+            credits = list_eval_cost_credits(args.intake_db, hotkey=args.hotkey)
+        except IntakeError as exc:
+            print(f"REFUSED: {exc}")
+            return 2
+        if not credits:
+            print("no eval-cost credits recorded")
+            return 0
+        for credit in credits:
+            state = (
+                f"spent by {credit.reservation_id[:16]} at block {credit.spent_block}"
+                if credit.spent
+                else "unspent"
+            )
+            line = (
+                f"{credit.credit_id[:16]}  {credit.hotkey}  "
+                f"{credit.amount_tao_rao} rao  {credit.granted_at}  {state}"
+            )
+            if credit.note:
+                line += f"  # {credit.note}"
+            print(line)
+        return 0
+    if not args.hotkey:
+        print("REFUSED: --hotkey is required to grant a credit")
+        return 2
+    try:
+        credit_id = grant_eval_cost_credit(
+            args.intake_db,
+            hotkey=args.hotkey,
+            coldkey=args.coldkey,
+            amount_tao_rao=args.amount_tao_rao,
+            note=args.note,
+        )
+    except IntakeError as exc:
+        print(f"REFUSED: {exc}")
+        return 2
+    print(f"credit_id:      {credit_id}")
+    print(f"hotkey:         {args.hotkey}")
+    if args.coldkey:
+        print(f"coldkey:        {args.coldkey}")
+    print(f"amount_tao_rao: {args.amount_tao_rao}")
+    if args.note:
+        print(f"note:           {args.note}")
+    print(
+        "The next fee-gated reveal from this hotkey that carries no payment "
+        "pointer is admitted against this credit: the miner re-submits with a "
+        "plain chain-submit (no --pay, no payment pointer)."
+    )
+    return 0
+
+
 def cmd_chain_submit(args: argparse.Namespace) -> int:
     from cacheon.chain.eval_cost import (
         EvalCostCommitError,
@@ -2119,7 +2178,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  submit on-chain (miner) .... chain-register, chain-package,\n"
             "                               chain-publish, chain-eval-cost,\n"
             "                               chain-submit, chain-status\n"
-            "  referee + settlement ....... chain-validate, chain-snapshot\n"
+            "  referee + settlement ....... chain-validate, chain-snapshot,\n"
+            "                               chain-eval-cost-credit\n"
             "  environment checks ......... compat, chain-compat\n"
             "\n"
             "New to Cacheon? Start with docs/MINER_GUIDE.md."
@@ -2671,6 +2731,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="quoted TAO amount in rao; default 1000000000 (1 TAO) is the published v1 quote",
     )
     sp.set_defaults(func=cmd_chain_eval_cost)
+
+    sp = sub.add_parser(
+        "chain-eval-cost-credit",
+        help="operator: grant one artificial eval-cost credit so a hotkey can "
+             "submit once without paying, or --list recorded credits",
+    )
+    sp.add_argument(
+        "--intake-db",
+        required=True,
+        help="path to the validator intake sqlite database",
+    )
+    sp.add_argument(
+        "--hotkey",
+        default="",
+        help="miner hotkey ss58 the credit admits (required to grant)",
+    )
+    sp.add_argument(
+        "--coldkey",
+        default="",
+        help="miner coldkey ss58, recorded for audit only",
+    )
+    sp.add_argument(
+        "--amount-tao-rao",
+        type=int,
+        default=1_000_000_000,
+        help="fee amount the credit stands in for, recorded for audit "
+             "(default 1000000000, 1 TAO)",
+    )
+    sp.add_argument(
+        "--note",
+        default="",
+        help="why the credit was granted (audit trail)",
+    )
+    sp.add_argument(
+        "--list",
+        action="store_true",
+        help="list credits (optionally filtered by --hotkey) instead of granting",
+    )
+    sp.set_defaults(func=cmd_chain_eval_cost_credit)
 
     sp = sub.add_parser("chain-submit",
                         help="miner: commit a bundle (hash + fetch URL) on-chain via "

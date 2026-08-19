@@ -37,6 +37,7 @@ from cacheon.copy_fingerprint import (
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
+from cacheon.chain.eval_cost_credit import EVAL_COST_CREDITS_DDL
 
 if TYPE_CHECKING:
     from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
@@ -683,6 +684,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             ) STRICT;
             """
         )
+        self._db.executescript(EVAL_COST_CREDITS_DDL)
         reservation_columns = {
             row["name"] for row in self._db.execute("PRAGMA table_info(reservations)")
         }
@@ -855,6 +857,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         ).fetchone()
         return row is not None
 
+    def _unspent_eval_cost_credit(self, hotkey: str) -> str:
+        row = self._db.execute(
+            "SELECT credit_id FROM eval_cost_credits "
+            "WHERE hotkey=? AND reservation_id='' "
+            "ORDER BY granted_at, credit_id LIMIT 1",
+            (hotkey,),
+        ).fetchone()
+        return "" if row is None else row["credit_id"]
+
     def reserve_finalized(
         self,
         arrivals: Iterable[FinalizedArrival],
@@ -921,9 +932,30 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                     (epoch, arrival.hotkey),
                 ).fetchone()["n"]
                 status, reason = "reserved", ""
-                if not arrival.valid:
+                # An operator-granted credit substitutes for exactly one
+                # missing payment; every other invalid_reason keeps its
+                # verdict, and a cited (even invalid) payment pointer is
+                # never rescued.
+                credit_id = ""
+                if (
+                    eval_cost_amount_tao_rao > 0
+                    and arrival.payment_block == 0
+                    and (
+                        arrival.valid
+                        or arrival.invalid_reason == "missing_eval_cost_payment"
+                    )
+                ):
+                    credit_id = self._unspent_eval_cost_credit(arrival.hotkey)
+                if not arrival.valid and not (
+                    credit_id
+                    and arrival.invalid_reason == "missing_eval_cost_payment"
+                ):
                     status, reason = "failed", arrival.invalid_reason
-                elif eval_cost_amount_tao_rao > 0 and arrival.payment_block == 0:
+                elif (
+                    eval_cost_amount_tao_rao > 0
+                    and arrival.payment_block == 0
+                    and not credit_id
+                ):
                     status, reason = "failed", "missing_eval_cost_payment"
                 elif finalized_block - arrival.block >= self.policy.expiry_blocks:
                     status, reason = "expired", _AUTOMATIC_EXPIRY_REASON
@@ -985,6 +1017,22 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                             eval_cost_amount_tao_rao,
                         ),
                     )
+                elif (
+                    eval_cost_amount_tao_rao > 0
+                    and status in {"reserved", "deferred"}
+                    and credit_id
+                ):
+                    # Mirror payment semantics: consumed only by an admitted
+                    # row, inside the same transaction that peeked it.
+                    spent = self._db.execute(
+                        "UPDATE eval_cost_credits SET reservation_id=?, "
+                        "spent_block=? WHERE credit_id=? AND reservation_id=''",
+                        (arrival.reservation_id, finalized_block, credit_id),
+                    )
+                    if spent.rowcount != 1:
+                        raise IntakeError(
+                            "eval-cost credit disappeared during admission"
+                        )
                 inserted.append(arrival.reservation_id)
             cursor_value = json.dumps(
                 [finalized_block, finalized_block_hash], separators=(",", ":")

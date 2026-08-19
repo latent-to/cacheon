@@ -26,9 +26,14 @@ from cacheon.chain.eval_cost import (
     verify_eval_cost_payment,
 )
 from cacheon.chain.eval_cost_payment import bind_eval_cost_payment, read_subnet_owner_coldkey
+from cacheon.chain.eval_cost_credit import (
+    grant_eval_cost_credit,
+    list_eval_cost_credits,
+)
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
+    IntakeError,
     IntakePolicy,
     IntakeScope,
 )
@@ -597,6 +602,228 @@ def test_failed_intake_leaves_eval_cost_payment_unused(tmp_path) -> None:
         )[0]
         assert second.status == "reserved"
         assert second.arrival.payment_block == 8
+
+
+def _unpaid_arrival(
+    hotkey: str, digest: str, block: int, event_index: int = 0
+) -> FinalizedArrival:
+    """An arrival shaped exactly as the loop emits it for a missing payment."""
+
+    return FinalizedArrival(
+        hotkey=hotkey,
+        content_hash=digest,
+        url=f"https://example.com/{digest[:8]}.tar.gz",
+        block=block,
+        block_hash="0x" + f"{block:064x}",
+        event_index=event_index,
+        invalid_reason="missing_eval_cost_payment",
+    )
+
+
+def test_eval_cost_credit_admits_one_unpaid_reveal(tmp_path) -> None:
+    with FinalizedIntakeStore(
+        tmp_path / "private" / "intake.sqlite3",
+        IntakePolicy(expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        # Grant through a second connection while the controller holds its
+        # exclusive lock, exactly as the ops command runs in production.
+        credit_id = grant_eval_cost_credit(
+            store.path,
+            hotkey="miner",
+            coldkey="miner-cold",
+            amount_tao_rao=_PAID_AMOUNT,
+            note="expired through validator backpressure",
+        )
+        first = store.reserve_finalized(
+            (_unpaid_arrival("miner", "a" * 64, 10),),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )[0]
+        assert first.status == "reserved"
+        credit = list_eval_cost_credits(store.path, hotkey="miner")[0]
+        assert credit.credit_id == credit_id
+        assert credit.spent
+        assert credit.reservation_id == first.reservation_id
+        assert credit.spent_block == 10
+        second = store.reserve_finalized(
+            (_unpaid_arrival("miner", "b" * 64, 11),),
+            finalized_block=11,
+            finalized_block_hash="0x" + f"{11:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )[0]
+        assert second.status == "failed"
+        assert second.reason == "missing_eval_cost_payment"
+
+
+def test_eval_cost_credit_is_hotkey_scoped(tmp_path) -> None:
+    with FinalizedIntakeStore(
+        tmp_path / "private" / "intake.sqlite3",
+        IntakePolicy(expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        grant_eval_cost_credit(store.path, hotkey="miner")
+        other = store.reserve_finalized(
+            (_unpaid_arrival("other", "a" * 64, 10),),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )[0]
+        assert other.status == "failed"
+        assert other.reason == "missing_eval_cost_payment"
+        mine = store.reserve_finalized(
+            (_unpaid_arrival("miner", "b" * 64, 11),),
+            finalized_block=11,
+            finalized_block_hash="0x" + f"{11:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )[0]
+        assert mine.status == "reserved"
+
+
+def test_one_credit_admits_only_one_unpaid_reveal_per_batch(tmp_path) -> None:
+    with FinalizedIntakeStore(
+        tmp_path / "private" / "intake.sqlite3",
+        IntakePolicy(expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        grant_eval_cost_credit(store.path, hotkey="miner")
+        rows = store.reserve_finalized(
+            (
+                _unpaid_arrival("miner", "a" * 64, 10, 0),
+                _unpaid_arrival("miner", "b" * 64, 10, 1),
+            ),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )
+        assert [row.status for row in rows] == ["reserved", "failed"]
+        assert rows[1].reason == "missing_eval_cost_payment"
+
+
+def test_eval_cost_credit_survives_admission_failed_for_another_reason(
+    tmp_path,
+) -> None:
+    invalid = FinalizedArrival(
+        hotkey="miner",
+        content_hash="a" * 64,
+        url="https://example.com/a.tar.gz",
+        block=10,
+        block_hash="0x" + f"{10:064x}",
+        event_index=0,
+        invalid_reason="malformed_payload",
+    )
+    with FinalizedIntakeStore(
+        tmp_path / "private" / "intake.sqlite3",
+        IntakePolicy(expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        grant_eval_cost_credit(store.path, hotkey="miner")
+        failed = store.reserve_finalized(
+            (invalid,),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )[0]
+        assert failed.status == "failed"
+        assert failed.reason == "malformed_payload"
+        assert not list_eval_cost_credits(store.path)[0].spent
+        retry = store.reserve_finalized(
+            (_unpaid_arrival("miner", "b" * 64, 11),),
+            finalized_block=11,
+            finalized_block_hash="0x" + f"{11:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )[0]
+        assert retry.status == "reserved"
+        assert list_eval_cost_credits(store.path)[0].spent
+
+
+def test_eval_cost_credit_is_consumed_by_a_deferred_admission(tmp_path) -> None:
+    paid = FinalizedArrival(
+        hotkey="other",
+        content_hash="a" * 64,
+        url="https://example.com/a.tar.gz",
+        block=10,
+        block_hash="0x" + f"{10:064x}",
+        event_index=0,
+        payment_block=8,
+        payment_extrinsic_index=4,
+    )
+    with FinalizedIntakeStore(
+        tmp_path / "private" / "intake.sqlite3",
+        IntakePolicy(expiry_blocks=100, max_pending=1, max_cohort=1),
+        scope=SCOPE,
+    ) as store:
+        grant_eval_cost_credit(store.path, hotkey="miner")
+        rows = store.reserve_finalized(
+            (paid, _unpaid_arrival("miner", "b" * 64, 10, 1)),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )
+        assert [row.status for row in rows] == ["reserved", "deferred"]
+        credit = list_eval_cost_credits(store.path)[0]
+        assert credit.spent
+        assert credit.reservation_id == rows[1].reservation_id
+
+
+def test_credit_never_rescues_a_cited_payment_pointer(tmp_path) -> None:
+    used_twice = FinalizedArrival(
+        hotkey="miner",
+        content_hash="b" * 64,
+        url="https://example.com/b.tar.gz",
+        block=11,
+        block_hash="0x" + f"{11:064x}",
+        event_index=1,
+        payment_block=8,
+        payment_extrinsic_index=4,
+    )
+    with FinalizedIntakeStore(
+        tmp_path / "private" / "intake.sqlite3",
+        IntakePolicy(expiry_blocks=100),
+        scope=SCOPE,
+    ) as store:
+        grant_eval_cost_credit(store.path, hotkey="miner")
+        first = FinalizedArrival(
+            hotkey="miner",
+            content_hash="a" * 64,
+            url="https://example.com/a.tar.gz",
+            block=10,
+            block_hash="0x" + f"{10:064x}",
+            event_index=0,
+            payment_block=8,
+            payment_extrinsic_index=4,
+        )
+        rows = store.reserve_finalized(
+            (first,),
+            finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )
+        assert rows[0].status == "reserved"
+        replayed = store.reserve_finalized(
+            (used_twice,),
+            finalized_block=11,
+            finalized_block_hash="0x" + f"{11:064x}",
+            eval_cost_amount_tao_rao=_PAID_AMOUNT,
+        )[0]
+        assert replayed.status == "failed"
+        assert replayed.reason == "eval_cost_payment_used"
+        assert not list_eval_cost_credits(store.path)[0].spent
+
+
+def test_grant_eval_cost_credit_fails_closed(tmp_path) -> None:
+    with pytest.raises(IntakeError, match="does not exist"):
+        grant_eval_cost_credit(tmp_path / "missing.sqlite3", hotkey="miner")
+    db_path = tmp_path / "private" / "intake.sqlite3"
+    with FinalizedIntakeStore(db_path, IntakePolicy(), scope=SCOPE) as store:
+        with pytest.raises(IntakeError, match="hotkey"):
+            grant_eval_cost_credit(store.path, hotkey="")
+        with pytest.raises(IntakeError, match="amount"):
+            grant_eval_cost_credit(store.path, hotkey="miner", amount_tao_rao=0)
+        with pytest.raises(IntakeError, match="note"):
+            grant_eval_cost_credit(store.path, hotkey="miner", note="a\nb")
+        assert list_eval_cost_credits(store.path) == ()
 
 
 class _Hotkey:

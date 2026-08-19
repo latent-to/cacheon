@@ -24,6 +24,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-package` | contributor | packaging | Build a canonical archive and print its content hash |
 | `chain-publish` | contributor | object-store mutation | Package, publish, and anonymously verify a content-addressed proposal archive |
 | `chain-eval-cost` | contributor | read-only | Print the published eval-cost quote (v1 is a fixed TAO transfer) |
+| `chain-eval-cost-credit` | validator operator | private intake mutation | Grant (or list) one artificial eval-cost credit admitting one unpaid reveal from a hotkey |
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
@@ -194,6 +195,46 @@ This is a chain mutation and may burn registration cost. It checks for existing
 registration first, then runs the SDK preflight.
 
 ## Validator commands
+
+### `chain-eval-cost-credit`
+
+Grant one artificial eval-cost credit: the next fee-gated reveal from the
+granted hotkey that arrives **without** a payment pointer is admitted exactly
+as if a submission payment had been consumed. Use it as a make-good when a
+paid submission died for a validator-side reason (for example, a paid row
+expired under validator backpressure, which does not release the consumed
+payment).
+
+```bash
+python -m cacheon.cli chain-eval-cost-credit \
+  --intake-db /srv/cacheon/state/intake.sqlite3 \
+  --hotkey <miner-hotkey-ss58> \
+  --coldkey <miner-coldkey-ss58> \
+  --note "reservation <id>: expired under validator backpressure"
+```
+
+After granting, the miner re-submits with a plain `chain-submit` — no `--pay`
+and no payment pointer. Semantics:
+
+- One credit admits exactly one reveal; a second unpaid reveal fails
+  `missing_eval_cost_payment` as usual. Credits are matched by hotkey, oldest
+  grant first; `--coldkey` and `--note` are recorded for audit only.
+- A credit is consumed only when the reveal is actually admitted (`reserved`
+  or `deferred`). A reveal that fails for any other reason (malformed payload,
+  hotkey epoch limit, ...) leaves the credit unspent.
+- A credit never rescues a reveal that cited a payment pointer: an invalid or
+  already-used payment keeps its verdict.
+- Safe to run while `chain-validate` is live. The command writes through its
+  own SQLite connection and never takes the intake controller lock; the credit
+  is claimed inside the controller's own admission transaction.
+
+Audit the trail with `--list` (optionally filtered by `--hotkey`); spent
+credits print the consuming reservation and block:
+
+```bash
+python -m cacheon.cli chain-eval-cost-credit \
+  --intake-db /srv/cacheon/state/intake.sqlite3 --list
+```
 
 ### `chain-reservation-status`
 
