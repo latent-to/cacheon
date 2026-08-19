@@ -17,7 +17,6 @@ import time
 from dataclasses import dataclass
 from typing import Callable, NoReturn, Protocol, Sequence
 
-from cacheon.discovery_overlay import DiscoveryActivationReceipt
 from cacheon.eval.oci_process import (
     OCIAttachedClient,
     OCIAttachedDiagnostic,
@@ -522,7 +521,6 @@ class SessionExecutionEvidence:
     first_timed_completed_at: float
     conditioning_token_numerator: int
     session_completed_at: float
-    discovery_activation: DiscoveryActivationReceipt | None = None
     audit_policy_digest: str | None = None
 
     @property
@@ -642,7 +640,6 @@ class OpenedOuterSession:
         self.conditioning_started_at: float | None = None
         self.first_timed_completed_at: float | None = None
         self.preflight: RuntimePreflightFacts | None = None
-        self.discovery_activation: DiscoveryActivationReceipt | None = None
         self.ready_completed_at = 0.0
         self.last_host_time = started_at
         self.started = False
@@ -728,22 +725,10 @@ class OpenedOuterSession:
                 deadline=init_deadline,
             )
             try:
-                expected_identity = self.plan.expected_discovery_overlay_identity_digest
-                self.discovery_activation = validate_ready(
+                validate_ready(
                     ready,
                     session_id=self.session_id,
                     launch_digest=self.plan.launch_digest,
-                    expected_discovery_identity_digest=expected_identity,
-                    expected_discovery_tp_size=(
-                        self.plan.engine_config.tp_size
-                        if expected_identity is not None
-                        else None
-                    ),
-                    expected_discovery_sglang_version=(
-                        self.plan.expected_preflight.sglang_version
-                        if expected_identity is not None
-                        else None
-                    ),
                 )
             except SessionProtocolError as exc:
                 raise OuterSessionProtocolError(str(exc)) from None
@@ -901,7 +886,6 @@ class OpenedOuterSession:
             first_timed_completed_at=self.first_timed_completed_at,
             conditioning_token_numerator=conditioning_tokens,
             session_completed_at=session_completed_at,
-            discovery_activation=self.discovery_activation,
             audit_policy_digest=(
                 None if self.plan.audit_policy is None else self.plan.audit_policy.digest
             ),

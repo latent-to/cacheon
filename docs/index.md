@@ -58,15 +58,12 @@ flowchart LR
   Q -. "does not ship automatically" .-> R
 ```
 
-A miner submits a **proposal** for one registered target delta, or a bounded discovery
-prototype through the separate discovery ABI. The referee may establish a **crown**
-after two independent passing qualifications. Cacheon maintainers may then turn the
-proposal into an **integrated contribution** after security, provenance,
-compatibility, and maintenance review. Only integrated contributions may enter a signed
-**Engine release**. Discovery policy defines reviewed promotion and bounded-bounty
-outcomes, but the durable registered-promotion transport is not implemented and fails
-closed; the implemented disposition path is bounty-only. Discovery is not another
-standing target family.
+A miner submits a **proposal** for one registered target delta. The referee may
+establish a **crown** after two independent passing qualifications. Cacheon
+maintainers may then turn the proposal into an **integrated contribution** after
+security, provenance, compatibility, and maintenance review. Work that does not fit
+a registered target is not a valid proposal; widening the catalog is a reviewed
+validator-side change.
 
 [Learn the product model →](architecture/product-model.md)
 
@@ -89,8 +86,8 @@ physical-lane roles. A persistent hot-swap screen may route candidates before
 this schedule, but its measurements cannot qualify or settle a contribution.
 
 This separates the **execution unit** (a complete disposable engine) from the
-**economic unit** (one singleton target, atomic target, or bounded discovery
-contribution). A new optimization can build on previous wins without repackaging or
+**economic unit** (one singleton target or atomic target). A new optimization can
+build on previous wins without repackaging or
 copying them.
 
 [Follow a proposal through the system →](architecture/pipeline.md)

@@ -33,11 +33,6 @@
   evaluation stack; it does not ship code. Digest distinctness does not attest separate
   operators, hosts, or infrastructure failure domains.
 
-**Discovery lane**
-: A bounded SGLang source-patch proposal path for improvements that do not yet
-  fit a registered target. Its outcomes are review/promotion decisions, not a
-  permanent whole-engine title.
-
 **Direct-artifact declaration**
 : The manifest's closed description of artifact exports, semantic bindings,
   specialization, launch parameters, resources, and lifecycle. It contains no

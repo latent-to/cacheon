@@ -26,8 +26,7 @@ Before a candidate runs, the validator binds:
 
 For a registered candidate, C is the incumbent stack with exactly one target replaced.
 Every other contribution, adapter, fallback, and engine setting is supplied by the
-validator. Discovery uses its separate prepared overlay identity and cannot install an
-evaluation-stack manifest merely by passing.
+validator.
 
 There are three nested identities to keep straight:
 
@@ -268,8 +267,8 @@ independence fields differ:
 | Lane, arena, reservation and finalized order | Qualification authority digest |
 | Hotkey, target, members, selected delta | Qualification plan digest |
 | Arm and incumbent/candidate stack + tree digests | Attempt artifact digest |
-| Incumbent and candidate manifests (registered lane) | Qualification report digest |
-| Discovery proposal identity (discovery lane) | Selection commitment digest |
+| Incumbent and candidate manifests | Qualification report digest |
+|  | Selection commitment digest |
 |  | Selection-secret commitment digest |
 |  | Selection evidence digest |
 
@@ -313,8 +312,8 @@ without these products is not authority.
 See [Evidence and replay](../security/evidence.md) for retention and audit requirements.
 
 An authoritative attempt is not one headline. Durable authority includes the authority
-manifest; selected plan and commitment/entropy/selection receipts; referenced graph or
-discovery-execution evidence; the aggregate speed witness; the pristine-T execution
+manifest; selected plan and commitment/entropy/selection receipts; referenced graph
+evidence; the aggregate speed witness; the pristine-T execution
 witness and raw quality artifact/binding; per-candidate reports; and the enclosing attempt
 artifact. Settlement keeps references to both attempt roots.
 

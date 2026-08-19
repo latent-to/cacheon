@@ -194,19 +194,13 @@ def _eval_cost_invalid_reason(
 
 
 def _fingerprint_private_bundle(root: Path):
-    """Choose a lane by exact parser success; never by miner-provided mode alone."""
+    """Fingerprint by exact component-parser success; never by miner-provided mode."""
 
-    component_error: Exception | None = None
     try:
         return fingerprint_submitted_delta(root)
-    except (OSError, TypeError, ValueError) as exc:
-        component_error = exc
-    try:
-        return fingerprint_submitted_delta(root, discovery=True)
-    except (OSError, TypeError, ValueError) as discovery_error:
+    except (OSError, TypeError, ValueError) as component_error:
         raise ValueError(
-            "submission is neither a registered component nor a closed discovery "
-            f"proposal: component={component_error}; discovery={discovery_error}"
+            f"submission is not a registered component: {component_error}"
         ) from None
 
 

@@ -137,7 +137,7 @@ graph replay, authoritative quality evidence, or performance.
 
 Use a normal slot implementation when you own the complete registered callable.
 Use a [dependency patch](dep-patches.md) only when a registered target explicitly
-requires an approved dependency export/build change. Use the
-[Discovery lane](discovery-lane.md) when the desired hole, base, or engine change
-is not registered. Do not vendor a large dependency into a bundle to simulate a
-validator-owned base.
+requires an approved dependency export/build change. A hole, base, or engine
+change that is not registered cannot be submitted; registering it is a reviewed
+validator-side catalog change. Do not vendor a large dependency into a bundle to
+simulate a validator-owned base.

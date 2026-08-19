@@ -175,7 +175,7 @@ entry points or submission metadata.
 
 | Field | Operational responsibility |
 |---|---|
-| `factory` | Rebuilds the frozen registered/discovery causal plan and preserves the exact promoted reservation order |
+| `factory` | Rebuilds the frozen registered causal plan and preserves the exact promoted reservation order |
 | `executor` | Runs resident crossover, the audit-only role, and pristine reference under reviewed OCI authority |
 | `entropy_provider` | Reveals post-commit selection entropy without exposing the private selection secret early |
 | `hidden_judge` | Performs the registered hidden task work outside candidate authority |

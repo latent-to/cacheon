@@ -120,8 +120,8 @@ would manufacture the second half of that pair from the first.
 
 - **Patches to SGLang.** The engine is pinned and consensus-critical. Submit
   kernels, not engine changes. See [Dependency patches](dep-patches.md).
-- **Engine-wide setup.** A bundle that installs process-wide setup belongs in
-  the fenced [discovery lane](discovery-lane.md), not a registered target.
+- **Engine-wide setup.** A bundle that installs process-wide setup is not a
+  registered target and is rejected at resolution.
 
 ## Before you submit — checklist
 

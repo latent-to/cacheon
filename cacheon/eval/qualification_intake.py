@@ -18,7 +18,6 @@ from cacheon._strict import require_digest, require_identifier, require_int
 if TYPE_CHECKING:
     from cacheon.settlement import SettlementQualification
 
-from cacheon.discovery import DiscoveryArmPlan
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_DOMAIN,
@@ -39,8 +38,6 @@ from cacheon.eval.qualification_runner import (
     CandidateQualificationReport,
     CausalQualificationInput,
     CohortQualificationAttempt,
-    DiscoveryCandidateQualificationReport,
-    DiscoveryQualificationAttempt,
     QualificationStageExit,
     QualificationRunnerError,
     STAGE_EXIT_SCHEMA,
@@ -67,7 +64,7 @@ from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
 
 AUTHORITY_SCHEMA_VERSION = 1
-_LANES = frozenset({"registered", "discovery"})
+_LANES = frozenset({"registered"})
 _RETRY_STRATEGIES = frozenset({"requeue", "bisect"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}\Z")
 
@@ -213,7 +210,6 @@ class QualificationAuthorityManifest:
             or tuple(row.selected_delta_digest for row in reservations) != deltas
             or len({row.reservation_digest for row in reservations}) != len(reservations)
             or len({row.arrival_order for row in reservations}) != len(reservations)
-            or (self.lane == "discovery" and len(reservations) != 1)
         ):
             raise QualificationIntakeError(
                 "qualification reservations do not exactly bind the candidate order"
@@ -231,9 +227,8 @@ class QualificationAuthorityManifest:
     ) -> "QualificationAuthorityManifest":
         if type(value) is not CausalQualificationInput:
             raise QualificationIntakeError("qualification plan is not exactly typed")
-        discovery = type(value.prepared.source) is DiscoveryArmPlan
         return cls(
-            "discovery" if discovery else "registered",
+            "registered",
             qualification_authority_digest(value),
             value.prepared.source.digest,
             value.commitment.digest,
@@ -1003,12 +998,7 @@ def run_qualification_intake(
     except QualificationRunnerError as exc:
         return _no_decision_batch(manifest, exc, reason="qualification_runner")
 
-    expected_attempt_type = (
-        DiscoveryQualificationAttempt
-        if manifest.lane == "discovery"
-        else CohortQualificationAttempt
-    )
-    if type(attempt) is not expected_attempt_type:
+    if type(attempt) is not CohortQualificationAttempt:
         raise QualificationIntakeError("qualification attempt lane differs")
     if (
         attempt.authority_digest != manifest.authority_digest
@@ -1016,11 +1006,7 @@ def run_qualification_intake(
         or len(attempt.reports) != len(manifest.reservations)
     ):
         raise QualificationIntakeError("qualification attempt differs from intake authority")
-    expected_report_type = (
-        DiscoveryCandidateQualificationReport
-        if manifest.lane == "discovery"
-        else CandidateQualificationReport
-    )
+    expected_report_type = CandidateQualificationReport
     outcomes = []
     retry_reservations = []
     from cacheon.eval.marginal_runtime import PreparedMarginalRuntime

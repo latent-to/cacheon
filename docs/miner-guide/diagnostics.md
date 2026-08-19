@@ -285,8 +285,7 @@ Transactional settlement may:
 
 - crown a registered-target candidate;
 - neutralize a non-winning/overlapped candidate;
-- hold a candidate when authority cannot safely advance;
-- award a discovery bounty instead of a standing crown.
+- hold a candidate when authority cannot safely advance.
 
 Weight publication is a separate reconciled action. Under V1 a crown receives
 decaying relative standing credit. Under the selected but inactive V2 policy,

@@ -16,9 +16,9 @@ submit weights after each pass.
    Slow hosting therefore cannot rewrite priority.
 4. **Fetch privately.** Accept HTTPS only, validate DNS and every redirect, enforce
    archive limits, extract regular files safely, and rederive the committed hash.
-5. **Classify and fingerprint.** Parse a normal target-scoped proposal or the distinct
-   discovery schema. Parser success—not a miner-selected mode switch—chooses the lane.
-   Copy identity covers the submitted delta, never the validator's incumbent stack.
+5. **Classify and fingerprint.** Parse the target-scoped proposal; a bundle the
+   component parser rejects is refused. Copy identity covers the submitted delta,
+   never the validator's incumbent stack.
 6. **Publish immutably.** Copy the validated private tree to a content-addressed worker
    publication and reopen it before use.
 7. **Reconcile copies.** Compare durable fingerprints in finalized order. This step is
@@ -406,10 +406,6 @@ remark from that reveal's hotkey, content hash, and netuid; only that triple can
 the pointer. The paying coldkey is not the claimant. When the gate is disabled, the
 pointer is ignored for payment accounting: unverified coordinates are neither consumed
 nor allowed to pre-claim a future payment.
-
-Discovery proposal identity is checked before screening. A proposal already retained as
-seen or awarded is terminally disposed, and legacy pending duplicates are deduplicated
-before lease. Repackaging cannot buy another screen or bounty.
 
 ## Verdict and retry semantics
 

@@ -23,7 +23,7 @@ from cacheon._strict import require_digest, require_identifier, require_int
 
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
-_LANES = frozenset({"registered", "discovery"})
+_LANES = frozenset({"registered"})
 _LEGACY_SPEED_POLICY_DIGEST = canonical_digest(
     "cacheon.qualification.speed-evidence-policy",
     {
@@ -355,10 +355,6 @@ class SettlementQualification:
                 raise SettlementError(
                     "registered candidates cannot name a discovery proposal"
                 )
-        elif self.candidate_manifest is not None:
-            raise SettlementError("discovery candidates cannot install a stack manifest")
-        elif not self.proposal_digest:
-            raise SettlementError("discovery candidate lacks its proposal identity")
         object.__setattr__(
             self,
             "proposal_digest",
@@ -423,7 +419,6 @@ class SettlementQualification:
     ) -> "SettlementQualification":
         """Project already reopened trusted types without reimplementing their grader."""
 
-        from cacheon.discovery import DiscoveryArmPlan
         from cacheon.eval.evidence_store import EvidenceArtifactRef
         from cacheon.eval.marginal_runtime import PreparedCandidateRuntime
         from cacheon.eval.qualification import QualificationDecision
@@ -432,8 +427,6 @@ class SettlementQualification:
             CausalQualificationInput,
             CandidateQualificationReport,
             CohortQualificationAttempt,
-            DiscoveryCandidateQualificationReport,
-            DiscoveryQualificationAttempt,
             QualificationStageExit,
             ResidentSpeedWitness,
             STAGE_EXIT_SCHEMA_V3,
@@ -484,19 +477,6 @@ class SettlementQualification:
             ):
                 raise SettlementError("registered report differs from prepared runtime")
             manifest = arm.candidate
-        elif type(arm) is DiscoveryArmPlan:
-            lane = "discovery"
-            if (
-                type(report) is not DiscoveryCandidateQualificationReport
-                or type(attempt) is not DiscoveryQualificationAttempt
-            ):
-                raise SettlementError("discovery candidate report has the wrong type")
-            if (
-                report.discovery_arm_digest != arm.digest
-                or report.candidate_launch_digest != prepared.launch.digest
-            ):
-                raise SettlementError("discovery report differs from prepared runtime")
-            manifest = None
         else:  # pragma: no cover - PreparedCandidateRuntime already closes this union
             raise SettlementError("qualification arm is unsupported")
         if authority.lane != lane:
@@ -591,7 +571,7 @@ class SettlementQualification:
                 else report.speedup
             ),
             incumbent_manifest=arm.incumbent,
-            proposal_digest=(arm.proposal_digest if lane == "discovery" else ""),
+            proposal_digest="",
             candidate_manifest=manifest,
             speed_evidence_policy_digest=report.speed_witness.policy.digest,
             audit_control_digest=(
@@ -1195,17 +1175,6 @@ def plan_settlement(
             SettlementEventType.HOLD, row, subject_digest=row.selected_delta_digest,
             target_id=row.target_id, before=before, after=before,
             reason="stale_incumbent",
-        )
-
-    discoveries = sorted(
-        (row for row in current if row.lane == "discovery"),
-        key=lambda row: row.finalized_order,
-    )
-    for row in discoveries:
-        journal.add(
-            SettlementEventType.DISCOVERY_BOUNTY, row,
-            subject_digest=row.selected_delta_digest, target_id=row.target_id,
-            before=before, after=before, reason="qualified_discovery",
         )
 
     registered = tuple(row for row in current if row.lane == "registered")

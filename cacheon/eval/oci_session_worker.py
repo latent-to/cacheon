@@ -84,7 +84,6 @@ _WRITABLE_RUNTIME_DIRECTORIES = (
     "TRITON_HOME",
     "XDG_CACHE_HOME",
 )
-DISCOVERY_OVERLAY_RELPATH = Path("dep_overlays/discovery")
 NVIDIA_SMI = "/usr/bin/nvidia-smi"
 WORKER_STDERR_DIAGNOSTIC_MAX_BYTES = 8 << 10
 
@@ -437,45 +436,6 @@ def _artifact_root() -> Path:
     return requested
 
 
-def _requested_discovery_overlay(
-    *, reference_mode: bool
-) -> tuple[Path, str] | None:
-    """Read the closed host-selected discovery binding before engine entry."""
-
-    from cacheon import discovery_overlay
-
-    armed = os.environ.get(discovery_overlay.ARMED, "").strip()
-    values = {
-        key: os.environ.get(key, "").strip()
-        for key in discovery_overlay.DISCOVERY_ENVIRONMENT_KEYS
-    }
-    if not armed:
-        if any(values.values()):
-            raise SessionWorkerError(
-                "disabled discovery launch contains an ambient marker"
-            )
-        return None
-    if armed != "1" or reference_mode:
-        raise SessionWorkerError(
-            "discovery activation is invalid for this session role"
-        )
-    allowed = {
-        discovery_overlay.ARMED,
-        discovery_overlay.EXPECTED_IDENTITY,
-    }
-    if any(value for key, value in values.items() if key not in allowed):
-        raise SessionWorkerError(
-            "discovery launch contains a worker-owned transient marker"
-        )
-    identity = _required_digest_env(discovery_overlay.EXPECTED_IDENTITY)
-    root = _artifact_root() / DISCOVERY_OVERLAY_RELPATH
-    if not _read_only_directory(root):
-        raise SessionWorkerError(
-            "discovery overlay is absent from the read-only native publication"
-        )
-    return root, identity
-
-
 def _validate_live_preflight(
     config: EngineSessionConfig, *, launch_digest: str
 ) -> tuple[RuntimePreflightFacts, object]:
@@ -602,113 +562,73 @@ def _engine_session(
     gate_environment = seam_binding_environment(
         () if reference_mode else config.seam_bindings
     )
-    from cacheon import discovery_overlay
+    with _environment(**gate_environment):
+        if reference_mode:
+            os.environ["PYTHONPATH"] = ""
+        else:
+            _prepare_descendant_bootstrap()
+        from cacheon.manifest import load_manifest
 
-    # Only the ordinary protocol may activate a discovery overlay; resident
-    # sessions reuse the reference-role refusal so an armed launch fails closed.
-    discovery = _requested_discovery_overlay(
-        reference_mode=session_protocol != "ordinary"
-    )
-    discovery_environment = discovery_overlay.disabled_environment()
-    if discovery is not None:
-        overlay_root, identity = discovery
-        discovery_environment = discovery_overlay.launch_environment(
-            overlay_root=overlay_root,
-            expected_identity_digest=identity,
+        tree_root = Path(getattr(tree, "root"))
+        runtime_manifest = getattr(tree, "runtime_manifest", None)
+        manifest = (
+            load_manifest(tree_root)
+            if runtime_manifest is not None
+            else None
         )
-    try:
-        with _environment(**discovery_environment):
-            if discovery is not None:
-                discovery_overlay.arm_driver_activation(
-                    expected_identity_digest=identity,
-                    expected_members=config.tp_size,
-                )
-                discovery_overlay.install_process_role_hook()
-            with _environment(**gate_environment):
-                if reference_mode:
-                    os.environ["PYTHONPATH"] = ""
-                else:
-                    _prepare_descendant_bootstrap()
-                from cacheon.manifest import load_manifest
+    active = bool(manifest is not None and manifest.ops)
+    framework_mode = bool(
+        manifest is not None
+        and any(operation.setup for operation in manifest.ops)
+    )
+    cfg = SimpleNamespace(
+        model_path=config.model_path,
+        dtype=config.dtype,
+        deterministic=config.deterministic,
+        attention_backend=config.attention_backend,
+        disable_cuda_graph=config.disable_cuda_graph,
+        mem_fraction_static=config.mem_fraction_static,
+        log_level=config.log_level,
+        max_running_requests=config.max_running_requests,
+        tp_size=config.tp_size,
+        moe_runner_backend=config.moe_runner_backend,
+        disable_custom_all_reduce=config.disable_custom_all_reduce,
+        extra_engine_kwargs=dict(config.engine_kwargs),
+        seam_bindings=config.seam_bindings,
+        seed=0,
+        framework_mode=framework_mode,
+        isolate=True,
+        allow_unsafe_no_isolation=False,
+    )
+    from cacheon.eval.engine_worker import isolated_engine_session
 
-                tree_root = Path(getattr(tree, "root"))
-                runtime_manifest = getattr(tree, "runtime_manifest", None)
-                manifest = (
-                    load_manifest(tree_root)
-                    if runtime_manifest is not None
-                    else None
-                )
-            active = bool(manifest is not None and manifest.ops)
-            framework_mode = bool(
-                manifest is not None
-                and any(operation.setup for operation in manifest.ops)
+    bundle_path = str(tree_root) if active else ""
+    if manifest is not None and manifest.dep_patches and not os.environ.get(
+        "FLASHINFER_WORKSPACE_BASE", ""
+    ):
+        raise SessionWorkerError(
+            "dep-patched tree lacks its sealed runtime workspace"
+        )
+    with isolated_engine_session(
+        cfg,
+        bundle_path=bundle_path,
+        active=active,
+        framework_mode=framework_mode,
+        install_seams=not reference_mode,
+        audit_policy=audit_policy,
+    ) as handle:
+        audit_collector = getattr(handle, "collect_audit_receipts", None)
+        if audit_policy is not None and not callable(audit_collector):
+            raise SessionWorkerError(
+                "audited engine lacks a raw audit receipt collector"
             )
-            cfg = SimpleNamespace(
-                model_path=config.model_path,
-                dtype=config.dtype,
-                deterministic=config.deterministic,
-                attention_backend=config.attention_backend,
-                disable_cuda_graph=config.disable_cuda_graph,
-                mem_fraction_static=config.mem_fraction_static,
-                log_level=config.log_level,
-                max_running_requests=config.max_running_requests,
-                tp_size=config.tp_size,
-                moe_runner_backend=config.moe_runner_backend,
-                disable_custom_all_reduce=config.disable_custom_all_reduce,
-                extra_engine_kwargs=dict(config.engine_kwargs),
-                seam_bindings=config.seam_bindings,
-                seed=0,
-                framework_mode=framework_mode,
-                isolate=True,
-                allow_unsafe_no_isolation=False,
-            )
-            from cacheon.eval.engine_worker import isolated_engine_session
-
-            bundle_path = str(tree_root) if active else ""
-            if manifest is not None and manifest.dep_patches and not os.environ.get(
-                "FLASHINFER_WORKSPACE_BASE", ""
-            ):
-                raise SessionWorkerError(
-                    "dep-patched tree lacks its sealed runtime workspace"
-                )
-            with isolated_engine_session(
-                cfg,
-                bundle_path=bundle_path,
-                active=active,
-                framework_mode=framework_mode,
-                install_seams=not reference_mode,
-                audit_policy=audit_policy,
-            ) as handle:
-                audit_collector = getattr(handle, "collect_audit_receipts", None)
-                if audit_policy is not None and not callable(audit_collector):
-                    raise SessionWorkerError(
-                        "audited engine lacks a raw audit receipt collector"
-                    )
-                if not callable(audit_collector):
-                    audit_collector = lambda: []
-                receipt = None
-                if discovery is not None:
-                    sglang_module = sys.modules.get("sglang")
-                    if sglang_module is None:
-                        raise SessionWorkerError(
-                            "engine construction returned without stock driver SGLang"
-                        )
-                    receipt = discovery_overlay.require_driver_activation(
-                        sglang_module,
-                        overlay_root,
-                        expected_identity_digest=identity,
-                        expected_members=config.tp_size,
-                        expected_sglang_version=_required_sglang_version(),
-                    )
-                yield SimpleNamespace(
-                    engine=handle.engine,
-                    require_completion=handle.require_completion,
-                    collect_audit_receipts=audit_collector,
-                    discovery_activation_receipt=receipt,
-                )
-    finally:
-        if discovery is not None:
-            discovery_overlay.clear_driver_activation()
+        if not callable(audit_collector):
+            audit_collector = lambda: []
+        yield SimpleNamespace(
+            engine=handle.engine,
+            require_completion=handle.require_completion,
+            collect_audit_receipts=audit_collector,
+        )
 
 
 def _engine_outputs(outputs: object, *, request: BatchRequest) -> BatchEvidence:
@@ -1306,9 +1226,6 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
                     ready_message(
                         session_id=session_id,
                         launch_digest=launch_digest,
-                        discovery_activation=getattr(
-                            handle, "discovery_activation_receipt", None
-                        ),
                     ),
                     max_bytes=MAX_CONTROL_BYTES,
                 ),

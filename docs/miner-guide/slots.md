@@ -97,7 +97,7 @@ mode = "atomic"
 
 Adding two unrelated `[[ops]]` rows does not create a target. Nor may a miner
 declare membership, displacement, overlap, or a new target ID. An unregistered
-combination belongs in the [Discovery lane](discovery-lane.md).
+combination is not a valid submission until the catalog registers it.
 
 ## Selecting a target
 
@@ -109,7 +109,8 @@ Start from the published arena, not from an isolated kernel idea:
 3. Choose the smallest registered target that contains the required delta.
 4. Describe every specialization in an explicit capability domain.
 5. If the change needs engine-wide setup, arbitrary SGLang edits, or semantics
-   outside a registered target, stop and use discovery instead.
+   outside a registered target, stop: it is not submittable until the catalog
+   registers that surface.
 
 For a first implementation, `activation.silu_and_mul` and `norm.rmsnorm` have
 the smallest single-process ABIs. They are good learning targets, not a promise
@@ -135,19 +136,19 @@ Walk the desired change from semantics outward:
 6. **State the honest domain.** Use capability predicates for real specialization
    boundaries. Do not use them to hide failing shapes or claim a target that never routes.
 
-The outcome should be one of exactly three shapes: one registered singleton, the exact
-complete member set of a registered atomic target, or discovery. “Closest available
-slot” is not a fourth option.
+The outcome should be one of exactly two shapes: one registered singleton or the exact
+complete member set of a registered atomic target. “Closest available slot” is not a
+third option, and unregistered work is not submittable.
 
 ### Worked choices
 
 | Idea | Choice | Reasoning |
 |---|---|---|
 | fuse SiLU and multiply for a particular token range | `activation.silu_and_mul` singleton with a constrained variant | both operations and the output are already inside one slot |
-| add a residual connection to pure RMSNorm | not `norm.rmsnorm`; use a matching registered collective boundary only if its full semantics apply, otherwise discovery | the singleton RMSNorm contract explicitly does not own residual addition |
+| add a residual connection to pure RMSNorm | not `norm.rmsnorm`; use a matching registered collective boundary only if its full semantics apply, otherwise not submittable | the singleton RMSNorm contract explicitly does not own residual addition |
 | replace local expert compute and its trailing reduction as one implementation | `moe.fused_experts_reduce` | this slot, unlike `moe.fused_experts`, owns the supplied-group reduction |
 | jointly alter the shallow and deep MoE collective epilogues | `collective.moe_epilogue.v1`, implementing both members | the catalog already registers and prices the coupled overlap unit |
-| patch scheduler batching or invent a new attention seam | discovery | engine control flow lies outside every component callable ABI |
+| patch scheduler batching or invent a new attention seam | not submittable | engine control flow lies outside every component callable ABI |
 
 This exercise prevents two common errors. Choosing a boundary that is too narrow makes
 the desired optimization impossible without hidden side effects. Choosing one that is

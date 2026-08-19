@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import importlib.abc
 import importlib.machinery
-import os
 import sys
 
 # Modules whose import should trigger seam installation — derived from the single seam
@@ -26,17 +25,6 @@ import sys
 # (no torch/sglang), safe to import at interpreter startup. seam.activate() installs
 # whatever is loaded.
 from cacheon.seams import TARGET_MODULES as _TARGETS
-
-
-# Install the standard-library-only discovery role hook before any SGLang
-# import.  The hook is inert unless the isolated worker explicitly arms a
-# sealed overlay, and only exact scheduler spawn children receive that overlay.
-if os.environ.get("CACHEON_DISCOVERY_OVERLAY_ARMED", "").strip().lower() in {
-    "1", "true", "yes", "on",
-}:
-    from cacheon import discovery_overlay as _discovery_overlay
-
-    _discovery_overlay.install()
 
 
 def _run_activate() -> None:

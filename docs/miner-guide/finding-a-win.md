@@ -78,8 +78,8 @@ Promising classes include:
 
 Do not expand the manifest until a desired optimization “fits.” The target
 catalog fixes the smallest allowed delta. If the change needs an unregistered
-engine seam, scheduler behavior, broad source patch, or engine-wide setup, move
-it to [Discovery](discovery-lane.md).
+engine seam, scheduler behavior, broad source patch, or engine-wide setup, it is
+not submittable until the catalog registers that surface.
 
 ## Match the workload regime
 

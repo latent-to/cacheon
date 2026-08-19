@@ -141,9 +141,6 @@ The winning transaction may emit crown, retirement, neutralization, adoption, an
 transition events. Atomic targets explicitly displace overlapping singleton targets;
 manifest order and bundle packaging never decide overlap.
 
-Discovery is different: a qualifying discovery may create a bounded bounty event, but it
-does not install a stack manifest or create a standing reward family.
-
 ## Reward policy follows the activated generation
 
 Under retained legacy V1 authority, each active registered target defines one

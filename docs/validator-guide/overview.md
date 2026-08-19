@@ -76,8 +76,8 @@ The current validator path is deliberately staged:
 2. Reserve that order durably in a single-writer SQLite store.
 3. Fetch the committed archive over HTTPS, enforce transport and extraction limits,
    and rederive the committed content hash.
-4. Resolve the submitted delta to one registered target, or to the separate discovery
-   lane, and compute copy fingerprints over submitted bytes only.
+4. Resolve the submitted delta to one registered target and compute copy
+   fingerprints over submitted bytes only.
 5. Copy the private intake tree into an immutable worker publication.
 6. Run registered, non-crownable screens, using the routing-only resident screen for
    swappable candidates and an explicit waiver for non-swappable candidates.
@@ -87,12 +87,6 @@ The current validator path is deliberately staged:
    physical TP-lane role swap.
 9. Apply target and evaluation-stack changes in one settlement transaction.
 10. Reconcile the global reward projection from a separate signer process.
-
-Discovery policy includes a `registered_promotion` disposition and typed
-`DiscoveryWinRecord`/`DiscoveryPromotion` objects. The durable composition store does
-not yet transport and reopen that promotion authority, so registered promotion fails
-closed. The implemented durable discovery disposition is `bounty_only`; a later
-registered target still requires its own admitted qualification and reproduction.
 
 One reservation therefore crosses three different kinds of state:
 
@@ -259,7 +253,6 @@ replace any durable intake, qualification, settlement, or weight-publication pro
 - It does not treat resident-screen measurements as crown authority.
 - It does not implement V2 finite-debt economics; that surface was extracted
   from the tree on 2026-08-09 and only its reserved durable schema remains.
-- It does not implement durable registered discovery promotion.
 - It does not claim a completed production Engine release, authorized registry image,
   or complete all-rank serving receipt set for this revision.
 

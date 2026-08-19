@@ -82,9 +82,8 @@ The evidence classes are intentionally non-substitutable:
   S3-compatible endpoint and proves anonymous HTTPS reopen through the production
   validator fetcher. Hippius and MinIO are optional configuration presets, not
   protocol identities.
-- Replayed discovery proposals are terminally disposed or deduplicated before
-  screening. Legacy schema-3 single-PASS migration holds are non-crownable and
-  have an evidence-preserving archive command.
+- Legacy schema-3 single-PASS migration holds are non-crownable and have an
+  evidence-preserving archive command.
 - Optional eval-cost admission (default off) requires a coldkey
   `Balances.transfer_keep_alive` of the published TAO amount to the current
   subnet owner coldkey, bound by a content-hash remark and consumed once. v1
@@ -383,6 +382,22 @@ mode deliberately trusts configured raw storage. A valid old authenticated
 envelope can still be replayed within the bounded follower freshness window,
 and storage, gateway, push-secret, response-hotkey, signer-wallet, and host-root
 availability/custody remain deployment responsibilities.
+
+### Removed discovery lane (2026-08-19)
+
+On **2026-08-19** the fenced discovery lane — the separate discovery proposal
+ABI, overlay build/activation, discovery arm qualification, and every
+discovery branch in intake, settlement, OCI session, and qualification code
+(`discovery.py`, `discovery_overlay.py`, and the lane's tests and guide) — was
+removed. It never admitted a production proposal: the live store holds zero
+discovery reservations or claims. Work that does not fit a registered target
+is now refused at resolution. Durable shapes are preserved unchanged: the
+settlement `lane` field (value set narrowed to `registered`), the submitted-delta
+`product_kind` (narrowed to `component`), the always-`None` session-plan key
+`expected_discovery_overlay_identity_digest` in its digest domains, the
+`DISCOVERY_BOUNTY` settlement event vocabulary, and the legacy V1
+discovery-bounty economics and tables, which stay fenced V1 schema. Complete
+implementation remains in Git history at the parent of the removing commit.
 
 ### Inactive V2 finite debt
 

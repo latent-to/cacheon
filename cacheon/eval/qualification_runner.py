@@ -54,15 +54,13 @@ from cacheon.eval.oci_session_protocol import (
     AuditReceiptFacts, EngineSessionConfig, RuntimePreflightFacts, SlotAuditPolicy,
 )
 from cacheon.eval.qualification import (
-    DiscoveryExecutionGrade, DiscoveryExecutionRequirement,
-    DiscoveryQualificationProfile,
     GraphVerificationEvidenceRef, GraphVerificationGrade, GraphVerificationRequirement,
     QualificationDecision, QualificationProfile, SelectionCommitment,
     SelectionEntropyReceipt, SelectionReceipt, _selected_prompt_texts, _trajectory_rows,
     candidate_lifecycle_digest, cohort_trajectory_digest, derived_hidden_task_plan_digest,
-    grade_discovery_execution, qualification_identity_digest,
+    qualification_identity_digest,
     declared_qualification_entropy_digest,
-    reopen_discovery_execution_binding, reopen_graph_verification,
+    reopen_graph_verification,
     selected_trajectory_digest,
     selected_trajectory_projection_digest, validate_quality_binding,
 )
@@ -101,9 +99,6 @@ ATTEMPT_SCHEMA = "cacheon.qualification.cohort-attempt.v1"
 ATTEMPT_SCHEMA_V2 = "cacheon.qualification.cohort-attempt.v2"
 ATTEMPT_SCHEMA_V3 = "cacheon.qualification.cohort-attempt.v3"
 ATTEMPT_SCHEMA_V4 = "cacheon.qualification.cohort-attempt.v4"
-DISCOVERY_ATTEMPT_DOMAIN = "qualification.discovery-attempt"
-DISCOVERY_ATTEMPT_SCHEMA = "cacheon.qualification.discovery-attempt.v1"
-DISCOVERY_ATTEMPT_SCHEMA_V2 = "cacheon.qualification.discovery-attempt.v2"
 STAGE_EXIT_DOMAIN = "qualification.stage-exit"
 STAGE_EXIT_SCHEMA = "cacheon.qualification.stage-exit.v1"
 STAGE_EXIT_SCHEMA_V2 = "cacheon.qualification.stage-exit.v2"
@@ -236,7 +231,6 @@ def _encode_record(value: object) -> object:
     # an attempt dataclass.
     if type(value) in {
         globals().get("CandidateQualificationReport"),
-        globals().get("DiscoveryCandidateQualificationReport"),
         globals().get("ResidentSpeedWitness"),
     }:
         return value.to_dict()  # type: ignore[union-attr]
@@ -364,36 +358,7 @@ class CandidateQualificationAuthority:
             raise QualificationRunnerError("candidate graph/profile authority is mismatched")
 
 
-@dataclass(frozen=True)
-class DiscoveryCandidateQualificationAuthority:
-    """Pre-execution authority for one non-catalog discovery arm."""
-
-    selected_delta_digest: str
-    profile: DiscoveryQualificationProfile
-    execution_requirement: DiscoveryExecutionRequirement
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "selected_delta_digest",
-            require_sha256_hex(self.selected_delta_digest, field="selected delta"),
-        )
-        if (
-            type(self.profile) is not DiscoveryQualificationProfile
-            or type(self.execution_requirement) is not DiscoveryExecutionRequirement
-            or self.profile.execution_requirement_digest
-            != self.execution_requirement.digest
-            or self.execution_requirement.selected_delta_digest
-            != self.selected_delta_digest
-        ):
-            raise QualificationRunnerError(
-                "discovery execution/profile authority is mismatched"
-            )
-
-
-CandidateAuthority = (
-    CandidateQualificationAuthority | DiscoveryCandidateQualificationAuthority
-)
+CandidateAuthority = CandidateQualificationAuthority
 
 @dataclass(frozen=True)
 class CausalQualificationInput:
@@ -451,18 +416,9 @@ class CausalQualificationInput:
         object.__setattr__(self, "evidence_root", root)
         candidates = tuple(self.candidates)
         expected = tuple(row.arm.selected_delta_digest for row in self.prepared.candidates)
-        from cacheon.discovery import DiscoveryArmPlan
-
-        discovery = type(self.prepared.source) is DiscoveryArmPlan
-        allowed = (
-            {DiscoveryCandidateQualificationAuthority}
-            if discovery
-            else {CandidateQualificationAuthority}
-        )
         if (
             not candidates
-            or (discovery and len(candidates) != 1)
-            or any(type(row) not in allowed for row in candidates)
+            or any(type(row) is not CandidateQualificationAuthority for row in candidates)
             or tuple(row.selected_delta_digest for row in candidates) != expected
         ):
             raise QualificationRunnerError("candidate authority order differs from the sealed cohort")
@@ -502,7 +458,7 @@ class CausalQualificationInput:
                 "resident audit plan coverage differs from speed policy"
             )
         if resident is not None:
-            if discovery or len(self.prepared.candidates) != 1:
+            if len(self.prepared.candidates) != 1:
                 raise QualificationRunnerError(
                     "resident speed plan differs from qualification authority"
                 )
@@ -621,7 +577,7 @@ class CausalQualificationInput:
         if (
             self.speed_stage_disposition
             is SpeedStageDisposition.CALIBRATION_OBSERVATION
-            and (discovery or len(candidates) != 1 or resident is None)
+            and (len(candidates) != 1 or resident is None)
         ):
             raise QualificationRunnerError(
                 "calibration speed continuation requires a registered resident singleton"
@@ -655,17 +611,13 @@ class CausalQualificationInput:
             object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
 
 
-def _profile(authority: CandidateAuthority) -> QualificationProfile | DiscoveryQualificationProfile:
+def _profile(authority: CandidateAuthority) -> QualificationProfile:
     return authority.profile
 
 
-def _requirement(
-    authority: CandidateAuthority,
-) -> GraphVerificationRequirement | DiscoveryExecutionRequirement:
+def _requirement(authority: CandidateAuthority) -> GraphVerificationRequirement:
     if type(authority) is CandidateQualificationAuthority:
         return authority.graph_requirement
-    if type(authority) is DiscoveryCandidateQualificationAuthority:
-        return authority.execution_requirement
     raise QualificationRunnerError("candidate authority has an unsupported type")
 
 def _decision(value: str | QualificationDecision) -> QualificationDecision:
@@ -2027,144 +1979,11 @@ class CandidateQualificationReport:
         return canonical_digest(domain, self.to_dict())
 
 
-@dataclass(frozen=True)
-class DiscoveryCandidateQualificationReport:
-    _domain: ClassVar[str] = "cacheon.qualification.discovery-candidate-report.v2"
-    selected_delta_digest: str
-    discovery_arm_digest: str
-    proposal_digest: str
-    candidate_launch_digest: str
-    profile_digest: str
-    calibration_digest: str
-    execution_grade: DiscoveryExecutionGrade
-    speed_evidence_digest: str
-    speed_decision: QualificationDecision
-    speedup: str
-    quality_evidence_digest: str
-    quality_decision: QualificationDecision
-    candidate_mean_teacher_nll: str
-    raw_quality_artifact: EvidenceArtifactRef
-    raw_quality_binding: ReferenceQualityRawBinding
-    speed_witness: SpeedWitness | ResidentSpeedWitness
-    t_request_sha256: str
-    audit_evidence_digest: str
-    audit_decision: QualificationDecision
-    audit_witness: AuditWitness
-    decision: QualificationDecision
-    reason: str
-    retryable: bool
-    repeat_quality: RepeatQualityWitness | None = None
-
-    def __post_init__(self) -> None:
-        for field in (
-            "selected_delta_digest", "discovery_arm_digest", "proposal_digest",
-            "candidate_launch_digest", "profile_digest", "calibration_digest",
-            "speed_evidence_digest",
-            "quality_evidence_digest", "t_request_sha256",
-            "audit_evidence_digest",
-        ):
-            object.__setattr__(
-                self, field, require_sha256_hex(getattr(self, field), field=field)
-            )
-        for field in (
-            "speed_decision", "quality_decision", "audit_decision", "decision"
-        ):
-            object.__setattr__(self, field, _decision(getattr(self, field)))
-        if (
-            type(self.execution_grade) is not DiscoveryExecutionGrade
-            or type(self.raw_quality_artifact) is not EvidenceArtifactRef
-            or type(self.raw_quality_binding) is not ReferenceQualityRawBinding
-            or type(self.speed_witness) not in {SpeedWitness, ResidentSpeedWitness}
-            or type(self.audit_witness) is not AuditWitness
-        ):
-            raise QualificationRunnerError("discovery evidence witness is not typed")
-        if _speed_has_repeat(self.speed_witness) != (
-            type(self.repeat_quality) is RepeatQualityWitness
-        ):
-            raise QualificationRunnerError(
-                "discovery repeat quality coverage differs from speed policy"
-            )
-        expected = _aggregate_decision(
-            self.execution_grade.decision, self.speed_decision,
-            self.quality_decision, self.audit_decision,
-        )
-        if (
-            self.audit_witness.digest != self.audit_evidence_digest
-            or self.audit_witness.decision is not self.audit_decision
-            or self.audit_witness.selected_delta_digest != self.selected_delta_digest
-            or self.audit_witness.candidate_launch_digest != self.candidate_launch_digest
-            or self.audit_witness.runtime_resource_policy_digest
-            != _candidate_runtime_resource_policy_digest(self.speed_witness)
-            or self.decision is not expected
-            or type(self.retryable) is not bool
-            or self.retryable != (expected is QualificationDecision.NO_DECISION)
-            or not isinstance(self.reason, str)
-            or not self.reason
-        ):
-            raise QualificationRunnerError(
-                "discovery candidate aggregate headline is inconsistent"
-            )
-        for field in ("speedup", "candidate_mean_teacher_nll"):
-            try:
-                value = float(getattr(self, field))
-            except (TypeError, ValueError) as exc:
-                raise QualificationRunnerError(f"{field} is not numeric") from exc
-            if not math.isfinite(value) or value < 0:
-                raise QualificationRunnerError(f"{field} is nonfinite or negative")
-
-    def to_dict(self) -> dict[str, object]:
-        return _report_fields(self, include_repeat=self.repeat_quality is not None)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "DiscoveryCandidateQualificationReport":
-        fields_v2 = set(cls.__dataclass_fields__) - {"_domain"}
-        fields_v1 = fields_v2 - {"repeat_quality"}
-        if type(value) is not dict:
-            raise QualificationRunnerError("discovery candidate report is not an object")
-        raw = _strict(
-            value,
-            fields_v2 if "repeat_quality" in value else fields_v1,
-            "discovery candidate report",
-        )
-        return cls(**{
-            **raw,
-            "execution_grade": DiscoveryExecutionGrade.from_dict(
-                raw["execution_grade"]
-            ),
-            "raw_quality_artifact": EvidenceArtifactRef.from_dict(
-                raw["raw_quality_artifact"]
-            ),
-            "raw_quality_binding": ReferenceQualityRawBinding.from_dict(
-                raw["raw_quality_binding"]
-            ),
-            "speed_witness": (
-                ResidentSpeedWitness.from_dict(raw["speed_witness"])
-                if type(raw["speed_witness"]) is dict
-                and "resident_policy" in raw["speed_witness"]
-                else SpeedWitness.from_dict(raw["speed_witness"])
-            ),
-            "audit_witness": AuditWitness.from_dict(raw["audit_witness"]),
-            "repeat_quality": (
-                RepeatQualityWitness.from_dict(raw["repeat_quality"])
-                if "repeat_quality" in raw
-                else None
-            ),
-        })  # type: ignore[arg-type]
-
-    @property
-    def digest(self) -> str:
-        domain = self._domain if self.repeat_quality is None else f"{self._domain}.repeat"
-        return canonical_digest(domain, self.to_dict())
-
-
 def _attempt_speed_policy(reports: tuple[object, ...]) -> SpeedEvidencePolicy:
     policies = tuple(
         row.speed_witness.policy
         for row in reports
-        if type(row) in {
-            CandidateQualificationReport,
-            DiscoveryCandidateQualificationReport,
-        }
+        if type(row) is CandidateQualificationReport
     )
     if len(policies) != len(reports) or not policies or any(
         row != policies[0] for row in policies
@@ -2424,110 +2243,7 @@ class CohortQualificationAttempt:
         return canonical_digest(domain, self.to_dict())
 
 
-@dataclass(frozen=True)
-class DiscoveryQualificationAttempt:
-    _domain: ClassVar[str] = "cacheon.qualification.discovery-attempt.v1"
-    authority_digest: str
-    source_digest: str
-    cohort_trajectory_digest: str
-    commitment: SelectionCommitment
-    teardown_before_t: OCIQuiescenceReceipt
-    entropy: SelectionEntropyReceipt
-    entropy_observed_monotonic_s: float
-    selection: SelectionReceipt
-    reference_execution: ReferenceExecutionWitness
-    teardown_after_t: OCIQuiescenceReceipt
-    reports: tuple[DiscoveryCandidateQualificationReport, ...]
-
-    def __post_init__(self) -> None:
-        for field in (
-            "authority_digest", "source_digest", "cohort_trajectory_digest"
-        ):
-            object.__setattr__(
-                self, field, require_sha256_hex(getattr(self, field), field=field)
-            )
-        if (
-            type(self.commitment) is not SelectionCommitment
-            or type(self.teardown_before_t) is not OCIQuiescenceReceipt
-            or type(self.entropy) is not SelectionEntropyReceipt
-            or type(self.selection) is not SelectionReceipt
-            or type(self.reference_execution) is not ReferenceExecutionWitness
-            or type(self.teardown_after_t) is not OCIQuiescenceReceipt
-            or type(self.entropy_observed_monotonic_s) is not float
-            or not math.isfinite(self.entropy_observed_monotonic_s)
-        ):
-            raise QualificationRunnerError(
-                "discovery attempt authority is not typed"
-            )
-        reports = tuple(self.reports)
-        if len(reports) != 1 or type(reports[0]) is not DiscoveryCandidateQualificationReport:
-            raise QualificationRunnerError(
-                "discovery attempt requires exactly one typed report"
-            )
-        object.__setattr__(self, "reports", reports)
-        _attempt_speed_policy(reports)
-        before, after = self.teardown_before_t, self.teardown_after_t
-        if (
-            (before.executor_id, before.manager_instance_id, before.namespace_digest)
-            != (after.executor_id, after.manager_instance_id, after.namespace_digest)
-            or after.sequence != before.sequence + 1
-            or not before.observed_monotonic_s <= self.entropy_observed_monotonic_s
-            <= after.observed_monotonic_s
-            or self.selection.commitment_digest != self.commitment.digest
-            or self.selection.entropy_receipt_digest != self.entropy.digest
-        ):
-            raise QualificationRunnerError(
-                "discovery causal ordering or executor identity differs"
-            )
-
-    def to_dict(self) -> dict[str, object]:
-        return _record_dict(self)
-
-    @classmethod
-    def from_dict(cls, value: object) -> "DiscoveryQualificationAttempt":
-        raw = _strict(
-            value,
-            set(cls.__dataclass_fields__) - {"_domain"},
-            "discovery attempt",
-        )
-        return cls(**{
-            **raw,
-            "commitment": SelectionCommitment.from_dict(raw["commitment"]),
-            "entropy": SelectionEntropyReceipt.from_dict(raw["entropy"]),
-            "entropy_observed_monotonic_s": float(
-                raw["entropy_observed_monotonic_s"]
-            ),
-            "selection": SelectionReceipt.from_dict(raw["selection"]),
-            "reference_execution": ReferenceExecutionWitness.from_dict(
-                raw["reference_execution"]
-            ),
-            "teardown_before_t": _quiescence_from_dict(raw["teardown_before_t"]),
-            "teardown_after_t": _quiescence_from_dict(raw["teardown_after_t"]),
-            "reports": tuple(
-                DiscoveryCandidateQualificationReport.from_dict(row)
-                for row in raw["reports"]
-            ),
-        })  # type: ignore[arg-type]
-
-    @property
-    def reference_plan_digest(self) -> str:
-        return self.reference_execution.plan_digest
-
-    @property
-    def reference_session_digest(self) -> str:
-        return self.reference_execution.session_digest
-
-    @property
-    def digest(self) -> str:
-        domain = (
-            self._domain
-            if _attempt_speed_policy(self.reports).version == 1
-            else f"{self._domain}.repeat"
-        )
-        return canonical_digest(domain, self.to_dict())
-
-
-QualificationAttempt = CohortQualificationAttempt | DiscoveryQualificationAttempt
+QualificationAttempt = CohortQualificationAttempt
 
 def _planned_prompt_digests(prepared: PreparedMarginalRuntime) -> tuple[str, ...]:
     plan = prepared.baseline_session_plan
@@ -2597,59 +2313,14 @@ def _validate_pre_execution(
             )
         ):
             raise QualificationRunnerError("candidate qualification profile differs from cohort")
-        if type(authority) is CandidateQualificationAuthority:
-            grades[authority.selected_delta_digest] = reopen_graph_verification(
-                value.evidence_root,
-                authority.graph_artifact_ref,
-                authority.graph_requirement,
-                authority.graph_evidence_ref,
-            )
-            continue
-        from cacheon.discovery import DiscoveryArmPlan
-
-        if type(authority) is not DiscoveryCandidateQualificationAuthority or type(
-            prepared.arm
-        ) is not DiscoveryArmPlan:
-            raise QualificationRunnerError("discovery pre-execution authority is mismatched")
-        requirement = authority.execution_requirement
-        arm, launch = prepared.arm, prepared.launch
-        expected = (
-            arm.digest,
-            arm.proposal_digest,
-            arm.selected_delta_digest,
-            arm.candidate_stack_digest,
-            arm.candidate_tree_digest,
-            launch.digest,
-            prepared.binding.launch_binding.native_build_spec.digest,
-            arm.policy_digest,
-            arm.build_profile_digest,
-            launch.worker_distribution_digest,
-            launch.engine_config_digest,
-            launch.hardware.tp_size,
+        if type(authority) is not CandidateQualificationAuthority:
+            raise QualificationRunnerError("pre-execution authority has an unsupported type")
+        grades[authority.selected_delta_digest] = reopen_graph_verification(
+            value.evidence_root,
+            authority.graph_artifact_ref,
+            authority.graph_requirement,
+            authority.graph_evidence_ref,
         )
-        actual = (
-            requirement.arm_digest,
-            requirement.proposal_digest,
-            requirement.selected_delta_digest,
-            requirement.candidate_stack_digest,
-            requirement.candidate_tree_digest,
-            requirement.candidate_launch_digest,
-            requirement.native_build_spec_digest,
-            requirement.discovery_policy_digest,
-            requirement.build_profile_digest,
-            requirement.worker_distribution_digest,
-            requirement.engine_config_digest,
-            requirement.expected_tp_size,
-        )
-        if (
-            expected != actual
-            or profile.execution_requirement_digest != requirement.digest
-            or value.calibration_context.verification_policy_digest
-            != requirement.activation_policy_digest
-        ):
-            raise QualificationRunnerError(
-                "discovery requirement differs from the prepared runtime"
-            )
     return calibration, grades
 
 def _selected_frames(
@@ -2716,7 +2387,7 @@ def _reference_request(
     )
 
 def _task_digests(
-    profile: QualificationProfile | DiscoveryQualificationProfile,
+    profile: QualificationProfile,
     prompt_digest: str,
 ) -> tuple[str, ...]:
     return tuple(sorted(canonical_digest(
@@ -2731,7 +2402,7 @@ def _task_digests(
     ) for index in range(profile.hidden_tasks_per_prompt)))
 
 def _hidden_judge_binding(
-    profile: QualificationProfile | DiscoveryQualificationProfile,
+    profile: QualificationProfile,
 ) -> HiddenJudgeBinding:
     return HiddenJudgeBinding(
         profile.reference.hidden_corpus_commitment,
@@ -2741,7 +2412,7 @@ def _hidden_judge_binding(
 
 def _rollout(
     *,
-    profile: QualificationProfile | DiscoveryQualificationProfile,
+    profile: QualificationProfile,
     prompt_digest: str,
     frame: dict[str, object],
     role_input: ReferenceRoleInput,
@@ -3064,32 +2735,6 @@ def _report_reason(
     return "qualified"
 
 
-def _discovery_report_reason(
-    execution: DiscoveryExecutionGrade,
-    speed: QualificationDecision,
-    quality: ReferenceQualityVerdict,
-    audit: AuditWitness,
-    repeat_quality: ReferenceQualityVerdict | None = None,
-) -> str:
-    if execution.decision is not QualificationDecision.PASS:
-        return execution.reason
-    if audit.decision is not QualificationDecision.PASS:
-        return "slot_audit_failed"
-    if speed is QualificationDecision.NO_DECISION:
-        return "speed_noise"
-    if speed is QualificationDecision.FAIL:
-        return "speed_regression"
-    if quality.decision == "FAIL":
-        return "quality_regression"
-    if quality.decision == "NO_DECISION":
-        return "quality_overlap"
-    if repeat_quality is not None and repeat_quality.decision == "FAIL":
-        return "quality_repeat_regression"
-    if repeat_quality is not None and repeat_quality.decision == "NO_DECISION":
-        return "quality_repeat_overlap"
-    return "qualified"
-
-
 def qualification_authority_digest(value: CausalQualificationInput) -> str:
     """Bind the durable attempt to all validator-owned inputs available before B."""
 
@@ -3149,53 +2794,7 @@ def qualification_authority_digest(value: CausalQualificationInput) -> str:
             ),
             payload,
         )
-    if len(value.candidates) != 1 or type(
-        value.candidates[0]
-    ) is not DiscoveryCandidateQualificationAuthority:
-        raise QualificationRunnerError("qualification authority mode is inconsistent")
-    authority = value.candidates[0]
-    prepared = value.prepared.candidates[0]
-    payload = {
-        "calibration": [value.calibration_threshold_policy.digest,
-                        value.calibration_manifest.digest,
-                        value.calibration_context.digest,
-                        value.calibration_artifact_ref.to_dict()],
-        "candidate": {
-            "arm": prepared.arm.digest,
-            "delta": authority.selected_delta_digest,
-            "execution_requirement": authority.execution_requirement.digest,
-            "launch": prepared.launch.digest,
-            "native": prepared.binding.launch_binding.native_build_spec.digest,
-            "preflight": prepared.binding.launch_binding.runtime_preflight_receipt.sha256,
-            "profile": authority.profile.digest,
-            "proposal": authority.execution_requirement.proposal_digest,
-        },
-        "commitment": value.commitment.digest,
-        "model_mount": value.model_mount.digest,
-        "incumbent_preflight": (
-            value.prepared.incumbent_binding.launch_binding
-            .runtime_preflight_receipt.sha256
-        ),
-        "policies": [value.expected_launch_resource_policy_digest,
-                     value.expected_runtime_resource_policy_digest,
-                     value.expected_device_policy_digest],
-        "slot_audit_policies": [row.to_dict() for row in value.audit_policies],
-        "reference": [value.pristine_stack.digest, value.pristine_launch.digest,
-                      value.pristine_binding.native_build_spec.digest,
-                      value.pristine_binding.controller_distribution_digest,
-                      value.pristine_binding.runtime_preflight_receipt.sha256,
-                      value.reference_engine_config.digest,
-                      value.reference_preflight.digest],
-        "source": value.prepared.source.digest,
-    }
-    if value.speed_evidence_policy.version == 1:
-        return canonical_digest(
-            "cacheon.qualification.discovery-causal-authority.audit-v1", payload
-        )
-    payload["speed_evidence_policy"] = value.speed_evidence_policy.to_dict()
-    return canonical_digest(
-        "cacheon.qualification.discovery-causal-authority.v2.audit-v1", payload
-    )
+    raise QualificationRunnerError("qualification authority mode is inconsistent")
 
 def _validate_reference_execution(
     attempt: QualificationAttempt, expected: CausalQualificationInput
@@ -3474,9 +3073,11 @@ def reopen_qualification_stage_exit(
 def publish_causal_qualification(
     root: Path, attempt: QualificationAttempt
 ) -> EvidenceArtifactRef:
-    policy = _attempt_speed_policy(attempt.reports) if type(attempt) in {
-        CohortQualificationAttempt, DiscoveryQualificationAttempt
-    } else None
+    policy = (
+        _attempt_speed_policy(attempt.reports)
+        if type(attempt) is CohortQualificationAttempt
+        else None
+    )
     if type(attempt) is CohortQualificationAttempt:
         domain = ATTEMPT_DOMAIN
         schema = (
@@ -3487,13 +3088,6 @@ def publish_causal_qualification(
                 2: ATTEMPT_SCHEMA_V2,
                 3: ATTEMPT_SCHEMA_V3,
             }[policy.version]
-        )
-    elif type(attempt) is DiscoveryQualificationAttempt:
-        domain = DISCOVERY_ATTEMPT_DOMAIN
-        schema = (
-            DISCOVERY_ATTEMPT_SCHEMA
-            if policy.version == 1
-            else DISCOVERY_ATTEMPT_SCHEMA_V2
         )
     else:
         raise QualificationRunnerError("qualification attempt is not typed")
@@ -3542,44 +3136,25 @@ def reopen_causal_qualification(
                 plan=resident_pair_lifecycle.plan,
                 lane_quiescence=resident_pair_lifecycle.lane_quiescence,
             )
-        discovery_mode = (
-            len(expected.candidates) == 1
-            and type(expected.candidates[0])
-            is DiscoveryCandidateQualificationAuthority
-        )
         artifact_type = (
+            ATTEMPT_DOMAIN,
+            "application/json",
             (
-                DISCOVERY_ATTEMPT_DOMAIN,
-                "application/json",
-                DISCOVERY_ATTEMPT_SCHEMA
-                if expected.speed_evidence_policy.version == 1
-                else DISCOVERY_ATTEMPT_SCHEMA_V2,
-            )
-            if discovery_mode
-            else (
-                ATTEMPT_DOMAIN,
-                "application/json",
-                (
-                    ATTEMPT_SCHEMA_V4
-                    if resident_pair_lifecycle is not None
-                    else {
-                        1: ATTEMPT_SCHEMA,
-                        2: ATTEMPT_SCHEMA_V2,
-                        3: ATTEMPT_SCHEMA_V3,
-                    }[expected.speed_evidence_policy.version]
-                ),
-            )
+                ATTEMPT_SCHEMA_V4
+                if resident_pair_lifecycle is not None
+                else {
+                    1: ATTEMPT_SCHEMA,
+                    2: ATTEMPT_SCHEMA_V2,
+                    3: ATTEMPT_SCHEMA_V3,
+                }[expected.speed_evidence_policy.version]
+            ),
         )
         if type(reference) is not EvidenceArtifactRef or (
             reference.domain, reference.media_type, reference.schema
         ) != artifact_type:
             raise QualificationRunnerError("qualification artifact type is not authoritative")
         payload = _canonical_payload(reopen_evidence(root, reference))
-        attempt = (
-            DiscoveryQualificationAttempt.from_dict(payload)
-            if discovery_mode
-            else CohortQualificationAttempt.from_dict(payload)
-        )
+        attempt = CohortQualificationAttempt.from_dict(payload)
         if attempt.to_dict() != payload:
             raise QualificationRunnerError("qualification artifact is not semantically canonical")
         if attempt.authority_digest != qualification_authority_digest(expected):
@@ -3852,56 +3427,6 @@ def reopen_causal_qualification(
                     ),
                     decision is QualificationDecision.NO_DECISION,
                 )
-            elif type(authority) is DiscoveryCandidateQualificationAuthority:
-                if type(report) is not DiscoveryCandidateQualificationReport:
-                    raise QualificationRunnerError(
-                        "discovery qualification report type differs"
-                    )
-                execution = report.execution_grade
-                reopen_discovery_execution_binding(
-                    authority.execution_requirement,
-                    execution,
-                    prepared,
-                    candidate_lifecycle_digest=raw.candidate_lifecycle_digest,
-                    session_id=rates[1].session_id,
-                )
-                identity = canonical_digest(
-                    "cacheon.qualification.discovery-candidate-identity",
-                    {
-                        **identity_common,
-                        "execution_requirement_digest": (
-                            authority.execution_requirement.digest
-                        ),
-                    },
-                )
-                decision = _aggregate_decision(
-                    execution.decision, speed_grade, quality_grade, audit_grade
-                )
-                headline = (
-                    report.discovery_arm_digest, report.proposal_digest,
-                    report.candidate_launch_digest, report.profile_digest,
-                    report.calibration_digest, report.execution_grade,
-                    report.speed_evidence_digest, report.speed_decision,
-                    report.speedup, report.quality_evidence_digest,
-                    report.quality_decision, report.candidate_mean_teacher_nll,
-                    report.audit_evidence_digest, report.audit_decision,
-                    report.decision, report.reason, report.retryable,
-                )
-                expected_headline = (
-                    prepared.arm.digest,
-                    authority.execution_requirement.proposal_digest,
-                    prepared.launch.digest, authority.profile.digest,
-                    calibration.digest, execution,
-                    report.speed_witness.evidence_digest, speed_grade, speedup,
-                    quality.evidence_digest, quality_grade,
-                    candidate_mean_teacher_nll,
-                    audit_witness.digest, audit_grade, decision,
-                    _discovery_report_reason(
-                        execution, speed_grade, quality, audit_witness,
-                        repeat_quality,
-                    ),
-                    decision is QualificationDecision.NO_DECISION,
-                )
             else:
                 raise QualificationRunnerError(
                     "qualification authority has an unsupported type"
@@ -3935,28 +3460,15 @@ def reopen_causal_qualification(
                     "t_request_sha256": report.repeat_quality.t_request_sha256,
                     "t_session_digest": attempt.reference_session_digest,
                 }
-                if type(authority) is CandidateQualificationAuthority:
-                    repeat_identity = canonical_digest(
-                        "cacheon.qualification.candidate-identity",
-                        {
-                            **repeat_common,
-                            "graph_requirement_digest": authority.graph_requirement.digest,
-                        },
-                    )
-                else:
-                    if type(authority) is not DiscoveryCandidateQualificationAuthority:
-                        raise QualificationRunnerError(
-                            "repeat quality authority type differs"
-                        )
-                    repeat_identity = canonical_digest(
-                        "cacheon.qualification.discovery-candidate-identity",
-                        {
-                            **repeat_common,
-                            "execution_requirement_digest": (
-                                authority.execution_requirement.digest
-                            ),
-                        },
-                    )
+                if type(authority) is not CandidateQualificationAuthority:
+                    raise QualificationRunnerError("repeat quality authority type differs")
+                repeat_identity = canonical_digest(
+                    "cacheon.qualification.candidate-identity",
+                    {
+                        **repeat_common,
+                        "graph_requirement_digest": authority.graph_requirement.digest,
+                    },
+                )
                 repeat_binding = (
                     repeat_raw.qualification_identity_digest,
                     repeat_raw.reference_manifest_digest,
@@ -4171,7 +3683,7 @@ def run_causal_qualification(
                     reopen_qualification_stage_exit(
                         value.evidence_root, durable_final, expected=value
                     )
-            elif durable_final.domain in (ATTEMPT_DOMAIN, DISCOVERY_ATTEMPT_DOMAIN):
+            elif durable_final.domain == ATTEMPT_DOMAIN:
                 if pair_mode:
                     reopen_causal_qualification(
                         value.evidence_root,
@@ -4401,9 +3913,6 @@ def run_causal_qualification(
         resident_accept=False,
         seams=QualificationContinuationRunnerSeams(
             qualification_decision=QualificationDecision,
-            discovery_candidate_authority_type=(
-                DiscoveryCandidateQualificationAuthority
-            ),
             qualification_stage_exit_type=QualificationStageExit,
             quality_continuation_type=QualityContinuation,
             audit_continuation_type=AuditContinuation,
@@ -4413,7 +3922,6 @@ def run_causal_qualification(
             qualification_authority_digest=qualification_authority_digest,
             run_marginal_lifecycle=run_marginal_lifecycle,
             run_slot_audits=_run_slot_audits,
-            grade_discovery_execution=grade_discovery_execution,
             selection_receipt_type=SelectionReceipt,
             cohort_trajectory_digest=cohort_trajectory_digest,
             lifecycle_causal_completion=_lifecycle_causal_completion,
@@ -4440,7 +3948,6 @@ def run_causal_qualification(
     teardown_after = continuation_stage.teardown_after
     t_pre = continuation_stage.t_pre
     t_post = continuation_stage.t_post
-    discovery_grades = continuation_stage.discovery_grades
 
     reports = []
     exchanges = reference_execution.session.exchanges
@@ -4617,53 +4124,9 @@ def run_causal_qualification(
                 lifecycle.closure if pair_mode else None,
             ))
         else:
-            if type(authority) is not DiscoveryCandidateQualificationAuthority:
-                raise QualificationRunnerError(
-                    "candidate authority has an unsupported type"
-                )
-            execution = discovery_grades[authority.selected_delta_digest]
-            decision = _aggregate_decision(
-                execution.decision, speed_grade, quality_grade,
-                audit_witness.decision,
-            )
-            reports.append(DiscoveryCandidateQualificationReport(
-                authority.selected_delta_digest,
-                candidate.arm.digest,
-                authority.execution_requirement.proposal_digest,
-                candidate.candidate.launch.digest,
-                authority.profile.digest,
-                calibration.digest,
-                execution,
-                speed_evidence_digest,
-                speed_grade,
-                speedup,
-                quality.evidence_digest,
-                quality_grade,
-                candidate_mean_teacher_nll,
-                raw_ref,
-                raw_binding,
-                speed_witness,
-                t_request_sha256,
-                audit_witness.digest,
-                audit_witness.decision,
-                audit_witness,
-                decision,
-                _discovery_report_reason(
-                    execution, speed_grade, quality, audit_witness,
-                    repeat_quality_verdict,
-                ),
-                decision is QualificationDecision.NO_DECISION,
-                repeat_quality,
-            ))
+            raise QualificationRunnerError("candidate authority has an unsupported type")
     if exchange_index != len(exchanges):
         raise QualificationRunnerError("T exchange grouping differs from speed policy")
-    attempt_type = (
-        DiscoveryQualificationAttempt
-        if all(
-            type(row) is DiscoveryCandidateQualificationReport for row in reports
-        )
-        else CohortQualificationAttempt
-    )
     attempt_args = (
         qualification_authority_digest(value),
         value.prepared.source.digest,
@@ -4678,7 +4141,7 @@ def run_causal_qualification(
         tuple(reports),
     )
     if resident_speed_witness is not None:
-        if attempt_type is not CohortQualificationAttempt or len(reports) != 1:
+        if len(reports) != 1:
             raise QualificationRunnerError(
                 "resident qualification attempt changed lane or cardinality"
             )
@@ -4698,7 +4161,7 @@ def run_causal_qualification(
         )
         attempt = CohortQualificationAttempt(*attempt_args, timing)
     else:
-        attempt = attempt_type(*attempt_args)
+        attempt = CohortQualificationAttempt(*attempt_args)
     reference = publish_causal_qualification(value.evidence_root, attempt)
     if pair_mode:
         reopen_causal_qualification(
@@ -4715,8 +4178,6 @@ def run_causal_qualification(
 
 __all__ = [
     "AuditWitness", "CandidateQualificationAuthority", "CandidateQualificationReport",
-    "DiscoveryCandidateQualificationAuthority",
-    "DiscoveryCandidateQualificationReport", "DiscoveryQualificationAttempt",
     "CausalQualificationInput", "CohortQualificationAttempt", "EntropyProvider",
     "HiddenJudge", "HiddenJudgeBinding", "HiddenJudgeReceipt",
     "QualificationRunnerError", "QualificationStageExit",

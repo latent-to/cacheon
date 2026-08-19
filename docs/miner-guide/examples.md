@@ -38,8 +38,8 @@ These bundles are meant to fail or expose a gate:
 | [`miner_setup_demo`](https://github.com/latent-to/cacheon/tree/main/examples/miner_setup_demo) | legacy engine-wide `setup` surface for isolation tests |
 
 `miner_setup_demo` is not a registered component template. No registered
-target permits `setup`; a cross-cutting engine change belongs in
-[Discovery](discovery-lane.md).
+target permits `setup`; a cross-cutting engine change is not a valid
+submission — widening the catalog is a reviewed validator-side change.
 
 ## Override example
 

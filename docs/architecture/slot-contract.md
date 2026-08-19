@@ -42,7 +42,7 @@ This cheap gate proves that the candidate computes the registered function. It i
 
 The host times requests outside the candidate process. The validator owns workloads, role schedules, output storage, reference work, evidence schemas, and verdicts. Candidate logs, self-reported throughput, and self-reported quality cannot mint a score.
 
-A feature that cannot preserve all four invariants is not a core slot. It must use a fenced discovery or reviewed integration path.
+A feature that cannot preserve all four invariants is not a core slot. It needs a reviewed catalog or integration change, not a submission.
 
 ## Slot kinds
 
@@ -213,7 +213,7 @@ The stable waist is the four invariants, not a promise that the catalog's set of
 
 ## Escape hatches
 
-Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals use the discovery lane; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a core slot, an atomic target, or reviewed product source without relabeling changed selected payload bytes under old evidence.
+Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a core slot, an atomic target, or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
 This keeps experimentation possible without widening every ordinary submission's authority.
 

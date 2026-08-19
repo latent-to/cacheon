@@ -636,7 +636,7 @@ class SubmittedDeltaFingerprint:
     advisory_fingerprints: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if self.product_kind not in {"component", "discovery"}:
+        if self.product_kind != "component":
             raise ValueError("submitted delta product kind is unsupported")
         if not isinstance(self.target_id, str) or not self.target_id:
             raise ValueError("submitted delta target is malformed")
@@ -655,11 +655,8 @@ class SubmittedDeltaFingerprint:
             "exact_payload_digest",
             "selected_delta_digest",
             "normalized_delta_digest",
+            "target_spec_digest",
         )
-        if self.product_kind == "component":
-            digest_fields += ("target_spec_digest",)
-        elif self.target_spec_digest:
-            raise ValueError("discovery fingerprint cannot claim target authority")
         for field in digest_fields:
             value = getattr(self, field)
             if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
@@ -673,7 +670,7 @@ class SubmittedDeltaFingerprint:
 
     @property
     def reward_namespace(self) -> tuple[str, ...]:
-        return self.members if self.product_kind == "component" else ("discovery",)
+        return self.members
 
     @property
     def digest(self) -> str:
@@ -738,38 +735,14 @@ def fingerprint_submitted_delta(
     bundle_root: str | Path,
     *,
     catalog=None,
-    discovery: bool = False,
 ) -> SubmittedDeltaFingerprint:
     """Fingerprint one target-owned proposal without canonical stack bytes.
 
-    Normal component intake reuses :func:`inspect_contribution`, the same trusted
-    projection used by stack assembly. Discovery intake fingerprints only the closed
-    discovery manifest and declared patches. Callers must choose the lane explicitly;
-    parser failure never silently reclassifies a component as discovery.
+    Component intake reuses :func:`inspect_contribution`, the same trusted
+    projection used by stack assembly.
     """
 
     root = Path(bundle_root)
-    if discovery:
-        from cacheon.discovery import inspect_discovery
-
-        inspected = inspect_discovery(root)
-        normalized = tuple(
-            sorted(dep_patch_fingerprint(text) for _path, text in inspected.patch_texts)
-        )
-        return SubmittedDeltaFingerprint(
-            product_kind="discovery",
-            target_id="discovery",
-            target_spec_digest="",
-            members=("discovery",),
-            exact_payload_digest=inspected.proposal_digest,
-            selected_delta_digest=inspected.proposal_digest,
-            normalized_delta_digest=_digest_rows(
-                "cacheon.discovery.normalized-delta.v1", normalized
-            ),
-            containment_fingerprints=normalized,
-            advisory_fingerprints=(),
-        )
-
     from cacheon.engine_tree import inspect_contribution
     from cacheon.target_catalog import default_target_catalog
 

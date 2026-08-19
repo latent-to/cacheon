@@ -15,7 +15,7 @@ deterministic packaging outside that selected closure, and release signing.
 
 ```mermaid
 flowchart LR
-    M["Miner proposal\nregistered target or discovery"]
+    M["Miner proposal\none registered target"]
     I["Finalized intake\nfetch, hash, copy disposition"]
     Q["Isolated referee\nrouting screen + resident adaptive qualification"]
     C["Crown\nreproduced evidence + attribution"]
@@ -38,7 +38,7 @@ Cacheon uses two different units on purpose.
 | Boundary | Unit | Why it exists |
 |---|---|---|
 | Execution | A complete isolated engine | Candidate Python, native code, engine construction, and serving behavior remain outside the trusted controller. |
-| Attribution | One registered slot, atomic target, or reviewed discovery contribution | A miner proposes only the smallest attributable delta; the validator supplies the incumbent stack around it. |
+| Attribution | One registered slot or atomic target | A miner proposes only the smallest attributable delta; the validator supplies the incumbent stack around it. |
 
 A candidate can therefore improve an incumbent stack without receiving or repackaging the incumbent contributors' bundles. For example, a new 3% delta can be tested on top of an existing 7% improvement while attribution remains attached only to the new delta.
 
@@ -48,7 +48,7 @@ Execution isolation does not imply whole-engine economic ownership. Conversely, 
 
 Four objects must remain distinct throughout the system:
 
-1. A **proposal** is hostile input: a target-scoped delta or a fenced discovery prototype.
+1. A **proposal** is hostile input: a target-scoped delta.
 2. A **crown** is retained evidence that the proposal improved one registered arena and target.
 3. An **integrated contribution** is reviewed Cacheon source that preserves the crowned selected payload and is bound to an immutable contribution identity.
 4. An **engine release** is a signed artifact containing the pinned runtime, reviewed stack, model identity, native artifacts, policy inputs, SBOM, and provenance.
@@ -103,12 +103,11 @@ Normal submissions optimize the inference data plane: kernels, quantized GEMMs, 
 
 The service control plane remains upstream of the competition boundary: HTTP and API behavior, authentication, tokenization, request admission, fleet orchestration, autoscaling, observability, and operational lifecycle management are not ordinary miner targets.
 
-Work that cannot yet fit a registered target enters the fenced discovery lane. The
-durable disposition path can retain review and issue a bounded reviewed bounty; it
-does not create an unbounded duplicate reward family. Registered promotion into a
-new validator-owned target remains a designed disposition, but fails closed until
-typed promotion transport, target registration, and fresh qualification/CROWN
-linkage are implemented.
+Work that cannot fit a registered target is not a valid submission. Widening the
+catalog — a new slot or atomic target — is a reviewed validator-side change,
+followed by fresh qualification and CROWN linkage; there is no separate proposal
+lane. (A fenced "discovery lane" for cross-cutting source patches existed until
+2026-08-19 and was removed without ever admitting a production proposal.)
 
 ## End-to-end flow
 

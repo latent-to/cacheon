@@ -118,14 +118,12 @@ sealed native publication is bound to the reviewed integrated source.
 | Deterministic Engine tree | [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) |
 | Model provisioning | [`model_provision.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/model_provision.py) |
 
-## Compatibility and discovery
+## Compatibility
 
 | Area | Primary source |
 |---|---|
 | SGLang pin and canary | [`compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py) |
 | Bittensor SDK canary | [`chain_canary.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain_canary.py) |
-| Discovery policy and arm | [`discovery.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/discovery.py) |
-| Discovery overlay | [`discovery_overlay.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/discovery_overlay.py) |
 
 ## Follow a concrete task
 

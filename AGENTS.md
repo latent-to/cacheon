@@ -33,8 +33,8 @@ or treated as production authority.
 - A miner proposal is hostile input, not production source.
 - The validator owns the model, workload, timing, outputs, references, target
   policy, and verdict.
-- A contribution changes one registered singleton/atomic target or enters the
-  fenced discovery lane.
+- A contribution changes one registered singleton/atomic target; there is no
+  separate proposal lane for unregistered work.
 - Candidate build and execution remain outside the trusted controller in
   validator-owned, no-egress OCI lifetimes.
 - CUDA graphs are part of the scored contract.
