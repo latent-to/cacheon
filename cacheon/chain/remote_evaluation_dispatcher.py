@@ -36,7 +36,6 @@ from cacheon.chain.evaluation_coordinator import (
     WorkerReadiness,
     _LeaseHeartbeat,
 )
-from cacheon.chain.guarded_evaluation_run import GuardedEvaluationRun
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.remote_qualification_evidence import (
     _SCHEMA_VERSION,
@@ -1072,22 +1071,9 @@ class RemoteEvaluationDispatcher:
         raise RemoteEvaluationDispatcherError(reason) from cause
 
     def dispatch_screen_once(self) -> EvaluationRun | None:
-        guarded = self._dispatch_screen_once(expected_members=None)
-        return None if guarded is None else guarded.run
-
-    def dispatch_guarded_screen_once(
-        self, *, expected_members: tuple[EvaluationLeaseMember, ...]
-    ) -> GuardedEvaluationRun | None:
-        return self._dispatch_screen_once(expected_members=expected_members)
-
-    def _dispatch_screen_once(
-        self,
-        *,
-        expected_members: tuple[EvaluationLeaseMember, ...] | None,
-    ) -> GuardedEvaluationRun | None:
         """Claim the exact FIFO screen row, invoke remotely, and CAS-commit."""
         self._validate_live_transport()
-        claim = self.coordinator.claim_screen(expected_members=expected_members)
+        claim = self.coordinator.claim_screen()
         if claim is None:
             return None
         heartbeat = _LeaseHeartbeat(self.coordinator, claim.lease)
@@ -1136,15 +1122,12 @@ class RemoteEvaluationDispatcher:
                 result_digest=envelope.digest,
             )
         self.coordinator.commit_screen_result(claim, receipt, envelope)
-        return GuardedEvaluationRun(
-            request.digest, EvaluationRun(lease, envelope, receipt, "completed")
-        )
+        return EvaluationRun(lease, envelope, receipt, "completed")
 
 
 __all__ = [
     "AuthenticatedRemoteEvaluationResponse",
     "AuthenticatedWorkerTransport",
-    "GuardedEvaluationRun",
     "REMOTE_EVALUATION_PROTOCOL_DIGEST",
     "RemoteEvidenceArtifact",
     "RemoteEvaluationDispatcher",

@@ -41,48 +41,12 @@ if TYPE_CHECKING:
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 
 
-class EvaluationClaimConflict(RuntimeError):
-    """An exact guarded claim differs from the authority selected in SQLite."""
-
-    def __init__(
-        self,
-        expected_members: tuple[EvaluationLeaseMember, ...] | None,
-        observed_members: tuple[EvaluationLeaseMember, ...],
-        *,
-        expected_lease_id: str | None = None,
-        observed_lease_id: str | None = None,
-        expected_request_id: str | None = None,
-        observed_request_id: str | None = None,
-    ) -> None:
-        super().__init__("evaluation claim differs from exact expected authority")
-        self.expected_members = expected_members
-        self.observed_members = observed_members
-        self.expected_lease_id = expected_lease_id
-        self.observed_lease_id = observed_lease_id
-        self.expected_request_id = expected_request_id
-        self.observed_request_id = observed_request_id
-
-
 def _intake_error(message: str) -> RuntimeError:
     # Imported lazily to keep the mixin reusable without a module cycle while
     # preserving the public IntakeError contract at runtime.
     from cacheon.chain.intake import IntakeError
 
     return IntakeError(message)
-
-
-def _closed_expected_members(
-    value: object,
-) -> tuple[EvaluationLeaseMember, ...] | None:
-    if value is None:
-        return None
-    if (
-        type(value) is not tuple
-        or any(type(row) is not EvaluationLeaseMember for row in value)
-        or len({row.reservation_id for row in value}) != len(value)
-    ):
-        raise _intake_error("expected evaluation lease members are malformed")
-    return value
 
 
 class EvaluationLeaseStoreMixin:
@@ -474,7 +438,6 @@ class EvaluationLeaseStoreMixin:
         current_block: int,
         lease_blocks: int = 30,
         max_members: int | None = None,
-        expected_members: tuple[EvaluationLeaseMember, ...] | None = None,
     ) -> EvaluationLease | None:
         """Atomically claim one oldest eligible screen or qualification cohort.
 
@@ -488,7 +451,6 @@ class EvaluationLeaseStoreMixin:
         completion, release, or finalized-block expiry.
         """
 
-        expected_members = _closed_expected_members(expected_members)
         try:
             owner = require_evaluation_owner(owner)
         except EvaluationLeaseError as exc:
@@ -517,8 +479,6 @@ class EvaluationLeaseStoreMixin:
                 EvaluationLeaseMember(row.reservation_id, row.status)
                 for row in reservations
             )
-            if expected_members is not None and members != expected_members:
-                raise EvaluationClaimConflict(expected_members, members)
             if not selected:
                 return None
             ids = tuple(row.reservation_id for row in reservations)
@@ -989,7 +949,6 @@ class EvaluationLeaseStoreMixin:
 
 
 __all__ = [
-    "EvaluationClaimConflict",
     "EvaluationLeaseStoreError",
     "EvaluationLeaseStoreMixin",
     "configure_evaluation_lease_connection",

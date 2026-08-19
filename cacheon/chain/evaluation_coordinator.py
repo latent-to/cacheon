@@ -796,7 +796,7 @@ class EvaluationCoordinator:
             ) from cause
         raise EvaluationCoordinatorError(reason) from cause
 
-    def claim_screen(self, *, expected_members: tuple[EvaluationLeaseMember, ...] | None = None) -> ClaimedScreenEvaluation | None:
+    def claim_screen(self) -> ClaimedScreenEvaluation | None:
         """Claim the exact oldest screen singleton, then reopen bytes unlocked."""
         self.readiness.validate(self.service)
         store, point = self._open_at_durable_cursor()
@@ -808,7 +808,6 @@ class EvaluationCoordinator:
                 owner=self.owner,
                 current_block=point[0],
                 lease_blocks=self.lease_blocks,
-                expected_members=expected_members,
             )
             if lease is None:
                 return None

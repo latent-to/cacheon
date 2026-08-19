@@ -22,17 +22,12 @@ from cacheon.chain.evaluation_coordinator import (
     EvaluationRun,
     _qualification_reservations,
 )
-from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
-from cacheon.chain.evaluation_lease_store import (
-    EvaluationClaimConflict,
-    _closed_expected_members,
-)
+from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.evaluation_recovery import (
     EvaluationRecovery,
     EvaluationRecoveryHoldError,
     RecoveryPhase,
 )
-from cacheon.chain.guarded_evaluation_run import GuardedEvaluationRun
 from cacheon.chain.execution_disposition import (
     AUTHORITY_CHANGED_HOLD_REASON,
     AuthenticatedPreResidentRefusal,
@@ -405,49 +400,16 @@ class RecoverableQualificationDispatcher:
             store.close()
             raise
 
-    def _claim_or_reopen(
-        self,
-        *,
-        expected_members: tuple[EvaluationLeaseMember, ...] | None = None,
-        expected_lease_id: str | None = None,
-        expected_request_id: str | None = None,
-    ) -> _RecoveryClaim | None:
+    def _claim_or_reopen(self) -> _RecoveryClaim | None:
         store, point = self._open_store()
         try:
             recovery = store.pending_qualification_recovery()
             if recovery is None:
-                if expected_lease_id is not None or expected_request_id is not None:
-                    raise EvaluationClaimConflict(
-                        expected_members,
-                        (),
-                        expected_lease_id=expected_lease_id,
-                        expected_request_id=expected_request_id,
-                    )
                 recovery = store.claim_recoverable_qualification(
                     owner=self.coordinator.owner,
                     current_block=point[0],
                     lease_blocks=self.coordinator.lease_blocks,
                     max_members=self.coordinator.qualification_max_members,
-                    expected_members=expected_members,
-                )
-            elif (
-                (expected_members is not None and recovery.lease.members != expected_members)
-                or (
-                    expected_lease_id is not None
-                    and recovery.lease.lease_id != expected_lease_id
-                )
-                or (
-                    expected_request_id is not None
-                    and recovery.request_id != expected_request_id
-                )
-            ):
-                raise EvaluationClaimConflict(
-                    expected_members,
-                    recovery.lease.members,
-                    expected_lease_id=expected_lease_id,
-                    observed_lease_id=recovery.lease.lease_id,
-                    expected_request_id=expected_request_id,
-                    observed_request_id=recovery.request_id,
                 )
             if recovery is None:
                 return None
@@ -1002,68 +964,12 @@ class RecoverableQualificationDispatcher:
         | RecoverableQualificationRequeue
         | None
     ):
-        result = self._dispatch_once(
-            expected_members=None,
-            expected_lease_id=None,
-            expected_request_id=None,
-        )
-        return result.run if type(result) is GuardedEvaluationRun else result
-
-    def dispatch_guarded_once(
-        self,
-        *,
-        expected_members: tuple[EvaluationLeaseMember, ...],
-        expected_lease_id: str | None = None,
-        expected_request_id: str | None = None,
-    ) -> (
-        GuardedEvaluationRun
-        | RecoverableQualificationHold
-        | CompletedQualificationHold
-        | RecoverableQualificationRequeue
-        | None
-    ):
-        return self._dispatch_once(
-            expected_members=expected_members,
-            expected_lease_id=expected_lease_id,
-            expected_request_id=expected_request_id,
-        )
-
-    def _dispatch_once(
-        self,
-        *,
-        expected_members: tuple[EvaluationLeaseMember, ...] | None,
-        expected_lease_id: str | None,
-        expected_request_id: str | None,
-    ) -> (
-        GuardedEvaluationRun
-        | RecoverableQualificationHold
-        | CompletedQualificationHold
-        | RecoverableQualificationRequeue
-        | None
-    ):
         """Run or resume one FIFO item without ever creating replacement work."""
 
-        expected_members = _closed_expected_members(expected_members)
-        try:
-            if expected_lease_id is not None:
-                require_sha256_hex(expected_lease_id, field="expected lease id")
-            if expected_request_id is not None and expected_request_id != "":
-                require_sha256_hex(expected_request_id, field="expected request id")
-        except (TypeError, ValueError) as exc:
-            raise RecoverableQualificationDispatcherError(str(exc)) from None
         self._validate_live_authority()
-        if (
-            expected_members is None
-            and expected_lease_id is None
-            and expected_request_id is None
-            and self.hold_requeue.refuse_fresh_claim()
-        ):
+        if self.hold_requeue.refuse_fresh_claim():
             return None
-        selected = self._claim_or_reopen(
-            expected_members=expected_members,
-            expected_lease_id=expected_lease_id,
-            expected_request_id=expected_request_id,
-        )
+        selected = self._claim_or_reopen()
         if selected is None:
             return None
         recovery, claim = selected.recovery, selected.claim
@@ -1195,10 +1101,7 @@ class RecoverableQualificationDispatcher:
                     recovery = self._record_import(recovery)
                     continue
                 if recovery.phase is RecoveryPhase.EVIDENCE_IMPORTED:
-                    run = GuardedEvaluationRun(
-                        recovery.request_id,
-                        self._commit_product(recovery, claim, product),
-                    )
+                    run = self._commit_product(recovery, claim, product)
                     self.hold_requeue.note_terminal()
                     return run
         except _PreResidentRefusalObserved as signal:
@@ -1219,7 +1122,6 @@ class RecoverableQualificationDispatcher:
 
 
 __all__ = [
-    "GuardedEvaluationRun",
     "CompletedQualificationHold",
     "RecoverableQualificationDispatcher",
     "RecoverableQualificationDispatcherError",
