@@ -278,13 +278,23 @@ def test_composed_qualification_claim_is_pinned_singleton_fifo(tmp_path: Path) -
             claim.lease, coordinator.readiness, coordinator.service, receipt
         )
         coordinator.commit_screen_result(claim, receipt, envelope)
-    qualification = coordinator.claim_qualification()
-    assert qualification is not None
     # Mainnet 2026-08-15: the v3 execution core refuses multi-candidate
     # requests at the deployment factory, so the dispatcher pins singleton
     # claims instead of deriving min(policy.max_cohort, capacity).
     assert coordinator.qualification_max_members == 1
-    assert qualification.lease.reservation_ids == (rows[0].reservation_id,)
+    store, point = coordinator._open_at_durable_cursor()
+    try:
+        lease = store.claim_evaluation_lease(
+            stage="qualification",
+            owner=coordinator.owner,
+            current_block=point[0],
+            lease_blocks=coordinator.lease_blocks,
+            max_members=coordinator.qualification_max_members,
+        )
+    finally:
+        store.close()
+    assert lease is not None
+    assert lease.reservation_ids == (rows[0].reservation_id,)
 
 
 def _published_intake_row(tmp_path: Path, intake_db: Path, *, label: str):

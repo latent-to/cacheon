@@ -29,8 +29,6 @@ from cacheon.arena_service import (
 from cacheon.chain.evaluation_leases import EvaluationLease
 from cacheon.chain.evaluation_coordinator import (
     SYSTEMIC_QUALIFICATION_REASONS,
-    ClaimedQualificationEvaluation,
-    ClaimedScreenEvaluation,
     EvaluationCoordinatorError,
     EvaluationResultEnvelope,
     EvaluationRun,
@@ -220,34 +218,6 @@ class B300MainnetWorker:
             },
         )
 
-    def run(
-        self,
-        job: ClaimedScreenEvaluation | ClaimedQualificationEvaluation,
-    ) -> EvaluationRun:
-        """Execute one exact leased job and seal its typed result envelope."""
-
-        if type(job) not in {ClaimedScreenEvaluation, ClaimedQualificationEvaluation}:
-            raise B300MainnetWorkerError("leased evaluation job is not exactly typed")
-        with self._lock:
-            if self._closed:
-                raise B300MainnetWorkerError("B300 mainnet worker is closed")
-            self._validate_readiness(self.readiness, self.service)
-            if type(job) is ClaimedScreenEvaluation:
-                payload = self._run_screen(job)
-                disposition = "completed"
-            else:
-                payload = self._run_qualification(job)
-                disposition = (
-                    "released" if self._systemic(payload) else "completed"
-                )
-            envelope = EvaluationResultEnvelope.seal(
-                job.lease,
-                self.readiness,
-                self.service,
-                payload,
-            )
-            return EvaluationRun(job.lease, envelope, payload, disposition)
-
     def run_remote_screen(
         self,
         lease: EvaluationLease,
@@ -416,9 +386,6 @@ class B300MainnetWorker:
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
         self.close()
 
-    def _run_screen(self, job: ClaimedScreenEvaluation) -> ArenaScreenReceipt:
-        return self._screen_candidate(job.candidate)
-
     def _screen_candidate(
         self,
         candidate: ArenaCandidateBinding,
@@ -434,21 +401,6 @@ class B300MainnetWorker:
                 "screen result changed the exact leased candidate"
             )
         return receipt
-
-    def _run_qualification(
-        self,
-        job: ClaimedQualificationEvaluation,
-    ) -> QualificationIntakeBatch:
-        execution = self._execute_qualification(
-            job.candidates,
-            job.screen_receipts,
-        )
-        if type(execution) is B300QualificationGraphGateHold:
-            raise B300MainnetWorkerError(
-                "local qualification unexpectedly returned a remote graph HOLD"
-            )
-        batch, _manifest, _references = execution
-        return batch
 
     def _execute_qualification(
         self,
@@ -831,23 +783,9 @@ class B300MainnetWorker:
             ) from exc
 
 
-def run_b300_mainnet_job(
-    job: ClaimedScreenEvaluation | ClaimedQualificationEvaluation,
-    *,
-    manifest: ArenaServiceManifest,
-    authorities: B300DeploymentAuthorities | B300ScreenDeploymentAuthorities,
-    readiness: WorkerReadiness,
-) -> EvaluationRun:
-    """One-shot in-process entrypoint for a deployment-owned sealed adapter."""
-
-    with B300MainnetWorker(manifest, authorities, readiness) as worker:
-        return worker.run(job)
-
-
 __all__ = [
     "B300MainnetWorker",
     "B300MainnetWorkerError",
     "B300RemoteQualificationRun",
     "WORKER_SCHEMA",
-    "run_b300_mainnet_job",
 ]

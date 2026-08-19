@@ -21,13 +21,12 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, NoReturn
 
 from cacheon.arena_service import (
     ArenaCandidateBinding,
-    ArenaQualificationWork,
     ArenaScreenReceipt,
     ArenaService,
 )
@@ -48,11 +47,6 @@ from cacheon.chain.publication import (
     WorkerBundlePublication,
     reopen_worker_bundle,
 )
-from cacheon.chain.screen_identity_rotation import (
-    ROTATED_SCREEN_RELEASE,
-    rotated_reservation_ids,
-)
-from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.evidence_store import (
     EvidenceArtifactRef,
     EvidenceStoreError,
@@ -61,9 +55,7 @@ from cacheon.eval.evidence_store import (
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
-    QualificationPlanFactory,
     QualificationReservation,
-    run_qualification_intake,
 )
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
@@ -849,91 +841,6 @@ class EvaluationCoordinator:
                 cause=exc,
             )
 
-    def claim_qualification(self) -> ClaimedQualificationEvaluation | None:
-        """Claim one exact promoted cohort and gather all retained CPU authority."""
-
-        self.readiness.validate(self.service)
-        store, point = self._open_at_durable_cursor()
-        lease: EvaluationLease | None = None
-        claim_error: IntakeError | None = None
-        try:
-            lease = store.claim_evaluation_lease(
-                stage="qualification",
-                owner=self.owner,
-                current_block=point[0],
-                lease_blocks=self.lease_blocks,
-                max_members=self.qualification_max_members,
-            )
-            if lease is None:
-                return None
-            reservations = tuple(store.get(row) for row in lease.reservation_ids)
-            receipts = tuple(
-                store.latest_promoted_screen(row.reservation_id)
-                for row in reservations
-            )
-        except IntakeError as exc:
-            if lease is None:
-                raise EvaluationCoordinatorError(
-                    f"qualification claim failed: {exc}"
-                ) from exc
-            claim_error = exc
-        finally:
-            store.close()
-        if claim_error is not None:
-            self._release_after_error(
-                lease,
-                reason="qualification_claim_snapshot",
-                cause=claim_error,
-            )
-        rotated = rotated_reservation_ids(reservations, receipts, self.service.identity)
-        if rotated:
-            # See cacheon.chain.screen_identity_rotation: these receipts were
-            # signed by a service identity that is no longer live, so they
-            # cannot authorize qualification.
-            self._release(lease, reason=ROTATED_SCREEN_RELEASE)
-            store, _ = self._open_at_durable_cursor()
-            try:
-                for reservation_id in rotated:
-                    store.demote_promoted_for_rescreen(
-                        reservation_id, reason=ROTATED_SCREEN_RELEASE
-                    )
-            except IntakeError as exc:
-                raise EvaluationCoordinatorError(
-                    f"rotated screen cohort could not be requeued: {exc}"
-                ) from exc
-            finally:
-                store.close()
-            return None
-        try:
-            publications = tuple(
-                reopen_worker_bundle(
-                    row.publication_root,
-                    row.arrival.content_hash,
-                    expected_receipt_digest=row.publication_digest,
-                )
-                for row in reservations
-            )
-            authority = _qualification_reservations(reservations, publications)
-            candidates = tuple(
-                ArenaCandidateBinding(item, publication, row.screen_attempts)
-                for row, publication, item in zip(
-                    reservations, publications, authority, strict=True
-                )
-            )
-            return ClaimedQualificationEvaluation(
-                lease,
-                reservations,
-                publications,
-                candidates,
-                receipts,
-            )
-        except BaseException as exc:
-            self._release_after_error(
-                lease,
-                reason="qualification_claim_materialization",
-                cause=exc,
-            )
-
     def commit_screen_result(
         self,
         claim: ClaimedScreenEvaluation,
@@ -984,66 +891,6 @@ class EvaluationCoordinator:
             ) from exc
         finally:
             store.close()
-
-    @staticmethod
-    def _validate_work(
-        work: ArenaQualificationWork,
-        claim: ClaimedQualificationEvaluation,
-    ) -> None:
-        expected = tuple(row.reservation for row in claim.candidates)
-        if (
-            type(work) is not ArenaQualificationWork
-            or type(work.factory) is not QualificationPlanFactory
-            or type(work.factory.manifest) is not QualificationAuthorityManifest
-            or work.factory.manifest.reservations != expected
-        ):
-            raise EvaluationCoordinatorError(
-                "qualification planner changed the exact finalized cohort"
-            )
-
-    @staticmethod
-    def _validate_batch(
-        batch: QualificationIntakeBatch,
-        work: ArenaQualificationWork,
-        claim: ClaimedQualificationEvaluation,
-    ) -> None:
-        expected = tuple(row.reservation for row in claim.candidates)
-        if (
-            type(batch) is not QualificationIntakeBatch
-            or batch.authority_manifest_digest != work.factory.manifest.digest
-            or tuple(row.reservation_digest for row in batch.outcomes)
-            != tuple(row.reservation_digest for row in expected)
-            or tuple(row.selected_delta_digest for row in batch.outcomes)
-            != tuple(row.selected_delta_digest for row in expected)
-        ):
-            raise EvaluationCoordinatorError(
-                "qualification result changed the exact finalized cohort"
-            )
-
-    @staticmethod
-    def _systemic(batch: QualificationIntakeBatch) -> bool:
-        return bool(batch.outcomes) and all(
-            outcome.decision is QualificationDecision.NO_DECISION
-            and outcome.reason in SYSTEMIC_QUALIFICATION_REASONS
-            for outcome in batch.outcomes
-        )
-
-    @staticmethod
-    def _stack_authority(prepared) -> tuple[object, str, Path]:
-        arms = tuple(row.arm for row in prepared.prepared.candidates)
-        if (
-            not arms
-            or len({row.baseline_before for row in arms}) != 1
-            or any(row.incumbent != arms[0].incumbent for row in arms)
-        ):
-            raise EvaluationCoordinatorError(
-                "qualification planner has no single incumbent stack"
-            )
-        return (
-            arms[0].incumbent,
-            arms[0].baseline_before.tree_digest,
-            Path(prepared.evidence_root),
-        )
 
     def commit_remote_qualification_result(
         self,
@@ -1175,172 +1022,6 @@ class EvaluationCoordinator:
         finally:
             store.close()
 
-    def commit_qualification_result(
-        self,
-        claim: ClaimedQualificationEvaluation,
-        work: ArenaQualificationWork,
-        prepared,
-        batch: QualificationIntakeBatch,
-        envelope: EvaluationResultEnvelope,
-    ) -> tuple[IntakeReservation, ...]:
-        """Atomically install stack authority and apply one exact typed cohort."""
-
-        if type(claim) is not ClaimedQualificationEvaluation:
-            raise EvaluationCoordinatorError("qualification claim is not exactly typed")
-        self._validate_work(work, claim)
-        self._validate_batch(batch, work, claim)
-        envelope.verify(claim.lease, self.readiness, self.service, batch)
-        incumbent, tree_digest, evidence_root = self._stack_authority(prepared)
-        authority_digest = work.factory.manifest.digest
-        authority_manifest = work.factory.manifest.to_dict()
-        store, point = self._open_at_durable_cursor()
-        try:
-            with store.accept_evaluation_result(
-                claim.lease,
-                current_block=point[0],
-                result_digest=envelope.digest,
-            ) as rows:
-                if rows != claim.reservations:
-                    raise EvaluationCoordinatorError(
-                        "qualification cohort changed before result commit"
-                    )
-                store.initialize_evaluation_stack(
-                    incumbent,
-                    tree_digest=tree_digest,
-                )
-                for row in rows:
-                    store.mark_qualifying(
-                        row.reservation_id,
-                        authority_digest,
-                        authority_manifest,
-                    )
-                result = store.apply_qualification_batch(
-                    batch,
-                    current_finalized_block=point[0],
-                    evidence_root=evidence_root,
-                )
-            return result
-        except IntakeError as exc:
-            raise EvaluationCoordinatorError(
-                f"qualification result was rejected by the durable lease: {exc}"
-            ) from exc
-        finally:
-            store.close()
-
-    def run_screen_once(self) -> EvaluationRun | None:
-        """Run one screen outside controller ownership and commit its envelope."""
-
-        claim = self.claim_screen()
-        if claim is None:
-            return None
-        heartbeat = _LeaseHeartbeat(self, claim.lease)
-        heartbeat.start()
-        try:
-            receipt = self.service.screen(claim.candidate)
-        except BaseException as exc:
-            lease, heartbeat_error = heartbeat.stop()
-            cause = heartbeat_error or exc
-            self._release_after_error(
-                lease,
-                reason="screen_provider_exception",
-                cause=cause,
-            )
-        lease, heartbeat_error = heartbeat.stop()
-        claim = replace(claim, lease=lease)
-        envelope = EvaluationResultEnvelope.seal(
-            lease,
-            self.readiness,
-            self.service,
-            receipt,
-        )
-        if heartbeat_error is not None:
-            self._release_after_error(
-                lease,
-                reason="screen_heartbeat_failure",
-                cause=heartbeat_error,
-                result_digest=envelope.digest,
-            )
-        self.commit_screen_result(claim, receipt, envelope)
-        return EvaluationRun(lease, envelope, receipt, "completed")
-
-    def run_qualification_once(self) -> EvaluationRun | None:
-        """Plan and run one exact cohort unlocked, then commit or requeue it."""
-
-        claim = self.claim_qualification()
-        if claim is None:
-            return None
-        heartbeat = _LeaseHeartbeat(self, claim.lease)
-        heartbeat.start()
-        prepared = None
-        try:
-            # ``state=None`` is intentional: an open controller/store is never
-            # delegated to the provider.  All finalized rows and screen receipts
-            # needed by the request were snapshotted before the flock was closed.
-            work = self.service.plan_qualification(
-                claim.candidates,
-                claim.screen_receipts,
-                state=None,
-            )
-            self._validate_work(work, claim)
-            try:
-                prepared = work.factory.build()
-            except BaseException:
-                # The typed intake runner converts supported plan failures into
-                # a manifest-bound ``qualification_plan`` NO_DECISION batch.
-                prepared = None
-            batch = run_qualification_intake(
-                work.factory,
-                executor=work.executor,
-                resident_baseline_executor=work.resident_baseline_executor,
-                entropy_provider=work.entropy_provider,
-                hidden_judge=work.hidden_judge,
-                deadline=float(work.deadline),
-            )
-            self._validate_batch(batch, work, claim)
-            if prepared is None and not self._systemic(batch):
-                prepared = work.factory.build()
-        except BaseException as exc:
-            lease, heartbeat_error = heartbeat.stop()
-            cause = heartbeat_error or exc
-            self._release_after_error(
-                lease,
-                reason="qualification_provider_exception",
-                cause=cause,
-            )
-        lease, heartbeat_error = heartbeat.stop()
-        claim = replace(claim, lease=lease)
-        envelope = EvaluationResultEnvelope.seal(
-            lease,
-            self.readiness,
-            self.service,
-            batch,
-        )
-        if heartbeat_error is not None:
-            self._release_after_error(
-                lease,
-                reason="qualification_heartbeat_failure",
-                cause=heartbeat_error,
-                result_digest=envelope.digest,
-            )
-        if self._systemic(batch):
-            reasons = ",".join(sorted({row.reason for row in batch.outcomes}))
-            self._release(
-                lease,
-                reason=f"systemic_qualification:{reasons}",
-                result_digest=envelope.digest,
-            )
-            return EvaluationRun(lease, envelope, batch, "released")
-        if prepared is None:
-            self._release_after_error(
-                lease,
-                reason="qualification_stack_authority_missing",
-                cause=EvaluationCoordinatorError(
-                    "qualification completed without a rebuildable stack authority"
-                ),
-                result_digest=envelope.digest,
-            )
-        self.commit_qualification_result(claim, work, prepared, batch, envelope)
-        return EvaluationRun(lease, envelope, batch, "completed")
 
 
 __all__ = [

@@ -8,10 +8,12 @@ from pathlib import Path
 
 import pytest
 
+import cacheon.chain.evaluation_coordinator as coordinator_module
 import cacheon.chain.remote_evaluation_dispatcher as remote_dispatcher_module
 import cacheon.chain.remote_qualification_evidence as remote_evidence_module
 from cacheon.arena_service import (
     SCREEN_STAGES,
+    ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaRuntimeIdentity,
     ArenaService,
@@ -25,7 +27,12 @@ from cacheon.arena_service import (
     WorkloadRegime,
 )
 from cacheon.bundle_hash import content_hash
-from cacheon.chain.evaluation_coordinator import EvaluationCoordinator, WorkerReadiness
+from cacheon.chain.evaluation_coordinator import (
+    ClaimedQualificationEvaluation,
+    EvaluationCoordinator,
+    EvaluationResultEnvelope,
+    WorkerReadiness,
+)
 from cacheon.chain.intake import (
     FinalizedArrival,
     FinalizedIntakeStore,
@@ -33,7 +40,7 @@ from cacheon.chain.intake import (
     IntakePolicy,
     IntakeScope,
 )
-from cacheon.chain.publication import publish_worker_bundle
+from cacheon.chain.publication import publish_worker_bundle, reopen_worker_bundle
 from cacheon.chain.remote_evaluation_dispatcher import (
     AuthenticatedRemoteEvaluationResponse,
     REMOTE_EVALUATION_PROTOCOL_DIGEST,
@@ -271,6 +278,57 @@ def _coordinator(
     )
     options.update(changes)
     return EvaluationCoordinator(**options)
+
+
+def _promote_one(coordinator: EvaluationCoordinator) -> None:
+    """Fixture: claim the oldest screen row, run the fake provider unlocked,
+    seal, and CAS-commit the PROMOTE receipt (no transport involved)."""
+    claim = coordinator.claim_screen()
+    assert claim is not None
+    receipt = coordinator.service.screen(claim.candidate)
+    envelope = EvaluationResultEnvelope.seal(
+        claim.lease, coordinator.readiness, coordinator.service, receipt
+    )
+    coordinator.commit_screen_result(claim, receipt, envelope)
+
+
+def _claim_qualification(
+    coordinator: EvaluationCoordinator,
+) -> ClaimedQualificationEvaluation:
+    """Fixture: durable qualification lease over promoted rows, materialized
+    into the CPU authority DTO the recoverable dispatcher hands to transport."""
+    store, point = coordinator._open_at_durable_cursor()
+    try:
+        lease = store.claim_evaluation_lease(
+            stage="qualification",
+            owner=coordinator.owner,
+            current_block=point[0],
+            lease_blocks=coordinator.lease_blocks,
+            max_members=coordinator.qualification_max_members,
+        )
+        assert lease is not None
+        reservations = tuple(store.get(row) for row in lease.reservation_ids)
+        receipts = tuple(
+            store.latest_promoted_screen(row.reservation_id) for row in reservations
+        )
+    finally:
+        store.close()
+    publications = tuple(
+        reopen_worker_bundle(
+            row.publication_root,
+            row.arrival.content_hash,
+            expected_receipt_digest=row.publication_digest,
+        )
+        for row in reservations
+    )
+    authority = coordinator_module._qualification_reservations(reservations, publications)
+    candidates = tuple(
+        ArenaCandidateBinding(item, publication, row.screen_attempts)
+        for row, publication, item in zip(reservations, publications, authority, strict=True)
+    )
+    return ClaimedQualificationEvaluation(
+        lease, reservations, publications, candidates, receipts
+    )
 
 
 def _transport_identity(

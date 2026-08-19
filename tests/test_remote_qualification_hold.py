@@ -59,9 +59,9 @@ def _qualification_request(tmp_path: Path, *, count: int = 1):
         cursor,
         qualification_max_members=count,
     )
-    assert all(coordinator.run_screen_once() is not None for _ in range(count))
-    claim = coordinator.claim_qualification()
-    assert claim is not None
+    for _ in range(count):
+        fixtures._promote_one(coordinator)
+    claim = fixtures._claim_qualification(coordinator)
     credential = RemoteWorkerCredential("qualification-hold-key", b"h" * 32)
     identity = fixtures._transport_identity(coordinator, credential)
     request = seal_remote_request(
