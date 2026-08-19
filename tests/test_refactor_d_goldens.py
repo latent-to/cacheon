@@ -31,6 +31,7 @@ from cacheon.verification_outcomes import (
     VerificationCaseDescriptor,
     VerificationCaseKind,
 )
+from tests import test_refactor_d_golden_families as golden_families
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "refactor_d_goldens.json"
@@ -100,18 +101,18 @@ _DESCRIPTOR_INPUTS: dict[str, dict[str, Any]] = {
 }
 
 
-def _build_descriptor(inputs: dict[str, Any]) -> tuple[bytes, str]:
+def _build_descriptor(inputs: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
     descriptor = VerificationCaseDescriptor.from_call_dicts(
         slot_id=inputs["slot_id"],
         variant_id=inputs["variant_id"],
         case_kind=VerificationCaseKind(inputs["case_kind"]),
         calls=tuple(inputs["calls"]),
     )
-    return _canonical(descriptor.to_dict()), descriptor.digest
+    return _canonical(descriptor.to_dict()), descriptor.digest, {}
 
 
 def test_descriptor_digest_is_sha256_of_its_canonical_bytes() -> None:
-    raw, digest = _build_descriptor(_DESCRIPTOR_INPUTS["ordinary_single"])
+    raw, digest, _ = _build_descriptor(_DESCRIPTOR_INPUTS["ordinary_single"])
     assert digest == hashlib.sha256(raw).hexdigest()
     assert json.loads(raw)["domain"] == "cacheon.verification-case-descriptor.v1"
 
@@ -146,11 +147,16 @@ def test_descriptor_refuses_a_call_missing_sealed_context() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Golden document: {family: {case: {"inputs", "canonical", "digest"}}}
+# Golden document: {family: {case: {"inputs", "canonical", "digest", "extras"}}}
+# Builders return (canonical_bytes, digest, extras); extras hold the family's
+# other pinned values (ids, sibling records, reopen outcomes).
 # --------------------------------------------------------------------------- #
 
-_FAMILIES: dict[str, tuple[dict[str, dict[str, Any]], Callable[[dict[str, Any]], tuple[bytes, str]]]] = {
+Builder = Callable[[dict[str, Any]], tuple[bytes, str, dict[str, Any]]]
+
+_FAMILIES: dict[str, tuple[dict[str, dict[str, Any]], Builder]] = {
     "verification_descriptor": (_DESCRIPTOR_INPUTS, _build_descriptor),
+    **golden_families.FAMILIES,
 }
 
 
@@ -159,11 +165,12 @@ def _capture() -> dict[str, dict[str, dict[str, Any]]]:
     for family, (inputs, build) in _FAMILIES.items():
         document[family] = {}
         for case, case_inputs in inputs.items():
-            raw, digest = build(case_inputs)
+            raw, digest, extras = build(case_inputs)
             document[family][case] = {
                 "inputs": case_inputs,
-                "canonical": raw.decode("ascii"),
+                "canonical": raw.decode("utf-8"),
                 "digest": digest,
+                "extras": extras,
             }
     return document
 
@@ -181,9 +188,10 @@ def test_golden_bytes_and_digest_are_unchanged(family: str, case: str) -> None:
     assert family in golden, f"family without a pinned golden (pin it in this change): {family}"
     assert case in golden[family], f"case without a pinned golden (pin it in this change): {case}"
     pinned = golden[family][case]
-    raw, digest = _FAMILIES[family][1](pinned["inputs"])
-    assert raw.decode("ascii") == pinned["canonical"], f"{family}/{case}: canonical bytes moved"
+    raw, digest, extras = _FAMILIES[family][1](pinned["inputs"])
+    assert raw.decode("utf-8") == pinned["canonical"], f"{family}/{case}: canonical bytes moved"
     assert digest == pinned["digest"], f"{family}/{case}: digest moved"
+    assert extras == pinned["extras"], f"{family}/{case}: pinned sibling values moved"
 
 
 def test_golden_has_no_orphaned_cases() -> None:
