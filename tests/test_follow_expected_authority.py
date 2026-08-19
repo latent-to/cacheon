@@ -91,3 +91,58 @@ def test_follow_weights_pins_subnet_owner_when_expected_authority_empty(
     assert seen["expected_authority"] == "owner-hk"
     out = capsys.readouterr().out
     assert "pinning subnet-owner hotkey owner-hk" in out
+
+
+def test_follow_weights_watch_reuses_one_chain_client_and_redials_after_a_failure(
+    monkeypatch,
+) -> None:
+    """The watch loop must not leak a websocket per pass.
+
+    Mainnet 2026-08-19: one fresh ``Subtensor`` per pass left an orphaned
+    keepalive thread every interval, and one archive-node blip failed 96 of
+    them at once. One client per session; drop and re-dial only after a pass
+    fails.
+    """
+
+    class _Client:
+        instances: list["_Client"] = []
+
+        def __init__(self) -> None:
+            self.closed = False
+            _Client.instances.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    dialed: list[dict[str, object]] = []
+
+    def _connect(network: str, **options: object) -> _Client:
+        dialed.append({"network": network, **options})
+        return _Client()
+
+    passes: list[object] = []
+    outcomes = iter([0, RuntimeError("node blip"), 0, 2])
+
+    def _once(args, subtensor=None):
+        passes.append(subtensor)
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(chain, "connect", _connect)
+    monkeypatch.setattr(cli, "_cmd_follow_weights_once", _once)
+    import time as _time
+
+    monkeypatch.setattr(_time, "sleep", lambda _s: None)
+
+    args = Namespace(network="wss://node.example.invalid", watch=True, dry_run=False, interval=1.0)
+    assert cli.cmd_follow_weights(args) == 2
+
+    # Two clients total: the first served passes 1-2 and was closed after the
+    # failure; the second served passes 3-4 and was closed on the way out.
+    assert len(dialed) == 2
+    assert dialed[0]["retry_forever"] is True
+    first, second = _Client.instances
+    assert passes == [first, first, second, second]
+    assert first.closed and second.closed

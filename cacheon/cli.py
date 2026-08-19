@@ -793,7 +793,20 @@ def cmd_serve_weights(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
+def _close_chain_quietly(subtensor: object) -> None:
+    """Best-effort close of a subtensor client whose connection may be dead."""
+
+    close = getattr(subtensor, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - the socket is already gone
+            pass
+
+
+def _cmd_follow_weights_once(
+    args: argparse.Namespace, subtensor: object | None = None
+) -> int:
     from cacheon import chain
     from cacheon.chain.intake import (
         FinalizedIntakeStore,
@@ -812,7 +825,8 @@ def _cmd_follow_weights_once(args: argparse.Namespace) -> int:
     if not 1 <= skew <= 600:
         raise SystemExit("--max-skew-seconds must be between 1 and 600")
     wallet = _wallet_from_args(args)
-    subtensor = _connect_chain_from_args(args)
+    if subtensor is None:
+        subtensor = _connect_chain_from_args(args)
     expected_authority = (args.expected_authority or "").strip()
     if not expected_authority:
         owner = chain.resolve_subnet_owner_burn_target(subtensor, args.netuid)
@@ -877,10 +891,20 @@ def cmd_follow_weights(args: argparse.Namespace) -> int:
 
     logger = logging.getLogger("cacheon.chain.weight_share")
     failures = 0
+    # One chain client for the whole watch session. Dialing a fresh client per
+    # pass leaked one websocket (and its keepalive thread) every interval; a
+    # node blip then failed all of them at once (2026-08-19: 96 keepalive
+    # tracebacks in three minutes on mainnet). Re-dial only after a failed
+    # pass, when the connection is the likeliest casualty.
+    subtensor = None
     while True:
         try:
-            status = _cmd_follow_weights_once(args)
+            if subtensor is None:
+                subtensor = _connect_chain_from_args(args)
+            status = _cmd_follow_weights_once(args, subtensor)
         except Exception as exc:
+            _close_chain_quietly(subtensor)
+            subtensor = None
             if getattr(exc, "retryable", True) is False:
                 raise
             failures += 1
@@ -892,6 +916,7 @@ def cmd_follow_weights(args: argparse.Namespace) -> int:
         else:
             failures = 0
             if status not in {0, 3}:
+                _close_chain_quietly(subtensor)
                 return status
         time.sleep(float(interval) * (1 + min(failures, 5)))
 
