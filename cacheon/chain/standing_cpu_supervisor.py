@@ -32,6 +32,11 @@ from pathlib import Path
 from typing import Any, Callable
 from functools import partial
 from cacheon.chain import sealed_config
+from cacheon.chain.standing_weights_stage import (
+    WeightsStageConfig,
+    compose_weight_offer_push,
+    load_weights_config,
+)
 
 
 STATUS_SCHEMA = "cacheon-standing-cpu-supervisor-status-v1"
@@ -53,6 +58,7 @@ _STANDING_CONFIG_FIELDS = frozenset(
         "screen_dispatcher_config",
         "settlement_network",
         "stall_timeout_ms",
+        "weights_stage_config",
     }
 )
 
@@ -563,6 +569,7 @@ class StandingSupervisorConfig:
     enable_settlement: bool
     enable_qualification: bool
     settlement_network: str
+    weights_stage: WeightsStageConfig | None
     stall_timeout_s: float
     idle_poll_s: float
     restart_initial_backoff_s: float
@@ -622,11 +629,6 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
     enable_qualification = _exact_bool(
         row["enable_qualification"], "enable_qualification"
     )
-    if enable_weights:
-        raise StandingCpuSupervisorError(
-            "enable_weights requires a sealed weights authority composition; "
-            "keep enable_weights false until the weights stage is attached"
-        )
     # Settlement is chain-independent arithmetic over already-durable PASS
     # pairs, but it is *clocked* by the finalized head: ``_settle_pending``
     # refuses a regressed clock and stamps the cohort lease with it. That read
@@ -647,6 +649,22 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
     # epoch, which is exactly how the 2026-08-16 expiry_blocks decision was
     # lost: a per-epoch artifact edited in place, then orphaned by the next
     # commission regenerating it from defaults.
+
+    weights_stage_config = row["weights_stage_config"]
+    if type(weights_stage_config) is not str:
+        raise StandingCpuSupervisorError("weights_stage_config is malformed")
+    if enable_weights and not weights_stage_config.strip():
+        raise StandingCpuSupervisorError(
+            "enable_weights requires weights_stage_config, the sealed eval "
+            "push-weight-offer authority"
+        )
+    if not enable_weights and weights_stage_config:
+        raise StandingCpuSupervisorError(
+            "weights_stage_config is configured while enable_weights is false"
+        )
+    weights_stage = (
+        load_weights_config(weights_stage_config) if enable_weights else None
+    )
 
     stall_timeout_ms = _positive_int(
         row["stall_timeout_ms"], "stall_timeout_ms", maximum=86_400_000
@@ -677,6 +695,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         enable_settlement=enable_settlement,
         enable_qualification=enable_qualification,
         settlement_network=settlement_network,
+        weights_stage=weights_stage,
         stall_timeout_s=stall_timeout_ms / 1000.0,
         idle_poll_s=idle_poll_ms / 1000.0,
         restart_initial_backoff_s=restart_initial_backoff_ms / 1000.0,
@@ -753,8 +772,20 @@ def build_standing_supervisor(
 
     weights_once = None
     if config.enable_weights:
-        # load_standing_config already refuses enable_weights until sealed.
-        raise StandingCpuSupervisorError("weights stage is not sealed")
+        if config.weights_stage is None:
+            raise StandingCpuSupervisorError(
+                "enable_weights is set without a sealed weights stage"
+            )
+        weights_once = compose_weight_offer_push(
+            config.weights_stage,
+            store_factory=partial(
+                RecoverableFinalizedIntakeStore,
+                screen_config.intake_db,
+                screen_config.policy,
+                scope=screen_config.scope,
+            ),
+            scope=screen_config.scope,
+        )
 
     return StandingCpuSupervisor(
         screen_once=screen_dispatcher.dispatch_screen_once,

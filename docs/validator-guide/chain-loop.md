@@ -326,6 +326,24 @@ restarts rather than restarting the experiment. Stage faults tear down the
 constructed authority and rebuild it under bounded exponential backoff; every
 status change is one canonical-JSON line on stdout.
 
+`enable_weights` installs the eval-side weight-offer push stage
+(`chain/standing_weights_stage.py`) and requires `weights_stage_config`, an
+absolute path to a second sealed, closed, owner-controlled file with schema
+`cacheon-standing-weights-config-v1` and exactly these fields: `network`
+(explicit `wss://` finalized-head reader), `fallback_endpoint` (empty or
+`wss://`), `push_url` (`http(s)` serve-weights offer endpoint),
+`push_credentials` (owner-only path to the push credential set),
+`attribution_hotkey`, `half_life_blocks`, `discovery_lifetime_blocks`,
+`discovery_pool_ppm`, `refresh_blocks`, and `burn_hotkey`. Every
+`refresh_blocks` the stage reads the finalized head and metagraph, reopens the
+intake store, and pushes the current V1 offer: the real projection whenever an
+active reward claim, a crowned arena, or an activated composition exists;
+otherwise the full-pool burn offer to `burn_hotkey` when that field is set, or
+the builder's crownless refusal as a stage error when it is empty. The stage
+never signs; the serve-weights lane owns readback and the follow-weights
+signer decides what reaches the chain. Naming `weights_stage_config` while
+`enable_weights` is false is refused, as is the reverse.
+
 ## Durable reservation states
 
 The store makes work and failure class explicit:
