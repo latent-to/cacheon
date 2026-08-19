@@ -343,7 +343,7 @@ def test_callbacks_receive_exact_token_and_deadline_outside_lock(
     assert len(seen) == 1
 
 
-def test_arbitrary_pre_entry_digest_never_authorizes_retry(
+def test_producer_failure_reuses_the_existing_arm_on_retry(
     tmp_path: Path,
     exact_inputs: tuple[str, B300QualificationGraphBinding],
 ) -> None:
@@ -362,7 +362,9 @@ def test_arbitrary_pre_entry_digest_never_authorizes_retry(
         # type or proof digest is trusted to unarm the attempt.
         raise RuntimeError(f"untrusted pre-entry failure claim {_h('arbitrary-proof')}")
 
-    with pytest.raises(B300QualificationGraphEvidenceHold, match="ambiguous"):
+    with pytest.raises(
+        B300QualificationGraphEvidenceHold, match="failed before durable output"
+    ):
         B300QualificationGraphEvidenceStore(root, policy).probe_once(
             binding, untrusted_claim, deadline=_deadline()
         )
@@ -376,13 +378,17 @@ def test_arbitrary_pre_entry_digest_never_authorizes_retry(
         calls += 1
         return _output(exact, policy, token)
 
-    with pytest.raises(B300QualificationGraphEvidenceHold, match="armed"):
-        B300QualificationGraphEvidenceStore(root, policy).probe_once(
-            binding, would_succeed, deadline=_deadline()
-        )
-    assert calls == 1
+    reference = B300QualificationGraphEvidenceStore(root, policy).probe_once(
+        binding, would_succeed, deadline=_deadline()
+    )
+    assert reference == B300QualificationGraphEvidenceStore(
+        root, policy
+    ).reopen(binding, deadline=_deadline())
+    assert calls == 2
     assert sorted(path.name for path in _attempt_dir(root, policy, binding).iterdir()) == [
-        "0000000000000001.armed.json"
+        "0000000000000001.armed.json",
+        "0000000000000001.output.json",
+        "0000000000000001.terminal.json",
     ]
 
 
@@ -398,7 +404,7 @@ def test_prearm_validation_failure_creates_no_generation(
     assert not os.path.lexists(_attempt_dir(root, policy, binding))
 
 
-def test_armed_without_terminal_never_invokes_producer(
+def test_armed_without_terminal_reenters_the_producer(
     tmp_path: Path,
     exact_inputs: tuple[str, B300QualificationGraphBinding],
 ) -> None:
@@ -407,17 +413,21 @@ def test_armed_without_terminal_never_invokes_producer(
     store.arm(binding, deadline=_deadline())
     called = False
 
-    def must_not_run(*_args: object) -> B300QualificationGraphGenerationOutput:
+    def produce(
+        exact: B300QualificationGraphBinding,
+        token: B300QualificationGraphAttemptToken,
+        _deadline_value: float,
+    ) -> B300QualificationGraphGenerationOutput:
         nonlocal called
         called = True
-        raise AssertionError("producer re-entered")
+        return _output(exact, policy, token)
 
-    with pytest.raises(B300QualificationGraphEvidenceHold, match="armed"):
-        store.probe_once(binding, must_not_run, deadline=_deadline())
-    assert not called
+    reference = store.probe_once(binding, produce, deadline=_deadline())
+    assert called
+    assert store.reopen(binding, deadline=_deadline()) == reference
 
 
-def test_callback_result_returned_after_deadline_remains_hold(
+def test_callback_result_returned_after_deadline_can_retry_the_armed_probe(
     tmp_path: Path,
     exact_inputs: tuple[str, B300QualificationGraphBinding],
 ) -> None:
@@ -443,9 +453,9 @@ def test_callback_result_returned_after_deadline_remains_hold(
     with pytest.raises(B300QualificationGraphEvidenceHold, match="deadline expired"):
         store.probe_once(binding, late, deadline=_deadline(0.75))
     assert calls == 1  # the producer ran here and returned after the deadline
-    with pytest.raises(B300QualificationGraphEvidenceHold, match="armed"):
-        store.probe_once(binding, late, deadline=_deadline())
-    assert calls == 1
+    reference = store.probe_once(binding, late, deadline=_deadline())
+    assert calls == 2
+    assert store.reopen(binding, deadline=_deadline()) == reference
 
 
 def test_lock_acquisition_obeys_absolute_deadline(
@@ -567,17 +577,9 @@ def test_restart_is_safe_at_each_owned_publication_crash_boundary(
         return _output(exact, policy, token)
 
     restarted = B300QualificationGraphEvidenceStore(root, policy)
-    if kind == "arm" and phase == "temp_created":
+    if kind == "arm" or (kind == "output" and phase == "temp_created"):
         restarted.probe_once(binding, producer, deadline=_deadline())
         assert called
-    elif kind == "arm":
-        with pytest.raises(B300QualificationGraphEvidenceHold, match="armed"):
-            restarted.probe_once(binding, producer, deadline=_deadline())
-        assert not called
-    elif kind == "output" and phase == "temp_created":
-        with pytest.raises(B300QualificationGraphEvidenceHold, match="armed"):
-            restarted.probe_once(binding, producer, deadline=_deadline())
-        assert not called
     else:
         restarted.probe_once(binding, producer, deadline=_deadline())
         assert not called

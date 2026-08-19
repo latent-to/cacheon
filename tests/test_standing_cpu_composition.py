@@ -406,6 +406,6 @@ def test_postpublication_infrastructure_results_requeue_fresh_until_capped(
     ) as store:
         parked = store.get(reservation_id)
         assert parked.status == "held"
-        assert parked.decision == "NO_DECISION"
+        assert parked.decision == ""
         assert parked.reason.startswith("systemic_release_cap:")
         assert store.pending_qualification_recovery() is None

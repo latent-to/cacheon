@@ -134,10 +134,12 @@ class _Guard:
     def __init__(self):
         self.events = []
 
-    def before_launch(self, launch_id, *, deadline):
+    # Capture quiesces the device around a graph capture (F-09); a cold lane
+    # or a quiescent retained pair both satisfy it.
+    def before_capture(self, launch_id, *, deadline):
         self.events.append(("pre", launch_id, deadline))
 
-    def after_launch(self, launch_id, *, deadline):
+    def after_capture(self, launch_id, *, deadline):
         self.events.append(("post", launch_id, deadline))
 
 

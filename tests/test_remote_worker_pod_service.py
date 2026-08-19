@@ -359,7 +359,7 @@ def test_adapter_cooldown_parks_resumes_and_doubles(
     )
 
 
-def test_cooldown_heartbeat_requires_failure_threshold_and_cap() -> None:
+def test_cooldown_heartbeat_is_telemetry_and_failure_cap_holds() -> None:
     registration = {
         "ready_receipt_digest": "a" * 64,
         "worker_epoch": "b" * 32,
@@ -382,8 +382,10 @@ def test_cooldown_heartbeat_requires_failure_threshold_and_cap() -> None:
         30,
     )
     assert verified["state"] == "adapter_cooldown"
-    with pytest.raises(spool.RemoteWorkerError):
-        spool.verify_heartbeat(payload("adapter_cooldown", 1), registration, 30)
+    # Cooldown after a single transport-interrupted adapter death is valid
+    # telemetry (2026-08-12): no failure-threshold consistency rejection.
+    cooled = spool.verify_heartbeat(payload("adapter_cooldown", 1), registration, 30)
+    assert cooled["state"] == "adapter_cooldown"
     with pytest.raises(spool.RemoteWorkerError):
         spool.verify_heartbeat(
             payload("idle", spool.MAX_CONSECUTIVE_ADAPTER_FAILURES + 1),

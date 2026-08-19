@@ -18,6 +18,7 @@ from cacheon.eval.resident_queue import ScreenCandidate, ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLaneError,
+    ResidentScreenUnavailable,
     ResidentServingScreenStage,
     screen_swappability,
 )
@@ -208,29 +209,43 @@ class TestResidentScreenLane:
         lane = ResidentScreenLane(
             factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
         )
-        first = lane.screen(_candidate(DIGEST_A, "a"))
-        assert first.withdrawn and first.verdict is None
-        second = lane.screen(_candidate(DIGEST_A, "a"))
-        assert second.passed
+        assert lane.screen(_candidate(DIGEST_A, "a")).passed
         assert factory.calls == 1
+        recovery = lane.last_canary_recovery
+        assert recovery is not None and recovery[1]
+        assert recovery[0] == pytest.approx((95.0, 95.0))
         lane.close()
 
-    def test_persistent_canary_drift_quarantines_without_unloading(self) -> None:
+    def test_persistent_canary_drift_never_loads_a_second_lifetime(self) -> None:
         factory = FakeLifetimeFactory(
-            lambda _n: FakeResidentSession(
+            lambda n: FakeResidentSession(
                 100.0,
                 {DIGEST_A: 112.0},
-                stock_drift_after=1,
+                stock_drift_after=1 if n == 1 else None,
             )
         )
         lane = ResidentScreenLane(
             factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
         )
-        assert lane.screen(_candidate()).withdrawn
-        with pytest.raises(ResidentScreenLaneError, match="retained in quarantine"):
+        with pytest.raises(ResidentScreenUnavailable, match="screen bypassed"):
             lane.screen(_candidate())
         assert factory.calls == 1
-        assert not factory.sessions[0].finished
+        assert factory.sessions[0].finished
+        lane.close()
+
+    def test_persistent_canary_drift_is_not_a_worker_epoch_failure(self) -> None:
+        factory = FakeLifetimeFactory(
+            lambda _n: FakeResidentSession(
+                100.0, {DIGEST_A: 112.0}, stock_drift_after=1
+            )
+        )
+        lane = ResidentScreenLane(
+            factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
+        )
+        with pytest.raises(ResidentScreenUnavailable, match="screen bypassed"):
+            lane.screen(_candidate())
+        assert factory.calls == 1
+        assert all(session.finished for session in factory.sessions)
         lane.close()
 
     def test_boot_failure_requires_explicit_service_restart(self) -> None:
@@ -418,20 +433,21 @@ class TestScreenSwappability:
 
 class TestResidentServingScreenStage:
     def _stage(self, tmp_path, builder):
+        factory = FakeLifetimeFactory(builder)
         lane = ResidentScreenLane(
-            FakeLifetimeFactory(builder),
+            factory,
             prompts=("p",),
             verdict_timeout_s=30.0,
             close_timeout_s=30.0,
         )
         root = tmp_path / "swap-intake"
         root.mkdir()
-        return ResidentServingScreenStage(lane, root), lane, root
+        return ResidentServingScreenStage(lane, root), lane, root, factory
 
     def test_swappable_winner_passes(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
-        stage, lane, root = self._stage(
+        stage, lane, root, _factory = self._stage(
             tmp_path, lambda _n: FakeResidentSession(100.0, {staged: 112.0})
         )
         result = stage.run_screen(binding)
@@ -443,7 +459,7 @@ class TestResidentServingScreenStage:
     def test_swappable_loser_fails(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
-        stage, lane, _root = self._stage(
+        stage, lane, _root, _factory = self._stage(
             tmp_path, lambda _n: FakeResidentSession(100.0, {staged: 80.0})
         )
         assert stage.run_screen(binding).grade is ScreenGrade.FAIL
@@ -452,7 +468,7 @@ class TestResidentServingScreenStage:
     def test_wrong_dispatch_fails(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
-        stage, lane, _root = self._stage(
+        stage, lane, _root, _factory = self._stage(
             tmp_path,
             lambda _n: FakeResidentSession(
                 100.0, {staged: 112.0}, slots={staged: ("other.slot",)}
@@ -461,16 +477,41 @@ class TestResidentServingScreenStage:
         assert stage.run_screen(binding).grade is ScreenGrade.FAIL
         lane.close()
 
-    def test_noise_or_withdrawal_is_no_decision(self, tmp_path) -> None:
+    def test_canary_drift_bypasses_without_second_lifetime(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
-        stage, lane, _root = self._stage(
+        stage, lane, _root, factory = self._stage(
             tmp_path,
             lambda _n: FakeResidentSession(
                 100.0, {staged: 112.0}, stock_drift_after=1
             ),
         )
-        assert stage.run_screen(binding).grade is ScreenGrade.NO_DECISION
+        assert stage.run_screen(binding).grade is ScreenGrade.PASS
+        assert factory.calls == 1
+        assert stage.bypass_reason == (
+            "stock canary did not recover; routing screen bypassed"
+        )
+        assert stage.run_screen(binding).grade is ScreenGrade.PASS
+        assert factory.calls == 1
+        lane.close()
+
+    def test_failed_resident_lifetime_bypasses_without_adapter_failure(
+        self, tmp_path
+    ) -> None:
+        binding = _binding(tmp_path)
+        staged = binding.publication.content_hash
+        stage, lane, _root, factory = self._stage(
+            tmp_path,
+            lambda _n: FakeResidentSession(
+                100.0, {staged: 112.0}, fail_on_swap=True
+            ),
+        )
+
+        assert stage.run_screen(binding).grade is ScreenGrade.PASS
+        assert stage.bypass_reason is not None
+        assert "resident screen lifetime failed" in stage.bypass_reason
+        assert stage.run_screen(binding).grade is ScreenGrade.PASS
+        assert factory.calls == 1
         lane.close()
 
     @pytest.mark.parametrize(

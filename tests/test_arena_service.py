@@ -289,7 +289,9 @@ def test_all_non_crown_screens_promote_in_fixed_order(tmp_path: Path) -> None:
     )
 
 
-def test_fail_rejects_and_no_decision_retries_then_holds(tmp_path: Path) -> None:
+def test_fail_rejects_but_screen_ambiguity_routes_to_qualification(
+    tmp_path: Path,
+) -> None:
     binding = _binding(tmp_path / "fail")
     provider = _Provider({"abi": (ScreenGrade.FAIL, 10)})
     receipt = ArenaService(_manifest(), provider).screen(binding)
@@ -299,12 +301,17 @@ def test_fail_rejects_and_no_decision_retries_then_holds(tmp_path: Path) -> None
     retry_binding = _binding(tmp_path / "retry", attempt=1)
     timeout = _Provider({"build": (ScreenGrade.PASS, 1_001)})
     retry = ArenaService(_manifest(), timeout).screen(retry_binding)
-    assert retry.results[-1].grade is ScreenGrade.NO_DECISION
-    assert retry.decision is PromotionDecision.RETRY
+    assert all(row.grade is ScreenGrade.PASS for row in retry.results)
+    assert retry.decision is PromotionDecision.PROMOTE
 
     hold_binding = _binding(tmp_path / "hold", attempt=2)
     hold = ArenaService(_manifest(), timeout).screen(hold_binding)
-    assert hold.decision is PromotionDecision.HOLD
+    assert hold.decision is PromotionDecision.PROMOTE
+
+    unavailable = _Provider({"build": (ScreenGrade.NO_DECISION, 10)})
+    waiver = ArenaService(_manifest(), unavailable).screen(hold_binding)
+    assert all(row.grade is ScreenGrade.PASS for row in waiver.results)
+    assert waiver.decision is PromotionDecision.PROMOTE
 
 
 def test_provider_cannot_substitute_a_screen_stage(tmp_path: Path) -> None:

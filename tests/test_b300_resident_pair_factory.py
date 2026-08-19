@@ -409,7 +409,7 @@ def _authority(label: str) -> pair_factory.B300ResidentPairRequestAuthority:
     )
 
 
-def test_two_sequential_requests_create_fresh_pairs_and_four_lifetimes(
+def test_two_sequential_requests_reuse_one_pair_and_two_lifetimes(
     tmp_path: Path,
     lifetimes: _LifetimeHarness,
     managed_executors,
@@ -436,36 +436,27 @@ def test_two_sequential_requests_create_fresh_pairs_and_four_lifetimes(
         for lifetime in lifetimes.factories[:2]
         for session in lifetime.sessions
     )
-    with pytest.raises(pair_factory.B300ResidentPairFactoryError, match="pair is live"):
-        first.complete(first_authority, first_borrow.binding)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        retirements = tuple(pool.map(lambda _index: first.close(), range(2)))
-    first_retirement = retirements[0]
-    assert type(first_retirement) is ResidentEvaluationRetirementEvidence
-    assert retirements[1] is first_retirement
-    assert first.close() is first_retirement
-    assert first.complete(first_authority, first_borrow.binding) is first_retirement
+    first_epoch = first.request_epoch_digest
+    assert first.release(first_authority, first_borrow.binding) == first_borrow.binding
     assert all(
-        session.finish_calls == 1
+        session.finish_calls == 0
         for lifetime in lifetimes.factories[:2]
         for session in lifetime.sessions
     )
 
     second = commissioned.factory.open_request(second_authority, deadline=200.0)
     second_borrow = second.borrow(second_authority)
-    assert second_borrow.pair is not first_borrow.pair
-    assert len(lifetimes.calls) == 4
-    assert sum(len(row.sessions) for row in lifetimes.factories) == 4
+    assert second is first
+    assert second_borrow.pair is first_borrow.pair
+    assert len(lifetimes.calls) == 2
+    assert sum(len(row.sessions) for row in lifetimes.factories) == 2
     assert (
         first_borrow.binding.service_epoch_digest
         == second_borrow.binding.service_epoch_digest
         == commissioned.factory.commissioned_epoch_digest
     )
-    assert first.request_epoch_digest != second.request_epoch_digest
-    assert first_borrow.binding.digest != second_borrow.binding.digest
-    assert set(first_borrow.binding.identities).isdisjoint(
-        second_borrow.binding.identities
-    )
+    assert first_epoch != second.request_epoch_digest
+    assert first_borrow.binding == second_borrow.binding
     second_retirement = second.close()
     assert type(second_retirement) is ResidentEvaluationRetirementEvidence
     assert all(
@@ -572,7 +563,9 @@ def test_delayed_borrow_expires_before_lifetimes_or_bounds_start_wall(
     borrowed = bounded.borrow(bounded.authority)
     assert borrowed.pair._timeouts[0] == pytest.approx(0.25)
     assert borrowed.pair._timeouts[2] == pytest.approx(2.0)
-    assert {row["deadline"] for row in lifetimes.calls} == {11.0}
+    assert {row["deadline"] for row in lifetimes.calls} == {
+        10.0 + pair_factory.PAIR_LIFETIME_SECONDS
+    }
     bounded.close()
 
 
