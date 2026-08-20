@@ -4,7 +4,7 @@ A slot is a validator-owned semantic boundary inside the pinned engine. A
 contribution supplies an implementation for that boundary; the validator owns
 the call site, inputs, output allocation, reference, and verification policy.
 
-The live registry contains **11 slots**. The registry in
+The registered API contains **11 slots**. The registry in
 [`cacheon/slots.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/slots.py)
 is authoritative; print it with `python -m cacheon.cli slots`.
 
@@ -47,12 +47,14 @@ Block slots follow the same ownership rule over a wider semantic region.
 Collective slots add the validator-owned process group; candidate code may use
 it but may not create a private group or let only some ranks fall back.
 
-!!! note "Registered does not always mean installed"
-    `attention.msa_block_score` has a complete slot and verifier contract, but
-    its decode-side SGLang adapter refuses installation unless the pinned
-    runtime exposes a stable, auditable registered chokepoint. Its prefill
-    sibling has an installed adapter. See [State of record](state-of-record.md)
-    for validated coverage.
+!!! warning "Unavailable in the current MiniMax-M3 mainnet arena"
+    `norm.rmsnorm` cannot execute because the deployed model uses
+    `GemmaRMSNorm` rather than the registered `RMSNorm.forward_cuda` callsite.
+    `attention.msa_block_score` cannot execute because its decode-side SGLang
+    adapter is non-installing for the pinned runtime. Do not pay for or submit
+    either target to this arena. The entries remain registered ABI and verifier
+    contracts; no other target is withdrawn by this notice. See
+    [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 ## Kinds
 

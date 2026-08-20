@@ -148,6 +148,20 @@ The executable catalog contains 11 slots and one registered atomic target:
 | Collective | `moe.fused_experts_reduce`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.moe_finalize_ar_rmsnorm` |
 | Atomic target | `collective.moe_epilogue.v1` over the two MoE epilogue collective members |
 
+The table records registered contracts, not deployment availability. As of
+2026-08-20, two targets are unavailable in the current MiniMax-M3 mainnet
+arena:
+
+- `norm.rmsnorm`: MiniMax-M3 uses `GemmaRMSNorm` at the relevant model
+  callsites, while the registered adapter targets `RMSNorm.forward_cuda`;
+- `attention.msa_block_score`: the pinned runtime has no installing
+  decode-side adapter for this contract.
+
+Candidate code for either target cannot execute, so miners must not pay for or
+submit them to this arena. Their ABI/verifier registrations remain, and this
+finding does not withdraw any other registered target. The miner-facing notice
+is [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+
 The closed direct-artifact registry has one crownable provider,
 `cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
 no-network child and may publish one sealed CUBIN. Validator code owns ABI

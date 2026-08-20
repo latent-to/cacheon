@@ -146,6 +146,11 @@ def rmsnorm(x, weight, out, eps):
 
 This is pure RMSNorm. The slot does not grant ownership of a residual add.
 
+!!! warning "Not available on the current MiniMax-M3 arena"
+    MiniMax-M3 uses `GemmaRMSNorm`, not the registered
+    `RMSNorm.forward_cuda` callsite. This section defines the ABI, but miners
+    must not pay for or submit `norm.rmsnorm` to the current mainnet arena.
+
 ## Attention block slots
 
 ### `attention.sdpa`
@@ -186,6 +191,11 @@ def msa_block_score(q, index_k, seq_lens, block_size, out):
 
 The validator owns top-k block selection and the subsequent attend. Your output
 is a score sheet, and correctness is judged through the selected block sets.
+
+!!! warning "Not available on the current MiniMax-M3 arena"
+    The decode-side contract has no installing adapter in the pinned runtime.
+    This section defines the ABI, but miners must not pay for or submit
+    `attention.msa_block_score` to the current mainnet arena.
 
 ### `attention.msa_prefill_block_score`
 

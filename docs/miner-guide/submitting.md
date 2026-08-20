@@ -106,6 +106,13 @@ Copy the printed content hash and the public HTTPS URL. Set `URL` to that
 exact URL. Bucket variables, CDN origins, and fetch limits are under
 [Publish from the miner's object store](#publish-from-the-miners-object-store).
 
+!!! warning "Unavailable MiniMax-M3 targets"
+    Do not pay for or submit `norm.rmsnorm` or
+    `attention.msa_block_score` to the current MiniMax-M3 mainnet arena. A
+    candidate for either registered contract cannot execute in the deployed
+    model/runtime. This restriction does not apply to the other registered
+    targets. See [Current MiniMax-M3 availability](slots.md#current-minimax-m3-availability).
+
 ### 4. Dry-run the unpaid payload
 
 ```bash
