@@ -1,8 +1,8 @@
 {
   "_meta": {
-    "generated_at_commit": "c04c9196",
+    "generated_at_commit": "a887d917",
     "purpose": "Refactor D durable-format goldens (synthetic inputs)",
-    "python": "3.11.15"
+    "python": "3.12.11"
   },
   "families": {
     "count_closure": {
@@ -277,15 +277,15 @@
     },
     "verification_descriptor": {
       "collective_graph_sequence": {
-        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":16,\"tp_size\":4,\"world_size\":4},\"ordinal\":0},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":32,\"tp_size\":4,\"world_size\":4},\"ordinal\":1}],\"case_kind\":\"collective_graph_sequence\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-d\"}",
-        "digest": "55cab41364f0da4d46e4489cbf84be51a8b86f7ff8c93c50c3e70da25705bc95",
+        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":16,\"tp_size\":4,\"world_size\":4},\"ordinal\":0},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":32,\"tp_size\":4,\"world_size\":4},\"ordinal\":1}],\"case_kind\":\"collective_graph_sequence\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-d\"}",
+        "digest": "ce847fdd21a3c453a0ae0cb27b5cc02b2971b2069ec7909ee28c79c00871bed8",
         "extras": {},
         "inputs": {
           "calls": [
             {
               "architecture": "sm100",
               "dtype": "bfloat16",
-              "graph_mode": "capture",
+              "graph_mode": "cuda_graph",
               "hidden": 4096,
               "num_tokens": 16,
               "tp_size": 4,
@@ -294,7 +294,7 @@
             {
               "architecture": "sm100",
               "dtype": "bfloat16",
-              "graph_mode": "capture",
+              "graph_mode": "cuda_graph",
               "hidden": 4096,
               "num_tokens": 32,
               "tp_size": 4,
@@ -307,15 +307,15 @@
         }
       },
       "collective_single": {
-        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":8,\"tp_size\":4,\"world_size\":4},\"ordinal\":0}],\"case_kind\":\"collective_single\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-b\"}",
-        "digest": "e1d6ba62bac81ee44de24117252651e48182ae4ae233667c2fd7b8dc4050c9a5",
+        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":8,\"tp_size\":4,\"world_size\":4},\"ordinal\":0}],\"case_kind\":\"collective_single\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-b\"}",
+        "digest": "d79f92760ea15ec235f18af75ff2f3a94d828800a1530a18dad9b158e2c82c2a",
         "extras": {},
         "inputs": {
           "calls": [
             {
               "architecture": "sm100",
               "dtype": "bfloat16",
-              "graph_mode": "capture",
+              "graph_mode": "cuda_graph",
               "hidden": 4096,
               "num_tokens": 8,
               "tp_size": 4,
@@ -328,15 +328,15 @@
         }
       },
       "collective_temporal_eager": {
-        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":1,\"tp_size\":4,\"world_size\":4},\"ordinal\":0},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":8,\"tp_size\":4,\"world_size\":4},\"ordinal\":1},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"hidden\":4096,\"num_tokens\":64,\"tp_size\":4,\"world_size\":4},\"ordinal\":2}],\"case_kind\":\"collective_temporal_eager\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-c\"}",
-        "digest": "16fe3027e458d13cff0442ec609927d97aad92b976ba71a068b9045e03daf01b",
+        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":1,\"tp_size\":4,\"world_size\":4},\"ordinal\":0},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":8,\"tp_size\":4,\"world_size\":4},\"ordinal\":1},{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"hidden\":4096,\"num_tokens\":64,\"tp_size\":4,\"world_size\":4},\"ordinal\":2}],\"case_kind\":\"collective_temporal_eager\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"collective.all_reduce\",\"variant_id\":\"golden-c\"}",
+        "digest": "5d1381da769bbe6431acda07925b21be2ddc58f8d8bcb85ab3b6f24b6676bb36",
         "extras": {},
         "inputs": {
           "calls": [
             {
               "architecture": "sm100",
               "dtype": "bfloat16",
-              "graph_mode": "capture",
+              "graph_mode": "cuda_graph",
               "hidden": 4096,
               "num_tokens": 1,
               "tp_size": 4,
@@ -345,7 +345,7 @@
             {
               "architecture": "sm100",
               "dtype": "bfloat16",
-              "graph_mode": "capture",
+              "graph_mode": "cuda_graph",
               "hidden": 4096,
               "num_tokens": 8,
               "tp_size": 4,
@@ -354,7 +354,7 @@
             {
               "architecture": "sm100",
               "dtype": "bfloat16",
-              "graph_mode": "capture",
+              "graph_mode": "cuda_graph",
               "hidden": 4096,
               "num_tokens": 64,
               "tp_size": 4,
@@ -367,15 +367,15 @@
         }
       },
       "ordinary_single": {
-        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"capture\",\"last_dim\":2048,\"num_tokens\":64,\"tp_size\":4,\"world_size\":4},\"ordinal\":0}],\"case_kind\":\"ordinary_single\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"activation.silu_and_mul\",\"variant_id\":\"golden-a\"}",
-        "digest": "a7ef85100096a5fa933a5f431673692d08cdd5d21add809640ef2719b52bcf4a",
+        "canonical": "{\"calls\":[{\"descriptor\":{\"architecture\":\"sm100\",\"dtype\":\"bfloat16\",\"graph_mode\":\"cuda_graph\",\"last_dim\":2048,\"num_tokens\":64,\"tp_size\":4,\"world_size\":4},\"ordinal\":0}],\"case_kind\":\"ordinary_single\",\"domain\":\"cacheon.verification-case-descriptor.v1\",\"slot_id\":\"activation.silu_and_mul\",\"variant_id\":\"golden-a\"}",
+        "digest": "6598a2daaa78ae6df58cdd0c2e6931b653f109cc5d30d677f5d90798b01aa2b7",
         "extras": {},
         "inputs": {
           "calls": [
             {
               "architecture": "sm100",
               "dtype": "bfloat16",
-              "graph_mode": "capture",
+              "graph_mode": "cuda_graph",
               "last_dim": 2048,
               "num_tokens": 64,
               "tp_size": 4,

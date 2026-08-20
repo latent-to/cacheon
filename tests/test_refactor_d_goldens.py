@@ -58,7 +58,7 @@ _CONTEXT = {
     "architecture": "sm100",
     "tp_size": 4,
     "world_size": 4,
-    "graph_mode": "capture",
+    "graph_mode": "cuda_graph",
 }
 
 
