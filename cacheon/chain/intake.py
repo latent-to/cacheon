@@ -1114,13 +1114,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 raise IntakeError("deferred queue changed while activating capacity")
         return ids
 
-    def activate_deferred(self) -> tuple[IntakeReservation, ...]:
-        """Fill free active capacity from durable finalized FIFO backlog."""
-
-        with self._transaction():
-            ids = self._activate_deferred_rows()
-        return tuple(self.get(reservation_id) for reservation_id in ids)
-
     def pending(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
         bound = self.policy.max_cohort if limit is None else limit
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_pending:
@@ -1293,29 +1286,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 ),
             )
         return self.get(reservation_id)
-
-    def published(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
-        bound = self.policy.max_cohort if limit is None else limit
-        if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
-            raise IntakeError("published cohort limit is invalid")
-        first = self._db.execute(
-            "SELECT retry_group_digest FROM reservations WHERE status='published' "
-            "ORDER BY block,event_index,event_subindex,hotkey,content_hash LIMIT 1"
-        ).fetchone()
-        if first is not None and first["retry_group_digest"]:
-            rows = self._db.execute(
-                "SELECT * FROM reservations WHERE status='published' "
-                "AND retry_group_digest=? ORDER BY retry_position LIMIT ?",
-                (first["retry_group_digest"], bound),
-            )
-        else:
-            rows = self._db.execute(
-                "SELECT * FROM reservations WHERE status='published' "
-                "AND retry_group_digest='' "
-                "ORDER BY block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
-                (bound,),
-            )
-        return tuple(self._row(row) for row in rows)
 
     def screenable(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
         """Return validator-selected work awaiting a fresh non-crown screen."""
@@ -1724,76 +1694,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         return self.get(reservation_id)
 
-    def mark_outcome(
-        self,
-        reservation_id: str,
-        *,
-        decision: str,
-        attempt_ref: EvidenceArtifactRef | None = None,
-        report_digest: str = "",
-        failure_digest: str = "",
-        reason: str = "",
-    ) -> IntakeReservation:
-        if decision not in {"PASS", "FAIL", "NO_DECISION"}:
-            raise IntakeError("qualification decision is unsupported")
-        if decision == "PASS":
-            raise IntakeError(
-                "PASS requires a typed settlement qualification and reproduction gate"
-            )
-        report_based = attempt_ref is not None or bool(report_digest)
-        if report_based and (
-            type(attempt_ref) is not EvidenceArtifactRef or not report_digest
-        ):
-            raise IntakeError("qualification report evidence is incomplete")
-        if report_digest:
-            require_sha256_hex(report_digest, field="qualification report digest")
-        if failure_digest:
-            require_sha256_hex(failure_digest, field="qualification failure digest")
-        if decision == "NO_DECISION":
-            if report_based == bool(failure_digest):
-                raise IntakeError("NO_DECISION requires one report or failure product")
-        elif not report_based or failure_digest:
-            raise IntakeError("PASS/FAIL requires a retained attempt and report")
-        evidence_digest = attempt_ref.sha256 if attempt_ref is not None else failure_digest
-        attempt_json = (
-            json.dumps(attempt_ref.to_dict(), separators=(",", ":"), sort_keys=True)
-            if attempt_ref is not None
-            else ""
-        )
-        status = {"FAIL": "failed", "NO_DECISION": "no_decision"}[decision]
-        with self._transaction():
-            row = self.get(reservation_id)
-            authority_json = self._db.execute(
-                "SELECT qualification_authority_json FROM reservations WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["qualification_authority_json"]
-            if (
-                row.status != "qualifying"
-                or not row.qualification_authority_digest
-                or not authority_json
-            ):
-                raise IntakeError("qualification outcome lacks an active authority")
-            attempt = self._db.execute(
-                "SELECT COUNT(*) AS n FROM qualification_dispositions WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["n"]
-            self._db.execute(
-                "INSERT INTO qualification_dispositions(reservation_id,attempt_index,authority_digest,"
-                "authority_manifest_json,evidence_digest,attempt_ref_json,report_digest,failure_digest,"
-                "decision,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (
-                    reservation_id, attempt, row.qualification_authority_digest,
-                    authority_json, evidence_digest, attempt_json, report_digest,
-                    failure_digest, decision, reason,
-                ),
-            )
-            self._db.execute(
-                "UPDATE reservations SET status=?,decision=?,reason=?,"
-                "qualification_evidence_digest=? WHERE reservation_id=?",
-                (status, decision, reason, evidence_digest, reservation_id),
-            )
-        return self.get(reservation_id)
-
     def qualification_dispositions(self, reservation_id: str) -> tuple[dict[str, object], ...]:
         self.get(reservation_id)
         result = []
@@ -2169,7 +2069,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         self,
         candidate: SettlementCandidate,
     ):
-        from cacheon.eval.evidence_store import EvidenceArtifactRef
         from cacheon.settlement import SettlementEvidence, SettlementQualification
 
         row = self._db.execute(
@@ -3090,50 +2989,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         )
 
 
-    def requeue_qualification(
-        self,
-        reservation_id: str,
-        *,
-        reason: str,
-        retry_group_digest: str,
-        retry_position: int,
-    ) -> IntakeReservation:
-        if not reason:
-            raise IntakeError("qualification requeue requires a reason")
-        require_sha256_hex(retry_group_digest, field="retry_group_digest")
-        if type(retry_position) is not int or retry_position < 0:
-            raise IntakeError("qualification retry position is malformed")
-        with self._transaction():
-            row = self.get(reservation_id)
-            if row.status != "no_decision":
-                raise IntakeError("only a retained NO_DECISION may be requeued")
-            attempts = self._db.execute(
-                "SELECT COUNT(*) AS n FROM qualification_dispositions WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["n"]
-            retained = self._db.execute(
-                "SELECT COUNT(*) AS n FROM settlement_qualifications "
-                "WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["n"]
-            retry_status = "reproduction_pending" if retained == 1 else "published"
-            status = retry_status if attempts < self.policy.max_qualification_retries else "held"
-            self._db.execute(
-                "UPDATE reservations SET status=?,decision='',reason=?,"
-                "retry_group_digest=?,retry_position=?,"
-                "qualification_authority_digest='',qualification_authority_json='',"
-                "qualification_evidence_digest='' "
-                "WHERE reservation_id=?",
-                (
-                    status,
-                    reason,
-                    retry_group_digest,
-                    retry_position,
-                    reservation_id,
-                ),
-            )
-        return self.get(reservation_id)
-
     def requeue_validator_downtime_expired(
         self,
         reservation_ids: tuple[str, ...],
@@ -3405,24 +3260,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         with self._transaction():
             expired = self._expire_stale_rows(current_block)
         return tuple(self.get(reservation_id) for reservation_id in expired)
-
-    def expire(self, reservation_id: str, *, current_block: int, reason: str) -> IntakeReservation:
-        row = self.get(reservation_id)
-        if row.reason == _SCHEMA3_MIGRATION_HOLD_REASON:
-            raise IntakeError(
-                "legacy single-PASS settlement requires explicit archival migration"
-            )
-        if not isinstance(reason, str) or not reason:
-            raise IntakeError("explicit expiry requires an operator reason")
-        if type(current_block) is not int or current_block - row.arrival.block < self.policy.expiry_blocks:
-            raise IntakeError("reservation is not old enough for explicit expiry")
-        return self._transition(
-            reservation_id,
-            set(_EXPLICITLY_EXPIRABLE),
-            "expired",
-            "NO_DECISION",
-            reason,
-        )
 
     def archive_schema3_migration_hold(
         self,
