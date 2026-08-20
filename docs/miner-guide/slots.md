@@ -37,6 +37,21 @@ manifest; it does not require the Python function itself to be named `entry`.
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
 | `collective.moe_finalize_ar_rmsnorm` | collective | `entry(gemm_out, row_map, scales, residual, weight, eps, out_norm, out_residual, group)` | finalized/reduced residual and normalized output |
 
+## Current MiniMax-M3 availability
+
+As of 2026-08-20, two registered slot contracts are **unavailable for paid
+submission in the current MiniMax-M3 mainnet arena**:
+
+- `norm.rmsnorm`: the deployed model uses `GemmaRMSNorm` at every relevant
+  normalization callsite. The registered adapter patches the separate
+  `RMSNorm.forward_cuda` boundary, so a candidate for this slot cannot execute.
+- `attention.msa_block_score`: the decode-side contract has no installing
+  adapter for the pinned runtime, so a candidate for this slot cannot execute.
+
+Do not pay for or submit either target to the current arena. They remain in the
+registry as ABI and verifier contracts; this arena-specific notice does not
+withdraw any other registered target.
+
 The two MSA slots output **scores**, not selected indices or attended values.
 The production engine's runtime top-k controls the validator-owned selection tail.
 `SlotSpec.correctness.top_k` is a separate verification parameter: it selects the
@@ -48,12 +63,9 @@ score sheet and the stock tail applies the engine's value.
 The prefill slot is a distinct long-prefill boundary and its canonical live
 descriptor is eager; do not assume a decode optimization exercises it.
 
-Registration and live installation are also different facts. The
-`attention.msa_block_score` decode contract is registered and CPU-verifiable, but its
-current SGLang decode adapter is deliberately a non-installing stub until the pinned
-runtime has a stable model-specific chokepoint. The prefill sibling has a real guarded
-adapter. Confirm that the operator's arena actually binds and activates the target before
-investing in a production submission; a contract alone does not make a call site hot.
+Registration and live installation are different facts. Confirm that the
+operator's arena actually binds and activates a target before investing in a
+production submission; a contract alone does not make a callsite hot.
 
 Collective slots are distributed contracts. `group` is the process group the
 validator supplies, and every listed output is validator-allocated. Test with
@@ -111,10 +123,12 @@ Start from the published arena, not from an isolated kernel idea:
 5. If the change needs engine-wide setup, arbitrary SGLang edits, or semantics
    outside a registered target, stop and use discovery instead.
 
-For a first implementation, `activation.silu_and_mul` and `norm.rmsnorm` have
-the smallest single-process ABIs. They are good learning targets, not a promise
-of economic headroom against tuned incumbents. Advanced collective and deep-MoE
-targets require the matching multi-GPU and build environment to test honestly.
+For a first offline implementation, `activation.silu_and_mul` and
+`norm.rmsnorm` have the smallest single-process ABIs. They are useful for
+learning the contract, not a promise of current-arena availability or economic
+headroom; `norm.rmsnorm` is specifically unavailable in the current
+MiniMax-M3 arena as stated above. Advanced collective and deep-MoE targets
+require the matching multi-GPU and build environment to test honestly.
 
 ### A decision procedure
 

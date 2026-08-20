@@ -63,11 +63,17 @@ The registered rows are:
 
 Several adapters may share one binding when they implement one semantic product. The shallow AR-fusion consume adapter and both deep producer adapters share `arfusion`; activating only part of that set would violate the protocol.
 
-The catalog can contain a verified slot before the pinned runtime exposes a safe live
-chokepoint. `attention.msa_block_score` has a slot and verifier contract, while
+The catalog can contain a verified slot before the deployed model/runtime has a
+reachable live chokepoint. In the current MiniMax-M3 arena,
+`attention.msa_block_score` has a slot and verifier contract but
 [`sglang_msa.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_msa.py)
-refuses installation unless a stable decode-side MSA chokepoint is registered. The
-prefill sibling has an installed adapter and appears in the table.
+refuses installation because there is no stable decode-side MSA chokepoint. The
+registered `norm.rmsnorm` adapter targets `RMSNorm.forward_cuda`, while the
+deployed model uses the separate `GemmaRMSNorm` class at every relevant
+callsite. Candidate code for either target therefore cannot execute in this
+arena. The MSA prefill sibling has an installed adapter and appears in the
+table. See
+[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 `resident_swap` is deliberately outside the crown path. It is inert unless the
 validator supplies `CACHEON_RESIDENT_SWAP` to a persistent screening engine. The

@@ -54,10 +54,13 @@ active alongside the atomic target. This prevents one semantic change from
 creating duplicate permanent reward titles.
 
 Catalog registration defines identity and admission; it does not by itself
-prove that a serving seam is installed. The `attention.msa_block_score`
-decode-side integration is non-installing unless the pinned runtime exposes a
-stable registered chokepoint. See [State of record](state-of-record.md) for
-validated adapter coverage.
+prove that a serving seam is installed or that the deployed model reaches it.
+In the current MiniMax-M3 mainnet arena, `norm.rmsnorm` cannot execute because
+the model uses `GemmaRMSNorm`, and `attention.msa_block_score` cannot execute
+because its decode-side integration is non-installing. Do not pay for or submit
+either target to this arena. This restriction does not withdraw any other
+registered target. See
+[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 ## Resolution
 
@@ -91,11 +94,11 @@ do not resolve to a current reward title.
 
 ### Worked resolution examples
 
-**Ordinary singleton.** A bundle requests `norm.rmsnorm`, contains one RMSNorm
-entry, and observes only features admitted by that target. Resolution produces
-the singleton target and its frozen target-spec digest. Adding an unrelated
-all-reduce row would not create a larger target; it would make the bundle
-ineligible for the requested one.
+**Ordinary singleton.** A bundle requests `activation.silu_and_mul`, contains
+one matching entry, and observes only features admitted by that target.
+Resolution produces the singleton target and its frozen target-spec digest.
+Adding an unrelated all-reduce row would not create a larger target; it would
+make the bundle ineligible for the requested one.
 
 **Atomic epilogue.** A bundle requests `collective.moe_epilogue.v1` and supplies
 the exact registered member set. If it becomes active, catalog displacement
