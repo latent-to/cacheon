@@ -28,7 +28,6 @@ from cacheon.arena_service import (
     ArenaQualificationRequest,
     ArenaQualificationWork,
     ArenaRuntimeIdentity,
-    ArenaService,
     ArenaServiceManifest,
     ScreenGrade,
     ScreenStagePolicy,
@@ -863,15 +862,6 @@ class B300ArenaServiceProvider:
             )
 
 
-def compose_b300_arena_service(
-    manifest: ArenaServiceManifest,
-    authorities: _AuthorityBundle,
-) -> ArenaService:
-    """Construct the generic service from one exact B300 deployment bundle."""
-
-    return ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
-
-
 __all__ = [
     "B300ArenaProviderError",
     "B300ArenaServiceProvider",
@@ -891,5 +881,4 @@ __all__ = [
     "SCREEN_EXCEPTION_SCHEMA",
     "b300_executor_role_policy_digest",
     "b300_arena_provider_digest",
-    "compose_b300_arena_service",
 ]

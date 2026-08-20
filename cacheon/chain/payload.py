@@ -22,7 +22,6 @@ PAYLOAD_VERSION = 1
 PAID_PAYLOAD_VERSION = 2
 MAX_PAYLOAD_BYTES = 1024
 ALLOWED_URL_SCHEMES = ("https",)
-_TEST_ONLY_URL_SCHEMES = ("https", "file")
 
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _SCHEME_RE = re.compile(r"^([a-z][a-z0-9+.-]*)://")
@@ -124,24 +123,6 @@ def encode_payload(
         content_hash,
         url,
         schemes=ALLOWED_URL_SCHEMES,
-        payment_block=payment_block,
-        payment_extrinsic_index=payment_extrinsic_index,
-    )
-
-
-def encode_payload_for_testing(
-    content_hash: str,
-    url: str,
-    *,
-    payment_block: int = 0,
-    payment_extrinsic_index: int = 0,
-) -> str:
-    """Encode a hermetic-test reference which may additionally use ``file://``."""
-
-    return _encode_payload(
-        content_hash,
-        url,
-        schemes=_TEST_ONLY_URL_SCHEMES,
         payment_block=payment_block,
         payment_extrinsic_index=payment_extrinsic_index,
     )
@@ -262,9 +243,3 @@ def decode_payload(hotkey: str, block: int, data: object) -> SubmissionRef | Non
     return _decode_payload(hotkey, block, data, schemes=ALLOWED_URL_SCHEMES)
 
 
-def decode_payload_for_testing(
-    hotkey: str, block: int, data: object
-) -> SubmissionRef | None:
-    """Decode bytes under the explicit hermetic-test transport policy."""
-
-    return _decode_payload(hotkey, block, data, schemes=_TEST_ONLY_URL_SCHEMES)

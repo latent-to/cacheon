@@ -8,9 +8,9 @@ from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.resident_queue import (
     ResidentQueueError,
+    ResidentScreenLoop,
     ScreenCandidate,
     ScreenPolicy,
-    run_resident_screen,
 )
 
 DIGEST_A = "a" * 64
@@ -97,10 +97,39 @@ def _candidate(digest: str, name: str = "cand") -> ScreenCandidate:
     return ScreenCandidate(name, digest, ("moe.fused_experts",))
 
 
+class _Screened:
+    """One lifetime's outcome, driven the way the arena lane drives arrivals."""
+
+    def __init__(
+        self,
+        session: FakeSession,
+        candidates: list[ScreenCandidate],
+        *,
+        prompts: tuple[str, ...],
+        policy: ScreenPolicy = ScreenPolicy(),
+    ) -> None:
+        loop = ResidentScreenLoop(session, prompts=prompts, policy=policy)
+        self.verdicts = []
+        for candidate in candidates:
+            result = loop.screen(candidate)
+            if result is None:
+                break
+            self.verdicts.append(result)
+            if loop.stopped_reason is not None:
+                break
+        # loop.processed is the list position of the first candidate that must
+        # be re-screened on a fresh lifetime; a withdrawn candidate does not
+        # count as processed.
+        self.unprocessed_candidate_ids = tuple(
+            row.candidate_id for row in candidates[loop.processed :]
+        )
+        self.stopped_reason = loop.stopped_reason
+
+
 class TestScreenQueue:
     def test_clear_winner_passes_without_escalation(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 112.0})
-        report = run_resident_screen(
+        report = _Screened(
             session, [_candidate(DIGEST_A)], prompts=("p",),
         )
         [verdict] = report.verdicts
@@ -112,7 +141,7 @@ class TestScreenQueue:
 
     def test_clear_loser_fails_without_escalation(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 80.0})
-        report = run_resident_screen(
+        report = _Screened(
             session, [_candidate(DIGEST_A)], prompts=("p",),
         )
         [verdict] = report.verdicts
@@ -122,7 +151,7 @@ class TestScreenQueue:
 
     def test_borderline_escalates_to_five_legs(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 101.0})
-        report = run_resident_screen(
+        report = _Screened(
             session, [_candidate(DIGEST_A)], prompts=("p",),
         )
         [verdict] = report.verdicts
@@ -134,7 +163,7 @@ class TestScreenQueue:
 
     def test_queue_reuses_brackets_across_candidates(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 112.0, DIGEST_B: 80.0})
-        report = run_resident_screen(
+        report = _Screened(
             session,
             [_candidate(DIGEST_A, "a"), _candidate(DIGEST_B, "b")],
             prompts=("p",),
@@ -148,7 +177,7 @@ class TestScreenQueue:
         session = FakeSession(
             100.0, {DIGEST_A: 112.0}, slots={DIGEST_A: ("other.slot",)}
         )
-        report = run_resident_screen(
+        report = _Screened(
             session, [_candidate(DIGEST_A)], prompts=("p",),
         )
         [verdict] = report.verdicts
@@ -163,7 +192,7 @@ class TestScreenQueue:
             {DIGEST_A: 112.0, DIGEST_B: 112.0},
             stock_drift_after=2,
         )
-        report = run_resident_screen(
+        report = _Screened(
             session,
             [_candidate(DIGEST_A, "a"), _candidate(DIGEST_B, "b")],
             prompts=("p",),
@@ -177,7 +206,7 @@ class TestScreenQueue:
 
     def test_lifetime_budget_stops_queue(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 112.0, DIGEST_B: 112.0})
-        report = run_resident_screen(
+        report = _Screened(
             session,
             [_candidate(DIGEST_A, "a"), _candidate(DIGEST_B, "b")],
             prompts=("p",),
@@ -187,18 +216,8 @@ class TestScreenQueue:
         assert report.unprocessed_candidate_ids == ("b",)
         assert report.stopped_reason == "lifetime candidate budget exhausted"
 
-    def test_duplicate_candidate_ids_rejected(self) -> None:
-        with pytest.raises(ResidentQueueError, match="unique"):
-            run_resident_screen(
-                FakeSession(100.0, {DIGEST_A: 110.0}),
-                [_candidate(DIGEST_A, "x"), _candidate(DIGEST_B, "x")],
-                prompts=("p",),
-            )
-
     def test_empty_prompts_rejected(self) -> None:
         with pytest.raises(ResidentQueueError, match="prompt plan"):
-            run_resident_screen(
-                FakeSession(100.0, {DIGEST_A: 110.0}),
-                [_candidate(DIGEST_A)],
-                prompts=(),
+            ResidentScreenLoop(
+                FakeSession(100.0, {DIGEST_A: 110.0}), prompts=(),
             )
