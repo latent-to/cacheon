@@ -160,11 +160,9 @@ def run_continuation_quality_stage(
     if quality_state is not None:
         assert continuation is not None
         if not resident_mode:
-            lifecycle = continuation.load_marginal_speed(value.prepared)
-            if lifecycle is None:
-                raise seams.qualification_continuation_error(
-                    "quality continuation exists without its speed continuation"
-                )
+            raise seams.qualification_continuation_error(
+                "durable continuation requires a resident speed policy"
+            )
         audit_operation = _audit_operation_digest(value, lifecycle, seams)
         audit_state = continuation.load_audit(audit_operation)
         if audit_state is None:
@@ -239,23 +237,19 @@ def run_continuation_quality_stage(
                 passed=True,
             )
     else:
+        if not resident_mode and continuation is not None:
+            raise seams.qualification_continuation_error(
+                "durable continuation requires a resident speed policy"
+            )
         with executor.exclusive_transaction():
             if not resident_mode:
-                lifecycle = (
-                    None
-                    if continuation is None
-                    else continuation.load_marginal_speed(value.prepared)
+                lifecycle = seams.run_marginal_lifecycle(
+                    value.prepared,
+                    executor=executor,
+                    model_mount=value.model_mount,
+                    deadline=float(deadline),
+                    candidate_reads=value.speed_evidence_policy.candidate_reads,
                 )
-                if lifecycle is None:
-                    lifecycle = seams.run_marginal_lifecycle(
-                        value.prepared,
-                        executor=executor,
-                        model_mount=value.model_mount,
-                        deadline=float(deadline),
-                        candidate_reads=value.speed_evidence_policy.candidate_reads,
-                    )
-                    if continuation is not None:
-                        continuation.record_marginal_speed(lifecycle)
             audit_operation = _audit_operation_digest(value, lifecycle, seams)
             audit_state = (
                 None if continuation is None

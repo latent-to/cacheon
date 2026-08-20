@@ -3620,6 +3620,14 @@ def run_causal_qualification(
             raise QualificationRunnerError(
                 "continuation authority is not exactly typed"
             )
+        if not resident_mode:
+            # Marginal speed keeps generic (restartless) execution; its durable
+            # writers were retired after the retained-corpus census proved zero
+            # marginal records, so a nonresident restart must fail loudly here
+            # rather than silently redo paid work.
+            raise QualificationContinuationError(
+                "durable continuation requires a resident speed policy"
+            )
         if (
             continuation.authority_digest != qualification_authority_digest(value)
             or continuation.source_digest != value.prepared.source.digest

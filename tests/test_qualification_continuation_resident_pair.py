@@ -143,8 +143,6 @@ def test_legacy_and_resident_pair_speed_modes_are_mutually_exclusive(
 
     with pytest.raises(QualificationContinuationError, match="resident shape"):
         resident_pair.load_resident_speed()
-    with pytest.raises(QualificationContinuationError, match="marginal shape"):
-        resident_pair.load_marginal_speed(SimpleNamespace())  # type: ignore[arg-type]
 
     legacy_resident = _scope(tmp_path / "legacy-resident")
     legacy_resident._record("speed", {"mode": "resident", "crossover": {}})
