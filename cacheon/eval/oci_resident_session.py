@@ -29,7 +29,9 @@ from cacheon.eval.oci_outer_session import (
     _control_or_error,
     _fresh_id,
     _now,
-    diagnostic_provider,
+    abort_failed_session,
+    perform_init_handshake,
+    require_session_timeouts,
 )
 from cacheon.eval.oci_session_protocol import (
     MAX_BATCH_REQUEST_BYTES,
@@ -45,8 +47,6 @@ from cacheon.eval.oci_session_protocol import (
     make_init,
     preflight_accept_message,
     validate_batch_request,
-    validate_preflight,
-    validate_ready,
     validate_swap_evidence,
 )
 from cacheon.eval.resident_execution_evidence import (
@@ -294,20 +294,15 @@ class ResidentOuterSession:
         if type(plan) is not ResidentSessionPlan:
             raise OuterSessionInfrastructureError("resident plan is not typed")
         started_at = _now(clock)
-        for name, value in (
-            ("deadline", deadline),
-            ("init_timeout_s", init_timeout_s),
-            ("batch_timeout_s", batch_timeout_s),
-            ("swap_timeout_s", swap_timeout_s),
-        ):
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(float(value))
-                or (name == "deadline" and value <= started_at)
-                or (name != "deadline" and value <= 0)
-            ):
-                raise OuterSessionInfrastructureError(f"{name} is invalid")
+        require_session_timeouts(
+            started_at,
+            (
+                ("deadline", deadline),
+                ("init_timeout_s", init_timeout_s),
+                ("batch_timeout_s", batch_timeout_s),
+                ("swap_timeout_s", swap_timeout_s),
+            ),
+        )
         self.plan = plan
         self.transport = transport
         self.deadline = float(deadline)
@@ -333,84 +328,28 @@ class ResidentOuterSession:
         return min(self.deadline, _now(self.clock) + limit)
 
     def _fail(self, original: BaseException) -> NoReturn:
-        if isinstance(original, OuterSessionError):
-            original.attach_diagnostic(diagnostic_provider(self.transport))
-        try:
-            self.transport.abort()
-        except BaseException as cleanup:
-            error = OuterSessionInfrastructureError(
-                f"session cleanup could not be proven: {cleanup}"
-            )
-            error.attach_diagnostic(diagnostic_provider(self.transport))
-            self.closed = True
-            raise error from original
-        self.closed = True
-        raise original
+        abort_failed_session(self, original)
 
     def start(self) -> None:
         if self.started or self.closed:
             raise OuterSessionInfrastructureError("session start order is invalid")
         try:
-            self.transport.start()
-            if self.transport.has_pending_output():
-                raise OuterSessionProtocolError("worker emitted output before init")
-            init_deadline = self._phase_deadline(self.init_timeout_s)
-            init = make_init(
-                self.plan.engine_config,
-                session_id=self.session_id,
-                launch_digest=self.plan.launch_digest,
-                expected_engine_config_digest=(
-                    self.plan.expected_engine_config_digest
-                ),
-            )
-            self.transport.write_frame(
-                frame_message(init, max_bytes=MAX_INIT_BYTES), deadline=init_deadline
-            )
-            try:
-                self.preflight = validate_preflight(
-                    _control_or_error(
-                        self.transport,
-                        session_id=self.session_id,
-                        launch_digest=self.plan.launch_digest,
-                        deadline=init_deadline,
-                    ),
-                    session_id=self.session_id,
-                    launch_digest=self.plan.launch_digest,
-                    expected_facts=self.plan.expected_preflight,
-                )
-            except (SessionProtocolError, OuterSessionError) as exc:
-                detail = (
-                    exc.message if isinstance(exc, OuterSessionError) else str(exc)
-                )
-                raise OuterSessionInfrastructureError(
-                    f"runtime preflight failed: {detail}",
-                    diagnostic_provider(self.transport),
-                ) from None
-            self.transport.write_frame(
-                frame_message(
-                    preflight_accept_message(
-                        session_id=self.session_id,
-                        launch_digest=self.plan.launch_digest,
-                        facts=self.preflight,
-                    ),
-                    max_bytes=MAX_CONTROL_BYTES,
-                ),
-                deadline=init_deadline,
-            )
-            ready = _control_or_error(
+            self.preflight = perform_init_handshake(
                 self.transport,
-                session_id=self.session_id,
-                launch_digest=self.plan.launch_digest,
-                deadline=init_deadline,
-            )
-            try:
-                validate_ready(
-                    ready,
+                init=make_init(
+                    self.plan.engine_config,
                     session_id=self.session_id,
                     launch_digest=self.plan.launch_digest,
-                )
-            except SessionProtocolError as exc:
-                raise OuterSessionProtocolError(str(exc)) from None
+                    expected_engine_config_digest=(
+                        self.plan.expected_engine_config_digest
+                    ),
+                ),
+                session_id=self.session_id,
+                launch_digest=self.plan.launch_digest,
+                expected_preflight=self.plan.expected_preflight,
+                init_deadline=self._phase_deadline(self.init_timeout_s),
+                preflight_catch=(SessionProtocolError, OuterSessionError),
+            )
             self.ready_completed_at = _now(self.clock, previous=self.started_at)
             self.last_host_time = self.ready_completed_at
             if self.transport.has_pending_output():

@@ -23,21 +23,18 @@ from cacheon.eval.oci_outer_session import (
     OuterSessionTimeoutError,
     OuterSessionWorkerError,
     diagnostic_provider,
+    perform_init_handshake,
+    require_session_timeouts,
 )
 from cacheon.eval.oci_session_protocol import (
     CONTROL_MAGIC,
     MAX_CONTROL_BYTES,
-    MAX_INIT_BYTES,
     EngineSessionConfig,
     RuntimePreflightFacts,
     SessionProtocolError,
     decode_message,
-    frame_message,
     make_init,
     parse_error_message,
-    preflight_accept_message,
-    validate_preflight,
-    validate_ready,
 )
 from cacheon.eval.qualification import ReferenceManifest
 from cacheon.eval.reference_protocol import (
@@ -346,27 +343,6 @@ class AttachedReferenceTransport(AttachedSessionTransport):
             raise OuterSessionProtocolError(str(exc)) from None
 
 
-def _control_or_error(
-    transport: ReferenceTransport,
-    *,
-    session_id: str,
-    launch_digest: str,
-    deadline: float,
-) -> dict:
-    message = transport.read_control(max_bytes=MAX_CONTROL_BYTES, deadline=deadline)
-    try:
-        detail = parse_error_message(
-            message, session_id=session_id, launch_digest=launch_digest
-        )
-    except SessionProtocolError as exc:
-        raise OuterSessionProtocolError(str(exc)) from None
-    if detail is not None:
-        raise OuterSessionWorkerError(
-            ": ".join(detail), diagnostic_provider(transport)
-        )
-    return message
-
-
 def run_reference_session(
     plan: ReferenceSessionPlan,
     *,
@@ -381,18 +357,14 @@ def run_reference_session(
     if type(plan) is not ReferenceSessionPlan:
         raise ReferenceSessionError("reference session plan is not typed")
     started_at = _now(clock)
-    for name, value in (
-        ("deadline", deadline),
-        ("init_timeout_s", init_timeout_s),
-        ("batch_timeout_s", batch_timeout_s),
-    ):
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or float(value) <= (started_at if name == "deadline" else 0.0)
-        ):
-            raise OuterSessionInfrastructureError(f"{name} is invalid")
+    require_session_timeouts(
+        started_at,
+        (
+            ("deadline", deadline),
+            ("init_timeout_s", init_timeout_s),
+            ("batch_timeout_s", batch_timeout_s),
+        ),
+    )
     deadline = float(deadline)
 
     def phase_deadline(limit: float) -> float:
@@ -403,56 +375,25 @@ def run_reference_session(
     preflight: RuntimePreflightFacts | None = None
     exchanges: list[ReferenceExchangeEvidence] = []
     try:
-        transport.start()
-        if transport.has_pending_output():
-            raise OuterSessionProtocolError("reference worker emitted output before init")
-        init_deadline = phase_deadline(init_timeout_s)
-        init = make_init(
-            plan.engine_config,
-            session_id=session_id,
-            launch_digest=launch_digest,
-            expected_engine_config_digest=plan.expected_engine_config_digest,
-        )
-        transport.write_frame(
-            frame_message(init, max_bytes=MAX_INIT_BYTES), deadline=init_deadline
-        )
-        try:
-            preflight = validate_preflight(
-                _control_or_error(
-                    transport,
-                    session_id=session_id,
-                    launch_digest=launch_digest,
-                    deadline=init_deadline,
-                ),
+        preflight = perform_init_handshake(
+            transport,
+            init=make_init(
+                plan.engine_config,
                 session_id=session_id,
                 launch_digest=launch_digest,
-                expected_facts=plan.expected_preflight,
-            )
-        except (SessionProtocolError, OuterSessionProtocolError, OuterSessionWorkerError) as exc:
-            detail = exc.message if isinstance(exc, OuterSessionError) else str(exc)
-            raise OuterSessionInfrastructureError(
-                f"runtime preflight failed: {detail}",
-                diagnostic_provider(transport),
-            ) from None
-        transport.write_frame(
-            frame_message(
-                preflight_accept_message(
-                    session_id=session_id, launch_digest=launch_digest, facts=preflight
-                ),
-                max_bytes=MAX_CONTROL_BYTES,
+                expected_engine_config_digest=plan.expected_engine_config_digest,
             ),
-            deadline=init_deadline,
-        )
-        ready = _control_or_error(
-            transport,
             session_id=session_id,
             launch_digest=launch_digest,
-            deadline=init_deadline,
+            expected_preflight=plan.expected_preflight,
+            init_deadline=phase_deadline(init_timeout_s),
+            preflight_catch=(
+                SessionProtocolError,
+                OuterSessionProtocolError,
+                OuterSessionWorkerError,
+            ),
+            worker_label="reference worker",
         )
-        try:
-            validate_ready(ready, session_id=session_id, launch_digest=launch_digest)
-        except SessionProtocolError as exc:
-            raise OuterSessionProtocolError(str(exc)) from None
         ready_at = _now(clock, previous=started_at)
         last_time = ready_at
         if transport.has_pending_output():
