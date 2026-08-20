@@ -14,6 +14,7 @@ import tests.test_resident_pair_crossover as pair_fixtures
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.engine_tree import MaterializedEngineTree
 from cacheon.eval import b300_resident_pair_factory as pair_factory
+from cacheon.eval.resident_pair_retirement_checkpoint import _request_epoch
 from cacheon.eval.b300_qualification_lanes import (
     B300QualificationLanePair,
     B300QualificationLanePolicy,
@@ -418,13 +419,14 @@ def test_two_sequential_requests_reuse_one_pair_and_two_lifetimes(
     first_authority, second_authority = _authority("profile-one"), _authority(
         "profile-two"
     )
-    first = commissioned.factory.open_request(first_authority, deadline=100.0)
+    factory = commissioned.factory
+    factory.open_request(first_authority, deadline=100.0)
     assert lifetimes.calls == []
     assert lifetimes.factories == []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         borrows = tuple(
-            pool.map(lambda _index: first.borrow(first_authority), range(2))
+            pool.map(lambda _index: factory.borrow(first_authority), range(2))
         )
     assert borrows[0] is borrows[1]
     first_borrow = borrows[0]
@@ -436,17 +438,16 @@ def test_two_sequential_requests_reuse_one_pair_and_two_lifetimes(
         for lifetime in lifetimes.factories[:2]
         for session in lifetime.sessions
     )
-    first_epoch = first.request_epoch_digest
-    assert first.release(first_authority, first_borrow.binding) == first_borrow.binding
+    first_epoch = _request_epoch(factory, first_authority)
+    assert factory.release(first_authority, first_borrow.binding) == first_borrow.binding
     assert all(
         session.finish_calls == 0
         for lifetime in lifetimes.factories[:2]
         for session in lifetime.sessions
     )
 
-    second = commissioned.factory.open_request(second_authority, deadline=200.0)
-    second_borrow = second.borrow(second_authority)
-    assert second is first
+    factory.open_request(second_authority, deadline=200.0)
+    second_borrow = factory.borrow(second_authority)
     assert second_borrow.pair is first_borrow.pair
     assert len(lifetimes.calls) == 2
     assert sum(len(row.sessions) for row in lifetimes.factories) == 2
@@ -455,9 +456,9 @@ def test_two_sequential_requests_reuse_one_pair_and_two_lifetimes(
         == second_borrow.binding.service_epoch_digest
         == commissioned.factory.commissioned_epoch_digest
     )
-    assert first_epoch != second.request_epoch_digest
+    assert first_epoch != _request_epoch(factory, second_authority)
     assert first_borrow.binding == second_borrow.binding
-    second_retirement = second.close()
+    second_retirement = factory.close_request()
     assert type(second_retirement) is ResidentEvaluationRetirementEvidence
     assert all(
         session.finish_calls == 1
@@ -472,23 +473,23 @@ def test_released_pair_rebinds_without_reloading(
     managed_executors,
 ) -> None:
     commissioned = _commissioned(tmp_path, lifetimes, managed_executors)
+    factory = commissioned.factory
     first_authority = _authority("first")
-    first = commissioned.factory.open_request(first_authority, deadline=100.0)
-    first_borrow = first.borrow(first_authority)
-    first_request_epoch = first.request_epoch_digest
-    first.release(first_authority, first_borrow.binding)
+    factory.open_request(first_authority, deadline=100.0)
+    first_borrow = factory.borrow(first_authority)
+    first_request_epoch = _request_epoch(factory, first_authority)
+    factory.release(first_authority, first_borrow.binding)
 
     second_authority = _authority("second")
-    second = commissioned.factory.open_request(second_authority, deadline=200.0)
-    second_borrow = second.borrow(second_authority)
+    factory.open_request(second_authority, deadline=200.0)
+    second_borrow = factory.borrow(second_authority)
 
-    assert second is first
     assert second_borrow.pair is first_borrow.pair
     assert second_borrow.binding is first_borrow.binding
-    assert second.request_epoch_digest != first_request_epoch
+    assert _request_epoch(factory, second_authority) != first_request_epoch
     assert len(lifetimes.calls) == 2
     assert sum(len(row.sessions) for row in lifetimes.factories) == 2
-    second.close()
+    factory.close_request()
 
 
 def test_binding_freezes_exact_stock_lane_and_request_authorities(
@@ -498,8 +499,8 @@ def test_binding_freezes_exact_stock_lane_and_request_authorities(
 ) -> None:
     commissioned = _commissioned(tmp_path, lifetimes, managed_executors)
     authority = _authority("generic")
-    owner = commissioned.factory.open_request(authority, deadline=100.0)
-    borrowed = owner.borrow(authority)
+    commissioned.factory.open_request(authority, deadline=100.0)
+    borrowed = commissioned.factory.borrow(authority)
 
     assert tuple(row.lane_id for row in borrowed.binding.lanes) == ("A", "B")
     for row, plan in zip(borrowed.binding.lanes, commissioned.plans):
@@ -509,7 +510,7 @@ def test_binding_freezes_exact_stock_lane_and_request_authorities(
         assert row.executor_namespace_digest == plan.executor.manager.namespace_digest
     assert borrowed.binding.identities == borrowed.pair.identities
     assert authority.target_profile_digest not in repr(borrowed.binding)
-    owner.close()
+    commissioned.factory.close_request()
 
 
 def test_foreign_request_or_runtime_binding_fails_without_new_work(
@@ -519,23 +520,24 @@ def test_foreign_request_or_runtime_binding_fails_without_new_work(
 ) -> None:
     commissioned = _commissioned(tmp_path, lifetimes, managed_executors)
     authority, foreign = _authority("first"), _authority("foreign")
-    owner = commissioned.factory.open_request(authority, deadline=100.0)
+    factory = commissioned.factory
+    factory.open_request(authority, deadline=100.0)
     with pytest.raises(pair_factory.B300ResidentPairFactoryError, match="stale or foreign"):
-        owner.borrow(foreign)
+        factory.borrow(foreign)
     assert not any(row.sessions for row in lifetimes.factories)
 
-    borrowed = owner.borrow(authority)
+    borrowed = factory.borrow(authority)
     changed = replace(
         borrowed.binding,
         service_epoch_digest=_h("foreign-service-epoch"),
     )
     history = borrowed.pair.request_history
     with pytest.raises(pair_factory.B300ResidentPairFactoryError, match="stale or foreign"):
-        owner.require_binding(authority, changed)
+        factory.require_binding(authority, changed)
     with pytest.raises(pair_factory.B300ResidentPairFactoryError, match="stale or foreign"):
-        owner.require_binding(foreign, borrowed.binding)
+        factory.require_binding(foreign, borrowed.binding)
     assert borrowed.pair.request_history == history
-    owner.close()
+    factory.close_request()
 
 
 def test_delayed_borrow_expires_before_lifetimes_or_bounds_start_wall(
@@ -544,29 +546,27 @@ def test_delayed_borrow_expires_before_lifetimes_or_bounds_start_wall(
     managed_executors,
 ) -> None:
     commissioned = _commissioned(tmp_path, lifetimes, managed_executors)
-    expired = commissioned.factory.open_request(
-        _authority("expired"), deadline=10.0
-    )
+    expired_authority = _authority("expired")
+    commissioned.factory.open_request(expired_authority, deadline=10.0)
     lifetimes.clock.span(9.0)  # 1.0 -> exact request deadline.
     with pytest.raises(
         pair_factory.B300ResidentPairFactoryError,
         match="expired before pair start",
     ):
-        expired.borrow(expired.authority)
+        commissioned.factory.borrow(expired_authority)
     assert lifetimes.calls == []
     assert lifetimes.factories == []
 
-    bounded = commissioned.factory.open_request(
-        _authority("bounded"), deadline=11.0
-    )
+    bounded_authority = _authority("bounded")
+    commissioned.factory.open_request(bounded_authority, deadline=11.0)
     lifetimes.clock.span(0.75)
-    borrowed = bounded.borrow(bounded.authority)
+    borrowed = commissioned.factory.borrow(bounded_authority)
     assert borrowed.pair._timeouts[0] == pytest.approx(0.25)
     assert borrowed.pair._timeouts[2] == pytest.approx(2.0)
     assert {row["deadline"] for row in lifetimes.calls} == {
         10.0 + pair_factory.PAIR_LIFETIME_SECONDS
     }
-    bounded.close()
+    commissioned.factory.close_request()
 
 
 def test_two_target_profiles_and_physical_allocations_are_generic(
@@ -588,20 +588,20 @@ def test_two_target_profiles_and_physical_allocations_are_generic(
         identity="second",
         allocation_offset=8,
     )
-    first_owner = first.factory.open_request(_authority("shape-one"), deadline=100.0)
-    second_owner = second.factory.open_request(
-        _authority("shape-two"), deadline=100.0
-    )
-    first_borrow = first_owner.borrow(first_owner.authority)
-    first_owner.close()
-    second_borrow = second_owner.borrow(second_owner.authority)
-    second_owner.close()
+    first_authority = _authority("shape-one")
+    second_authority = _authority("shape-two")
+    first.factory.open_request(first_authority, deadline=100.0)
+    second.factory.open_request(second_authority, deadline=100.0)
+    first_borrow = first.factory.borrow(first_authority)
+    first.factory.close_request()
+    second_borrow = second.factory.borrow(second_authority)
+    second.factory.close_request()
 
     assert {
         row.allocation_digest for row in first_borrow.binding.lanes
     }.isdisjoint({row.allocation_digest for row in second_borrow.binding.lanes})
-    assert first_owner.authority.target_profile_digest != (
-        second_owner.authority.target_profile_digest
+    assert first_authority.target_profile_digest != (
+        second_authority.target_profile_digest
     )
     source = Path(pair_factory.__file__).read_text(encoding="utf-8").lower()
     for target_name in ("arnorm", "msa", "all_reduce", "moe_epilogue"):
@@ -624,14 +624,13 @@ def test_factory_failure_starts_no_lifetime(
         return lambda _driver: pytest.fail("partial factory must never start")
 
     monkeypatch.setattr(pair_factory, "make_backend_lifetime_factory", fail_second)
-    owner = commissioned.factory.open_request(
-        _authority("factory-fail"), deadline=100.0
-    )
+    authority = _authority("factory-fail")
+    commissioned.factory.open_request(authority, deadline=100.0)
     with pytest.raises(
         pair_factory.B300ResidentPairFactoryError,
         match="second backend factory",
     ):
-        owner.borrow(owner.authority)
+        commissioned.factory.borrow(authority)
     assert len(calls) == 2
 
 
@@ -664,15 +663,15 @@ def test_partial_start_closes_the_started_lane_once_and_latches_failure(
 
     monkeypatch.setattr(pair_factory, "make_backend_lifetime_factory", partial)
     authority = _authority("start-fail")
-    owner = commissioned.factory.open_request(authority, deadline=100.0)
+    commissioned.factory.open_request(authority, deadline=100.0)
     with pytest.raises(pair_factory.B300ResidentPairFactoryError, match="failed to start"):
-        owner.borrow(authority)
+        commissioned.factory.borrow(authority)
     assert len(good.sessions) == 1
     assert good.sessions[0].finish_calls == 1
     with pytest.raises(pair_factory.B300ResidentPairFactoryError, match="permanently failed"):
-        owner.borrow(authority)
+        commissioned.factory.borrow(authority)
     with pytest.raises(pair_factory.B300ResidentPairFactoryError, match="previously failed"):
-        owner.close()
+        commissioned.factory.close_request()
     assert good.sessions[0].finish_calls == 1
 
 
@@ -703,16 +702,16 @@ def test_binding_freeze_failure_retires_both_started_lanes_once(
         duplicate_session_factory,
     )
     authority = _authority("duplicate-session")
-    owner = commissioned.factory.open_request(authority, deadline=100.0)
+    commissioned.factory.open_request(authority, deadline=100.0)
     with pytest.raises(
         pair_factory.B300ResidentPairFactoryError,
         match="failed to freeze",
     ):
-        owner.borrow(authority)
+        commissioned.factory.borrow(authority)
     assert len(rows) == 2
     assert all(row.sessions[0].finish_calls == 1 for row in rows)
     with pytest.raises(pair_factory.B300ResidentPairFactoryError):
-        owner.close()
+        commissioned.factory.close_request()
     assert all(row.sessions[0].finish_calls == 1 for row in rows)
 
 
@@ -759,13 +758,13 @@ def test_stock_pair_rejects_candidate_tree_foreign_lane_and_ready_width(
         )
 
 
-def test_owner_has_no_partial_close_or_audit_launch_surface(
+def test_request_surface_has_no_partial_close_or_audit_launch(
     tmp_path: Path,
     lifetimes: _LifetimeHarness,
     managed_executors,
 ) -> None:
     commissioned = _commissioned(tmp_path, lifetimes, managed_executors)
-    owner = commissioned.factory.open_request(_authority("surface"), deadline=100.0)
+    commissioned.factory.open_request(_authority("surface"), deadline=100.0)
     for forbidden in (
         "close_lane",
         "close_a",
@@ -774,9 +773,9 @@ def test_owner_has_no_partial_close_or_audit_launch_surface(
         "run_audit",
         "reuse",
     ):
-        assert not hasattr(owner, forbidden)
-    assert owner.close() is None
-    assert owner.close() is None
+        assert not hasattr(commissioned.factory, forbidden)
+    assert commissioned.factory.close_request() is None
+    assert commissioned.factory.close_request() is None
 
 
 def test_pre_gate_retire_closes_only_a_released_pair(
@@ -788,8 +787,8 @@ def test_pre_gate_retire_closes_only_a_released_pair(
     assert commissioned.factory.retire_released_pair() is False
 
     authority = _authority("pre-gate")
-    owner = commissioned.factory.open_request(authority, deadline=100.0)
-    borrowed = owner.borrow(authority)
+    commissioned.factory.open_request(authority, deadline=100.0)
+    borrowed = commissioned.factory.borrow(authority)
     assert commissioned.factory.retire_released_pair() is False
     assert all(
         session.finish_calls == 0
@@ -797,7 +796,7 @@ def test_pre_gate_retire_closes_only_a_released_pair(
         for session in lifetime.sessions
     )
 
-    owner.release(authority, borrowed.binding)
+    commissioned.factory.release(authority, borrowed.binding)
     assert commissioned.factory.retire_released_pair() is True
     assert all(
         session.finish_calls == 1
@@ -807,8 +806,10 @@ def test_pre_gate_retire_closes_only_a_released_pair(
     assert commissioned.factory.retire_released_pair() is False
 
     fresh_authority = _authority("after-retire")
-    fresh = commissioned.factory.open_request(fresh_authority, deadline=200.0)
-    fresh_borrow = fresh.borrow(fresh_authority)
+    commissioned.factory.open_request(fresh_authority, deadline=200.0)
+    fresh_borrow = commissioned.factory.borrow(fresh_authority)
     assert fresh_borrow.pair is not borrowed.pair
     assert len(lifetimes.calls) == 4
-    assert type(fresh.close()) is ResidentEvaluationRetirementEvidence
+    assert type(commissioned.factory.close_request()) is (
+        ResidentEvaluationRetirementEvidence
+    )

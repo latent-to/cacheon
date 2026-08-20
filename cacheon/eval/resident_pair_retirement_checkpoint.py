@@ -5,7 +5,6 @@ from __future__ import annotations
 from cacheon.eval.b300_resident_pair_factory import (
     B300CommissionedResidentPairFactory,
     B300ResidentPairRequestAuthority,
-    B300ResidentPairRequestOwner,
     B300ResidentStockLanePlan,
 )
 from cacheon.eval.continuation_codec import ContinuationCodec, ContinuationCodecError
@@ -214,7 +213,6 @@ def _lane(
 
 
 def build_resident_pair_retirement_checkpoint(
-    owner: B300ResidentPairRequestOwner,
     *,
     factory: B300CommissionedResidentPairFactory,
     authority: B300ResidentPairRequestAuthority,
@@ -226,9 +224,7 @@ def build_resident_pair_retirement_checkpoint(
     """Close once and return the only durable, path-free retirement product."""
 
     _context(factory, authority, speed_plan, speed, count_plan, count)
-    if type(owner) is not B300ResidentPairRequestOwner:
-        raise ResidentPairRetirementHold("resident pair owner is not exact")
-    retirement, proofs = owner.retire_and_quiesce(authority, speed_plan.pair_binding)
+    retirement, proofs = factory.retire_and_quiesce(authority, speed_plan.pair_binding)
     slices = _history(retirement, speed, count)
     lifetimes = (retirement.lane_a.lifetime_evidence, retirement.lane_b.lifetime_evidence)
     checkpoint = ResidentPairRetirementCheckpoint(

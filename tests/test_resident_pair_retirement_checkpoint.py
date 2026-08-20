@@ -399,8 +399,8 @@ def test_retirement_publishes_once_and_reopens_without_live_pair(
     commissioned = _commissioned(tmp_path, lifetimes, managed_executors)
     _install_exact_lifetimes(monkeypatch, commissioned, lifetimes)
     authority = _authority("retirement")
-    owner = commissioned.factory.open_request(authority, deadline=100.0)
-    borrowed = owner.borrow(authority)
+    commissioned.factory.open_request(authority, deadline=100.0)
+    borrowed = commissioned.factory.borrow(authority)
     lifetimes.factories[1].sessions[0].durations = (0.8,)
     crossover = ResidentCrossoverPlan(
         _h("retirement:selected-delta"),
@@ -427,7 +427,6 @@ def test_retirement_publishes_once_and_reopens_without_live_pair(
         fast_lane=fast_lane,
     )
     checkpoint = build_resident_pair_retirement_checkpoint(
-        owner,
         factory=commissioned.factory,
         authority=authority,
         speed_plan=speed_plan,
@@ -435,8 +434,12 @@ def test_retirement_publishes_once_and_reopens_without_live_pair(
         count_plan=count_plan,
         count=count,
     )
+    retirement_evidence, _proofs = commissioned.factory.retire_and_quiesce(
+        authority, speed_plan.pair_binding
+    )
     assert tuple(
-        row.request_slice.lane_id for row in owner.retirement.request_history[-2:]
+        row.request_slice.lane_id
+        for row in retirement_evidence.request_history[-2:]
     )[0] == fast_lane
     store_root = tmp_path / "continuations"
     continuation = QualificationContinuationStore(store_root).scope(

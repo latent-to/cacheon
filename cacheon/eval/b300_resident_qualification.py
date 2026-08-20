@@ -10,7 +10,6 @@ from cacheon.eval.b300_resident_pair_factory import (
     B300CommissionedResidentPairFactory,
     B300ResidentPairFactoryError,
     B300ResidentPairRequestAuthority,
-    B300ResidentPairRequestOwner,
     B300ResidentRequestPair,
 )
 from cacheon.eval.crossover_runtime import SpeedStageDecision
@@ -372,13 +371,11 @@ def run_b300_resident_qualification_prefix(
             raise B300ResidentQualificationHold(
                 "staged resident bundle changed publication identity"
             )
-        owner: B300ResidentPairRequestOwner | None = factory.open_request(
-            authority, deadline=deadline
-        )
+        factory.open_request(authority, deadline=deadline)
         borrowed: B300ResidentRequestPair | None = None
         completed = False
         try:
-            borrowed = owner.borrow(authority)
+            borrowed = factory.borrow(authority)
             speed_plan = _speed_plan(
                 plan,
                 factory,
@@ -400,7 +397,7 @@ def run_b300_resident_qualification_prefix(
                     "resident speed disappeared after durable publication"
                 )
             if speed.decision is SpeedStageDecision.FAIL:
-                owner.release(authority, borrowed.binding)
+                factory.release(authority, borrowed.binding)
                 completed = True
                 return B300ResidentQualificationPrefix(
                     speed_plan, speed, None, None, None, None, None
@@ -443,7 +440,6 @@ def run_b300_resident_qualification_prefix(
                 evidence_root=plan.evidence_root,
             )
             retirement = build_resident_pair_retirement_checkpoint(
-                owner,
                 factory=factory,
                 authority=authority,
                 speed_plan=speed_plan,
@@ -469,11 +465,11 @@ def run_b300_resident_qualification_prefix(
                 screen_lane=screen_lane,
             )
         finally:
-            if owner is not None and not completed:
+            if not completed:
                 if borrowed is None:
-                    owner.close()
+                    factory.close_request()
                 else:
-                    owner.retire_and_quiesce(authority, borrowed.binding)
+                    factory.retire_and_quiesce(authority, borrowed.binding)
     except B300ResidentQualificationHold:
         raise
     except _HOLD_ERRORS as exc:

@@ -861,12 +861,55 @@ class B300CommissionedResidentPairFactory:
                     "resident stock pair differs from service READY or model authority"
                 )
 
+    def _request_owner(self) -> B300ResidentPairRequestOwner:
+        with self._lock:
+            owner = self._owner
+        if owner is None:
+            raise B300ResidentPairFactoryError("no resident request is open")
+        return owner
+
+    def borrow(
+        self, authority: B300ResidentPairRequestAuthority
+    ) -> B300ResidentRequestPair:
+        """Start the open request's pair once and freeze actual A/B sessions."""
+
+        return self._request_owner().borrow(authority)
+
+    def release(
+        self,
+        authority: B300ResidentPairRequestAuthority,
+        binding: ResidentPairRuntimeBinding,
+    ) -> ResidentPairRuntimeBinding:
+        return self._request_owner().release(authority, binding)
+
+    def require_binding(
+        self,
+        authority: B300ResidentPairRequestAuthority,
+        binding: ResidentPairRuntimeBinding,
+    ) -> B300ResidentRequestPair:
+        """Reopen only the exact binding frozen by the open request."""
+
+        return self._request_owner().require_binding(authority, binding)
+
+    def retire_and_quiesce(
+        self,
+        authority: B300ResidentPairRequestAuthority,
+        binding: ResidentPairRuntimeBinding,
+    ) -> tuple[
+        ResidentEvaluationRetirementEvidence[ResidentEngineExecutionEvidence],
+        tuple[tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]],
+    ]:
+        return self._request_owner().retire_and_quiesce(authority, binding)
+
+    def close_request(self) -> ResidentEvaluationRetirementEvidence | None:
+        return self._request_owner().close()
+
     def open_request(
         self,
         authority: B300ResidentPairRequestAuthority,
         *,
         deadline: float,
-    ) -> B300ResidentPairRequestOwner:
+    ) -> None:
         """Lease the loaded pair, or lazily create it for the first request."""
 
         if type(authority) is not B300ResidentPairRequestAuthority:
@@ -880,7 +923,8 @@ class B300CommissionedResidentPairFactory:
                     "commissioned resident pair factory is closed"
                 )
             if self._owner is not None and self._owner.reusable:
-                return self._owner._rebind(authority, deadline=absolute)
+                self._owner._rebind(authority, deadline=absolute)
+                return
             if self._owner is not None and self._owner._released:
                 self._owner.close()
             if (
@@ -932,7 +976,6 @@ class B300CommissionedResidentPairFactory:
                     "commissioned resident pair factory closed during request open"
                 )
             self._owner = owner
-        return owner
 
     def retire_released_pair(self) -> bool:
         """Retire a released pair so pre-pair gates can find idle devices.
