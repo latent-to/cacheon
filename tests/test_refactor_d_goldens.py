@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 import pytest
 
+from cacheon.capabilities import CallDescriptor
 from cacheon.verification_outcomes import (
     VerificationCaseDescriptor,
     VerificationCaseKind,
@@ -102,11 +103,11 @@ _DESCRIPTOR_INPUTS: dict[str, dict[str, Any]] = {
 
 
 def _build_descriptor(inputs: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
-    descriptor = VerificationCaseDescriptor.from_call_dicts(
+    descriptor = VerificationCaseDescriptor(
         slot_id=inputs["slot_id"],
         variant_id=inputs["variant_id"],
         case_kind=VerificationCaseKind(inputs["case_kind"]),
-        calls=tuple(inputs["calls"]),
+        calls=tuple(CallDescriptor(call) for call in inputs["calls"]),
     )
     return _canonical(descriptor.to_dict()), descriptor.digest, {}
 

@@ -23,6 +23,7 @@ from cacheon.eval.b300_qualification_graph_provider import (
     B300QualificationGraphArtifact,
     B300QualificationGraphBinding,
 )
+from cacheon.capabilities import CallDescriptor
 from cacheon.manifest import AOTExport, OpEntry, load_manifest
 from cacheon.verification_outcomes import (
     GraphPhaseOutcome,
@@ -114,11 +115,11 @@ def _descriptor(
         VerificationCaseKind.COLLECTIVE_TEMPORAL_EAGER,
         VerificationCaseKind.COLLECTIVE_GRAPH_SEQUENCE,
     } else (call,)
-    return VerificationCaseDescriptor.from_call_dicts(
+    return VerificationCaseDescriptor(
         slot_id=slot,
         variant_id=variant,
         case_kind=kind,
-        calls=calls,
+        calls=tuple(CallDescriptor(value) for value in calls),
     )
 
 
@@ -583,11 +584,11 @@ def test_typed_descriptor_execution_context_must_match_policy(
         descriptor = row.case_descriptor
         call = dict(descriptor.calls[0])
         call[field] = value
-        row.case_descriptor = VerificationCaseDescriptor.from_call_dicts(
+        row.case_descriptor = VerificationCaseDescriptor(
             slot_id=descriptor.slot_id,
             variant_id=descriptor.variant_id,
             case_kind=descriptor.case_kind,
-            calls=(call,),
+            calls=(CallDescriptor(call),),
         )
         return result
 

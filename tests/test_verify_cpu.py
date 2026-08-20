@@ -13,6 +13,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from cacheon.capabilities import CallDescriptor  # noqa: E402
 from cacheon.registry import Eligibility, eligibility_from_metadata  # noqa: E402
 from cacheon.sandbox import load_entry  # noqa: E402
 from cacheon.slots import get_slot  # noqa: E402
@@ -639,22 +640,22 @@ def test_ordinary_case_descriptor_binds_full_context_and_digest():
     ):
         changed = dict(call)
         changed[field] = value
-        rebound = VerificationCaseDescriptor.from_call_dicts(
+        rebound = VerificationCaseDescriptor(
             slot_id=case.slot_id,
             variant_id=case.variant_id,
             case_kind=case.case_kind,
-            calls=(changed,),
+            calls=(CallDescriptor(changed),),
         )
         assert rebound.digest != case.digest
 
     missing = dict(call)
     missing.pop("architecture")
     with pytest.raises(ValueError, match="missing sealed execution context"):
-        VerificationCaseDescriptor.from_call_dicts(
+        VerificationCaseDescriptor(
             slot_id=case.slot_id,
             variant_id=case.variant_id,
             case_kind=case.case_kind,
-            calls=(missing,),
+            calls=(CallDescriptor(missing),),
         )
 
 

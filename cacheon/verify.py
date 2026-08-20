@@ -928,11 +928,11 @@ def verify_entry(
         architecture or _device_architecture(device) or torch.device(device).type
     )
 
-    def sealed_call(descriptor: CallDescriptor) -> dict:
+    def sealed_call(descriptor: CallDescriptor) -> CallDescriptor:
         return descriptor.with_updates(
             architecture=case_architecture, tp_size=case_tp_size,
             world_size=case_world_size, graph_mode=verification_graph_mode,
-        ).as_dict()
+        )
     if graph_required and graph_replays < 2:
         raise ValueError("CUDA graph verification requires at least two replays")
     tol = slot.tolerance_for(dtype)
@@ -1000,7 +1000,7 @@ def verify_entry(
                     inputs = catalog_inputs
                     descriptor = catalog_descriptor
                     match = catalog_match
-            case_descriptor = VerificationCaseDescriptor.from_call_dicts(
+            case_descriptor = VerificationCaseDescriptor(
                 slot_id=slot.name,
                 variant_id=variant_name or "default",
                 case_kind=VerificationCaseKind.ORDINARY_SINGLE,
@@ -1037,7 +1037,7 @@ def verify_entry(
                 ))
                 continue
         else:
-            case_descriptor = VerificationCaseDescriptor.from_call_dicts(
+            case_descriptor = VerificationCaseDescriptor(
                 slot_id=slot.name,
                 variant_id=variant_name or "default",
                 case_kind=VerificationCaseKind.ORDINARY_SINGLE,

@@ -799,10 +799,10 @@ def verify_collective(
                 model_key=model_key,
                 architecture=architecture or ("cpu" if device == "cpu" else None),
                 world_size=world_size,
-            ).as_dict()
+            )
             for shape in sequence
         )
-        return VerificationCaseDescriptor.from_call_dicts(
+        return VerificationCaseDescriptor(
             slot_id=slot.name,
             variant_id=variant_name or "default",
             case_kind=case_kind,
