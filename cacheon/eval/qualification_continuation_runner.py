@@ -24,7 +24,6 @@ class QualificationContinuationRunnerSeams:
     qualification_runner_error: type[Exception]
     qualification_continuation_error: type[Exception]
     qualification_authority_digest: Callable[[Any], str]
-    run_marginal_lifecycle: Callable[..., Any]
     run_slot_audits: Callable[..., Any]
     selection_receipt_type: type[Any]
     cohort_trajectory_digest: Callable[[Any], str]
@@ -92,7 +91,6 @@ def run_continuation_quality_stage(
     make_id: Callable[[], str],
     continuation: Any | None,
     quality_state: Any | None,
-    resident_mode: bool,
     resident_pair_mode: bool,
     quality_reads: int,
     resident_lifecycle: Any | None,
@@ -159,10 +157,6 @@ def run_continuation_quality_stage(
 
     if quality_state is not None:
         assert continuation is not None
-        if not resident_mode:
-            raise seams.qualification_continuation_error(
-                "durable continuation requires a resident speed policy"
-            )
         audit_operation = _audit_operation_digest(value, lifecycle, seams)
         audit_state = continuation.load_audit(audit_operation)
         if audit_state is None:
@@ -176,7 +170,7 @@ def run_continuation_quality_stage(
             raise seams.qualification_continuation_error(
                 "quality continuation audit coverage differs from the sealed cohort"
             )
-        if resident_mode and any(
+        if any(
             row.decision is not seams.qualification_decision.PASS
             for row in audit_witnesses.values()
         ):
@@ -237,19 +231,7 @@ def run_continuation_quality_stage(
                 passed=True,
             )
     else:
-        if not resident_mode and continuation is not None:
-            raise seams.qualification_continuation_error(
-                "durable continuation requires a resident speed policy"
-            )
         with executor.exclusive_transaction():
-            if not resident_mode:
-                lifecycle = seams.run_marginal_lifecycle(
-                    value.prepared,
-                    executor=executor,
-                    model_mount=value.model_mount,
-                    deadline=float(deadline),
-                    candidate_reads=value.speed_evidence_policy.candidate_reads,
-                )
             audit_operation = _audit_operation_digest(value, lifecycle, seams)
             audit_state = (
                 None if continuation is None
@@ -287,7 +269,7 @@ def run_continuation_quality_stage(
                 audit_started = audit_state.audit_started
                 audit_completed = audit_state.audit_completed
                 audit_last_completed = audit_state.audit_last_completed
-            if resident_mode and any(
+            if any(
                 row.decision is not seams.qualification_decision.PASS
                 for row in audit_witnesses.values()
             ):

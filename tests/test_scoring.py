@@ -8,47 +8,20 @@ tests pin both halves: a genuine win passes, and noise alone never does.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import FrozenInstanceError, replace
-from pathlib import Path
-from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 
-from cacheon.eval.calibration import CalibrationContext, SpeedCalibration
-from cacheon.eval.device_state import (
-    DeviceStateActiveReceipt,
-    DeviceStateReceipt,
-    DeviceStateSample,
-)
-from cacheon.eval.marginal_runtime import (
-    CandidateLifecycleEvidence,
-    MarginalLifecycleEvidence,
-    MarginalRuntimeError,
-    run_marginal_lifecycle,
-)
-from cacheon.eval.native_artifact import publish_native_artifact
-from cacheon.eval.oci_backend import EngineExecutionEvidence, runtime_identity_from_preflight
-from cacheon.eval.oci_prebuild import OCIPrebuildResult
 from cacheon.eval.oci_outer_session import (
-    BatchExecutionEvidence,
     OuterSessionInfrastructureError,
-    SessionExecutionEvidence,
-    SessionExecutionPlan,
     require_decode_dominant_plan,
 )
-from cacheon.eval.oci_session_protocol import (
-    BatchEvidence,
-    PromptEvidence,
-)
 from cacheon.eval.scoring import (
+    ChargedExecutionRate,
     RawSpeedEvidenceError,
-    marginal_workload_digest,
-    project_marginal_speed,
-    recompute_charged_rate,
     relative_spread,
     score_speedup,
 )
-from tests.test_calibration import _manifest as calibration_manifest
 from tests.test_marginal_runtime import _case as runtime_case
 from tests.test_marginal_runtime import _prepared as prepared_runtime
 
@@ -59,173 +32,6 @@ def _digest(label: str) -> str:
 
 def _binding(label: str) -> str:
     return _digest(label)[:32]
-
-
-def _session(plan: SessionExecutionPlan, *, label: str, scale: float) -> SessionExecutionEvidence:
-    times = ((0.1, 0.3), (0.4, 0.6), (0.7, 0.9))
-    batches = []
-    for index, (started, completed) in enumerate(times):
-        prompts = tuple(
-            PromptEvidence(
-                tuple(range(plan.max_new_tokens)),
-                tuple(
-                    tuple((0.0 - rank, rank) for rank in range(plan.top_logprobs_num))
-                    for _ in range(plan.max_new_tokens)
-                ),
-            )
-            for _ in plan.prompt_batches[index]
-        )
-        tokens = len(prompts) * plan.max_new_tokens
-        batches.append(BatchExecutionEvidence(
-            index,
-            _binding(f"request:{label}:{index}"),
-            _binding(f"nonce:{label}:{index}"),
-            started * scale,
-            completed * scale,
-            tokens,
-            BatchEvidence(prompts),
-        ))
-    return SessionExecutionEvidence(
-        _binding("session:" + label),
-        plan.launch_digest,
-        plan.expected_preflight,
-        0.0,
-        tuple(batches),
-        plan.warmup_count,
-        plan.conditioning_count,
-        0.0,
-        0.6 * scale,
-        batches[0].token_numerator + batches[1].token_numerator,
-        1.0 * scale,
-    )
-
-
-class _TypedExecutor:
-    def __init__(self, root: Path, scales: tuple[float, ...], runtime_policy: str) -> None:
-        self.root = root
-        self.scales = scales
-        self.runtime_policy = runtime_policy
-        self.index = 0
-        (root / "publications").mkdir(parents=True)
-
-    def _publication(self, build_digest: str):
-        source = self.root / "native" / build_digest
-        source.mkdir(parents=True, exist_ok=True)
-        (source / "kernel.bin").write_bytes(b"typed test artifact")
-        return publish_native_artifact(
-            source, self.root / "publications", build_spec_digest=build_digest
-        )
-
-    def _devices(self, session: SessionExecutionEvidence, launch_id: str, sequence: int):
-        ids, config = (0,), _digest("device-configuration")
-        policy = self.device_policy
-        first_timed = session.batches[session.warmup_count].request_started_at
-        idle = DeviceStateSample(-1.5, (), (), True, "idle")
-        active_sample = DeviceStateSample(0.02, (), (), False, "active", True, "ok")
-        ready_sample = DeviceStateSample(0.03, (), (), False, "ready", True, "ok")
-        post_sample = DeviceStateSample(session.session_completed_at + 0.02, (), (), True, "idle")
-        return (
-            DeviceStateReceipt("cacheon.device-state-receipt.v1", sequence, launch_id, "pre", ids, config, policy, -2.0, -1.0, 1, (idle,)),
-            DeviceStateActiveReceipt("cacheon.device-state-active-receipt.v2", sequence + 1, launch_id, "final-warmup", ids, config, policy, 0.01, first_timed - 0.01, 1, 1, 1, (active_sample, ready_sample)),
-            DeviceStateReceipt("cacheon.device-state-receipt.v1", sequence + 2, launch_id, "post", ids, config, policy, session.session_completed_at + 0.01, session.session_completed_at + 0.03, 1, (post_sample,)),
-        )
-
-    def execute(self, launch, binding, mount, plan, *, deadline):
-        del deadline
-        index, self.index = self.index, self.index + 1
-        label = f"arm-{index}"
-        session = _session(plan, label=label, scale=self.scales[index])
-        publication = self._publication(binding.native_build_spec.digest)
-        prebuild = OCIPrebuildResult(
-            launch.digest, binding.native_build_spec.digest, publication, None, None
-        )
-        self.device_policy = launch.hardware.device_policy_digest
-        receipts = self._devices(session, "runtime-" + _binding(label), index * 3 + 1)
-        receipt = binding.runtime_preflight_receipt
-        return EngineExecutionEvidence(
-            "cacheon.oci-engine-execution.v1",
-            launch.digest,
-            runtime_identity_from_preflight(receipt),
-            receipt.sha256,
-            mount.digest,
-            self.runtime_policy,
-            prebuild,
-            publication.publication_digest,
-            _digest("argv:" + label),
-            (),
-            receipts,
-            session,
-        )
-
-
-def _lifecycle(tmp_path: Path, *, after_scale: float = 1.002, top_logprobs_num: int = 1):
-    case = runtime_case(tmp_path)
-    case.session = replace(
-        case.session,
-        prompt_batches=(("warmup",), ("timed-1",), ("timed-2",)),
-        max_new_tokens=10,
-        top_logprobs_num=top_logprobs_num,
-    )
-    prepared = prepared_runtime(case)
-    runtime_policy = _digest("runtime-resource-policy")
-    lifecycle = run_marginal_lifecycle(
-        prepared,
-        executor=_TypedExecutor(tmp_path / "executor", (1.0, 0.75, after_scale), runtime_policy),
-        model_mount=case.mount,
-        deadline=10_000.0,
-    )
-    context = CalibrationContext(
-        _digest("reference-manifest"),
-        case.launch.arena_digest,
-        case.launch.runtime_digest,
-        case.launch.base_engine_digest,
-        case.launch.model_revision_digest,
-        case.launch.model_manifest_digest,
-        case.launch.model_content_digest,
-        case.launch.hardware.digest,
-        marginal_workload_digest(prepared.baseline_session_plan),
-        _digest("verification-policy"),
-    )
-    calibration = replace(
-        calibration_manifest(), context=context, speed=SpeedCalibration("0.02", "2", "0.1")
-    )
-    return lifecycle, case.arm.selected_delta_digest, case, calibration, runtime_policy
-
-
-def _project(lifecycle, delta, case, calibration, runtime_policy):
-    return project_marginal_speed(
-        lifecycle,
-        selected_delta_digest=delta,
-        calibration=calibration,
-        expected_context=calibration.context,
-        model_mount=case.mount,
-        expected_launch_resource_policy_digest=case.launch.resource_policy_digest,
-        expected_runtime_resource_policy_digest=runtime_policy,
-        expected_device_policy_digest=case.launch.hardware.device_policy_digest,
-    )
-
-
-def _replace_candidate_session(
-    lifecycle: MarginalLifecycleEvidence, session: SessionExecutionEvidence
-) -> MarginalLifecycleEvidence:
-    row = lifecycle.candidates[0]
-    receipts = list(row.execution.device_receipts)
-    post = receipts[2]
-    if session.session_completed_at >= post.started_monotonic_s:
-        sample = replace(post.samples[0], monotonic_s=session.session_completed_at + 0.02)
-        receipts[2] = replace(
-            post,
-            started_monotonic_s=session.session_completed_at + 0.01,
-            completed_monotonic_s=session.session_completed_at + 0.03,
-            samples=(sample,),
-        )
-    execution = replace(row.execution, session=session, device_receipts=tuple(receipts))
-    return MarginalLifecycleEvidence(
-        lifecycle.prepared,
-        lifecycle.baseline_before,
-        (CandidateLifecycleEvidence(row.candidate, execution),),
-        lifecycle.baseline_after,
-    )
 
 
 def test_relative_spread_two_reads_is_range_over_mean():
@@ -367,439 +173,59 @@ def test_speed_policy_fails_closed(policy):
         score_speedup([100.0, 101.0], 110.0, **policy)
 
 
-def test_raw_projection_counts_first_timed_batch_once(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    projection = _project(lifecycle, delta, case, calibration, runtime_policy)
-    # Conditioning is ready->first timed request (0.4), not the stored interval
-    # ending after that request (0.6). Both timed rows are then charged once.
-    assert projection.baseline_before.conditioning_seconds == pytest.approx(0.4)
-    assert projection.baseline_before.timed_seconds == pytest.approx(0.5)
-    assert projection.baseline_before.charged_seconds == pytest.approx(0.9)
-    assert projection.baseline_before.conditioning_tokens == 10
-    assert projection.baseline_before.timed_tokens == 20
-    assert projection.baseline_before.charged_tokens == 30
-    assert projection.baseline_before.tokens_per_second == pytest.approx(30 / 0.9)
-    assert projection.candidate.tokens_per_second == pytest.approx(30 / 0.675)
-    assert projection.verdict.confident and projection.verdict.passed_speedup
-    assert len(projection.evidence_digest) == 64
-    assert projection.evidence_digest == _project(
-        lifecycle, delta, case, calibration, runtime_policy
-    ).evidence_digest
-
-
-def test_projection_thresholds_come_only_from_frozen_calibration(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    strict = replace(calibration, speed=SpeedCalibration("0.5", "2", "0.1"))
-    projection = _project(lifecycle, delta, case, strict, runtime_policy)
-    assert projection.verdict.required == 1.5
-    assert not projection.verdict.passed_speedup
-
-
-def test_projection_rejects_stale_context_and_provisional_policy(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    stale = replace(
-        calibration,
-        context=replace(calibration.context, workload_digest=_digest("stale-workload")),
+def test_speed_witness_shape_decides_policy_and_recomputes():
+    # The settlement byte contract: 3 rates = the historical B/C/B-prime shape,
+    # 5 rates = repeat reads in run order, anything else refuses; the evidence
+    # digest must recompute from the rates or construction fails closed.
+    from cacheon.eval.qualification_runner import (
+        QualificationRunnerError,
+        SpeedEvidencePolicy,
+        SpeedWitness,
     )
-    with pytest.raises(RawSpeedEvidenceError, match="context differs"):
-        _project(lifecycle, delta, case, stale, runtime_policy)
-    with pytest.raises(RawSpeedEvidenceError, match="not frozen"):
-        _project(
-            lifecycle,
-            delta,
-            case,
-            replace(calibration, status="provisional"),
-            runtime_policy,
+    from cacheon.eval.scoring import _projection_digest
+
+    def rate(label: str) -> ChargedExecutionRate:
+        return ChargedExecutionRate(
+            _digest("launch:" + label),
+            _binding("session:" + label),
+            10, 20, 30, 1.0, 2.0, 3.0, 10.0,
         )
 
-
-@pytest.mark.parametrize("field", ("runtime_identity", "prebuild", "device_receipts"))
-def test_projection_rejects_untyped_or_zero_device_execution(tmp_path, field):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    replacement = () if field == "device_receipts" else SimpleNamespace()
-    forged_before = replace(lifecycle.baseline_before, **{field: replacement})
-    forged = MarginalLifecycleEvidence(
-        lifecycle.prepared,
-        forged_before,
-        lifecycle.candidates,
-        lifecycle.baseline_after,
-    )
-    with pytest.raises(RawSpeedEvidenceError):
-        _project(forged, delta, case, calibration, runtime_policy)
-
-
-def test_projection_binds_launch_and_runtime_resource_policies_separately(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    assert runtime_policy != case.launch.resource_policy_digest
-    assert _project(lifecycle, delta, case, calibration, runtime_policy).verdict.confident
-    with pytest.raises(RawSpeedEvidenceError, match="resource policy"):
-        _project(lifecycle, delta, case, calibration, _digest("other-runtime-policy"))
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    (("conditioning_token_numerator", 999), ("first_timed_completed_at", 0.7)),
-)
-def test_raw_projection_rejects_forged_session_summaries(tmp_path, field, value):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    session = replace(lifecycle.candidates[0].execution.session, **{field: value})
-    forged = _replace_candidate_session(lifecycle, session)
-    with pytest.raises(RawSpeedEvidenceError, match="conditioning"):
-        _project(forged, delta, case, calibration, runtime_policy)
-
-
-def test_raw_projection_uses_bookend_drift_for_no_decision(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(
-        tmp_path, after_scale=1.30
-    )
-    projection = _project(lifecycle, delta, case, calibration, runtime_policy)
-    assert not projection.verdict.confident
-    assert not projection.verdict.passed_speedup
-    assert "NO-DECISION" in projection.verdict.detail
-
-
-def test_raw_projection_requires_exact_candidate_selection_and_binding(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    with pytest.raises(RawSpeedEvidenceError, match="absent or ambiguous"):
-        _project(lifecycle, _digest("wrong"), case, calibration, runtime_policy)
-
-    object.__setattr__(
-        lifecycle.candidates[0].execution,
-        "launch_digest",
-        lifecycle.baseline_before.launch_digest,
-    )
-    with pytest.raises(RawSpeedEvidenceError, match="executor evidence|launch"):
-        _project(lifecycle, delta, case, calibration, runtime_policy)
-
-
-@pytest.mark.parametrize(
-    ("started", "completed"),
-    ((0.4, 0.4), (0.5, 0.4), (float("nan"), 0.6)),
-)
-def test_raw_projection_rejects_zero_negative_or_nonfinite_batch_clocks(
-    tmp_path, started, completed
-):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    session = lifecycle.candidates[0].execution.session
-    rows = list(session.batches)
-    rows[1] = replace(
-        rows[1], request_started_at=started, response_completed_at=completed
-    )
-    forged = _replace_candidate_session(lifecycle, replace(session, batches=tuple(rows)))
-    with pytest.raises(RawSpeedEvidenceError, match="clock|finite"):
-        _project(forged, delta, case, calibration, runtime_policy)
-
-
-def test_raw_projection_rejects_token_mutation(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    session = lifecycle.candidates[0].execution.session
-    rows = list(session.batches)
-    rows[2] = replace(rows[2], token_numerator=9)
-    forged = _replace_candidate_session(lifecycle, replace(session, batches=tuple(rows)))
-    with pytest.raises(RawSpeedEvidenceError, match="token evidence"):
-        _project(forged, delta, case, calibration, runtime_policy)
-
-
-def test_raw_projection_rejects_redistributed_prompt_tokens(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    session = lifecycle.candidates[0].execution.session
-    rows = list(session.batches)
-    row = rows[2]
-    # Preserve the aggregate count but violate the one-prompt workload shape.
-    rows[2] = replace(
-        row,
-        evidence=replace(
-            row.evidence,
-            prompts=(PromptEvidence(tuple(range(9)), ()), PromptEvidence((9,), ())),
-        ),
-    )
-    forged = _replace_candidate_session(lifecycle, replace(session, batches=tuple(rows)))
-    with pytest.raises(RawSpeedEvidenceError, match="token evidence"):
-        _project(forged, delta, case, calibration, runtime_policy)
-
-
-def test_raw_projection_charges_inter_request_cooldown(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    session = lifecycle.candidates[0].execution.session
-    rows = list(session.batches)
-    # Move the final timed request later without changing either request's own
-    # elapsed duration.  A sum-of-request-times projection would miss this gap.
-    rows[2] = replace(rows[2], request_started_at=1.7, response_completed_at=1.9)
-    delayed = _replace_candidate_session(
-        lifecycle,
-        replace(session, batches=tuple(rows), session_completed_at=2.0),
-    )
-    projection = _project(delayed, delta, case, calibration, runtime_policy)
-    assert projection.candidate.timed_seconds == pytest.approx(1.9 - 0.3)
-    assert projection.candidate.tokens_per_second < projection.baseline_before.tokens_per_second
-
-
-def test_projection_is_immutable_and_raw_mutation_is_revalidated(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    projection = _project(lifecycle, delta, case, calibration, runtime_policy)
-    original_rate = projection.candidate.tokens_per_second
-    with pytest.raises(FrozenInstanceError):
-        projection.candidate.tokens_per_second = 999.0  # type: ignore[misc]
-
-    object.__setattr__(
-        lifecycle.candidates[0].execution.session.batches[1],
-        "response_completed_at",
-        0.4,
-    )
-    assert projection.candidate.tokens_per_second == original_rate
-    with pytest.raises(RawSpeedEvidenceError, match="clock|conditioning"):
-        _project(lifecycle, delta, case, calibration, runtime_policy)
-
-
-def test_direct_session_projection_rejects_relabel_and_fake_headline(tmp_path):
-    lifecycle, _delta, _case, _calibration, _runtime_policy = _lifecycle(tmp_path)
-    session = lifecycle.baseline_before.session
-    plan = lifecycle.prepared.baseline_session_plan
-    assert recompute_charged_rate(session, plan).tokens_per_second == pytest.approx(30 / 0.9)
-    with pytest.raises(RawSpeedEvidenceError, match="identity"):
-        recompute_charged_rate(replace(session, launch_digest=_digest("other")), plan)
-    with pytest.raises(RawSpeedEvidenceError, match="exact typed"):
-        recompute_charged_rate(SimpleNamespace(tok_per_s=10**30), plan)
-
-
-def test_projection_rejects_relabelled_model_mount_identity(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    wrong = replace(case.mount, arena_digest=_digest("wrong-arena"))
-    relabel = lambda execution: replace(  # noqa: E731 - compact fixture transform
-        execution, arena_model_receipt_digest=wrong.digest
-    )
-    lifecycle = replace(
-        lifecycle,
-        baseline_before=relabel(lifecycle.baseline_before),
-        candidates=tuple(
-            replace(row, execution=relabel(row.execution)) for row in lifecycle.candidates
-        ),
-        baseline_after=relabel(lifecycle.baseline_after),
-    )
-    case.mount = wrong
-    with pytest.raises(RawSpeedEvidenceError, match="model/resource/device identity"):
-        _project(lifecycle, delta, case, calibration, runtime_policy)
-
-
-def test_projection_regrades_device_samples_and_cross_arm_order(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    receipts = list(lifecycle.baseline_before.device_receipts)
-    receipts[0] = replace(
-        receipts[0], samples=(replace(receipts[0].samples[-1], idle=False),)
-    )
-    bad_samples = replace(
-        lifecycle,
-        baseline_before=replace(lifecycle.baseline_before, device_receipts=tuple(receipts)),
-    )
-    with pytest.raises(RawSpeedEvidenceError, match="sample facts"):
-        _project(bad_samples, delta, case, calibration, runtime_policy)
-
-    receipts = tuple(
-        replace(receipt, sequence=10 + index)
-        for index, receipt in enumerate(lifecycle.baseline_before.device_receipts)
-    )
-    reordered = replace(
-        lifecycle,
-        baseline_before=replace(lifecycle.baseline_before, device_receipts=receipts),
-    )
-    with pytest.raises(RawSpeedEvidenceError, match="sequence was replayed"):
-        _project(reordered, delta, case, calibration, runtime_policy)
-
-
-def test_projection_rejects_overlapping_active_and_post_release_samples(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    receipts = list(lifecycle.baseline_before.device_receipts)
-    active = receipts[1]
-    receipts[1] = replace(
-        active,
-        release_sample_index=0,
-        samples=(active.samples[0],),
-    )
-    lifecycle = replace(
-        lifecycle,
-        baseline_before=replace(
-            lifecycle.baseline_before,
-            device_receipts=tuple(receipts),
-        ),
-    )
-    with pytest.raises(RawSpeedEvidenceError, match="sample facts"):
-        _project(lifecycle, delta, case, calibration, runtime_policy)
-
-
-def test_projection_accepts_ready_miss_before_authoritative_passing_tail(tmp_path):
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    receipts = list(lifecycle.baseline_before.device_receipts)
-    active = receipts[1]
-    intermediate_miss = replace(
-        active.samples[-1],
-        monotonic_s=(
-            active.samples[-2].monotonic_s + active.samples[-1].monotonic_s
-        ) / 2,
-        active_envelope_passed=False,
-        active_envelope_reason="ready envelope not reached yet",
-    )
-    receipts[1] = replace(
-        active,
-        samples=(*active.samples[:-1], intermediate_miss, active.samples[-1]),
-    )
-    with_miss = replace(
-        lifecycle,
-        baseline_before=replace(
-            lifecycle.baseline_before,
-            device_receipts=tuple(receipts),
-        ),
-    )
-
-    assert _project(with_miss, delta, case, calibration, runtime_policy)
-
-    failed_tail = list(receipts)
-    failed_tail[1] = replace(
-        receipts[1],
-        samples=(
-            *receipts[1].samples[:-1],
-            replace(
-                receipts[1].samples[-1],
-                active_envelope_passed=False,
-                active_envelope_reason="ready tail failed",
-            ),
-        ),
-    )
-    with_failed_tail = replace(
-        lifecycle,
-        baseline_before=replace(
-            lifecycle.baseline_before,
-            device_receipts=tuple(failed_tail),
-        ),
-    )
-    with pytest.raises(RawSpeedEvidenceError, match="sample facts"):
-        _project(with_failed_tail, delta, case, calibration, runtime_policy)
-
-
-def _lifecycle_repeat(tmp_path: Path):
-    # B, C, B', C', B'' — scales make both candidate reads ~1.32x the baselines
-    # with tiny within-arm spread, so the repeat-read verdict is a confident PASS.
-    case = runtime_case(tmp_path)
-    case.session = replace(
-        case.session,
-        prompt_batches=(("warmup",), ("timed-1",), ("timed-2",)),
-        max_new_tokens=10,
-        top_logprobs_num=1,
-    )
-    prepared = prepared_runtime(case)
-    runtime_policy = _digest("runtime-resource-policy")
-    lifecycle = run_marginal_lifecycle(
-        prepared,
-        executor=_TypedExecutor(
-            tmp_path / "executor", (1.0, 0.75, 1.002, 0.76, 0.998), runtime_policy
-        ),
-        model_mount=case.mount,
-        deadline=10_000.0,
-        candidate_reads=2,
-    )
-    context = CalibrationContext(
-        _digest("reference-manifest"),
-        case.launch.arena_digest,
-        case.launch.runtime_digest,
-        case.launch.base_engine_digest,
-        case.launch.model_revision_digest,
-        case.launch.model_manifest_digest,
-        case.launch.model_content_digest,
-        case.launch.hardware.digest,
-        marginal_workload_digest(prepared.baseline_session_plan),
-        _digest("verification-policy"),
-    )
-    calibration = replace(
-        calibration_manifest(), context=context, speed=SpeedCalibration("0.02", "2", "0.1")
-    )
-    return lifecycle, case.arm.selected_delta_digest, case, calibration, runtime_policy
-
-
-def test_repeat_read_lifecycle_projects_and_regrades_five_rates(tmp_path):
-    from cacheon.eval.qualification_runner import SpeedWitness
-
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle_repeat(tmp_path)
-    assert len(lifecycle.candidates_repeat) == 1
-    assert lifecycle.baseline_third is not None
-    assert lifecycle.final_baseline is lifecycle.baseline_third
-
-    projection = _project(lifecycle, delta, case, calibration, runtime_policy)
-    assert projection.candidate_repeat is not None
-    assert projection.baseline_third is not None
-    assert projection.verdict.n_baselines == 3
-    assert projection.verdict.n_candidates == 2
-    assert projection.verdict.confident
-    assert projection.verdict.passed_speedup
-    assert projection.verdict.speedup > 1.25
-
-    witness = SpeedWitness.from_projection(projection, runtime_policy)
-    assert len(witness.rates) == 5
-    # run order: B, C, B', C', B''
-    assert witness.rates[0] == projection.baseline_before
-    assert witness.rates[1] == projection.candidate
-    assert witness.rates[2] == projection.baseline_after
-    assert witness.rates[3] == projection.candidate_repeat
-    assert witness.rates[4] == projection.baseline_third
-    round_tripped = SpeedWitness.from_dict(witness.to_dict())
-    assert round_tripped == witness
-    grade, speedup = round_tripped.regrade(calibration, calibration.context)
-    assert grade.name == "PASS"
-    assert speedup == format(projection.verdict.speedup, ".17g")
-
-
-def test_repeat_reads_require_the_third_baseline_bookend(tmp_path):
-    lifecycle, *_ = _lifecycle_repeat(tmp_path)
-    with pytest.raises(MarginalRuntimeError, match="third baseline bookend"):
-        MarginalLifecycleEvidence(
-            lifecycle.prepared,
-            lifecycle.baseline_before,
-            lifecycle.candidates,
-            lifecycle.baseline_after,
-            lifecycle.candidates_repeat,
-            None,
+    heads = tuple(
+        _digest("witness:" + name)
+        for name in (
+            "delta", "candidate-launch", "calibration",
+            "context", "workload", "runtime-policy",
         )
-    with pytest.raises(MarginalRuntimeError, match="third baseline bookend"):
-        MarginalLifecycleEvidence(
-            lifecycle.prepared,
-            lifecycle.baseline_before,
-            lifecycle.candidates,
-            lifecycle.baseline_after,
-            (),
-            lifecycle.baseline_third,
-        )
-
-
-def test_candidate_reads_policy_is_exact(tmp_path):
-    case = runtime_case(tmp_path)
-    case.session = replace(
-        case.session,
-        prompt_batches=(("warmup",), ("timed-1",), ("timed-2",)),
-        max_new_tokens=10,
-        top_logprobs_num=1,
     )
-    prepared = prepared_runtime(case)
-    executor = _TypedExecutor(tmp_path / "executor", (1.0,), _digest("runtime-resource-policy"))
-    for reads in (0, 3, True, 2.0):
-        with pytest.raises(MarginalRuntimeError, match="candidate_reads"):
-            run_marginal_lifecycle(
-                prepared,
-                executor=executor,
-                model_mount=case.mount,
-                deadline=10_000.0,
-                candidate_reads=reads,
-            )
-
-
-def test_legacy_three_leg_witness_shape_is_unchanged(tmp_path):
-    from cacheon.eval.qualification_runner import SpeedWitness
-
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
-    projection = _project(lifecycle, delta, case, calibration, runtime_policy)
-    assert projection.candidate_repeat is None
-    assert projection.baseline_third is None
-    assert projection.verdict.n_candidates == 1
-    witness = SpeedWitness.from_projection(projection, runtime_policy)
-    assert len(witness.rates) == 3
+    legacy_rates = tuple(rate(role) for role in ("B", "C", "B-prime"))
+    witness = SpeedWitness(
+        *heads, _projection_digest(*heads, legacy_rates), legacy_rates
+    )
+    assert witness.policy == SpeedEvidencePolicy.legacy()
     assert SpeedWitness.from_dict(witness.to_dict()) == witness
+
+    repeat_rates = legacy_rates + tuple(
+        rate(role) for role in ("C-prime", "B-double-prime")
+    )
+    repeat = SpeedWitness(
+        *heads, _projection_digest(*heads, repeat_rates), repeat_rates
+    )
+    assert repeat.policy == SpeedEvidencePolicy.repeat()
+    assert SpeedWitness.from_dict(repeat.to_dict()) == repeat
+
+    with pytest.raises(QualificationRunnerError, match="B/C/B-prime"):
+        SpeedWitness(
+            *heads, _projection_digest(*heads, legacy_rates[:2]), legacy_rates[:2]
+        )
+    with pytest.raises(QualificationRunnerError, match="does not recompute"):
+        SpeedWitness(*heads, _digest("forged evidence"), legacy_rates)
+    # A 3-rate witness can never be regraded under the repeat authority (and
+    # vice versa): the policy check refuses before any calibration is read.
+    with pytest.raises(QualificationRunnerError, match="policy differs"):
+        witness.regrade(None, None, expected_policy=SpeedEvidencePolicy.repeat())
+    with pytest.raises(QualificationRunnerError, match="policy differs"):
+        repeat.regrade(None, None, expected_policy=SpeedEvidencePolicy.legacy())
 
 
 def test_decode_dominant_plan_gate(tmp_path):

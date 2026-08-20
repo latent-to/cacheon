@@ -22,7 +22,6 @@ from cacheon.eval.device_state import (
     DeviceStateSample,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
-from cacheon.eval.marginal_runtime import run_marginal_lifecycle
 from cacheon.eval.native_artifact import NativeArtifactPublication
 from cacheon.eval.oci_backend import (
     EngineExecutionEvidence,
@@ -497,11 +496,14 @@ def _pristine_reference_execution(
 def test_quality_record_round_trips_real_evidence(tmp_path: Path) -> None:
     case = _case(tmp_path / "runtime")
     prepared = _prepared(case)
-    executor = _TypedExecutor(tmp_path / "artifacts")
-    lifecycle = run_marginal_lifecycle(
-        prepared, executor=executor, model_mount=case.mount, deadline=999.0
+    baseline_execution = _TypedExecutor(tmp_path / "artifacts").execute(
+        prepared.baseline_launch,
+        case.baseline_binding.launch_binding,
+        case.mount,
+        prepared.baseline_session_plan,
+        deadline=999.0,
     )
-    reference_execution = _pristine_reference_execution(lifecycle.baseline_before)
+    reference_execution = _pristine_reference_execution(baseline_execution)
     entropy = SelectionEntropyReceipt(
         _d("entropy-source"), _d("commitment"), _d("entropy"), _d("entropy-authority")
     )
@@ -633,11 +635,16 @@ def _fresh_quiescence(monkeypatch):
     return lambda: state.update(count=0)
 
 
-def _run(harness: _Harness, continuation: _MemoryContinuation):
+def _run(
+    harness: _Harness,
+    continuation: _MemoryContinuation,
+    resident_baseline_executor=None,
+):
     ids = iter(f"{index + 1:032x}" for index in range(64))
     return runner.run_causal_qualification(
         harness.value,
         executor=harness.executor,
+        resident_baseline_executor=resident_baseline_executor,
         entropy_provider=lambda _commitment, _teardown: harness.entropy,
         hidden_judge=harness.hidden_judge,
         deadline=100.0,
@@ -877,16 +884,16 @@ def test_continuation_identity_mismatch_holds_before_any_execution(
     assert harness.reference_calls == 0
 
 
-def test_nonresident_continuation_is_refused_before_any_execution(
-    monkeypatch,
-) -> None:
+def test_nonresident_qualification_is_refused_at_entry(monkeypatch) -> None:
+    # D8: the marginal (nonresident) execution path is retired; a non-v3 speed
+    # policy is refused before prevalidation, execution, or any durable write.
     harness = _pass_harness(monkeypatch)
     with pytest.raises(
-        QualificationContinuationError,
-        match="durable continuation requires a resident speed policy",
+        runner.QualificationRunnerError,
+        match="causal qualification requires the resident speed policy",
     ):
         _run(harness, _MemoryContinuation())
-    assert "lifecycle" not in harness.calls
+    assert harness.calls == []
     assert harness.reference_calls == 0
 
 
@@ -897,11 +904,17 @@ def test_untyped_continuation_is_rejected_before_any_execution(monkeypatch) -> N
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
     with pytest.raises(
         runner.QualificationRunnerError, match="not exactly typed"
     ):
-        _run(harness, _MemoryContinuation())
-    assert "lifecycle" not in harness.calls
+        _run(harness, _MemoryContinuation(), baseline)
+    assert "resident.speed" not in harness.calls
 
 
 def test_quality_record_without_speed_record_holds(

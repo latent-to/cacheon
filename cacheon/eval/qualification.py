@@ -1071,7 +1071,6 @@ def _validated_topk_position(position: object) -> list[list[object]]:
 
 def _trajectory_rows(lifecycle: object):
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
-    from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
     from cacheon.eval.oci_session_protocol import PromptEvidence
     from cacheon.eval.resident_pair_quality_lifecycle import (
         ResidentPairMarginalLifecycleEvidence,
@@ -1079,24 +1078,14 @@ def _trajectory_rows(lifecycle: object):
     from cacheon.eval.scoring import marginal_workload_digest
 
     if type(lifecycle) not in {
-        MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
         ResidentPairMarginalLifecycleEvidence,
     }:
         raise QualificationError("trajectory lifecycle is not typed")
     plan = lifecycle.prepared.baseline_session_plan
-    if type(lifecycle) in {
-        ResidentMarginalLifecycleEvidence,
-        ResidentPairMarginalLifecycleEvidence,
-    }:
-        batch_sets = tuple(
-            lifecycle.role_batches(role) for role in lifecycle.role_names
-        )
-    else:
-        executions = (lifecycle.baseline_before,) + tuple(
-            row.execution for row in lifecycle.candidates
-        ) + (lifecycle.baseline_after,)
-        batch_sets = tuple(row.session.batches for row in executions)
+    batch_sets = tuple(
+        lifecycle.role_batches(role) for role in lifecycle.role_names
+    )
     workload = marginal_workload_digest(plan)
     rows = []
     for batch_index, prompts in enumerate(plan.prompt_batches):
@@ -1145,42 +1134,21 @@ def _quality_leg_lifecycle(lifecycle: object, candidate_read: int):
     """
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
-    from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
     from cacheon.eval.resident_pair_quality_lifecycle import (
         ResidentPairMarginalLifecycleEvidence,
     )
 
     if type(lifecycle) not in {
-        MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
         ResidentPairMarginalLifecycleEvidence,
     }:
         raise QualificationError("quality lifecycle is not typed")
     if type(candidate_read) is not int or candidate_read not in (1, 2):
         raise QualificationError("candidate read must be exactly 1 or 2")
-    if type(lifecycle) in {
-        ResidentMarginalLifecycleEvidence,
-        ResidentPairMarginalLifecycleEvidence,
-    }:
-        try:
-            return lifecycle.quality_leg(candidate_read)
-        except (TypeError, ValueError, RuntimeError) as exc:
-            raise QualificationError(str(exc)) from None
-    if candidate_read == 1:
-        return MarginalLifecycleEvidence(
-            lifecycle.prepared,
-            lifecycle.baseline_before,
-            lifecycle.candidates,
-            lifecycle.baseline_after,
-        )
-    if not lifecycle.candidates_repeat or lifecycle.baseline_third is None:
-        raise QualificationError("repeat quality requested without repeat lifecycle evidence")
-    return MarginalLifecycleEvidence(
-        lifecycle.prepared,
-        lifecycle.baseline_after,
-        lifecycle.candidates_repeat,
-        lifecycle.baseline_third,
-    )
+    try:
+        return lifecycle.quality_leg(candidate_read)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise QualificationError(str(exc)) from None
 
 
 def lifecycle_prompt_digests(lifecycle: object) -> tuple[str, ...]:
@@ -1221,13 +1189,11 @@ def candidate_lifecycle_digest(
     """Bind the exact retained B/C/B-prime execution used by one qualifier."""
 
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
-    from cacheon.eval.marginal_runtime import MarginalLifecycleEvidence
     from cacheon.eval.resident_pair_quality_lifecycle import (
         ResidentPairMarginalLifecycleEvidence,
     )
 
     if type(lifecycle) not in {
-        MarginalLifecycleEvidence,
         ResidentMarginalLifecycleEvidence,
         ResidentPairMarginalLifecycleEvidence,
     }:
@@ -1260,64 +1226,13 @@ def candidate_lifecycle_digest(
                 "source_digest": lifecycle.source.digest,
             },
         )
-    if type(lifecycle) is ResidentMarginalLifecycleEvidence:
-        return canonical_digest(
-            "cacheon.qualification.candidate-lifecycle.resident-v1",
-            {
-                "arm_digest": candidate.arm.digest,
-                "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
-                "crossover_evidence_digest": lifecycle.crossover.digest,
-                "crossover_plan_digest": lifecycle.plan.digest,
-                "selected_delta_digest": _digest(
-                    selected_delta_digest, "selected delta"
-                ),
-                "source_digest": lifecycle.source.digest,
-            },
-        )
-    executions = (
-        lifecycle.baseline_before,
-        candidate.execution,
-        lifecycle.baseline_after,
-    )
-    if lifecycle.candidates_repeat:
-        repeats = tuple(
-            row
-            for row in lifecycle.candidates_repeat
-            if row.arm.selected_delta_digest == selected_delta_digest
-        )
-        if len(repeats) != 1 or lifecycle.baseline_third is None:
-            raise QualificationError("repeat candidate lifecycle is absent or ambiguous")
-        executions += (repeats[0].execution, lifecycle.baseline_third)
-
-    def execution_row(execution):
-        session = execution.session
-        return {
-            "device": [
-                [row.launch_id, row.sequence] for row in execution.device_receipts
-            ],
-            "launch_digest": execution.launch_digest,
-            "native_publication_digest": execution.native_publication_digest,
-            "requests": [
-                [
-                    row.request_id,
-                    row.nonce,
-                    row.token_numerator,
-                    format(row.request_started_at, ".17g"),
-                    format(row.response_completed_at, ".17g"),
-                ]
-                for row in session.batches
-            ],
-            "resource_policy_digest": execution.resource_policy_digest,
-            "runtime_argv_sha256": execution.runtime_argv_sha256,
-            "session_id": session.session_id,
-        }
-
     return canonical_digest(
-        "cacheon.qualification.candidate-lifecycle",
+        "cacheon.qualification.candidate-lifecycle.resident-v1",
         {
             "arm_digest": candidate.arm.digest,
             "cohort_trajectory_digest": cohort_trajectory_digest(lifecycle),
-            "executions": [execution_row(row) for row in executions],
+            "crossover_evidence_digest": lifecycle.crossover.digest,
+            "crossover_plan_digest": lifecycle.plan.digest,
             "selected_delta_digest": _digest(
                 selected_delta_digest, "selected delta"
             ),

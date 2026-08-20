@@ -8,7 +8,6 @@ import subprocess
 import sys
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -29,24 +28,18 @@ from cacheon.eval.engine_launch import (
     native_toolchain_digest,
 )
 from cacheon.eval.marginal_runtime import (
-    CandidateArmWorkerError,
     MarginalRuntimeError,
     MaterializedArmBinding,
-    prepare_cohort_runtime,
     prepare_marginal_runtime,
-    run_marginal_lifecycle,
 )
 from cacheon.eval.native_compile_profile import NativeCuTeCompileProfile
 from cacheon.eval.oci_backend import (
-    EngineExecutionEvidence,
     TrustedArenaModelMountReceipt,
     expected_runtime_preflight,
     runtime_identity_from_preflight,
 )
 from cacheon.eval.oci_outer_session import (
     BatchExecutionEvidence,
-    OuterSessionWorkerError,
-    SessionExecutionEvidence,
     SessionExecutionPlan,
 )
 from cacheon.eval.oci_session_protocol import (
@@ -60,7 +53,7 @@ from cacheon.stack_manifest import (
     EvaluationStackManifest,
     ProposalContributionRef,
 )
-from cacheon.stack_plan import CohortPlan, MarginalArmPlan, plan_candidate_stack, plan_marginal_arm
+from cacheon.stack_plan import MarginalArmPlan, plan_candidate_stack, plan_marginal_arm
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 
 
@@ -426,78 +419,7 @@ def _batch_evidence(
     )
 
 
-def _execution(
-    launch: EngineLaunchSpec,
-    binding: TrustedLaunchBinding,
-    mount: TrustedArenaModelMountReceipt,
-    plan: SessionExecutionPlan,
-    *,
-    label: str,
-) -> EngineExecutionEvidence:
-    batches = tuple(
-        _batch_evidence(plan, index, label=label)
-        for index in range(len(plan.prompt_batches))
-    )
-    session = SessionExecutionEvidence(
-        _binding_id("session:" + label),
-        launch.digest,
-        plan.expected_preflight,
-        0.5,
-        batches,
-        plan.warmup_count,
-        plan.conditioning_count,
-        0.5,
-        3.0,
-        sum(row.token_numerator for row in batches[: plan.warmup_count + 1]),
-        4.0,
-    )
-    device_id = "runtime-" + _binding_id("device:" + label)
-    devices = tuple(SimpleNamespace(launch_id=device_id) for _ in range(3))
-    native = binding.native_build_spec
-    publication = SimpleNamespace(
-        build_spec_digest=native.digest,
-        publication_digest=_digest("publication:" + label),
-    )
-    prebuild = SimpleNamespace(
-        launch_digest=launch.digest,
-        build_spec_digest=native.digest,
-        publication=publication,
-    )
-    receipt = binding.runtime_preflight_receipt
-    return EngineExecutionEvidence(
-        "cacheon.oci-engine-execution.v1",
-        launch.digest,
-        runtime_identity_from_preflight(receipt),
-        receipt.sha256,
-        mount.digest,
-        launch.resource_policy_digest,
-        prebuild,
-        publication.publication_digest,
-        _digest("argv:" + label),
-        (),
-        devices,
-        session,
-    )
-
-
-class FakeExecutor:
-    def __init__(self, *, fail_at: int | None = None, mutate=None) -> None:
-        self.calls: list[tuple[object, ...]] = []
-        self.fail_at = fail_at
-        self.mutate = mutate
-
-    def execute(self, launch, binding, mount, plan, *, deadline):
-        index = len(self.calls)
-        self.calls.append((launch, binding, mount, plan, deadline))
-        if self.fail_at == index:
-            raise RuntimeError("injected candidate failure")
-        result = _execution(
-            launch, binding, mount, plan, label=f"call-{index}"
-        )
-        return result if self.mutate is None else self.mutate(index, result)
-
-
-def test_singleton_derives_exact_launch_session_and_lifecycle(tmp_path: Path) -> None:
+def test_singleton_derives_exact_launch_and_session_plan(tmp_path: Path) -> None:
     case = _case(tmp_path)
     prepared = _prepared(case)
     candidate = prepared.candidates[0]
@@ -523,20 +445,6 @@ def test_singleton_derives_exact_launch_session_and_lifecycle(tmp_path: Path) ->
     encoded = candidate.launch.canonical_bytes.decode()
     assert all(word not in encoded for word in ("baseline", "challenger", "target_id"))
 
-    executor = FakeExecutor()
-    result = run_marginal_lifecycle(
-        prepared, executor=executor, model_mount=case.mount, deadline=999.0
-    )
-    assert [call[0].digest for call in executor.calls] == [
-        case.launch.digest,
-        candidate.launch.digest,
-        case.launch.digest,
-    ]
-    assert all(call[2] is case.mount and call[4] == 999.0 for call in executor.calls)
-    assert result.source is case.arm
-    assert result.candidates[0].arm is case.arm
-    assert result.baseline_before.session.session_id != result.baseline_after.session.session_id
-
 
 @pytest.mark.parametrize("fixture", (MSA, FUSED), ids=("msa-singleton", "fused-atomic"))
 def test_singleton_and_atomic_fixtures_bind_without_runtime_import(
@@ -548,81 +456,6 @@ def test_singleton_and_atomic_fixtures_bind_without_runtime_import(
         fixture, case.catalog
     ).target_id
     assert prepared.candidates[0].launch.tree_digest == case.candidate_tree.tree_digest
-
-
-def test_cohort_uses_entropy_order_and_exact_binding_coverage(tmp_path: Path) -> None:
-    first = _case(tmp_path / "first", SILU, suffix="-silu")
-    msa_ref = _ref(MSA, first.catalog)
-    msa_stack = plan_candidate_stack(
-        first.incumbent,
-        msa_ref,
-        catalog=first.catalog,
-        expected_context=first.context,
-    )
-    msa_tree = materialize_engine_tree(
-        msa_stack,
-        context=first.context,
-        catalog=first.catalog,
-        resolver=_resolver((msa_ref, MSA)),
-        destination=tmp_path / "msa-tree",
-    )
-    msa_arm = plan_marginal_arm(
-        first.incumbent,
-        msa_ref,
-        catalog=first.catalog,
-        incumbent_tree_digest=first.baseline_tree.tree_digest,
-        candidate_tree_digest=msa_tree.tree_digest,
-        expected_context=first.context,
-    )
-    msa_binding = _local_binding(
-        msa_tree,
-        _native(msa_tree.tree_digest, first.preflight),
-        first.launch,
-        first.preflight,
-        physical_id="0",
-    )
-    cohort = CohortPlan.seal(
-        (first.arm, msa_arm),
-        entropy_digest=_digest("entropy"),
-        authority_order=(msa_ref, first.arm.transition.replacement),
-        catalog=first.catalog,
-        expected_context=first.context,
-    )
-    bindings = {
-        msa_arm.selected_delta_digest: msa_binding,
-        first.arm.selected_delta_digest: first.candidate_binding,
-    }
-    prepared = prepare_cohort_runtime(
-        cohort,
-        catalog=first.catalog,
-        expected_context=first.context,
-        incumbent_launch=first.launch,
-        incumbent_binding=first.baseline_binding,
-        candidate_bindings=dict(reversed(tuple(bindings.items()))),
-        baseline_session_plan=first.session,
-    )
-    assert tuple(row.arm for row in prepared.candidates) == cohort.execution_arms
-    executor = FakeExecutor()
-    result = run_marginal_lifecycle(
-        prepared, executor=executor, model_mount=first.mount, deadline=500.0
-    )
-    assert tuple(row.arm for row in result.candidates) == cohort.execution_arms
-    assert len(executor.calls) == 4
-
-    for changed in ({first.arm.selected_delta_digest: first.candidate_binding}, {
-        **bindings,
-        _digest("extra"): first.candidate_binding,
-    }):
-        with pytest.raises(MarginalRuntimeError, match="cover every selected delta"):
-            prepare_cohort_runtime(
-                cohort,
-                catalog=first.catalog,
-                expected_context=first.context,
-                incumbent_launch=first.launch,
-                incumbent_binding=first.baseline_binding,
-                candidate_bindings=changed,
-                baseline_session_plan=first.session,
-            )
 
 
 def test_prepare_rejects_swaps_environment_context_and_workload(tmp_path: Path) -> None:
@@ -785,190 +618,6 @@ def test_prepare_never_imports_candidate_top_level(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
-@pytest.mark.parametrize(
-    "mutation,message",
-    (
-        (lambda i, row: object() if i == 1 else row, "wrong evidence type"),
-        (
-            lambda i, row: replace(row, launch_digest=_digest("wrong")) if i == 1 else row,
-            "launch/build/model identity",
-        ),
-        (
-            lambda i, row: replace(
-                row, resource_policy_digest=_digest("wrong resource")
-            )
-            if i == 1
-            else row,
-            "changed runtime resource policy",
-        ),
-        (
-            lambda i, row: replace(
-                row,
-                session=replace(
-                    row.session,
-                    launch_digest=_digest("wrong session launch"),
-                ),
-            )
-            if i == 1
-            else row,
-            "session evidence",
-        ),
-    ),
-)
-def test_malformed_evidence_fails_before_next_arm(
-    tmp_path: Path, mutation, message: str
-) -> None:
-    case = _case(tmp_path)
-    executor = FakeExecutor(mutate=mutation)
-    with pytest.raises(MarginalRuntimeError, match=message):
-        run_marginal_lifecycle(
-            _prepared(case), executor=executor, model_mount=case.mount, deadline=100.0
-        )
-    assert len(executor.calls) == 2
-
-
-def test_replayed_baseline_evidence_and_partial_candidate_failure_do_not_complete(
-    tmp_path: Path,
-) -> None:
-    case = _case(tmp_path)
-    first: list[EngineExecutionEvidence] = []
-
-    def replay(index, row):
-        if index == 0:
-            first.append(row)
-        return first[0] if index == 2 else row
-
-    executor = FakeExecutor(mutate=replay)
-    with pytest.raises(MarginalRuntimeError, match="prior session identity"):
-        run_marginal_lifecycle(
-            _prepared(case), executor=executor, model_mount=case.mount, deadline=100.0
-        )
-    assert len(executor.calls) == 3
-
-    failing = FakeExecutor(fail_at=1)
-    with pytest.raises(RuntimeError, match="injected candidate failure"):
-        run_marginal_lifecycle(
-            _prepared(case), executor=failing, model_mount=case.mount, deadline=100.0
-        )
-    assert len(failing.calls) == 2
-
-
-class _WorkerFailExecutor(FakeExecutor):
-    def __init__(self, fail_at: int) -> None:
-        super().__init__()
-        self.fail_at = fail_at
-
-    def execute(self, launch, binding, mount, plan, *, deadline):
-        index = len(self.calls)
-        self.calls.append((launch, binding, mount, plan, deadline))
-        if index == self.fail_at:
-            raise OuterSessionWorkerError(f"worker failed at lifecycle index {index}")
-        return _execution(launch, binding, mount, plan, label=f"call-{index}")
-
-
-def test_candidate_worker_error_carries_exact_active_arm_identity(tmp_path: Path) -> None:
-    case = _case(tmp_path)
-    prepared = _prepared(case)
-    candidate = prepared.candidates[0]
-    executor = _WorkerFailExecutor(1)
-
-    with pytest.raises(CandidateArmWorkerError) as raised:
-        run_marginal_lifecycle(
-            prepared, executor=executor, model_mount=case.mount, deadline=100.0
-        )
-
-    failure = raised.value
-    assert failure.candidate_index == 0
-    assert failure.selected_delta_digest == candidate.arm.selected_delta_digest
-    assert failure.arm_digest == candidate.arm.digest
-    assert failure.launch_digest == candidate.launch.digest
-    assert type(failure.worker_error) is OuterSessionWorkerError
-    assert len(executor.calls) == 2
-
-
-def test_repeat_candidate_worker_error_carries_exact_active_arm_identity(
-    tmp_path: Path,
-) -> None:
-    case = _case(tmp_path)
-    prepared = _prepared(case)
-    candidate = prepared.candidates[0]
-    # B, C, B-prime succeed; C-prime fails at lifecycle index 3.
-    executor = _WorkerFailExecutor(3)
-
-    with pytest.raises(CandidateArmWorkerError) as raised:
-        run_marginal_lifecycle(
-            prepared,
-            executor=executor,
-            model_mount=case.mount,
-            deadline=100.0,
-            candidate_reads=2,
-        )
-
-    failure = raised.value
-    assert failure.candidate_index == 0
-    assert failure.selected_delta_digest == candidate.arm.selected_delta_digest
-    assert failure.arm_digest == candidate.arm.digest
-    assert failure.launch_digest == candidate.launch.digest
-    assert type(failure.worker_error) is OuterSessionWorkerError
-    assert len(executor.calls) == 4
-
-
-def test_b_double_prime_worker_error_remains_shared_infrastructure(
-    tmp_path: Path,
-) -> None:
-    case = _case(tmp_path)
-    # B, C, B-prime, C-prime succeed; B-double-prime fails at index 4.
-    executor = _WorkerFailExecutor(4)
-
-    with pytest.raises(OuterSessionWorkerError, match="lifecycle index 4"):
-        run_marginal_lifecycle(
-            _prepared(case),
-            executor=executor,
-            model_mount=case.mount,
-            deadline=100.0,
-            candidate_reads=2,
-        )
-    assert len(executor.calls) == 5
-
-
-@pytest.mark.parametrize("fail_at", (0, 2), ids=("baseline-before", "baseline-after"))
-def test_baseline_worker_error_is_never_relabelled_as_candidate(
-    tmp_path: Path, fail_at: int
-) -> None:
-    case = _case(tmp_path)
-    executor = _WorkerFailExecutor(fail_at)
-
-    with pytest.raises(OuterSessionWorkerError, match="lifecycle index"):
-        run_marginal_lifecycle(
-            _prepared(case), executor=executor, model_mount=case.mount, deadline=100.0
-        )
-    assert len(executor.calls) == fail_at + 1
-
-
-def test_completed_lifecycle_cannot_be_relabelled(tmp_path: Path) -> None:
-    case = _case(tmp_path / "silu")
-    prepared = _prepared(case)
-    result = run_marginal_lifecycle(
-        prepared, executor=FakeExecutor(), model_mount=case.mount, deadline=100.0
-    )
-    other = _prepared(_case(tmp_path / "msa", MSA, suffix="-msa"))
-    with pytest.raises(MarginalRuntimeError, match="launch binding"):
-        replace(result.candidates[0], candidate=other.candidates[0])
-    with pytest.raises(MarginalRuntimeError, match="relabeled or reordered"):
-        replace(result, prepared=other)
-
-    candidate = prepared.candidates[0]
-    drifted = replace(
-        candidate,
-        session_plan=replace(
-            candidate.session_plan,
-            prompt_batches=(("different warmup",), ("different timed",)),
-        ),
-    )
-    with pytest.raises(MarginalRuntimeError, match="common launch or workload"):
-        replace(prepared, candidates=(drifted,))
-
-
 def test_bridge_import_and_records_exclude_grading_authority() -> None:
     script = f"""
 import sys
@@ -992,8 +641,8 @@ print(module.__name__)
         field.name
         for record in (
             module.PreparedMarginalRuntime,
-            module.MarginalLifecycleEvidence,
-            module.CandidateLifecycleEvidence,
+            module.PreparedCandidateRuntime,
+            module.MaterializedArmBinding,
         )
         for field in fields(record)
     }

@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 from cacheon.eval.evidence_store import EvidenceArtifactRef
-from cacheon.eval.marginal_runtime import run_marginal_lifecycle
 from cacheon.eval.qualification import SelectionEntropyReceipt
 from cacheon.eval.qualification_continuation import (
     QualificationContinuation,
@@ -107,15 +106,14 @@ def _rewrite_payload(
 def _pristine_quality(root: Path) -> QualityContinuation:
     case = _case(root / "runtime")
     prepared = _prepared(case)
-    lifecycle = run_marginal_lifecycle(
-        prepared,
-        executor=_TypedExecutor(root / "artifacts"),
-        model_mount=case.mount,
+    baseline_execution = _TypedExecutor(root / "artifacts").execute(
+        prepared.baseline_launch,
+        case.baseline_binding.launch_binding,
+        case.mount,
+        prepared.baseline_session_plan,
         deadline=999.0,
     )
-    reference_execution = _pristine_reference_execution(
-        lifecycle.baseline_before
-    )
+    reference_execution = _pristine_reference_execution(baseline_execution)
     return QualityContinuation(
         teardown_before=_quiescence(1, 3.0),
         entropy=SelectionEntropyReceipt(
