@@ -453,3 +453,61 @@ def test_settlement_and_weights_stages_wire_into_supervisor() -> None:
     assert result.disposition == "confirmed"
 
     assert weights_stage(publish=lambda: None)() is None
+
+
+def test_python_m_entry_shares_one_module_identity_with_by_name_imports(tmp_path) -> None:
+    """``python -m cacheon.chain.standing_cpu_supervisor`` runs the file as ``__main__``.
+
+    The weights stage imports the supervisor by name when it is composed. On
+    mainnet (2026-08-19) that loaded a second module copy whose
+    ``SupervisorStageResult`` and ``StandingCpuSupervisorError`` were different
+    classes, so every weights push that had already landed on serve-weights was
+    then rejected as "an untyped product". The entry must alias itself so that
+    the by-name import and the ``__main__`` module are one object.
+    """
+
+    import os
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+
+    import cacheon
+
+    package_root = Path(cacheon.__file__).resolve().parents[1]
+    child = textwrap.dedent(
+        f"""
+        import runpy, sys
+        sys.argv = ["standing_cpu_supervisor", "--config", {str(tmp_path / "missing.json")!r}]
+        try:
+            runpy.run_module(
+                "cacheon.chain.standing_cpu_supervisor", run_name="__main__", alter_sys=True
+            )
+        except SystemExit as exc:
+            print("ENTRY_EXIT=" + str(exc.code))
+        import cacheon.chain.standing_cpu_supervisor as by_name
+        from cacheon.chain import standing_weights_stage
+        print("BY_NAME_IS_MAIN=" + str(by_name.__name__ == "__main__"))
+        try:
+            standing_weights_stage.load_weights_config({str(tmp_path / "missing-weights.json")!r})
+        except by_name.StandingCpuSupervisorError:
+            print("STAGE_ERROR_IS_ENTRY_CLASS=True")
+        except Exception as exc:
+            print("STAGE_ERROR_IS_ENTRY_CLASS=False " + type(exc).__module__)
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", child],
+        cwd=package_root,
+        env={**os.environ, "PYTHONPATH": str(package_root)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    lines = dict(
+        line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line
+    )
+    assert lines.get("ENTRY_EXIT") == "2", proc.stderr[-800:]
+    assert lines.get("BY_NAME_IS_MAIN") == "True", proc.stdout
+    assert lines.get("STAGE_ERROR_IS_ENTRY_CLASS") == "True", proc.stdout

@@ -41,9 +41,7 @@ installed `cacheon` console script resolves to the same parser.
 | `push-weight-offer` | eval | peer weight distribution | Build the legacy V1 offer and HTTP-push; never chain-publishes |
 | `serve-weights` | weights gateway | peer weight distribution | Serve/store the offer; optional authenticated PUT from eval |
 | `follow-weights` | signer | peer weight publication | Fetch the shared offer and publish through the commit-reveal reconciler |
-| `model-provision` | release operator | production artifact | Seal model bytes into a content-addressed publication and receipt |
-| `release-verify` | release consumer | production verification | Reopen a signed Engine release under an externally trusted key |
-| `release-context` | release consumer | production build input | Materialize a deterministic OCI context from a verified release |
+| `model-provision` | validator operator | production artifact | Seal model bytes into a content-addressed publication and receipt |
 
 There is no local command that grants qualification or settlement authority. Complete
 engine qualification begins at the deployment-injected arena boundary; a local evaluator

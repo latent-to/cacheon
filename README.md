@@ -25,7 +25,7 @@ release tooling.
 | Understand why miners participate and how rewards work | [How miners earn rewards](docs/miner-guide/incentives.md) |
 | Build a miner contribution | [Miner guide](docs/miner-guide/overview.md) |
 | Operate a validator | [Validator guide](docs/validator-guide/overview.md) |
-| Integrate an approved contribution | [Cacheon Engine](docs/engine/overview.md) |
+| Integrate an approved contribution | [Cacheon Engine](docs/engine/integration.md) |
 | Review trust boundaries | [Security model](docs/security/threat-model.md) |
 | Contribute to the repository | [Contributing](CONTRIBUTING.md) |
 

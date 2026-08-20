@@ -373,11 +373,11 @@ unconfirmed vector.
 Principal code: [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py).
 See the [emissions policy](../reference/emissions-policy.md).
 
-## 11. Integration and release
+## 11. Integration
 
-A settled crown may enter integration review, but serving remains a separate state machine. Reviewed source is promoted to an integrated contribution, assembled into an `EngineReleaseManifest`, rematerialized, signed, published, and verified without chain dependencies.
+A settled crown may enter integration review, but serving remains a separate state machine. Reviewed source is promoted to an integrated contribution; the signed chain-independent release product was removed on 2026-08-19 because no release was ever produced or consumed.
 
-See [Release architecture](releases.md). The dated
+The dated
 [State of record](../reference/state-of-record.md) tracks implementation and validation
 limits.
 

@@ -17,8 +17,7 @@ Choose the smallest relevant path:
 5. `docs/miner-guide/overview.md` — contribution workflow.
 6. `docs/validator-guide/overview.md` — intake, qualification, settlement, and
    publication.
-7. `docs/engine/overview.md` — chain-independent serving releases.
-8. `docs/security/threat-model.md` — implemented controls and residual risk.
+7. `docs/security/threat-model.md` — implemented controls and residual risk.
 
 If a task continues earlier automated-contributor work, follow the
 cross-harness continuity instructions supplied by the environment. Historical logs route an

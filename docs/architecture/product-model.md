@@ -62,7 +62,7 @@ The ship decision separately requires:
 - immutable contribution attribution;
 - exact release, native, model, and policy identities.
 
-This permits emissions to follow crown policy while production deployment follows release policy. See [Release architecture](releases.md).
+This permits emissions to follow crown policy while production deployment follows a separate review.
 
 ## Marginal contribution, complete execution
 
@@ -233,4 +233,3 @@ confuses the execution unit with the reward unit.
 - [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — proposal, integration, evaluation-stack, and release-stack identities
 - [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — reward-unit policy
 - [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic proposal and integrated-source materialization
-- [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py) — chain-independent release artifacts and signatures

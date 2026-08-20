@@ -13,7 +13,6 @@ level.
 | Does an entry satisfy its tensor contract? | CPU for CPU-capable examples; otherwise GPU | The component matches the trusted reference for the exercised cases |
 | Is a CUDA implementation graph-safe and dispatchable? | Exact GPU, Torch, CUDA, and pinned SGLang environment | The registered component and seam gates passed on that topology |
 | Does a proposal improve serving without quality loss? | Validator-owned arena and isolated complete engines | One qualification attempt produced reopenable evidence |
-| Can reviewed source ship? | Release environment plus model/native publications and signing authority | A signed release can be reopened under external trust inputs |
 
 These rows are cumulative only in tooling, not in authority. A GPU component
 verification is stronger than a CPU unit test for that component, but it is
@@ -31,7 +30,7 @@ cd cacheon
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[cpu,dev,release]"
+python -m pip install -e ".[cpu,dev]"
 ```
 
 Run the deterministic local loop:
@@ -69,15 +68,6 @@ A failing negative control is evidence that the local verifier can distinguish
 the semantic operation from a cheaper look-alike. It is not an installation
 failure to “fix.”
 
-## Release dependencies
-
-Release signing and verification use the `release` extra, included in the setup
-above. If you began with the smaller `cpu,dev` environment, add it with:
-
-```bash
-python -m pip install -e ".[cpu,dev,release]"
-```
-
 Keep signing keys out of the repository, virtual environment, shell history,
 test fixtures, and generated OCI contexts. Tests should use ephemeral keys.
 
@@ -88,7 +78,7 @@ test fixtures, and generated OCI contexts. Tests should use ephemeral keys.
 - Treat `cacheon/slots.py`, `cacheon/target_catalog.py`, stack manifests, and
   qualification schemas as contracts. Change tests and documentation with
   them.
-- Use temporary directories for intake, model, native, and release tests.
+- Use temporary directories for intake, model, and native tests.
   Durable production SQLite files are not development scratch space.
 - Never run an untrusted bundle on a workstation or control-plane host.
   `scan` is not a sandbox.
@@ -104,7 +94,7 @@ Use the narrowest test that can falsify the change, then widen the boundary:
 2. **Component execution** for reference comparisons, variants, output
    ownership, and negative controls.
 3. **Integration tests** for stack planning, Engine-tree materialization,
-   intake restart, evidence reopening, and release construction.
+   intake restart, and evidence reopening.
 4. **GPU seam tests** for the exact SGLang pin, architecture, graph replay,
    collectives, model, and tensor-parallel topology.
 5. **Arena qualification** for the current v7 resident B/C/[B′] or v8
@@ -123,7 +113,6 @@ pytest -q tests/test_static.py tests/test_target_catalog.py
 pytest -q tests/test_stack_manifest.py tests/test_engine_tree.py
 pytest -q tests/test_qualification.py tests/test_qualification_runner.py
 pytest -q tests/test_chain_intake.py tests/test_weight_publication.py
-pytest -q tests/test_release.py tests/test_release_host.py
 ```
 
 Use the complete suite before merging cross-boundary changes. GPU-dependent
@@ -138,8 +127,7 @@ hardware campaign.
 | Slot ABI or verification | slot, tensor, and verifier tests | graph replay and the supported GPU matrix |
 | Target overlap/composition | target catalog and stack planning | settlement and emissions projection |
 | Intake or retry state | chain intake and validator-loop tests | restart, evidence, and weight reconciliation |
-| Integration or Engine tree | stack manifest and Engine-tree tests | release construction and reopen verification |
-| Release host policy | release, runtime, and host tests | real registry double-build and serving receipts |
+| Integration or Engine tree | stack manifest and Engine-tree tests | materialization and reopen verification |
 
 When a schema changes, add both a positive construction and a negative reopen
 case. Cacheon's security properties depend heavily on old or malformed objects
