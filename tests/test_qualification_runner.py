@@ -1671,6 +1671,83 @@ def test_durable_attempt_roundtrip_rejects_nested_decision_tamper(
         _REAL_REOPEN_CAUSAL(root, forged, expected=harness.value)
 
 
+def test_reopen_rejects_self_consistent_speed_witness_arm_relabel(
+    monkeypatch, tmp_path
+) -> None:
+    """A witness relabeled to another delta — with every nested digest kept
+    wire-consistent — must still die on the EXTERNAL authority comparison.
+    The report-level cohort identity is left untouched, so nothing before the
+    per-report speed check can catch the substitution; the companion test in
+    test_qualification.py proves the real witness's internal digest admits an
+    equally self-consistent forgery at construction."""
+
+    harness = _Harness(
+        monkeypatch,
+        graph=(QualificationDecision.PASS,),
+        speed=(QualificationDecision.PASS,),
+        quality=(QualificationDecision.PASS,),
+    )
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    # Reopen's resident branch demands an exactly-typed ResidentCrossoverPlan
+    # before it will even read the witness, so the harness's namespace plan is
+    # replaced by a real plan built through the production crossover math; the
+    # harness's candidate-launch and runtime-policy identities are realigned to
+    # it so every honest cross-check passes and only the relabel can fail.
+    from tests.test_qualification import _lifecycle as _resident_fixture
+
+    plan = _resident_fixture(tmp_path / "resident-fixture")[0].plan
+    harness.value.resident_speed_plan = plan
+    harness.value.prepared.candidates[0].launch.digest = plan.candidate.launch.digest
+    harness.value.expected_runtime_resource_policy_digest = (
+        plan.candidate.runtime_resource_policy_digest
+    )
+    _run_resident_harness(harness, baseline)
+    payload = harness.published_attempt.to_dict()
+    report = payload["reports"][0]
+    speed = report["speed_witness"]
+    speed["selected_delta_digest"] = _d("relabeled-delta")
+    speed["evidence_digest"] = _d("relabeled-evidence")
+    report["speed_evidence_digest"] = speed["evidence_digest"]
+    # The attempt-level timing witness cross-binds the report's speed evidence
+    # digest; a competent forger rebinds it, and the reopen must still refuse.
+    payload["operational_timing"]["speed_evidence_digest"] = speed["evidence_digest"]
+
+    root = tmp_path / "speed-relabel"
+    monkeypatch.setattr(runner, "publish_evidence", publish_evidence)
+    forged = publish_evidence(
+        root,
+        runner.canonical_json_bytes(payload),
+        domain=runner.ATTEMPT_DOMAIN,
+        media_type="application/json",
+        schema=runner.ATTEMPT_SCHEMA_V3,
+    )
+    monkeypatch.setattr(runner, "_validate_reference_execution", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "reopen_calibration_evidence",
+        lambda *_args, **_kwargs: harness.calibration,
+    )
+    monkeypatch.setattr(
+        runner, "reopen_reference_quality_evidence", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        runner,
+        "score_reference_quality",
+        lambda *_args, **_kwargs: _quality_verdict(
+            QualificationDecision.PASS, 0, harness.calibration.digest
+        ),
+    )
+    with pytest.raises(
+        runner.QualificationRunnerError, match="differs from its marginal arm"
+    ):
+        _REAL_REOPEN_CAUSAL(root, forged, expected=harness.value)
+
+
 @pytest.mark.parametrize("tamper", ("launch", "causal_time"))
 def test_reference_execution_witness_rejects_launch_and_causal_tamper(
     monkeypatch, tamper

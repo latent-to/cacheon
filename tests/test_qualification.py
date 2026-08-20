@@ -1506,3 +1506,62 @@ def test_teacher_nll_only_profile_admits_width_zero_and_refuses_kl_metrics():
     assert nll_only.topk_width == 0
     with pytest.raises(QualificationError, match="cannot require distribution metrics"):
         profile(0, ("mean_nll", "task_score", "topk_kl"))
+
+
+def test_resident_speed_witness_relabel_forgery_is_internally_undetectable(tmp_path):
+    """The real witness's internal digest stops a naive delta relabel, but a
+    forger who recomputes the projection digest constructs a fully valid
+    witness for a delta the arm never ran. Internal validation therefore
+    CANNOT catch arm relabeling; the reopen-time authority comparison
+    ("speed witness differs from its marginal arm", pinned in
+    test_qualification_runner's arm-relabel test) is the only line of
+    defense, and this pair of tests keeps both halves honest."""
+
+    from cacheon.eval.qualification_runner import (
+        QualificationRunnerError,
+        ResidentSpeedWitness,
+        _resident_speed_projection_digest,
+    )
+
+    lifecycle, _delta, _case, _calibration, _runtime_policy = _lifecycle(tmp_path)
+    witness = ResidentSpeedWitness.from_evidence(lifecycle.crossover, lifecycle.plan)
+    honest = witness.to_dict()
+    relabel = _d("relabeled-delta")
+
+    with pytest.raises(QualificationRunnerError, match="does not recompute"):
+        ResidentSpeedWitness.from_dict(
+            {**honest, "selected_delta_digest": relabel}
+        )
+
+    forged_digest = _resident_speed_projection_digest(
+        selected_delta_digest=relabel,
+        candidate_launch_digest=witness.candidate_launch_digest,
+        calibration_digest=witness.calibration_digest,
+        calibration_context_digest=witness.calibration_context_digest,
+        workload_digest=witness.workload_digest,
+        baseline_runtime_resource_policy_digest=(
+            witness.baseline_runtime_resource_policy_digest
+        ),
+        candidate_runtime_resource_policy_digest=(
+            witness.candidate_runtime_resource_policy_digest
+        ),
+        plan_digest=witness.plan_digest,
+        baseline_lane_digest=witness.baseline_lane_digest,
+        candidate_lane_digest=witness.candidate_lane_digest,
+        baseline_quiescence_digest=witness.baseline_quiescence_digest,
+        candidate_quiescence_digest=witness.candidate_quiescence_digest,
+        raw_crossover_digest=witness.raw_crossover_digest,
+        resident_policy=witness.resident_policy,
+        rates=witness.rates,
+        started_monotonic_s=witness.started_monotonic_s,
+        completed_monotonic_s=witness.completed_monotonic_s,
+    )
+    forged = ResidentSpeedWitness.from_dict(
+        {
+            **honest,
+            "selected_delta_digest": relabel,
+            "evidence_digest": forged_digest,
+        }
+    )
+    assert forged.selected_delta_digest == relabel
+    assert forged.rates == witness.rates
