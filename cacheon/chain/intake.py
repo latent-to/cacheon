@@ -3261,6 +3261,28 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             expired = self._expire_stale_rows(current_block)
         return tuple(self.get(reservation_id) for reservation_id in expired)
 
+    def expire(self, reservation_id: str, *, current_block: int, reason: str) -> IntakeReservation:
+        """Documented operator transition (docs/security/evidence.md): rows the
+        automatic SLA cannot reach — e.g. a legacy retained primary with
+        retained_block=0 — are terminalized only through this typed path."""
+
+        row = self.get(reservation_id)
+        if row.reason == _SCHEMA3_MIGRATION_HOLD_REASON:
+            raise IntakeError(
+                "legacy single-PASS settlement requires explicit archival migration"
+            )
+        if not isinstance(reason, str) or not reason:
+            raise IntakeError("explicit expiry requires an operator reason")
+        if type(current_block) is not int or current_block - row.arrival.block < self.policy.expiry_blocks:
+            raise IntakeError("reservation is not old enough for explicit expiry")
+        return self._transition(
+            reservation_id,
+            set(_EXPLICITLY_EXPIRABLE),
+            "expired",
+            "NO_DECISION",
+            reason,
+        )
+
     def archive_schema3_migration_hold(
         self,
         reservation_id: str,

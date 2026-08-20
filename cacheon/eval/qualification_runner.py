@@ -146,10 +146,11 @@ RESIDENT_SPEED_ESTIMATOR = "resident-adaptive-bcbp-v1"
 class SpeedEvidencePolicy:
     """Consensus identity for the speed-read shape and its estimator.
 
-    Version 1 remains the calibrated production default and reopens historical
-    B/C/B-prime artifacts byte-for-byte.  Version 2 is an explicit opt-in until a
-    current-head GPU null/honest campaign calibrates it.  The second candidate
-    read is not an optional runner knob; it is pre-B authority and therefore must
+    Fresh execution is resident-only (version 3); ``run_causal_qualification``
+    refuses any other version at entry.  Versions 1 and 2 are retained-evidence
+    vocabulary: they reopen historical B/C/B-prime (and the never-calibrated
+    repeat-shaped) artifacts byte-for-byte through settlement, and cannot be
+    freshly executed.  The read shape is pre-B authority and therefore must
     agree across primary and reproduction.
     """
 
@@ -194,10 +195,10 @@ class SpeedEvidencePolicy:
         }
 
 
-# Keep production on the calibrated historical referee until a current-head GPU
-# stock-null + honest-control campaign calibrates v2.  The complete repeat path is
-# opt-in authority, never an unbound runner toggle.
-DEFAULT_SPEED_EVIDENCE_POLICY = SpeedEvidencePolicy.legacy
+# Fresh execution is resident-only; the entry gate refuses anything else, so the
+# default is the one policy a fresh plan can actually run.  Legacy v1 (and the
+# never-calibrated v2 repeat shape) survive only as reopen vocabulary.
+DEFAULT_SPEED_EVIDENCE_POLICY = SpeedEvidencePolicy.resident
 
 
 class SpeedStageDisposition(str, Enum):
@@ -379,8 +380,9 @@ class CausalQualificationInput:
     expected_runtime_resource_policy_digest: str
     expected_device_policy_digest: str
     audit_policies: tuple[SlotAuditPolicy, ...]
-    # Legacy remains the production default until repeat-read is GPU-calibrated.
-    # A v2 plan must opt in before B and is then authority-bound end to end.
+    # Resident (v3) is the only policy the entry gate accepts for fresh work;
+    # builders may still bind it explicitly, and reopen paths carry the retained
+    # policy inside the witness rather than through this field's default.
     speed_evidence_policy: SpeedEvidencePolicy = field(
         default_factory=DEFAULT_SPEED_EVIDENCE_POLICY
     )

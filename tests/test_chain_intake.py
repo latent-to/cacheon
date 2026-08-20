@@ -119,33 +119,6 @@ def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
     )
 
 
-def _published_ids(store: FinalizedIntakeStore) -> tuple[str, ...]:
-    """Retry-group-aware published cohort, as the live selector orders it.
-
-    Probe helper mirroring the selection the production screen path applies:
-    the earliest published row's retry group (by retry_position) when one
-    exists, otherwise group-free rows in finalized arrival order.
-    """
-
-    first = store._db.execute(
-        "SELECT retry_group_digest FROM reservations WHERE status='published' "
-        "ORDER BY block,event_index,event_subindex,hotkey,content_hash LIMIT 1"
-    ).fetchone()
-    if first is not None and first["retry_group_digest"]:
-        rows = store._db.execute(
-            "SELECT reservation_id FROM reservations WHERE status='published' "
-            "AND retry_group_digest=? ORDER BY retry_position",
-            (first["retry_group_digest"],),
-        )
-    else:
-        rows = store._db.execute(
-            "SELECT reservation_id FROM reservations WHERE status='published' "
-            "AND retry_group_digest='' "
-            "ORDER BY block,event_index,event_subindex,hotkey,content_hash",
-        )
-    return tuple(row["reservation_id"] for row in rows)
-
-
 def test_exact_manifest_compatibility_failure_can_return_to_fifo(tmp_path) -> None:
     reason = (
         "manifest:submission is not a registered component: "
@@ -553,6 +526,20 @@ def test_copy_decision_uses_only_durable_delta_fingerprints(tmp_path):
         assert copied.status == "failed" and copied.decision == "FAIL"
 
 
+def test_expiry_and_retry_release_are_explicit(tmp_path):
+    with _store(tmp_path, expiry_blocks=20) as store:
+        row = store.reserve_finalized(
+            (_arrival(0),), finalized_block=10,
+            finalized_block_hash="0x" + f"{10:064x}",
+        )[0]
+        store.mark_fetching(row.reservation_id)
+        store.mark_transport_retry(row.reservation_id, "host unavailable")
+        with pytest.raises(IntakeError, match="not old enough"):
+            store.expire(row.reservation_id, current_block=29, reason="operator expiry")
+        expired = store.expire(row.reservation_id, current_block=30, reason="operator expiry")
+        assert expired.status == "expired" and expired.decision == "NO_DECISION"
+
+
 def test_transport_retry_exhaustion_becomes_an_explicit_hold(tmp_path):
     with _store(tmp_path, max_transport_retries=1) as store:
         row = store.reserve_finalized(
@@ -664,8 +651,16 @@ def test_legacy_retained_primary_unknown_block_stays_manual(tmp_path):
         ).fetchone()
         assert progress["retained_block"] == 0
         assert reopened.expire_stale(current_block=100) == ()
-        retained = reopened.get(reservation_id)
-        assert retained.status == "reproduction_pending"
+        # A retained_block=0 legacy row is unreachable by the automatic SLA;
+        # the typed operator transition is the only terminalization path.
+        expired = reopened.expire(
+            reservation_id,
+            current_block=100,
+            reason="operator archived legacy retained PASS",
+        )
+        assert (expired.status, expired.reason) == (
+            "expired", "operator archived legacy retained PASS"
+        )
 
 
 def test_schema3_migration_hold_survives_all_generic_expiry_paths(tmp_path):
@@ -684,6 +679,12 @@ def test_schema3_migration_hold_survives_all_generic_expiry_paths(tmp_path):
         )
         assert reopened.expire_stale(current_block=100) == ()
         assert reopened.get(candidate.reservation_digest) == held
+        with pytest.raises(IntakeError, match="archival migration"):
+            reopened.expire(
+                candidate.reservation_digest,
+                current_block=100,
+                reason="generic operator expiry",
+            )
         with pytest.raises(IntakeError, match="archival migration"):
             reopened.release_hold(
                 candidate.reservation_digest,
@@ -906,7 +907,14 @@ def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_pat
             current_finalized_block=10,
         )
         assert [row.status for row in stored] == ["published", "published"]
-        assert _published_ids(store) == (rows[0].reservation_id,)
+        # Re-screen both republished retries; the live promoted() cohort
+        # selector must isolate the first retry group rather than merging
+        # both groups back into one failing cohort.
+        for row in rows:
+            _promote(store, row.reservation_id)
+        assert tuple(row.reservation_id for row in store.promoted()) == (
+            rows[0].reservation_id,
+        )
         assert store.qualification_dispositions(rows[0].reservation_id)[0][
             "authority_manifest"
         ] == AUTHORITY
@@ -960,9 +968,11 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
             current_finalized_block=10,
         )
 
-        # Finalized order selects the offender's isolated retry without pulling
-        # the unrelated retry group back into the same failing cohort.
-        assert _published_ids(store) == (offender.reservation_id,)
+        # The live screen selector picks the offender's isolated retry first
+        # in finalized order.
+        assert tuple(row.reservation_id for row in store.screenable(limit=1)) == (
+            offender.reservation_id,
+        )
         _promote(store, offender.reservation_id)
         store.mark_qualifying(offender.reservation_id, "8" * 64, AUTHORITY)
         singleton_failure = "9" * 64
@@ -996,8 +1006,11 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
         assert len(store.qualification_dispositions(offender.reservation_id)) == 2
 
         # Once the bounded offender is held, the peer's isolated group remains
-        # runnable and can retain an independently evidenced terminal decision.
-        assert _published_ids(store) == (peer.reservation_id,)
+        # runnable: the live screen selector now picks it, and it can retain an
+        # independently evidenced terminal decision.
+        assert tuple(row.reservation_id for row in store.screenable(limit=1)) == (
+            peer.reservation_id,
+        )
         _promote(store, peer.reservation_id)
         store.mark_qualifying(peer.reservation_id, "a" * 64, AUTHORITY)
         store.apply_qualification_batch(

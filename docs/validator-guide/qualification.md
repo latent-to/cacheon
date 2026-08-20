@@ -72,9 +72,12 @@ calibrated threshold is the one the provider sealed.
 C′ and B″ are unreachable under v6, v7 and v8. The five-arm bracket survives only
 in v2–v5 evidence.
 
-The legacy constructor default remains v1 so historical serialized evidence reopens
-without reinterpretation. A production arena provider must explicitly bind its
-resident authority. Merely changing the policy label does not upgrade old evidence.
+Fresh execution is resident-only: the runner refuses any other speed-evidence
+policy at entry, and the constructor default is the resident policy — the only
+one a fresh plan can run. Versions 1 and 2 survive as reopen vocabulary: a
+reopen binds the retained evidence's own policy explicitly, and historical
+serialized artifacts regrade byte-for-byte without reinterpretation. Merely
+changing the policy label does not upgrade old evidence.
 
 ## Resident adaptive timeline
 
