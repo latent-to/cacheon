@@ -64,7 +64,6 @@ PAIR_START_TIMEOUT_SECONDS = 1_800.0
 PAIR_REQUEST_TIMEOUT_SECONDS = 3_600.0
 PAIR_CLOSE_TIMEOUT_SECONDS = 1_800.0
 PAIR_LIFETIME_SECONDS = 30 * 24 * 60 * 60
-_OWNER_CONSTRUCTION_TOKEN = object()
 
 
 class B300ResidentPairFactoryError(RuntimeError):
@@ -276,445 +275,6 @@ class B300ResidentRequestPair:
             )
 
 
-class B300ResidentPairRequestOwner:
-    """Own one service pair and expose one authenticated request at a time."""
-
-    def __init__(
-        self,
-        *,
-        authority: B300ResidentPairRequestAuthority,
-        commissioned_epoch_digest: str,
-        lane_plans: tuple[B300ResidentStockLanePlan, B300ResidentStockLanePlan],
-        lifetime_factories: Callable[[], tuple[Callable, Callable]],
-        deadline: float,
-        start_timeout_s: float,
-        request_timeout_s: float,
-        close_timeout_s: float,
-        clock: Callable[[], float],
-        _construction_token: object | None = None,
-    ) -> None:
-        if (
-            _construction_token is not _OWNER_CONSTRUCTION_TOKEN
-            or type(authority) is not B300ResidentPairRequestAuthority
-            or type(lane_plans) is not tuple
-            or len(lane_plans) != 2
-            or any(type(row) is not B300ResidentStockLanePlan for row in lane_plans)
-            or tuple(row.lane_policy.lane_id for row in lane_plans) != ("A", "B")
-            or not callable(lifetime_factories)
-            or not callable(clock)
-        ):
-            raise B300ResidentPairFactoryError(
-                "resident request owner authorities are not exact"
-            )
-        self.authority = authority
-        self.commissioned_epoch_digest = _digest(
-            commissioned_epoch_digest, "commissioned resident epoch digest"
-        )
-        self._plans = lane_plans
-        self._lifetime_factories = lifetime_factories
-        self._deadline = _absolute_deadline(deadline, clock)
-        self._start_timeout_s = _positive_seconds(
-            start_timeout_s, "pair start timeout"
-        )
-        self._request_timeout_s = _positive_seconds(
-            request_timeout_s, "pair request timeout"
-        )
-        self._close_timeout_s = _positive_seconds(
-            close_timeout_s, "pair close timeout"
-        )
-        self._clock = clock
-        self._pair: ResidentEvaluationPair | None = None
-        self._lock = threading.RLock()
-        self._borrow: B300ResidentRequestPair | None = None
-        self._retirement: ResidentEvaluationRetirementEvidence | None = None
-        self._quiescence: tuple[
-            tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]
-        ] | None = None
-        self._quiescence_attempted = False
-        self._start_attempted = False
-        self._close_attempted = False
-        self._failure: BaseException | None = None
-        self._released = False
-
-    @property
-    def request_epoch_digest(self) -> str:
-        return canonical_digest(
-            "cacheon.eval.b300-resident-request-pair-epoch.v1",
-            {
-                "commissioned_epoch": self.commissioned_epoch_digest,
-                "request_authority": self.authority.digest,
-            },
-        )
-
-    @property
-    def retirement(self) -> ResidentEvaluationRetirementEvidence | None:
-        with self._lock:
-            return self._retirement
-
-    @property
-    def quiescence(
-        self,
-    ) -> tuple[
-        tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]
-    ] | None:
-        with self._lock:
-            return self._quiescence
-
-    def _require_authority(
-        self, authority: B300ResidentPairRequestAuthority
-    ) -> None:
-        if (
-            type(authority) is not B300ResidentPairRequestAuthority
-            or authority != self.authority
-        ):
-            raise B300ResidentPairFactoryError(
-                "resident pair request authority is stale or foreign"
-            )
-
-    @property
-    def reusable(self) -> bool:
-        """Whether the exact stock-restored pair may accept another request."""
-
-        with self._lock:
-            return bool(
-                self._released
-                and self._pair is not None
-                and self._failure is None
-                and not self._close_attempted
-                and self._pair.fatal_error is None
-            )
-
-    def _rebind(
-        self,
-        authority: B300ResidentPairRequestAuthority,
-        *,
-        deadline: float,
-    ) -> "B300ResidentPairRequestOwner":
-        with self._lock:
-            if type(authority) is not B300ResidentPairRequestAuthority:
-                raise B300ResidentPairFactoryError(
-                    "resident pair request authority is not exact"
-                )
-            if not self.reusable or self._borrow is None or self._pair is None:
-                raise B300ResidentPairFactoryError(
-                    "resident service pair is not reusable"
-                )
-            self.authority = authority
-            self._deadline = _absolute_deadline(deadline, self._clock)
-            self._borrow = B300ResidentRequestPair(
-                authority, self._pair, self._borrow.binding
-            )
-            self._released = False
-            return self
-
-    def _retire_after_start_failure(self) -> None:
-        self._close_attempted = True
-        if self._pair is None:
-            return
-        try:
-            self._pair.close()
-        except BaseException:
-            # The original start failure is authoritative. ResidentEvaluationPair
-            # has still issued the one terminal close to every started lane.
-            pass
-
-    def borrow(
-        self, authority: B300ResidentPairRequestAuthority
-    ) -> B300ResidentRequestPair:
-        """Start this request's pair once and freeze actual A/B sessions."""
-
-        with self._lock:
-            self._require_authority(authority)
-            if self._failure is not None:
-                raise B300ResidentPairFactoryError(
-                    "resident request pair is permanently failed"
-                ) from self._failure
-            if self._released:
-                raise B300ResidentPairFactoryError(
-                    "resident request pair was released for reuse"
-                )
-            if self._close_attempted:
-                raise B300ResidentPairFactoryError(
-                    "resident request pair is already retired"
-                )
-            if self._borrow is not None:
-                return self._borrow
-            self._start_attempted = True
-            try:
-                remaining = self._deadline - float(self._clock())
-            except BaseException as exc:
-                self._failure = exc
-                self._close_attempted = True
-                raise B300ResidentPairFactoryError(
-                    "resident pair host clock failed before start"
-                ) from exc
-            if not math.isfinite(remaining) or remaining <= 0:
-                failure = B300ResidentPairFactoryError(
-                    "resident request deadline expired before pair start"
-                )
-                self._failure = failure
-                self._close_attempted = True
-                raise failure
-            try:
-                factories = self._lifetime_factories()
-            except BaseException as exc:
-                self._failure = exc
-                self._close_attempted = True
-                raise B300ResidentPairFactoryError(
-                    f"resident backend lifetime factory failed: {exc}"
-                ) from exc
-            if (
-                type(factories) is not tuple
-                or len(factories) != 2
-                or any(not callable(row) for row in factories)
-            ):
-                failure = B300ResidentPairFactoryError(
-                    "resident backend lifetime factories are not exact"
-                )
-                self._failure = failure
-                self._close_attempted = True
-                raise failure
-            try:
-                remaining = self._deadline - float(self._clock())
-            except BaseException as exc:
-                self._failure = exc
-                self._close_attempted = True
-                raise B300ResidentPairFactoryError(
-                    "resident pair host clock failed before start"
-                ) from exc
-            if not math.isfinite(remaining) or remaining <= 0:
-                failure = B300ResidentPairFactoryError(
-                    "resident request deadline expired before pair start"
-                )
-                self._failure = failure
-                self._close_attempted = True
-                raise failure
-            try:
-                self._pair = ResidentEvaluationPair(
-                    factories[0],
-                    factories[1],
-                    start_timeout_s=min(self._start_timeout_s, remaining),
-                    request_timeout_s=self._request_timeout_s,
-                    close_timeout_s=self._close_timeout_s,
-                    clock=self._clock,
-                )
-            except BaseException as exc:
-                self._failure = exc
-                self._close_attempted = True
-                raise B300ResidentPairFactoryError(
-                    "resident request pair failed to construct"
-                ) from exc
-            try:
-                identities = self._pair.start()
-            except BaseException as exc:
-                self._failure = exc
-                self._retire_after_start_failure()
-                raise B300ResidentPairFactoryError(
-                    "resident request pair failed to start"
-                ) from exc
-            if tuple(row.lane_id for row in identities) != ("A", "B"):
-                failure = B300ResidentPairFactoryError(
-                    "resident request pair returned reordered sessions"
-                )
-                self._failure = failure
-                self._retire_after_start_failure()
-                raise failure
-            try:
-                binding = ResidentPairRuntimeBinding(
-                    self.commissioned_epoch_digest,
-                    tuple(
-                        ResidentPairLaneBinding(
-                            identity.lane_id,
-                            identity.session_id,
-                            plan.stock_launch.digest,
-                            plan.lane_authority_digest,
-                            plan.allocation_digest,
-                            plan.executor.manager.namespace_digest,
-                        )
-                        for identity, plan in zip(identities, self._plans)
-                    ),
-                )
-                self._borrow = B300ResidentRequestPair(
-                    self.authority, self._pair, binding
-                )
-            except BaseException as exc:
-                self._failure = exc
-                self._retire_after_start_failure()
-                raise B300ResidentPairFactoryError(
-                    "resident request pair failed to freeze its runtime binding"
-                ) from exc
-            return self._borrow
-
-    def release(
-        self,
-        authority: B300ResidentPairRequestAuthority,
-        binding: ResidentPairRuntimeBinding,
-    ) -> ResidentPairRuntimeBinding:
-        with self._lock:
-            borrowed = self.require_binding(authority, binding)
-            if self._failure is not None or self._close_attempted:
-                raise B300ResidentPairFactoryError(
-                    "resident request pair cannot be released"
-                )
-            fatal = borrowed.pair.fatal_error
-            if fatal is not None:
-                self._failure = fatal
-                try:
-                    self.close()
-                except B300ResidentPairFactoryError:
-                    pass
-                raise B300ResidentPairFactoryError(
-                    "resident request pair failed before release"
-                ) from fatal
-            self._released = True
-            return borrowed.binding
-
-    def require_binding(
-        self,
-        authority: B300ResidentPairRequestAuthority,
-        binding: ResidentPairRuntimeBinding,
-    ) -> B300ResidentRequestPair:
-        """Reopen only the exact binding frozen by this request owner."""
-
-        with self._lock:
-            self._require_authority(authority)
-            if (
-                type(binding) is not ResidentPairRuntimeBinding
-                or self._borrow is None
-                or binding != self._borrow.binding
-            ):
-                raise B300ResidentPairFactoryError(
-                    "resident pair runtime binding is stale or foreign"
-                )
-            return self._borrow
-
-    def close(self) -> ResidentEvaluationRetirementEvidence | None:
-        """Retire both lanes once; a started pair must yield exact retirement."""
-
-        with self._lock:
-            if self._retirement is not None:
-                return self._retirement
-            if self._close_attempted:
-                if self._failure is not None:
-                    raise B300ResidentPairFactoryError(
-                        "resident request pair retirement previously failed"
-                    ) from self._failure
-                return None
-            self._close_attempted = True
-            if self._pair is None:
-                return None
-            try:
-                retirement = self._pair.close()
-            except BaseException as exc:
-                if self._failure is None:
-                    self._failure = exc
-                raise B300ResidentPairFactoryError(
-                    "resident request pair retirement failed"
-                ) from exc
-            if (
-                self._start_attempted
-                and type(retirement) is not ResidentEvaluationRetirementEvidence
-            ):
-                failure = B300ResidentPairFactoryError(
-                    "started resident request pair produced no exact retirement"
-                )
-                self._failure = failure
-                raise failure
-            if retirement is not None and self._borrow is not None:
-                if (
-                    retirement.lane_a.identity
-                    != self._borrow.binding.identities[0]
-                    or retirement.lane_b.identity
-                    != self._borrow.binding.identities[1]
-                ):
-                    failure = B300ResidentPairFactoryError(
-                        "resident retirement changed the frozen A/B sessions"
-                    )
-                    self._failure = failure
-                    raise failure
-            self._retirement = retirement
-            return retirement
-
-    def complete(
-        self,
-        authority: B300ResidentPairRequestAuthority,
-        binding: ResidentPairRuntimeBinding,
-    ) -> ResidentEvaluationRetirementEvidence:
-        """Return request-complete proof only after both lanes retired."""
-
-        with self._lock:
-            self.require_binding(authority, binding)
-            if self._retirement is None:
-                raise B300ResidentPairFactoryError(
-                    "qualification request cannot complete while its pair is live"
-                )
-            return self._retirement
-
-    def retire_and_quiesce(
-        self,
-        authority: B300ResidentPairRequestAuthority,
-        binding: ResidentPairRuntimeBinding,
-    ) -> tuple[
-        ResidentEvaluationRetirementEvidence[ResidentEngineExecutionEvidence],
-        tuple[tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]],
-    ]:
-        """Close both lifetimes once, then prove both exact namespaces empty."""
-
-        with self._lock:
-            self.require_binding(authority, binding)
-            if self._quiescence is not None:
-                assert self._retirement is not None
-                return self._retirement, self._quiescence
-            if self._quiescence_attempted:
-                raise B300ResidentPairFactoryError(
-                    "resident pair quiescence previously failed"
-                ) from self._failure
-            retirement = self.close()
-            if retirement is None:
-                raise B300ResidentPairFactoryError(
-                    "resident pair quiescence requires a started pair"
-                )
-            lifetimes = (
-                retirement.lane_a.lifetime_evidence,
-                retirement.lane_b.lifetime_evidence,
-            )
-            if any(type(row) is not ResidentEngineExecutionEvidence for row in lifetimes):
-                raise B300ResidentPairFactoryError(
-                    "resident pair retirement lacks exact engine lifetime evidence"
-                )
-            cutoff = max(
-                row.device_receipts[1].completed_monotonic_s for row in lifetimes
-            )
-            self._quiescence_attempted = True
-            try:
-                proofs = tuple(
-                    (plan.lane_policy.lane_id, plan.executor.prove_quiescent())
-                    for plan in self._plans
-                )
-            except BaseException as exc:
-                self._failure = exc
-                raise B300ResidentPairFactoryError(
-                    "resident pair post-close quiescence failed"
-                ) from exc
-            for plan, (lane_id, proof) in zip(self._plans, proofs, strict=True):
-                manager = plan.executor.manager
-                if (
-                    type(proof) is not OCIQuiescenceReceipt
-                    or lane_id != plan.lane_policy.lane_id
-                    or proof.executor_id != manager.executor_id
-                    or proof.manager_instance_id != manager.manager_instance_id
-                    or proof.namespace_digest != manager.namespace_digest
-                    or proof.observed_monotonic_s < cutoff
-                ):
-                    failure = B300ResidentPairFactoryError(
-                        "resident pair post-close quiescence changed lane authority"
-                    )
-                    self._failure = failure
-                    raise failure
-            self._quiescence = proofs
-            return retirement, proofs
-
-
 class B300CommissionedResidentPairFactory:
     """Commissioned stock authority for one reusable loaded TP4 pair."""
 
@@ -790,9 +350,9 @@ class B300CommissionedResidentPairFactory:
                 "service": service,
             },
         )
-        self._owner: B300ResidentPairRequestOwner | None = None
         self._lock = threading.RLock()
         self._closed = False
+        self._reset_request_locked()
 
     @staticmethod
     def _validate_common_authority(
@@ -861,26 +421,199 @@ class B300CommissionedResidentPairFactory:
                     "resident stock pair differs from service READY or model authority"
                 )
 
-    def _request_owner(self) -> B300ResidentPairRequestOwner:
-        with self._lock:
-            owner = self._owner
-        if owner is None:
+    def _reset_request_locked(self) -> None:
+        self._authority: B300ResidentPairRequestAuthority | None = None
+        self._deadline = 0.0
+        self._lifetime_factories: (
+            Callable[[], tuple[Callable, Callable]] | None
+        ) = None
+        self._pair: ResidentEvaluationPair | None = None
+        self._borrow: B300ResidentRequestPair | None = None
+        self._retirement: ResidentEvaluationRetirementEvidence | None = None
+        self._quiescence: tuple[
+            tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]
+        ] | None = None
+        self._quiescence_attempted = False
+        self._start_attempted = False
+        self._close_attempted = False
+        self._failure: BaseException | None = None
+        self._released = False
+
+    def _require_authority(
+        self, authority: B300ResidentPairRequestAuthority
+    ) -> None:
+        if self._authority is None:
             raise B300ResidentPairFactoryError("no resident request is open")
-        return owner
+        if (
+            type(authority) is not B300ResidentPairRequestAuthority
+            or authority != self._authority
+        ):
+            raise B300ResidentPairFactoryError(
+                "resident pair request authority is stale or foreign"
+            )
+
+    def _reusable_locked(self) -> bool:
+        """Whether the exact stock-restored pair may accept another request."""
+
+        return bool(
+            self._released
+            and self._pair is not None
+            and self._failure is None
+            and not self._close_attempted
+            and self._pair.fatal_error is None
+        )
+
+    def _retire_after_start_failure(self) -> None:
+        self._close_attempted = True
+        if self._pair is None:
+            return
+        try:
+            self._pair.close()
+        except BaseException:
+            # The original start failure is authoritative. ResidentEvaluationPair
+            # has still issued the one terminal close to every started lane.
+            pass
+
+    def _remaining_before_start_locked(self) -> float:
+        try:
+            remaining = self._deadline - float(self.clock())
+        except BaseException as exc:
+            self._failure = exc
+            self._close_attempted = True
+            raise B300ResidentPairFactoryError(
+                "resident pair host clock failed before start"
+            ) from exc
+        if not math.isfinite(remaining) or remaining <= 0:
+            failure = B300ResidentPairFactoryError(
+                "resident request deadline expired before pair start"
+            )
+            self._failure = failure
+            self._close_attempted = True
+            raise failure
+        return remaining
 
     def borrow(
         self, authority: B300ResidentPairRequestAuthority
     ) -> B300ResidentRequestPair:
         """Start the open request's pair once and freeze actual A/B sessions."""
 
-        return self._request_owner().borrow(authority)
+        with self._lock:
+            self._require_authority(authority)
+            if self._failure is not None:
+                raise B300ResidentPairFactoryError(
+                    "resident request pair is permanently failed"
+                ) from self._failure
+            if self._released:
+                raise B300ResidentPairFactoryError(
+                    "resident request pair was released for reuse"
+                )
+            if self._close_attempted:
+                raise B300ResidentPairFactoryError(
+                    "resident request pair is already retired"
+                )
+            if self._borrow is not None:
+                return self._borrow
+            self._start_attempted = True
+            self._remaining_before_start_locked()
+            try:
+                factories = self._lifetime_factories()
+            except BaseException as exc:
+                self._failure = exc
+                self._close_attempted = True
+                raise B300ResidentPairFactoryError(
+                    f"resident backend lifetime factory failed: {exc}"
+                ) from exc
+            if (
+                type(factories) is not tuple
+                or len(factories) != 2
+                or any(not callable(row) for row in factories)
+            ):
+                failure = B300ResidentPairFactoryError(
+                    "resident backend lifetime factories are not exact"
+                )
+                self._failure = failure
+                self._close_attempted = True
+                raise failure
+            remaining = self._remaining_before_start_locked()
+            try:
+                self._pair = ResidentEvaluationPair(
+                    factories[0],
+                    factories[1],
+                    start_timeout_s=min(self.start_timeout_s, remaining),
+                    request_timeout_s=self.request_timeout_s,
+                    close_timeout_s=self.close_timeout_s,
+                    clock=self.clock,
+                )
+            except BaseException as exc:
+                self._failure = exc
+                self._close_attempted = True
+                raise B300ResidentPairFactoryError(
+                    "resident request pair failed to construct"
+                ) from exc
+            try:
+                identities = self._pair.start()
+            except BaseException as exc:
+                self._failure = exc
+                self._retire_after_start_failure()
+                raise B300ResidentPairFactoryError(
+                    "resident request pair failed to start"
+                ) from exc
+            if tuple(row.lane_id for row in identities) != ("A", "B"):
+                failure = B300ResidentPairFactoryError(
+                    "resident request pair returned reordered sessions"
+                )
+                self._failure = failure
+                self._retire_after_start_failure()
+                raise failure
+            try:
+                binding = ResidentPairRuntimeBinding(
+                    self.commissioned_epoch_digest,
+                    tuple(
+                        ResidentPairLaneBinding(
+                            identity.lane_id,
+                            identity.session_id,
+                            plan.stock_launch.digest,
+                            plan.lane_authority_digest,
+                            plan.allocation_digest,
+                            plan.executor.manager.namespace_digest,
+                        )
+                        for identity, plan in zip(identities, self.lane_plans)
+                    ),
+                )
+                self._borrow = B300ResidentRequestPair(
+                    self._authority, self._pair, binding
+                )
+            except BaseException as exc:
+                self._failure = exc
+                self._retire_after_start_failure()
+                raise B300ResidentPairFactoryError(
+                    "resident request pair failed to freeze its runtime binding"
+                ) from exc
+            return self._borrow
 
     def release(
         self,
         authority: B300ResidentPairRequestAuthority,
         binding: ResidentPairRuntimeBinding,
     ) -> ResidentPairRuntimeBinding:
-        return self._request_owner().release(authority, binding)
+        with self._lock:
+            borrowed = self.require_binding(authority, binding)
+            if self._failure is not None or self._close_attempted:
+                raise B300ResidentPairFactoryError(
+                    "resident request pair cannot be released"
+                )
+            fatal = borrowed.pair.fatal_error
+            if fatal is not None:
+                self._failure = fatal
+                try:
+                    self._close_request_locked()
+                except B300ResidentPairFactoryError:
+                    pass
+                raise B300ResidentPairFactoryError(
+                    "resident request pair failed before release"
+                ) from fatal
+            self._released = True
+            return borrowed.binding
 
     def require_binding(
         self,
@@ -889,7 +622,17 @@ class B300CommissionedResidentPairFactory:
     ) -> B300ResidentRequestPair:
         """Reopen only the exact binding frozen by the open request."""
 
-        return self._request_owner().require_binding(authority, binding)
+        with self._lock:
+            self._require_authority(authority)
+            if (
+                type(binding) is not ResidentPairRuntimeBinding
+                or self._borrow is None
+                or binding != self._borrow.binding
+            ):
+                raise B300ResidentPairFactoryError(
+                    "resident pair runtime binding is stale or foreign"
+                )
+            return self._borrow
 
     def retire_and_quiesce(
         self,
@@ -899,10 +642,117 @@ class B300CommissionedResidentPairFactory:
         ResidentEvaluationRetirementEvidence[ResidentEngineExecutionEvidence],
         tuple[tuple[str, OCIQuiescenceReceipt], tuple[str, OCIQuiescenceReceipt]],
     ]:
-        return self._request_owner().retire_and_quiesce(authority, binding)
+        """Close both lifetimes once, then prove both exact namespaces empty."""
+
+        with self._lock:
+            self.require_binding(authority, binding)
+            if self._quiescence is not None:
+                assert self._retirement is not None
+                return self._retirement, self._quiescence
+            if self._quiescence_attempted:
+                raise B300ResidentPairFactoryError(
+                    "resident pair quiescence previously failed"
+                ) from self._failure
+            retirement = self._close_request_locked()
+            if retirement is None:
+                raise B300ResidentPairFactoryError(
+                    "resident pair quiescence requires a started pair"
+                )
+            lifetimes = (
+                retirement.lane_a.lifetime_evidence,
+                retirement.lane_b.lifetime_evidence,
+            )
+            if any(type(row) is not ResidentEngineExecutionEvidence for row in lifetimes):
+                raise B300ResidentPairFactoryError(
+                    "resident pair retirement lacks exact engine lifetime evidence"
+                )
+            cutoff = max(
+                row.device_receipts[1].completed_monotonic_s for row in lifetimes
+            )
+            self._quiescence_attempted = True
+            try:
+                proofs = tuple(
+                    (plan.lane_policy.lane_id, plan.executor.prove_quiescent())
+                    for plan in self.lane_plans
+                )
+            except BaseException as exc:
+                self._failure = exc
+                raise B300ResidentPairFactoryError(
+                    "resident pair post-close quiescence failed"
+                ) from exc
+            for plan, (lane_id, proof) in zip(self.lane_plans, proofs, strict=True):
+                manager = plan.executor.manager
+                if (
+                    type(proof) is not OCIQuiescenceReceipt
+                    or lane_id != plan.lane_policy.lane_id
+                    or proof.executor_id != manager.executor_id
+                    or proof.manager_instance_id != manager.manager_instance_id
+                    or proof.namespace_digest != manager.namespace_digest
+                    or proof.observed_monotonic_s < cutoff
+                ):
+                    failure = B300ResidentPairFactoryError(
+                        "resident pair post-close quiescence changed lane authority"
+                    )
+                    self._failure = failure
+                    raise failure
+            self._quiescence = proofs
+            return retirement, proofs
+
+    def _close_request_locked(
+        self,
+    ) -> ResidentEvaluationRetirementEvidence | None:
+        """Retire both lanes once; a started pair must yield exact retirement."""
+
+        if self._retirement is not None:
+            return self._retirement
+        if self._close_attempted:
+            if self._failure is not None:
+                raise B300ResidentPairFactoryError(
+                    "resident request pair retirement previously failed"
+                ) from self._failure
+            return None
+        self._close_attempted = True
+        if self._pair is None:
+            return None
+        try:
+            retirement = self._pair.close()
+        except BaseException as exc:
+            if self._failure is None:
+                self._failure = exc
+            raise B300ResidentPairFactoryError(
+                "resident request pair retirement failed"
+            ) from exc
+        if (
+            self._start_attempted
+            and type(retirement) is not ResidentEvaluationRetirementEvidence
+        ):
+            failure = B300ResidentPairFactoryError(
+                "started resident request pair produced no exact retirement"
+            )
+            self._failure = failure
+            raise failure
+        if retirement is not None and self._borrow is not None:
+            if (
+                retirement.lane_a.identity
+                != self._borrow.binding.identities[0]
+                or retirement.lane_b.identity
+                != self._borrow.binding.identities[1]
+            ):
+                failure = B300ResidentPairFactoryError(
+                    "resident retirement changed the frozen A/B sessions"
+                )
+                self._failure = failure
+                raise failure
+        self._retirement = retirement
+        return retirement
 
     def close_request(self) -> ResidentEvaluationRetirementEvidence | None:
-        return self._request_owner().close()
+        with self._lock:
+            if self._authority is None:
+                raise B300ResidentPairFactoryError(
+                    "no resident request is open"
+                )
+            return self._close_request_locked()
 
     def open_request(
         self,
@@ -922,60 +772,51 @@ class B300CommissionedResidentPairFactory:
                 raise B300ResidentPairFactoryError(
                     "commissioned resident pair factory is closed"
                 )
-            if self._owner is not None and self._owner.reusable:
-                self._owner._rebind(authority, deadline=absolute)
+            if self._reusable_locked() and self._borrow is not None:
+                self._authority = authority
+                self._deadline = absolute
+                self._borrow = B300ResidentRequestPair(
+                    authority, self._pair, self._borrow.binding
+                )
+                self._released = False
                 return
-            if self._owner is not None and self._owner._released:
-                self._owner.close()
+            if self._authority is not None and self._released:
+                self._close_request_locked()
             if (
-                self._owner is not None
-                and not self._owner._close_attempted
-                and self._owner._failure is None
+                self._authority is not None
+                and not self._close_attempted
+                and self._failure is None
             ):
                 raise B300ResidentPairFactoryError(
                     "previous resident request has not released its pair"
                 )
             lifetime_deadline = float(self.clock()) + PAIR_LIFETIME_SECONDS
-        def lifetime_factories() -> tuple[Callable, Callable]:
-            factories = []
-            try:
-                for plan in self.lane_plans:
-                    factories.append(
-                        make_backend_lifetime_factory(
-                            plan.executor,
-                            plan.stock_launch,
-                            plan.stock_binding,
-                            self.model_mount,
-                            plan.resident_plan,
-                            swap_intake_root=self.swap_intake_root,
-                            deadline_provider=lambda: lifetime_deadline,
-                        )
-                    )
-            except Exception as exc:
-                raise B300ResidentPairFactoryError(
-                    f"resident backend lifetime factory failed: {exc}"
-                ) from exc
-            return factories[0], factories[1]
 
-        owner = B300ResidentPairRequestOwner(
-            authority=authority,
-            commissioned_epoch_digest=self.commissioned_epoch_digest,
-            lane_plans=self.lane_plans,
-            lifetime_factories=lifetime_factories,
-            deadline=absolute,
-            start_timeout_s=self.start_timeout_s,
-            request_timeout_s=self.request_timeout_s,
-            close_timeout_s=self.close_timeout_s,
-            clock=self.clock,
-            _construction_token=_OWNER_CONSTRUCTION_TOKEN,
-        )
-        with self._lock:
-            if self._closed:
-                owner.close()
-                raise B300ResidentPairFactoryError(
-                    "commissioned resident pair factory closed during request open"
-                )
-            self._owner = owner
+            def lifetime_factories() -> tuple[Callable, Callable]:
+                factories = []
+                try:
+                    for plan in self.lane_plans:
+                        factories.append(
+                            make_backend_lifetime_factory(
+                                plan.executor,
+                                plan.stock_launch,
+                                plan.stock_binding,
+                                self.model_mount,
+                                plan.resident_plan,
+                                swap_intake_root=self.swap_intake_root,
+                                deadline_provider=lambda: lifetime_deadline,
+                            )
+                        )
+                except Exception as exc:
+                    raise B300ResidentPairFactoryError(
+                        f"resident backend lifetime factory failed: {exc}"
+                    ) from exc
+                return factories[0], factories[1]
+
+            self._reset_request_locked()
+            self._authority = authority
+            self._deadline = absolute
+            self._lifetime_factories = lifetime_factories
 
     def retire_released_pair(self) -> bool:
         """Retire a released pair so pre-pair gates can find idle devices.
@@ -987,11 +828,10 @@ class B300CommissionedResidentPairFactory:
         """
 
         with self._lock:
-            owner = self._owner
-            if owner is None or not owner._released:
+            if self._authority is None or not self._released:
                 return False
-            owner.close()
-            self._owner = None
+            self._close_request_locked()
+            self._reset_request_locked()
         return True
 
     def close(self) -> None:
@@ -999,16 +839,14 @@ class B300CommissionedResidentPairFactory:
             if self._closed:
                 return
             self._closed = True
-            owner = self._owner
-        if owner is not None:
-            owner.close()
+            if self._authority is not None:
+                self._close_request_locked()
 
 
 __all__ = [
     "B300CommissionedResidentPairFactory",
     "B300ResidentPairFactoryError",
     "B300ResidentPairRequestAuthority",
-    "B300ResidentPairRequestOwner",
     "B300ResidentRequestPair",
     "B300ResidentStockLanePlan",
 ]
