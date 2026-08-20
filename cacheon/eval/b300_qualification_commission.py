@@ -9,7 +9,6 @@ from typing import Callable
 
 import cacheon.eval.b300_screen_deployment as screen_deployment
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
-from cacheon.engine_tree import materialize_engine_tree, reopen_materialized_engine_tree
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
@@ -76,7 +75,6 @@ from cacheon.eval.registered_resident_count_quality import (
     RegisteredResidentCountQualityError,
 )
 from cacheon.eval.scoring import marginal_workload_digest
-from cacheon.stack_manifest import EvaluationStackContext, EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
 
 
@@ -394,58 +392,16 @@ def _compose_locked(
 ) -> B300RemoteQualificationCommission:
     snapshot = catalog.snapshot()
     lane_pair = inputs.qualification_lane_pair
-    context = EvaluationStackContext(
-        runtime_digest=inputs.runtime.runtime_digest,
-        base_engine_digest=inputs.runtime.base_engine_digest,
-        arena_digest=manifest.digest,
-        catalog_snapshot=snapshot,
-        catalog_digest=catalog.digest,
-        target_spec_digests=screen_deployment._catalog_specs(catalog),
-    )
-    stock = EvaluationStackManifest(
-        runtime_digest=context.runtime_digest,
-        base_engine_digest=context.base_engine_digest,
-        arena_digest=context.arena_digest,
-        catalog_snapshot=snapshot,
-        catalog_digest=catalog.digest,
-        entries={},
-    )
-    trees_root = inputs.root / "engine-trees"
-    trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    destination = trees_root / f"resident-stock-{stock.digest}"
-    if destination.exists():
-        tree = reopen_materialized_engine_tree(destination)
-    else:
-        tree = materialize_engine_tree(
-            stock,
-            context=context,
-            catalog=catalog,
-            resolver={},
-            destination=destination,
-        )
-    if tree.stack_digest != stock.digest or tree.runtime_manifest is not None:
-        raise B300QualificationCommissionError(
-            "qualification stock tree differs from the empty commissioned stack"
-        )
-
-    target_rows = snapshot.get("targets")
-    if not isinstance(target_rows, list):
-        raise B300QualificationCommissionError("target catalog snapshot is malformed")
-    target_members = tuple(
-        sorted(
-            {
-                member
-                for row in target_rows
-                if isinstance(row, dict)
-                for member in row.get("members", ())
-                if isinstance(member, str)
-            }
+    target_members, context, stock, tree = (
+        screen_deployment._commissioned_stock_authority(
+            inputs,
+            manifest,
+            catalog,
+            snapshot,
+            error=B300QualificationCommissionError,
+            label="qualification",
         )
     )
-    if not target_members:
-        raise B300QualificationCommissionError(
-            "qualification target member set is empty"
-        )
     engine_config = screen_deployment._engine_config(
         target_members, disable_cuda_graph=False
     )

@@ -544,6 +544,74 @@ def _engine_config(
     )
 
 
+def _commissioned_stock_authority(
+    inputs: "_CommissionedInputs",
+    manifest: ArenaServiceManifest,
+    catalog: TargetCatalog,
+    snapshot: dict,
+    *,
+    error: type[Exception],
+    label: str,
+):
+    """Target members plus the empty-stack stock tree, from one exact catalog.
+
+    The screen and qualification commissions build the identical stock
+    identity — same context, same empty manifest, same on-disk
+    ``resident-stock-{digest}`` tree — so the authority lives once here.
+    ``error``/``label`` keep each commission's fail-closed error class and
+    wording exactly as before.
+    """
+
+    rows = snapshot.get("targets")
+    if not isinstance(rows, list):
+        raise error("target catalog snapshot is malformed")
+    target_members = tuple(
+        sorted(
+            {
+                member
+                for row in rows
+                if isinstance(row, dict)
+                for member in row.get("members", ())
+                if isinstance(member, str)
+            }
+        )
+    )
+    if not target_members:
+        raise error(f"{label} target member set is empty")
+    context = EvaluationStackContext(
+        runtime_digest=inputs.runtime.runtime_digest,
+        base_engine_digest=inputs.runtime.base_engine_digest,
+        arena_digest=manifest.digest,
+        catalog_snapshot=snapshot,
+        catalog_digest=catalog.digest,
+        target_spec_digests=_catalog_specs(catalog),
+    )
+    stock = EvaluationStackManifest(
+        runtime_digest=context.runtime_digest,
+        base_engine_digest=context.base_engine_digest,
+        arena_digest=context.arena_digest,
+        catalog_snapshot=snapshot,
+        catalog_digest=catalog.digest,
+        entries={},
+    )
+    trees_root = inputs.root / "engine-trees"
+    trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    destination = trees_root / f"resident-stock-{stock.digest}"
+    if destination.exists():
+        tree = reopen_materialized_engine_tree(destination)
+    else:
+        tree = materialize_engine_tree(
+            stock,
+            context=context,
+            catalog=catalog,
+            resolver={},
+            destination=destination,
+        )
+    if tree.stack_digest != stock.digest or tree.runtime_manifest is not None:
+        raise error(f"{label} stock tree differs from the empty commissioned stack")
+    return target_members, context, stock, tree
+
+
 def _native_build(
     tree_digest: str,
     preflight: RuntimePreflightReceipt,
@@ -861,55 +929,14 @@ def _resident_factory(
                 "resident service manifest differs from commission"
             )
         snapshot = catalog.snapshot()
-        rows = snapshot.get("targets")
-        if not isinstance(rows, list):
-            raise B300ScreenDeploymentError("target catalog snapshot is malformed")
-        target_members = tuple(
-            sorted(
-                {
-                    member
-                    for row in rows
-                    if isinstance(row, dict)
-                    for member in row.get("members", ())
-                    if isinstance(member, str)
-                }
-            )
+        target_members, _context, _stock, tree = _commissioned_stock_authority(
+            inputs,
+            manifest,
+            catalog,
+            snapshot,
+            error=B300ScreenDeploymentError,
+            label="resident",
         )
-        if not target_members:
-            raise B300ScreenDeploymentError("resident target member set is empty")
-        context = EvaluationStackContext(
-            runtime_digest=inputs.runtime.runtime_digest,
-            base_engine_digest=inputs.runtime.base_engine_digest,
-            arena_digest=manifest.digest,
-            catalog_snapshot=snapshot,
-            catalog_digest=catalog.digest,
-            target_spec_digests=_catalog_specs(catalog),
-        )
-        stock = EvaluationStackManifest(
-            runtime_digest=context.runtime_digest,
-            base_engine_digest=context.base_engine_digest,
-            arena_digest=context.arena_digest,
-            catalog_snapshot=snapshot,
-            catalog_digest=catalog.digest,
-            entries={},
-        )
-        trees_root = inputs.root / "engine-trees"
-        trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        destination = trees_root / f"resident-stock-{stock.digest}"
-        if destination.exists():
-            tree = reopen_materialized_engine_tree(destination)
-        else:
-            tree = materialize_engine_tree(
-                stock,
-                context=context,
-                catalog=catalog,
-                resolver={},
-                destination=destination,
-            )
-        if tree.stack_digest != stock.digest or tree.runtime_manifest is not None:
-            raise B300ScreenDeploymentError(
-                "resident stock tree differs from the empty commissioned stack"
-            )
 
         policy = inputs.device_policy
         hardware = LogicalHardwareSpec(
