@@ -407,6 +407,14 @@ the pointer. The paying coldkey is not the claimant. When the gate is disabled, 
 pointer is ignored for payment accounting: unverified coordinates are neither consumed
 nor allowed to pre-claim a future payment.
 
+Byte-identical resubmissions replay their prior verdict before any lease is claimed:
+a bundle whose exact content hash already reached a terminal `FAIL` under the exact
+current arena service digest inherits that `FAIL` (reason
+`duplicate_of:<reservation>:<original reason>`) and costs neither a screen nor a
+qualification. A prior `PASS` is never replayed — settlement requires an independently
+bound PASS pair, so a resubmitted winner queues for a real evaluation. Any changed
+byte, or any change to the arena, produces a fresh evaluation.
+
 ## Verdict and retry semantics
 
 The controller maps failures according to where authority was lost:

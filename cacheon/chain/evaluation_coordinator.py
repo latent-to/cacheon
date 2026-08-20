@@ -795,6 +795,11 @@ class EvaluationCoordinator:
         lease: EvaluationLease | None = None
         claim_error: IntakeError | None = None
         try:
+            # Identical bytes that already lost under this exact arena inherit
+            # that FAIL before any lease exists, so a resubmission costs neither
+            # a screen nor a qualification; a PASS is never replayed
+            # (cacheon.chain.duplicate_replay).
+            store.retire_duplicate_screenables(service_digest=self.service.identity)
             lease = store.claim_evaluation_lease(
                 stage="screen",
                 owner=self.owner,
