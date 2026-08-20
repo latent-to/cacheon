@@ -36,7 +36,6 @@ from cacheon.chain.remote_evaluation_dispatcher import (
 from cacheon.chain.remote_worker_artifact_recovery import publication_archive
 from cacheon.chain.remote_worker_request_plan import (
     PlannedQualificationObservation,
-    QualificationPrepublicationProof,
     QualificationRecoveryHold,
     QualificationRequestPlan,
     create_qualification_request_plan,
@@ -734,7 +733,7 @@ class DurableSpoolAuthenticatedWorkerTransport:
 
     def prove_planned_qualification_prepublication(
         self, plan: QualificationRequestPlan
-    ) -> QualificationPrepublicationProof:
+    ) -> PlannedQualificationObservation:
         return prove_qualification_plan(
             plan,
             self.spool_root / "outbox",

@@ -351,7 +351,7 @@ def test_reconstructed_transport_uses_one_plan_carrier_ready_and_no_enqueue(
         "carrier_materialized"
     )
     proof = first.prove_planned_qualification_prepublication(plan)
-    assert proof.carrier_materialized is True
+    assert proof.state == "carrier_materialized"
 
     second = authority.transport()
     assert second.publish_planned_qualification(reopened).state == "request_ready"
@@ -635,7 +635,7 @@ def test_sqlite_recovery_persists_one_plan_across_every_publication_crash_window
     materialized = _materialize(authority, plan)
     assert materialized.state == "carrier_materialized"
     proof = authority.transport().prove_planned_qualification_prepublication(plan)
-    assert proof.carrier_materialized is True
+    assert proof.state == "carrier_materialized"
 
     with RecoverableFinalizedIntakeStore(
         *store_options, **store_keywords
