@@ -53,6 +53,7 @@ from cacheon.chain.publication import (
 )
 from cacheon.chain.reference_copy_policy import reconcile_reference_copies
 from cacheon.copy_fingerprint import fingerprint_submitted_delta
+from cacheon.target_servability import unservable_target_reason
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationIntakeBatch,
@@ -531,6 +532,24 @@ def run_pass(
                 rejected = store.mark_failed(active.reservation_id, f"manifest:{exc}")
                 result.rejected[rejected.reservation_id] = rejected.reason
                 continue
+            # Fail-closed servability gate: a registered target whose arena
+            # chokepoint can never execute must reject deterministically here,
+            # not burn an evaluation lease to CandidateNeverExecutedError.
+            if fingerprint.product_kind == "component":
+                unservable = unservable_target_reason(fingerprint.target_id)
+                if unservable is not None:
+                    logger.info(
+                        "rejecting %s: target %s is unservable: %s",
+                        active.reservation_id,
+                        fingerprint.target_id,
+                        unservable,
+                    )
+                    rejected = store.mark_failed(
+                        active.reservation_id,
+                        f"unservable_target:{fingerprint.target_id}",
+                    )
+                    result.rejected[rejected.reservation_id] = rejected.reason
+                    continue
             try:
                 publication = publish_worker_bundle(
                     private,

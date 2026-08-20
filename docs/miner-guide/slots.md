@@ -55,6 +55,18 @@ runtime has a stable model-specific chokepoint. The prefill sibling has a real g
 adapter. Confirm that the operator's arena actually binds and activates the target before
 investing in a production submission; a contract alone does not make a call site hot.
 
+Intake now enforces this before evaluation: a submission against a target the
+live arena cannot execute is rejected at admission with the deterministic
+reason `unservable_target:<target_id>` instead of failing later with
+`CandidateNeverExecutedError`. Two registered targets are currently
+unservable and will be rejected:
+
+- `attention.msa_block_score` — no installed seam adapter serves the slot.
+- `norm.rmsnorm` — the current arena model (MiniMax-M3) uses `GemmaRMSNorm`
+  at every norm site, so the `RMSNorm` chokepoint never executes.
+
+See `cacheon/target_servability.py` for the authoritative policy and reasons.
+
 Collective slots are distributed contracts. `group` is the process group the
 validator supplies, and every listed output is validator-allocated. Test with
 the arena's world/TP size, not just one rank.
