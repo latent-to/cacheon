@@ -322,6 +322,8 @@ def compose_commissioned_qualifications(
             f"sealed qualification policy failed to seal: {exc}"
         ) from None
 
+    _require_cell_conformance(inputs, policy, session_block)
+
     lane_a_policy, lane_b_policy = _lane_policies(inputs)
     lane_a_executor = screen_deployment._build_executor(
         inputs.root / "qualification-lane-a",
@@ -372,6 +374,23 @@ def compose_commissioned_qualifications(
     return (commissions[0], commissions[1]), executors
 
 
+def _require_cell_conformance(inputs, policy, session_block) -> None:
+    """The declared workload cell and the consumed session are projections of
+    one sealed authority; any mismatch is a commissioning error, never a
+    runtime surprise.  Batch widths were validated against the cell at parse.
+    """
+
+    cell = screen_deployment._scored_cell(inputs.workload)
+    if (
+        policy.tokens_per_prompt != cell.output_tokens
+        or len(inputs.prompt_batches)
+        != session_block["warmup_count"] + cell.timed_reads
+    ):
+        raise B300QualificationCommissionError(
+            "sealed session does not conform to the declared workload cell"
+        )
+
+
 def _compose_locked(
     inputs,
     manifest,
@@ -403,7 +422,9 @@ def _compose_locked(
         )
     )
     engine_config = screen_deployment._engine_config(
-        target_members, disable_cuda_graph=False
+        target_members,
+        screen_deployment._scored_cell(inputs.workload),
+        disable_cuda_graph=False,
     )
     baseline_hardware = LogicalHardwareSpec(
         visible_gpu_count=screen_deployment.GPU_COUNT,

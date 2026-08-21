@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.b300_screen_deployment as deployment
-from cacheon.arena_service import ArenaCandidateBinding
+from cacheon.arena_service import ArenaCandidateBinding, WorkloadCell
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
 from cacheon.engine_tree import inspect_contribution
@@ -111,9 +111,17 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
         "hidden_judge_digest": _h("hidden-judge"),
         "hidden_task_policy_digest": _h("hidden-task-policy"),
         "prompt_batches": [["one"], ["two"], ["three"]],
+        "prompt_seed_scheme": "sealed-prompts-v1",
         "schema": "cacheon-private-prompt-authority-v1",
         "selection_policy_digest": _h("selection-policy"),
         "tokenizer_digest": _h("tokenizer"),
+        "workload_cell": {
+            "cell_id": "s8",
+            "concurrency": 1,
+            "input_tokens": 8192,
+            "output_tokens": 1024,
+            "timed_reads": 2,
+        },
     }
     prompt_sha = _write(prompt, prompt_value)
     calibration = tmp_path / "calibration-package.json"
@@ -431,11 +439,39 @@ def test_concrete_resolver_materializes_published_bundle_and_binds_tp4_launches(
         composition.close()
 
 
-def test_graph_engine_config_extends_sglang_watchdog_past_cuda_graph_capture() -> None:
-    eager = deployment._engine_config(("msa",), disable_cuda_graph=True)
-    graph = deployment._engine_config(("msa",), disable_cuda_graph=False)
+def test_graph_engine_config_derives_from_the_declared_cell() -> None:
+    cell = WorkloadCell("s8", 8192, 1024, 64, 8)
+    eager = deployment._engine_config(("msa",), cell, disable_cuda_graph=True)
+    graph = deployment._engine_config(("msa",), cell, disable_cuda_graph=False)
     assert "watchdog_timeout" not in eager.engine_kwargs
     assert graph.engine_kwargs["watchdog_timeout"] == 1800
+    for config in (eager, graph):
+        assert config.engine_kwargs["context_length"] == 8192 + 1024 + 128
+        assert config.engine_kwargs["disable_radix_cache"] is True
+        assert config.max_running_requests == 64
+
+
+def test_workload_parser_seals_cell_against_batches() -> None:
+    prompt = {
+        "prompt_seed_scheme": "sealed-prompts-v1",
+        "workload_cell": {
+            "cell_id": "s8",
+            "concurrency": 2,
+            "input_tokens": 8192,
+            "output_tokens": 1024,
+            "timed_reads": 2,
+        },
+    }
+    batches = (("a", "b"), ("c", "d"), ("e", "f"))
+    workload = deployment._workload(prompt, batches, _h("corpus"))
+    assert deployment._scored_cell(workload).concurrency == 2
+    assert workload.prompt_corpus_digest == _h("corpus")
+
+    with pytest.raises(deployment.B300ScreenDeploymentError, match="concurrency"):
+        deployment._workload(prompt, (("a",), ("b", "c"), ("d", "e")), _h("corpus"))
+    widened = dict(prompt, workload_cell=dict(prompt["workload_cell"], extra=1))
+    with pytest.raises(deployment.B300ScreenDeploymentError, match="closed"):
+        deployment._workload(widened, batches, _h("corpus"))
 
 
 def test_resident_intake_is_traversable_by_non_owner(tmp_path: Path) -> None:

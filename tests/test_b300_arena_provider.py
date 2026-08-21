@@ -24,9 +24,8 @@ from cacheon.arena_service import (
     ScreenGrade,
     ScreenStagePolicy,
     ScreenStageResult,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
@@ -378,23 +377,10 @@ def _manifest(
     authorities: B300DeploymentAuthorities,
     **changes,
 ) -> ArenaServiceManifest:
-    workload = WorkloadMixture(
+    workload = Workload(
         _h("prompt-corpus"),
         "sealed-prompt-seeds-v1",
-        (
-            WorkloadRegime(
-                "decode",
-                "decode",
-                500_000,
-                (ServingShape(256, 128, 8, 8),),
-            ),
-            WorkloadRegime(
-                "prefill",
-                "long_prefill",
-                500_000,
-                (ServingShape(8192, 16, 1, 8),),
-            ),
-        ),
+        (WorkloadCell("s8", 8192, 1024, 64, 8),),
     )
     values = {
         "runtime": authorities.runtime_identity,

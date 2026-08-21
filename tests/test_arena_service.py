@@ -22,9 +22,8 @@ from cacheon.arena_service import (
     ScreenGrade,
     ScreenStagePolicy,
     ScreenStageResult,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
@@ -55,23 +54,10 @@ def _manifest(**changes) -> ArenaServiceManifest:
         gpu_count=8,
         tensor_parallel_size=8,
     )
-    workload = WorkloadMixture(
+    workload = Workload(
         _h("corpus"),
         "finalized-entropy-v1",
-        (
-            WorkloadRegime(
-                "decode-serving",
-                "decode",
-                600_000,
-                (ServingShape(256, 256, 8, 32), ServingShape(1024, 128, 4, 16)),
-            ),
-            WorkloadRegime(
-                "long-prefill-serving",
-                "long_prefill",
-                400_000,
-                (ServingShape(8192, 32, 1, 16), ServingShape(32768, 16, 1, 8)),
-            ),
-        ),
+        (WorkloadCell("s8", 8192, 1024, 64, 8),),
     )
     capacity = ArenaCapacityPolicy(64, 600, 4, 8, 4, 2, 4, 3)
     screens = NonCrownScreenPolicy(
@@ -203,18 +189,14 @@ def test_service_identity_binds_every_serving_authority() -> None:
     assert len({manifest.digest, *(row.digest for row in variants)}) == 8
 
 
-def test_workload_requires_exact_decode_and_long_prefill_mixture() -> None:
-    decode = WorkloadRegime(
-        "decode", "decode", 1_000_000, (ServingShape(1, 1, 1, 1),)
-    )
-    with pytest.raises(ArenaServiceError, match="decode and long_prefill"):
-        WorkloadMixture(_h("corpus"), "seed-v1", (decode,))
-
-    prefill = WorkloadRegime(
-        "prefill", "long_prefill", 1, (ServingShape(8192, 1, 1, 1),)
-    )
-    with pytest.raises(ArenaServiceError, match="1M ppm"):
-        WorkloadMixture(_h("corpus"), "seed-v1", (decode, prefill))
+def test_workload_requires_typed_unique_cells() -> None:
+    cell = WorkloadCell("s8", 8192, 1024, 64, 8)
+    with pytest.raises(ArenaServiceError, match="cells"):
+        Workload(_h("corpus"), "seed-v1", ())
+    with pytest.raises(ArenaServiceError, match="cells"):
+        Workload(_h("corpus"), "seed-v1", (cell, cell))
+    with pytest.raises(ArenaServiceError, match="positive integer"):
+        WorkloadCell("s8", 8192, 0, 64, 8)
 
 
 def test_admission_is_capacity_bounded_and_fail_closed() -> None:

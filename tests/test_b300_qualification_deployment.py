@@ -25,9 +25,8 @@ from cacheon.arena_service import (
     ScreenGrade,
     ScreenStagePolicy,
     ScreenStageResult,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
@@ -369,23 +368,10 @@ def _screen_authorities(
 def _manifest(authorities: B300ScreenDeploymentAuthorities) -> ArenaServiceManifest:
     return ArenaServiceManifest(
         runtime=authorities.runtime_identity,
-        workload=WorkloadMixture(
+        workload=Workload(
             _h("prompt-corpus"),
             "sealed-prompt-seeds-v1",
-            (
-                WorkloadRegime(
-                    "decode",
-                    "decode",
-                    500_000,
-                    (ServingShape(256, 32, 32, 4),),
-                ),
-                WorkloadRegime(
-                    "long-prefill",
-                    "long_prefill",
-                    500_000,
-                    (ServingShape(8192, 4, 1, 4),),
-                ),
-            ),
+            (WorkloadCell("s8", 8192, 1024, 64, 8),),
         ),
         capacity=ArenaCapacityPolicy(32, 64, 1, 4, 4, 2, 2, 3),
         screens=NonCrownScreenPolicy(

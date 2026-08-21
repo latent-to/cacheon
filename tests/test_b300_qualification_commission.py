@@ -15,6 +15,8 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+from cacheon.arena_service import Workload, WorkloadCell
+
 import pytest
 import tests.test_calibration as calibration_fixtures
 import tests.test_oci_backend as oci_backend_fixtures
@@ -449,6 +451,27 @@ def test_compose_requires_a_sealed_commission_block() -> None:
         commission.compose_commissioned_qualifications(
             inputs, object(), object(), object()
         )
+
+
+def test_compose_rejects_a_session_that_differs_from_the_declared_cell() -> None:
+    workload = Workload(
+        _h("corpus"), "seed-v1", (WorkloadCell("s8", 8192, 1024, 2, 2),)
+    )
+    inputs = SimpleNamespace(workload=workload, prompt_batches=(("p", "p"),) * 3)
+    session = {"warmup_count": 1}
+    policy = SimpleNamespace(tokens_per_prompt=1024)
+    commission._require_cell_conformance(inputs, policy, session)
+
+    with pytest.raises(
+        commission.B300QualificationCommissionError, match="conform"
+    ):
+        commission._require_cell_conformance(
+            inputs, SimpleNamespace(tokens_per_prompt=256), session
+        )
+    with pytest.raises(
+        commission.B300QualificationCommissionError, match="conform"
+    ):
+        commission._require_cell_conformance(inputs, policy, {"warmup_count": 2})
 
 
 def test_qualification_swap_root_is_runtime_traversable(tmp_path: Path) -> None:

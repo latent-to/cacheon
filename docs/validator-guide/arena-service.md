@@ -33,20 +33,22 @@ refresh, SGLang update, worker image change, prompt-corpus change, topology chan
 capacity/policy edit creates a new service digest. Do not silently “update” an arena ID
 in place and compare results across the old and new digest.
 
-## Workload mixture
+## Scored workload
 
-A workload regime contains an exact phase, weight in integer parts per million, and one
-or more `(input_tokens, output_tokens, batch_size, samples)` shapes. A valid mixture:
+The workload declares the exact serving cells that qualification executes: for
+each cell, the engine-observed input tokens per request, the exact output
+budget, the timed-wave concurrency, and the number of timed reads, alongside
+the prompt-corpus digest and seed scheme. The declaration is not a separate
+description of intent — the sealed prompt batches are validated against the
+cell before anything commissions, the engine configuration (context length,
+admission width, cache policy) derives from the cell, and a qualification
+session whose output budget or read count differs from the cell cannot
+commission. What the manifest declares is therefore what the engine runs.
 
-- totals exactly 1,000,000 ppm;
-- contains both `decode` and `long_prefill` phases;
-- binds a prompt-corpus digest; and
-- binds the prompt seed scheme.
-
-This prevents a candidate, operator typo, or later configuration drift from quietly
-changing the workload represented by a result. It does not prove that the registered
-mixture perfectly predicts every production deployment; workload representativeness
-remains a governance and measurement responsibility.
+This prevents a candidate, operator typo, or later configuration drift from
+quietly changing the workload represented by a result. Whether the declared
+cells predict production serving well remains a governance and measurement
+responsibility.
 
 ## Non-crownable screens
 

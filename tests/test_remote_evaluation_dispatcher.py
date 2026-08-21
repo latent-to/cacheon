@@ -22,9 +22,8 @@ from cacheon.arena_service import (
     ScreenGrade,
     ScreenStagePolicy,
     ScreenStageResult,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.evaluation_coordinator import (
@@ -103,20 +102,10 @@ def _manifest() -> ArenaServiceManifest:
             gpu_count=4,
             tensor_parallel_size=4,
         ),
-        WorkloadMixture(
+        Workload(
             _h("corpus"),
             "test-seed-v1",
-            (
-                WorkloadRegime(
-                    "decode", "decode", 500_000, (ServingShape(128, 32, 1, 1),)
-                ),
-                WorkloadRegime(
-                    "prefill",
-                    "long_prefill",
-                    500_000,
-                    (ServingShape(1024, 8, 1, 1),),
-                ),
-            ),
+            (WorkloadCell("s8", 8192, 1024, 64, 8),),
         ),
         ArenaCapacityPolicy(32, 100, 4, 4, 4, 3, 3, 3),
         NonCrownScreenPolicy(

@@ -220,7 +220,7 @@ review all of the following as one service identity:
 
 1. exact runtime, base engine, validator overlay, worker distribution, model revision,
    model content, GPU architecture, topology, GPU count, and TP size;
-2. prompt-corpus digest, seed scheme, decode and long-prefill regimes, and exact shapes;
+2. prompt-corpus digest, seed scheme, and the exact scored workload cells;
 3. queue, screen, qualification, cohort, age, and retry bounds;
 4. five ordered non-crown screen timeouts plus resident-screen swap, canary, waiver,
    and lifetime policy;

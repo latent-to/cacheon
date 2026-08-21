@@ -47,15 +47,16 @@ are:
 | Section | Bound decisions |
 |---|---|
 | `ArenaRuntimeIdentity` | Arena ID; runtime/base/overlay/worker digests; exact model identities; architecture; topology; GPU and TP sizes |
-| `WorkloadMixture` | Prompt-corpus digest and seed scheme; weighted decode and long-prefill regimes; exact serving shapes |
+| `Workload` | Prompt-corpus digest and seed scheme; the exact scored serving cells (engine-observed input tokens, output budget, concurrency, timed reads) |
 | `ArenaCapacityPolicy` | Queue depth/age, concurrent screen and qualification limits, cohort size, and retry budgets |
 | `NonCrownScreenPolicy` | Exactly ordered static, build, ABI, graph, and abbreviated-serving stages with timeouts |
 | Qualification/provider digests | Exact qualification policy and reviewed provider implementation identity |
 
-Workload weights sum to one million parts per million and must cover both
-decode and long-prefill. Tensor parallel size cannot exceed the bound GPU
-count. These checks turn “same arena” into a typed identity rather than an
-operator nickname.
+Every workload cell is typed, positive, and unique, and the sealed prompt
+batches must match each cell's declared concurrency before anything
+commissions. Tensor parallel size cannot exceed the bound GPU count. These
+checks turn “same arena” into a typed identity rather than an operator
+nickname.
 
 ## Boundary types
 
@@ -91,7 +92,7 @@ types, not by a generic arena outcome object.
 ## What the service owns
 
 - exact runtime, base-engine, model, worker, architecture, and topology identity;
-- the decode/long-prefill workload mixture;
+- the scored workload cells and prompt corpus;
 - queue depth/age, cohort size, active screen/qualification, and retry bounds;
 - the fixed static/build/ABI/graph/abbreviated-serving screens;
 - qualification-policy and provider digests; and

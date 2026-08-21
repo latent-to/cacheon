@@ -86,7 +86,7 @@ An `ArenaServiceRegistry` maps a public arena identifier to a closed
 
 - runtime, base-engine, validator-overlay, worker, model, architecture, GPU,
   and topology identities;
-- the decode/long-prefill workload mixture and prompt-seed scheme;
+- the scored workload cells and prompt-seed scheme;
 - non-crown screen policy;
 - queue depth/age, cohort size, screen/qualification concurrency, and retry policy;
 - the qualification-policy digest; and

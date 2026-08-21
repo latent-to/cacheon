@@ -2,7 +2,7 @@
 
 An arena service is the trusted bridge between finalized publications and the
 crownable qualification authority.  It binds the exact runtime/model/topology,
-serving workload mixture, resource budgets, and reviewed provider identity.  Its
+scored serving workload, resource budgets, and reviewed provider identity.  Its
 screens are deliberately non-economic: they may reject, retry, or promote a
 candidate to qualification, but cannot produce a score or a crown.
 
@@ -28,8 +28,7 @@ from cacheon.stack_identity import canonical_digest
 from cacheon._strict import require_digest, require_identifier
 
 
-SERVICE_SCHEMA_VERSION = 1
-WEIGHT_PPM = 1_000_000
+SERVICE_SCHEMA_VERSION = 2
 SCREEN_STAGES = ("static", "build", "abi", "graph", "abbreviated_serving")
 _SCREEN_WAIVER_SCHEMA = "cacheon.arena.screen-waiver.v1"
 _IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,255}\Z")
@@ -120,64 +119,43 @@ class ArenaRuntimeIdentity:
 
 
 @dataclass(frozen=True)
-class ServingShape:
-    """One exact serving shape sampled within a workload regime."""
+class WorkloadCell:
+    """One scored serving cell, stated exactly as the session executes it.
 
+    The declaration and the consumed ``SessionExecutionPlan`` are projections
+    of the same sealed authority: ``concurrency`` is the width of every sealed
+    prompt batch, ``output_tokens`` is the session's exact generation budget
+    (``ignore_eos``), and ``input_tokens`` is the engine-observed prompt length
+    every timed request must report.  A plan that cannot satisfy the cell
+    cannot commission, so the declared and executed workloads cannot diverge.
+    """
+
+    cell_id: str
     input_tokens: int
     output_tokens: int
-    batch_size: int
-    samples: int
+    concurrency: int
+    timed_reads: int
 
     def __post_init__(self) -> None:
-        for field in ("input_tokens", "output_tokens", "batch_size", "samples"):
+        object.__setattr__(self, "cell_id", _identifier(self.cell_id, "workload cell id"))
+        for field in ("input_tokens", "output_tokens", "concurrency", "timed_reads"):
             object.__setattr__(self, field, _positive(getattr(self, field), field))
-
-    def to_dict(self) -> dict[str, int]:
-        return {
-            "batch_size": self.batch_size,
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "samples": self.samples,
-        }
-
-
-@dataclass(frozen=True)
-class WorkloadRegime:
-    name: str
-    phase: str
-    weight_ppm: int
-    shapes: tuple[ServingShape, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "name", _identifier(self.name, "workload regime name"))
-        if self.phase not in {"decode", "long_prefill"}:
-            raise ArenaServiceError("workload phase must be decode or long_prefill")
-        if type(self.weight_ppm) is not int or not 1 <= self.weight_ppm <= WEIGHT_PPM:
-            raise ArenaServiceError("workload regime weight_ppm is invalid")
-        shapes = tuple(self.shapes)
-        if (
-            not shapes
-            or any(type(row) is not ServingShape for row in shapes)
-            or len({(row.input_tokens, row.output_tokens, row.batch_size) for row in shapes})
-            != len(shapes)
-        ):
-            raise ArenaServiceError("workload regime shapes are empty or duplicated")
-        object.__setattr__(self, "shapes", shapes)
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "name": self.name,
-            "phase": self.phase,
-            "shapes": [row.to_dict() for row in self.shapes],
-            "weight_ppm": self.weight_ppm,
+            "cell_id": self.cell_id,
+            "concurrency": self.concurrency,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "timed_reads": self.timed_reads,
         }
 
 
 @dataclass(frozen=True)
-class WorkloadMixture:
+class Workload:
     prompt_corpus_digest: str
     prompt_seed_scheme: str
-    regimes: tuple[WorkloadRegime, ...]
+    cells: tuple[WorkloadCell, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -190,28 +168,24 @@ class WorkloadMixture:
             "prompt_seed_scheme",
             _identifier(self.prompt_seed_scheme, "prompt_seed_scheme"),
         )
-        regimes = tuple(self.regimes)
+        cells = tuple(self.cells)
         if (
-            not regimes
-            or any(type(row) is not WorkloadRegime for row in regimes)
-            or len({row.name for row in regimes}) != len(regimes)
-            or sum(row.weight_ppm for row in regimes) != WEIGHT_PPM
-            or {row.phase for row in regimes} != {"decode", "long_prefill"}
+            not cells
+            or any(type(row) is not WorkloadCell for row in cells)
+            or len({row.cell_id for row in cells}) != len(cells)
         ):
-            raise ArenaServiceError(
-                "workload mixture must uniquely cover decode and long_prefill at 1M ppm"
-            )
-        object.__setattr__(self, "regimes", regimes)
+            raise ArenaServiceError("workload cells are empty, untyped, or duplicated")
+        object.__setattr__(self, "cells", cells)
 
     @property
     def digest(self) -> str:
-        return canonical_digest("cacheon.arena.workload-mixture", self.to_dict())
+        return canonical_digest("cacheon.arena.workload-cells.v1", self.to_dict())
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "cells": [row.to_dict() for row in self.cells],
             "prompt_corpus_digest": self.prompt_corpus_digest,
             "prompt_seed_scheme": self.prompt_seed_scheme,
-            "regimes": [row.to_dict() for row in self.regimes],
         }
 
 
@@ -272,7 +246,7 @@ class NonCrownScreenPolicy:
 @dataclass(frozen=True)
 class ArenaServiceManifest:
     runtime: ArenaRuntimeIdentity
-    workload: WorkloadMixture
+    workload: Workload
     capacity: ArenaCapacityPolicy
     screens: NonCrownScreenPolicy
     qualification_policy_digest: str
@@ -282,7 +256,7 @@ class ArenaServiceManifest:
     def __post_init__(self) -> None:
         if (
             type(self.runtime) is not ArenaRuntimeIdentity
-            or type(self.workload) is not WorkloadMixture
+            or type(self.workload) is not Workload
             or type(self.capacity) is not ArenaCapacityPolicy
             or type(self.screens) is not NonCrownScreenPolicy
             or type(self.schema_version) is not int
@@ -744,7 +718,6 @@ __all__ = [
     "ScreenGrade",
     "ScreenStagePolicy",
     "ScreenStageResult",
-    "ServingShape",
-    "WorkloadMixture",
-    "WorkloadRegime",
+    "Workload",
+    "WorkloadCell",
 ]

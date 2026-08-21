@@ -176,6 +176,22 @@ not safely hot-swappable. They receive a typed screen waiver and proceed to
 dedicated qualification. A waiver and a screen promotion are routing products,
 not qualification evidence.
 
+### One workload authority (2026-08-21)
+
+Until 2026-08-21 the manifest declared a hand-written two-regime workload
+mixture (decode 256-token/concurrency-32 plus long-prefill 8,192-token) that
+no execution path consumed, while the scored session actually ran the sealed
+corpus's short prompts (40–230 actual input tokens, median 74) at 256 output
+tokens. Retained mainnet evidence surfaced the split on 2026-08-21. Current
+source removes the mixture schema entirely: the sealed prompt authority
+declares the exact scored workload cell (engine-observed input tokens, output
+budget, concurrency, timed reads), the manifest embeds that declaration, the
+sealed batches are validated against the cell at parse, the engine
+configuration (context length, admission width, radix-cache disable) derives
+from the cell, and commissioning fails closed on any session/policy mismatch.
+The declared and consumed workloads are projections of one object and cannot
+diverge.
+
 ### Resident adaptive qualification
 
 Since **2026-08-16** resident speed policy **version 7** swaps both arms. Under
