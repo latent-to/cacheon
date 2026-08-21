@@ -352,6 +352,7 @@ class SessionExecutionPlan:
     max_new_tokens: int
     top_logprobs_num: int
     temperature: float
+    expected_prompt_tokens: int | None = None
     expected_discovery_overlay_identity_digest: str | None = None
     audit_policy: SlotAuditPolicy | None = None
 
@@ -434,6 +435,7 @@ class SessionExecutionPlan:
                     max_new_tokens=self.max_new_tokens,
                     top_logprobs_num=self.top_logprobs_num,
                     temperature=self.temperature,
+                    expected_prompt_tokens=self.expected_prompt_tokens,
                 )
                 frame_message(message, max_bytes=MAX_BATCH_REQUEST_BYTES)
             except SessionProtocolError as exc:
@@ -813,6 +815,7 @@ class OpenedOuterSession:
                     max_new_tokens=self.plan.max_new_tokens,
                     top_logprobs_num=self.plan.top_logprobs_num,
                     temperature=self.plan.temperature,
+                    expected_prompt_tokens=self.plan.expected_prompt_tokens,
                 )
             )
             final_warmup = index == self.plan.warmup_count - 1

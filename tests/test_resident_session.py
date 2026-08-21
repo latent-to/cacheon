@@ -390,6 +390,7 @@ class TestServeResidentLoop:
                 return [
                     {
                         "meta_info": {
+                            "prompt_tokens": 5,
                             "output_ids": list(range(tokens)),
                             "output_top_logprobs": [
                                 [(-0.5 - column, column) for column in range(width)]
@@ -630,6 +631,7 @@ class TestResidentOuterSession:
                                 )
                                 for _ in range(request.max_new_tokens)
                             ),
+                            request.expected_prompt_tokens or 5,
                         )
                         for _ in request.prompts
                     )

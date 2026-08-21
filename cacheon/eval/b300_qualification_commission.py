@@ -499,6 +499,9 @@ def _compose_locked(
         max_new_tokens=policy.tokens_per_prompt,
         top_logprobs_num=policy.topk_width,
         temperature=float(session_block["temperature"]),
+        expected_prompt_tokens=screen_deployment._scored_cell(
+            inputs.workload
+        ).input_tokens,
     )
     pristine_launch, pristine_session_plan = _pristine_reference_authority(
         incumbent_launch,

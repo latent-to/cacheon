@@ -891,6 +891,7 @@ class _CommissionedScreenPlanResolver:
                 max_new_tokens=4,
                 top_logprobs_num=0,
                 temperature=0.0,
+                expected_prompt_tokens=cell.input_tokens,
                 audit_policy=audit,
             )
 

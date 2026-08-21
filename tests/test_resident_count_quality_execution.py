@@ -92,6 +92,7 @@ class _Session:
                 PromptEvidence(
                     self.outputs[prompt],
                     tuple(() for _ in self.outputs[prompt]),
+                    5,
                 )
                 for prompt in prompts
             )

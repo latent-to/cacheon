@@ -121,7 +121,7 @@ def _batch_evidence(request: BatchRequest) -> BatchEvidence:
             ((-0.7, 100 + index), (-1.0, 200 + index))
             for index in range(request.max_new_tokens)
         )
-        prompts.append(PromptEvidence(ids, positions))
+        prompts.append(PromptEvidence(ids, positions, 5))
     return BatchEvidence(tuple(prompts))
 
 

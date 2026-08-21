@@ -53,10 +53,11 @@ def marginal_workload_digest(plan: object) -> str:
     if type(plan) is not SessionExecutionPlan:
         raise RawSpeedEvidenceError("workload plan must be exact typed evidence")
     return canonical_digest(
-        "cacheon.qualification.marginal-workload.v1",
+        "cacheon.qualification.marginal-workload.v2",
         {
             "conditioning_count": plan.conditioning_count,
             "engine_config_digest": plan.expected_engine_config_digest,
+            "expected_prompt_tokens": plan.expected_prompt_tokens,
             "max_new_tokens": plan.max_new_tokens,
             "prompt_batches": plan.prompt_batches,
             "temperature": format(plan.temperature, ".17g"),

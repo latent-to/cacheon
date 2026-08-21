@@ -25,7 +25,7 @@ SLOT = "attention.msa_prefill_block_score"
 
 
 def _batch_evidence() -> BatchEvidence:
-    return BatchEvidence((PromptEvidence((1,), (((-0.5, 1),),)),))
+    return BatchEvidence((PromptEvidence((1,), (((-0.5, 1),),), 5),))
 
 
 class FakeSession:

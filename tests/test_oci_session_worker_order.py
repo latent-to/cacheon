@@ -506,10 +506,11 @@ def test_open_ended_worker_returns_only_exact_binary_batch_evidence(monkeypatch)
             return {
                 "output_ids": [11, 12],
                 "meta_info": {
+                    "prompt_tokens": 5,
                     "output_top_logprobs": [
                         [[-0.25, 11, "forbidden-text"]],
                         [[-0.5, 12, "forbidden-text"]],
-                    ]
+                    ],
                 },
                 "text": "must-not-cross-wire",
             }
@@ -601,10 +602,11 @@ def test_audited_worker_projects_candidate_coverage_failure_to_empty_evidence(
             return {
                 "output_ids": [11, 12],
                 "meta_info": {
+                    "prompt_tokens": 5,
                     "output_top_logprobs": [
                         [[-0.25, 11, None]],
                         [[-0.5, 12, None]],
-                    ]
+                    ],
                 },
             }
 

@@ -86,6 +86,12 @@ runtime namespaces, lane-specific NUMA policy, exact workload, and a total quali
 budget. Both engine lifetimes remain resident, but the controller permits only one lane
 to execute GPU work at a time.
 
+Every read's evidence carries the engine-observed prompt token count for each request,
+and the protocol layer rejects any read whose counts differ from the sealed workload
+cell before it can be graded. A nominal host-side token count is never authority, and a
+count mismatch is an infrastructure fault — it can hold the leg, never mint a candidate
+verdict.
+
 ```mermaid
 sequenceDiagram
     participant H as Trusted host

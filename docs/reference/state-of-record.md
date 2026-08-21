@@ -190,7 +190,10 @@ sealed batches are validated against the cell at parse, the engine
 configuration (context length, admission width, radix-cache disable) derives
 from the cell, and commissioning fails closed on any session/policy mismatch.
 The declared and consumed workloads are projections of one object and cannot
-diverge.
+diverge. Each read's evidence additionally carries the engine-observed prompt
+token count per request, validated against the cell at the protocol boundary;
+a mismatch or missing count is an infrastructure fault, never a candidate
+verdict.
 
 ### Resident adaptive qualification
 

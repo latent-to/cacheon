@@ -122,6 +122,7 @@ class _FixtureLane:
                     )
                     for _ in range(self.plan.max_new_tokens)
                 ),
+                self.plan.expected_prompt_tokens or 5,
             )
             for _ in self.plan.prompt_batches[index]
         )

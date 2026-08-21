@@ -79,6 +79,7 @@ class ResidentSessionPlan:
     max_new_tokens: int
     top_logprobs_num: int
     temperature: float
+    expected_prompt_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.engine_config, EngineSessionConfig):
@@ -135,6 +136,7 @@ class ResidentSessionPlan:
                 max_new_tokens=self.max_new_tokens,
                 top_logprobs_num=self.top_logprobs_num,
                 temperature=self.temperature,
+                expected_prompt_tokens=self.expected_prompt_tokens,
             )
         except SessionProtocolError as exc:
             raise OuterSessionInfrastructureError(
@@ -149,6 +151,7 @@ class ResidentBatchShape:
     max_new_tokens: int
     top_logprobs_num: int
     temperature: float
+    expected_prompt_tokens: int | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -162,6 +165,7 @@ class ResidentBatchShape:
                 max_new_tokens=self.max_new_tokens,
                 top_logprobs_num=self.top_logprobs_num,
                 temperature=self.temperature,
+                expected_prompt_tokens=self.expected_prompt_tokens,
             )
         except SessionProtocolError as exc:
             raise OuterSessionInfrastructureError(
@@ -438,6 +442,7 @@ class ResidentOuterSession:
                 self.plan.max_new_tokens,
                 self.plan.top_logprobs_num,
                 self.plan.temperature,
+                self.plan.expected_prompt_tokens,
             ),
             canary=canary,
         )
@@ -479,6 +484,7 @@ class ResidentOuterSession:
                     max_new_tokens=shape.max_new_tokens,
                     top_logprobs_num=shape.top_logprobs_num,
                     temperature=shape.temperature,
+                    expected_prompt_tokens=shape.expected_prompt_tokens,
                 )
             )
             if self.transport.has_pending_output():

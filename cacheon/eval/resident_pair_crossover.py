@@ -83,6 +83,7 @@ def _shape(plan: ResidentCrossoverPlan) -> ResidentBatchShape:
         workload.max_new_tokens,
         workload.top_logprobs_num,
         workload.temperature,
+        workload.expected_prompt_tokens,
     )
 
 

@@ -153,8 +153,8 @@ def test_pure_generation_request_disables_engine_logprob_work() -> None:
             # A logprob-free engine response: token IDs only, no top-k
             # structure anywhere in meta_info.
             return [
-                {"meta_info": {"output_ids": [10, 20]}},
-                {"meta_info": {"output_ids": [30, 40]}},
+                {"meta_info": {"output_ids": [10, 20], "prompt_tokens": 3}},
+                {"meta_info": {"output_ids": [30, 40], "prompt_tokens": 3}},
             ]
 
     evidence = _generate(_Engine(), request)
@@ -170,12 +170,24 @@ def test_pure_generation_request_disables_engine_logprob_work() -> None:
         for position in prompt.top_logprobs
     )
 
+    assert all(prompt.prompt_tokens == 3 for prompt in evidence.prompts)
+
+    # A response without the engine's own prompt token count is an
+    # infrastructure fault, never a gradable read.
+    with pytest.raises(SessionProtocolError, match="prompt token count"):
+        _engine_outputs(
+            [{"meta_info": {"output_ids": [10, 20]}}] * 2, request=request
+        )
+
     # Width zero never excuses a missing top-k on an eval-carrying request.
     topk_request = BatchRequest(
         "a" * 32, "b" * 64, "c" * 32, "d" * 32, 0, ("alpha",), 2, 2, 0.0
     )
     with pytest.raises(SessionProtocolError, match="token/top-k"):
-        _engine_outputs([{"meta_info": {"output_ids": [10, 20]}}], request=topk_request)
+        _engine_outputs(
+            [{"meta_info": {"output_ids": [10, 20], "prompt_tokens": 3}}],
+            request=topk_request,
+        )
 
 
 def test_width_zero_reference_scoring_skips_the_support_gather() -> None:

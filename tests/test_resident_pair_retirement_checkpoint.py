@@ -209,7 +209,7 @@ def _run_count_on_pair(borrowed, speed_plan, sessions, *, fast_lane):
         raw = BatchEvidence(
             tuple(
                 PromptEvidence(
-                    outputs[prompt], tuple(() for _ in outputs[prompt])
+                    outputs[prompt], tuple(() for _ in outputs[prompt]), 5
                 )
                 for prompt in prompts
             )
@@ -320,7 +320,7 @@ def _coordinator_case(
             raw = BatchEvidence(
                 tuple(
                     PromptEvidence(
-                        outputs[prompt], tuple(() for _ in outputs[prompt])
+                        outputs[prompt], tuple(() for _ in outputs[prompt]), 5
                     )
                     for prompt in prompts
                 )

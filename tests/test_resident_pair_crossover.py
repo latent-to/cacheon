@@ -168,7 +168,7 @@ class _Session:
         )
         evidence = BatchEvidence(
             tuple(
-                PromptEvidence(tuple(range(shape.max_new_tokens)), positions)
+                PromptEvidence(tuple(range(shape.max_new_tokens)), positions, 5)
                 for _ in prompts
             )
         )

@@ -35,6 +35,7 @@ def _evidence(tokens: int = 4) -> BatchEvidence:
             PromptEvidence(
                 tuple(range(tokens)),
                 tuple(((-0.5, 0),) for _ in range(tokens)),
+                5,
             ),
         )
     )

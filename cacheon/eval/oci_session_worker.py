@@ -647,6 +647,12 @@ def _engine_outputs(outputs: object, *, request: BatchRequest) -> BatchEvidence:
         metadata = row.get("meta_info")
         if not isinstance(metadata, dict):
             raise SessionProtocolError("engine output metadata is missing")
+        # The engine's own prompt token count is the only input-length
+        # authority; a missing count is an infrastructure fault, never a
+        # candidate verdict.
+        prompt_tokens = metadata.get("prompt_tokens")
+        if type(prompt_tokens) is not int or prompt_tokens < 1:
+            raise SessionProtocolError("engine output lacks its prompt token count")
         raw_ids = row.get("output_ids") or metadata.get("output_ids")
         raw_topk = metadata.get("output_top_logprobs")
         if (
@@ -684,7 +690,9 @@ def _engine_outputs(outputs: object, *, request: BatchRequest) -> BatchEvidence:
                     raise SessionProtocolError("engine output top-k value is invalid")
                 position.append((float(logprob), token_id))
             positions.append(tuple(position))
-        prompts.append(PromptEvidence(tuple(output_ids), tuple(positions)))
+        prompts.append(
+            PromptEvidence(tuple(output_ids), tuple(positions), prompt_tokens)
+        )
     return BatchEvidence(tuple(prompts))
 
 

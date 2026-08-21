@@ -139,8 +139,8 @@ def _evidence() -> BatchEvidence:
     )
     return BatchEvidence(
         (
-            PromptEvidence((10, 20), positions),
-            PromptEvidence((30, 40), positions),
+            PromptEvidence((10, 20), positions, 5),
+            PromptEvidence((30, 40), positions, 5),
         )
     )
 
@@ -484,8 +484,8 @@ def test_pure_generation_batch_round_trips_with_empty_topk() -> None:
     request = _request(top_logprobs_num=0)
     evidence = BatchEvidence(
         (
-            PromptEvidence((10, 20), ((), ())),
-            PromptEvidence((30, 40), ((), ())),
+            PromptEvidence((10, 20), ((), ()), 5),
+            PromptEvidence((30, 40), ((), ()), 5),
         )
     )
     frame = evidence_frame(evidence, request=request)
@@ -495,7 +495,7 @@ def test_pure_generation_batch_round_trips_with_empty_topk() -> None:
     per_position = 4  # token ID only: no top-k bytes exist at width zero
     assert expected_evidence_payload_bytes(request) == (
         protocol._EVIDENCE_BINDING.size
-        + len(request.prompts) * request.max_new_tokens * per_position
+        + len(request.prompts) * (4 + request.max_new_tokens * per_position)
     )
     decoded = parse_evidence_frame_bytes(frame, request=request)
     assert decoded.observed_tokens == 4
@@ -506,8 +506,8 @@ def test_pure_generation_batch_round_trips_with_empty_topk() -> None:
     )
     smuggled = BatchEvidence(
         (
-            PromptEvidence((10, 20), (((-0.4, 7),), ())),
-            PromptEvidence((30, 40), ((), ())),
+            PromptEvidence((10, 20), (((-0.4, 7),), ()), 5),
+            PromptEvidence((30, 40), ((), ()), 5),
         )
     )
     with pytest.raises(SessionProtocolError, match="top-k width"):
@@ -533,11 +533,12 @@ def test_binary_evidence_is_fixed_size_token_topk_only() -> None:
     assert decoded.prompts[0].top_logprobs[0][0][0] == pytest.approx(-0.4)
 
     # No string payload can exist after the fixed binding: every remaining byte
-    # is accounted for by integer token IDs and float32/token-ID top-k pairs.
+    # is accounted for by one engine-observed prompt-token count per prompt,
+    # integer token IDs, and float32/token-ID top-k pairs.
     per_position = 4 + request.top_logprobs_num * 8
     assert expected_evidence_payload_bytes(request) == (
         protocol._EVIDENCE_BINDING.size
-        + len(request.prompts) * request.max_new_tokens * per_position
+        + len(request.prompts) * (4 + request.max_new_tokens * per_position)
     )
 
 
@@ -572,7 +573,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
     ("evidence", "match"),
     [
         (
-            BatchEvidence((PromptEvidence((1,), (((-0.2, 1), (-1.0, 2)),)),) * 2),
+            BatchEvidence((PromptEvidence((1,), (((-0.2, 1), (-1.0, 2)),), 5),) * 2),
             "short/oversized",
         ),
         (
@@ -581,6 +582,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
                     PromptEvidence(
                         (1, 2),
                         (((float("nan"), 1), (-1.0, 2)),) * 2,
+                        5,
                     ),
                 )
                 * 2
@@ -593,6 +595,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
                     PromptEvidence(
                         (1, 2),
                         (((-0.2, 1), (-1.0, 1)),) * 2,
+                        5,
                     ),
                 )
                 * 2
@@ -605,6 +608,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
                     PromptEvidence(
                         (1, 2),
                         (((-1.0, 1), (-0.2, 2)),) * 2,
+                        5,
                     ),
                 )
                 * 2
@@ -617,6 +621,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
                     PromptEvidence(
                         (1, 2),
                         (((-0.01, 1), (-0.01, 2)),) * 2,
+                        5,
                     ),
                 )
                 * 2
@@ -635,8 +640,12 @@ def test_binary_evidence_values_fail_closed(
 def test_binary_decoder_rejects_nonfinite_float_even_at_exact_size() -> None:
     request = _request()
     frame = bytearray(evidence_frame(_evidence(), request=request))
+    # The first prompt record leads with its prompt-token count, then the
+    # first output token ID, then that token's first top-k logprob.
     first_logprob = (
-        FRAME_HEADER_BYTES + protocol._EVIDENCE_BINDING.size + protocol._TOKEN_ID.size
+        FRAME_HEADER_BYTES
+        + protocol._EVIDENCE_BINDING.size
+        + 2 * protocol._TOKEN_ID.size
     )
     frame[first_logprob : first_logprob + 4] = struct.pack(">f", math.nan)
     with pytest.raises(SessionProtocolError, match="finite"):

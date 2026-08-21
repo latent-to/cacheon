@@ -406,6 +406,7 @@ def _batch_evidence(
             tuple((float(-rank), rank) for rank in range(plan.top_logprobs_num))
             for _ in range(plan.max_new_tokens)
         ),
+        prompt_tokens=5,
     )
     evidence = BatchEvidence(tuple(prompt for _ in plan.prompt_batches[index]))
     return BatchExecutionEvidence(
