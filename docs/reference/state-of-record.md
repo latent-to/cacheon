@@ -184,11 +184,13 @@ candidate role a measured advantage on identical work: a bundle audited
 `aot_invoked:0` read 0.9–2.7% fast in the C role across six runs and both
 physical orientations, of which position explained 0.117% and the physical lane
 none. Under version 7 the baseline takes a stock-to-stock swap of its own, so
-neither role is measured unswapped. Version 7 also gates a resident candidate
-leg on per-rank execution evidence: a swap reports the execution count for the
-generation it closes, and a leg is graded only when every rank of the group
-completed the candidate under exactly the activation generation. Unobserved
-evidence is `NO_DECISION`, never a candidate verdict. Before this the resident
+neither role is measured unswapped. The swap also reports the per-rank execution
+count for the generation it closes. That count remained diagnostic-only until
+2026-08-21, when retained mainnet evidence showed a candidate at 0/4 ranks had
+still received a speed verdict. Current source unconditionally holds the leg
+unless every rank completed the candidate under exactly the activation
+generation. Unobserved or incomplete evidence is an infrastructure
+HOLD/non-verdict, never candidate PASS or FAIL. Before version 7 the resident
 lane emitted no execution evidence at all — it is launched stock, so the
 one-shot driver's `active`-gated receipt directory was never created for it,
 and registration was the only thing the crossover could observe.

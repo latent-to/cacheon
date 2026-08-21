@@ -232,12 +232,14 @@ The reported count is a tri-state, and the states carry different authority:
 
 | Reported | Meaning | Decision |
 |---|---|---|
-| Unobserved | The evidence path itself is unusable | `NO_DECISION` |
-| Observed, short of the rank group | The candidate did not execute on every rank | Not a `PASS` |
+| Unobserved | The evidence path itself is unusable | Infrastructure HOLD / non-verdict |
+| Observed, short of the rank group | The candidate did not execute on every rank | HOLD / non-verdict |
 | Observed, complete | Execution is proven for that generation | Speed evidence may be graded |
 
-Unobserved is never read as zero. Absent evidence is an infrastructure fault and may not
-be converted into a candidate verdict.
+Unobserved is never read as zero. Absent or incomplete evidence may not be
+converted into candidate PASS or FAIL. The durable store represents this as a
+reservation HOLD with no candidate decision, which is semantically
+`NO_DECISION` without reviving the retired literal decision field.
 
 This evidence is written from inside the candidate's own process. It closes accidental
 non-invocation; it is not proof against a deliberate forger, for which complete-engine
