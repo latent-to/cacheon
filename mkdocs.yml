@@ -180,6 +180,7 @@ nav:
       - Codebase map: reference/codebase-map.md
       - Glossary: reference/glossary.md
   - Results and development:
+      - Evaluation report: results/evaluations.md
       - MiniMax-M3 case study: results/minimax-m3.md
       - Design evolution: history/changelog.md
       - GPU setup: dev/gpu-setup.md
