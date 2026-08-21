@@ -50,6 +50,12 @@ quietly changing the workload represented by a result. Whether the declared
 cells predict production serving well remains a governance and measurement
 responsibility.
 
+The manifest also seals `closed_targets`: registered families the commissioned
+cells cannot measure. The list is data from the sealed commissioning inputs,
+validated against the target catalog — never a hardcoded list in evaluator
+code. Intake parks proposals for closed targets without charging them; see
+[Arenas](../reference/arenas.md).
+
 ## Non-crownable screens
 
 Every service runs these stages in this order:

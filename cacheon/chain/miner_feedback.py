@@ -102,6 +102,14 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "A FAIL verdict replays onto identical bytes. Change the kernel, not the "
         "packaging.",
     ),
+    "target_unavailable": (
+        "The commissioned arena workload cannot currently measure this "
+        "registered target family, so the submission was parked before any "
+        "evaluation.",
+        "This is NOT a judgement on the bundle and it was not charged: the "
+        "cited eval-cost payment stays spendable. Resubmit when the family "
+        "reopens; the arena manifest lists closed targets.",
+    ),
     "finalized_block_sla_expired": (
         "The submission left the queue on its service-level window without "
         "reaching a verdict.",

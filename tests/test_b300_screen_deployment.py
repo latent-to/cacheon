@@ -107,6 +107,7 @@ def _case(tmp_path: Path) -> tuple[dict[str, Path], tuple[GPUConfiguration, ...]
     prompt = tmp_path / "prompt-authority.json"
     prompt_value = {
         "accepted_token_subsequences": [],
+        "closed_targets": ["attention.msa_prefill_block_score"],
         "hidden_corpus_commitment": _h("hidden-corpus"),
         "hidden_judge_digest": _h("hidden-judge"),
         "hidden_task_policy_digest": _h("hidden-task-policy"),
@@ -472,6 +473,28 @@ def test_workload_parser_seals_cell_against_batches() -> None:
     widened = dict(prompt, workload_cell=dict(prompt["workload_cell"], extra=1))
     with pytest.raises(deployment.B300ScreenDeploymentError, match="closed"):
         deployment._workload(widened, batches, _h("corpus"))
+
+
+def test_closed_targets_are_sealed_registered_data() -> None:
+    from cacheon.target_catalog import default_target_catalog
+
+    catalog = default_target_catalog()
+    prompt = {
+        "closed_targets": ["attention.msa_prefill_block_score", "norm.rmsnorm"]
+    }
+    assert deployment._closed_targets(prompt, catalog) == (
+        "attention.msa_prefill_block_score",
+        "norm.rmsnorm",
+    )
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError, match="not registered"
+    ):
+        deployment._closed_targets({"closed_targets": ["made.up_target"]}, catalog)
+    # An authority that omits the field fails commissioning closed.
+    with pytest.raises(
+        deployment.B300ScreenDeploymentError, match="list of strings"
+    ):
+        deployment._closed_targets({}, catalog)
 
 
 def test_resident_intake_is_traversable_by_non_owner(tmp_path: Path) -> None:

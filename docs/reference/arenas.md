@@ -51,12 +51,19 @@ are:
 | `ArenaCapacityPolicy` | Queue depth/age, concurrent screen and qualification limits, cohort size, and retry budgets |
 | `NonCrownScreenPolicy` | Exactly ordered static, build, ABI, graph, and abbreviated-serving stages with timeouts |
 | Qualification/provider digests | Exact qualification policy and reviewed provider implementation identity |
+| `closed_targets` | Registered families this commissioned workload cannot measure; sealed data, sorted and catalog-validated |
 
 Every workload cell is typed, positive, and unique, and the sealed prompt
 batches must match each cell's declared concurrency before anything
 commissions. Tensor parallel size cannot exceed the bound GPU count. These
 checks turn “same arena” into a typed identity rather than an operator
 nickname.
+
+Intake parks a proposal for a closed target before any evaluation, with
+reason `target_unavailable:<target>` and decision `NO_DECISION` — never a
+`FAIL` that byte-identical replay would echo after the family reopens — and
+releases the cited eval-cost payment pointer or admission credit in the same
+transaction. A closed family costs the miner nothing.
 
 ## Boundary types
 

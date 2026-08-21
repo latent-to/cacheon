@@ -525,6 +525,18 @@ def run_pass(
                 rejected = store.mark_failed(active.reservation_id, f"manifest:{exc}")
                 result.rejected[rejected.reservation_id] = rejected.reason
                 continue
+            if (
+                service is not None
+                and fingerprint.target_id in service.manifest.closed_targets
+            ):
+                # The sealed arena cannot measure this registered family right
+                # now. Park without charging: payment stays spendable and the
+                # identical bytes may return when the family reopens.
+                parked = store.mark_target_unavailable(
+                    active.reservation_id, target_id=fingerprint.target_id
+                )
+                result.rejected[parked.reservation_id] = parked.reason
+                continue
             try:
                 publication = publish_worker_bundle(
                     private,

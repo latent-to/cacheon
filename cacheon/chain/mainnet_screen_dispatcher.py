@@ -163,6 +163,9 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
             for stage in screens_row["stages"]
         )
     )
+    closed_targets_raw = row["closed_targets"]
+    if type(closed_targets_raw) is not list:
+        raise MainnetScreenDispatcherError("arena closed targets are not a list")
     manifest = ArenaServiceManifest(
         runtime=runtime,
         workload=workload,
@@ -170,6 +173,7 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
         screens=screens,
         qualification_policy_digest=row["qualification_policy_digest"],
         provider_digest=row["provider_digest"],
+        closed_targets=tuple(closed_targets_raw),
         schema_version=row["schema_version"],
     )
     if manifest.to_dict() != row:

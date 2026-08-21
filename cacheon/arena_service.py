@@ -251,6 +251,10 @@ class ArenaServiceManifest:
     screens: NonCrownScreenPolicy
     qualification_policy_digest: str
     provider_digest: str
+    # Registered families this commissioned workload cannot measure. A
+    # proposal for a closed target is parked at intake without charging the
+    # miner; the list is sealed commissioning data, never evaluator code.
+    closed_targets: tuple[str, ...] = ()
     schema_version: int = SERVICE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -263,6 +267,17 @@ class ArenaServiceManifest:
             or self.schema_version != SERVICE_SCHEMA_VERSION
         ):
             raise ArenaServiceError("arena service manifest is not exactly typed")
+        if (
+            type(self.closed_targets) is not tuple
+            or any(
+                type(target) is not str or not target
+                for target in self.closed_targets
+            )
+            or list(self.closed_targets) != sorted(set(self.closed_targets))
+        ):
+            raise ArenaServiceError(
+                "closed targets must be a sorted tuple of unique target ids"
+            )
         object.__setattr__(
             self,
             "qualification_policy_digest",
@@ -283,6 +298,7 @@ class ArenaServiceManifest:
     def to_dict(self) -> dict[str, object]:
         return {
             "capacity": self.capacity.to_dict(),
+            "closed_targets": list(self.closed_targets),
             "provider_digest": self.provider_digest,
             "qualification_policy_digest": self.qualification_policy_digest,
             "runtime": self.runtime.to_dict(),

@@ -195,6 +195,18 @@ token count per request, validated against the cell at the protocol boundary;
 a mismatch or missing count is an infrastructure fault, never a candidate
 verdict.
 
+### Sealed family closure (2026-08-21)
+
+An `ArenaServiceManifest` seals `closed_targets`: registered families its
+commissioned workload cannot measure, taken from the sealed commissioning
+inputs and validated against the target catalog. Intake parks a proposal for
+a closed target at the fingerprint step with reason
+`target_unavailable:<target>` and decision `NO_DECISION` — replay never
+echoes it — and releases the cited eval-cost payment pointer or admission
+credit in the same transaction. Before this, a closed family could only be
+marked in documentation while intake charged and evaluated against a
+workload that could not resolve it.
+
 ### Graded speed-failure reasons (2026-08-21)
 
 Until 2026-08-21 every speed FAIL was published as `speed_regression`,

@@ -125,6 +125,16 @@ A `FAIL` replays. A `PASS` does not: a first `PASS` is `reproduction_pending`,
 and settlement requires an independently bound `PASS` pair, so replaying one
 would manufacture the second half of that pair from the first.
 
+## A closed family is parked, not failed
+
+The commissioned arena workload may be unable to measure some registered
+target families. A submission for one is parked at intake with reason
+`target_unavailable:<target>` before any evaluation runs. This is not a
+judgement on the bundle and it is not charged — the cited eval-cost payment
+stays spendable — and because the disposition is `NO_DECISION`, the identical
+bytes get a fresh evaluation when the family reopens. The arena manifest
+lists the currently closed targets.
+
 ## Things that are not valid submissions
 
 - **Patches to SGLang.** The engine is pinned and consensus-critical. Submit

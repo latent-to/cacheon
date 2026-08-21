@@ -663,6 +663,7 @@ class _CommissionedInputs:
     prompt_batches: tuple[tuple[str, ...], ...]
     prompt_identity: dict[str, str]
     workload: Workload
+    closed_targets: tuple[str, ...]
     plan_resolver_digest: str
     evidence_policy_digest: str
     resident_factory_digest: str
@@ -1140,6 +1141,7 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
             inputs.declared_qualification.qualification_policy_digest
         ),
         provider_digest=b300_arena_provider_digest(authorities),
+        closed_targets=inputs.closed_targets,
     )
     manifest_box.append(manifest)
     return _Composition(
@@ -1218,6 +1220,28 @@ def _scored_cell(workload: Workload) -> WorkloadCell:
             "this evaluator commissions exactly one scored workload cell"
         )
     return workload.cells[0]
+
+
+def _string_rows(value: object, label: str) -> list[str]:
+    if type(value) is not list or any(type(row) is not str for row in value):
+        raise B300ScreenDeploymentError(f"{label} must be a list of strings")
+    return value
+
+
+def _closed_targets(
+    prompt: dict[str, object], catalog: TargetCatalog
+) -> tuple[str, ...]:
+    """Sealed family closures: registered targets this workload cannot measure."""
+
+    rows = _string_rows(prompt.get("closed_targets"), "closed targets")
+    for target in rows:
+        try:
+            catalog.require(target)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise B300ScreenDeploymentError(
+                f"closed target is not registered: {exc}"
+            ) from None
+    return tuple(rows)
 
 
 def _prompt_identity(prompt: dict[str, object], sha256: str) -> dict[str, str]:
@@ -1571,6 +1595,7 @@ def _derive_inputs(
         prompt_batches=batches,
         prompt_identity=prompt_identity,
         workload=workload,
+        closed_targets=_closed_targets(prompt, catalog),
         plan_resolver_digest=plan_resolver_digest,
         evidence_policy_digest=evidence_policy_digest,
         resident_factory_digest=resident_factory_digest,
@@ -1836,6 +1861,7 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
             ),
             qualification_policy_digest=row["qualification_policy_digest"],  # type: ignore[arg-type]
             provider_digest=row["provider_digest"],  # type: ignore[arg-type]
+            closed_targets=tuple(_string_rows(row["closed_targets"], "closed targets")),
             schema_version=row["schema_version"],  # type: ignore[arg-type]
         )
     except (KeyError, TypeError, ValueError) as exc:

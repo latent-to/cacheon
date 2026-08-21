@@ -1158,6 +1158,43 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             reservation_id, {"fetching", "published"}, "failed", "FAIL", reason
         )
 
+    def mark_target_unavailable(
+        self, reservation_id: str, *, target_id: str
+    ) -> IntakeReservation:
+        """Park a proposal whose registered family is closed in this arena.
+
+        Nothing about the bundle was measured, so the row leaves the queue as
+        NO_DECISION -- never a FAIL that byte-identical replay would echo back
+        after the family reopens -- and the cited eval-cost payment pointer or
+        admission credit is released in the same transaction: a closed family
+        costs the miner nothing.
+        """
+
+        if type(target_id) is not str or not target_id:
+            raise IntakeError("closed-target disposal requires the target id")
+        with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
+            row = self.get(reservation_id)
+            if row.status != "fetching":
+                raise IntakeError(
+                    f"closed-target disposal from {row.status!r} is forbidden"
+                )
+            self._db.execute(
+                "UPDATE reservations SET status='expired',"
+                "decision='NO_DECISION',reason=? WHERE reservation_id=?",
+                (f"target_unavailable:{target_id}", reservation_id),
+            )
+            self._db.execute(
+                "DELETE FROM eval_cost_payments WHERE reservation_id=?",
+                (reservation_id,),
+            )
+            self._db.execute(
+                "UPDATE eval_cost_credits SET reservation_id='',spent_block=0 "
+                "WHERE reservation_id=?",
+                (reservation_id,),
+            )
+        return self.get(reservation_id)
+
     def release_manifest_compatibility_failure(
         self,
         reservation_id: str,
