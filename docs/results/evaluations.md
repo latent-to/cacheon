@@ -120,8 +120,8 @@ stage-exit artifact. Do not edit by hand — regenerate.
 | 3339ead5 | 5GeDg11e | collective.ar_residual_rmsnorm | FAIL | candidate_kernel_does_not_compile | — | no attempt evidence | — | — | superseded arena |
 | 0fba035d | 5DvSNuAi | activation.silu_and_mul | FAIL | copy_of:1c483eb6f9f8518d26801cd59516de738a2fd77a44d347538d0cf26608f5b0ea | — | no attempt evidence | — | — | current contract |
 | 3cce0438 | 5GYwy8VG | activation.silu_and_mul | FAIL | copy_of:a1913ada8e649dc2cdeaa9b913cf6fba6bf26ceeed27551c1bb884ca2a0edac9 | — | no attempt evidence | — | — | current contract |
-| a07740c3 | 5D5cCTp5 | activation.silu_and_mul | PASS | qualified | PASS | 1.02237 | 1.00500 | 2053.9 / 2007.3 | superseded arena |
-| a07740c3 | 5D5cCTp5 | activation.silu_and_mul | PASS | qualified | PASS | 1.14645 | 1.00500 | 2368.0 / 2065.5 | superseded arena |
+| a07740c3 | 5D5cCTp5 | activation.silu_and_mul | PASS | qualified | PASS | 1.02237 | 1.00500 | 2053.9 / 2007.3 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
+| a07740c3 | 5D5cCTp5 | activation.silu_and_mul | PASS | qualified | PASS | 1.14645 | 1.00500 | 2368.0 / 2065.5 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
 | 5026e60b | 5CLUzATr | norm.rmsnorm | FAIL | copy_of:631e9d3ae40a11d50b14bb645561c1a428d21a6e95fdda9ace9117d635701253 | — | no attempt evidence | — | — | current contract |
 | 57682a23 | 5DngPdvA | norm.rmsnorm | FAIL | copy_of:cbc2639448f206c8d40db12998888030e5a999beec9fa6ad878117ddc6f891a1 | — | no attempt evidence | — | — | current contract |
 | faa15ed7 | 5ESHQpJq | norm.rmsnorm | FAIL | speed_regression | FAIL | 1.00073 | 1.00500 | 2076.2 / 2074.7 | superseded arena |
@@ -274,12 +274,12 @@ stage-exit artifact. Do not edit by hand — regenerate.
 | 894ea0d0 | 5FXDTjpM | collective.all_reduce | FAIL | graph_member_not_applicable | — | no attempt evidence | — | — | superseded arena |
 | 9eaa99c7 | 5FF6aYZd | activation.silu_and_mul | FAIL | speed_regression | FAIL | 1.00075 | 1.00500 | 2053.8 / 2052.3 | superseded arena |
 | 392d23c2 | 5ELvFb8V | norm.rmsnorm | FAIL | speed_regression | FAIL | 0.99629 | 1.00500 | 2076.5 / 2084.3 | superseded arena |
-| 3771d851 | 5DoErT6g | attention.sdpa | PASS | qualified | PASS | 1.00845 | 1.00500 | 2073.1 / 2055.7 | superseded arena |
-| 37fbfd0c | 5DRUUYXU | collective.moe_finalize_ar_rmsnorm | PASS | qualified | PASS | 1.12558 | 1.00500 | 2310.6 / 2052.8 | superseded arena |
+| 3771d851 | 5DoErT6g | attention.sdpa | PASS | qualified | PASS | 1.00845 | 1.00500 | 2073.1 / 2055.7 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
+| 37fbfd0c | 5DRUUYXU | collective.moe_finalize_ar_rmsnorm | PASS | qualified | PASS | 1.12558 | 1.00500 | 2310.6 / 2052.8 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
 | 3771d851 | 5DoErT6g | attention.sdpa | FAIL | speed_regression | FAIL | 1.00063 | 1.00500 | 2050.8 / 2049.5 | superseded arena |
 | 37fbfd0c | 5DRUUYXU | collective.moe_finalize_ar_rmsnorm | FAIL | speed_regression | FAIL | 1.00068 | 1.00500 | 2052.9 / 2051.5 | superseded arena |
-| eaca4484 | 5FbvdAnB | attention.decode | PASS | qualified | PASS | 1.00986 | 1.00500 | 2052.0 / 2032.0 | superseded arena |
-| eaca4484 | 5FbvdAnB | attention.decode | PASS | qualified | PASS | 1.01029 | 1.00500 | 2079.8 / 2058.6 | superseded arena |
+| eaca4484 | 5FbvdAnB | attention.decode | PASS | qualified | PASS | 1.00986 | 1.00500 | 2052.0 / 2032.0 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
+| eaca4484 | 5FbvdAnB | attention.decode | PASS | qualified | PASS | 1.01029 | 1.00500 | 2079.8 / 2058.6 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
 | 273f18e7 | 5H3NepbQ | attention.msa_block_score | NO_DECISION | finalized_block_sla_expired | — | no attempt evidence | — | — | infrastructure — not a kernel verdict |
 | 9d9266ae | 5FZRQ4qW | collective.ar_residual_rmsnorm | NO_DECISION | finalized_block_sla_expired | — | no attempt evidence | — | — | infrastructure — not a kernel verdict |
 | 29f1b50e | 5FF6aYZd | activation.silu_and_mul | NO_DECISION | finalized_block_sla_expired | — | no attempt evidence | — | — | infrastructure — not a kernel verdict |
@@ -313,15 +313,15 @@ stage-exit artifact. Do not edit by hand — regenerate.
 | 2884a096 | 5DA12PVW | moe.fused_experts_reduce | FAIL | graph_eager_failed | — | no attempt evidence | — | — | superseded arena |
 | 59266577 | 5FZRQ4qW | collective.ar_residual_rmsnorm | NO_DECISION | finalized_block_sla_expired | — | no attempt evidence | — | — | infrastructure — not a kernel verdict |
 | 549fb2c0 | 5DtBoN6U | moe.fused_experts_reduce | FAIL | graph_member_not_applicable | — | no attempt evidence | — | — | superseded arena |
-| e4f699a0 | 5CXEMm6u | attention.decode | PASS | qualified | PASS | 1.14648 | 1.00500 | 2357.6 / 2056.4 | superseded arena |
+| e4f699a0 | 5CXEMm6u | attention.decode | PASS | qualified | PASS | 1.14648 | 1.00500 | 2357.6 / 2056.4 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
 | e4f699a0 | 5CXEMm6u | attention.decode | FAIL | speed_regression | FAIL | 0.99938 | 1.00500 | 2051.2 / 2052.5 | superseded arena |
 | f74321e1 | 5GMwKoCa | collective.ar_residual_rmsnorm | FAIL | speed_regression | FAIL | 0.65292 | 1.00500 | 1324.8 / 2029.1 | superseded arena |
 | 9fcbf467 | 5DtBoN6U | moe.fused_experts | FAIL | graph_member_not_applicable | — | no attempt evidence | — | — | superseded arena |
 | 17b56cd4 | 5CXEMm6u | moe.fused_experts | FAIL | graph_member_not_applicable | — | no attempt evidence | — | — | superseded arena |
 | 414e6ec7 | 5DtBoN6U | attention.msa_prefill_block_score | FAIL | speed_regression | FAIL | 0.98134 | 1.00500 | 2018.5 / 2056.9 | tainted: superseded arena, disarmed-execution-guard era: no evidence the candidate kernel was in the measured path, and the advertised long-prefill surface was not the workload executed; the numbers describe engine-vs-engine variance, not the kernel |
-| d472d96e | 5DtBoN6U | norm.rmsnorm | PASS | qualified | PASS | 1.01265 | 1.00500 | 2076.3 / 2050.3 | superseded arena |
+| d472d96e | 5DtBoN6U | norm.rmsnorm | PASS | qualified | PASS | 1.01265 | 1.00500 | 2076.3 / 2050.3 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
 | d472d96e | 5DtBoN6U | norm.rmsnorm | FAIL | speed_regression | FAIL | 0.99978 | 1.00500 | 2052.6 / 2053.0 | superseded arena |
-| 32277203 | 5CXEMm6u | activation.silu_and_mul | PASS | qualified | PASS | 1.01552 | 1.00500 | 2085.3 / 2053.4 | superseded arena |
+| 32277203 | 5CXEMm6u | activation.silu_and_mul | PASS | qualified | PASS | 1.01552 | 1.00500 | 2085.3 / 2053.4 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
 | 32277203 | 5CXEMm6u | activation.silu_and_mul | FAIL | speed_regression | FAIL | 0.87822 | 1.00500 | 2075.4 / 2363.2 | superseded arena |
 | 7196cb05 | 5DtBoN6U | moe.fused_experts | FAIL | graph_member_not_applicable | — | no attempt evidence | — | — | superseded arena |
 | 3729dcb6 | 5E1xcX25 | collective.ar_residual_rmsnorm | FAIL | copy_of:0ce5ee9716984f05c9732e88d507202365d1747b3e1f6b748b8bc513ada6443f | — | no attempt evidence | — | — | current contract |
@@ -334,20 +334,20 @@ stage-exit artifact. Do not edit by hand — regenerate.
 | b5aa1359 | 5DtBoN6U | collective.moe_finalize_ar_rmsnorm | NO_DECISION | finalized_block_sla_expired | — | no attempt evidence | — | — | infrastructure — not a kernel verdict |
 | 6e1b3773 | 5CXEMm6u | collective.ar_residual_rmsnorm | NO_DECISION | finalized_block_sla_expired | — | no attempt evidence | — | — | infrastructure — not a kernel verdict |
 | a8d927bf | 5HJxNcPD | collective.moe_finalize_ar_rmsnorm | NO_DECISION | finalized_block_sla_expired | — | no attempt evidence | — | — | infrastructure — not a kernel verdict |
-| a66d0b74 | 5ELvFb8V | norm.rmsnorm | PASS | qualified | PASS | 1.01033 | 1.00500 | 2076.8 / 2055.6 | superseded arena |
-| a66d0b74 | 5ELvFb8V | norm.rmsnorm | PASS | qualified | PASS | 1.13809 | 1.00500 | 2338.2 / 2054.5 | superseded arena |
+| a66d0b74 | 5ELvFb8V | norm.rmsnorm | PASS | qualified | PASS | 1.01033 | 1.00500 | 2076.8 / 2055.6 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
+| a66d0b74 | 5ELvFb8V | norm.rmsnorm | PASS | qualified | PASS | 1.13809 | 1.00500 | 2338.2 / 2054.5 | superseded arena — PASS from the asymmetric-swap era (only the candidate lane swapped engines; documented ~1.6% swap bias); not citable as a kernel win |
 | 299d60d8 | 5ELvFb8V | norm.rmsnorm | NO_DECISION | finalized_block_sla_expired | — | no attempt evidence | — | — | infrastructure — not a kernel verdict |
 | efe4182b | 5FZRQ4qW | collective.ar_residual_rmsnorm | FAIL | speed_regression | — | evidence artifact not found | — | — | superseded arena |
 | c3c8b13b | 5F3y5iWP | attention.msa_prefill_block_score | FAIL | speed_regression | FAIL | 0.96372 | 1.00500 | 1978.0 / 2052.4 | tainted: superseded arena, disarmed-execution-guard era: no evidence the candidate kernel was in the measured path, and the advertised long-prefill surface was not the workload executed; the numbers describe engine-vs-engine variance, not the kernel |
 | 29b085aa | 5DnnE2vD | collective.moe_epilogue.v1 | FAIL | screen_rejected | — | no attempt evidence | — | — | superseded arena |
-| 3558c980 | 5Gddrt3e | moe.fused_experts | PASS | qualified | PASS | 1.02604 | 1.00500 | 2065.0 / 2012.6 | superseded arena |
-| 3558c980 | 5Gddrt3e | moe.fused_experts | PASS | qualified | PASS | 1.02086 | 1.00500 | 2072.3 / 2029.9 | superseded arena |
+| 3558c980 | 5Gddrt3e | moe.fused_experts | PASS | qualified | PASS | 1.02604 | 1.00500 | 2065.0 / 2012.6 | tainted: audited false positive: inert-pass class, candidate ran stock code on swap bias (2026-08-16 audit) |
+| 3558c980 | 5Gddrt3e | moe.fused_experts | PASS | qualified | PASS | 1.02086 | 1.00500 | 2072.3 / 2029.9 | tainted: audited false positive: inert-pass class, candidate ran stock code on swap bias (2026-08-16 audit) |
 | 9defeb29 | 5FZRQ4qW | collective.ar_residual_rmsnorm | FAIL | duplicate_of:945c9cac26622065:speed_regression | — | no attempt evidence | — | — | superseded arena |
 | 32e652c2 | 5FZRQ4qW | collective.ar_residual_rmsnorm | FAIL | speed_regression | FAIL | 0.92622 | 1.00500 | 1907.2 / 2059.1 | superseded arena |
-| 87982705 | 5EsWtKni | moe.fused_experts_reduce | PASS | qualified | PASS | 1.00922 | 1.00500 | 2072.4 / 2053.4 | superseded arena |
-| 87982705 | 5EsWtKni | moe.fused_experts_reduce | PASS | qualified | PASS | 1.01134 | 1.00500 | 2079.5 / 2056.2 | superseded arena |
-| c9250862 | 5CXi9Mm6 | collective.moe_finalize_ar_rmsnorm | PASS | qualified | PASS | 1.01784 | 1.00500 | 2092.2 / 2055.6 | superseded arena |
-| c9250862 | 5CXi9Mm6 | collective.moe_finalize_ar_rmsnorm | PASS | qualified | PASS | 1.00748 | 1.00500 | 2069.4 / 2052.4 | superseded arena |
+| 87982705 | 5EsWtKni | moe.fused_experts_reduce | PASS | qualified | PASS | 1.00922 | 1.00500 | 2072.4 / 2053.4 | tainted: audited false positive: candidate kernel never loaded (aot_invoked:0 on all ranks); edge = asymmetric-swap bias |
+| 87982705 | 5EsWtKni | moe.fused_experts_reduce | PASS | qualified | PASS | 1.01134 | 1.00500 | 2079.5 / 2056.2 | tainted: audited false positive: candidate kernel never loaded (aot_invoked:0 on all ranks); edge = asymmetric-swap bias |
+| c9250862 | 5CXi9Mm6 | collective.moe_finalize_ar_rmsnorm | PASS | qualified | PASS | 1.01784 | 1.00500 | 2092.2 / 2055.6 | tainted: audited: PASS sits inside the v6 inert envelope (2026-08-19 crown audit); not citable as a kernel win |
+| c9250862 | 5CXi9Mm6 | collective.moe_finalize_ar_rmsnorm | PASS | qualified | PASS | 1.00748 | 1.00500 | 2069.4 / 2052.4 | tainted: audited: PASS sits inside the v6 inert envelope (2026-08-19 crown audit); not citable as a kernel win |
 | cccb9170 | 5G4BxbbG | collective.ar_residual_rmsnorm | FAIL | speed_regression | — | evidence artifact not found | — | — | superseded arena |
 | 3a757b05 | 5FL76QTC | moe.fused_experts | FAIL | graph_member_not_applicable | — | no attempt evidence | — | — | superseded arena |
 | 74e252a6 | 5FZRQ4qW | collective.ar_residual_rmsnorm | FAIL | speed_regression | — | evidence artifact not found | — | — | superseded arena |

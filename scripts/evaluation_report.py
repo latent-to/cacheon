@@ -171,7 +171,23 @@ def _regrade(raw: bytes) -> dict:
     }
 
 
+# Individually audited false positives, cited to their evidence. 87982705 and
+# 3558c980: per-rank audit receipts read aot_loaded:0 / aot_invoked:0 on all
+# four TP ranks — the candidate kernel never executed; the measured edge is the
+# documented ~1.6% asymmetric-swap bias (2026-08-16 ledger, "inert-pass
+# class"). c9250862: the moe_finalize crown sits inside the v6 inert envelope
+# (chainops/GEOMEAN_CROSSCHECK_2026-08-19.md, finding 3).
+AUDITED_FALSE_POSITIVES = {
+    "87982705": "audited false positive: candidate kernel never loaded (aot_invoked:0 on all ranks); edge = asymmetric-swap bias",
+    "3558c980": "audited false positive: inert-pass class, candidate ran stock code on swap bias (2026-08-16 audit)",
+    "c9250862": "audited: PASS sits inside the v6 inert envelope (2026-08-19 crown audit); not citable as a kernel win",
+}
+
+
 def _validity(row: dict, current_arena: str | None) -> str:
+    override = AUDITED_FALSE_POSITIVES.get((row["reservation"] or "")[:8])
+    if override:
+        return f"tainted: {override}"
     if row["reason"] in INFRA_REASONS:
         return "infrastructure — not a kernel verdict"
     arena = row["arena"] or ""
@@ -179,6 +195,12 @@ def _validity(row: dict, current_arena: str | None) -> str:
         note = SUPERSEDED_TARGET_NOTES.get(row["target"])
         if note:
             return f"tainted: {note}"
+        if (row["attempt_decision"] or row["decision"]) in ("PASS", "qualified"):
+            return (
+                "superseded arena — PASS from the asymmetric-swap era (only the"
+                " candidate lane swapped engines; documented ~1.6% swap bias);"
+                " not citable as a kernel win"
+            )
         return "superseded arena"
     return "current contract"
 
