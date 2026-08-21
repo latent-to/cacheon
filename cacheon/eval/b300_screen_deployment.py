@@ -171,7 +171,10 @@ def _stable_json(path_value: str | os.PathLike[str], field: str) -> tuple[Path, 
     stable = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
     if any(getattr(before, name) != getattr(after, name) for name in stable):
         raise B300ScreenDeploymentError(f"{field} changed while being read")
-    if not raw or len(raw) > 64 << 20:
+    # 256MiB: these are validator-sealed, sha-bound inputs (never miner
+    # bytes); the sealed S8 prompt authority embeds 16x128 8k-token prompts
+    # (~77MB), which the old 64MiB bound predated.
+    if not raw or len(raw) > 256 << 20:
         raise B300ScreenDeploymentError(f"{field} is empty or exceeds its byte bound")
     try:
         value = json.loads(
