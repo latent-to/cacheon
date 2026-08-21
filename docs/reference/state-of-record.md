@@ -278,6 +278,19 @@ invalidated by every commit. Calibration packages sealed under the earlier
 eleven-field context shape do not parse under this contract and are resealed
 from their durable inputs, not re-measured.
 
+Since **2026-08-21** measurement-reuse identity is also policy-blind: sealed
+calibration binds the measured subset of its context — workload, hardware,
+model, runtime, and verification identities — and no longer gates on
+`arena_digest`, which transitively hashes the qualification-policy scalars.
+A grading-policy recommission therefore reuses the sealed calibration and the
+durable capture it anchors instead of repeating the engine-boot capture that
+dominates a full relaunch; a workload-shape change still refuses reuse. The
+full context, arena digest included, remains the provenance record inside the
+package. In the same change, commissioning refuses a resident-speed
+`min_windows` floor above the workload cell's timed reads: an unsatisfiable
+evidence floor is a commissioning error, not a runtime refusal discovered
+after a measured run (the 2026-08-21 mainnet failure mode).
+
 Providers commissioned on **2026-08-10** sealed resident speed policy
 **version 4**: every timed read is graded (the version-3 mid-run
 window-scatter refusal is retired as verdict control flow), window scatter is

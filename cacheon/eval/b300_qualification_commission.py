@@ -322,7 +322,7 @@ def compose_commissioned_qualifications(
             f"sealed qualification policy failed to seal: {exc}"
         ) from None
 
-    _require_cell_conformance(inputs, policy, session_block)
+    _require_cell_conformance(inputs, policy, session_block, speed_block)
 
     lane_a_policy, lane_b_policy = _lane_policies(inputs)
     lane_a_executor = screen_deployment._build_executor(
@@ -374,10 +374,12 @@ def compose_commissioned_qualifications(
     return (commissions[0], commissions[1]), executors
 
 
-def _require_cell_conformance(inputs, policy, session_block) -> None:
+def _require_cell_conformance(inputs, policy, session_block, speed_block) -> None:
     """The declared workload cell and the consumed session are projections of
     one sealed authority; any mismatch is a commissioning error, never a
     runtime surprise.  Batch widths were validated against the cell at parse.
+    A min_windows floor above the cell's timed reads is unsatisfiable by
+    construction and must die here, not forty minutes into a measured run.
     """
 
     cell = screen_deployment._scored_cell(inputs.workload)
@@ -385,6 +387,7 @@ def _require_cell_conformance(inputs, policy, session_block) -> None:
         policy.tokens_per_prompt != cell.output_tokens
         or len(inputs.prompt_batches)
         != session_block["warmup_count"] + cell.timed_reads
+        or speed_block["min_windows"] > cell.timed_reads
     ):
         raise B300QualificationCommissionError(
             "sealed session does not conform to the declared workload cell"
