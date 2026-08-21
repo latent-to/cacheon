@@ -1,9 +1,5 @@
-# CPU/GPU dry-run bundle for the attention.decode BLOCK slot (paged-decode
-# attention) — the slot the runtime attention seam routes decode through. It mirrors
-# the reference (so it passes the gate trivially); its purpose is to exercise the
-# manifest -> scan -> load -> op-correctness path and the decode seam end-to-end, not
-# to be competitive. Run the e2e in eager mode (CACHEON_ATTENTION_SEAM=1,
-# --disable-cuda-graph) — the gather is variable-shape, so not CUDA-graph-capturable.
+# Graph-native MiniMax-M3 sparse-decode attention bundle. Stock code owns score and
+# top-k selection; this entry attends only the validator-supplied paged block set.
 
 bundle_id = "example-attention-decode-torch"
 abi_version = "cacheon-op-abi-v0"

@@ -28,7 +28,7 @@ manifest; it does not require the Python function itself to be named `entry`.
 | `activation.silu_and_mul` | op | `entry(x, out)` | MLP activation output |
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
 | `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | dense/GQA/MQA attention output |
-| `attention.decode` | block | `entry(q, k, v, seq_lens, sm_scale, out)` | paged decode-attention output |
+| `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | MiniMax-M3 graph-native sparse attention over validator-selected blocks |
 | `attention.msa_block_score` | block | `entry(q, index_k, seq_lens, block_size, out)` | decode-time block scores; validator owns top-k selection and attend |
 | `attention.msa_prefill_block_score` | block | `entry(q, index_k, prefix_len, scale, block_size, out)` | causal per-row prefill block scores; validator owns top-k selection and attend |
 | `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
@@ -50,7 +50,7 @@ descriptor is eager; do not assume a decode optimization exercises it.
 
 Registration and live installation are also different facts. The
 `attention.msa_block_score` decode contract is registered and CPU-verifiable, but its
-current SGLang decode adapter is deliberately a non-installing stub until the pinned
+current SGLang decode adapter is a non-installing stub until the pinned
 runtime has a stable model-specific chokepoint. The prefill sibling has a real guarded
 adapter. Confirm that the operator's arena actually binds and activates the target before
 investing in a production submission; a contract alone does not make a call site hot.

@@ -67,6 +67,7 @@ from cacheon.artifact_abi import (
     SILU_AND_MUL_CALL_ABI,
     SlotCallABI,
 )
+from cacheon.minimax_sparse_decode_slot import build_slot as build_minimax_sparse_decode_slot
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 
 
@@ -333,11 +334,8 @@ RMSNORM = SlotSpec(
 # This is the first *block* slot — the attention compute core every backend
 # (FlashAttention / FlashInfer / FlashMLA / Triton) implements. It demonstrates the
 # generalization: several fused ops behind one typed boundary, multiple tensor
-# inputs, and a matched-ratio gate (a real flash/online-softmax/fp8 kernel is not
-# bit-exact). The seam (cacheon/integrations/sglang_attention.py) routes the model's
-# attention through this contract at the RadixAttention chokepoint; the paged-decode
-# / MLA-latent variants are sibling slots that reuse the same dispatcher with a wider
-# input tuple (compressed KV + page table). See dispatch.make_attention_dispatcher.
+# inputs, and a matched-ratio gate. This generic dense contract is offline-only in
+# the MiniMax-M3 arena; its graph-native decode sibling owns paged sparse attend.
 # ---------------------------------------------------------------------------
 
 
@@ -408,76 +406,14 @@ ATTENTION_SDPA = SlotSpec(
 
 
 # ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.decode   (paged-decode attention — the runtime-wired one)
-#   q:(B,Hq,D)  k,v:(B,S,Hkv,D)  seq_lens:(B,) -> o:(B,Hq,D)
-#   Each request's single query attends to its first seq_lens[i] cached k/v.
-#   contract: entry(q, k, v, seq_lens, sm_scale, out)
-#
-# This is the slot the attention seam routes *decode* attention to: the validator
-# resolves the request-local SGLang backend, gathers its paged KV into the padded
-# (B,S,Hkv,D) view, and lets the miner fill `out`. See
-# dispatch.make_attention_dispatcher / _run_decode_kernel.
+# Slot (BLOCK): attention.decode
+#   MiniMax-M3's graph-native sparse decode boundary over paged main/index KV.
+#   The focused constructor keeps this oversized registry to wiring only.
 # ---------------------------------------------------------------------------
 
 
-def _decode_attn_reference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                           seq_lens: torch.Tensor, sm_scale: float) -> torch.Tensor:
-    # q:(B,Hq,D)  k,v:(B,S,Hkv,D)  seq_lens:(B,) -> o:(B,Hq,D).  GQA/MQA via Hq % Hkv == 0.
-    B, Hq, D = q.shape
-    S, Hkv = k.shape[1], k.shape[2]
-    g = Hq // Hkv
-    q32 = q.float()
-    k32 = k.float().repeat_interleave(g, dim=2)  # (B,S,Hq,D)
-    v32 = v.float().repeat_interleave(g, dim=2)  # (B,S,Hq,D)
-    scores = torch.einsum("bhd,bshd->bhs", q32, k32) * sm_scale  # (B,Hq,S)
-    sidx = torch.arange(S, device=q.device).view(1, 1, S)
-    scores = scores.masked_fill(sidx >= seq_lens.view(B, 1, 1), float("-inf"))  # mask padding/beyond-context
-    p = torch.softmax(scores, dim=-1)
-    o = torch.einsum("bhs,bshd->bhd", p, v32)  # (B,Hq,D)
-    return o.to(q.dtype)
-
-
-def _decode_attn_inputs(*, batch: int, num_q_heads: int, num_kv_heads: int, head_dim: int, ctx: int,
-                        dtype: torch.dtype, device: str, seed: int) -> dict:
-    g = torch.Generator(device=device).manual_seed(seed)
-
-    def rnd(*shape: int) -> torch.Tensor:
-        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
-
-    seq_lens = torch.randint(1, ctx + 1, (batch,), generator=g, device=device).to(torch.int32)
-    seq_lens[0] = ctx  # ensure one full-length request (exercises the whole window + the mask)
-    return {
-        "q": rnd(batch, num_q_heads, head_dim),
-        "k": rnd(batch, ctx, num_kv_heads, head_dim),
-        "v": rnd(batch, ctx, num_kv_heads, head_dim),
-        "seq_lens": seq_lens,
-        "sm_scale": 1.0 / (head_dim ** 0.5),
-    }
-
-
-ATTENTION_DECODE = SlotSpec(
-    name="attention.decode",
-    entry="attention_decode",
-    summary=(
-        "decode attention: each request's query attends to its first seq_lens[i] cached k/v;  "
-        "q:(B,Hq,D) k,v:(B,S,Hkv,D) seq_lens:(B,) -> o:(B,Hq,D);  entry(q, k, v, seq_lens, sm_scale, out)"
-    ),
-    kind="block",
-    make_inputs=_decode_attn_inputs,
-    out_shapes=lambda i: [tuple(i["q"].shape)],
-    invoke_reference=lambda i: [_decode_attn_reference(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"])],
-    invoke_entry=lambda entry, i, outs, prepared: entry(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"], outs[0]),
-    graph_dynamic_inputs=("q", "k", "v", "seq_lens"),
-    shapes=(
-        {"batch": 4, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64, "ctx": 16},
-        {"batch": 2, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128, "ctx": 32},   # GQA
-        {"batch": 8, "num_q_heads": 16, "num_kv_heads": 16, "head_dim": 128, "ctx": 64},
-        {"batch": 3, "num_q_heads": 8, "num_kv_heads": 1, "head_dim": 128, "ctx": 48},   # MQA
-    ),
-    correctness=Correctness("matched_ratio", min_ratio=0.99),
-    tolerances=_BF16_TOL,
-    kl_threshold=3e-2,  # attention's higher intrinsic floor (see attention.sdpa)
-    call_abi=ATTENTION_DECODE_CALL_ABI,
+ATTENTION_DECODE = build_minimax_sparse_decode_slot(
+    SlotSpec, Correctness, _BF16_TOL, ATTENTION_DECODE_CALL_ABI
 )
 
 

@@ -891,6 +891,7 @@ def verify_entry(
     architecture: Optional[str] = None,
     tp_size: Optional[int] = None,
     world_size: Optional[int] = None,
+    model_key: Optional[str] = None,
     variant_name: Optional[str] = None,
     _graph_backend: Optional[_GraphBackend] = None,
 ) -> VerifyResult:
@@ -969,6 +970,8 @@ def verify_entry(
             architecture=architecture,
             tp_size=tp_size,
             world_size=world_size,
+            graph_mode=verification_graph_mode,
+            model_key=model_key,
         )
         if eligibility is not None:
             match = eligibility.match(descriptor)
@@ -993,6 +996,8 @@ def verify_entry(
                     architecture=architecture,
                     tp_size=tp_size,
                     world_size=world_size,
+                    graph_mode=verification_graph_mode,
+                    model_key=model_key,
                 )
                 catalog_match = eligibility.match(catalog_descriptor)
                 if catalog_match.accepted:
@@ -1230,6 +1235,8 @@ def _verification_call_descriptor(
     architecture: Optional[str],
     tp_size: Optional[int],
     world_size: Optional[int],
+    graph_mode: str,
+    model_key: Optional[str],
 ) -> CallDescriptor:
     """Build the same canonical call description as a live arena binding.
 
@@ -1239,6 +1246,34 @@ def _verification_call_descriptor(
     """
 
     resolved_arch = architecture or _device_architecture(device)
+    if slot.name == "attention.decode" and {
+        "q", "k_cache", "v_cache", "req_to_token", "seq_lens",
+        "req_pool_indices", "topk_idx", "block_size",
+    } <= set(inputs):
+        q = inputs["q"]
+        k_cache = inputs["k_cache"]
+        return CallDescriptor(
+            dtype=_name(q.dtype),
+            architecture=resolved_arch,
+            graph_mode=graph_mode,
+            layout="paged_nhd",
+            model=model_key or "MiniMax-M3",
+            phase="decode",
+            quant="dense",
+            batch_size=int(q.shape[0]),
+            num_tokens=int(q.shape[0]),
+            q_len=1,
+            num_q_heads=int(q.shape[1]),
+            num_kv_heads=int(k_cache.shape[1]),
+            head_dim=int(q.shape[-1]),
+            kv_len=int(inputs["req_to_token"].shape[1]),
+            last_dim=int(q.shape[-1]),
+            block_size=int(inputs["block_size"]),
+            page_size=int(inputs["block_size"]),
+            top_k=int(inputs["topk_idx"].shape[-1]),
+            tp_size=tp_size,
+            world_size=world_size,
+        )
     if not _has_msa_prefill_call_contract(slot, inputs):
         primary = next(
             (
@@ -1408,6 +1443,7 @@ def verify_entry_from_source(
                         shapes=shapes, jitter_seed=jitter_seed, graph_safe=graph_safe,
                         graph_replays=graph_replays, eligibility=eligibility,
                         tp_size=tp_size, world_size=world_size,
+                        model_key=model_key,
                         variant_name=variant_name)
 
 

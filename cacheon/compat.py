@@ -23,7 +23,7 @@ from dataclasses import dataclass
 #
 # 0.5.13.post1 (CUDA 13). VALIDATION STATE — read before treating as authoritative:
 #   * static seam canary: GREEN — all chokepoints intact on 0.5.13.post1 (sglang-canary CI,
-#     2026-06-22: FusedMoE/RadixAttention/SiluAndMul/RMSNorm/all_reduce + logprob API + ServerArgs).
+#     2026-06-22: FusedMoE/SiluAndMul/RMSNorm/all_reduce + logprob API + ServerArgs).
 #   * GPU end-to-end re-validation (broken-bundle gate FAILs, faithful kernels PASS) + champion
 #     RE-BASELINE: **PENDING** — run on a pod before this pin is authoritative for scoring.
 #     0.5.12.post1 was the last fully H100-validated pin.
@@ -141,29 +141,27 @@ def run_checks() -> list[Check]:
     except Exception as exc:  # noqa: BLE001
         add("seam: RMSNorm (layernorm)", False, repr(exc))
 
-    # attention seam (the attention BLOCK slot chokepoint: RadixAttention.forward)
-    try:
-        from sglang.srt.layers.radix_attention import RadixAttention
+    # MiniMax sparse decode imports this function by value. Check the exact pinned
+    # ABI and the second binding; a callable source symbol alone is not enough.
+    if _requires_present("sglang.srt.layers.attention.minimax_sparse_ops"):
+        try:
+            from sglang.srt.layers.attention.minimax_sparse_ops import minimax_sparse
+            from sglang.srt.layers.attention.minimax_sparse_ops.decode import topk_sparse
 
-        params = set(inspect.signature(RadixAttention.forward).parameters)
-        ok = hasattr(RadixAttention, "forward") and {"q", "k", "v", "forward_batch"} <= params
-        add("seam: RadixAttention (attention)", ok, f"forward params={tuple(sorted(params))}")
-    except Exception as exc:  # noqa: BLE001
-        add("seam: RadixAttention (attention)", False, repr(exc))
-
-    # The decode gather also depends on the pinned request-local backend authority.
-    # ForwardBatch no longer carries the KV pools, so a surviving RadixAttention
-    # signature alone is not enough to declare the attention adapter compatible.
-    try:
-        from sglang.srt.model_executor.forward_context import get_attn_backend
-
-        add(
-            "attention backend accessor: get_attn_backend",
-            callable(get_attn_backend),
-            "sglang.srt.model_executor.forward_context",
-        )
-    except Exception as exc:  # noqa: BLE001
-        add("attention backend accessor: get_attn_backend", False, repr(exc))
+            source = topk_sparse.flash_decode_with_gqa_share_sparse
+            consumer = minimax_sparse.flash_decode_with_gqa_share_sparse
+            expected = (
+                "q", "sink", "k_cache", "v_cache", "req_to_token", "seq_lens",
+                "slot_ids", "block_size", "topk_idx", "sm_scale", "use_tma",
+            )
+            params = tuple(inspect.signature(source).parameters)
+            add(
+                "seam: MiniMax sparse decode function and consumer",
+                params == expected and source is consumer,
+                f"params={params!r}; shared_binding={source is consumer}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            add("seam: MiniMax sparse decode function and consumer", False, repr(exc))
 
     # MoE seam (the MoE BLOCK slot chokepoint: FusedMoE.forward_impl(hidden_states,
     # topk_output) — the waist all paths converge on; .forward is bypassed under

@@ -162,19 +162,27 @@ validator-provided causal flag.
 ### `attention.decode`
 
 ```python
-def attention_decode(q, k, v, seq_lens, sm_scale, out):
-    # q: (B, Hq, D); k/v: (B, S, Hkv, D); seq_lens: (B,)
+def attention_decode(
+    q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices,
+    topk_idx, out, sm_scale, block_size,
+):
+    # q: (B,Hq,D); paged K/V: (max_slots,Hkv,D)
+    # topk_idx: (Hkv,B,K) block IDs selected by validator-owned stock code
     ...
 ```
 
-Request `i` attends only to the first `seq_lens[i]` cached keys and values.
+This is the graph-native MiniMax-M3 sparse-attend boundary. The validator owns
+cache writes, score production, top-k selection, request/page metadata, and output
+allocation. The candidate attends exactly the supplied nonnegative block IDs;
+`-1` entries and tokens at or beyond `seq_lens` are excluded. The entry contains no
+host synchronization or request-dependent allocation and must declare graph safety
+to enter a scored CUDA graph.
 
-The current live seam builds this dense, padded view by gathering from SGLang's
-paged KV cache. That path is an **eager diagnostic path only**: its request-dependent
-gather and host scalar read cannot be captured safely, so Cacheon keeps stock
-attention during CUDA graph capture. A graph-qualified production submission would
-need a separate paged-direct contract that exposes validator-owned paging metadata
-without the dense gather. Cacheon does not currently provide that larger contract.
+The live call descriptor includes `batch_size`/`num_tokens`, page-table capacity as
+`kv_len`, `top_k`, block/page size, head counts, head dimension, layout, model, and
+phase, so capability predicates on those fields are enforced. `quant` describes the
+K/V tensors at this boundary (`dense` for the commissioned BF16 cache); the model's
+NVFP4 expert-weight format is not an attention-kernel requirement.
 
 ### `attention.msa_block_score`
 

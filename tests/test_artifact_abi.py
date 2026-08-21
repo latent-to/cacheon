@@ -25,7 +25,9 @@ _EXPECTED_CALL_ARGS = {
         "input.q", "input.k", "input.v", "output.out", "input.sm_scale", "input.causal"
     ),
     "attention.decode": (
-        "input.q", "input.k", "input.v", "input.seq_lens", "input.sm_scale", "output.out"
+        "input.q", "input.k_cache", "input.v_cache", "input.req_to_token",
+        "input.seq_lens", "input.req_pool_indices", "input.topk_idx",
+        "output.out", "input.sm_scale", "input.block_size",
     ),
     "moe.fused_experts": (
         "input.x", "input.topk_ids", "input.topk_weights", "prepared.state", "output.out"

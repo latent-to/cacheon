@@ -2,8 +2,7 @@
 model must fall back to the trusted baseline instead of silently computing the
 wrong thing (and framing an honest kernel for the resulting KL failure).
 
-Pins three of them:
-* attention decode: ANY unexpected kwarg (gpt-oss ``sinks``, MLA ``k_rope``) -> baseline;
+Pins two of them:
 * rmsnorm: ``variance_size_override`` / ``cast_x_before_out_mul`` / ``fp32_residual`` -> baseline;
 * moe.fused_experts_reduce: a TP layer with ``reduce_results=False`` defers its reduce
   downstream, so the reduce-OWNING kernel must not run (it would insert an extra reduce).
@@ -18,7 +17,6 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from cacheon.dispatch import (  # noqa: E402
-    _decode_supported,
     make_moe_dispatcher,
     make_rmsnorm_dispatcher,
 )
@@ -31,29 +29,6 @@ _BASELINE = object()  # sentinel: the dispatcher fell back
 class _Param:
     def __init__(self, t):
         self.data = t
-
-
-# ---- attention decode: unknown kwargs -------------------------------------------------
-
-
-def _attn_self():
-    return SimpleNamespace(qk_head_dim=64, v_head_dim=64, is_cross_attention=False,
-                           sliding_window_size=-1)
-
-
-def test_decode_supported_plain_mha():
-    k = v = torch.zeros(2, 64)
-    assert _decode_supported(_attn_self(), k, v, {})
-
-
-@pytest.mark.parametrize("kwargs", [
-    {"sinks": torch.zeros(8)},           # gpt-oss attention sinks
-    {"k_rope": torch.zeros(2, 64)},      # MLA rope split
-    {"anything_new_sglang_adds": 1},     # future-proof: unknown means unmodeled
-])
-def test_decode_supported_rejects_any_extra_kwarg(kwargs):
-    k = v = torch.zeros(2, 64)
-    assert not _decode_supported(_attn_self(), k, v, kwargs)
 
 
 # ---- rmsnorm: semantic overrides -------------------------------------------------------
