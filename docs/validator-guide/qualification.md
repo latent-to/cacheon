@@ -132,6 +132,15 @@ speed non-PASS emits a durable stage-exit and does not run audit or T. A separat
 calibration-observation disposition may continue after a speed failure to collect
 diagnostic audit and T evidence, but it cannot crown the candidate.
 
+A speed FAIL names what the round proved, graded with the verdict itself rather than
+derived from the bare decision. A bar of 1 + u can only call a candidate slower once
+its measured speedup falls below the mirrored bound 1 − u, or a conditioning
+regression is measured directly; that failure is `candidate_slower`. A miss inside
+the band is `speed_threshold_not_met`: the bar was not cleared, and the candidate was
+not measurably slower either. Reports settled before this split carry the retained
+coarse code `speed_regression`, which remains valid for them and is never recorded on
+a new verdict.
+
 The audit-only role is distinct from both timed lanes. Trusted-host grading imports no
 PyTorch and requires the expected slot × TP-rank/PID coverage, minimum call counts, and
 absence of retained violations or protocol errors. Live floating-point facts are

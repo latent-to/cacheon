@@ -96,6 +96,15 @@ The baseline is a tuned production stack; see
 [Finding an improvement](finding-a-win.md) before choosing a target, and
 [Choose a target](slots.md) for what is registered.
 
+A speed FAIL states which of two different things was measured.
+`speed_threshold_not_met` means the speedup landed inside the round's noise
+band: it did not clear the required bar of 1 + max(min_margin, k·noise), and it
+was not measurably slower either — an ordinary competitive miss, not a
+regression. `candidate_slower` means the timed bracket measured the bundle
+slower than the baseline beyond that band, or measured a conditioning
+regression directly. Verdicts settled before this split carry the older
+combined code `speed_regression`.
+
 ## CUDA graphs are part of the contract
 
 17 failures were graph-contract failures, split between

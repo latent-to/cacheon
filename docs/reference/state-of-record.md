@@ -195,6 +195,19 @@ token count per request, validated against the cell at the protocol boundary;
 a mismatch or missing count is an infrastructure fault, never a candidate
 verdict.
 
+### Graded speed-failure reasons (2026-08-21)
+
+Until 2026-08-21 every speed FAIL was published as `speed_regression`,
+including in-band misses: retained report 162dee6a recorded a 1.00338×
+speedup against a 1.01024× bar — a 0.685-point miss inside the round's noise
+band — as a regression. Current source grades the reason with the verdict:
+`candidate_slower` requires the speedup below the mirrored bound 1 − u for a
+bar of 1 + u, or a directly measured conditioning regression;
+`speed_threshold_not_met` covers the band. The reason is produced by the
+witness graders and carried through stage exits, reports, and miner feedback;
+report composition refuses a speed FAIL that arrives without it. Reports and
+stage exits settled earlier revalidate under their retained coarse code.
+
 ### Resident adaptive qualification
 
 Since **2026-08-16** resident speed policy **version 7** swaps both arms. Under

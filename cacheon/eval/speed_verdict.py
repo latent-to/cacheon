@@ -42,6 +42,23 @@ class SpeedStageDecision(str, Enum):
     NO_DECISION = "NO_DECISION"
 
 
+SPEED_FAIL_REASONS = frozenset({"candidate_slower", "speed_threshold_not_met"})
+
+
+def fail_reason(verdict: SpeedupVerdict, *, conditioning_failed: bool = False) -> str:
+    """Name what a speed FAIL actually proved.
+
+    A bar of ``1 + u`` can only call a candidate slower once its speedup falls
+    below the mirrored bound ``1 - u``; a conditioning regression is a measured
+    slowdown in its own right. Anything else inside the band proved only that
+    the bar was not cleared -- an ordinary competitive miss, not a regression.
+    """
+
+    if conditioning_failed or verdict.speedup < 2.0 - verdict.required:
+        return "candidate_slower"
+    return "speed_threshold_not_met"
+
+
 def resident_speed_roles(version: int, count: int) -> tuple[str, ...] | None:
     roles = {2: ("B", "C"), 3: ("B", "C", "B_prime")}
     if version < 6:
@@ -198,7 +215,9 @@ def speed_grade(
 
 
 __all__ = [
+    "SPEED_FAIL_REASONS",
     "SpeedStageDecision",
+    "fail_reason",
     "invariant_decision",
     "resident_speed_roles",
     "speed_grade",

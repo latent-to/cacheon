@@ -738,7 +738,14 @@ def _install_resident_runner_path(
             return len(self.rates) == 5
 
         def regrade(self, *_args, **_kwargs):
-            return speed_decision, "1.1000000000000001"
+            reason = (
+                None
+                if speed_decision is QualificationDecision.PASS
+                else "speed_noise"
+                if speed_decision is QualificationDecision.NO_DECISION
+                else "speed_threshold_not_met"
+            )
+            return speed_decision, "1.1000000000000001", reason
 
         def to_dict(self):
             return {
@@ -859,6 +866,9 @@ def test_resident_speed_fail_exits_before_audit_t_and_legacy_lifecycle(
     assert len(exits) == 1
     assert exits[0].stage == "speed"
     assert exits[0].decision is QualificationDecision.FAIL
+    # The exit carries the witness's graded band reason, not a coarse
+    # "speed_regression" invented from the bare decision enum.
+    assert exits[0].reason == "speed_threshold_not_met"
     assert harness.calls == [
         "prevalidate",
         "resident.speed",

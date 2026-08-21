@@ -78,10 +78,16 @@ from cacheon.eval.resident_audit_authority import (
     ResidentAuditAuthorityError, ResidentAuditExecutionAuthority,
 )
 from cacheon.eval.scoring import (
-    ChargedExecutionRate, RawSpeedEvidenceError, _projection_digest,
-    marginal_workload_digest, score_speedup,
+    ChargedExecutionRate, RawSpeedEvidenceError, SpeedupVerdict,
+    _projection_digest, marginal_workload_digest, score_speedup,
 )
-from cacheon.eval.speed_verdict import resident_speed_roles, speed_grade, v6_grade
+from cacheon.eval.speed_verdict import (
+    SPEED_FAIL_REASONS,
+    fail_reason,
+    resident_speed_roles,
+    speed_grade,
+    v6_grade,
+)
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes, require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon._strict import require_exact_fields
@@ -712,7 +718,7 @@ class SpeedWitness:
         context: CalibrationContext,
         *,
         expected_policy: SpeedEvidencePolicy | None = None,
-    ) -> tuple[QualificationDecision, str]:
+    ) -> tuple[QualificationDecision, str, str | None]:
         if expected_policy is not None and (
             type(expected_policy) is not SpeedEvidencePolicy
             or self.policy != expected_policy
@@ -749,7 +755,26 @@ class SpeedWitness:
             if verdict.passed_speedup
             else QualificationDecision.FAIL
         )
-        return grade, format(verdict.speedup, ".17g")
+        return grade, format(verdict.speedup, ".17g"), _speed_reason(grade, verdict)
+
+
+def _speed_reason(
+    grade: "QualificationDecision",
+    verdict: SpeedupVerdict,
+    *,
+    conditioning_failed: bool = False,
+) -> str | None:
+    """The graded reason for a speed decision, produced with the verdict.
+
+    Downstream consumers (stage exits, reports, miner feedback) must carry
+    this value rather than re-derive a reason from the bare decision enum.
+    """
+
+    if grade is QualificationDecision.PASS:
+        return None
+    if grade is QualificationDecision.NO_DECISION:
+        return "speed_noise"
+    return fail_reason(verdict, conditioning_failed=conditioning_failed)
 
 
 def _resident_speed_projection_digest(
@@ -943,7 +968,7 @@ class ResidentSpeedWitness:
     def has_repeat(self) -> bool:
         return len(self.rates) == 5
 
-    def always_bookend_result(self) -> tuple[QualificationDecision, str]:
+    def always_bookend_result(self) -> tuple[QualificationDecision, str, str | None]:
         """Grade the two-process schedule: B, C and B-prime, read unconditionally.
 
         The pre-v6 branch below asserts an adaptive read shape -- three reads if
@@ -962,13 +987,17 @@ class ResidentSpeedWitness:
                 [self.rates[1]],
                 concluding=True,
             )
-            if self.resident_policy.conditioning_regression(
+            conditioning = self.resident_policy.conditioning_regression(
                 self.rates[0], self.rates[1]
-            ):
+            )
+            if conditioning:
                 decision = SpeedStageDecision.FAIL
         except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
             raise QualificationRunnerError(str(exc)) from None
-        return QualificationDecision(decision.value), format(verdict.speedup, ".17g")
+        grade = QualificationDecision(decision.value)
+        return grade, format(verdict.speedup, ".17g"), _speed_reason(
+            grade, verdict, conditioning_failed=conditioning
+        )
 
     def accepted_speedup(self) -> str:
         """The settled speedup, graded the way this witness's version grades.
@@ -985,7 +1014,7 @@ class ResidentSpeedWitness:
             return self.always_bookend_result()[1]
         return self.v6_result()[1]
 
-    def v6_result(self) -> tuple[QualificationDecision, str]:
+    def v6_result(self) -> tuple[QualificationDecision, str, str | None]:
         if self.resident_policy.version < 6:
             raise QualificationRunnerError("resident speed witness is not v6")
         try:
@@ -995,9 +1024,20 @@ class ResidentSpeedWitness:
                 self.rates[1],
                 self.rates[2] if len(self.rates) == 3 else None,
             )
+            # A two-read exit is the B/C precheck, where a conditioning
+            # regression is a terminating FAIL in its own right; a third read
+            # exists only because that precheck already came back clean.
+            conditioning = len(
+                self.rates
+            ) == 2 and self.resident_policy.conditioning_regression(
+                self.rates[0], self.rates[1]
+            )
         except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
             raise QualificationRunnerError(str(exc)) from None
-        return QualificationDecision(decision.value), format(verdict.speedup, ".17g")
+        grade = QualificationDecision(decision.value)
+        return grade, format(verdict.speedup, ".17g"), _speed_reason(
+            grade, verdict, conditioning_failed=conditioning
+        )
 
     def regrade(
         self,
@@ -1005,7 +1045,7 @@ class ResidentSpeedWitness:
         context: CalibrationContext,
         *,
         expected_policy: SpeedEvidencePolicy | None = None,
-    ) -> tuple[QualificationDecision, str]:
+    ) -> tuple[QualificationDecision, str, str | None]:
         if expected_policy is not None and expected_policy != self.policy:
             raise QualificationRunnerError("resident speed witness policy differs")
         try:
@@ -1103,7 +1143,9 @@ class ResidentSpeedWitness:
             if verdict.passed_speedup
             else QualificationDecision.FAIL
         )
-        return grade, format(verdict.speedup, ".17g")
+        return grade, format(verdict.speedup, ".17g"), _speed_reason(
+            grade, verdict, conditioning_failed=conditioning_failed
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1376,16 +1418,20 @@ class QualificationStageExit:
             except ValueError as exc:
                 raise QualificationRunnerError(str(exc)) from None
             object.__setattr__(self, "retirement_digest", retirement_digest)
-        expected_reason = {
-            ("speed", QualificationDecision.FAIL): "speed_regression",
-            ("speed", QualificationDecision.NO_DECISION): "speed_noise",
-            ("resident_count", QualificationDecision.FAIL): (
-                "resident_count_regression"
+        # "speed_regression" is the retained pre-band coarse vocabulary; new
+        # speed failures carry the graded band reason from their witness.
+        allowed_reasons = {
+            ("speed", QualificationDecision.FAIL): (
+                SPEED_FAIL_REASONS | {"speed_regression"}
             ),
-            ("audit", QualificationDecision.FAIL): "slot_audit_failed",
-            ("resident_accept", QualificationDecision.PASS): "qualified",
-        }.get((self.stage, self.decision))
-        if self.reason != expected_reason:
+            ("speed", QualificationDecision.NO_DECISION): {"speed_noise"},
+            ("resident_count", QualificationDecision.FAIL): {
+                "resident_count_regression"
+            },
+            ("audit", QualificationDecision.FAIL): {"slot_audit_failed"},
+            ("resident_accept", QualificationDecision.PASS): {"qualified"},
+        }.get((self.stage, self.decision), {None})
+        if self.reason not in allowed_reasons:
             raise QualificationRunnerError("qualification stage-exit reason differs")
         if self.stage in {"speed", "resident_count"}:
             if any(
@@ -2690,6 +2736,8 @@ def _report_reason(
     quality: ReferenceQualityVerdict,
     audit: AuditWitness,
     repeat_quality: ReferenceQualityVerdict | None = None,
+    *,
+    speed_reason: str | None = None,
 ) -> str:
     if graph.decision is not QualificationDecision.PASS:
         return graph.reason
@@ -2698,7 +2746,14 @@ def _report_reason(
     if speed is QualificationDecision.NO_DECISION:
         return "speed_noise"
     if speed is QualificationDecision.FAIL:
-        return "speed_regression"
+        # The reason is graded with the verdict, never re-derived from the
+        # bare decision enum: a miss inside the noise band and a measured
+        # slowdown are different claims to the miner.
+        if speed_reason not in SPEED_FAIL_REASONS:
+            raise QualificationRunnerError(
+                "speed failure reached the report without its graded reason"
+            )
+        return speed_reason
     if quality.decision == "FAIL":
         return "quality_regression"
     if quality.decision == "NO_DECISION":
@@ -2708,6 +2763,19 @@ def _report_reason(
     if repeat_quality is not None and repeat_quality.decision == "NO_DECISION":
         return "quality_repeat_overlap"
     return "qualified"
+
+
+def _retained_reason(expected: str, claimed: object) -> str:
+    """Accept the retained coarse token in place of either band reason.
+
+    Pre-band reports persisted "speed_regression" for every speed FAIL, so
+    they revalidate against the vocabulary they could have recorded. The
+    alias is never accepted the other way around.
+    """
+
+    if claimed == "speed_regression" and expected in SPEED_FAIL_REASONS:
+        return "speed_regression"
+    return expected
 
 
 def qualification_authority_digest(value: CausalQualificationInput) -> str:
@@ -2962,7 +3030,7 @@ def reopen_qualification_stage_exit(
                 authority.graph_requirement,
                 authority.graph_evidence_ref,
             )
-        speed_grade, _speedup = witness.regrade(
+        speed_grade, _speedup, speed_reason = witness.regrade(
             calibration,
             expected.calibration_context,
             expected_policy=expected.speed_evidence_policy,
@@ -2972,6 +3040,7 @@ def reopen_qualification_stage_exit(
                 expected.speed_stage_disposition
                 is SpeedStageDisposition.CALIBRATION_OBSERVATION
                 or speed_grade is not result.decision
+                or result.reason not in {speed_reason, "speed_regression"}
             ):
                 raise QualificationRunnerError(
                     "speed stage exit does not independently regrade"
@@ -3273,7 +3342,7 @@ def reopen_causal_qualification(
                 or not session_shape_valid
             ):
                 raise QualificationRunnerError("speed witness differs from its marginal arm")
-            speed_grade, speedup = speed.regrade(
+            speed_grade, speedup, speed_reason = speed.regrade(
                 calibration,
                 expected.calibration_context,
                 expected_policy=expected.speed_evidence_policy,
@@ -3396,9 +3465,12 @@ def reopen_causal_qualification(
                     quality.evidence_digest, quality_grade,
                     candidate_mean_teacher_nll,
                     audit_witness.digest, audit_grade, decision,
-                    _report_reason(
-                        graph, speed_grade, quality, audit_witness,
-                        repeat_quality,
+                    _retained_reason(
+                        _report_reason(
+                            graph, speed_grade, quality, audit_witness,
+                            repeat_quality, speed_reason=speed_reason,
+                        ),
+                        report.reason,
                     ),
                     decision is QualificationDecision.NO_DECISION,
                 )
@@ -3755,7 +3827,7 @@ def run_causal_qualification(
                     f"speed continuation does not bind the sealed plan: {exc}"
                 ) from None
             raise QualificationRunnerError(str(exc)) from None
-    speed_grade, _speedup = resident_speed_witness.regrade(
+    speed_grade, _speedup, speed_reason = resident_speed_witness.regrade(
         calibration,
         value.calibration_context,
         expected_policy=value.speed_evidence_policy,
@@ -3770,11 +3842,7 @@ def run_causal_qualification(
             value.candidates[0].selected_delta_digest,
             "speed",
             speed_grade,
-            (
-                "speed_noise"
-                if speed_grade is QualificationDecision.NO_DECISION
-                else "speed_regression"
-            ),
+            speed_reason,
             resident_speed_witness,
             None,
             None,
@@ -4020,7 +4088,7 @@ def run_causal_qualification(
         speed_witness: ResidentSpeedWitness | ResidentPairLiveSpeedWitness = (
             resident_speed_witness
         )
-        speed_grade, speedup = resident_speed_witness.regrade(
+        speed_grade, speedup, speed_reason = resident_speed_witness.regrade(
             calibration,
             value.calibration_context,
             expected_policy=value.speed_evidence_policy,
@@ -4072,7 +4140,7 @@ def run_causal_qualification(
                 decision,
                 _report_reason(
                     graph, speed_grade, quality, audit_witness,
-                    repeat_quality_verdict,
+                    repeat_quality_verdict, speed_reason=speed_reason,
                 ),
                 decision is QualificationDecision.NO_DECISION,
                 repeat_quality,
