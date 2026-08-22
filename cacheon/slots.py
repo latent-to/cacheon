@@ -67,6 +67,7 @@ from cacheon.artifact_abi import (
 )
 from cacheon.minimax_sparse_decode_slot import build_slot as build_minimax_sparse_decode_slot
 from cacheon.minimax_sparse_prefill_slot import build_slot as build_minimax_sparse_prefill_slot
+from cacheon.minimax_sparse_score_slot import build_slot as build_minimax_sparse_score_slot
 from cacheon.moe_nvfp4_contract import (
     prepare_args_from_inputs as _moe_prepare_args_from_inputs,
     prepare_args_from_layer as _moe_prepare_args_from_layer,
@@ -838,89 +839,8 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.msa_block_score   (the MSA / sparse-attention indexer)
-#   q:(B,Hq,D)  index_k:(B,S,1,D)  seq_lens:(B,)  block_size -> block_scores:(B, S//block_size)
-#   contract: entry(q, index_k, seq_lens, block_size, out)
-#
-# The FINER-than-attention.decode seam for a SELECTION win (the fp8 MSA indexer, M3). The kernel
-# computes per-128-token-block SCORES (block-max-pool of the index QK); the validator owns the
-# irreducible downstream step — the top-k block SELECTION and the bf16 attend over the chosen
-# blocks. So the kernel stays strictly upstream of the sampler (a wrong score just mis-selects,
-# caught by the gate + e2e KL). The output is a SELECTION, gated on `topk_overlap` (top-k block
-# SETS agree vs the bf16 reference), NOT cosine/KL: an fp8 index-K may perturb every score yet
-# pick the same blocks. No live adapter currently registers this decode-side score boundary.
-# ---------------------------------------------------------------------------
-
-_MSA_TOPK = 8  # the block-selection K this slot's correctness checks (<= every shape's n_blocks)
-
-
-def _msa_block_score_reference(q, index_k, seq_lens, block_size):
-    # q:(B,Hq,D) index_k:(B,S,1,D) seq_lens:(B,) -> (B, S//block_size) fp32 block-max-pool of QK.
-    B, Hq, D = q.shape
-    S = index_k.shape[1]
-    nblk = S // block_size
-    q32 = q.float().sum(dim=1)                       # (B,D): sum over index q-heads (1 shared idx-k head)
-    k32 = index_k.float()[:, :, 0, :]                # (B,S,D)
-    scores = torch.einsum("bd,bsd->bs", q32, k32)    # (B,S) per-token index QK
-    sidx = torch.arange(S, device=q.device).view(1, S)
-    scores = scores.masked_fill(sidx >= seq_lens.view(B, 1), float("-inf"))  # mask beyond context
-    return scores.view(B, nblk, block_size).amax(dim=-1)  # (B, nblk) block-max-pool
-
-
-def _msa_inputs(*, batch: int, num_q_heads: int, head_dim: int, ctx: int, block_size: int,
-                dtype: torch.dtype, device: str, seed: int) -> dict:
-    g = torch.Generator(device=device).manual_seed(seed)
-
-    def rnd(*shape: int) -> torch.Tensor:
-        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
-
-    # Keep ctx a clean multiple of block_size with n_blocks comfortably ABOVE _MSA_TOPK,
-    # robust to count-dim jitter. n_blocks == top_k would make the gate vacuous (top-k of
-    # k blocks selects everything — any output, even all-zeros, scores overlap 1.0), so
-    # the floor keeps at least 4 distractor blocks the selection can get wrong.
-    nblk = max(_MSA_TOPK + 4, ctx // block_size)
-    ctx = nblk * block_size
-    seq_lens = torch.randint(_MSA_TOPK * block_size, ctx + 1, (batch,), generator=g, device=device).to(torch.int32)
-    seq_lens[0] = ctx  # one full-length request
-    return {
-        "q": rnd(batch, num_q_heads, head_dim),
-        "index_k": rnd(batch, ctx, 1, head_dim),
-        "seq_lens": seq_lens,
-        "block_size": block_size,
-    }
-
-
-ATTENTION_MSA_BLOCK_SCORE = SlotSpec(
-    name="attention.msa_block_score",
-    entry="msa_block_score",
-    summary=(
-        "MSA indexer block scores: q:(B,Hq,D) index_k:(B,S,1,D) seq_lens:(B,) block_size -> "
-        "block_scores:(B,S//block_size) = block-max-pool of the index QK.  "
-        "entry(q, index_k, seq_lens, block_size, out).  The validator owns the top-k block "
-        "SELECTION + the attend; gated on topk_overlap (the SELECTED set), not score values."
-    ),
-    kind="block",
-    make_inputs=_msa_inputs,
-    out_shapes=lambda i: [(i["q"].shape[0], i["index_k"].shape[1] // i["block_size"])],
-    invoke_reference=lambda i: [_msa_block_score_reference(i["q"], i["index_k"], i["seq_lens"], i["block_size"])],
-    invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["q"], i["index_k"], i["seq_lens"], i["block_size"], outs[0]),
-    graph_dynamic_inputs=("q", "index_k", "seq_lens"),
-    shapes=(
-        # Every shape keeps n_blocks > _MSA_TOPK (=8): at n_blocks == top_k the overlap
-        # gate is vacuous (any selection of 8-of-8 blocks scores 1.0).
-        {"batch": 4, "num_q_heads": 4, "head_dim": 128, "ctx": 1536, "block_size": 128},   # 12 blocks
-        {"batch": 2, "num_q_heads": 4, "head_dim": 128, "ctx": 2048, "block_size": 128},   # 16 blocks
-        {"batch": 8, "num_q_heads": 8, "head_dim": 64, "ctx": 1536, "block_size": 128},    # 12 blocks
-        {"batch": 3, "num_q_heads": 4, "head_dim": 128, "ctx": 4096, "block_size": 128},   # 32 blocks
-    ),
-    # The output is a SELECTION: gate on the top-k block SETS agreeing, not the score values.
-    # 7/8 tolerates a thin selection drift (e.g. fp8 index-K flipping a borderline block).
-    correctness=Correctness("topk_overlap", top_k=_MSA_TOPK, min_overlap=0.875),
-    tolerances=_BF16_TOL,
-    kl_threshold=3e-2,  # attention's higher intrinsic floor (this rides the attention path)
-    call_abi=MSA_BLOCK_SCORE_CALL_ABI,
+ATTENTION_MSA_BLOCK_SCORE = build_minimax_sparse_score_slot(
+    SlotSpec, Correctness, _BF16_TOL, MSA_BLOCK_SCORE_CALL_ABI
 )
 
 

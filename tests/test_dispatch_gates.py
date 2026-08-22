@@ -70,6 +70,53 @@ def test_rmsnorm_semantic_overrides_fall_back(attrs):
     assert dispatched(_rms_self(**attrs), torch.randn(4, 16)) is _BASELINE
 
 
+def test_rmsnorm_non_contiguous_input_falls_back():
+    # The candidate ABI is only ever verified on contiguous rows; a transposed view
+    # would be read with the wrong strides -- wrong numbers, not an error.
+    dispatched = make_rmsnorm_dispatcher(lambda *a: _BASELINE, registry=_rms_registry())
+    assert dispatched(_rms_self(), torch.randn(16, 4).t()) is _BASELINE
+
+
+# ---- rmsnorm: the Gemma binding scales by (1 + weight) ---------------------------------
+
+
+def test_gemma_binding_hands_the_kernel_the_folded_scale():
+    # GemmaRMSNorm's scale is 1 + weight. The slot contract stays a plain
+    # x_normed * weight, so the dispatcher must fold, not hand over the raw weight.
+    layer = _rms_self(weight=_Param(torch.full((16,), 0.25)))
+    x = torch.randn(4, 16)
+    folded = make_rmsnorm_dispatcher(
+        lambda *a: _BASELINE, registry=_rms_registry(), gemma_fold=True)
+    plain = make_rmsnorm_dispatcher(lambda *a: _BASELINE, registry=_rms_registry())
+    expected = plain(_rms_self(weight=_Param(torch.full((16,), 1.25))), x)
+    torch.testing.assert_close(folded(layer, x), expected)
+
+
+def test_gemma_scale_is_materialised_once_and_never_during_capture(monkeypatch):
+    # The fold must not be allocated inside a capture: it would come from the graph's
+    # private pool and be unsafe to read outside a replay. An uncached layer stays on
+    # stock until the next eager call.
+    import cacheon.dispatch as dispatch
+
+    layer = _rms_self(weight=_Param(torch.full((16,), 0.25)))
+    x = torch.randn(4, 16)
+    dispatched = make_rmsnorm_dispatcher(
+        lambda *a: _BASELINE, registry=_rms_registry(), gemma_fold=True)
+
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: True)
+    assert dispatched(layer, x) is _BASELINE
+    assert not hasattr(layer, dispatch._GEMMA_SCALE)
+
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: False)
+    assert dispatched(layer, x) is not _BASELINE
+    scale = getattr(layer, dispatch._GEMMA_SCALE)
+    torch.testing.assert_close(scale, torch.full((16,), 1.25))
+
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: True)
+    assert dispatched(layer, x) is not _BASELINE  # cached: capture reuses it
+    assert getattr(layer, dispatch._GEMMA_SCALE) is scale
+
+
 # ---- moe.fused_experts_reduce: layers that defer their reduce --------------------------
 
 

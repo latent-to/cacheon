@@ -49,6 +49,7 @@ The registered rows are:
 |---|---|---|---|
 | `activation` | `SiluAndMul.forward_cuda` | `activation.silu_and_mul` | Registry-selected |
 | `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm` | Registry-selected |
+| `layernorm_gemma` | `GemmaRMSNorm.forward_cuda` | `norm.rmsnorm`, scaled by `1 + weight` | Registry-selected |
 | `attention` | `flash_decode_with_gqa_share_sparse` | graph-native MiniMax-M3 `attention.decode` sparse attend | `attention` |
 | `attention_audit_mode` | `MiniMaxSparseAttnBackend.__init__` | keeps MSA prefill but routes the untimed decode audit through the scored Triton insertion | `attention` |
 | `moe` | `FusedMoE.forward_impl` | `moe.fused_experts`, `moe.fused_experts_reduce` | `moe` |

@@ -70,6 +70,11 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
                 "sglang_silu", "SiluAndMul.forward_cuda", ("activation.silu_and_mul",)),
     SeamAdapter("layernorm", "sglang.srt.layers.layernorm",
                 "sglang_norm", "RMSNorm.forward_cuda", ("norm.rmsnorm",)),
+    # Same adapter module: GemmaRMSNorm is a SIBLING class, so patching RMSNorm alone
+    # leaves every Gemma-norm model (MiniMax-M3 included) cold. The row makes the
+    # compat canary assert this chokepoint too -- its absence is why that gap shipped.
+    SeamAdapter("layernorm_gemma", "sglang.srt.layers.layernorm",
+                "sglang_norm", "GemmaRMSNorm.forward_cuda", ("norm.rmsnorm",)),
     SeamAdapter(
         "attention",
         "sglang.srt.layers.attention.minimax_sparse_ops.decode.topk_sparse",

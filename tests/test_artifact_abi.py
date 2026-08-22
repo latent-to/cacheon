@@ -40,8 +40,10 @@ _EXPECTED_CALL_ARGS = {
         "group.current",
     ),
     "attention.msa_block_score": (
-        "input.q", "input.index_k", "input.seq_lens", "input.block_size",
-        "output.block_scores",
+        "input.q", "input.k_cache", "input.req_to_token", "input.slot_ids",
+        "input.seq_lens", "output.block_scores", "input.sm_scale",
+        "input.block_size", "input.topk", "input.init_blocks",
+        "input.local_blocks",
     ),
     "attention.msa_prefill_block_score": (
         "input.q", "input.index_k_cache", "input.req_to_token", "input.slot_ids",

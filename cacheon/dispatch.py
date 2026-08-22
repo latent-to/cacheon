@@ -283,11 +283,26 @@ def make_silu_and_mul_dispatcher(
     return dispatched
 
 
+_GEMMA_SCALE = "_cacheon_gemma_scale"
+
+
+def _gemma_scale(module: object) -> torch.Tensor | None:
+    """Materialize Gemma's ``1 + weight`` scale outside graph capture."""
+    scale = getattr(module, _GEMMA_SCALE, None)
+    if scale is None:
+        if _in_cuda_graph():
+            return None
+        scale = module.weight.data + 1.0  # type: ignore[attr-defined]
+        setattr(module, _GEMMA_SCALE, scale)
+    return scale
+
+
 def make_rmsnorm_dispatcher(
     baseline_forward: Callable[..., object],
     *,
     registry: KernelRegistry = REGISTRY,
     slot: str = "norm.rmsnorm",
+    gemma_fold: bool = False,
 ) -> Callable[..., object]:
     """Build a replacement for ``RMSNorm.forward_cuda`` / ``forward_native``.
 
@@ -307,8 +322,16 @@ def make_rmsnorm_dispatcher(
         # (cast_x_before_out_mul) are all NOT the pure rmsnorm the slot contract states.
         if (post_residual_addition is not None or getattr(self, "fp32_residual", False)
                 or getattr(self, "variance_size_override", None) is not None
-                or getattr(self, "cast_x_before_out_mul", False)):
+                or getattr(self, "cast_x_before_out_mul", False)
+                or not x.is_contiguous()):
             return baseline_forward(self, x, residual, post_residual_addition)
+
+        if gemma_fold:
+            weight = _gemma_scale(self)
+            if weight is None:
+                return baseline_forward(self, x, residual, post_residual_addition)
+        else:
+            weight = self.weight.data
 
         impl = registry.lookup(
             slot,
@@ -320,7 +343,6 @@ def make_rmsnorm_dispatcher(
             return baseline_forward(self, x, residual, post_residual_addition)
 
         eps = float(self.variance_epsilon)
-        weight = self.weight.data
         aud = _audit.sampled()
         try:
             if residual is None:
