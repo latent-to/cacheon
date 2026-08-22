@@ -12,6 +12,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon_kernels import codec
 
 NVFP4_PREPARE_TAG = "nvfp4_layer"
+NVFP4_GATE_UP_LAYOUT = "gate_up"
 NVFP4_INTERLEAVED_LAYOUT = "up_gate_interleaved_64+sf_swizzled_128x4"
 _NVFP4_TENSORS = (
     "w13_weight", "w2_weight", "w13_blockscale_swizzled",
@@ -57,6 +58,14 @@ def _value(source: object, name: str) -> Any:
     return getattr(value, "data", value)
 
 
+def _context(source: object, name: str, default: object) -> object:
+    key = f"__moe_{name}__"
+    if isinstance(source, Mapping):
+        return source.get(key, default)
+    attr = f"moe_{name}" if name in {"tp_size", "ep_size", "ep_rank"} else name
+    return getattr(source, attr, default)
+
+
 def supports_layer(layer: object) -> bool:
     try:
         values = tuple(_value(layer, name) for name in _NVFP4_TENSORS)
@@ -64,7 +73,6 @@ def supports_layer(layer: object) -> bool:
             values[0].dtype == values[1].dtype == torch.uint8
             and values[2].dtype == values[3].dtype == torch.float8_e4m3fn
             and all(torch.is_tensor(value) for value in values)
-            and getattr(layer, "w13_blockscale_mma", None) is not None
             and int(_value(layer, "intermediate_size_per_partition")) > 0
         )
     except (AttributeError, TypeError, ValueError):
@@ -86,6 +94,8 @@ def _layer_view(
     a2 = _value(source, "w2_input_scale_quant")
     intermediate = int(_value(source, "intermediate_size_per_partition"))
     top_k = int(source["topk_ids"].shape[-1]) if isinstance(source, Mapping) else 0
+    tp_size = int(_context(source, "tp_size", 1))
+    fused_shared = int(_context(source, "num_fused_shared_experts", 0))
     view = SimpleNamespace(
         w13_weight=w13, w2_weight=w2,
         w13_weight_scale=w13_sf, w2_weight_scale=w2_sf,
@@ -97,28 +107,20 @@ def _layer_view(
         intermediate_size_per_partition=intermediate,
         num_local_experts=experts, num_experts=experts,
         hidden_size=int(w13.shape[-1]) * 2,
-        moe_ep_size=1, moe_ep_rank=0, moe_tp_size=1, reduce_results=False,
+        moe_ep_size=int(_context(source, "ep_size", 1)),
+        moe_ep_rank=int(_context(source, "ep_rank", 0)),
+        moe_tp_size=tp_size,
+        reduce_results=bool(_context(source, "reduce_results", False)),
+        num_fused_shared_experts=fused_shared,
         cacheon_group_size=16, cacheon_w13_layout=layout,
         moe_runner_config=SimpleNamespace(
             is_gated=True, num_experts=experts, top_k=top_k,
             hidden_size=int(w13.shape[-1]) * 2,
             intermediate_size_per_partition=intermediate,
             activation="swigluoai",
+            num_fused_shared_experts=fused_shared,
         ),
     )
-    optional = (
-        "w13_blockscale_mma", "w2_blockscale_mma", "moe_runner_config",
-        "_cutedsl_wrapper", "_cutedsl_scales", "_cutedsl_input_scale",
-        "fc1_input_dequant", "fc1_dequant", "fc2_quant", "fc2_dequant",
-    )
-    for name in optional:
-        value = (
-            source.get(name)
-            if isinstance(source, Mapping)
-            else getattr(source, name, None)
-        )
-        if value is not None:
-            setattr(view, name, getattr(value, "data", value))
     return view
 
 
@@ -132,9 +134,14 @@ def prepare_args_from_layer(layer: object) -> tuple[object, ...]:
     if not quantized:
         return w13, _value(layer, "w2_weight")
     if not supports_layer(layer):
-        raise ValueError("NVFP4 MoE layer is outside the interleaved-v2 contract")
+        raise ValueError("NVFP4 MoE layer is outside the canonical weight contract")
     view = _layer_view(
-        layer, layout=NVFP4_INTERLEAVED_LAYOUT,
+        layer,
+        layout=(
+            NVFP4_INTERLEAVED_LAYOUT
+            if getattr(layer, "w13_blockscale_mma", None) is not None
+            else NVFP4_GATE_UP_LAYOUT
+        ),
         scale_names=("w13_blockscale_swizzled", "w2_blockscale_swizzled"),
     )
     return NVFP4_PREPARE_TAG, view
@@ -165,18 +172,16 @@ def verification_inputs(dense: Mapping[str, object]) -> dict[str, object]:
         **dense,
         "w13": w13_ref,
         "w2": w2_ref,
-        "w13_weight": codec.interleave_w13_halves(w13_q, group=64),
+        "w13_weight": w13_q,
         "w2_weight": w2_q,
-        "w13_weight_scale": codec.swizzle_blockscale(
-            codec.interleave_w13_halves(w13_sf, group=64)
-        ),
+        "w13_weight_scale": codec.swizzle_blockscale(w13_sf),
         "w2_weight_scale": codec.swizzle_blockscale(w2_sf),
         "g1_alphas": ones,
         "g2_alphas": ones.clone(),
         "w13_input_scale_quant": ones.clone(),
         "w2_input_scale_quant": ones.clone(),
         "intermediate_size_per_partition": int(w2_ref.shape[-1]),
-        "w13_layout": NVFP4_INTERLEAVED_LAYOUT,
+        "w13_layout": NVFP4_GATE_UP_LAYOUT,
         "__moe_quant__": "nvfp4",
     }
 

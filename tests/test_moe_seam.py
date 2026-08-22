@@ -1,16 +1,3 @@
-"""CPU tests for the FusedMoE block seam (cacheon.dispatch.make_moe_dispatcher).
-
-The seam replaces ``FusedMoE.forward_impl(self, hidden_states, topk_output)`` — the
-waist every path (eager, in-piecewise, the two piecewise custom ops) converges on; a
-patch on ``.forward`` is bypassed under piecewise capture. These tests drive that
-dispatcher directly with a *fake* layer + a fake standard ``topk_output`` — no GPU, no
-sglang — so the routing extraction, the (prepare, forward) wiring, the validator-owned
-output allocation, and the conservative fallbacks are all exercised on the laptop. The
-faithful kernel is the real example bundle; correctness is checked against the slot's
-own fp32 reference. The install path (which method gets patched) is covered by
-``test_install_patches_forward_impl`` below.
-"""
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -202,24 +189,17 @@ def test_raising_kernel_falls_back_unless_strict(monkeypatch):
 
     reg = _registry(raising, prepare)
     dispatched = make_moe_dispatcher(_baseline_forward, registry=reg)
-    # non-strict: a crashing kernel just loses -> baseline
     assert dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs)) is _BASELINE
-    # strict: surface the error (used in debugging, not scoring)
     reg.set_strict(True)
     with pytest.raises(RuntimeError, match="boom"):
         dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs))
 
 
-# ---- M0: the install path patches forward_impl (the piecewise waist), not forward ----
-
 def test_install_patches_forward_impl(monkeypatch):
-    """``.forward`` is bypassed under piecewise capture (it routes to custom ops that call
-    ``forward_impl`` directly), so the seam MUST patch ``forward_impl``."""
     import sys
     from types import ModuleType
 
     from cacheon.integrations import sglang_moe
-
     def forward(self, hidden_states, topk_output):          # the router — must stay untouched
         return ("forward", hidden_states)
 
@@ -251,8 +231,6 @@ def test_install_patches_forward_impl(monkeypatch):
 
 
 def test_install_noop_without_forward_impl(monkeypatch):
-    """An older sglang lacking ``forward_impl`` -> the seam stays inert (the compat canary
-    flags the missing chokepoint rather than the seam silently patching the wrong method)."""
     import sys
     from types import ModuleType
 
@@ -269,3 +247,108 @@ def test_install_noop_without_forward_impl(monkeypatch):
     sglang_moe.install()
     assert not sglang_moe.is_installed()
     assert not hasattr(OldFusedMoE, "_cacheon_orig_forward_impl")
+
+
+def test_minimax_reduce_owns_immediate_and_deferred_ar_but_plain_cannot_forge(
+    monkeypatch,
+):
+    import sys
+    from types import ModuleType
+
+    from cacheon.integrations import sglang_moe
+
+    group = SimpleNamespace(size=lambda: 2)
+    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    monkeypatch.setattr(dispatch, "_tp_device_group", lambda: group)
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: False)
+    monkeypatch.setattr(dispatch._audit, "sampled", lambda: False)
+    completed = []
+    monkeypatch.setattr(dispatch._receipts, "completed", completed.append)
+
+    x = torch.randn(3, 8)
+    ids = torch.zeros(3, 2, dtype=torch.int32)
+    weights = torch.full((3, 2), 0.5)
+    topk = SimpleNamespace(topk_ids=ids, topk_weights=weights)
+
+    class FakeFusedMoE:
+        def forward_impl(self, hidden_states, _topk):
+            return hidden_states
+
+    experts = FakeFusedMoE()
+    experts.w13_weight = _Param(torch.randn(4, 8, 8))
+    experts.w2_weight = _Param(torch.randn(4, 8, 4))
+    experts.moe_tp_size = 2
+    experts.moe_ep_size = 1
+    experts.reduce_results = False
+    experts.num_fused_shared_experts = 1
+    experts.num_local_experts = 4
+    experts.intermediate_size_per_partition = 4
+
+    model_mod = ModuleType(sglang_moe._MODEL_MODULE)
+    stock_reduces = []
+
+    def stock_reduce(output):
+        stock_reduces.append(True)
+        return output + 10
+
+    model_mod.tensor_model_parallel_all_reduce = stock_reduce
+
+    class FakeMiniMaxM3MoE:
+        def forward_normal(
+            self, hidden_states, should_allreduce_fusion=False, use_reduce_scatter=False
+        ):
+            out = self.experts.forward_impl(hidden_states, self.topk)
+            if self.tp_size > 1 and not should_allreduce_fusion and not use_reduce_scatter:
+                out = model_mod.tensor_model_parallel_all_reduce(out)
+            return out
+
+    class FakeMiniMaxM3DecoderLayer:
+        def forward(self, hidden_states, deferred=False):
+            out = self.mlp.forward_normal(hidden_states, deferred, False)
+            if deferred:
+                out._sglang_needs_allreduce_fusion = True
+            return out, None
+
+    model_mod.MiniMaxM3MoE = FakeMiniMaxM3MoE
+    model_mod.MiniMaxM3DecoderLayer = FakeMiniMaxM3DecoderLayer
+    layer_mod = ModuleType(sglang_moe._MODULE)
+    layer_mod.FusedMoE = FakeFusedMoE
+    monkeypatch.setitem(sys.modules, sglang_moe._MODULE, layer_mod)
+    monkeypatch.setitem(sys.modules, sglang_moe._MODEL_MODULE, model_mod)
+
+    registry = KernelRegistry()
+    registry.register(KernelImpl(
+        slot="moe.fused_experts_reduce", bundle_id="reduce", variant="default",
+        entry=lambda x, _i, _w, _p, out, _g: out.copy_(x),
+        prepare=lambda _w13, _w2: None,
+        eligibility=Eligibility(dtypes=frozenset({"float32"})),
+    ))
+    registry.register(KernelImpl(
+        slot="moe.fused_experts", bundle_id="plain", variant="default",
+        entry=lambda x, _i, _w, _p, out: (
+            out.copy_(x),
+            setattr(out, dispatch._MOE_REDUCED_ATTR, dispatch._MOE_REDUCED_TOKEN),
+        ),
+        prepare=lambda _w13, _w2: None,
+        eligibility=Eligibility(dtypes=frozenset({"float32"})),
+    ))
+    registry.enable()
+
+    model = FakeMiniMaxM3MoE()
+    model.experts, model.topk, model.tp_size = experts, topk, 2
+    model.n_shared_experts, model.shared_experts = 1, None
+    decoder = FakeMiniMaxM3DecoderLayer()
+    decoder.mlp = model
+    try:
+        sglang_moe.install(registry)
+        assert torch.equal(model.forward_normal(x), x)
+        assert torch.equal(decoder.forward(x, True)[0], x)
+        assert stock_reduces == [] and completed == [
+            "moe.fused_experts_reduce", "moe.fused_experts_reduce"
+        ]
+
+        model.shared_experts = object()
+        assert torch.equal(model.forward_normal(x), x + 10)
+        assert stock_reduces == [True]
+    finally:
+        sglang_moe.uninstall()

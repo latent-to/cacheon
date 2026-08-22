@@ -61,8 +61,6 @@ from cacheon.artifact_abi import (
     COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
     MSA_BLOCK_SCORE_CALL_ABI,
     MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
-    MOE_FUSED_EXPERTS_CALL_ABI,
-    MOE_FUSED_EXPERTS_REDUCE_CALL_ABI,
     RMSNORM_CALL_ABI,
     SILU_AND_MUL_CALL_ABI,
     SlotCallABI,
@@ -528,7 +526,6 @@ MOE_FUSED_EXPERTS = SlotSpec(
     # gate on a matched ratio vs the fp32 reference, calibrated to the stock noise floor.
     correctness=Correctness("matched_ratio", min_ratio=0.97),
     tolerances=_BF16_TOL,
-    call_abi=MOE_FUSED_EXPERTS_CALL_ABI,
 )
 
 
@@ -787,22 +784,7 @@ COLLECTIVE_MOE_FINALIZE_AR_RMSNORM = SlotSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slot (COLLECTIVE block — owns its trailing reduce): moe.fused_experts_reduce
-#   prepare(w13, w2) -> prepared                                  (once at load)
-#   forward(x, topk_ids, topk_weights, prepared, out, group)      (per step)
-#   x:(M,H) per rank -> out:(M,H) = SUM_over_ranks( local_experts(x) )
-#
-# This is the fix for the structural ceiling: the decode win is the OVERLAP of the
-# expert GEMM with the trailing TP all-reduce (~75% of decode at TP/EP scale), and a
-# plain moe.fused_experts slot can't express it because the validator replays a SEPARATE
-# stock all-reduce after the kernel — the two ops are severed. Here ONE kernel owns BOTH
-# the experts AND the reduce (it is handed the process group), so it can fuse/overlap them.
-# The validator does NOT replay the reduce. Wider capability -> verified DISTRIBUTED vs the
-# fp32 cross-rank sum of the per-rank expert outputs, and the end-to-end gate is mandatory.
-# Still inside the four invariants: validator owns out + the group + the call site; the
-# reduced output feeds the residual stream upstream of the sampler (nothing to substitute).
-# ---------------------------------------------------------------------------
+# This collective slot owns local experts and their one trailing TP reduction.
 
 
 def _moe_reduce_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter: int, topk: int,
@@ -855,7 +837,6 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.97),
     tolerances=_BF16_TOL,
-    call_abi=MOE_FUSED_EXPERTS_REDUCE_CALL_ABI,
 )
 
 
@@ -870,8 +851,7 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 # blocks. So the kernel stays strictly upstream of the sampler (a wrong score just mis-selects,
 # caught by the gate + e2e KL). The output is a SELECTION, gated on `topk_overlap` (top-k block
 # SETS agree vs the bf16 reference), NOT cosine/KL: an fp8 index-K may perturb every score yet
-# pick the same blocks. Reusable pattern: finer seam + set-metric + validator-owns-the-step. The
-# live seam (the MSA backend's score kernel) is GPU/M3-specific — see integrations/sglang_msa.py.
+# pick the same blocks. No live adapter currently registers this decode-side score boundary.
 # ---------------------------------------------------------------------------
 
 _MSA_TOPK = 8  # the block-selection K this slot's correctness checks (<= every shape's n_blocks)
@@ -1204,17 +1184,45 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
             repl["collective_partial"] = _partial
     if profile.correctness is not None:
         repl["correctness"] = profile.correctness
-    if slot.name == "moe.fused_experts" and profile.quant == "nvfp4":
+    if slot.name in _MOE_SLOTS and profile.quant == "nvfp4":
         make_dense_inputs = slot.make_inputs
 
         def _quant_inputs(**kwargs):
-            return _moe_nvfp4_verification_inputs(make_dense_inputs(**kwargs))
+            dense = make_dense_inputs(**kwargs)
+            tokens, top_k = dense["topk_ids"].shape
+            experts = dense["w13"].shape[0]
+            routed_k = top_k - 1
+            generator = torch.Generator(device=kwargs["device"]).manual_seed(
+                int(kwargs["seed"]) + 17_171
+            )
+            routed = torch.rand(
+                tokens, experts - 1, generator=generator, device=kwargs["device"]
+            ).topk(routed_k, dim=-1).indices.to(torch.int32)
+            scores = torch.rand(
+                tokens, routed_k, generator=generator, device=kwargs["device"]
+            )
+            dense["topk_ids"] = torch.cat(
+                (routed, torch.full_like(routed[:, :1], experts - 1)), dim=-1
+            )
+            dense["topk_weights"] = torch.cat(
+                (2 * scores / scores.sum(-1, keepdim=True), torch.ones_like(scores[:, :1])),
+                dim=-1,
+            )
+            dense.update(
+                __moe_tp_size__=int(kwargs.get("world_size", 4)),
+                __moe_ep_size__=1,
+                __moe_ep_rank__=0,
+                __moe_reduce_results__=False,
+                __moe_num_fused_shared_experts__=1,
+            )
+            return _moe_nvfp4_verification_inputs(dense)
 
         repl["make_inputs"] = _quant_inputs
         repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
             *_moe_prepare_args_from_inputs(i)
         )
         repl["call_abi"] = None
+        repl["shapes"] = _M3_MOE_SHAPES
     return replace(slot, **repl) if repl else slot
 
 
@@ -1225,6 +1233,11 @@ _M3_MOE_PROFILE = SlotProfile(
     # m3_swigluoai_gate.py) with headroom; plain-SiLU scores 0.45 and is rejected.
     # No norm guard yet (max_rel_norm_err uncalibrated — TODO measure the floor).
     correctness=Correctness("cosine", min_cosine=0.985),
+)
+_M3_MOE_SHAPES = (
+    {"num_tokens": 1, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+    {"num_tokens": 8, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+    {"num_tokens": 32, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
 )
 _M3_MOE_NVFP4_PROFILE = replace(_M3_MOE_PROFILE, quant="nvfp4")
 
@@ -1237,7 +1250,7 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
         # Registering only the plain slot would verify an M3 reduce kernel against a
         # SiLU reference and false-fail every honest submission.
         "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
-        "moe.fused_experts_reduce": _M3_MOE_PROFILE,
+        "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
 }
 # NVFP4 builds carry a "-NVFP4" suffix in their declared model id; alias them.

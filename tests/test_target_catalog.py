@@ -449,7 +449,7 @@ def test_default_contract_refs_match_every_live_serializable_slot_field():
 
     catalog = default_target_catalog()
     for slot_id, slot in sorted(SLOTS.items()):
-        if slot_id == "moe.fused_experts":
+        if slot_id in {"moe.fused_experts", "moe.fused_experts_reduce"}:
             slot = slot_for_model(slot_id, "MiniMax-M3-NVFP4")
         ref = catalog.require(slot_id).contract_ref
         assert ref is not None
@@ -835,6 +835,10 @@ def test_default_displacement_and_compatible_overlap_are_explicit():
     assert atomic.displaces == frozenset(MOE_EPILOGUE_MEMBERS)
     assert catalog.require("moe.fused_experts").compatible_with == frozenset(
         {"moe.fused_experts_reduce"}
+    )
+    assert all(
+        not any(feature.startswith("aot:") for feature in catalog.require(slot).allowed_features)
+        for slot in ("moe.fused_experts", "moe.fused_experts_reduce")
     )
     assert catalog.validate_active_targets(
         ["moe.fused_experts", "moe.fused_experts_reduce"]

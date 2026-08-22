@@ -1,5 +1,3 @@
-"""NVFP4 verification/live parity for the plain fused-experts slot."""
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -11,7 +9,7 @@ torch = pytest.importorskip("torch")
 import cacheon.dispatch as dispatch  # noqa: E402
 from cacheon.dispatch import make_moe_dispatcher  # noqa: E402
 from cacheon.moe_nvfp4_contract import (  # noqa: E402
-    NVFP4_INTERLEAVED_LAYOUT,
+    NVFP4_GATE_UP_LAYOUT,
     NVFP4_PREPARE_TAG,
     dequantize_prepare_args,
     prepare_args_from_inputs,
@@ -50,14 +48,17 @@ def _candidate(corrupt: bool = False):
     return prepare, entry, seen
 
 
-def _live_layer(inputs, *, mma=True):
-    return SimpleNamespace(
+def _live_layer(inputs, *, complete=True):
+    layer = SimpleNamespace(
         **{name: inputs[name] for name in WEIGHT_FIELDS},
         w13_blockscale_swizzled=inputs["w13_weight_scale"],
         w2_blockscale_swizzled=inputs["w2_weight_scale"],
-        w13_blockscale_mma=object() if mma else None,
-        moe_ep_size=1, moe_tp_size=1, reduce_results=False,
+        moe_ep_size=1, moe_tp_size=4, reduce_results=False,
+        num_fused_shared_experts=1,
     )
+    if not complete:
+        del layer.w13_blockscale_swizzled
+    return layer
 
 
 @pytest.mark.parametrize(("corrupt", "passed"), ((False, True), (True, False)))
@@ -82,7 +83,7 @@ def test_m3_nvfp4_verification_executes_the_quantized_contract(corrupt, passed):
     view = seen[0][1]
     assert view.w13_weight.dtype == view.w2_weight.dtype == torch.uint8
     assert (view.cacheon_group_size, view.cacheon_w13_layout) == (
-        16, NVFP4_INTERLEAVED_LAYOUT,
+        16, NVFP4_GATE_UP_LAYOUT,
     )
     assert result.shape_results[0].case_descriptor.calls[0]["quant"] == "nvfp4"
 
@@ -97,6 +98,15 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
     live_args = prepare_args_from_layer(layer)
     assert verify_args[0] == live_args[0] == NVFP4_PREPARE_TAG
     verify_view, live_view = verify_args[1], live_args[1]
+    assert (
+        verify_view.moe_tp_size,
+        verify_view.moe_ep_size,
+        verify_view.num_fused_shared_experts,
+    ) == (
+        live_view.moe_tp_size,
+        live_view.moe_ep_size,
+        live_view.num_fused_shared_experts,
+    ) == (4, 1, 1)
     assert all(
         getattr(verify_view, name).dtype == getattr(live_view, name).dtype
         and torch.equal(
@@ -108,14 +118,35 @@ def test_live_layer_and_verifier_emit_the_same_nvfp4_prepare_schema():
     assert torch.equal(live_w13, inputs["w13"]) and torch.equal(live_w2, inputs["w2"])
 
 
+def test_m3_reduce_profile_uses_live_shape_topology_and_nvfp4_prepare():
+    slot = slot_for_model("moe.fused_experts_reduce", "MiniMax-M3-NVFP4")
+    assert slot.call_abi is None
+    assert slot.shapes[0] == {
+        "num_tokens": 1, "num_experts": 129, "hidden": 6144,
+        "inter": 768, "topk": 5,
+    }
+    inputs = slot.make_inputs(
+        **SHAPE, dtype=torch.float32, device="cpu", seed=7, rank=0, world_size=4
+    )
+    assert torch.equal(inputs["topk_ids"][:, -1], torch.full((4,), 3, dtype=torch.int32))
+    assert torch.all(inputs["topk_ids"][:, :-1] != 3)
+    assert torch.allclose(inputs["topk_weights"][:, :-1].sum(-1), torch.full((4,), 2.0))
+    assert torch.equal(inputs["topk_weights"][:, -1], torch.ones(4))
+    tag, view = prepare_args_from_inputs(inputs)
+    assert tag == NVFP4_PREPARE_TAG
+    assert (view.moe_tp_size, view.moe_ep_size, view.num_fused_shared_experts) == (
+        4, 1, 1,
+    )
+
+
 @pytest.mark.parametrize(
-    ("quant", "mma", "routed"),
+    ("quant", "complete", "routed"),
     ((frozenset(), True, False),
      (frozenset({"nvfp4"}), False, False),
      (frozenset({"nvfp4"}), True, True)),
 )
 def test_live_dispatch_selects_only_matching_finalized_nvfp4(
-    monkeypatch, quant, mma, routed
+    monkeypatch, quant, complete, routed
 ):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", lambda: 1)
@@ -137,7 +168,7 @@ def test_live_dispatch_selects_only_matching_finalized_nvfp4(
                                   slots=("moe.fused_experts",))
     topk = SimpleNamespace(topk_ids=inputs["topk_ids"],
                            topk_weights=inputs["topk_weights"])
-    output = wrapped(_live_layer(inputs, mma=mma), inputs["x"], topk)
+    output = wrapped(_live_layer(inputs, complete=complete), inputs["x"], topk)
     assert (output is not stock) is routed
     assert bool(prepared) is routed and bool(fired) is routed and bool(completed) is routed
 

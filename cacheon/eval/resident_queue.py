@@ -318,6 +318,15 @@ class ResidentScreenLoop:
 
         swap_out = session.swap(None)
         receipts.append(swap_out)
+        if failure is None and not swap_out.execution.proves_execution(
+            generation=swap_in.generation,
+            expected_ranks=swap_out.expected_ranks,
+        ):
+            failure = (
+                "candidate execution not proven before screen promotion "
+                f"({swap_out.execution.prior_execution_ranks}/"
+                f"{swap_out.expected_ranks} ranks)"
+            )
         closing = session.execute_batch(prompt_plan, canary=True)
         batch_indices.append(closing.batch_index)
         closing_throughput = _throughput(closing)
@@ -344,6 +353,11 @@ class ResidentScreenLoop:
                     candidate_reads.append(_throughput(candidate_row_2))
                 swap_out_2 = session.swap(None)
                 receipts.append(swap_out_2)
+                if failure is None and not swap_out_2.execution.proves_execution(
+                    generation=swap_in_2.generation,
+                    expected_ranks=swap_out_2.expected_ranks,
+                ):
+                    failure = "escalation candidate execution not proven"
                 closing_2 = session.execute_batch(prompt_plan, canary=True)
                 batch_indices.append(closing_2.batch_index)
                 closing_throughput = _throughput(closing_2)

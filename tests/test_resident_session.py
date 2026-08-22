@@ -181,6 +181,7 @@ class TestWorkerSwapApplication:
         tp: int = 2,
         slots=("s.one",),
         prior_generation: int | None = None,
+        fired: int = 1,
         completed: int = 1,
         fallback: int = 0,
     ) -> None:
@@ -189,6 +190,7 @@ class TestWorkerSwapApplication:
             if prior_generation is not None:
                 row["prior_generation"] = prior_generation
                 row["prior_receipts"] = {
+                    "fired": fired,
                     "completed": completed,
                     "fallback": fallback,
                     "load_failed": 0,

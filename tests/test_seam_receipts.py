@@ -81,6 +81,25 @@ def test_registry_lookup_writes_fired_once(receipt_dir, monkeypatch):
     assert len(fired) == 1 and fired[0]["slot"] == "activation.silu_and_mul"
 
 
+def test_registry_fired_receipt_rearms_for_each_resident_scope(
+    receipt_dir, monkeypatch
+):
+    monkeypatch.setattr("cacheon.registry._FIRED_SLOTS", set())
+    monkeypatch.setattr(receipts, "_SCOPE", "")
+    reg = KernelRegistry()
+    reg.register(KernelImpl(
+        slot="norm.rmsnorm", bundle_id="t", entry=lambda *a: None,
+        eligibility=Eligibility(),
+    ))
+    reg.enable()
+    for scope in ("1", "2"):
+        receipts.set_scope(scope)
+        assert reg.lookup(
+            "norm.rmsnorm", dtype_name="bfloat16", last_dim=128, arch=None
+        ) is not None
+        assert len(receipts.collect(receipt_dir / scope, "fired")) == 1
+
+
 def test_registry_miss_writes_nothing(receipt_dir, monkeypatch):
     monkeypatch.setattr("cacheon.registry._FIRED_SLOTS", set())
     reg = KernelRegistry()

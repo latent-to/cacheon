@@ -183,13 +183,7 @@ class SwapReceipt:
     slots: tuple[str, ...]
     requested_at: float
     completed_at: float
-    # Execution evidence for the generation this swap closed, and the rank group
-    # it had to cover. Carried here because a swap is the only moment at which a
-    # generation's receipts are final: nothing more can run under a scope once
-    # the lane has swapped away from it.
-    # Defaulted to UNOBSERVED so that any construction which does not supply
-    # real evidence fails closed: an unobserved swap can never prove execution,
-    # so a caller that forgets these gets a hold, never a free pass.
+    # A swap closes the prior generation; omitted evidence defaults fail-closed.
     execution: ResidentExecutionEvidence = UNOBSERVED_EVIDENCE
     expected_ranks: int = 1
 
@@ -237,9 +231,12 @@ class SwapReceipt:
             "bundle_digest": self.bundle_digest,
             "completed_at": format(self.completed_at, ".17g"),
             "generation": self.generation,
+            "prior_execution_ranks": self.execution.prior_execution_ranks,
+            "prior_generation": self.execution.prior_generation,
             "requested_at": format(self.requested_at, ".17g"),
             "slots": list(self.slots),
             "swap_index": self.swap_index,
+            "expected_ranks": self.expected_ranks,
         }
 
 

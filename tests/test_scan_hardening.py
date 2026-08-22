@@ -1,9 +1,3 @@
-"""scan_source hardening (#5): close the literal-AST-denylist bypasses.
-
-Still a tripwire, not the boundary (isolation is) — but the trivial one-liners the
-report flagged should no longer pass clean.
-"""
-
 from pathlib import Path
 
 import pytest
@@ -23,6 +17,9 @@ EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
     "import os\nf = os.system\nf('id')\n",                        # banned-callable ALIAS (no Call at the access)
     "import os\ncmds = [os.system]\ncmds[0]('id')\n",             # alias via a container
     "import dill\nl = dill.loads\nl(b'')\n",                      # deserializer alias
+    "import cacheon.receipts\n",
+    "from cacheon import receipts\n",
+    "import cacheon as c\n",
 ])
 def test_known_bypasses_are_flagged(src):
     assert not scan_source(src).ok, f"should have flagged: {src!r}"
@@ -48,6 +45,8 @@ def test_scan_tree_flags_symlinks_fail_closed(tmp_path):
     "import torch\ndef k(x, out):\n    out.copy_(torch.relu(x))\n",
     "class C:\n    pass\nc = C()\nv = getattr(c, 'attr', None)\n",   # LITERAL getattr is fine
     "d = {'a': 1}\nx = d['a']\n",                                    # ordinary subscript fine
+    "from cacheon.moe_nvfp4_contract import dequantize_prepare_args\n",
+    "from cacheon.slots import Activation\n",
 ])
 def test_legitimate_code_not_flagged(src):
     assert scan_source(src).ok, f"false positive on: {src!r}"

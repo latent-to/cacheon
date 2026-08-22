@@ -152,7 +152,8 @@ plans fail closed.
 
 The abbreviated-serving stage may keep a stock engine resident and hot-swap a
 bounded candidate queue. Each swap is generation-bound, triggers graph
-recapture, and is checked by shared stock brackets and contamination canaries.
+recapture, and is checked by shared stock brackets, contamination canaries, and
+exact all-rank fired/completed evidence before promotion.
 The calibrated screen policy is retained by the arena provider. Graph-enabled
 B300 screen engines set SGLang `watchdog_timeout=1800` so the default 300s
 scheduler watchdog cannot SIGKILL ranks mid CUDA-graph capture on the live

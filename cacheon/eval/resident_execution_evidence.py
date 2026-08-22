@@ -1,27 +1,8 @@
-"""Did the candidate's kernel actually run during the reads that were timed?
+"""Generation-scoped proof that a resident candidate really executed.
 
-A resident lane is launched stock and acquires candidates by hot-swap, so the
-one-shot driver's execution gate — which mints a receipt directory only for an
-engine that is already active at construction — never applied to it. The lane
-therefore served every candidate of its life with receipts disabled, and a
-bundle whose kernel never dispatched was indistinguishable from one that ran:
-both produced a clean speed number and no execution evidence at all. That is how
-a non-invoking bundle reached a PASS (2026-08-16).
-
-The swap seam now scopes receipts by generation and counts the closing scope on
-each rank as it swaps away from it. This module is the single definition of what
-those per-rank counts mean, shared by the worker that summarizes them and the
-controller that acts on them, so the two ends cannot drift into disagreeing
-about what "executed" is.
-
-Three states, and keeping them distinct is the entire point:
-
-  * ``UNOBSERVED`` — the evidence path itself is unusable. No verdict may be
-    drawn: this is an infrastructure fault, and converting one into a candidate
-    verdict is exactly the failure this code exists to prevent.
-  * observed, short of the full rank set — the candidate did not execute
-    cleanly on every rank. Not a PASS.
-  * observed, complete — execution is proven for that generation.
+The closing swap counts rank receipts. ``UNOBSERVED`` means broken evidence;
+observed short coverage means the candidate did not run cleanly everywhere;
+only exact rank coverage can authorize speed grading or screen promotion.
 """
 
 from __future__ import annotations
@@ -85,13 +66,13 @@ def _rank_executed_cleanly(counts: object) -> bool | None:
     if not isinstance(counts, dict):
         return None
     values = []
-    for kind in ("completed", "fallback", "load_failed"):
+    for kind in ("fired", "completed", "fallback", "load_failed"):
         value = counts.get(kind)
         if type(value) is not int or value < 0:
             return None
         values.append(value)
-    completed, fallback, load_failed = values
-    return completed > 0 and fallback == 0 and load_failed == 0
+    fired, completed, fallback, load_failed = values
+    return fired > 0 and completed > 0 and fallback == 0 and load_failed == 0
 
 
 def summarize_rank_acks(

@@ -234,7 +234,8 @@ prepare("nvfp4_layer", weights)
 `weights` is a validator-owned view, not the SGLang layer. It exposes packed
 `uint8` E2M1 `w13_weight`/`w2_weight`, swizzled E4M3 weight scales,
 `g1_alphas`/`g2_alphas`, inverse activation scales, intermediate size, group
-size 16, and the `up_gate_interleaved_64+sf_swizzled_128x4` layout. The
+size 16, and the logical ModelOpt `gate_up` layout. `prepare` may repack that
+view into any candidate-owned backend layout. The
 validator derives each weight's outer scale as `g*_alpha * a*_inv` and
 dequantizes independently for its fp32 reference.
 
@@ -260,6 +261,9 @@ def fused_experts_reduce(
 
 The validator does not replay a second stock reduce after this slot. That wider
 authority is why it is a distributed contract.
+
+The M3 NVFP4 MoE profiles currently accept source/JIT entries only. Direct-AOT
+rows remain unavailable until their native prepare ABI carries the same tagged view.
 
 The prepare/forward split exists because weight transformation and request-time work have
 different lifetimes. Packing fixed expert weights once can be a legitimate optimization;

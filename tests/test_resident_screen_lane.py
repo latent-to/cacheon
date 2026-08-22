@@ -14,6 +14,7 @@ from cacheon.chain.publication import publish_worker_bundle
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.qualification_intake import QualificationReservation
+from cacheon.eval.resident_execution_evidence import ResidentExecutionEvidence
 from cacheon.eval.resident_queue import ScreenCandidate, ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
@@ -71,6 +72,7 @@ class FakeResidentSession:
     def swap(self, bundle_digest: str | None) -> SwapReceipt:
         if self.fail_on_swap:
             raise RuntimeError("engine lost")
+        prior_generation, prior_active = self.generation, self.active
         self.generation += 1
         self.active = bundle_digest
         self.swaps.append(bundle_digest)
@@ -82,6 +84,8 @@ class FakeResidentSession:
             () if bundle_digest is None else self.slots[bundle_digest],
             self.clock - 30.0,
             self.clock,
+            ResidentExecutionEvidence(prior_generation, int(prior_active is not None)),
+            1,
         )
 
     def execute_batch(self, prompts, *, canary: bool = False):

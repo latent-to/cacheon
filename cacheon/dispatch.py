@@ -44,6 +44,46 @@ from cacheon.tensor_spec import (
 logger = logging.getLogger("cacheon.dispatch")
 _MOE_LOGGED_ACTIVE = False
 _MOE_LOGGED_FALLBACK = False
+_MOE_OUTER_REDUCE_ATTR = "_cacheon_outer_reduce_owner"
+_MOE_OUTER_REDUCE_TOKEN = object()
+_MOE_REDUCED_ATTR = "_cacheon_already_reduced"
+_MOE_REDUCED_TOKEN = object()
+_MOE_REDUCE_MODES = frozenset({"immediate", "deferred"})
+
+
+def _moe_reduce_owner(layer: object) -> str | None:
+    state = getattr(layer, _MOE_OUTER_REDUCE_ATTR, None)
+    if (
+        isinstance(state, tuple)
+        and len(state) == 2
+        and state[0] is _MOE_OUTER_REDUCE_TOKEN
+        and state[1] in _MOE_REDUCE_MODES
+    ):
+        return state[1]
+    return None
+
+
+def _clear_moe_reduced(output: object) -> None:
+    if torch.is_tensor(output) and hasattr(output, _MOE_REDUCED_ATTR):
+        delattr(output, _MOE_REDUCED_ATTR)
+
+
+def _consume_moe_reduced(output: object, mode: str) -> bool:
+    state = getattr(output, _MOE_REDUCED_ATTR, None) if torch.is_tensor(output) else None
+    if state is None:
+        return False
+    if (
+        not isinstance(state, tuple)
+        or len(state) != 3
+        or state[0] is not _MOE_REDUCED_TOKEN
+        or state[1] != mode
+        or state[2] is not _tp_device_group()
+    ):
+        raise RuntimeError("invalid reduce-owning MoE completion context")
+    delattr(output, _MOE_REDUCED_ATTR)
+    _log_once_active("moe.fused_experts_reduce")
+    _receipts.completed("moe.fused_experts_reduce")
+    return True
 
 
 def _arch_tag(device_index: int = 0) -> Optional[str]:
@@ -351,11 +391,10 @@ def make_moe_dispatcher(
                             descriptor = None
                             if reduce_slot:
                                 topk_ids, topk_weights = routed
-                                # Synthetic distributed qualification currently owns
-                                # only the dense prepare ABI. Running an NVFP4/FP8
-                                # layer here would execute a live configuration that
-                                # offline verification could only mark N/A.
-                                if quant_fmt is not None:
+                                if quant_fmt not in {None, "nvfp4"} or (
+                                    quant_fmt == "nvfp4"
+                                    and not supports_nvfp4_moe_layer(self)
+                                ):
                                     continue
                                 if not (
                                     x.is_contiguous()
@@ -373,7 +412,10 @@ def make_moe_dispatcher(
                                     and topk_weights.device == x.device
                                 ):
                                     continue
-                                if not getattr(self, "reduce_results", False):
+                                if not (
+                                    getattr(self, "reduce_results", False)
+                                    or _moe_reduce_owner(self) is not None
+                                ):
                                     continue
                                 group = _tp_device_group()
                                 group_size = _process_group_size(group)
@@ -488,10 +530,24 @@ def make_moe_dispatcher(
                                 group=group,
                             )
                             if aud:
-                                _audit.run(slot, (out,) if torch.is_tensor(out) else tuple(out),
-                                           lambda: baseline_forward(self, a_x, topk_output))
-                            _log_once_active(slot)
-                            _receipts.completed(slot)
+                                def stock_reference():
+                                    stock = baseline_forward(self, a_x, topk_output)
+                                    if reduce_slot and _moe_reduce_owner(self) is not None:
+                                        from sglang.srt.distributed.communication_op import (
+                                            tensor_model_parallel_all_reduce,
+                                        )
+
+                                        stock = tensor_model_parallel_all_reduce(stock)
+                                    return stock
+
+                                _audit.run(
+                                    slot,
+                                    (out,) if torch.is_tensor(out) else tuple(out),
+                                    stock_reference,
+                                )
+                            if not (reduce_slot and _moe_reduce_owner(self) is not None):
+                                _log_once_active(slot)
+                                _receipts.completed(slot)
                             return out
             except Exception as exc:  # noqa: BLE001
                 if selected_is_collective:
@@ -529,40 +585,24 @@ def _log_once_fallback(exc: Exception) -> None:
 
 
 def _moe_seam_active() -> bool:
-    # Opt-in until the seam is validated end-to-end on the pod (graph-safe TP path,
-    # quant weight view); keeps it inert in production until then.
     import os
 
     return os.environ.get("CACHEON_MOE_SEAM") == "1"
 
 
 def _moe_supported(self) -> bool:
-    # The (M,H)->(M,H) expert contract models local experts only. Expert parallelism
-    # and MoE data parallelism add token dispatch/combine boundaries the contract
-    # doesn't express, so either topology falls back to the trusted backend. Pure
-    # tensor parallelism IS supported (see the all-reduce in _run_moe_kernel).
+    """Admit local-expert/TP layers; EP/DP boundaries remain stock."""
     if getattr(self, "moe_ep_size", 1) != 1:
         return False
     if _moe_data_parallel_world_size() != 1:
         return False
-    # Need the expert-weight params prepare_from_layer maps to the kernel's weight view.
     if not (hasattr(self, "w13_weight") and hasattr(self, "w2_weight")):
         return False
-    # Quantized layers (FP4/FP8 — they expose *_weight_scale) ARE admitted here and
-    # paired to a kernel BY FORMAT in the dispatch loop (_quant_ok): a quantized layer
-    # only runs a kernel that DECLARES its exact format (and gets the quant-aware
-    # prepare_from_layer); a dense layer still runs only a dense kernel. The format gate
-    # is per-impl, so it lives in the loop — _moe_supported runs before the impl is known.
     return True
 
 
 def _moe_quant_format(self) -> Optional[str]:
-    """The layer's expert-weight quant format: ``None`` (dense), ``"fp8"``, or ``"nvfp4"``.
-
-    A quantized FusedMoE exposes ``*_weight_scale`` params; the format is read off the
-    packed weight dtype (float8 -> ``"fp8"``; sub-byte packed -> ``"nvfp4"``). The
-    canonical descriptor lets registry selection enforce the declared quant format.
-    This helper only classifies; the slot's prepare mapper validates the fields."""
+    """Classify dense, FP8, or packed-uint8 NVFP4 expert weights."""
     if not (hasattr(self, "w13_weight_scale") or hasattr(self, "w2_weight_scale")):
         return None
     w = getattr(getattr(self, "w13_weight", None), "data", None)
@@ -659,16 +699,7 @@ def _run_moe_kernel(
     *,
     group=None,
 ):
-    """Allocate the output (validator-owned) and run the miner's fused-experts kernel.
-
-    Two contracts share this path:
-      * ``moe.fused_experts`` — miner fills the LOCAL expert output; the validator then
-        replays FusedMoE.forward_impl's tensor-parallel all-reduce (the reduce is stock).
-      * ``moe.fused_experts_reduce`` — the miner kernel OWNS the trailing all-reduce (it is
-        handed the TP process group), so it can overlap the expert GEMM with the reduce; the
-        validator does NOT replay it. This is the only contract that can express the
-        compute-comm overlap win. EP is excluded upstream for both.
-    """
+    """Run the local-expert or reduce-owning expert contract into validator output."""
     topk_ids, topk_weights = routed
     live_inputs = {
         "x": x,
@@ -692,14 +723,25 @@ def _run_moe_kernel(
         # The caller has already made this route non-recoverable before entering
         # any rank-local fallible prelude.
         prepared = _moe_prepared(self, impl, slot)
-        impl.entry(x, topk_ids, topk_weights, prepared, out, group)  # miner fills the REDUCED out
+        _clear_moe_reduced(out)
+        try:
+            impl.entry(x, topk_ids, topk_weights, prepared, out, group)
+        finally:
+            _clear_moe_reduced(out)
         _validate_live_outputs(
             contract, allocation, tensor_inputs, input_bindings, like=x
         )
+        owner = _moe_reduce_owner(self)
+        if owner is not None:
+            setattr(out, _MOE_REDUCED_ATTR, (_MOE_REDUCED_TOKEN, owner, group))
         return out
 
     prepared = _moe_prepared(self, impl, slot)
-    impl.entry(x, topk_ids, topk_weights, prepared, out)  # miner fills `out` (local experts)
+    _clear_moe_reduced(out)
+    try:
+        impl.entry(x, topk_ids, topk_weights, prepared, out)
+    finally:
+        _clear_moe_reduced(out)
     _validate_live_outputs(
         contract, allocation, tensor_inputs, input_bindings, like=x
     )

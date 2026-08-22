@@ -65,10 +65,9 @@ The registered rows are:
 Several adapters may share one binding when they implement one semantic product. The shallow AR-fusion consume adapter and both deep producer adapters share `arfusion`; activating only part of that set would violate the protocol.
 
 The catalog can contain a verified slot before the pinned runtime exposes a safe live
-chokepoint. `attention.msa_block_score` has a slot and verifier contract, while
-[`sglang_msa.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_msa.py)
-refuses installation unless a stable decode-side MSA chokepoint is registered. The
-prefill sibling has an installed adapter. The separate `attention.decode` adapter
+chokepoint. `attention.msa_block_score` has a slot and verifier contract but no live
+adapter; the deleted placeholder only raised `NotImplementedError`. The prefill sibling
+has an installed adapter. The separate `attention.decode` adapter
 patches both the sparse-attend defining symbol and SGLang's by-value consumer so the
 candidate becomes a member of the recorded decode graph rather than an eager-only
 warmup call.

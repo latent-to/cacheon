@@ -1,8 +1,4 @@
-"""CPU tests for per-model activation profiles (slots.MODEL_PROFILES / slot_for_model) and
-the override-point verify path: a swigluoai epilogue PASSES under the MiniMax-M3 profile
-(cosine vs a swigluoai reference) and FAILS generic (vs the SiLU reference) — the control
-that proves the profile, not the kernel, was the missing piece.
-"""
+"""Per-model activation, correctness, and override verification tests."""
 
 from __future__ import annotations
 
@@ -14,6 +10,8 @@ torch = pytest.importorskip("torch")
 
 from cacheon.slots import Activation, _moe_reference, get_slot, slot_for_model  # noqa: E402
 from cacheon.verify import verify_entry_from_source  # noqa: E402
+
+_SMALL_SHAPE = {"num_tokens": 8, "num_experts": 4, "hidden": 64, "inter": 64, "topk": 2}
 
 
 def test_slot_for_model_generic_unchanged():
@@ -75,7 +73,7 @@ def test_override_verify_passes_with_m3_profile(tmp_path):
     res = verify_entry_from_source(
         "moe.fused_experts", src, "gemm1_epilogue",
         override_point="gemm1_epilogue", model_key="MiniMax-M3",
-        dtype_name="float32", device="cpu",
+        dtype_name="float32", device="cpu", shapes=[_SMALL_SHAPE],
     )
     assert res.passed, res.shape_results
     # cosine metric on the M3 profile
@@ -89,7 +87,7 @@ def test_override_verify_fails_generic(tmp_path):
     res = verify_entry_from_source(
         "moe.fused_experts", src, "gemm1_epilogue",
         override_point="gemm1_epilogue", model_key=None,
-        dtype_name="float32", device="cpu",
+        dtype_name="float32", device="cpu", shapes=[_SMALL_SHAPE],
     )
     assert not res.passed
 
@@ -101,5 +99,5 @@ def test_override_missing_torch_reference_errors(tmp_path):
         verify_entry_from_source(
             "moe.fused_experts", str(p), "gemm1_epilogue",
             override_point="gemm1_epilogue", model_key="MiniMax-M3",
-            dtype_name="float32", device="cpu",
+            dtype_name="float32", device="cpu", shapes=[_SMALL_SHAPE],
         )

@@ -239,9 +239,9 @@ produces a complete speed number.
 
 Each swap therefore reports per-rank execution evidence for the generation it closes —
 the scope is final only once the lane has swapped away from it. A resident candidate leg
-is graded only when every rank of the group completed the candidate under exactly the
-activation generation. A rank that fell back to the trusted baseline, or failed to load
-the bundle, does not count as having executed it.
+is screened or graded only when every rank fired and completed the candidate under exactly
+the activation generation. A rank that fell back to the trusted baseline, or failed to
+load the bundle, does not count as having executed it.
 
 The reported count is a tri-state, and the states carry different authority:
 

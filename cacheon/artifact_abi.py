@@ -2343,33 +2343,6 @@ ATTENTION_DECODE_CALL_ABI = SlotCallABI(
 )
 
 
-def _moe_resources(*, collective: bool) -> tuple[SlotResource, ...]:
-    common = (
-        SlotResource("input.x", "tensor"),
-        SlotResource("input.topk_ids", "tensor"),
-        SlotResource("input.topk_weights", "tensor"),
-        SlotResource("input.w13", "tensor"),
-        SlotResource("input.w2", "tensor"),
-        SlotResource("prepared.state", "opaque", access="readwrite"),
-        SlotResource("output.out", "tensor", access="write"),
-    )
-    return common + (_GROUP_RESOURCES if collective else ()) + (_STREAM_RESOURCE,)
-
-
-MOE_FUSED_EXPERTS_CALL_ABI = SlotCallABI(
-    slot="moe.fused_experts",
-    resources=_moe_resources(collective=False),
-    call_args=(
-        "input.x",
-        "input.topk_ids",
-        "input.topk_weights",
-        "prepared.state",
-        "output.out",
-    ),
-    prepare_args=("input.w13", "input.w2"),
-    prepare_result="prepared.state",
-)
-
 COLLECTIVE_ALL_REDUCE_CALL_ABI = SlotCallABI(
     slot="collective.all_reduce",
     resources=(
@@ -2433,21 +2406,6 @@ COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI = SlotCallABI(
         "output.out_residual",
         "group.current",
     ),
-)
-
-MOE_FUSED_EXPERTS_REDUCE_CALL_ABI = SlotCallABI(
-    slot="moe.fused_experts_reduce",
-    resources=_moe_resources(collective=True),
-    call_args=(
-        "input.x",
-        "input.topk_ids",
-        "input.topk_weights",
-        "prepared.state",
-        "output.out",
-        "group.current",
-    ),
-    prepare_args=("input.w13", "input.w2"),
-    prepare_result="prepared.state",
 )
 
 MSA_BLOCK_SCORE_CALL_ABI = SlotCallABI(
@@ -2516,11 +2474,9 @@ SLOT_CALL_ABIS: Mapping[str, SlotCallABI] = MappingProxyType(
             RMSNORM_CALL_ABI,
             ATTENTION_SDPA_CALL_ABI,
             ATTENTION_DECODE_CALL_ABI,
-            MOE_FUSED_EXPERTS_CALL_ABI,
             COLLECTIVE_ALL_REDUCE_CALL_ABI,
             COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
             COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
-            MOE_FUSED_EXPERTS_REDUCE_CALL_ABI,
             MSA_BLOCK_SCORE_CALL_ABI,
             MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
         )
@@ -2549,8 +2505,6 @@ __all__ = [
     "COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI",
     "MSA_PREFILL_BLOCK_SCORE_CALL_ABI",
     "MSA_BLOCK_SCORE_CALL_ABI",
-    "MOE_FUSED_EXPERTS_CALL_ABI",
-    "MOE_FUSED_EXPERTS_REDUCE_CALL_ABI",
     "RMSNORM_CALL_ABI",
     "SLOT_CALL_ABIS",
     "SILU_AND_MUL_CALL_ABI",

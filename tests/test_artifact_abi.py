@@ -29,9 +29,6 @@ _EXPECTED_CALL_ARGS = {
         "input.seq_lens", "input.req_pool_indices", "input.topk_idx",
         "output.out", "input.sm_scale", "input.block_size",
     ),
-    "moe.fused_experts": (
-        "input.x", "input.topk_ids", "input.topk_weights", "prepared.state", "output.out"
-    ),
     "collective.all_reduce": ("input.x", "output.out", "group.current"),
     "collective.ar_residual_rmsnorm": (
         "input.x", "input.residual", "input.weight", "input.eps",
@@ -41,10 +38,6 @@ _EXPECTED_CALL_ARGS = {
         "input.gemm_out", "input.row_map", "input.scales", "input.residual",
         "input.weight", "input.eps", "output.out_norm", "output.out_residual",
         "group.current",
-    ),
-    "moe.fused_experts_reduce": (
-        "input.x", "input.topk_ids", "input.topk_weights", "prepared.state",
-        "output.out", "group.current",
     ),
     "attention.msa_block_score": (
         "input.q", "input.index_k", "input.seq_lens", "input.block_size",
@@ -85,29 +78,24 @@ def _blockscore_bindings():
     )
 
 
-def test_every_slot_has_one_shared_validator_owned_call_abi():
+def test_every_native_slot_has_one_shared_validator_owned_call_abi():
     from cacheon.slots import SLOTS
 
-    assert set(SLOT_CALL_ABIS) == set(SLOTS) == set(_EXPECTED_CALL_ARGS)
+    unsupported = {"moe.fused_experts", "moe.fused_experts_reduce"}
+    assert set(SLOT_CALL_ABIS) == set(SLOTS) - unsupported
+    assert set(SLOT_CALL_ABIS) == set(_EXPECTED_CALL_ARGS)
+    assert all(SLOTS[slot].call_abi is None for slot in unsupported)
     for slot_name, call_args in _EXPECTED_CALL_ARGS.items():
         abi = SLOT_CALL_ABIS[slot_name]
         assert abi.call_args == call_args
         assert SLOTS[slot_name].call_abi is abi
 
 
-def test_prepare_and_collective_boundaries_are_explicit_not_folded_into_run():
-    for slot_name in ("moe.fused_experts", "moe.fused_experts_reduce"):
-        abi = SLOT_CALL_ABIS[slot_name]
-        assert abi.prepare_args == ("input.w13", "input.w2")
-        assert abi.prepare_result == "prepared.state"
-        assert "input.w13" not in abi.call_args
-        assert "input.w2" not in abi.call_args
-
+def test_collective_boundaries_are_explicit_not_folded_into_run():
     for slot_name in (
         "collective.all_reduce",
         "collective.ar_residual_rmsnorm",
         "collective.moe_finalize_ar_rmsnorm",
-        "moe.fused_experts_reduce",
     ):
         abi = SLOT_CALL_ABIS[slot_name]
         group = abi.by_name["group.current"]

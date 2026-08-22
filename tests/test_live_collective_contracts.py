@@ -96,13 +96,15 @@ def _register(
     return registry
 
 
-def _offline(shape, *, slot_name=None, world_size=2, graph_safe=False):
+def _offline(
+    shape, *, slot_name=None, world_size=2, graph_safe=False, model_key=None
+):
     return _collective_descriptor(
         shape,
         dtype_name="float32",
         device="cpu",
         graph_safe=graph_safe,
-        model_key=None,
+        model_key=model_key,
         architecture=None,
         world_size=world_size,
         slot_name=slot_name,
@@ -227,6 +229,28 @@ def test_moe_reduce_live_descriptor_exactly_matches_offline(monkeypatch):
             slot_name=MOE_REDUCE,
         ),
     )
+
+
+def test_moe_reduce_m3_descriptor_is_nvfp4_on_both_rails(monkeypatch):
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: False)
+    x = torch.empty(1, 6144)
+    live = dispatch._collective_call_descriptor(
+        x,
+        group_size=4,
+        quant="nvfp4",
+        ep_size=1,
+        top_k=5,
+        num_experts=129,
+        intermediate_dim=768,
+    )
+    offline = _offline(
+        {"num_tokens": 1, "hidden": 6144, "num_experts": 129,
+         "inter": 768, "topk": 5},
+        slot_name=MOE_REDUCE,
+        world_size=4,
+        model_key="MiniMax-M3-NVFP4",
+    )
+    assert live == offline and live["quant"] == "nvfp4"
 
 
 def test_collective_model_constraint_is_consistently_unavailable_until_arena_binding():
@@ -360,7 +384,7 @@ def test_stock_group_not_layer_moe_tp_hint_defines_reduce_topology(monkeypatch):
     )
 
 
-def test_quantized_moe_reduce_is_not_run_without_quant_verifier(monkeypatch):
+def test_quantized_moe_reduce_rejects_incomplete_layout(monkeypatch):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     prepared = []

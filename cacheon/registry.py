@@ -409,7 +409,7 @@ class SelectionDecision:
 # one-time routing-only "fired" receipt. This event is deliberately not evidence
 # that candidate execution completed; stronger execution accounting is a separate
 # referee-hardening layer.
-_FIRED_SLOTS: set[str] = set()
+_FIRED_SLOTS: set[tuple[str, str]] = set()
 
 
 class KernelRegistry:
@@ -551,13 +551,14 @@ class KernelRegistry:
 
     @staticmethod
     def _write_fired_once(slot: str) -> None:
-        if slot not in _FIRED_SLOTS:
+        from cacheon import receipts
+
+        key = (receipts.current_scope(), slot)
+        if key not in _FIRED_SLOTS:
             # First time this process SELECTS the miner impl for this slot. This proves
             # routing only: eligibility/graph checks and the call itself may still fail
             # or decline downstream.
-            _FIRED_SLOTS.add(slot)
-            from cacheon import receipts
-
+            _FIRED_SLOTS.add(key)
             receipts.write("fired", {"slot": slot}, tag=slot)
 
     def lookup(

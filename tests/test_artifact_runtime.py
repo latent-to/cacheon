@@ -13,12 +13,12 @@ from cacheon.artifact_abi import (
     ArtifactShapeExtent,
     ArtifactShapeFactor,
     COLLECTIVE_ALL_REDUCE_CALL_ABI,
-    MOE_FUSED_EXPERTS_CALL_ABI,
     MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
     SILU_AND_MUL_CALL_ABI,
     SlotCallABI,
     SlotResource,
 )
+from tests.test_artifact_resources import MOE_FUSED_EXPERTS_CALL_ABI
 from cacheon.artifact_runtime import (
     ArtifactAllocationBudget,
     ArtifactPreparedState,

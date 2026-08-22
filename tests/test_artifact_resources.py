@@ -11,11 +11,29 @@ from cacheon.artifact_abi import (
     ArtifactShapeFactor,
     COLLECTIVE_ALL_REDUCE_CALL_ABI,
     MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
-    MOE_FUSED_EXPERTS_CALL_ABI,
     SlotCallABI,
     SlotResource,
     parse_artifact_bindings,
     parse_artifact_resources,
+)
+
+MOE_FUSED_EXPERTS_CALL_ABI = SlotCallABI(
+    slot="test.prepared",
+    resources=(
+        SlotResource("input.x", "tensor"),
+        SlotResource("input.topk_ids", "tensor"),
+        SlotResource("input.topk_weights", "tensor"),
+        SlotResource("input.w13", "tensor"),
+        SlotResource("input.w2", "tensor"),
+        SlotResource("prepared.state", "opaque", access="readwrite"),
+        SlotResource("output.out", "tensor", access="write"),
+    ),
+    call_args=(
+        "input.x", "input.topk_ids", "input.topk_weights",
+        "prepared.state", "output.out",
+    ),
+    prepare_args=("input.w13", "input.w2"),
+    prepare_result="prepared.state",
 )
 
 
