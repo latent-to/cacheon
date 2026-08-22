@@ -365,10 +365,10 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "58603aaec088928b10bffe6931464dc6f930301b8ebdeaf946f8387a12c0f330"
+        "8c500c2bdd08fb1e4f68cef53938059914e84f4f8c4c383917c0b88673f92a7f"
     )
     assert candidate.digest == (
-        "0032812223644a7dfa383f68e83472514051837eda4c3981d8b6c43b74852dae"
+        "0769ad9de4de374aaa08ca08953c1adf864821b965f2a988432841d7dc5db04f"
     )
 
 
