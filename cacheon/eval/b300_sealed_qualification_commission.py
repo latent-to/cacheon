@@ -264,7 +264,7 @@ def parse_sealed_calibration_package(
             or source_digests["primary"] == source_digests["reproduction"]
         ):
             raise ValueError("lane calibration authorities are not independent")
-        if parsed[stage][0].context.measured_binding != context.measured_binding:
+        if parsed[stage][0].context != context:
             raise ValueError(
                 f"{stage} calibration context differs from the commissioned lane"
             )

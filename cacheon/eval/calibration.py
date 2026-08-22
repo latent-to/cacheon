@@ -127,19 +127,6 @@ class CalibrationContext:
     def digest(self) -> str:
         return canonical_digest("cacheon.qualification.calibration-context", self.to_dict())
 
-    @property
-    def measured_binding(self) -> dict[str, str]:
-        # Everything a calibration control physically observed. arena_digest is
-        # excluded: it transitively hashes the qualification-policy scalars, so
-        # binding it here forces a fresh GPU calibration for a grading-policy
-        # edit no control run can distinguish. Workload shape, hardware, model,
-        # runtime, and verification identities stay binding. Mirrors
-        # ReferenceManifest.measured_digest, which strips controller fields.
-        row = self.to_dict()
-        del row["arena_digest"]
-        return row
-
-
 @dataclass(frozen=True)
 class SpeedCalibration:
     min_margin: str
@@ -345,10 +332,7 @@ class CalibrationManifest:
         return self.status == "frozen"
 
     def require_context(self, expected: CalibrationContext) -> "CalibrationManifest":
-        if (
-            type(expected) is not CalibrationContext
-            or self.context.measured_binding != expected.measured_binding
-        ):
+        if type(expected) is not CalibrationContext or self.context != expected:
             raise CalibrationError("calibration context is stale or mismatched")
         return self
 

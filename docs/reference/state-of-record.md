@@ -278,18 +278,13 @@ invalidated by every commit. Calibration packages sealed under the earlier
 eleven-field context shape do not parse under this contract and are resealed
 from their durable inputs, not re-measured.
 
-Since **2026-08-21** measurement-reuse identity is also policy-blind: sealed
-calibration binds the measured subset of its context — workload, hardware,
-model, runtime, and verification identities — and no longer gates on
-`arena_digest`, which transitively hashes the qualification-policy scalars.
-A grading-policy recommission therefore reuses the sealed calibration and the
-durable capture it anchors instead of repeating the engine-boot capture that
-dominates a full relaunch; a workload-shape change still refuses reuse. The
-full context, arena digest included, remains the provenance record inside the
-package. In the same change, commissioning refuses a resident-speed
-`min_windows` floor above the workload cell's timed reads: an unsatisfiable
-evidence floor is a commissioning error, not a runtime refusal discovered
-after a measured run (the 2026-08-21 mainnet failure mode).
+Since **2026-08-21**, commissioning refuses a resident-speed `min_windows`
+floor above the workload cell's timed reads: an unsatisfiable evidence floor
+is a commissioning error, not a runtime refusal discovered after a measured
+run. A proposed policy-only calibration relabel was removed before deployment:
+the nested reference identity still changed with the arena, and downstream
+quality binding required exact context equality. Fast recommissioning must
+make the fresh durable seal inexpensive instead of weakening that identity.
 
 Providers commissioned on **2026-08-10** sealed resident speed policy
 **version 4**: every timed read is graded (the version-3 mid-run
@@ -868,6 +863,15 @@ follow-weights
 
 The local miner loop is `scan` plus `verify`. Complete-engine performance and
 quality authority begins with a deployment-injected arena provider.
+
+### MiniMax-M3 plain-MoE NVFP4 contract smoke (2026-08-22)
+
+Source `70bffb8f` on one B300, in sealed image `a7cbc41a` (SGLang
+`g56e290315`, FlashInfer `0.6.12`, Torch `2.11.0+cu130`), passed BF16 eager
+verification, CUDA capture, and three dynamic replays for the validator-owned
+`nvfp4_layer` view (`cosine=1.00000`, maximum absolute error `5.969e-05`).
+This is contract/graph evidence only: no finalized M3 layer, TP4 live seam,
+full model, quality authority, or performance claim was exercised.
 
 ## Deployment boundary
 

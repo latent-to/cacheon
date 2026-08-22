@@ -205,6 +205,8 @@ class Eligibility:
                 _missing("quant", f"one of {sorted(self.quant)!r}")
             elif descriptor["quant"] not in self.quant:
                 _outside("quant", f"one of {sorted(self.quant)!r}", descriptor["quant"])
+        elif descriptor.get("quant") not in (None, "dense"):
+            _outside("quant", "dense", descriptor["quant"])
         if descriptor.get("graph_mode") == "cuda_graph" and not self.graph_safe:
             _outside("graph_mode", "eager (graph_safe is false)", "cuda_graph")
 
@@ -287,8 +289,7 @@ def _add_eligibility_constraints(
         _field("num_tokens").range(
             eligibility.min_num_tokens, eligibility.max_num_tokens
         )
-    if eligibility.quant:
-        _field("quant").allow(set(eligibility.quant))
+    _field("quant").allow(set(eligibility.quant) or {"dense"})
     if not eligibility.graph_safe:
         _field("graph_mode").excluded.add("cuda_graph")
 

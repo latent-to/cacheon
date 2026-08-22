@@ -52,7 +52,6 @@ from cacheon.target_catalog import TargetCatalog, default_target_catalog
 FIXTURES = Path(__file__).parent / "fixtures"
 MSA = FIXTURES / "stack_msa_singleton"
 FUSED = FIXTURES / "stack_fused_epilogue_atomic"
-OVERRIDE = Path(__file__).parents[1] / "examples" / "miner_m3_swigluoai_override"
 
 
 def _digest(label: str) -> str:
@@ -433,15 +432,26 @@ def test_independent_contributions_compose_without_source_name_collisions(
 def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    override = tmp_path / "override"
+    (override / "kernels").mkdir(parents=True)
+    (override / "kernels" / "epilogue.py").write_text(
+        "def gemm1_epilogue_ref(gate, up):\n    return gate\n"
+    )
+    (override / "manifest.toml").write_text(
+        'bundle_id = "override-fixture"\nabi_version = "cacheon-op-abi-v0"\n'
+        '[[ops]]\nslot = "moe.fused_experts"\nsource = "kernels/epilogue.py"\n'
+        'entry = "gemm1_epilogue"\nbase_kernel = "nvfp4_moe_megakernel"\n'
+        'override_point = "gemm1_epilogue"\ndtypes = ["bfloat16"]\n'
+    )
     catalog = default_target_catalog()
     context = _evaluation_context(catalog)
-    ref = _proposal_ref(OVERRIDE, catalog)
+    ref = _proposal_ref(override, catalog)
     stack = _evaluation_stack(catalog, context, ref)
     result = materialize_engine_tree(
         stack,
         context=context,
         catalog=catalog,
-        resolver=_sources((ref, OVERRIDE)),
+        resolver=_sources((ref, override)),
         destination=tmp_path / "engine",
     )
     op = load_manifest(result.root).ops[0]

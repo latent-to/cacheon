@@ -377,6 +377,7 @@ def test_quantized_moe_reduce_is_not_run_without_quant_verifier(monkeypatch):
         lambda *_args: _STOCK, registry=registry, slots=(MOE_REDUCE,)
     )
     layer = _moe_layer()
+    layer.w13_weight = _Param(layer.w13_weight.data.to(torch.uint8))
     layer.w13_weight_scale = _Param(torch.ones(1))
     x, routed = _moe_call(3)
 

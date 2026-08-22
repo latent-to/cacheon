@@ -224,6 +224,20 @@ def fused_experts(x, topk_ids, topk_weights, prepared, out):
     ...
 ```
 
+For the MiniMax-M3 NVFP4 profile, `prepare` instead receives the exact tagged
+form below from both verification and live dispatch:
+
+```python
+prepare("nvfp4_layer", weights)
+```
+
+`weights` is a validator-owned view, not the SGLang layer. It exposes packed
+`uint8` E2M1 `w13_weight`/`w2_weight`, swizzled E4M3 weight scales,
+`g1_alphas`/`g2_alphas`, inverse activation scales, intermediate size, group
+size 16, and the `up_gate_interleaved_64+sf_swizzled_128x4` layout. The
+validator derives each weight's outer scale as `g*_alpha * a*_inv` and
+dequantizes independently for its fp32 reference.
+
 `topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
 They are not promised to be probabilities: do not assume that a row sums to one,
 or that its only value is `1.0` when `K == 1`. SGLang configurations that do not

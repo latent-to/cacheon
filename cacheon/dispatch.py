@@ -27,6 +27,10 @@ from cacheon.capabilities import (
     collective_call_descriptor,
     msa_prefill_call_descriptor,
 )
+from cacheon.moe_nvfp4_contract import (
+    call_descriptor as moe_call_descriptor,
+    supports_layer as supports_nvfp4_moe_layer,
+)
 from cacheon.registry import REGISTRY, KernelRegistry
 from cacheon.slots import get_slot
 from cacheon.tensor_spec import (
@@ -316,55 +320,31 @@ def make_moe_dispatcher(
     registry: KernelRegistry = REGISTRY,
     slots: tuple[str, ...] = ("moe.fused_experts_reduce", "moe.fused_experts"),
 ) -> Callable[..., object]:
-    """Build a replacement for ``FusedMoE.forward_impl`` — the single chokepoint every MoE
-    layer funnels through (``sglang.srt.layers.moe.fused_moe_triton.layer``; ``.forward`` is
-    a router that bypasses to ``forward_impl`` under piecewise capture, so ``forward_impl`` is
-    the waist — see cacheon/integrations/sglang_moe.py), so the seam is backend-agnostic (the
-    triton / cutlass / marlin MoE backends all sit *below* it).
+    """Wrap the backend-neutral ``FusedMoE.forward_impl`` chokepoint.
 
-    MoE experts are a *block*, and a (prepare, forward) one: the validator owns routing
-    (``topk_output`` is computed upstream and handed in), owns the expert weights, and
-    owns the output allocation; the miner only (1) transforms the raw weights once via
-    ``prepare`` (the FP4 repack / scale-interleave / padding) and (2) fills the
-    validator-allocated ``out`` each step via ``entry``. The combined expert output
-    feeds the residual stream -> downstream layers -> sampler (all stock) — so there is
-    no final output to substitute, the same property that makes the op slots safe, and
-    no source patch / engine reconfigure (unlike the framework/rebuild path).
-
-    ARCHITECTURE-GENERAL by design: nothing here is hardware- or model-specific. A miner
-    kernel declares the arch(es)/dtype(s) it supports via eligibility; the dispatcher
-    routes to it only on matching hardware and otherwise trusts the baseline.
-
-    SCOPE: routes the **standard** routing format when ``CACHEON_MOE_SEAM=1``. Expert
-    and MoE data parallelism stay stock because this contract does not model their
-    token dispatch/combine. ``moe.fused_experts_reduce`` may run graph-safe variants
-    that own the actual trailing TP group; the legacy ``moe.fused_experts`` path uses
-    legacy lookup and replays the stock TP reduce. Non-graph-safe variants stay stock
-    under capture, and unknown routing, topology, quantized reduce-owning ABI, or
-    capability domains stay entirely stock.
+    The validator owns routing, weights and output allocation. EP/DP and
+    unsupported domains remain stock. The plain slot replays the trusted TP
+    reduce; the reduce-owning slot receives the real process group.
     """
 
     def dispatched(self, hidden_states, topk_output):
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_forward(self, hidden_states, topk_output)
-        _maybe_inspect_moe(self, hidden_states, topk_output)
         selected_slot = None
         route_exc = None
         selected_is_collective = False
         if _moe_seam_active():
             try:
                 if not (_moe_supported(self) and hidden_states.dim() == 2):
-                    _moe_debug(lambda: f"SKIP not-supported (ep={getattr(self,'moe_ep_size',1)} "
-                                       f"dim={hidden_states.dim()})")
+                    pass
                 else:
                     in_graph = _in_cuda_graph()
                     quant_fmt = _moe_quant_format(self)
                     routed = _standard_topk(topk_output)
                     if routed is None:
-                        _moe_debug(lambda: f"SKIP non-standard topk_output={type(topk_output).__name__}")
+                        pass
                     else:
                         x = hidden_states
-                        arch = _arch_tag(x.device.index or 0) if x.is_cuda else None
                         for slot in slots:
                             reduce_slot = slot.endswith(".fused_experts_reduce")
                             group = None
@@ -376,12 +356,6 @@ def make_moe_dispatcher(
                                 # layer here would execute a live configuration that
                                 # offline verification could only mark N/A.
                                 if quant_fmt is not None:
-                                    _moe_debug(
-                                        lambda s=slot, q=quant_fmt: (
-                                            f"SKIP {s}: quantized live ABI {q!r} has "
-                                            "no matching distributed verifier"
-                                        )
-                                    )
                                     continue
                                 if not (
                                     x.is_contiguous()
@@ -398,26 +372,12 @@ def make_moe_dispatcher(
                                     and topk_ids.device == x.device
                                     and topk_weights.device == x.device
                                 ):
-                                    _moe_debug(
-                                        lambda s=slot: f"SKIP {s}: live tensors do not "
-                                        "match the contiguous routed-MoE ABI"
-                                    )
                                     continue
                                 if not getattr(self, "reduce_results", False):
-                                    _moe_debug(
-                                        lambda s=slot: f"SKIP {s}: layer does not reduce "
-                                        "here (reduce_results=False)"
-                                    )
                                     continue
                                 group = _tp_device_group()
                                 group_size = _process_group_size(group)
                                 if group_size is None or group_size <= 1:
-                                    _moe_debug(
-                                        lambda s=slot, g=group_size: (
-                                            f"SKIP {s}: stock trailing TP group "
-                                            f"unavailable/single-rank ({g!r})"
-                                        )
-                                    )
                                     continue
                                 dimensions = {
                                     "ep_size": int(getattr(self, "moe_ep_size", 1)),
@@ -452,32 +412,47 @@ def make_moe_dispatcher(
                                 )
                                 impl = decision.impl
                             else:
-                                # The plain experts slot has not yet migrated to the
-                                # collective descriptor: it does not own the group.
-                                impl = registry.lookup(
-                                    slot,
-                                    dtype_name=_dtype_name(x.dtype),
-                                    last_dim=x.shape[-1],
-                                    arch=arch,
+                                if (
+                                    quant_fmt == "nvfp4"
+                                    and not supports_nvfp4_moe_layer(self)
+                                ):
+                                    continue
+                                topk_ids, _topk_weights = routed
+                                tp_size, world_size = _runtime_parallel_sizes()
+                                w13 = self.w13_weight.data
+                                w2 = self.w2_weight.data
+                                descriptor = moe_call_descriptor(
+                                    x,
+                                    topk_ids,
+                                    architecture=(
+                                        _arch_tag(x.device.index or 0)
+                                        if x.is_cuda else None
+                                    ),
+                                    graph_mode="cuda_graph" if in_graph else "eager",
+                                    quant=quant_fmt or "dense",
+                                    num_experts=int(w13.shape[0]),
+                                    intermediate_dim=int(
+                                        getattr(
+                                            self,
+                                            "intermediate_size_per_partition",
+                                            w2.shape[-1] * (2 if quant_fmt else 1),
+                                        )
+                                    ),
+                                    tp_size=tp_size,
+                                    world_size=world_size,
                                 )
+                                impl = registry.select(
+                                    slot, descriptor, write_fired_receipt=False
+                                ).impl
                             # (prepare, forward) slot: a registered kernel MUST carry
                             # prepare, else we can't honor the contract -> skip it.
                             if impl is None or impl.prepare is None:
-                                _moe_debug(lambda s=slot: f"SKIP {s}: no impl/prepare (lookup miss)")
                                 continue
                             # Under CUDA graphs (the scoring config) only run a kernel the
                             # miner DECLARED graph-capturable; otherwise trust the baseline
                             # in-graph so an un-capturable kernel can't wedge graph capture.
                             if (not reduce_slot and in_graph
                                     and not impl.eligibility.graph_safe):
-                                _moe_debug(lambda s=slot: f"SKIP {s}: in_graph & not graph_safe")
-                                continue
-                            # Pair kernel<->layer by quant format: a dense kernel never runs
-                            # a quantized layer (it would mis-read packed bytes + scales), and
-                            # a quant kernel never runs a dense layer. Mismatch -> baseline.
-                            if not _quant_ok(impl.eligibility.quant, quant_fmt):
-                                _moe_debug(lambda s=slot: f"SKIP {s}: quant mismatch "
-                                                          f"(kernel={set(impl.eligibility.quant)} layer={quant_fmt})")
                                 continue
                             if reduce_slot:
                                 # Commit the routing receipt only after every non-miner
@@ -493,6 +468,11 @@ def make_moe_dispatcher(
                                     )
                             else:
                                 selected_slot = slot
+                                committed = registry.select(slot, descriptor)
+                                if committed.impl is not impl:
+                                    raise RuntimeError(
+                                        "MoE selection changed between preflight and commit"
+                                    )
                             # Audit: baseline forward_impl on a pre-call clone (its TP
                             # reduce is collective — rank-seeded sampling keeps lockstep).
                             # Both sides are post-reduce here (the kernel path replays the
@@ -511,7 +491,6 @@ def make_moe_dispatcher(
                                 _audit.run(slot, (out,) if torch.is_tensor(out) else tuple(out),
                                            lambda: baseline_forward(self, a_x, topk_output))
                             _log_once_active(slot)
-                            _moe_debug(lambda s=slot, m=x.shape[0]: f"FIRED slot={s} M={m} quant={quant_fmt}")
                             _receipts.completed(slot)
                             return out
             except Exception as exc:  # noqa: BLE001
@@ -526,7 +505,6 @@ def make_moe_dispatcher(
                 if selected_slot is not None:
                     route_exc = exc
                 _log_once_fallback(exc)
-                _moe_debug(lambda e=exc: f"FELL BACK after kernel error: {e!r}")
                 # any mismatch with this sglang's internals -> trust the baseline
         stock = baseline_forward(self, hidden_states, topk_output)
         if route_exc is not None:
@@ -534,78 +512,6 @@ def make_moe_dispatcher(
         return stock
 
     return dispatched
-
-
-_MOE_INSPECTED = False
-
-
-def _maybe_inspect_moe(self, hidden_states, topk_output) -> None:
-    """Debug aid (off unless ``CACHEON_MOE_INSPECT`` is set): dump the live FusedMoE
-    layer's tensors + the topk_output structure ONCE, so seam integration on a new
-    model/quant format can be written against the real layout. Writes to the path in
-    ``CACHEON_MOE_INSPECT`` (or /tmp/cacheon_moe_inspect.txt if set to "1"). Never raises.
-    """
-    import os
-
-    path = os.environ.get("CACHEON_MOE_INSPECT")
-    if not path:
-        return
-    global _MOE_INSPECTED
-    if _MOE_INSPECTED:
-        return
-    _MOE_INSPECTED = True
-    if path == "1":
-        path = "/tmp/cacheon_moe_inspect.txt"
-    try:
-        lines = ["=== FusedMoE layer tensors (name: shape dtype) ==="]
-        for n in sorted(dir(self)):
-            if n.startswith("__"):
-                continue
-            try:
-                v = getattr(self, n)
-            except Exception:  # noqa: BLE001
-                continue
-            t = v if torch.is_tensor(v) else getattr(v, "data", None)
-            if torch.is_tensor(t):
-                lines.append(f"  {n}: {tuple(t.shape)} {t.dtype}")
-        for n in ("moe_tp_size", "moe_ep_size", "reduce_results", "hidden_size",
-                  "intermediate_size_per_partition", "num_local_experts", "layer_id"):
-            lines.append(f"  .{n} = {getattr(self, n, None)}")
-        lines.append(f"  hidden_states: {tuple(hidden_states.shape)} {hidden_states.dtype}")
-        fields = getattr(topk_output, "_fields", None)
-        lines.append(f"  topk_output: {type(topk_output).__name__} fields={fields}")
-        for f in fields or []:
-            v = getattr(topk_output, f, None)
-            if torch.is_tensor(v):
-                lines.append(f"    {f}: {tuple(v.shape)} {v.dtype}")
-        with open(path, "w") as fh:
-            fh.write("\n".join(lines) + "\n")
-    except Exception:  # noqa: BLE001
-        pass
-
-
-_MOE_DEBUG_SEEN: set = set()
-
-
-def _moe_debug(msg) -> None:
-    """Print a one-time-per-message MoE-seam decision to stderr when CACHEON_MOE_DEBUG=1.
-
-    A definitive observability hook for the spawned scheduler child, where the cacheon logger's
-    records don't always reach the captured stream. ``msg`` is a thunk so the (cheap) f-string
-    only runs when debugging is on. Inert otherwise."""
-    import os
-    import sys
-
-    if os.environ.get("CACHEON_MOE_DEBUG") != "1":
-        return
-    try:
-        m = msg() if callable(msg) else str(msg)
-    except Exception:  # noqa: BLE001
-        return
-    if m in _MOE_DEBUG_SEEN:
-        return
-    _MOE_DEBUG_SEEN.add(m)
-    print(f"[cacheon.moe] {m}", file=sys.stderr, flush=True)
 
 
 def _log_once_active(slot: str) -> None:
@@ -655,41 +561,19 @@ def _moe_quant_format(self) -> Optional[str]:
 
     A quantized FusedMoE exposes ``*_weight_scale`` params; the format is read off the
     packed weight dtype (float8 -> ``"fp8"``; sub-byte packed -> ``"nvfp4"``). The
-    dispatcher pairs this to a kernel's declared ``Eligibility.quant`` (see ``_quant_ok``).
-    The EXACT NVFP4 scale-param layout a kernel's prepare consumes is pinned against the
-    live layer via ``CACHEON_MOE_INSPECT`` (the dump hook above) — this only classifies."""
+    canonical descriptor lets registry selection enforce the declared quant format.
+    This helper only classifies; the slot's prepare mapper validates the fields."""
     if not (hasattr(self, "w13_weight_scale") or hasattr(self, "w2_weight_scale")):
         return None
     w = getattr(getattr(self, "w13_weight", None), "data", None)
     dt = getattr(w, "dtype", None)
     if dt in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None)):
         return "fp8"
-    return "nvfp4"
-
-
-def _quant_ok(declared: frozenset[str], fmt: Optional[str]) -> bool:
-    """Pair a kernel's declared quant formats to the layer's format. Conservative: a DENSE
-    layer (``fmt is None``) runs only a dense kernel (no declared formats); a QUANTIZED
-    layer runs only a kernel that declares its exact format. Never cross — a mismatch falls
-    back to the trusted baseline rather than mis-read the weights."""
-    if fmt is None:
-        return not declared
-    return fmt in declared
+    return "nvfp4" if dt == torch.uint8 else None
 
 
 def _dynamo_compiling() -> bool:
-    """True while torch.compile (Dynamo) is TRACING the caller.
-
-    Newer sglang compiles some seam call sites piecewise (observed 2026-07-07: the
-    prefill fusion path traces ``flashinfer_allreduce_residual_rmsnorm`` — i.e. our
-    rebound dispatcher — under Dynamo, which hard-errors on the dispatcher's
-    function-body imports/registry machinery). A traced region must bake PURE STOCK:
-    Dynamo constant-folds ``torch.compiler.is_compiling()`` to True during trace, so
-    an early ``return baseline_fn(...)`` erases the dispatcher from the compiled graph
-    entirely. Eager execution and classic CUDA-graph capture — the validated decode
-    win regime — see False and route normally. A slot that wants to live INSIDE a
-    compiled region needs the custom-op wrapper design (ledger, not built yet).
-    """
+    """Keep registry machinery out of Dynamo-traced regions."""
     try:
         return bool(torch.compiler.is_compiling())
     except Exception:  # noqa: BLE001 - older torch without torch.compiler
@@ -697,13 +581,7 @@ def _dynamo_compiling() -> bool:
 
 
 def _in_cuda_graph() -> bool:
-    """Whether Python is executing inside Sglang/direct CUDA graph capture.
-
-    Sglang renamed and moved the piecewise context in its current pinned runtime.
-    Probe the current API first, retain the legacy spelling for older consensus pins,
-    and finally ask CUDA itself so direct ``torch.cuda.CUDAGraph`` capture cannot be
-    mislabeled eager. A missing helper never authorizes an unsafe graph candidate.
-    """
+    """Probe pinned, legacy, then direct CUDA capture authorities."""
 
     detectors = []
     try:

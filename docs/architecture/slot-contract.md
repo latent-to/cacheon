@@ -129,6 +129,10 @@ validator owns every surrounding decision.
 
 Layout-sensitive or quantized slots may define a `(prepare, forward)` pair. `prepare` runs once against raw validator-supplied checkpoint state and produces prepared state retained by the engine. `entry` receives that state on each forward call and still fills validator-allocated outputs.
 
+Model-specific quantized profiles must give verification and live preparation the
+same explicit tensor schema; attaching a quantized descriptor to dense verification
+does not establish that a quantized candidate was tested.
+
 This makes weight repacking, scale interleaving, or layout transformation attributable to the same bounded slot without granting a generic engine-wide setup hook. The live layer-to-contract mapping remains validator-owned.
 
 ## Collective contract

@@ -248,6 +248,19 @@ def test_prefill_synthesizes_bounded_probes_inside_new_q_domain(
     assert any(r.shape.get("causal_probe") is True for r in synthesized)
 
 
+def test_prefill_accepts_long_context_only_domain():
+    result = verify_entry(
+        SLOT, _faithful, dtype=torch.float32, device="cpu", architecture="sm103",
+        eligibility=_production_like_eligibility(
+            q_len=1, head_dim=128, block_size=128, kv_len=131072
+        ),
+        graph_safe=False,
+    )
+    assert result.passed and result.domain_coverage_complete, format_verify(result)
+    assert any(r.applicable and r.shape.get("prefix_len_override") == 131071
+               for r in result.shape_results)
+
+
 def test_prefill_acausal_new_exact_q_domain_fails_synthesized_probe():
     result = verify_entry(
         SLOT,

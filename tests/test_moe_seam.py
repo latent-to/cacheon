@@ -169,34 +169,6 @@ def test_missing_prepare_falls_back(monkeypatch):
     assert dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs)) is _BASELINE
 
 
-def test_quantized_layer_falls_back_for_dense_kernel(monkeypatch):
-    # A quantized layer (packed bytes + *_scale) must NOT run a DENSE kernel (empty
-    # Eligibility.quant) — it would mis-read the weights -> fall back. The pairing gate
-    # (_quant_ok) never crosses dense<->quant.
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    inputs = _inputs()
-    entry = load_entry(MOE_BUNDLE, "fused_experts")
-    prepare = load_entry(MOE_BUNDLE, "prepare")
-    dispatched = make_moe_dispatcher(_baseline_forward, registry=_registry(entry, prepare))  # dense
-    layer = _fake_layer(inputs, w13_weight_scale=_Param(torch.ones(1)))
-    assert dispatched(layer, inputs["x"], _standard_topk_output(inputs)) is _BASELINE
-
-
-def test_quantized_layer_routes_when_kernel_declares_format(monkeypatch):
-    # The unblock: a quantized layer DOES route to a kernel that DECLARES its format
-    # (Eligibility.quant={"nvfp4"}). The gate admits it; the kernel runs.
-    monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
-    inputs = _inputs()
-    entry = load_entry(MOE_BUNDLE, "fused_experts")
-    prepare = load_entry(MOE_BUNDLE, "prepare")
-    reg = _registry(entry, prepare, quant=frozenset({"nvfp4"}))
-    dispatched = make_moe_dispatcher(_baseline_forward, registry=reg)
-    layer = _fake_layer(inputs, w13_weight_scale=_Param(torch.ones(1)))
-    out = dispatched(layer, inputs["x"], _standard_topk_output(inputs))
-    assert out is not _BASELINE, "a format-declaring kernel must be admitted for a quant layer"
-    assert tuple(out.shape) == (inputs["x"].shape[0], inputs["x"].shape[1])
-
-
 def test_dense_layer_skips_quant_only_kernel(monkeypatch):
     # The other direction: a DENSE layer must NOT run a quant-only kernel (it expects
     # scales that aren't there) -> fall back.

@@ -133,20 +133,6 @@ def test_calibration_context_mismatch_rejects() -> None:
         manifest.require_context(_context("e"))
 
 
-def test_policy_relabel_reuses_calibration_but_measured_change_refuses() -> None:
-    # arena_digest transitively hashes the qualification-policy scalars, so a
-    # policy-only recommission relabels the arena without moving anything a
-    # control observed: sealed calibration must survive exactly that relabel.
-    manifest = _manifest()
-    relabelled = replace(manifest.context, arena_digest=_digest("f"))
-    assert relabelled.digest != manifest.context.digest
-    assert relabelled.measured_binding == manifest.context.measured_binding
-    assert manifest.require_context(relabelled) is manifest
-    moved = replace(manifest.context, workload_digest=_digest("e"))
-    with pytest.raises(CalibrationError, match="stale or mismatched"):
-        manifest.require_context(moved)
-
-
 @pytest.mark.parametrize(
     "field,value",
     (
@@ -200,8 +186,7 @@ def test_strict_parser_rejects_unknown_or_tampered_fields() -> None:
     with pytest.raises(CalibrationError, match="fields mismatch"):
         CalibrationManifest.from_dict(raw)
 
-    # workload_digest is a measured field; tampering it must still refuse.
-    # (arena_digest tampers are the policy-relabel case, covered above.)
+    # Every context field is part of the frozen calibration authority.
     raw = manifest.to_dict()
     raw["context"]["workload_digest"] = _digest("f")
     reopened = CalibrationManifest.from_dict(raw)

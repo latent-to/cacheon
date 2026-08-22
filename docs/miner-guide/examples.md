@@ -41,18 +41,6 @@ These bundles are meant to fail or expose a gate:
 target permits `setup`; a cross-cutting engine change is not a valid
 submission — widening the catalog is a reviewed validator-side change.
 
-## Override example
-
-[`miner_m3_swigluoai_override`](https://github.com/latent-to/cacheon/tree/main/examples/miner_m3_swigluoai_override)
-demonstrates a Torch reference paired with a CuTe-DSL epilogue declaration for
-`moe.fused_experts/gemm1_epilogue`.
-
-This example exercises composition and the CPU/dense reference path. The
-validator-owned GPU base kernel raises `NotImplementedError`, so the example is
-not eligible for GPU qualification through that override point. Read
-[Override points](override-points.md) before using it. Provenance fields in its
-metadata are descriptive inputs, not evidence produced by this bundle.
-
 ## Identity fixtures are not kernels
 
 Two test fixtures are useful for inspecting modern manifest structure:

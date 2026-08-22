@@ -38,6 +38,7 @@ from cacheon.capabilities import (
     msa_prefill_call_descriptor,
 )
 from cacheon.registry import Eligibility
+from cacheon.moe_nvfp4_contract import call_descriptor as moe_call_descriptor
 from cacheon.slots import SlotSpec
 from cacheon.tensor_spec import (
     allocate_output_spec,
@@ -529,7 +530,7 @@ def _jitter_shapes(shapes: list[dict], seed: int) -> list[dict]:
 _MSA_PROBE_MAX_HEAD_DIM = 512
 _MSA_PROBE_MAX_BLOCK_SIZE = 4096
 _MSA_PROBE_MAX_Q_LEN = 1024
-_MSA_PROBE_MAX_KV_LEN = 32768
+_MSA_PROBE_MAX_KV_LEN = 131072
 _MSA_PROBE_MAX_MATMUL_WORK = 300_000_000
 _MSA_PROBE_MAX_TOTAL_WORK = 600_000_000
 _MSA_MAX_CANDIDATE_COMBINATIONS = 64
@@ -1271,6 +1272,21 @@ def _verification_call_descriptor(
             block_size=int(inputs["block_size"]),
             page_size=int(inputs["block_size"]),
             top_k=int(inputs["topk_idx"].shape[-1]),
+            tp_size=tp_size,
+            world_size=world_size,
+        )
+    if slot.name == "moe.fused_experts" and {
+        "x", "topk_ids", "w13", "w2",
+    } <= set(inputs):
+        quant = str(inputs.get("__moe_quant__", "dense"))
+        return moe_call_descriptor(
+            inputs["x"],
+            inputs["topk_ids"],
+            architecture=resolved_arch,
+            graph_mode=graph_mode,
+            quant=quant,
+            num_experts=int(inputs["w13"].shape[0]),
+            intermediate_dim=int(inputs["w2"].shape[-1]),
             tp_size=tp_size,
             world_size=world_size,
         )

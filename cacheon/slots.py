@@ -68,6 +68,11 @@ from cacheon.artifact_abi import (
     SlotCallABI,
 )
 from cacheon.minimax_sparse_decode_slot import build_slot as build_minimax_sparse_decode_slot
+from cacheon.moe_nvfp4_contract import (
+    prepare_args_from_inputs as _moe_prepare_args_from_inputs,
+    prepare_args_from_layer as _moe_prepare_args_from_layer,
+    verification_inputs as _moe_nvfp4_verification_inputs,
+)
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 
 
@@ -460,34 +465,6 @@ def _moe_reference(x, w13, w2, topk_ids, topk_weights, act: Activation = _SILU):
     return out
 
 
-def _moe_prepare_args_from_layer(layer):
-    """Map a LIVE sglang FusedMoE layer to the miner ``prepare()`` call shape — the
-    validator-owned layer->contract mapping. Live-eval seam only (``dispatch._moe_prepared``);
-    ``cacheon verify`` uses ``invoke_prepare`` on synthetic weights and never calls this.
-
-    * DENSE layer -> ``(w13_weight.data, w2_weight.data)`` — identical to the old default; the
-      miner's prepare reorders/repacks the two tensors.
-    * QUANTIZED layer (NVFP4 ``ModelOptNvFp4FusedMoEMethod``, weights are packed uint8) ->
-      ``("nvfp4_layer", layer)``: the validator hands the miner's prepare the LIVE layer. A
-      quantized kernel's weight layout is *kernel-specific* (the flashinfer CuteDSL v2 path wants
-      a ``CuteDslMoEWrapper`` + [Up,Gate]-interleaved weights + MMA-layout block-scales +
-      scalarized scales; a cutlass kernel wants something else), so the per-kernel transform
-      belongs in the miner's prepare, which builds it ONCE — reusing the model runtime's own
-      prepared state (e.g. sglang ``ensure_cutedsl_wrapper``) rather than re-deriving the fragile
-      scale algebra. This keeps the generic slot free of any one kernel's layout while still
-      giving the miner everything the quantized weights need (the dense 2-tuple omits the scales).
-
-    hasattr-guarded so a dense (or unrecognized) layer always falls back to the dense 2-tuple."""
-    w13 = getattr(getattr(layer, "w13_weight", None), "data", None)
-    is_quant = getattr(w13, "dtype", None) == torch.uint8 and (
-        getattr(layer, "w13_weight_scale", None) is not None
-        or getattr(layer, "g1_alphas", None) is not None
-    )
-    if is_quant:
-        return ("nvfp4_layer", layer)
-    return (layer.w13_weight.data, layer.w2_weight.data)  # dense — unchanged default
-
-
 def _raw_topk_weights(
     *, num_tokens: int, topk: int, generator: torch.Generator, device: str
 ) -> torch.Tensor:
@@ -545,7 +522,7 @@ MOE_FUSED_EXPERTS = SlotSpec(
         {"num_tokens": 4, "num_experts": 8, "hidden": 256, "inter": 128, "topk": 2},
         {"num_tokens": 16, "num_experts": 32, "hidden": 512, "inter": 256, "topk": 4},
         {"num_tokens": 8, "num_experts": 4, "hidden": 384, "inter": 192, "topk": 1},
-        {"num_tokens": 33, "num_experts": 16, "hidden": 320, "inter": 160, "topk": 4},
+        {"num_tokens": 33, "num_experts": 16, "hidden": 320, "inter": 192, "topk": 4},
     ),
     # A real fused-MoE kernel runs in fp8/fp4 with reordered reductions -> not bit-exact;
     # gate on a matched ratio vs the fp32 reference, calibrated to the stock noise floor.
@@ -1201,6 +1178,7 @@ class SlotProfile:
 
     activation: Activation = field(default_factory=Activation)
     correctness: Optional[Correctness] = None
+    quant: Optional[str] = None
 
 
 _MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
@@ -1226,6 +1204,17 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
             repl["collective_partial"] = _partial
     if profile.correctness is not None:
         repl["correctness"] = profile.correctness
+    if slot.name == "moe.fused_experts" and profile.quant == "nvfp4":
+        make_dense_inputs = slot.make_inputs
+
+        def _quant_inputs(**kwargs):
+            return _moe_nvfp4_verification_inputs(make_dense_inputs(**kwargs))
+
+        repl["make_inputs"] = _quant_inputs
+        repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
+            *_moe_prepare_args_from_inputs(i)
+        )
+        repl["call_abi"] = None
     return replace(slot, **repl) if repl else slot
 
 
@@ -1237,6 +1226,7 @@ _M3_MOE_PROFILE = SlotProfile(
     # No norm guard yet (max_rel_norm_err uncalibrated — TODO measure the floor).
     correctness=Correctness("cosine", min_cosine=0.985),
 )
+_M3_MOE_NVFP4_PROFILE = replace(_M3_MOE_PROFILE, quant="nvfp4")
 
 # model key (as a miner may declare it / as the validator keys its served model) -> {slot: profile}
 MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
@@ -1246,7 +1236,7 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
         # specialize_slot retargets its distributed reference (collective_partial) too.
         # Registering only the plain slot would verify an M3 reduce kernel against a
         # SiLU reference and false-fail every honest submission.
-        "moe.fused_experts": _M3_MOE_PROFILE,
+        "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
         "moe.fused_experts_reduce": _M3_MOE_PROFILE,
     },
 }

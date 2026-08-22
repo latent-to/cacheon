@@ -39,10 +39,6 @@ def test_scan_tree_skips_pycache(tmp_path):
     assert scan_tree(tmp_path).ok
 
 
-def test_override_bundle_scans_clean_recursively():
-    assert scan_tree("examples/miner_m3_swigluoai_override").ok
-
-
 # ---- blessed-base lockfile --------------------------------------------------
 
 def test_blessed_base_record_only_is_ok():

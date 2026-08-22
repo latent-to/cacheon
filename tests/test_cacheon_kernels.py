@@ -37,27 +37,26 @@ def test_interleave_places_up_before_gate():
     assert torch.equal(inter[:, group:], gate)  # gate second
 
 
-def test_swizzle_blockscale_roundtrips():
-    sf = torch.randn(2, 128, 8)  # (B, M=128, K=8); M%128==0, K%4==0
-    sw = codec.swizzle_blockscale(sf)
-    back = codec.unswizzle_blockscale(sw, M=128, K=8)
-    assert torch.equal(back, sf)
-
-
-def test_swizzle_rejects_bad_shape():
-    with pytest.raises(ValueError):
-        codec.swizzle_blockscale(torch.randn(1, 100, 8))  # M not %128
+def test_blockscale_swizzle_roundtrips_padding():
+    scale = torch.randn(2, 130, 5).to(torch.float8_e4m3fn)
+    swizzled = codec.swizzle_blockscale(scale)
+    assert swizzled.shape == (2, 256, 8)
+    assert torch.equal(codec.unswizzle_blockscale(swizzled, rows=130, cols=5).float(),
+                       scale.float())
 
 
 # ---- codec: NVFP4 quant round-trips within representational error ------------
 
-def test_nvfp4_exact_on_grid_values():
-    # Values already on the (scaled) e2m1 grid quantize+dequantize exactly.
+def test_nvfp4_modelopt_byte_golden():
     x = torch.tensor([[0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
                        -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0, 0.0]])
-    codes, scales = codec.quantize_nvfp4(x, block=16)
-    deq = codec.dequantize_nvfp4(codes, scales, block=16)
-    assert torch.allclose(deq, x, atol=1e-5)
+    packed, scales = codec.quantize_nvfp4(x)
+    golden = torch.tensor([[0x10, 0x32, 0x54, 0x76, 0xA9, 0xCB, 0xED, 0x0F]],
+                          dtype=torch.uint8)
+    assert torch.equal(packed, golden) and torch.equal(scales, torch.ones_like(scales))
+    outer = torch.tensor([[2.0]], dtype=torch.float8_e4m3fn)
+    assert torch.equal(codec.dequantize_nvfp4(golden, outer.float(), global_scale=0.25),
+                       x * 0.5)
 
 
 def test_nvfp4_roundtrip_faithful():
@@ -67,14 +66,7 @@ def test_nvfp4_roundtrip_faithful():
     deq = codec.dequantize_nvfp4(codes, scales, block=16, global_scale=1.0)
     cos = F.cosine_similarity(deq.flatten(), x.flatten(), dim=0)
     assert cos > 0.99  # NVFP4 representational floor on smooth data
-    assert codes.abs().max() <= codec.NVFP4_MAX + 1e-6  # values stay on/in the grid
-
-
-def test_scalarize_and_alpha():
-    qs = torch.tensor([0.25, 0.5, 0.125, 1.0])
-    assert torch.isclose(codec.scalarize_scale(qs), torch.tensor(0.125))
-    a = codec.gemm_alpha(torch.tensor([2.0, 4.0]), torch.tensor(0.5))
-    assert torch.allclose(a, torch.tensor([4.0, 8.0]))
+    assert codes.dtype == torch.uint8 and codes.shape[-1] == x.shape[-1] // 2
 
 
 # ---- override: compose() dense path == generic MoE with a pluggable activation ----

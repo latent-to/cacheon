@@ -1,22 +1,4 @@
-"""Epilogue override-points — the EFC (Epilogue Fusion Customization) submission ABI.
-
-A miner ships only a small **epilogue** (a CuTe-DSL device fn) + its **torch reference**,
-not a whole kernel. The validator owns a base kernel that exposes a typed hole and
-JIT-composes the override in at load time. This is NVIDIA's own pattern: CUTLASS ships it
-as ``examples/python/CuTeDSL/cute/blackwell/efc/`` (a named registry of activations, each a
-device method + a built-in torch reference for the correctness check), and flashinfer's
-fused-MoE kernel already threads an ``epilogue_op: cutlass.Constexpr`` hook.
-
-Why load-time composition (not a new seam): the composed result has the *standard*
-``fused_experts(x, topk_ids, topk_weights, prepared, out)`` signature, so it flows through
-the existing MoE dispatcher and inherits validator output-ownership, eligibility, quant
-pairing, graph-safety, and fallback — all four invariants — for free.
-
-The override carries TWO callables:
-  * the **device** epilogue (``@cute.jit``) — runs on GPU inside the base megakernel;
-  * the **torch** epilogue (``(gate, up) -> act``) — the fidelity oracle, and what the
-    CPU/dense path runs (so the whole mechanism is laptop-testable without cutlass).
-"""
+"""Compose a small miner epilogue into a validator-owned base kernel."""
 
 from __future__ import annotations
 
@@ -60,11 +42,7 @@ def point_for(slot: str, override_point: str) -> EpiloguePoint:
 
 
 def _dense_moe(x, topk_ids, topk_weights, prepared, out, *, activation: Callable) -> torch.Tensor:
-    """Generic dense SwiGLU-MLP MoE with a pluggable ``activation(gate, up) -> act``.
-
-    The CPU/dense path of every gemm1_epilogue override — identical to the slot's own fp32
-    reference except the activation is the miner's torch epilogue. Fills the validator-owned
-    ``out``; computes in fp32."""
+    """CPU oracle path with a pluggable ``activation(gate, up)``."""
     w13, w2, I = prepared["w13"], prepared["w2"], prepared["inter"]
     M, H = x.shape
     acc = torch.zeros(M, H, dtype=torch.float32, device=x.device)
@@ -87,50 +65,39 @@ def compose(
     epilogue_torch: Callable,
     epilogue_device: Optional[Callable] = None,
 ) -> Callable:
-    """Compose a base kernel + a miner epilogue into a standard ``fused_experts`` callable.
-
-    ``epilogue_torch(gate, up) -> act`` is the portable torch reference (required; the
-    fidelity oracle + the CPU/dense path). ``epilogue_device`` is the GPU ``@cute.jit``
-    epilogue (optional on CPU). The returned ``fused_experts(x, topk_ids, topk_weights,
-    prepared, out)`` picks the path off ``prepared["fmt"]``: ``"dense"`` -> the torch
-    epilogue via :func:`_dense_moe` (laptop); otherwise the GPU megakernel with the device
-    epilogue installed.
-    """
+    """Return the standard fused-experts callable for one registered point."""
     point = point_for(slot, override_point)  # validates the override-point exists
 
     def fused_experts(x, topk_ids, topk_weights, prepared, out):
         fmt = prepared.get("fmt") if isinstance(prepared, dict) else None
-        if fmt == "dense":
+        if fmt == "dense" or (
+            fmt == "nvfp4" and (epilogue_device is None or not x.is_cuda)
+        ):
             return _dense_moe(x, topk_ids, topk_weights, prepared, out, activation=epilogue_torch)
-        from cacheon_kernels.moe import nvfp4_megakernel  # base kernel by name (point.base_kernel)
-
         assert point.base_kernel == "nvfp4_moe_megakernel"
-        return nvfp4_megakernel.run(
-            x, topk_ids, topk_weights, prepared, out,
-            epilogue_device=epilogue_device, epilogue_torch=epilogue_torch,
+        raise NotImplementedError(
+            "nvfp4_moe_megakernel has no validator-owned GPU provider"
         )
 
     fused_experts.__cacheon_override__ = point.key  # provenance (attribution)
     return fused_experts
 
 
-def default_prepare(w13, w2):
-    """Validator-owned ``prepare`` for an override submission (the miner ships none).
+def default_prepare(*args):
+    """Validator-owned dense or NVFP4 preparation for an override."""
+    if len(args) == 2 and args[0] == "nvfp4_layer":
+        from cacheon.moe_nvfp4_contract import dequantize_prepare_args
 
-    CPU/dense form; the GPU NVFP4-layout prepare is part of the base megakernel (M1.2). The
-    validator owns the weight layout for a base kernel — the miner only fills the epilogue."""
-    return {"fmt": "dense", "w13": w13.contiguous(), "w2": w2.contiguous(), "inter": w13.shape[1] // 2}
+        w13, w2 = dequantize_prepare_args(tuple(args))
+        return {"fmt": "nvfp4", "w13": w13, "w2": w2, "inter": w13.shape[1] // 2}
+    if len(args) == 2:
+        w13, w2 = args
+        return {"fmt": "dense", "w13": w13.contiguous(), "w2": w2.contiguous(), "inter": w13.shape[1] // 2}
+    raise ValueError("invalid override prepare contract")
 
 
 def build_override(slot: str, override_point: str, entry_name: str, loader: Callable):
-    """Build ``(entry, prepare)`` for an override submission, shared by the live seam and
-    ``verify``. ``loader(name) -> callable | None`` loads a function from the (scanned)
-    bundle source, returning None if the symbol is absent.
-
-    Convention: ``entry_name`` is the **device** epilogue (``@cute.jit``, GPU-only — absent
-    on a CPU box behind a cutlass guard); ``entry_name + "_ref"`` is its **torch reference**
-    (always present, the EFC PyTorchEvaluation phase = the fidelity oracle + the CPU path).
-    """
+    """Build the device epilogue plus mandatory Torch reference."""
     epilogue_torch = loader(entry_name + "_ref")
     if epilogue_torch is None:
         raise ValueError(
