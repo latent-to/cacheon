@@ -13,7 +13,6 @@ from cacheon.artifact_abi import (
     ArtifactShapeExtent,
     ArtifactShapeFactor,
     COLLECTIVE_ALL_REDUCE_CALL_ABI,
-    MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
     SILU_AND_MUL_CALL_ABI,
     SlotCallABI,
     SlotResource,
@@ -28,6 +27,27 @@ from cacheon.artifact_runtime import (
     ArtifactRuntimeProvider,
     ArtifactRuntimeStep,
     artifact_call_resources,
+)
+
+
+_TEST_BLOCK_SCORE_CALL_ABI = SlotCallABI(
+    slot="test.block_score",
+    resources=(
+        SlotResource("input.q", "tensor"),
+        SlotResource("input.index_k", "tensor"),
+        SlotResource("input.prefix_len", "scalar", scalar_type="i64"),
+        SlotResource("input.scale", "scalar", scalar_type="f64"),
+        SlotResource(
+            "input.block_size", "scalar", scalar_type="i64",
+            capability_field="block_size",
+        ),
+        SlotResource("output.block_scores", "tensor", access="write"),
+        SlotResource("stream.current", "stream"),
+    ),
+    call_args=(
+        "input.q", "input.index_k", "input.prefix_len", "input.scale",
+        "input.block_size", "output.block_scores",
+    ),
 )
 
 
@@ -218,7 +238,7 @@ def _blockscore_bindings() -> tuple[ArtifactBinding, ...]:
 def test_generic_blockscore_projection_has_no_slot_adapter() -> None:
     calls: list[tuple[object, ...]] = []
     entry = ArtifactRuntimeEntry(
-        call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+        call_abi=_TEST_BLOCK_SCORE_CALL_ABI,
         steps=(
             _step(
                 "blockscore",
@@ -275,7 +295,7 @@ def test_unique_most_specific_matching_plan_wins() -> None:
     observed: list[str] = []
     bindings = (ArtifactBinding("output.block_scores", "tensor"),)
     entry = ArtifactRuntimeEntry(
-        call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+        call_abi=_TEST_BLOCK_SCORE_CALL_ABI,
         steps=(
             _step(
                 "fallback",
@@ -314,7 +334,7 @@ def test_aggregate_projection_rejects_axis_outside_live_rank() -> None:
         ),
     )
     entry = ArtifactRuntimeEntry(
-        call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+        call_abi=_TEST_BLOCK_SCORE_CALL_ABI,
         steps=(
             _step(
                 "aggregate",
@@ -337,7 +357,7 @@ def test_aggregate_projection_rejects_axis_outside_live_rank() -> None:
 
 def test_derived_scalar_cast_rejects_runtime_overflow() -> None:
     entry = ArtifactRuntimeEntry(
-        call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+        call_abi=_TEST_BLOCK_SCORE_CALL_ABI,
         steps=(
             _step(
                 "scalar",

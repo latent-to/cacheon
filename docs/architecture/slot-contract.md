@@ -19,13 +19,14 @@ The same typed output contract is used by offline verification and the live engi
 
 A slot may replace a bounded data-plane region, but it may not control final logits, logprobs, tokens, or sampling. Its output continues through validator-owned or pinned-runtime computation before the final response exists.
 
-For selection-style slots, the candidate fills an intermediate score sheet and the validator-owned tail performs the selection. This preserves the same property: the candidate never supplies the final selected output by assertion.
+For selection-style slots, the candidate may fill either a score sheet or a
+validator-allocated block-index tensor. The validator independently grades the
+selected sets and retains the subsequent attention and model path; candidate
+indices are never accepted by assertion.
 
-MSA keeps runtime selection width separate from verification policy. The live engine's
-top-k controls the stock selection tail. `SlotSpec.correctness.top_k` only fixes the
-width used when the verifier compares the highest-scoring blocks for overlap; equality
-between those values is not a routing condition. The candidate always implements the
-score-sheet boundary, not a miner-selected top-k operation.
+MSA decode keeps its score-sheet boundary. MSA prefill V2 receives the live
+selection width and full paged batch, then writes `topk_idx` once per wrapper
+invocation. Both are graded by validator-owned set overlap before downstream use.
 
 ### 3. Correctness uses trusted high-precision ground truth
 
@@ -34,7 +35,7 @@ Per-slot verification compares candidate output with a validator-owned fp32 or d
 - `allclose` for elementwise-equivalent results;
 - `matched_ratio` for numerically reordered kernels;
 - `cosine` with an optional norm guard for low-bit outputs;
-- `topk_overlap` for selection score sheets.
+- `topk_overlap` for score-derived or direct block selections.
 
 This cheap gate proves that the candidate computes the registered function. It is necessary but not sufficient: production qualification also applies pristine T quality authority to sealed end-to-end trajectories.
 
@@ -65,7 +66,7 @@ The current API contains **11 slots**.
 | `attention.sdpa` | `block` | `attention` | Scaled dot-product attention core |
 | `attention.decode` | `block` | `attention_decode` | Paged decode-attention boundary |
 | `attention.msa_block_score` | `block` | `msa_block_score` | MSA decode block-score sheet; validator owns top-k selection |
-| `attention.msa_prefill_block_score` | `block` | `msa_prefill_block_score` | MSA chunked-prefill block-score sheet; validator owns top-k selection |
+| `attention.msa_prefill_block_score` | `block` | `msa_prefill_block_score` | Batched paged MSA prefill score-to-selection; validator audits indices and owns attend |
 | `moe.fused_experts` | `block` | `fused_experts` | Prepared MoE expert execution |
 | `moe.fused_experts_reduce` | `collective` | `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |

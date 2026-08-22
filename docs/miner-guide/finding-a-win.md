@@ -89,8 +89,8 @@ problems. So are TP topologies with and without fast peer links.
 For attention work:
 
 - `attention.msa_block_score` is a decode-side block-score boundary;
-- `attention.msa_prefill_block_score` is the causal per-row long-prefill
-  boundary;
+- `attention.msa_prefill_block_score` is the batched paged long-prefill
+  score-to-selection boundary;
 - an optimization to one should not be measured on a workload dominated by the
   other.
 

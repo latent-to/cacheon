@@ -17,7 +17,7 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 | `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | matched ratio ≥ 0.99 |
 | `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | matched ratio ≥ 0.99 |
 | `attention.msa_block_score` | block | `entry(q, index_k, seq_lens, block_size, out)` | top-8 overlap ≥ 0.875 |
-| `attention.msa_prefill_block_score` | block | `entry(q, index_k, prefix_len, scale, block_size, out)` | top-8 overlap ≥ 0.90 |
+| `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | selected-set overlap ≥ 0.90 |
 | `moe.fused_experts` | block | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out)` | matched ratio ≥ 0.97 |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out, group)` | matched ratio ≥ 0.97 |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |

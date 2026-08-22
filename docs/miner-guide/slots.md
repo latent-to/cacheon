@@ -30,20 +30,18 @@ manifest; it does not require the Python function itself to be named `entry`.
 | `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | dense/GQA/MQA attention output |
 | `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | MiniMax-M3 graph-native sparse attention over validator-selected blocks |
 | `attention.msa_block_score` | block | `entry(q, index_k, seq_lens, block_size, out)` | decode-time block scores; validator owns top-k selection and attend |
-| `attention.msa_prefill_block_score` | block | `entry(q, index_k, prefix_len, scale, block_size, out)` | causal per-row prefill block scores; validator owns top-k selection and attend |
+| `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | one batched paged prefill score-to-selection call; validator audits indices and owns attend |
 | `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
 | `collective.ar_residual_rmsnorm` | collective | `entry(x, residual, weight, eps, out_norm, out_residual, group)` | reduced residual and normalized output |
 | `collective.moe_finalize_ar_rmsnorm` | collective | `entry(gemm_out, row_map, scales, residual, weight, eps, out_norm, out_residual, group)` | finalized/reduced residual and normalized output |
 
-The two MSA slots output **scores**, not selected indices or attended values.
-The production engine's runtime top-k controls the validator-owned selection tail.
-`SlotSpec.correctness.top_k` is a separate verification parameter: it selects the
-width of the score-sheet overlap comparison (the registered width is eight blocks), but does not
-configure production selection or gate whether the score kernel routes. A runtime
-call may therefore use a different top-k while the candidate still fills the complete
-score sheet and the stock tail applies the engine's value.
+The decode MSA slot outputs scores and retains stock selection. Prefill V2
+instead receives the engine's live top-k and writes validator-allocated `int32`
+indices for the whole paged batch in one call. The validator compares the
+consumed sets with its independent reference and retains sparse attention and
+the rest of the model. `-1` is required padding for short causal rows.
 
 The prefill slot is a distinct long-prefill boundary and its canonical live
 descriptor is eager; do not assume a decode optimization exercises it.

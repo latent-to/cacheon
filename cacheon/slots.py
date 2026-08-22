@@ -66,6 +66,7 @@ from cacheon.artifact_abi import (
     SlotCallABI,
 )
 from cacheon.minimax_sparse_decode_slot import build_slot as build_minimax_sparse_decode_slot
+from cacheon.minimax_sparse_prefill_slot import build_slot as build_minimax_sparse_prefill_slot
 from cacheon.moe_nvfp4_contract import (
     prepare_args_from_inputs as _moe_prepare_args_from_inputs,
     prepare_args_from_layer as _moe_prepare_args_from_layer,
@@ -98,12 +99,9 @@ class Correctness:
       (FP4/FP8): element-wise tolerance is meaningless when every element carries
       ~6-12% quantization error, but the *direction* (and energy) of the block output
       is preserved — which is what actually drives the model's logits.
-    * ``"topk_overlap"`` — for a kernel whose output is a **selection**, not a tensor value
-      (an MSA block-score indexer: scores -> the validator takes top-k blocks -> attends). The
-      values don't matter, only which top-``top_k`` they pick: the mean per-row overlap
-      ``|topk(actual) ∩ topk(expected)| / top_k`` must be >= ``min_overlap``. Element-wise
-      cosine/KL are the wrong metric — a kernel can perturb every score (fp8 index-K) as long
-      as the SELECTED set matches.
+    * ``"topk_overlap"`` — for an MSA score sheet or direct index output. Values
+      and index order do not matter; the selected block sets must meet
+      ``min_overlap`` before the validator-owned attention consumes them.
 
     DESIGN NOTE — this is the *op-correctness* gate, a cheap **sanity** check ("is this
     even computing the slot's function?"), explicitly necessary-but-not-sufficient
@@ -926,184 +924,8 @@ ATTENTION_MSA_BLOCK_SCORE = SlotSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.msa_prefill_block_score   (the PREFILL-side MSA indexer)
-#   q:(T,D)  index_k:(S,D)  prefix_len  scale  block_size -> block_scores:(T, ceil(S/block_size))
-#   contract: entry(q, index_k, prefix_len, scale, block_size, out)
-#
-# The prefill/extend sibling of attention.msa_block_score. At decode the indexer scores one
-# query against the whole context; at CHUNKED PREFILL it scores a T-token chunk against the
-# S = prefix_len + T tokens cached so far, under the causal rule (key n visible to chunk row m
-# iff n <= prefix_len + m), emitting a per-row, per-block score SHEET. This kernel family is
-# ~30% of long-context serving prefill (the 2026-07-10 M3 campaign's measured lever: replacing
-# it moved e2e prefill +19.6%/+22.4% at equal fidelity), so the slot exists to make that class
-# of win submittable. Same cheat-resistant split as the decode slot: the miner fills SCORES
-# only; the validator owns the top-k block selection and the attend, so the kernel stays
-# strictly upstream of the sampler and a wrong score merely mis-selects — caught by the
-# topk_overlap gate (per ROW of the sheet) + the e2e gate.
-#
-# Contract notes:
-#   * q is ONE index head (T,D) — at TP the serving seam calls per (request, head).
-#   * index_k is the GATHERED, contiguous (S,D) index-K for the request (gather-first: the
-#     seam materializes it from the paged cache; paging layout is not part of the contract).
-#   * scale is the full score multiplier (the model's sm_scale and any log-base fold), opaque
-#     to the gate (monotonic — selection-invariant) but passed so faithful kernels reproduce
-#     stock score VALUES (audit-mode compares under this slot's own gate).
-#   * out is (T, ceil(S/block_size)) — the ragged tail block is scored over its real keys
-#     only; every cell must be written (wholly-invisible cells = -inf, the stock convention).
-# ---------------------------------------------------------------------------
-
-
-def _msa_prefill_block_score_reference(q, index_k, prefix_len, scale, block_size):
-    # q:(T,D) index_k:(S,D) -> (T, ceil(S/block_size)) fp32 causal block-max of scaled QK.
-    T, D = q.shape
-    S = index_k.shape[0]
-    s = (q.float() @ index_k.float().t()) * float(scale)          # (T,S)
-    m = torch.arange(T, device=q.device).view(T, 1)
-    n = torch.arange(S, device=q.device).view(1, S)
-    s = s.masked_fill(n > int(prefix_len) + m, float("-inf"))     # causal (chunk offset = prefix)
-    nblk = (S + block_size - 1) // block_size
-    pad = nblk * block_size - S
-    if pad:
-        s = torch.nn.functional.pad(s, (0, pad), value=float("-inf"))
-    return s.view(T, nblk, block_size).amax(dim=-1)               # (T, nblk)
-
-
-def _msa_prefill_inputs(*, q_len: int, prefix_blocks: int, head_dim: int, block_size: int,
-                        dtype: torch.dtype, device: str, seed: int,
-                        causal_probe: bool = False,
-                        prefix_len_override: int | None = None) -> dict:
-    g = torch.Generator(device=device).manual_seed(seed)
-
-    def rnd(*shape: int) -> torch.Tensor:
-        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
-
-    # Non-vacuous floor, robust to count-dim jitter: EVERY row (including row 0, which sees
-    # only prefix_len+1 keys) must have comfortably more than _MSA_TOPK visible blocks, else
-    # top-k of ~k blocks makes the overlap gate vacuous. prefix stays ragged (not a block
-    # multiple) so the tail-block path is always exercised.
-    q_len = max(1, q_len)
-    prefix_blocks = max(_MSA_TOPK + 4, prefix_blocks)
-    prefix_len = (
-        prefix_blocks * block_size + 39
-        if prefix_len_override is None
-        else int(prefix_len_override)
-    )
-    if prefix_len < 0:
-        raise ValueError("MSA prefix_len must be non-negative")
-    seq_len = prefix_len + q_len                                  # chunked serving: S = prefix + T
-    q = rnd(q_len, head_dim)
-    index_k = rnd(seq_len, head_dim)
-    if causal_probe:
-        # Make every non-final row's first future key uniquely attractive to that
-        # row. Feature dimensions cycle when q_len > head_dim; each newly exposed
-        # future block still displaces a trusted-prefix block. A kernel that ignores
-        # the per-row causal mask therefore fails even when random probes dilute it.
-        # Preserve seed-dependent low-amplitude values so these adversarial cases
-        # remain genuine fresh-input CUDA-graph replay probes.  The explicit
-        # causal signals below dominate this noise by three to five orders.
-        q.mul_(2**-10)
-        index_k.mul_(2**-10)
-        row = torch.arange(q_len, device=device)
-        feature = row % head_dim
-        q[row, feature] = 1
-        visible_prefix_blocks = (prefix_len + block_size) // block_size
-        moderate_blocks = min(visible_prefix_blocks, _MSA_TOPK + 2)
-        index_k[
-            torch.arange(moderate_blocks, device=device) * block_size
-        ] = 1
-        if q_len > 1:
-            future_row = torch.arange(q_len - 1, device=device)
-            future_position = prefix_len + 1 + future_row
-            index_k[future_position, future_row % head_dim] = 100
-    return {
-        "q": q,
-        "index_k": index_k,
-        "prefix_len": prefix_len,
-        "scale": head_dim ** -0.5 * 1.4426950409,                 # a realistic opaque multiplier
-        "block_size": block_size,
-    }
-
-
-def _msa_prefill_out_shape(inputs: dict) -> tuple[int, int]:
-    return (
-        inputs["q"].shape[0],
-        (inputs["index_k"].shape[0] + inputs["block_size"] - 1)
-        // inputs["block_size"],
-    )
-
-
-def _msa_prefill_output_spec(inputs: dict) -> OutputSpec:
-    return OutputSpec(
-        outputs=(
-            TensorSpec(
-                shape=_msa_prefill_out_shape(inputs),
-                dtype=torch.float32,
-                stride_policy="strided",
-                stride_padding=7,
-                alignment_bytes=4,
-                aliasing="disjoint",
-                name="block_scores",
-            ),
-        )
-    )
-
-
-ATTENTION_MSA_PREFILL_BLOCK_SCORE = SlotSpec(
-    name="attention.msa_prefill_block_score",
-    entry="msa_prefill_block_score",
-    summary=(
-        "MSA indexer PREFILL block scores: q:(T,D) index_k:(S,D) prefix_len scale block_size "
-        "-> block_scores:(T,ceil(S/block_size)) = causal block-max of scale*(q@index_k^T), "
-        "key n visible to row m iff n <= prefix_len+m; invisible cells = -inf.  "
-        "entry(q, index_k, prefix_len, scale, block_size, out).  The validator owns the top-k "
-        "block SELECTION + the attend; gated on topk_overlap per ROW, not score values."
-    ),
-    kind="block",
-    make_inputs=_msa_prefill_inputs,
-    out_shapes=lambda i: [_msa_prefill_out_shape(i)],
-    output_spec=_msa_prefill_output_spec,
-    invoke_reference=lambda i: [_msa_prefill_block_score_reference(
-        i["q"], i["index_k"], i["prefix_len"], i["scale"], i["block_size"])],
-    invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["q"], i["index_k"], i["prefix_len"], i["scale"], i["block_size"], outs[0]),
-    graph_dynamic_inputs=("q", "index_k"),
-    shapes=(
-        # Every shape keeps EVERY row's visible blocks > _MSA_TOPK (=8) via the prefix floor
-        # in make_inputs; S is never a block multiple (ragged tail always exercised).
-        {"q_len": 16, "prefix_blocks": 12, "head_dim": 128, "block_size": 128},   # 12+ blocks
-        {"q_len": 128, "prefix_blocks": 16, "head_dim": 128, "block_size": 128},  # chunk-ish
-        {"q_len": 33, "prefix_blocks": 20, "head_dim": 64, "block_size": 128},    # ragged T
-        {"q_len": 64, "prefix_blocks": 24, "head_dim": 128, "block_size": 64},    # small blocks
-        # Orthogonal future-key probes keep causality observable for exact short-q
-        # variants; random short chunks can otherwise dilute one bad row above 0.9.
-        {"q_len": 16, "prefix_blocks": 12, "head_dim": 128, "block_size": 128,
-         "causal_probe": True},
-        {"q_len": 128, "prefix_blocks": 16, "head_dim": 128, "block_size": 128,
-         "causal_probe": True},
-        {"q_len": 33, "prefix_blocks": 20, "head_dim": 64, "block_size": 128,
-         "causal_probe": True},
-        {"q_len": 64, "prefix_blocks": 24, "head_dim": 128, "block_size": 64,
-         "causal_probe": True},
-        # CAUSALITY catchers for every (head_dim, block_size) family represented above.
-        # A shape-specialized variant sees only its own family, so one global long shape is
-        # insufficient. With a modest prefix and a chunk spanning several blocks, early rows
-        # can illegally see enough future blocks that measured overlap falls below 0.9.
-        {"q_len": 512, "prefix_blocks": 12, "head_dim": 64, "block_size": 128},
-        {"q_len": 512, "prefix_blocks": 12, "head_dim": 128, "block_size": 64},
-        {"q_len": 512, "prefix_blocks": 12, "head_dim": 128, "block_size": 128},
-    ),
-    # The output is a SELECTION sheet: gate on per-row top-k block SETS, not values (an fp8
-    # index-K may perturb every score yet select the same blocks). The floor is 0.9, NOT the
-    # decode slot's 7/8: with top_k=8 a SYSTEMATIC one-block-per-row error (an acausal kernel,
-    # a garbage ragged-tail block) lands at exactly mean 0.875 — the sheet has so many rows
-    # that per-row means concentrate, so 7/8 would admit it. Thin fp8-style drift flips a
-    # block on a FEW rows (mean ~0.98) and still clears 0.9 (test_msa_prefill_block_score
-    # proves both directions).
-    correctness=Correctness("topk_overlap", top_k=_MSA_TOPK, min_overlap=0.9),
-    tolerances=_BF16_TOL,
-    kl_threshold=3e-2,  # rides the attention path (same intrinsic floor as the decode slot)
-    call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+ATTENTION_MSA_PREFILL_BLOCK_SCORE = build_minimax_sparse_prefill_slot(
+    SlotSpec, Correctness, _BF16_TOL, MSA_PREFILL_BLOCK_SCORE_CALL_ABI
 )
 
 

@@ -198,16 +198,26 @@ is a score sheet, and correctness is judged through the selected block sets.
 ### `attention.msa_prefill_block_score`
 
 ```python
-def msa_prefill_block_score(q, index_k, prefix_len, scale, block_size, out):
-    # q: (T, D); index_k: (S, D)
-    # out: (T, ceil(S / block_size)), float32, possibly padded row stride
+def msa_prefill_block_score(
+    q, index_k_cache, req_to_token, slot_ids, cu_seqlens, seq_lens,
+    prefix_lens, max_seqlen_q, max_seqlen_k, block_size_q, block_size_k,
+    topk, init_blocks, local_blocks, scale, cu_seqblocks_q,
+    max_seqblock_q, all_seqblock_q, out_topk,
+):
+    # q: (total_q, num_q_heads, D); index_k_cache: paged (slots, 1, D)
+    # out_topk: contiguous int32 (num_q_heads, all_seqblock_q, topk)
     ...
 ```
 
-For query row `m`, key `n` is visible only when
-`n <= prefix_len + m`. Invisible score cells use negative infinity. The final
-block may be ragged. The output contract deliberately exercises a non-overlapping
-row-major strided view, so a kernel that assumes contiguous storage is invalid.
+This V2 call owns score production and selection for the full ragged batch.
+`req_to_token[slot_ids[b]]` maps logical keys to the paged cache. Query block
+`qb` selects only blocks visible through
+`prefix_lens[b] + qb * block_size_q`; initial and local blocks follow the
+supplied policy. Every valid index is global within that request's logical key
+sequence, and unused output cells must be `-1`. The candidate is called once;
+there is no validator gather, score slab, request-by-head loop, or separate
+top-k launch. The validator independently reconstructs and audits the selected
+sets before the pinned sparse-attention consumer runs.
 
 ## Prepare/forward MoE slots
 
@@ -338,8 +348,7 @@ current catalog uses:
 - elementwise tolerance for numerically equivalent op kernels;
 - `matched_ratio` for attention, MoE, and collectives whose legitimate reduction
   order can change rounding;
-- per-row `topk_overlap` for MSA score sheets, where selected blocks are the
-  semantic output.
+- per-row `topk_overlap` for MSA score-derived or direct block selections.
 
 Tolerance, ratio, overlap, reference, and model binding are not miner-selected
 manifest values. Passing local `verify` demonstrates compatibility with its
@@ -353,8 +362,8 @@ The comparators reflect the semantic output of each boundary:
 - **matched ratio or cosine** permits the bounded rounding/reduction effects expected of
   a low-bit or reordered implementation without allowing the miner to choose its own
   tolerance; and
-- **top-k overlap** grades which blocks the score sheet causes trusted selection to pick,
-  because raw score equality is not the downstream semantic requirement.
+- **top-k overlap** grades the block sets consumed downstream, because raw
+  score equality and index ordering are not the semantic requirement.
 
 Slot verification and end-to-end quality answer different questions. A per-call error can
 fit a slot tolerance yet compound across layers, so qualification still uses candidate-

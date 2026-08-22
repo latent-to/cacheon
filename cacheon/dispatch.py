@@ -23,10 +23,7 @@ import torch
 from cacheon import audit as _audit
 from cacheon import moe_export as _moe_export
 from cacheon import receipts as _receipts
-from cacheon.capabilities import (
-    collective_call_descriptor,
-    msa_prefill_call_descriptor,
-)
+from cacheon.capabilities import collective_call_descriptor
 from cacheon.moe_nvfp4_contract import (
     call_descriptor as moe_call_descriptor,
     supports_layer as supports_nvfp4_moe_layer,
@@ -37,7 +34,6 @@ from cacheon.tensor_spec import (
     allocate_output_spec,
     tensor_bindings,
     validate_output_allocation,
-    validate_output_spec,
     validate_tensor_bindings,
 )
 
@@ -1324,265 +1320,18 @@ def make_msa_prefill_dispatcher(
     registry: KernelRegistry = REGISTRY,
     slot: str = "attention.msa_prefill_block_score",
 ) -> Callable[..., object]:
-    """Build a replacement for the MODULE-LEVEL function
-    ``...minimax_sparse_ops.prefill.flash_with_topk_idx.flash_prefill_with_topk_index``
-    — the MSA arena's prefill-side indexer waist (the score kernel alone is ~30% of
-    long-context serving prefill; the 2026-07-10 M3 campaign's +19.6%/+22.4% e2e lever).
+    from cacheon.msa_prefill_dispatch import make_dispatcher
 
-    The cheat-resistant split (docs/SLOT_CONTRACT.md, same as the decode MSA slot): the
-    miner fills the per-(row, block) SCORE SHEET only; the validator keeps the stock
-    top-k selection kernel AND the attend over the chosen blocks, so the kernel stays
-    strictly upstream of the sampler and a wrong score merely mis-selects (the
-    topk_overlap op-gate + the e2e gate catch it).
-
-    SCOPE (production MSA config only; anything else -> stock verbatim): opt-in via
-    ``CACHEON_MSA_PREFILL_SEAM=1``; ``disable_index_value`` (the stock kernel's ONLY
-    output is then the score slab), ``score_type == "max"``, no sink, ONE index-K head.
-    Never under Dynamo tracing or CUDA-graph capture (this path does a host sync for
-    the per-request metadata; serving prefill runs eager). Any exception -> announced
-    whole-batch stock fallback (partial slab writes are overwrite-safe: both kernels
-    share the -inf masking convention on the same pre-filled slab).
-
-    ``module`` is the (M3-arena-pinned) target module itself: the stock top-k tail is
-    reproduced from its OWN pieces (``get_cu_seqblocks``, ``_topk_index_kernel``,
-    ``robust_allocator``) so selection stays byte-stock. Version-pinned glue by design
-    — this module only exists on the MSA arena's pinned sglang build.
-
-    AUDIT: wired (cacheon/audit.py, topk_overlap mode). On sampled calls the STOCK
-    function runs FIRST on the still-pristine inputs (no pre-call clones are possible
-    here — the gathered K comes from the multi-GB KV pool), then the miner path runs,
-    and the audit compares the CONSUMED product: the selection rows our
-    validator-owned selector produced from miner scores vs the rows stock produced —
-    per-row set overlap gated at the slot's own min_overlap. Only the untimed quality
-    launch arms sampling (CACHEON_SLOT_AUDIT); timed launches carry zero overhead.
-    """
-    import os
-
-    # Resolve once at binding installation, not in the serving hot loop.  The
-    # logical shape is still resolved per invocation below, but dtype/layout/stride
-    # policy now comes from the same validator-owned declaration as offline verify.
-    output_slot = get_slot(slot)
-
-    def dispatched(q, k_cache, v_cache, sink, req_to_token, slot_ids, cu_seqlens,
-                   seq_lens, prefix_lens, max_seqlen_q, max_seqlen_k, block_size_q,
-                   block_size_k, topk, init_blocks=1, local_blocks=2, sm_scale=None,
-                   use_tma=False, score_type="max", disable_index_value=False,
-                   cu_seqblocks_q=None, max_seqblock_q=None, all_seqblock_q=None):
-        def stock():
-            return baseline_fn(q, k_cache, v_cache, sink, req_to_token, slot_ids,
-                               cu_seqlens, seq_lens, prefix_lens, max_seqlen_q,
-                               max_seqlen_k, block_size_q, block_size_k, topk,
-                               init_blocks, local_blocks, sm_scale, use_tma,
-                               score_type, disable_index_value, cu_seqblocks_q,
-                               max_seqblock_q, all_seqblock_q)
-
-        if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
-            return stock()
-        if os.environ.get("CACHEON_MSA_PREFILL_SEAM") != "1" or _in_cuda_graph():
-            return stock()
-        selected = False
-        try:
-            num_kv_heads = k_cache.shape[1]
-            verification_top_k = int(output_slot.correctness.top_k)
-            # ``topk`` controls the validator-owned selector after the miner has
-            # filled the complete score sheet. It is not part of the miner entry
-            # ABI and must not gate score-kernel routing.
-            if not (disable_index_value and score_type == "max" and sink is None
-                    and num_kv_heads == 1 and q.is_cuda and q.dim() == 3):
-                return stock()
-            total_q, num_heads, head_dim = q.shape
-            batch_size = cu_seqlens.shape[0] - 1
-            scale = float(sm_scale if sm_scale is not None else head_dim ** -0.5) * 1.4426950409
-
-            # ONE host sync for the batch metadata (eager prefill path; mirrors the
-            # stock wrapper's own reliance on host-known max_seqlen_q/batch_size).
-            cu = cu_seqlens[: batch_size + 1].cpu()
-            sls = seq_lens[:batch_size].cpu()
-            pls = prefix_lens[:batch_size].cpu()
-            sids = slot_ids[:batch_size].cpu()
-
-            # Pre-scan BEFORE writing anything: the slot's causal convention (key n
-            # visible to row m iff n <= prefix+m) requires seq == prefix + q_len.
-            meta = []
-            for b in range(batch_size):
-                qs, qe = int(cu[b]), int(cu[b + 1])
-                seq_b, pre_b = int(sls[b]), int(pls[b])
-                if qe - qs > 0 and seq_b != pre_b + (qe - qs):
-                    return stock()
-                meta.append((b, qs, qe, seq_b, pre_b, int(sids[b])))
-
-            # Describe and select EVERY call before allocating/writing the shared
-            # score slab.  A mixed batch is atomic at this binding: if even one
-            # request/head lies outside all variants (or matches ambiguously), the
-            # whole batch runs byte-stock and no miner fallback is consulted.
-            architecture = _arch_tag(q.device.index or 0)
-            tp_size, world_size = _runtime_parallel_sizes()
-            planned: dict[int, tuple[object, object]] = {}
-            for b, qs, qe, seq_b, _pre_b, _sid in meta:
-                q_len_b = qe - qs
-                if q_len_b == 0 or seq_b == 0:
-                    continue
-                # The seam invokes one head at a time, but every head in this
-                # request has the same canonical descriptor. Select once and reuse
-                # the immutable implementation rather than multiplying Python
-                # capability matching by num_heads.
-                descriptor = msa_prefill_call_descriptor(
-                    dtype=_dtype_name(q.dtype),
-                    architecture=architecture,
-                    head_dim=head_dim,
-                    block_size=int(block_size_k),
-                    q_len=q_len_b,
-                    kv_len=seq_b,
-                    # This is the verifier's sampled overlap width, not the
-                    # downstream engine selector's runtime width.
-                    top_k=verification_top_k,
-                    num_kv_heads=num_kv_heads,
-                    tp_size=tp_size,
-                    world_size=world_size,
-                )
-                decision = registry.select(
-                    slot, descriptor, write_fired_receipt=False
-                )
-                if not decision.use_candidate:
-                    return stock()
-                planned[b] = (descriptor, decision.impl)
-            if not planned:
-                return stock()
-
-            # Commit routing only after the complete batch passed preflight.  This
-            # writes the slot-level "fired" receipt without reintroducing a partial
-            # batch: registry state is immutable after engine initialization, and a
-            # changed/ambiguous decision still fails closed to stock.
-            first_descriptor, first_impl = next(iter(planned.values()))
-            committed = registry.select(slot, first_descriptor)
-            if committed.impl is not first_impl:
-                return stock()
-            selected = True
-
-            # In-engine audit (per-rank independent here — the indexer is not a
-            # collective): stock runs FIRST on pristine inputs; the comparison target
-            # is the selection the engine would actually consume.
-            aud = _audit.sampled()
-            expected_idx = None
-            if aud:
-                exp = stock()
-                expected_idx = (exp[1] if isinstance(exp, (tuple, list)) and len(exp) > 1
-                                else None)
-
-            max_seqblock_k = (max_seqlen_k + block_size_k - 1) // block_size_k
-            probe_contract = output_slot.output_contract({
-                "q": q[:1, 0, :],
-                "index_k": k_cache[:1, 0, :],
-                "prefix_len": 0,
-                "scale": scale,
-                "block_size": block_size_k,
-            })
-            if len(probe_contract.outputs) != 1:
-                raise RuntimeError(f"{slot} must declare exactly one score output")
-            score_tensor_spec = probe_contract.outputs[0]
-            score_dtype = score_tensor_spec.dtype or q.dtype
-            score_device = score_tensor_spec.device or q.device
-            score = torch.full((num_heads, total_q, max_seqblock_k), float("-inf"),
-                               dtype=score_dtype, device=score_device)
-
-            contract_validated = False
-            candidate_calls = 0
-            for b, qs, qe, seq_b, pre_b, sid in meta:
-                if qe - qs == 0 or seq_b == 0:
-                    continue
-                nblk_b = (seq_b + block_size_k - 1) // block_size_k
-                # Gather-first: paged index-K -> contiguous (S, D). Paging layout is
-                # the validator's, not part of the miner contract.
-                slots_b = req_to_token[sid, :seq_b].to(torch.long)
-                kg = k_cache[slots_b, 0, :].contiguous()
-                for h in range(num_heads):
-                    _descriptor, impl = planned[b]
-                    q_bh = q[qs:qe, h, :].contiguous()
-                    out_view = score[h, qs:qe, :nblk_b]
-                    if not contract_validated:
-                        # One representative slice is enough: every per-head/request
-                        # view comes from this same slab with the same dtype, device,
-                        # layout and row pitch; logical shapes are constructed directly
-                        # from the validated metadata above.  Avoid per-head hot-path tax.
-                        live_inputs = {
-                            "q": q_bh,
-                            "index_k": kg,
-                            "prefix_len": pre_b,
-                            "scale": scale,
-                            "block_size": block_size_k,
-                        }
-                        validate_output_spec(
-                            output_slot.output_contract(live_inputs),
-                            [out_view],
-                            fallback_dtype=q.dtype,
-                            fallback_device=q.device,
-                            inputs=(q_bh, kg),
-                        )
-                        contract_validated = True
-                    impl.entry(q_bh, kg, pre_b, scale, block_size_k, out_view)
-                    candidate_calls += 1
-
-            if not candidate_calls:
-                raise RuntimeError("committed MSA route executed no candidate calls")
-
-            # The validator-owned top-k tail, byte-stock from the target module's own
-            # pieces: the SELECTION never comes from miner code.
-            import triton  # noqa: PLC0415 - deferred; only on the GPU path
-
-            triton.set_allocator(module.robust_allocator)
-            if cu_seqblocks_q is None or max_seqblock_q is None or all_seqblock_q is None:
-                cu_seqblocks_q, max_seqblock_q, all_seqblock_q, _, _, _ = (
-                    module.get_cu_seqblocks(cu_seqlens, max_seqlen_q, block_size_q,
-                                            block_size_k))
-            topk_idx = torch.full((num_heads, all_seqblock_q, topk), fill_value=-1,
-                                  device=score.device, dtype=torch.int32)
-            grid = (max_seqblock_q, batch_size, num_heads)
-            module._topk_index_kernel[grid](
-                score, topk_idx, block_size_q, block_size_k, cu_seqlens,
-                cu_seqblocks_q, prefix_lens, topk, init_blocks, local_blocks,
-                score.stride(0), score.stride(1), score.stride(2),
-                topk_idx.stride(0), topk_idx.stride(1), topk_idx.stride(2),
-                MASK_INIT=False, MASK_LOCAL=False,
-            )
-            if aud:
-                if expected_idx is None:
-                    _audit.baseline_refused(slot)
-                else:
-                    _audit.record(slot, (topk_idx,), (expected_idx,))
-            _log_msa_prefill_active()
-            if candidate_calls:
-                _receipts.completed(slot)
-            return None, topk_idx  # o is None in the gated (disable_index_value) mode
-        except Exception as exc:  # noqa: BLE001
-            if registry.strict:
-                raise
-            _log_msa_prefill_fallback(exc)
-            stock_result = stock()
-            if selected:
-                _receipts.fallback(slot, exc)
-            return stock_result
-
-    return dispatched
-
-
-_MSA_PREFILL_LOGGED_ACTIVE = False
-_MSA_PREFILL_LOGGED_FALLBACK = False
-
-
-def _log_msa_prefill_active() -> None:
-    global _MSA_PREFILL_LOGGED_ACTIVE
-    if not _MSA_PREFILL_LOGGED_ACTIVE:
-        _MSA_PREFILL_LOGGED_ACTIVE = True
-        logger.warning(
-            "cacheon: attention.msa_prefill_block_score seam ACTIVE — prefill indexer scores routed through miner kernel")
-
-
-def _log_msa_prefill_fallback(exc: Exception) -> None:
-    global _MSA_PREFILL_LOGGED_FALLBACK
-    if not _MSA_PREFILL_LOGGED_FALLBACK:
-        _MSA_PREFILL_LOGGED_FALLBACK = True
-        logger.warning(
-            "cacheon: attention.msa_prefill_block_score seam FELL BACK to baseline after kernel error: %r", exc)
+    return make_dispatcher(
+        baseline_fn,
+        module,
+        registry=registry,
+        slot=slot,
+        arch_tag=_arch_tag,
+        runtime_parallel_sizes=_runtime_parallel_sizes,
+        dynamo_compiling=_dynamo_compiling,
+        in_cuda_graph=_in_cuda_graph,
+    )
 
 
 def _arfusion_group(use_attn_tp_group: bool):

@@ -125,7 +125,7 @@ def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
     assert plan.by_name["prepared.lookup"].max_bytes == 4096
     assert set(MSA_PREFILL_BLOCK_SCORE_CALL_ABI.resource_table(plan)) >= {
         "input.q",
-        "output.block_scores",
+        "output.topk_idx",
         "workspace.scratch",
         "state.epoch",
         "prepared.lookup",
@@ -133,7 +133,7 @@ def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
 
     prepare = (ArtifactBinding("prepared.lookup", "tensor"),)
     run = (
-        ArtifactBinding("output.block_scores", "tensor"),
+        ArtifactBinding("output.topk_idx", "tensor"),
         ArtifactBinding("prepared.lookup", "tensor"),
         ArtifactBinding("workspace.scratch", "tensor"),
         ArtifactBinding("state.epoch", "tensor"),
@@ -173,7 +173,7 @@ def test_bindings_may_name_only_declared_generated_resources():
         MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
             role="run",
             bindings=(
-                ArtifactBinding("output.block_scores", "tensor"),
+                ArtifactBinding("output.topk_idx", "tensor"),
                 ArtifactBinding("workspace.not_declared", "tensor"),
             ),
             specializes={},
