@@ -814,8 +814,12 @@ def _apply_resident_swap(
         if now >= next_flush:
             # Retried because a flush can race scheduler-side work and report
             # failure; ranks that already applied this generation ignore it.
-            with contextlib.suppress(Exception):
+            try:
                 flush()
+            except Exception as exc:
+                raise SessionProtocolError(
+                    f"resident swap flush failed: {type(exc).__name__}: {exc}"
+                ) from exc
             next_flush = time.monotonic() + _RESIDENT_FLUSH_RETRY_SECONDS
         rows = _read_rank_acks(control_dir, tp_size=tp_size)
         if len(rows) == tp_size and all(

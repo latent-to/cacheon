@@ -146,8 +146,7 @@ class RemoteQualificationHoldProduct:
             )
             or (
                 self.schema_version == _SCHEMA_VERSION
-                and not worker_failure
-                and bool(self.failure_type or self.failure_message)
+                and bool(self.failure_type) != bool(self.failure_message)
             )
         ):
             raise RemoteEvaluationDispatcherError(

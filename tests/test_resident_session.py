@@ -326,6 +326,20 @@ class TestWorkerSwapApplication:
                 object(), _swap(digest=None), control_dir=control, tp_size=2
             )
 
+    def test_flush_exception_fails_without_waiting_for_swap_timeout(self, tmp_path) -> None:
+        from cacheon.eval import oci_session_worker as worker
+
+        control = self._control(tmp_path)
+
+        class Engine:
+            def flush_cache(self_inner) -> bool:
+                raise RuntimeError("CUDA out of memory")
+
+        with pytest.raises(SessionProtocolError, match="CUDA out of memory"):
+            worker._apply_resident_swap(
+                Engine(), _swap(digest=None), control_dir=control, tp_size=2
+            )
+
     def test_stale_generation_acks_are_ignored(self, tmp_path, monkeypatch) -> None:
         from cacheon.eval import oci_session_worker as worker
 

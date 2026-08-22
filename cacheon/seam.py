@@ -241,18 +241,10 @@ def finalize_pending_candidate_bundle() -> None:
 
 
 def swap_resident_bundle(bundle: str | None) -> dict[str, object]:
-    """EXPERIMENTAL (resident screen tier): re-arm the bundle in a LIVE rank.
+    """Replace the live source/JIT bundle, or clear it for stock recapture.
 
-    Only the validator-owned resident SCREENING engine calls this, via the
-    ``resident_swap`` seam's pre-recapture hook (gated by CACHEON_RESIDENT_SWAP —
-    production qualification/crown paths never set it). Clears the registry,
-    drops previously imported kernel modules, resets the deep-epilogue export
-    state, and loads the new bundle — or returns the engine to stock dispatch
-    when ``bundle`` is None. The caller MUST immediately recapture CUDA graphs:
-    already-captured graphs replay the previously baked kernel regardless of
-    registry state. Direct device artifacts, candidate native rebuilds,
-    dependency overlays, and engine-wide setup hooks are out of the screen
-    tier's scope and are rejected here.
+    Native artifacts, dependency overlays, and setup hooks remain non-swappable.
+    The caller must immediately recapture before serving another batch.
     """
 
     global _bundle_loaded, _bundle_pending

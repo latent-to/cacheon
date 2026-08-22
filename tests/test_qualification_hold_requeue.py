@@ -69,6 +69,18 @@ def test_release_failure_is_contained_and_row_stays_held() -> None:
     assert [row[0] for row in store.released] == ["ok"]
 
 
+def test_nonretryable_hold_is_never_released() -> None:
+    policy = QualificationHoldRequeuePolicy(max_attempts=3, breaker_threshold=99)
+    store = _FakeStore()
+    released = policy.after_hold(
+        store,
+        reservation_ids=("oom",),
+        reason="remote_qualification_hold:resident_evidence_unavailable",
+        retryable=False,
+    )
+    assert released == () and store.released == [] and store.exhausted == ["oom"]
+
+
 def test_a_retry_still_within_budget_never_counts_toward_the_breaker() -> None:
     """max_attempts=99: no row can exhaust, so no number of holds may trip it."""
 

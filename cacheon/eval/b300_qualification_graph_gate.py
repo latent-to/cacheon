@@ -110,6 +110,8 @@ class B300QualificationGraphGateHold:
 
     reason: RemoteQualificationHoldReason
     diagnostic_digest: str
+    failure_type: str = ""
+    failure_message: str = ""
 
     def __post_init__(self) -> None:
         if type(self.reason) is not RemoteQualificationHoldReason:
@@ -121,6 +123,10 @@ class B300QualificationGraphGateHold:
             "diagnostic_digest",
             _digest(self.diagnostic_digest, "graph gate diagnostic digest"),
         )
+        if bool(self.failure_type) != bool(self.failure_message):
+            raise B300QualificationGraphGateError(
+                "graph gate HOLD failure detail is incomplete"
+            )
 
 
 @dataclass(frozen=True)

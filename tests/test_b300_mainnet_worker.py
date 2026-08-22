@@ -776,6 +776,21 @@ def test_remote_qualification_refuses_lane_or_cohort_drift(
         worker.close()
 
 
+def test_resident_hold_preserves_the_root_exception_chain() -> None:
+    try:
+        try:
+            raise RuntimeError("CUDA out of memory")
+        except RuntimeError as inner:
+            raise ValueError("stock restoration failed") from inner
+    except ValueError as failure:
+        hold = worker_module._resident_evidence_hold(
+            _h("request"), _h("authority"), _h("source"), failure
+        )
+    assert hold.failure_type == "ValueError"
+    assert "stock restoration failed" in hold.failure_message
+    assert "CUDA out of memory" in hold.failure_message
+
+
 def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(
     tmp_path: Path,
     executor_factory,

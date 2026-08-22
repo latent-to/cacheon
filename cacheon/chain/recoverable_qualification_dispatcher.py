@@ -63,6 +63,7 @@ from cacheon.chain.remote_qualification_evidence import (
 )
 from cacheon.chain.remote_qualification_hold import (
     RemoteQualificationHoldProduct,
+    RemoteQualificationHoldReason,
     durable_remote_qualification_hold_reason,
 )
 from cacheon.chain.remote_worker_request_plan import (
@@ -527,6 +528,11 @@ class RecoverableQualificationDispatcher:
                 store,
                 reservation_ids=lease.reservation_ids,
                 reason=reason,
+                retryable=not (
+                    product.reason
+                    is RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE
+                    and bool(product.failure_type)
+                ),
             )
         finally:
             store.close()
