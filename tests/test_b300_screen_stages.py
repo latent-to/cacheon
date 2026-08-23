@@ -75,13 +75,18 @@ from cacheon.eval.oci_session_protocol import (
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
+from tests.support.b300 import gpu as _gpu, prebuild_policy, runtime_policy, sha as _h
+
+
+def _runtime_policy() -> OCIRuntimeResourcePolicy:
+    return runtime_policy("screen")
+
+
+def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
+    return prebuild_policy(runtime, "screen")
 
 
 SLOT = "activation.silu_and_mul"
-
-
-def _h(label: str) -> str:
-    return hashlib.sha256(label.encode()).hexdigest()
 
 
 def _workload() -> Workload:
@@ -226,62 +231,6 @@ def test_static_rejects_candidate_outside_sealed_runtime_quant(
 
     compatible = _candidate(tmp_path / "compatible", catalog, quant="nvfp4")
     assert adapter.run_screen(manifest, policy, compatible).grade is ScreenGrade.PASS
-
-
-def _runtime_policy() -> OCIRuntimeResourcePolicy:
-    return OCIRuntimeResourcePolicy(
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        cpu_millis=8_000,
-        memory_bytes=8 << 30,
-        pids_limit=2_048,
-        nofile_limit=32_768,
-        cache_bytes=2 << 30,
-        cache_inodes=10_000,
-        tmpfs_bytes=1 << 30,
-        shm_bytes=2 << 30,
-        init_timeout_seconds=30.0,
-        batch_timeout_seconds=30.0,
-        container_python="/usr/local/bin/python3",
-    )
-
-
-def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
-    return OCIPrebuildPolicy(
-        uid=runtime.uid,
-        gid=runtime.gid,
-        cpu_millis=8_000,
-        memory_bytes=8 << 30,
-        pids_limit=2_048,
-        tmpfs_bytes=1 << 30,
-        stage_bytes=4 << 30,
-        stage_inodes=10_000,
-        timeout_seconds=300.0,
-        native_compile_timeout_seconds=240,
-        container_python=runtime.container_python,
-        build_path=("/usr/local/cuda/bin", "/usr/local/bin", "/usr/bin", "/bin"),
-        build_tmpdir="/tmp",
-        pinned_build_roots=("/usr/include", "/usr/lib", "/usr/local/cuda"),
-        runtime_policy_digest=runtime.digest,
-    )
-
-
-def _gpu(index: int) -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=index,
-        uuid=f"GPU-00000000-{index:04x}-0000-0000-{index:012x}",
-        pci_bus_id=f"00000000:{index + 1:02x}:00.0",
-        name="NVIDIA B300 SXM6 AC",
-        memory_total_mib=288_000,
-        driver_version="600.10.01",
-        power_limit_mw=1_000_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_500,
-        max_memory_clock_mhz=5_000,
-    )
 
 
 def _executor(root: Path) -> OCIEngineExecutor:

@@ -65,89 +65,10 @@ from cacheon.eval.resident_screen_lane import (
     ResidentServingScreenStage,
     screen_waiver_result,
 )
+from tests.support.b300 import arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
 
 
 SLOT = "activation.silu_and_mul"
-
-
-def _h(label: str) -> str:
-    return hashlib.sha256(label.encode()).hexdigest()
-
-
-def _runtime() -> ArenaRuntimeIdentity:
-    return ArenaRuntimeIdentity(
-        arena_id="production-b300-tp4",
-        runtime_digest=_h("runtime"),
-        base_engine_digest=_h("base-engine"),
-        validator_overlay_digest=_h("validator-overlay"),
-        worker_distribution_digest=_h("worker-distribution"),
-        model_revision_digest=_h("model-revision"),
-        model_manifest_digest=_h("model-manifest"),
-        model_content_digest=_h("model-content"),
-        target_architecture="sm103",
-        topology_class="nvlink-domain",
-        topology_digest=_h("topology"),
-        gpu_count=4,
-        tensor_parallel_size=4,
-    )
-
-
-def _runtime_policy() -> OCIRuntimeResourcePolicy:
-    return OCIRuntimeResourcePolicy(
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        cpu_millis=8_000,
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        nofile_limit=65_536,
-        cache_bytes=4 << 30,
-        cache_inodes=100_000,
-        tmpfs_bytes=1 << 30,
-        shm_bytes=8 << 30,
-        init_timeout_seconds=120.0,
-        batch_timeout_seconds=60.0,
-        container_python="/usr/local/bin/python3",
-    )
-
-
-def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
-    return OCIPrebuildPolicy(
-        uid=runtime.uid,
-        gid=runtime.gid,
-        cpu_millis=8_000,
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        tmpfs_bytes=1 << 30,
-        stage_bytes=16 << 30,
-        stage_inodes=100_000,
-        timeout_seconds=7_200.0,
-        native_compile_timeout_seconds=6_000,
-        container_python=runtime.container_python,
-        build_path=("/usr/local/cuda/bin", "/usr/local/bin", "/usr/bin", "/bin"),
-        build_tmpdir="/tmp",
-        pinned_build_roots=("/usr/include", "/usr/lib", "/usr/local/cuda"),
-        runtime_policy_digest=runtime.digest,
-    )
-
-
-def _gpu(index: int) -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=index,
-        uuid=(
-            f"GPU-00000000-{index:04x}-0000-0000-{index:012x}"
-        ),
-        pci_bus_id=f"00000000:{index + 1:02x}:00.0",
-        name="NVIDIA B300 SXM6 AC",
-        memory_total_mib=288_000,
-        driver_version="600.10.01",
-        power_limit_mw=1_000_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_500,
-        max_memory_clock_mhz=5_000,
-    )
 
 
 @pytest.fixture

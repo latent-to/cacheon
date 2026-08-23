@@ -24,6 +24,7 @@ from cacheon.eval.oci_backend import runtime_identity_from_preflight
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.target_catalog import default_target_catalog
+from tests.support.b300 import gpu as _gpu
 
 
 def _h(label: str) -> str:
@@ -35,24 +36,6 @@ def _write(path: Path, value: object) -> str:
     path.write_bytes(raw)
     path.chmod(0o400)
     return hashlib.sha256(raw).hexdigest()
-
-
-def _gpu(index: int) -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=index,
-        uuid=f"GPU-00000000-{index:04x}-0000-0000-{index:012x}",
-        pci_bus_id=f"00000000:{index + 1:02x}:00.0",
-        name="NVIDIA B300 SXM6 AC",
-        memory_total_mib=288_000,
-        driver_version="600.10.01",
-        power_limit_mw=1_000_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_500,
-        max_memory_clock_mhz=5_000,
-    )
 
 
 def _preflight() -> RuntimePreflightReceipt:

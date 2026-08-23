@@ -35,6 +35,7 @@ from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_
 from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
+from tests.support.b300 import gpu as _gpu
 
 
 def _h(seed: str) -> str:
@@ -209,24 +210,6 @@ def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> N
         match="full catalog",
     ):
         commission._require_complete_factory_profiles(profiles[:-1])
-
-
-def _gpu(index: int) -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=index,
-        uuid=f"GPU-00000000-{index:04x}-0000-0000-{index:012x}",
-        pci_bus_id=f"00000000:{index + 1:02x}:00.0",
-        name="NVIDIA B300 SXM6 AC",
-        memory_total_mib=288_000,
-        driver_version="600.10.01",
-        power_limit_mw=1_000_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_500,
-        max_memory_clock_mhz=5_000,
-    )
 
 
 def test_lane_policies_reopen_exact_canonical_pair() -> None:
