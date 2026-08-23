@@ -139,7 +139,7 @@ def _moe_call(entry, *, slot="moe.fused_experts"):
     return wrapped, layer, x, topk
 
 
-def test_moe_records_actual_selected_slot(events, monkeypatch):
+def test_moe_records_success_but_never_falls_back_after_selection(events, monkeypatch):
     completed, fallbacks = events
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
 
@@ -149,12 +149,13 @@ def test_moe_records_actual_selected_slot(events, monkeypatch):
     good, layer, x, topk = _moe_call(good_entry)
     assert torch.is_tensor(good(layer, x, topk))
     bad, layer, x, topk = _moe_call(_boom)
-    assert bad(layer, x, topk) == "stock"
+    with pytest.raises(RuntimeError, match="candidate path failed"):
+        bad(layer, x, topk)
     assert completed == ["moe.fused_experts"]
-    assert fallbacks == [("moe.fused_experts", "RuntimeError")]
+    assert fallbacks == []
 
 
-def test_moe_selected_audit_prelude_failure_is_fallback(events, monkeypatch):
+def test_moe_selected_audit_prelude_failure_aborts(events, monkeypatch):
     completed, fallbacks = events
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch._audit, "sampled", lambda: True)
@@ -168,9 +169,10 @@ def test_moe_selected_audit_prelude_failure_is_fallback(events, monkeypatch):
         out.copy_(x)
 
     wrapped, layer, x, topk = _moe_call(entry)
-    assert wrapped(layer, x, topk) == "stock"
+    with pytest.raises(RuntimeError, match="clone failed"):
+        wrapped(layer, x, topk)
     assert completed == []
-    assert fallbacks == [("moe.fused_experts", "RuntimeError")]
+    assert fallbacks == []
 
 
 def test_allreduce_dispatcher_receipts_and_topology_skip(events, monkeypatch):

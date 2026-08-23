@@ -147,13 +147,13 @@ def test_bypassed_routing_falls_back(monkeypatch):
     assert dispatched(_fake_layer(inputs), inputs["x"], _bypassed_topk_output()) is _BASELINE
 
 
-def test_missing_prepare_falls_back(monkeypatch):
-    # A (prepare, forward) slot with no prepare loaded can't honor the contract -> baseline.
+def test_missing_prepare_aborts_selected_candidate(monkeypatch):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     entry = load_entry(MOE_BUNDLE, "fused_experts")
     dispatched = make_moe_dispatcher(_baseline_forward, registry=_registry(entry, prepare=None))
-    assert dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs)) is _BASELINE
+    with pytest.raises(RuntimeError, match="selected MoE candidate.*has no prepare"):
+        dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs))
 
 
 def test_dense_layer_skips_quant_only_kernel(monkeypatch):
@@ -179,7 +179,7 @@ def test_non_2d_hidden_states_falls_back(monkeypatch):
     assert dispatched(_fake_layer(inputs), x3d, _standard_topk_output(inputs)) is _BASELINE
 
 
-def test_raising_kernel_falls_back_unless_strict(monkeypatch):
+def test_raising_selected_kernel_aborts(monkeypatch):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     inputs = _inputs()
     prepare = load_entry(MOE_BUNDLE, "prepare")
@@ -189,8 +189,6 @@ def test_raising_kernel_falls_back_unless_strict(monkeypatch):
 
     reg = _registry(raising, prepare)
     dispatched = make_moe_dispatcher(_baseline_forward, registry=reg)
-    assert dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs)) is _BASELINE
-    reg.set_strict(True)
     with pytest.raises(RuntimeError, match="boom"):
         dispatched(_fake_layer(inputs), inputs["x"], _standard_topk_output(inputs))
 

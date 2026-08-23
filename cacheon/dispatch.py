@@ -367,8 +367,6 @@ def make_moe_dispatcher(
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_forward(self, hidden_states, topk_output)
         selected_slot = None
-        route_exc = None
-        selected_is_collective = False
         if _moe_seam_active():
             try:
                 if not (_moe_supported(self) and hidden_states.dim() == 2):
@@ -482,10 +480,13 @@ def make_moe_dispatcher(
                                 impl = registry.select(
                                     slot, descriptor, write_fired_receipt=False
                                 ).impl
-                            # (prepare, forward) slot: a registered kernel MUST carry
-                            # prepare, else we can't honor the contract -> skip it.
-                            if impl is None or impl.prepare is None:
+                            if impl is None:
                                 continue
+                            if impl.prepare is None:
+                                selected_slot = slot
+                                raise RuntimeError(
+                                    f"selected MoE candidate for {slot} has no prepare"
+                                )
                             # Under CUDA graphs (the scoring config) only run a kernel the
                             # miner DECLARED graph-capturable; otherwise trust the baseline
                             # in-graph so an un-capturable kernel can't wedge graph capture.
@@ -497,7 +498,6 @@ def make_moe_dispatcher(
                                 # preflight gate passed. Registry state is immutable in a
                                 # live engine, so identity must remain exact.
                                 selected_slot = slot
-                                selected_is_collective = True
                                 committed = registry.select(slot, descriptor)
                                 if committed.impl is not impl:
                                     raise RuntimeError(
@@ -546,21 +546,15 @@ def make_moe_dispatcher(
                                 _receipts.completed(slot)
                             return out
             except Exception as exc:  # noqa: BLE001
-                if selected_is_collective:
-                    # Once the lockstep ranks uniquely selected this collective route,
-                    # any later rank-local failure (clone/allocation/prepare/entry) must
-                    # abort the candidate engine. A stock call from only one rank would
-                    # diverge from peers entering candidate NCCL.
+                if selected_slot is not None:
+                    # A selected candidate cannot become a stock measurement. This is
+                    # also required for lockstep collective routes.
                     raise
                 if registry.strict:
                     raise
-                if selected_slot is not None:
-                    route_exc = exc
                 _log_once_fallback(exc)
                 # any mismatch with this sglang's internals -> trust the baseline
         stock = baseline_forward(self, hidden_states, topk_output)
-        if route_exc is not None:
-            _receipts.fallback(selected_slot, route_exc)
         return stock
 
     return dispatched

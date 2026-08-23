@@ -19,6 +19,7 @@ from cacheon.eval.resident_queue import ScreenCandidate, ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLaneError,
+    ResidentScreenLifetimeFailed,
     ResidentScreenUnavailable,
     ResidentServingScreenStage,
     screen_swappability,
@@ -500,9 +501,7 @@ class TestResidentServingScreenStage:
         assert factory.calls == 1
         lane.close()
 
-    def test_failed_resident_lifetime_bypasses_without_adapter_failure(
-        self, tmp_path
-    ) -> None:
+    def test_failed_resident_lifetime_propagates_without_sticky_pass(self, tmp_path) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
         stage, lane, _root, factory = self._stage(
@@ -512,10 +511,11 @@ class TestResidentServingScreenStage:
             ),
         )
 
-        assert stage.run_screen(binding).grade is ScreenGrade.PASS
-        assert stage.bypass_reason is not None
-        assert "resident screen lifetime failed" in stage.bypass_reason
-        assert stage.run_screen(binding).grade is ScreenGrade.PASS
+        with pytest.raises(ResidentScreenLifetimeFailed, match="lifetime failed"):
+            stage.run_screen(binding)
+        assert stage.bypass_reason is None
+        with pytest.raises(ResidentScreenLifetimeFailed, match="explicit service restart"):
+            stage.run_screen(binding)
         assert factory.calls == 1
         lane.close()
 

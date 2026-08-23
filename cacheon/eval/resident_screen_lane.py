@@ -525,7 +525,9 @@ class ResidentServingScreenStage:
                     candidate.reservation.reservation_digest, staged_digest, slots
                 )
             )
-        except (ResidentScreenLifetimeFailed, ResidentScreenUnavailable) as exc:
+        except ResidentScreenLifetimeFailed:
+            raise
+        except ResidentScreenUnavailable as exc:
             self._bypass_reason = str(exc)
             return screen_waiver_result(
                 candidate,
