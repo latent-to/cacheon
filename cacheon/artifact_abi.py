@@ -2307,55 +2307,41 @@ ATTENTION_DECODE_CALL_ABI = SlotCallABI(
     slot="attention.decode",
     resources=(
         SlotResource("input.q", "tensor"),
-        SlotResource("input.k", "tensor"),
-        SlotResource("input.v", "tensor"),
+        SlotResource("input.k_cache", "tensor"),
+        SlotResource("input.v_cache", "tensor"),
+        SlotResource("input.req_to_token", "tensor"),
         SlotResource("input.seq_lens", "tensor"),
+        SlotResource("input.req_pool_indices", "tensor"),
+        SlotResource("input.topk_idx", "tensor"),
+        SlotResource("output.out", "tensor", access="write"),
         SlotResource(
             "input.sm_scale",
             "scalar",
             scalar_type="f64",
             capability_field="sm_scale",
         ),
-        SlotResource("output.out", "tensor", access="write"),
+        SlotResource(
+            "input.block_size",
+            "scalar",
+            scalar_type="i32",
+            capability_field="block_size",
+        ),
         _STREAM_RESOURCE,
     ),
     call_args=(
         "input.q",
-        "input.k",
-        "input.v",
+        "input.k_cache",
+        "input.v_cache",
+        "input.req_to_token",
         "input.seq_lens",
+        "input.req_pool_indices",
+        "input.topk_idx",
+        "output.out",
         "input.sm_scale",
-        "output.out",
+        "input.block_size",
     ),
 )
 
-
-def _moe_resources(*, collective: bool) -> tuple[SlotResource, ...]:
-    common = (
-        SlotResource("input.x", "tensor"),
-        SlotResource("input.topk_ids", "tensor"),
-        SlotResource("input.topk_weights", "tensor"),
-        SlotResource("input.w13", "tensor"),
-        SlotResource("input.w2", "tensor"),
-        SlotResource("prepared.state", "opaque", access="readwrite"),
-        SlotResource("output.out", "tensor", access="write"),
-    )
-    return common + (_GROUP_RESOURCES if collective else ()) + (_STREAM_RESOURCE,)
-
-
-MOE_FUSED_EXPERTS_CALL_ABI = SlotCallABI(
-    slot="moe.fused_experts",
-    resources=_moe_resources(collective=False),
-    call_args=(
-        "input.x",
-        "input.topk_ids",
-        "input.topk_weights",
-        "prepared.state",
-        "output.out",
-    ),
-    prepare_args=("input.w13", "input.w2"),
-    prepare_result="prepared.state",
-)
 
 COLLECTIVE_ALL_REDUCE_CALL_ABI = SlotCallABI(
     slot="collective.all_reduce",
@@ -2422,21 +2408,6 @@ COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI = SlotCallABI(
     ),
 )
 
-MOE_FUSED_EXPERTS_REDUCE_CALL_ABI = SlotCallABI(
-    slot="moe.fused_experts_reduce",
-    resources=_moe_resources(collective=True),
-    call_args=(
-        "input.x",
-        "input.topk_ids",
-        "input.topk_weights",
-        "prepared.state",
-        "output.out",
-        "group.current",
-    ),
-    prepare_args=("input.w13", "input.w2"),
-    prepare_result="prepared.state",
-)
-
 MSA_BLOCK_SCORE_CALL_ABI = SlotCallABI(
     slot="attention.msa_block_score",
     resources=(
@@ -2465,33 +2436,53 @@ MSA_PREFILL_BLOCK_SCORE_CALL_ABI = SlotCallABI(
     slot="attention.msa_prefill_block_score",
     resources=(
         SlotResource("input.q", "tensor"),
-        SlotResource("input.index_k", "tensor"),
+        SlotResource("input.index_k_cache", "tensor"),
+        SlotResource("input.req_to_token", "tensor"),
+        SlotResource("input.slot_ids", "tensor"),
+        SlotResource("input.cu_seqlens", "tensor"),
+        SlotResource("input.seq_lens", "tensor"),
+        SlotResource("input.prefix_lens", "tensor"),
         SlotResource(
-            "input.prefix_len",
-            "scalar",
-            scalar_type="i64",
+            "input.max_seqlen_q", "scalar", scalar_type="i64",
+            capability_field="q_len",
         ),
         SlotResource(
-            "input.scale",
-            "scalar",
-            scalar_type="f64",
+            "input.max_seqlen_k", "scalar", scalar_type="i64",
+            capability_field="kv_len",
         ),
         SlotResource(
-            "input.block_size",
-            "scalar",
-            scalar_type="i64",
+            "input.block_size_q", "scalar", scalar_type="i64",
+            capability_field="q_block_size",
+        ),
+        SlotResource(
+            "input.block_size_k", "scalar", scalar_type="i64",
             capability_field="block_size",
         ),
-        SlotResource("output.block_scores", "tensor", access="write"),
-        SlotResource("stream.current", "stream"),
+        SlotResource(
+            "input.topk", "scalar", scalar_type="i64", capability_field="top_k"
+        ),
+        SlotResource(
+            "input.init_blocks", "scalar", scalar_type="i64",
+            capability_field="init_blocks",
+        ),
+        SlotResource(
+            "input.local_blocks", "scalar", scalar_type="i64",
+            capability_field="local_blocks",
+        ),
+        SlotResource("input.scale", "scalar", scalar_type="f64"),
+        SlotResource("input.cu_seqblocks_q", "tensor"),
+        SlotResource("input.max_seqblock_q", "scalar", scalar_type="i64"),
+        SlotResource("input.all_seqblock_q", "scalar", scalar_type="i64"),
+        SlotResource("output.topk_idx", "tensor", access="write"),
+        _STREAM_RESOURCE,
     ),
     call_args=(
-        "input.q",
-        "input.index_k",
-        "input.prefix_len",
-        "input.scale",
-        "input.block_size",
-        "output.block_scores",
+        "input.q", "input.index_k_cache", "input.req_to_token", "input.slot_ids",
+        "input.cu_seqlens", "input.seq_lens", "input.prefix_lens",
+        "input.max_seqlen_q", "input.max_seqlen_k", "input.block_size_q",
+        "input.block_size_k", "input.topk", "input.init_blocks",
+        "input.local_blocks", "input.scale", "input.cu_seqblocks_q",
+        "input.max_seqblock_q", "input.all_seqblock_q", "output.topk_idx",
     ),
 )
 
@@ -2503,11 +2494,9 @@ SLOT_CALL_ABIS: Mapping[str, SlotCallABI] = MappingProxyType(
             RMSNORM_CALL_ABI,
             ATTENTION_SDPA_CALL_ABI,
             ATTENTION_DECODE_CALL_ABI,
-            MOE_FUSED_EXPERTS_CALL_ABI,
             COLLECTIVE_ALL_REDUCE_CALL_ABI,
             COLLECTIVE_AR_RESIDUAL_RMSNORM_CALL_ABI,
             COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
-            MOE_FUSED_EXPERTS_REDUCE_CALL_ABI,
             MSA_BLOCK_SCORE_CALL_ABI,
             MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
         )
@@ -2536,8 +2525,6 @@ __all__ = [
     "COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI",
     "MSA_PREFILL_BLOCK_SCORE_CALL_ABI",
     "MSA_BLOCK_SCORE_CALL_ABI",
-    "MOE_FUSED_EXPERTS_CALL_ABI",
-    "MOE_FUSED_EXPERTS_REDUCE_CALL_ABI",
     "RMSNORM_CALL_ABI",
     "SLOT_CALL_ABIS",
     "SILU_AND_MUL_CALL_ABI",

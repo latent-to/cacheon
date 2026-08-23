@@ -12,11 +12,6 @@ from pathlib import Path
 import pytest
 
 import cacheon.eval.oci_session_protocol as protocol
-from cacheon.discovery_overlay import (
-    DiscoveryActivationReceipt,
-    DiscoveryDriverOrigin,
-    DiscoverySchedulerMember,
-)
 from cacheon.seams import (
     SEAM_ADAPTERS,
     SEAM_BINDINGS,
@@ -74,26 +69,6 @@ SESSION = "1" * 32
 REQUEST = "2" * 32
 NONCE = "3" * 32
 LAUNCH = _digest("launch")
-
-
-def _discovery_receipt(**changes: object) -> DiscoveryActivationReceipt:
-    values: dict[str, object] = {
-        "schema": "cacheon.discovery-driver-activation.v1",
-        "overlay_identity_digest": _digest("discovery-overlay"),
-        "driver_pid": 100,
-        "driver_origin": DiscoveryDriverOrigin(
-            "sglang", "0.0.0.dev1+g56e290315", "sglang/__init__.py"
-        ),
-        "scheduler_target_module": "sglang.srt.managers.scheduler",
-        "scheduler_target_qualname": "run_scheduler_process",
-        "tp_size": 2,
-        "members": (
-            DiscoverySchedulerMember(201, 0, 0, 0, 0, 0, 0, None),
-            DiscoverySchedulerMember(202, 1, 1, 1, 0, 1, 0, None),
-        ),
-    }
-    values.update(changes)
-    return DiscoveryActivationReceipt(**values)  # type: ignore[arg-type]
 
 
 def _config(**changes: object) -> EngineSessionConfig:
@@ -164,8 +139,8 @@ def _evidence() -> BatchEvidence:
     )
     return BatchEvidence(
         (
-            PromptEvidence((10, 20), positions),
-            PromptEvidence((30, 40), positions),
+            PromptEvidence((10, 20), positions, 5),
+            PromptEvidence((30, 40), positions, 5),
         )
     )
 
@@ -450,80 +425,6 @@ def test_ready_is_only_an_exact_bound_marker() -> None:
         validate_ready(changed, session_id=SESSION, launch_digest=LAUNCH)
 
 
-def test_discovery_ready_is_strictly_bound_and_never_accepted_by_ordinary() -> None:
-    receipt = _discovery_receipt()
-    message = ready_message(
-        session_id=SESSION,
-        launch_digest=LAUNCH,
-        discovery_activation=receipt,
-    )
-    assert validate_ready(
-        message,
-        session_id=SESSION,
-        launch_digest=LAUNCH,
-        expected_discovery_identity_digest=receipt.overlay_identity_digest,
-        expected_discovery_tp_size=receipt.tp_size,
-        expected_discovery_sglang_version=receipt.driver_origin.version,
-    ) == receipt
-    with pytest.raises(SessionProtocolError, match="stale|malformed"):
-        validate_ready(message, session_id=SESSION, launch_digest=LAUNCH)
-    with pytest.raises(SessionProtocolError, match="fields"):
-        validate_ready(
-            ready_message(session_id=SESSION, launch_digest=LAUNCH),
-            session_id=SESSION,
-            launch_digest=LAUNCH,
-            expected_discovery_identity_digest=receipt.overlay_identity_digest,
-            expected_discovery_tp_size=receipt.tp_size,
-            expected_discovery_sglang_version=receipt.driver_origin.version,
-        )
-
-    for changes in (
-        {"expected_discovery_identity_digest": _digest("other-overlay")},
-        {"expected_discovery_tp_size": 3},
-        {"expected_discovery_sglang_version": "9.9.9"},
-    ):
-        expected = {
-            "expected_discovery_identity_digest": receipt.overlay_identity_digest,
-            "expected_discovery_tp_size": receipt.tp_size,
-            "expected_discovery_sglang_version": receipt.driver_origin.version,
-            **changes,
-        }
-        with pytest.raises(SessionProtocolError, match="host policy"):
-            validate_ready(
-                message,
-                session_id=SESSION,
-                launch_digest=LAUNCH,
-                **expected,
-            )
-
-
-def test_discovery_ready_rejects_partial_expectation_and_extra_receipt_fields() -> None:
-    receipt = _discovery_receipt()
-    message = ready_message(
-        session_id=SESSION,
-        launch_digest=LAUNCH,
-        discovery_activation=receipt,
-    )
-    with pytest.raises(SessionProtocolError, match="expectation is incomplete"):
-        validate_ready(
-            message,
-            session_id=SESSION,
-            launch_digest=LAUNCH,
-            expected_discovery_identity_digest=receipt.overlay_identity_digest,
-        )
-    changed = copy.deepcopy(message)
-    changed["discovery_activation"]["candidate_claim"] = True
-    with pytest.raises(SessionProtocolError, match="malformed"):
-        validate_ready(
-            changed,
-            session_id=SESSION,
-            launch_digest=LAUNCH,
-            expected_discovery_identity_digest=receipt.overlay_identity_digest,
-            expected_discovery_tp_size=receipt.tp_size,
-            expected_discovery_sglang_version=receipt.driver_origin.version,
-        )
-
-
 def test_batch_request_discloses_only_one_exact_bounded_batch() -> None:
     message = batch_request(
         session_id=SESSION,
@@ -583,8 +484,8 @@ def test_pure_generation_batch_round_trips_with_empty_topk() -> None:
     request = _request(top_logprobs_num=0)
     evidence = BatchEvidence(
         (
-            PromptEvidence((10, 20), ((), ())),
-            PromptEvidence((30, 40), ((), ())),
+            PromptEvidence((10, 20), ((), ()), 5),
+            PromptEvidence((30, 40), ((), ()), 5),
         )
     )
     frame = evidence_frame(evidence, request=request)
@@ -594,7 +495,7 @@ def test_pure_generation_batch_round_trips_with_empty_topk() -> None:
     per_position = 4  # token ID only: no top-k bytes exist at width zero
     assert expected_evidence_payload_bytes(request) == (
         protocol._EVIDENCE_BINDING.size
-        + len(request.prompts) * request.max_new_tokens * per_position
+        + len(request.prompts) * (4 + request.max_new_tokens * per_position)
     )
     decoded = parse_evidence_frame_bytes(frame, request=request)
     assert decoded.observed_tokens == 4
@@ -605,8 +506,8 @@ def test_pure_generation_batch_round_trips_with_empty_topk() -> None:
     )
     smuggled = BatchEvidence(
         (
-            PromptEvidence((10, 20), (((-0.4, 7),), ())),
-            PromptEvidence((30, 40), ((), ())),
+            PromptEvidence((10, 20), (((-0.4, 7),), ()), 5),
+            PromptEvidence((30, 40), ((), ()), 5),
         )
     )
     with pytest.raises(SessionProtocolError, match="top-k width"):
@@ -632,11 +533,12 @@ def test_binary_evidence_is_fixed_size_token_topk_only() -> None:
     assert decoded.prompts[0].top_logprobs[0][0][0] == pytest.approx(-0.4)
 
     # No string payload can exist after the fixed binding: every remaining byte
-    # is accounted for by integer token IDs and float32/token-ID top-k pairs.
+    # is accounted for by one engine-observed prompt-token count per prompt,
+    # integer token IDs, and float32/token-ID top-k pairs.
     per_position = 4 + request.top_logprobs_num * 8
     assert expected_evidence_payload_bytes(request) == (
         protocol._EVIDENCE_BINDING.size
-        + len(request.prompts) * request.max_new_tokens * per_position
+        + len(request.prompts) * (4 + request.max_new_tokens * per_position)
     )
 
 
@@ -671,7 +573,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
     ("evidence", "match"),
     [
         (
-            BatchEvidence((PromptEvidence((1,), (((-0.2, 1), (-1.0, 2)),)),) * 2),
+            BatchEvidence((PromptEvidence((1,), (((-0.2, 1), (-1.0, 2)),), 5),) * 2),
             "short/oversized",
         ),
         (
@@ -680,6 +582,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
                     PromptEvidence(
                         (1, 2),
                         (((float("nan"), 1), (-1.0, 2)),) * 2,
+                        5,
                     ),
                 )
                 * 2
@@ -692,6 +595,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
                     PromptEvidence(
                         (1, 2),
                         (((-0.2, 1), (-1.0, 1)),) * 2,
+                        5,
                     ),
                 )
                 * 2
@@ -704,6 +608,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
                     PromptEvidence(
                         (1, 2),
                         (((-1.0, 1), (-0.2, 2)),) * 2,
+                        5,
                     ),
                 )
                 * 2
@@ -716,6 +621,7 @@ def test_binary_evidence_rejects_binding_shape_magic_and_trailing_corruption() -
                     PromptEvidence(
                         (1, 2),
                         (((-0.01, 1), (-0.01, 2)),) * 2,
+                        5,
                     ),
                 )
                 * 2
@@ -734,8 +640,12 @@ def test_binary_evidence_values_fail_closed(
 def test_binary_decoder_rejects_nonfinite_float_even_at_exact_size() -> None:
     request = _request()
     frame = bytearray(evidence_frame(_evidence(), request=request))
+    # The first prompt record leads with its prompt-token count, then the
+    # first output token ID, then that token's first top-k logprob.
     first_logprob = (
-        FRAME_HEADER_BYTES + protocol._EVIDENCE_BINDING.size + protocol._TOKEN_ID.size
+        FRAME_HEADER_BYTES
+        + protocol._EVIDENCE_BINDING.size
+        + 2 * protocol._TOKEN_ID.size
     )
     frame[first_logprob : first_logprob + 4] = struct.pack(">f", math.nan)
     with pytest.raises(SessionProtocolError, match="finite"):

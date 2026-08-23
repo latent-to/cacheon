@@ -109,16 +109,25 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
     (tmp_path / "metadata").mkdir()
     source = (
         "import torch\n\n"
-        "def run(q, index_k, prefix_len, scale, block_size, out):\n"
-        "    scores = (q.float() @ index_k.float().t()) * float(scale)\n"
-        "    rows = torch.arange(q.shape[0], device=q.device).view(-1, 1)\n"
-        "    keys = torch.arange(index_k.shape[0], device=q.device).view(1, -1)\n"
-        "    scores = scores.masked_fill(keys > int(prefix_len) + rows, float('-inf'))\n"
-        "    blocks = (index_k.shape[0] + block_size - 1) // block_size\n"
-        "    pad = blocks * block_size - index_k.shape[0]\n"
-        "    if pad:\n"
-        "        scores = torch.nn.functional.pad(scores, (0, pad), value=float('-inf'))\n"
-        "    out.copy_(scores.view(q.shape[0], blocks, block_size).amax(-1))\n"
+        "def run(q, cache, page, slots, cu, seq, prefix, maxq, maxk, bq, bk, "
+        "topk, init, local, scale, cu_blocks, max_blocks, all_blocks, out):\n"
+        "    out.fill_(-1)\n"
+        "    for b in range(seq.numel()):\n"
+        "        qs, qe = int(cu[b]), int(cu[b + 1])\n"
+        "        sid, length = int(slots[b]), int(seq[b])\n"
+        "        keys = cache[page[sid, :length].long(), 0].float()\n"
+        "        base = int(cu_blocks[b])\n"
+        "        for qb, row in enumerate(range(qs, qe, bq)):\n"
+        "            visible = min(length, int(prefix[b]) + qb * bq + 1)\n"
+        "            blocks = (visible + bk - 1) // bk\n"
+        "            scores = q[row].float() @ keys[:visible].T\n"
+        "            scores = torch.nn.functional.pad(\n"
+        "                scores, (0, blocks * bk - visible), value=float('-inf')\n"
+        "            ).view(q.shape[1], blocks, bk).amax(-1) * float(scale)\n"
+        "            scores[:, :min(blocks, init)] = torch.inf\n"
+        "            scores[:, max(0, blocks - local):] = torch.finfo(scores.dtype).max\n"
+        "            width = min(topk, blocks)\n"
+        "            out[:, base + qb, :width] = scores.topk(width, -1).indices.int()\n"
     )
     (tmp_path / "kernels" / "score.py").write_text(source)
     rows = []
@@ -134,9 +143,15 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
                 "dtype": dtype,
                 "head_dim": 128,
                 "block_size": 128,
+                "q_block_size": 128,
                 "q_len": q_len,
+                "batch_size": 1,
+                "num_q_heads": 1,
+                "num_kv_heads": 1,
+                "init_blocks": 0,
+                "local_blocks": 1,
                 "phase": "prefill",
-                "layout": "row_major",
+                "layout": "paged",
                 "graph_mode": "eager",
                 "quant": "dense",
                 "top_k": 8,

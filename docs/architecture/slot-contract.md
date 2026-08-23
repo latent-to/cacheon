@@ -19,13 +19,14 @@ The same typed output contract is used by offline verification and the live engi
 
 A slot may replace a bounded data-plane region, but it may not control final logits, logprobs, tokens, or sampling. Its output continues through validator-owned or pinned-runtime computation before the final response exists.
 
-For selection-style slots, the candidate fills an intermediate score sheet and the validator-owned tail performs the selection. This preserves the same property: the candidate never supplies the final selected output by assertion.
+For selection-style slots, the candidate may fill either a score sheet or a
+validator-allocated block-index tensor. The validator independently grades the
+selected sets and retains the subsequent attention and model path; candidate
+indices are never accepted by assertion.
 
-MSA keeps runtime selection width separate from verification policy. The live engine's
-top-k controls the stock selection tail. `SlotSpec.correctness.top_k` only fixes the
-width used when the verifier compares the highest-scoring blocks for overlap; equality
-between those values is not a routing condition. The candidate always implements the
-score-sheet boundary, not a miner-selected top-k operation.
+MSA decode keeps its score-sheet boundary. MSA prefill V2 receives the live
+selection width and full paged batch, then writes `topk_idx` once per wrapper
+invocation. Both are graded by validator-owned set overlap before downstream use.
 
 ### 3. Correctness uses trusted high-precision ground truth
 
@@ -34,7 +35,7 @@ Per-slot verification compares candidate output with a validator-owned fp32 or d
 - `allclose` for elementwise-equivalent results;
 - `matched_ratio` for numerically reordered kernels;
 - `cosine` with an optional norm guard for low-bit outputs;
-- `topk_overlap` for selection score sheets.
+- `topk_overlap` for score-derived or direct block selections.
 
 This cheap gate proves that the candidate computes the registered function. It is necessary but not sufficient: production qualification also applies pristine T quality authority to sealed end-to-end trajectories.
 
@@ -42,7 +43,7 @@ This cheap gate proves that the candidate computes the registered function. It i
 
 The host times requests outside the candidate process. The validator owns workloads, role schedules, output storage, reference work, evidence schemas, and verdicts. Candidate logs, self-reported throughput, and self-reported quality cannot mint a score.
 
-A feature that cannot preserve all four invariants is not a core slot. It must use a fenced discovery or reviewed integration path.
+A feature that cannot preserve all four invariants is not a core slot. It needs a reviewed catalog or integration change, not a submission.
 
 ## Slot kinds
 
@@ -65,7 +66,7 @@ The current API contains **11 slots**.
 | `attention.sdpa` | `block` | `attention` | Scaled dot-product attention core |
 | `attention.decode` | `block` | `attention_decode` | Paged decode-attention boundary |
 | `attention.msa_block_score` | `block` | `msa_block_score` | MSA decode block-score sheet; validator owns top-k selection |
-| `attention.msa_prefill_block_score` | `block` | `msa_prefill_block_score` | MSA chunked-prefill block-score sheet; validator owns top-k selection |
+| `attention.msa_prefill_block_score` | `block` | `msa_prefill_block_score` | Batched paged MSA prefill score-to-selection; validator audits indices and owns attend |
 | `moe.fused_experts` | `block` | `fused_experts` | Prepared MoE expert execution |
 | `moe.fused_experts_reduce` | `collective` | `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
 | `collective.all_reduce` | `collective` | `all_reduce` | Cross-rank sum into a validator-owned output |
@@ -137,6 +138,10 @@ validator owns every surrounding decision.
 ## Prepare and forward
 
 Layout-sensitive or quantized slots may define a `(prepare, forward)` pair. `prepare` runs once against raw validator-supplied checkpoint state and produces prepared state retained by the engine. `entry` receives that state on each forward call and still fills validator-allocated outputs.
+
+Model-specific quantized profiles must give verification and live preparation the
+same explicit tensor schema; attaching a quantized descriptor to dense verification
+does not establish that a quantized candidate was tested.
 
 This makes weight repacking, scale interleaving, or layout transformation attributable to the same bounded slot without granting a generic engine-wide setup hook. The live layer-to-contract mapping remains validator-owned.
 
@@ -222,7 +227,7 @@ The stable waist is the four invariants, not a promise that the catalog's set of
 
 ## Escape hatches
 
-Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals use the discovery lane; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a core slot, an atomic target, or reviewed product source without relabeling changed selected payload bytes under old evidence.
+Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; source or dependency patching uses validator-shipped, policy-constrained patchers. Successful work should be resolved into a core slot, an atomic target, or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
 This keeps experimentation possible without widening every ordinary submission's authority.
 

@@ -49,7 +49,8 @@ The registered rows are:
 |---|---|---|---|
 | `activation` | `SiluAndMul.forward_cuda` | `activation.silu_and_mul` | Registry-selected |
 | `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm` | Registry-selected |
-| `attention` | `RadixAttention.forward` | `attention.sdpa`, `attention.decode` | `attention` |
+| `attention` | `flash_decode_with_gqa_share_sparse` | graph-native MiniMax-M3 `attention.decode` sparse attend | `attention` |
+| `attention_audit_mode` | `MiniMaxSparseAttnBackend.__init__` | keeps MSA prefill but routes the untimed decode audit through the scored Triton insertion | `attention` |
 | `moe` | `FusedMoE.forward_impl` | `moe.fused_experts`, `moe.fused_experts_reduce` | `moe` |
 | `collective` | `GroupCoordinator.all_reduce` | `collective.all_reduce` | `collective` |
 | `arfusion` | `flashinfer_allreduce_residual_rmsnorm` | `collective.ar_residual_rmsnorm`; consume side for the deep epilogue | `arfusion` |
@@ -63,16 +64,17 @@ The registered rows are:
 
 Several adapters may share one binding when they implement one semantic product. The shallow AR-fusion consume adapter and both deep producer adapters share `arfusion`; activating only part of that set would violate the protocol.
 
-The catalog can contain a verified slot before the deployed model/runtime has a
-reachable live chokepoint. In the current MiniMax-M3 arena,
-`attention.msa_block_score` has a slot and verifier contract but
-[`sglang_msa.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_msa.py)
-refuses installation because there is no stable decode-side MSA chokepoint. The
+The catalog can contain a verified slot before the pinned runtime exposes a safe
+live chokepoint. In the current MiniMax-M3 arena,
+`attention.msa_block_score` has a slot and verifier contract but no live
+adapter; its deleted placeholder only raised `NotImplementedError`. The
 registered `norm.rmsnorm` adapter targets `RMSNorm.forward_cuda`, while the
 deployed model uses the separate `GemmaRMSNorm` class at every relevant
 callsite. Candidate code for either target therefore cannot execute in this
-arena. The MSA prefill sibling has an installed adapter and appears in the
-table. See
+arena. The MSA prefill sibling has an installed adapter. The separate
+`attention.decode` adapter patches both the sparse-attend defining symbol and
+SGLang's by-value consumer so the candidate becomes a member of the recorded
+decode graph rather than an eager-only warmup call. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 `resident_swap` is deliberately outside the crown path. It is inert unless the

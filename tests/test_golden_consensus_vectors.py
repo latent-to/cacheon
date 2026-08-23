@@ -41,7 +41,7 @@ def _tracked_trees() -> tuple[str, ...]:
     examples = sorted(
         f"examples/{entry.name}"
         for entry in (REPO_ROOT / "examples").iterdir()
-        if entry.is_dir()
+        if entry.is_dir() and (entry / "manifest.toml").is_file()
     )
     return (*examples, *_STACK_FIXTURES)
 

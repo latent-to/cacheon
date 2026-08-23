@@ -48,7 +48,6 @@ flowchart TD
     R -->|"matching PASS"| S["Reopen both evidence roots"]
     S --> G["Same-authority cohort planning"]
     G -->|"selected current registered winner"| T["Transactional settlement and stack update"]
-    G -->|"current discovery candidate"| J["DISCOVERY_BOUNTY / no stack transition"]
     G -->|"stale or not selected"| H["HOLD / no stack transition"]
     T --> W["Reward projection and journaled weights"]
     J --> W
@@ -88,7 +87,7 @@ An `ArenaServiceRegistry` maps a public arena identifier to a closed
 
 - runtime, base-engine, validator-overlay, worker, model, architecture, GPU,
   and topology identities;
-- the decode/long-prefill workload mixture and prompt-seed scheme;
+- the scored workload cells and prompt-seed scheme;
 - non-crown screen policy;
 - queue depth/age, cohort size, screen/qualification concurrency, and retry policy;
 - the qualification-policy digest; and
@@ -101,7 +100,7 @@ plan. `ArenaService` checks the plan's policy digest and finalized reservation
 order; it does not pretend all of that authority is a field of the service
 manifest itself.
 
-The proposal is resolved against the exact target catalog snapshot. A registered candidate must match its target members and permitted features. Cross-cutting unregistered work is routed through the discovery lane.
+The proposal is resolved against the exact target catalog snapshot. A registered candidate must match its target members and permitted features; unregistered work fails resolution.
 
 The command-line `chain-validate` loop can perform intake alone. Full production qualification requires the operator to inject a real `ArenaServiceRegistry` and select `--arena-id`; the repository does not manufacture a production arena provider from implicit defaults.
 
@@ -363,9 +362,6 @@ explicitly fenced incentive paths:
   tree on 2026-08-09 without ever being activated; see
   [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2).
 
-Reviewed discovery promotion into a registered target still fails closed because the
-durable promotion transport and fresh requalification/CROWN linkage are not implemented.
-
 The publisher persists intent and later readback states. An SDK return value does not
 prove inclusion, and the publisher may not advance economic authority from an
 unconfirmed vector.
@@ -373,11 +369,11 @@ unconfirmed vector.
 Principal code: [`chain/weights.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py).
 See the [emissions policy](../reference/emissions-policy.md).
 
-## 11. Integration and release
+## 11. Integration
 
-A settled crown may enter integration review, but serving remains a separate state machine. Reviewed source is promoted to an integrated contribution, assembled into an `EngineReleaseManifest`, rematerialized, signed, published, and verified without chain dependencies.
+A settled crown may enter integration review, but serving remains a separate state machine. Reviewed source is promoted to an integrated contribution; the signed chain-independent release product was removed on 2026-08-19 because no release was ever produced or consumed.
 
-See [Release architecture](releases.md). The dated
+The dated
 [State of record](../reference/state-of-record.md) tracks implementation and validation
 limits.
 

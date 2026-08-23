@@ -1,11 +1,3 @@
-"""Distributed verify of moe.fused_experts_reduce — the block that owns its reduce.
-
-Spawns 2 gloo ranks: each computes its local SwiGLU experts (different weight shard)
-AND the cross-rank reduce, and the result must equal the fp32 sum of the per-rank
-expert outputs. This is the slot that makes the compute-comm OVERLAP win expressible;
-the test proves the distributed contract (experts + owned reduce) end to end on CPU.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,7 +6,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from cacheon.slots import get_slot  # noqa: E402
+from cacheon.registry import Eligibility  # noqa: E402
+from cacheon.slots import get_slot, slot_for_model  # noqa: E402
 from cacheon.verify_collective import verify_collective  # noqa: E402
 
 BUNDLE = "examples/miner_moe_fused_experts_reduce_torch/kernels/moe_reduce.py"
@@ -34,9 +27,44 @@ def test_faithful_experts_plus_owned_reduce_passes_gloo_cpu():
     assert res.passed, "\n".join(f"{r.shape}: {r.detail}" for r in res.shape_results)
 
 
+def test_m3_nvfp4_experts_plus_owned_reduce_passes_gloo_cpu(tmp_path):
+    source = tmp_path / "nvfp4_reduce.py"
+    source.write_text(
+        "import torch\n"
+        "from cacheon.moe_nvfp4_contract import dequantize_prepare_args\n"
+        "from cacheon.slots import Activation, _moe_reference\n"
+        "def prepare(tag, view):\n"
+        "    return dequantize_prepare_args((tag, view))\n"
+        "def fused_experts_reduce(x, ids, weights, prepared, out, group):\n"
+        "    w13, w2 = prepared\n"
+        "    out.copy_(_moe_reference(x, w13, w2, ids, weights, Activation('swigluoai', 1.702, 7.0)))\n"
+        "    torch.distributed.all_reduce(out, group=group)\n"
+    )
+    shape = {
+        "num_tokens": 2, "num_experts": 4, "hidden": 64,
+        "inter": 64, "topk": 2,
+    }
+    result = verify_collective(
+        slot_for_model("moe.fused_experts_reduce", "MiniMax-M3-NVFP4"),
+        str(source),
+        "fused_experts_reduce",
+        prepare_name="prepare",
+        world_size=2,
+        backend="gloo",
+        device="cpu",
+        shapes=[shape],
+        model_key="MiniMax-M3-NVFP4",
+        eligibility=Eligibility(
+            dtypes=frozenset({"float32"}), quant=frozenset({"nvfp4"})
+        ),
+    )
+    assert result.passed and result.shape_results[0].applicable, "\n".join(
+        f"{row.shape}: {row.detail}" for row in result.shape_results
+    )
+    assert result.shape_results[0].case_descriptor.calls[0]["quant"] == "nvfp4"
+
+
 def test_kernel_that_skips_the_reduce_fails(tmp_path):
-    # A kernel that computes the local experts but FORGETS the cross-rank reduce returns
-    # only its own shard's output != sum over ranks -> distributed verify must catch it.
     broken = tmp_path / "broken.py"
     broken.write_text(
         "import torch, torch.nn.functional as F\n"

@@ -8,9 +8,8 @@
   },
   "content_hashes": {
     "examples/miner_allreduce_torch": "e17a2f17833f7b59c7f1f27684773bb5d9210296304e51ebbf1707b7355e7c68",
-    "examples/miner_attention_decode_torch": "18114c6c48da0f1763519115bef0807e9c477c01135ae3d1dce631019de5dba5",
+    "examples/miner_attention_decode_torch": "164082d07d9134677aa8136b3fd2dac9778c8e0bb6530d446cbafbe8803fa568",
     "examples/miner_attention_torch": "29ee924b65903a706fe6f55b2d38baa6238117f3204951efa3678aef9b19fbd1",
-    "examples/miner_m3_swigluoai_override": "60e6857018824d25dbcdcac5d09a07f1d7ff5784cd21a1e3efd57d2d6fbb1365",
     "examples/miner_moe_fused_experts_reduce_torch": "af2b0992a8f668911bd8d2af411273a7a4485fcc7579cf7cf1e07b1860a8049b",
     "examples/miner_moe_fused_experts_torch": "5376645cb576601d279ab30c890c519dccb72db980e547df531dd21b36d162be",
     "examples/miner_rmsnorm_broken": "9d3c91f9eeed12832a78706aab5e2990cf6a997889e12801aa8837de2e581a99",

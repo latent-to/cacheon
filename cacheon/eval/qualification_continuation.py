@@ -20,12 +20,6 @@ from cacheon.eval.continuation_codec import (
 from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence
 from cacheon.eval.device_state import DeviceStateReceipt
 from cacheon.eval.evidence_store import EvidenceArtifactRef
-from cacheon.eval.marginal_runtime import (
-    CandidateLifecycleEvidence,
-    MarginalLifecycleEvidence,
-    MarginalRuntimeError,
-    PreparedMarginalRuntime,
-)
 from cacheon.eval.oci_backend import (
     CandidateFreeRuntimeIdentity,
     EngineExecutionEvidence,
@@ -570,106 +564,6 @@ class QualificationContinuation:
                 "speed continuation reopened another evidence type"
             )
         return crossover
-
-    def record_marginal_speed(self, lifecycle: MarginalLifecycleEvidence) -> None:
-        if type(lifecycle) is not MarginalLifecycleEvidence:
-            raise QualificationContinuationError(
-                "marginal speed continuation requires exact lifecycle evidence"
-            )
-        encode = self._codec.encode
-        self._record(
-            "speed",
-            {
-                "mode": "marginal",
-                "baseline_before": encode(lifecycle.baseline_before),
-                "candidates": [encode(row.execution) for row in lifecycle.candidates],
-                "baseline_after": encode(lifecycle.baseline_after),
-                "candidates_repeat": [
-                    encode(row.execution) for row in lifecycle.candidates_repeat
-                ],
-                "baseline_third": (
-                    None
-                    if lifecycle.baseline_third is None
-                    else encode(lifecycle.baseline_third)
-                ),
-            },
-        )
-
-    def load_marginal_speed(
-        self, prepared: PreparedMarginalRuntime
-    ) -> MarginalLifecycleEvidence | None:
-        payload = self._load("speed")
-        if payload is None:
-            return None
-        expected_keys = {
-            "baseline_after",
-            "baseline_before",
-            "baseline_third",
-            "candidates",
-            "candidates_repeat",
-            "mode",
-        }
-        if (
-            type(payload) is not dict
-            or set(payload) != expected_keys
-            or payload.get("mode") != "marginal"
-            or type(payload["candidates"]) is not list
-            or type(payload["candidates_repeat"]) is not list
-        ):
-            raise QualificationContinuationError(
-                "speed continuation record is not the marginal shape"
-            )
-
-        def execution(encoded: object) -> EngineExecutionEvidence:
-            try:
-                value = self._codec.decode(encoded)
-            except ContinuationCodecError as exc:
-                raise QualificationContinuationError(str(exc)) from None
-            if type(value) is not EngineExecutionEvidence:
-                raise QualificationContinuationError(
-                    "speed continuation reopened another evidence type"
-                )
-            return value
-
-        rows = payload["candidates"]
-        repeats = payload["candidates_repeat"]
-        if len(rows) != len(prepared.candidates) or (
-            repeats and len(repeats) != len(prepared.candidates)
-        ):
-            raise QualificationContinuationError(
-                "speed continuation cardinality differs from the sealed runtime"
-            )
-        try:
-            return MarginalLifecycleEvidence(
-                prepared,
-                execution(payload["baseline_before"]),
-                tuple(
-                    CandidateLifecycleEvidence(candidate, execution(encoded))
-                    for candidate, encoded in zip(
-                        prepared.candidates, rows, strict=True
-                    )
-                ),
-                execution(payload["baseline_after"]),
-                (
-                    tuple(
-                        CandidateLifecycleEvidence(candidate, execution(encoded))
-                        for candidate, encoded in zip(
-                            prepared.candidates, repeats, strict=True
-                        )
-                    )
-                    if repeats
-                    else ()
-                ),
-                (
-                    None
-                    if payload["baseline_third"] is None
-                    else execution(payload["baseline_third"])
-                ),
-            )
-        except MarginalRuntimeError as exc:
-            raise QualificationContinuationError(
-                f"speed continuation does not bind the sealed runtime: {exc}"
-            ) from None
 
     # -- resident fixed-stock count quality -----------------------------------
 

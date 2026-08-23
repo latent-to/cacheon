@@ -228,16 +228,11 @@ evidence.
 
 ## What about discovery work?
 
-A cross-cutting idea that does not fit a registered target uses the separate
-[discovery lane](discovery-lane.md). Discovery does not receive a standing target
-crown.
-
-Under V1, a qualifying discovery that completes settlement as
-`DISCOVERY_BOUNTY` may receive one bounded, non-renewable claim under the active
-policy. If V2 were activated, the implemented discovery path would support only
-a one-time bounded `bounty_only` claim. Turning discovery work into a permanent
-registered target is not implemented, and inactive V2 cannot currently create a
-live reward.
+There is no discovery lane. A cross-cutting idea that does not fit a registered
+target is not a valid submission; registering a new target is a reviewed
+validator-side change. The legacy V1 `DISCOVERY_BOUNTY` disposition and the
+`discovery_pool_ppm` policy field remain only as fenced V1 schema — no
+submission can reach them.
 
 ## How inactive V2 would differ
 

@@ -1114,13 +1114,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 raise IntakeError("deferred queue changed while activating capacity")
         return ids
 
-    def activate_deferred(self) -> tuple[IntakeReservation, ...]:
-        """Fill free active capacity from durable finalized FIFO backlog."""
-
-        with self._transaction():
-            ids = self._activate_deferred_rows()
-        return tuple(self.get(reservation_id) for reservation_id in ids)
-
     def pending(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
         bound = self.policy.max_cohort if limit is None else limit
         if type(bound) is not int or bound <= 0 or bound > self.policy.max_pending:
@@ -1164,6 +1157,43 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         return self._transition(
             reservation_id, {"fetching", "published"}, "failed", "FAIL", reason
         )
+
+    def mark_target_unavailable(
+        self, reservation_id: str, *, target_id: str
+    ) -> IntakeReservation:
+        """Park a proposal whose registered family is closed in this arena.
+
+        Nothing about the bundle was measured, so the row leaves the queue as
+        NO_DECISION -- never a FAIL that byte-identical replay would echo back
+        after the family reopens -- and the cited eval-cost payment pointer or
+        admission credit is released in the same transaction: a closed family
+        costs the miner nothing.
+        """
+
+        if type(target_id) is not str or not target_id:
+            raise IntakeError("closed-target disposal requires the target id")
+        with self._transaction():
+            self._require_evaluation_mutation_authority(reservation_id)
+            row = self.get(reservation_id)
+            if row.status != "fetching":
+                raise IntakeError(
+                    f"closed-target disposal from {row.status!r} is forbidden"
+                )
+            self._db.execute(
+                "UPDATE reservations SET status='expired',"
+                "decision='NO_DECISION',reason=? WHERE reservation_id=?",
+                (f"target_unavailable:{target_id}", reservation_id),
+            )
+            self._db.execute(
+                "DELETE FROM eval_cost_payments WHERE reservation_id=?",
+                (reservation_id,),
+            )
+            self._db.execute(
+                "UPDATE eval_cost_credits SET reservation_id='',spent_block=0 "
+                "WHERE reservation_id=?",
+                (reservation_id,),
+            )
+        return self.get(reservation_id)
 
     def release_manifest_compatibility_failure(
         self,
@@ -1282,30 +1312,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             status, decision, reason = "published", "", ""
             if count >= self.policy.max_per_target_epoch:
                 status, reason = "failed", "target_epoch_admission_limit"
-            if delta_fingerprint.product_kind == "discovery":
-                awarded = self._db.execute(
-                    "SELECT 1 FROM ("
-                    "SELECT proposal_digest FROM discovery_bounty_claims UNION "
-                    "SELECT proposal_digest FROM incentive_discovery_wins"
-                    ") WHERE proposal_digest=? LIMIT 1",
-                    (delta_fingerprint.exact_payload_digest,),
-                ).fetchone()
-                predecessor = next(
-                    (
-                        prior
-                        for prior in self.all()
-                        if prior.arrival.arrival_key < row.arrival.arrival_key
-                        and prior.delta_fingerprint is not None
-                        and prior.delta_fingerprint.product_kind == "discovery"
-                        and prior.delta_fingerprint.exact_payload_digest
-                        == delta_fingerprint.exact_payload_digest
-                    ),
-                    None,
-                )
-                if awarded is not None:
-                    status, decision, reason = "failed", "FAIL", "already_awarded"
-                elif predecessor is not None:
-                    status, decision, reason = "failed", "FAIL", "duplicate_proposal"
             self._db.execute(
                 "UPDATE reservations SET status=?,target_id=?,target_members_json=?,delta_fingerprint_json=?,"
                 "publication_digest=?,publication_root=?,decision=?,reason=? WHERE reservation_id=?",
@@ -1317,29 +1323,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 ),
             )
         return self.get(reservation_id)
-
-    def published(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
-        bound = self.policy.max_cohort if limit is None else limit
-        if type(bound) is not int or bound <= 0 or bound > self.policy.max_cohort:
-            raise IntakeError("published cohort limit is invalid")
-        first = self._db.execute(
-            "SELECT retry_group_digest FROM reservations WHERE status='published' "
-            "ORDER BY block,event_index,event_subindex,hotkey,content_hash LIMIT 1"
-        ).fetchone()
-        if first is not None and first["retry_group_digest"]:
-            rows = self._db.execute(
-                "SELECT * FROM reservations WHERE status='published' "
-                "AND retry_group_digest=? ORDER BY retry_position LIMIT ?",
-                (first["retry_group_digest"], bound),
-            )
-        else:
-            rows = self._db.execute(
-                "SELECT * FROM reservations WHERE status='published' "
-                "AND retry_group_digest='' "
-                "ORDER BY block,event_index,event_subindex,hotkey,content_hash LIMIT ?",
-                (bound,),
-            )
-        return tuple(self._row(row) for row in rows)
 
     def screenable(self, *, limit: int | None = None) -> tuple[IntakeReservation, ...]:
         """Return validator-selected work awaiting a fresh non-crown screen."""
@@ -1748,76 +1731,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
         return self.get(reservation_id)
 
-    def mark_outcome(
-        self,
-        reservation_id: str,
-        *,
-        decision: str,
-        attempt_ref: EvidenceArtifactRef | None = None,
-        report_digest: str = "",
-        failure_digest: str = "",
-        reason: str = "",
-    ) -> IntakeReservation:
-        if decision not in {"PASS", "FAIL", "NO_DECISION"}:
-            raise IntakeError("qualification decision is unsupported")
-        if decision == "PASS":
-            raise IntakeError(
-                "PASS requires a typed settlement qualification and reproduction gate"
-            )
-        report_based = attempt_ref is not None or bool(report_digest)
-        if report_based and (
-            type(attempt_ref) is not EvidenceArtifactRef or not report_digest
-        ):
-            raise IntakeError("qualification report evidence is incomplete")
-        if report_digest:
-            require_sha256_hex(report_digest, field="qualification report digest")
-        if failure_digest:
-            require_sha256_hex(failure_digest, field="qualification failure digest")
-        if decision == "NO_DECISION":
-            if report_based == bool(failure_digest):
-                raise IntakeError("NO_DECISION requires one report or failure product")
-        elif not report_based or failure_digest:
-            raise IntakeError("PASS/FAIL requires a retained attempt and report")
-        evidence_digest = attempt_ref.sha256 if attempt_ref is not None else failure_digest
-        attempt_json = (
-            json.dumps(attempt_ref.to_dict(), separators=(",", ":"), sort_keys=True)
-            if attempt_ref is not None
-            else ""
-        )
-        status = {"FAIL": "failed", "NO_DECISION": "no_decision"}[decision]
-        with self._transaction():
-            row = self.get(reservation_id)
-            authority_json = self._db.execute(
-                "SELECT qualification_authority_json FROM reservations WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["qualification_authority_json"]
-            if (
-                row.status != "qualifying"
-                or not row.qualification_authority_digest
-                or not authority_json
-            ):
-                raise IntakeError("qualification outcome lacks an active authority")
-            attempt = self._db.execute(
-                "SELECT COUNT(*) AS n FROM qualification_dispositions WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["n"]
-            self._db.execute(
-                "INSERT INTO qualification_dispositions(reservation_id,attempt_index,authority_digest,"
-                "authority_manifest_json,evidence_digest,attempt_ref_json,report_digest,failure_digest,"
-                "decision,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (
-                    reservation_id, attempt, row.qualification_authority_digest,
-                    authority_json, evidence_digest, attempt_json, report_digest,
-                    failure_digest, decision, reason,
-                ),
-            )
-            self._db.execute(
-                "UPDATE reservations SET status=?,decision=?,reason=?,"
-                "qualification_evidence_digest=? WHERE reservation_id=?",
-                (status, decision, reason, evidence_digest, reservation_id),
-            )
-        return self.get(reservation_id)
-
     def qualification_dispositions(self, reservation_id: str) -> tuple[dict[str, object], ...]:
         self.get(reservation_id)
         result = []
@@ -2193,7 +2106,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         self,
         candidate: SettlementCandidate,
     ):
-        from cacheon.eval.evidence_store import EvidenceArtifactRef
         from cacheon.settlement import SettlementEvidence, SettlementQualification
 
         row = self._db.execute(
@@ -2331,42 +2243,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             blockers.append(row.reservation_id)
         return tuple(blockers)
 
-    def _dispose_duplicate_discovery_candidates(self) -> None:
-        """Terminally dispose legacy/recovered proposal replays before leasing."""
-
-        awarded = {
-            row["proposal_digest"]
-            for row in self._db.execute(
-                "SELECT proposal_digest FROM discovery_bounty_claims UNION "
-                "SELECT proposal_digest FROM incentive_discovery_wins"
-            )
-        }
-        seen: set[str] = set()
-        rows = tuple(
-            self._db.execute(
-                "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
-                "FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
-                "WHERE sc.status='pending' "
-                "ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
-            )
-        )
-        for row in rows:
-            candidate = self._settlement_candidate(row)
-            if candidate.lane != "discovery":
-                continue
-            proposal = candidate.proposal_digest
-            if proposal in awarded or proposal in seen:
-                self._db.execute(
-                    "UPDATE settlement_candidates SET status='duplicate_proposal',"
-                    "lease_id='',lease_expires_block=0,reason=? WHERE reservation_id=? "
-                    "AND status='pending'",
-                    (
-                        "already_awarded" if proposal in awarded else "duplicate_proposal",
-                        candidate.reservation_digest,
-                    ),
-                )
-            seen.add(proposal)
-
     def has_pending_settlement(self) -> bool:
         """Return whether retained settlement work may currently be leased."""
 
@@ -2424,7 +2300,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 "AND lease_expires_block<=?",
                 (current_block,),
             )
-            self._dispose_duplicate_discovery_candidates()
             pending = tuple(
                 self._db.execute(
                     "SELECT sc.*,r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash "
@@ -2499,7 +2374,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
     ) -> EvaluationStackState:
         """Atomically commit one independently planned retained-evidence disposition."""
 
-        from cacheon.economics import DiscoveryBountyClaim, StandingRewardClaim, WEIGHT_PPM
+        from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
         from cacheon.settlement import (
             SettlementEvidence,
             SettlementEventType,
@@ -2575,35 +2450,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             } != set(by_digest):
                 raise IntakeError("settlement lease is stale or incomplete")
 
-            awarded_proposals = {
-                row["proposal_digest"]
-                for row in self._db.execute(
-                    "SELECT proposal_digest FROM discovery_bounty_claims UNION "
-                    "SELECT proposal_digest FROM incentive_discovery_wins"
-                )
-            }
-            duplicate_digests = {
-                candidate.digest
-                for candidate in lease.candidates
-                if candidate.lane == "discovery"
-                and candidate.proposal_digest in awarded_proposals
-            }
-            commit_candidates = tuple(
-                candidate
-                for candidate in lease.candidates
-                if candidate.digest not in duplicate_digests
-            )
-            commit_plan = (
-                plan
-                if not duplicate_digests
-                else plan_settlement(
-                    commit_candidates,
-                    current_manifest=lease.stack.manifest,
-                    current_tree_digest=lease.stack.tree_digest,
-                    initial_event_sequence=lease.initial_event_sequence,
-                    previous_event_digest=lease.previous_event_digest,
-                )
-            )
+            commit_plan = plan
 
             # Retire/neutralize old families before installing the winner family.
             for event in commit_plan.events:
@@ -2617,9 +2464,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         (event.digest, lease.stack.arena_digest, event.target_id),
                     )
 
-            disposition: dict[str, str] = {
-                digest: "duplicate_proposal" for digest in duplicate_digests
-            }
+            disposition: dict[str, str] = {}
             for event in commit_plan.events:
                 candidate = by_digest[event.candidate_digest]
                 event_json = json.dumps(
@@ -2641,35 +2486,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 )
                 if event.event_type is SettlementEventType.HOLD:
                     disposition[candidate.digest] = "held"
-                elif event.event_type is SettlementEventType.DISCOVERY_BOUNTY:
-                    speedup_ppm = int(
-                        (Decimal(candidate.speedup) * WEIGHT_PPM).to_integral_value(
-                            rounding=ROUND_FLOOR
-                        )
-                    )
-                    claim = DiscoveryBountyClaim(
-                        candidate.proposal_digest,
-                        evidence_by_candidate[candidate.digest].digest,
-                        candidate.hotkey,
-                        max(1, speedup_ppm - WEIGHT_PPM),
-                        candidate.finalized_block,
-                    )
-                    self._db.execute(
-                        "INSERT INTO discovery_bounty_claims(claim_digest,proposal_digest,"
-                        "claim_json,status,event_id) VALUES(?,?,?,?,?)",
-                        (
-                            claim.digest,
-                            claim.proposal_digest,
-                            json.dumps(
-                                claim.to_dict(),
-                                separators=(",", ":"),
-                                sort_keys=True,
-                            ),
-                            "active",
-                            event.digest,
-                        ),
-                    )
-                    disposition[candidate.digest] = "discovery_bounty"
                 elif event.event_type is SettlementEventType.CROWN:
                     assert candidate.candidate_manifest is not None
                     contribution = candidate.candidate_manifest.entries[candidate.target_id]
@@ -3210,50 +3026,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         )
 
 
-    def requeue_qualification(
-        self,
-        reservation_id: str,
-        *,
-        reason: str,
-        retry_group_digest: str,
-        retry_position: int,
-    ) -> IntakeReservation:
-        if not reason:
-            raise IntakeError("qualification requeue requires a reason")
-        require_sha256_hex(retry_group_digest, field="retry_group_digest")
-        if type(retry_position) is not int or retry_position < 0:
-            raise IntakeError("qualification retry position is malformed")
-        with self._transaction():
-            row = self.get(reservation_id)
-            if row.status != "no_decision":
-                raise IntakeError("only a retained NO_DECISION may be requeued")
-            attempts = self._db.execute(
-                "SELECT COUNT(*) AS n FROM qualification_dispositions WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["n"]
-            retained = self._db.execute(
-                "SELECT COUNT(*) AS n FROM settlement_qualifications "
-                "WHERE reservation_id=?",
-                (reservation_id,),
-            ).fetchone()["n"]
-            retry_status = "reproduction_pending" if retained == 1 else "published"
-            status = retry_status if attempts < self.policy.max_qualification_retries else "held"
-            self._db.execute(
-                "UPDATE reservations SET status=?,decision='',reason=?,"
-                "retry_group_digest=?,retry_position=?,"
-                "qualification_authority_digest='',qualification_authority_json='',"
-                "qualification_evidence_digest='' "
-                "WHERE reservation_id=?",
-                (
-                    status,
-                    reason,
-                    retry_group_digest,
-                    retry_position,
-                    reservation_id,
-                ),
-            )
-        return self.get(reservation_id)
-
     def requeue_validator_downtime_expired(
         self,
         reservation_ids: tuple[str, ...],
@@ -3527,6 +3299,10 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         return tuple(self.get(reservation_id) for reservation_id in expired)
 
     def expire(self, reservation_id: str, *, current_block: int, reason: str) -> IntakeReservation:
+        """Documented operator transition (docs/security/evidence.md): rows the
+        automatic SLA cannot reach — e.g. a legacy retained primary with
+        retained_block=0 — are terminalized only through this typed path."""
+
         row = self.get(reservation_id)
         if row.reason == _SCHEMA3_MIGRATION_HOLD_REASON:
             raise IntakeError(

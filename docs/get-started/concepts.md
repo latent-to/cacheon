@@ -74,7 +74,7 @@ serving release.
 
 | Object | Trust level | What it establishes |
 |---|---|---|
-| **Proposal** | Hostile input | A miner asks the validator to evaluate one target-scoped delta or discovery prototype. |
+| **Proposal** | Hostile input | A miner asks the validator to evaluate one target-scoped delta. |
 | **Crown** | Retained measurement evidence | Two independent qualifications show that the same delta improved one registered arena and target. |
 | **Integrated contribution** | Reviewed Cacheon source | Maintainers preserve the crowned selected-payload bytes while approving provenance, tests, fallbacks, compatibility, and surrounding packaging. |
 | **Engine release** | Signed deployment artifact | A reproducible product assembles reviewed contributions and a sealed model for serving. |
@@ -133,11 +133,6 @@ These terms describe different layers:
 - A **singleton target** assigns economic identity to one slot.
 - An **atomic target** assigns one economic identity to a validator-defined group of
   regions that must change together.
-- A **discovery proposal** is a bounded cross-cutting prototype that cannot claim a
-  normal target. Policy and typed records define promotion into a target, integration
-  as a reviewed engine change, or a one-time bounded bounty. The durable settlement
-  path currently transports only bounty disposition; registered promotion remains
-  unimplemented and fails closed.
 - A **materialized engine** is the complete content-addressed tree executed for an arm.
 
 The candidate engine can contain the full incumbent stack, but the validator constructs

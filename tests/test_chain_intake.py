@@ -17,7 +17,6 @@ from cacheon.chain.intake import (
 )
 from cacheon.chain.weights import WeightProjection, WeightPublicationRecord
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
-from cacheon.discovery import DiscoveryArmPlan
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import QualificationDecision
@@ -27,7 +26,7 @@ from cacheon.eval.qualification_intake import (
     QualificationRetryPlan,
 )
 from cacheon.economics import (
-    DiscoveryBountyClaim, EconomicsError,
+    EconomicsError,
     EmissionsPolicyManifest,
     GlobalRewardProjectionContext,
     MetagraphMember,
@@ -122,8 +121,8 @@ def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
 
 def test_exact_manifest_compatibility_failure_can_return_to_fifo(tmp_path) -> None:
     reason = (
-        "manifest:submission is neither a registered component nor a closed "
-        "discovery proposal: component=unsupported abi_version 'pre-cutover'"
+        "manifest:submission is not a registered component: "
+        "unsupported abi_version 'pre-cutover'"
     )
     with _store(tmp_path) as store:
         row = store.reserve_finalized(
@@ -311,160 +310,6 @@ def _qualified_settlement_candidate(
             ) is None
             if primary_only:
                 return row.reservation_id
-    return SettlementCandidate.from_reproductions(*qualifications)
-
-
-def _discovery_fingerprint(
-    proposal_digest: str, *, selected_delta_digest: str | None = None
-) -> SubmittedDeltaFingerprint:
-    return SubmittedDeltaFingerprint(
-        "discovery",
-        "discovery",
-        "",
-        ("discovery",),
-        proposal_digest,
-        selected_delta_digest or proposal_digest,
-        _h(f"normalized:{proposal_digest}"),
-        (),
-        (),
-    )
-
-
-def _qualified_discovery_candidate(
-    store: FinalizedIntakeStore,
-    *,
-    index: int,
-    proposal_digest: str,
-    hotkey: str = "miner",
-    bypass_publication_dedup: bool = False,
-) -> SettlementCandidate:
-    catalog = default_target_catalog()
-    incumbent = EvaluationStackManifest(
-        runtime_digest=_h("runtime"),
-        base_engine_digest=_h("base"),
-        arena_digest=_h("arena"),
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        entries={},
-    )
-    arm = DiscoveryArmPlan.create(
-        incumbent=incumbent,
-        incumbent_tree_digest=_h("incumbent-tree"),
-        candidate_tree_digest=_h(f"discovery-tree:{index}"),
-        proposal_digest=proposal_digest,
-        policy_digest=_h("discovery-policy"),
-        build_profile_digest=_h("build-profile"),
-        overlay_identity_digest=_h(f"overlay:{index}"),
-    )
-    store.initialize_evaluation_stack(
-        incumbent, tree_digest=arm.baseline_before.tree_digest
-    )
-    evidence_root = store.path.parent / "evidence"
-    attempts = tuple(
-        publish_evidence(
-            evidence_root,
-            f"retained discovery {index} {lane}".encode(),
-            domain="qualification.cohort-attempt",
-            media_type="application/json",
-            schema="cacheon.qualification.cohort-attempt.v1",
-        )
-        for lane in ("primary", "reproduction")
-    )
-    row = store.reserve_finalized(
-        (_arrival(index, hotkey=hotkey),),
-        finalized_block=10,
-        finalized_block_hash="0x" + f"{10:064x}",
-    )[0]
-    store.mark_fetching(row.reservation_id)
-    published = store.mark_published(
-        row.reservation_id,
-        delta_fingerprint=_discovery_fingerprint(
-            proposal_digest, selected_delta_digest=arm.selected_delta_digest
-        ),
-        publication_digest=_h(f"publication:{index}"),
-        publication_root=f"/published/discovery-{index}",
-    )
-    if bypass_publication_dedup:
-        assert published.status == "failed"
-        awarded = store._db.execute(
-            "SELECT 1 FROM discovery_bounty_claims WHERE proposal_digest=?",
-            (proposal_digest,),
-        ).fetchone()
-        assert published.reason == (
-            "already_awarded" if awarded is not None else "duplicate_proposal"
-        )
-        store._db.execute(
-            "UPDATE reservations SET status='published',decision='',reason='' "
-            "WHERE reservation_id=?",
-            (row.reservation_id,),
-        )
-    else:
-        assert published.status == "published"
-
-    def qualification(lane: str, attempt, speedup: str) -> SettlementQualification:
-        audit_policy = _audit_policy(
-            f"discovery:{index}:{lane}", ("discovery",)
-        )
-        return SettlementQualification(
-            lane="discovery",
-            arena_digest=incumbent.arena_digest,
-            reservation_digest=row.reservation_id,
-            finalized_block=row.arrival.block,
-            event_index=row.arrival.event_index,
-            event_subindex=row.arrival.event_subindex,
-            hotkey=row.arrival.hotkey,
-            target_id="discovery",
-            members=("discovery",),
-            selected_delta_digest=arm.selected_delta_digest,
-            qualification_authority_digest=_h(f"authority:{index}:{lane}"),
-            qualification_plan_digest=_h(f"plan:{index}:{lane}"),
-            qualification_attempt_digest=attempt.sha256,
-            qualification_report_digest=_h(f"report:{index}:{lane}"),
-            selection_commitment_digest=_h(f"commitment:{index}:{lane}"),
-            selection_secret_commitment_digest=_h(f"secret:{index}:{lane}"),
-            selection_evidence_digest=_h(f"selection:{index}:{lane}"),
-            arm_digest=arm.digest,
-            incumbent_stack_digest=arm.baseline_before.stack_digest,
-            incumbent_tree_digest=arm.baseline_before.tree_digest,
-            candidate_stack_digest=arm.challenger.stack_digest,
-            candidate_tree_digest=arm.challenger.tree_digest,
-            speedup=speedup,
-            incumbent_manifest=incumbent,
-            proposal_digest=proposal_digest,
-            audit_control_digest=audit_policy.control.digest,
-            audit_policy=audit_policy,
-            audit_evidence_digest=_h(f"audit-evidence:{index}:{lane}"),
-        )
-
-    qualifications = (
-        qualification("primary", attempts[0], "1.03"),
-        qualification("reproduction", attempts[1], "1.02"),
-    )
-    for attempt, settled in zip(attempts, qualifications, strict=True):
-        _promote(store, row.reservation_id)
-        store.mark_qualifying(
-            row.reservation_id,
-            settled.qualification_authority_digest,
-            AUTHORITY,
-        )
-        outcome = QualificationIntakeOutcome(
-            row.reservation_id,
-            arm.selected_delta_digest,
-            settled.qualification_authority_digest,
-            QualificationDecision.PASS,
-            "qualified",
-            False,
-            attempt_artifact_sha256=attempt.sha256,
-            report_digest=settled.qualification_report_digest,
-            settlement_qualification=settled,
-        )
-        store.apply_qualification_batch(
-            QualificationIntakeBatch(
-                settled.qualification_authority_digest, (outcome,), attempt
-            ),
-            current_finalized_block=10,
-            evidence_root=evidence_root,
-        )
     return SettlementCandidate.from_reproductions(*qualifications)
 
 
@@ -806,6 +651,8 @@ def test_legacy_retained_primary_unknown_block_stays_manual(tmp_path):
         ).fetchone()
         assert progress["retained_block"] == 0
         assert reopened.expire_stale(current_block=100) == ()
+        # A retained_block=0 legacy row is unreachable by the automatic SLA;
+        # the typed operator transition is the only terminalization path.
         expired = reopened.expire(
             reservation_id,
             current_block=100,
@@ -1017,93 +864,6 @@ def test_schema3_archival_cli_uses_finalized_public_scope_without_a_wallet(
         assert archived.reason.startswith("schema3_archived@12:")
 
 
-def test_qualification_no_decision_is_retained_before_bounded_requeue(tmp_path):
-    with _store(tmp_path, max_qualification_retries=1) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),), finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
-        store.mark_fetching(row.reservation_id)
-        store.mark_published(
-            row.reservation_id,
-            delta_fingerprint=_fingerprint("target.a", "slot.a"),
-            publication_digest="d" * 64,
-            publication_root="/published/a",
-        )
-        _promote(store, row.reservation_id)
-        store.mark_qualifying(row.reservation_id, "6" * 64, AUTHORITY)
-        store.mark_outcome(
-            row.reservation_id,
-            decision="NO_DECISION",
-            failure_digest="7" * 64,
-            reason="shared_reference_failure",
-        )
-        assert store.qualification_dispositions(row.reservation_id) == ({
-            "attempt_index": 0,
-            "authority_digest": "6" * 64,
-            "authority_manifest": AUTHORITY,
-            "evidence_digest": "7" * 64,
-            "attempt_ref": None,
-            "report_digest": "",
-            "failure_digest": "7" * 64,
-            "decision": "NO_DECISION",
-            "reason": "shared_reference_failure",
-        },)
-        held = store.requeue_qualification(
-            row.reservation_id,
-            reason="retry budget checked",
-            retry_group_digest="8" * 64,
-            retry_position=0,
-        )
-        assert held.status == "held"
-        assert store.qualification_dispositions(row.reservation_id)[0]["decision"] == "NO_DECISION"
-
-
-def test_retry_groups_are_selected_separately_in_finalized_order(tmp_path):
-    with _store(tmp_path, max_cohort=2) as store:
-        first, second = store.reserve_finalized(
-            (_arrival(0), _arrival(1, hotkey="other")),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )
-        for row, marker in ((first, "a"), (second, "b")):
-            store.mark_fetching(row.reservation_id)
-            store.mark_published(
-                row.reservation_id,
-                delta_fingerprint=_fingerprint(
-                    f"target.{marker}", f"slot.{marker}", marker
-                ),
-                publication_digest=marker * 64,
-                publication_root=f"/published/{marker}",
-            )
-            _promote(store, row.reservation_id)
-            store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
-            store.mark_outcome(
-                row.reservation_id,
-                decision="NO_DECISION",
-                failure_digest="6" * 64,
-                reason="shared_failure",
-            )
-            store.requeue_qualification(
-                row.reservation_id,
-                reason="qualification_bisect",
-                retry_group_digest=marker * 64,
-                retry_position=0,
-            )
-
-        assert store.published() == (store.get(first.reservation_id),)
-        _promote(store, first.reservation_id)
-        store.mark_qualifying(first.reservation_id, "5" * 64, AUTHORITY)
-        store.mark_outcome(
-            first.reservation_id,
-            decision="FAIL",
-            attempt_ref=ATTEMPT,
-            report_digest="4" * 64,
-            reason="qualified",
-        )
-        assert store.published() == (store.get(second.reservation_id),)
-
-
 def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_path):
     with _store(tmp_path, max_cohort=2) as store:
         rows = store.reserve_finalized(
@@ -1147,7 +907,14 @@ def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_pat
             current_finalized_block=10,
         )
         assert [row.status for row in stored] == ["published", "published"]
-        assert store.published() == (store.get(rows[0].reservation_id),)
+        # Re-screen both republished retries; the live promoted() cohort
+        # selector must isolate the first retry group rather than merging
+        # both groups back into one failing cohort.
+        for row in rows:
+            _promote(store, row.reservation_id)
+        assert tuple(row.reservation_id for row in store.promoted()) == (
+            rows[0].reservation_id,
+        )
         assert store.qualification_dispositions(rows[0].reservation_id)[0][
             "authority_manifest"
         ] == AUTHORITY
@@ -1201,9 +968,9 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
             current_finalized_block=10,
         )
 
-        # Finalized order selects the offender's isolated retry without pulling
-        # the unrelated retry group back into the same failing cohort.
-        assert tuple(row.reservation_id for row in store.published()) == (
+        # The live screen selector picks the offender's isolated retry first
+        # in finalized order.
+        assert tuple(row.reservation_id for row in store.screenable(limit=1)) == (
             offender.reservation_id,
         )
         _promote(store, offender.reservation_id)
@@ -1239,8 +1006,9 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
         assert len(store.qualification_dispositions(offender.reservation_id)) == 2
 
         # Once the bounded offender is held, the peer's isolated group remains
-        # runnable and can retain an independently evidenced terminal decision.
-        assert tuple(row.reservation_id for row in store.published()) == (
+        # runnable: the live screen selector now picks it, and it can retain an
+        # independently evidenced terminal decision.
+        assert tuple(row.reservation_id for row in store.screenable(limit=1)) == (
             peer.reservation_id,
         )
         _promote(store, peer.reservation_id)
@@ -1286,11 +1054,25 @@ def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_
         )
         _promote(store, later.reservation_id)
         store.mark_qualifying(later.reservation_id, "5" * 64, AUTHORITY)
-        store.mark_outcome(
-            later.reservation_id,
-            decision="NO_DECISION",
-            failure_digest="4" * 64,
-            reason="not_decided",
+        store.apply_qualification_batch(
+            QualificationIntakeBatch(
+                "5" * 64,
+                (
+                    QualificationIntakeOutcome(
+                        later.reservation_id,
+                        "3" * 64,
+                        "5" * 64,
+                        QualificationDecision.NO_DECISION,
+                        "not_decided",
+                        True,
+                        failure_digest="4" * 64,
+                    ),
+                ),
+                retry_plan=QualificationRetryPlan(
+                    "5" * 64, "requeue", ((later.reservation_id,),), "4" * 64
+                ),
+            ),
+            current_finalized_block=10,
         )
 
         store.mark_fetching(first.reservation_id)
@@ -1369,170 +1151,6 @@ def test_interrupted_settlement_lease_requeues_retained_evidence_without_gpu(tmp
         assert second.candidates == (candidate,)
         assert second.generation > first.generation
         assert second.lease_id != first.lease_id
-
-
-@pytest.mark.parametrize("hotkey", ("miner", "other-miner"))
-def test_discovery_proposal_replay_is_terminal_before_screening(tmp_path, hotkey):
-    proposal = _h("one discovery proposal")
-    with _store(tmp_path) as store:
-        first, replay, distinct = store.reserve_finalized(
-            (
-                _arrival(0),
-                _arrival(1, hotkey=hotkey),
-                _arrival(2, hotkey=hotkey),
-            ),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )
-        for row, fingerprint in (
-            (first, _discovery_fingerprint(proposal)),
-            (replay, _discovery_fingerprint(proposal)),
-            (distinct, _discovery_fingerprint(_h("distinct proposal"))),
-        ):
-            store.mark_fetching(row.reservation_id)
-            store.mark_published(
-                row.reservation_id,
-                delta_fingerprint=fingerprint,
-                publication_digest=_h(f"publication:{row.reservation_id}"),
-                publication_root=f"/published/{row.reservation_id}",
-            )
-
-        rejected = store.get(replay.reservation_id)
-        assert rejected.status == "failed"
-        assert rejected.decision == "FAIL"
-        assert rejected.reason == "duplicate_proposal"
-        assert replay.reservation_id not in {
-            row.reservation_id for row in store.screenable()
-        }
-        assert store.get(distinct.reservation_id).status == "published"
-        assert store.reconcile_copies() == ()
-        if hotkey == first.arrival.hotkey:
-            # Same-hotkey exemption remains a plagiarism-policy rule only; it
-            # no longer permits repeated validator work or repeated bounty.
-            assert store.copy_predecessors(replay.reservation_id) == ()
-
-
-def test_legacy_awarded_discovery_replay_stays_terminal_across_restart(tmp_path):
-    proposal = _h("legacy duplicate proposal")
-    with _store(tmp_path) as store:
-        first = _qualified_discovery_candidate(
-            store, index=0, proposal_digest=proposal
-        )
-        lease = store.lease_settlement_cohort(current_block=11)
-        assert lease is not None and lease.candidates == (first,)
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
-        store.commit_settlement(lease, plan, evidence, current_block=11)
-        assert len(store.active_reward_claims()[1]) == 1
-
-        # Simulate a pending row retained by a pre-fix database. The current
-        # publication path would stop it before screening; lease recovery must
-        # also dispose it so restart cannot reproduce the old crash loop.
-        replay = _qualified_discovery_candidate(
-            store,
-            index=1,
-            proposal_digest=proposal,
-            bypass_publication_dedup=True,
-        )
-        assert store.copy_predecessors(replay.reservation_digest) == ()
-        assert store.lease_settlement_cohort(current_block=12) is None
-        duplicate = store._db.execute(
-            "SELECT status,reason FROM settlement_candidates WHERE reservation_id=?",
-            (replay.reservation_digest,),
-        ).fetchone()
-        assert tuple(duplicate) == ("duplicate_proposal", "already_awarded")
-
-    with _store(tmp_path) as reopened:
-        assert not reopened.has_pending_settlement()
-        duplicate = reopened._db.execute(
-            "SELECT status,reason FROM settlement_candidates WHERE reservation_id=?",
-            (replay.reservation_digest,),
-        ).fetchone()
-        assert tuple(duplicate) == ("duplicate_proposal", "already_awarded")
-
-
-def test_legacy_pending_discovery_replays_are_deduplicated_before_lease(tmp_path):
-    proposal = _h("pending duplicate proposal")
-    with _store(tmp_path) as store:
-        first = _qualified_discovery_candidate(
-            store, index=0, proposal_digest=proposal
-        )
-        replay = _qualified_discovery_candidate(
-            store,
-            index=1,
-            proposal_digest=proposal,
-            bypass_publication_dedup=True,
-        )
-        lease = store.lease_settlement_cohort(current_block=11)
-        assert lease is not None and lease.candidates == (first,)
-        duplicate = store._db.execute(
-            "SELECT status,reason FROM settlement_candidates WHERE reservation_id=?",
-            (replay.reservation_digest,),
-        ).fetchone()
-        assert tuple(duplicate) == ("duplicate_proposal", "duplicate_proposal")
-
-
-def test_discovery_award_race_is_an_idempotent_no_bounty_commit(tmp_path):
-    proposal = _h("raced discovery proposal")
-    with _store(tmp_path) as store:
-        candidate = _qualified_discovery_candidate(
-            store, index=0, proposal_digest=proposal
-        )
-        lease = store.lease_settlement_cohort(current_block=11)
-        assert lease is not None and lease.candidates == (candidate,)
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
-
-        competing = DiscoveryBountyClaim(
-            proposal,
-            _h("competing retained evidence"),
-            "other-miner",
-            1,
-            candidate.finalized_block,
-        )
-        store._db.execute(
-            "INSERT INTO discovery_bounty_claims(claim_digest,proposal_digest,"
-            "claim_json,status,event_id) VALUES(?,?,?,?,?)",
-            (
-                competing.digest,
-                competing.proposal_digest,
-                json.dumps(
-                    competing.to_dict(), separators=(",", ":"), sort_keys=True
-                ),
-                "active",
-                _h("competing event"),
-            ),
-        )
-
-        state = store.commit_settlement(lease, plan, evidence, current_block=11)
-        assert state == lease.stack
-        disposition = store._db.execute(
-            "SELECT status,reason FROM settlement_candidates WHERE reservation_id=?",
-            (candidate.reservation_digest,),
-        ).fetchone()
-        assert tuple(disposition) == ("duplicate_proposal", "already_awarded")
-        assert store._event_head() == (
-            lease.initial_event_sequence,
-            lease.previous_event_digest,
-        )
-        assert store.active_reward_claims()[1] == (competing,)
-        assert not store.has_pending_settlement()
 
 
 def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path):

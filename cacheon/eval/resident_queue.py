@@ -198,16 +198,6 @@ class CandidateScreenVerdict:
         }
 
 
-@dataclass(frozen=True)
-class ScreenReport:
-    """The outcome of one resident lifetime's screen pass."""
-
-    verdicts: tuple[CandidateScreenVerdict, ...]
-    stock_throughputs: tuple[float, ...]
-    unprocessed_candidate_ids: tuple[str, ...]
-    stopped_reason: str | None
-
-
 def _throughput(row: ResidentBatchEvidence) -> float:
     elapsed = row.elapsed_seconds
     if elapsed <= 0:
@@ -235,8 +225,7 @@ def _is_borderline(verdict: SpeedupVerdict, *, band: float) -> bool:
 class ResidentScreenLoop:
     """Incremental screen: one candidate at a time on one live session.
 
-    The batch entry point :func:`run_resident_screen` drives this over a fixed
-    list; the arena provider drives it over arrivals — candidates trickle in
+    The arena provider drives this over arrivals — candidates trickle in
     while the engine stays resident between them, so the loop carries the
     shared bracket (the last stock read), the lifetime's full stock band (the
     canary reference), and the stop condition across calls.
@@ -329,6 +318,15 @@ class ResidentScreenLoop:
 
         swap_out = session.swap(None)
         receipts.append(swap_out)
+        if failure is None and not swap_out.execution.proves_execution(
+            generation=swap_in.generation,
+            expected_ranks=swap_out.expected_ranks,
+        ):
+            failure = (
+                "candidate execution not proven before screen promotion "
+                f"({swap_out.execution.prior_execution_ranks}/"
+                f"{swap_out.expected_ranks} ranks)"
+            )
         closing = session.execute_batch(prompt_plan, canary=True)
         batch_indices.append(closing.batch_index)
         closing_throughput = _throughput(closing)
@@ -355,6 +353,11 @@ class ResidentScreenLoop:
                     candidate_reads.append(_throughput(candidate_row_2))
                 swap_out_2 = session.swap(None)
                 receipts.append(swap_out_2)
+                if failure is None and not swap_out_2.execution.proves_execution(
+                    generation=swap_in_2.generation,
+                    expected_ranks=swap_out_2.expected_ranks,
+                ):
+                    failure = "escalation candidate execution not proven"
                 closing_2 = session.execute_batch(prompt_plan, canary=True)
                 batch_indices.append(closing_2.batch_index)
                 closing_throughput = _throughput(closing_2)
@@ -411,59 +414,12 @@ class ResidentScreenLoop:
         return result
 
 
-def run_resident_screen(
-    session: ScreenSession,
-    candidates: Sequence[ScreenCandidate],
-    *,
-    prompts: Sequence[str],
-    policy: ScreenPolicy = ScreenPolicy(),
-) -> ScreenReport:
-    """Screen every candidate through one live engine; stop early on drift.
-
-    The caller owns the engine lifetime: it opens the resident session, calls
-    this, then closes.  When ``stopped_reason`` is set, the remaining
-    candidates in ``unprocessed_candidate_ids`` must be re-screened on a fresh
-    lifetime (recycle) — their absence here is scheduling state, not a verdict.
-    A canary drift additionally WITHDRAWS the just-closed candidate's verdict
-    (failure set, verdict ``None``, receipts retained for the record) and lists
-    that candidate as unprocessed too: re-screen it on the fresh lifetime.
-    """
-
-    rows = tuple(candidates)
-    if not rows or any(type(row) is not ScreenCandidate for row in rows):
-        raise ResidentQueueError("screen candidates must be typed and nonempty")
-    if len({row.candidate_id for row in rows}) != len(rows):
-        raise ResidentQueueError("screen candidate ids must be unique")
-
-    loop = ResidentScreenLoop(session, prompts=prompts, policy=policy)
-    verdicts: list[CandidateScreenVerdict] = []
-    for candidate in rows:
-        result = loop.screen(candidate)
-        if result is None:
-            break
-        verdicts.append(result)
-        if loop.stopped_reason is not None:
-            break
-    # loop.processed is the exact list position of the first candidate that
-    # must be re-screened: the loop was fresh and fed in list order, and a
-    # withdrawn candidate does not count as processed.
-    unprocessed = tuple(row.candidate_id for row in rows[loop.processed :])
-    return ScreenReport(
-        tuple(verdicts),
-        loop.stock_throughputs,
-        unprocessed,
-        loop.stopped_reason,
-    )
-
-
 __all__ = [
     "CandidateScreenVerdict",
     "ResidentQueueError",
     "ResidentScreenLoop",
     "ScreenCandidate",
     "ScreenPolicy",
-    "ScreenReport",
     "ScreenSession",
     "WITHDRAWN_FAILURE",
-    "run_resident_screen",
 ]

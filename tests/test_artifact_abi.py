@@ -25,10 +25,9 @@ _EXPECTED_CALL_ARGS = {
         "input.q", "input.k", "input.v", "output.out", "input.sm_scale", "input.causal"
     ),
     "attention.decode": (
-        "input.q", "input.k", "input.v", "input.seq_lens", "input.sm_scale", "output.out"
-    ),
-    "moe.fused_experts": (
-        "input.x", "input.topk_ids", "input.topk_weights", "prepared.state", "output.out"
+        "input.q", "input.k_cache", "input.v_cache", "input.req_to_token",
+        "input.seq_lens", "input.req_pool_indices", "input.topk_idx",
+        "output.out", "input.sm_scale", "input.block_size",
     ),
     "collective.all_reduce": ("input.x", "output.out", "group.current"),
     "collective.ar_residual_rmsnorm": (
@@ -40,17 +39,17 @@ _EXPECTED_CALL_ARGS = {
         "input.weight", "input.eps", "output.out_norm", "output.out_residual",
         "group.current",
     ),
-    "moe.fused_experts_reduce": (
-        "input.x", "input.topk_ids", "input.topk_weights", "prepared.state",
-        "output.out", "group.current",
-    ),
     "attention.msa_block_score": (
         "input.q", "input.index_k", "input.seq_lens", "input.block_size",
         "output.block_scores",
     ),
     "attention.msa_prefill_block_score": (
-        "input.q", "input.index_k", "input.prefix_len", "input.scale",
-        "input.block_size", "output.block_scores",
+        "input.q", "input.index_k_cache", "input.req_to_token", "input.slot_ids",
+        "input.cu_seqlens", "input.seq_lens", "input.prefix_lens",
+        "input.max_seqlen_q", "input.max_seqlen_k", "input.block_size_q",
+        "input.block_size_k", "input.topk", "input.init_blocks",
+        "input.local_blocks", "input.scale", "input.cu_seqblocks_q",
+        "input.max_seqblock_q", "input.all_seqblock_q", "output.topk_idx",
     ),
 }
 
@@ -65,47 +64,42 @@ def _blockscore_bindings():
             leading_dim=1,
         ),
         ArtifactBinding(
-            "input.index_k",
+            "input.index_k_cache",
             "tensor",
             unsqueeze=(-1,),
             assumed_align=16,
             leading_dim=1,
         ),
         ArtifactBinding(
-            "output.block_scores",
+            "output.topk_idx",
             "tensor",
             assumed_align=4,
             leading_dim=1,
         ),
-        ArtifactBinding("input.prefix_len", "scalar", cast="i32"),
+        ArtifactBinding("input.max_seqlen_k", "scalar", cast="i32"),
         ArtifactBinding("input.scale", "scalar", cast="f32"),
         ArtifactBinding("stream.current", "stream"),
     )
 
 
-def test_every_slot_has_one_shared_validator_owned_call_abi():
+def test_every_native_slot_has_one_shared_validator_owned_call_abi():
     from cacheon.slots import SLOTS
 
-    assert set(SLOT_CALL_ABIS) == set(SLOTS) == set(_EXPECTED_CALL_ARGS)
+    unsupported = {"moe.fused_experts", "moe.fused_experts_reduce"}
+    assert set(SLOT_CALL_ABIS) == set(SLOTS) - unsupported
+    assert set(SLOT_CALL_ABIS) == set(_EXPECTED_CALL_ARGS)
+    assert all(SLOTS[slot].call_abi is None for slot in unsupported)
     for slot_name, call_args in _EXPECTED_CALL_ARGS.items():
         abi = SLOT_CALL_ABIS[slot_name]
         assert abi.call_args == call_args
         assert SLOTS[slot_name].call_abi is abi
 
 
-def test_prepare_and_collective_boundaries_are_explicit_not_folded_into_run():
-    for slot_name in ("moe.fused_experts", "moe.fused_experts_reduce"):
-        abi = SLOT_CALL_ABIS[slot_name]
-        assert abi.prepare_args == ("input.w13", "input.w2")
-        assert abi.prepare_result == "prepared.state"
-        assert "input.w13" not in abi.call_args
-        assert "input.w2" not in abi.call_args
-
+def test_collective_boundaries_are_explicit_not_folded_into_run():
     for slot_name in (
         "collective.all_reduce",
         "collective.ar_residual_rmsnorm",
         "collective.moe_finalize_ar_rmsnorm",
-        "moe.fused_experts_reduce",
     ):
         abi = SLOT_CALL_ABIS[slot_name]
         group = abi.by_name["group.current"]
@@ -119,23 +113,23 @@ def test_prepare_and_collective_boundaries_are_explicit_not_folded_into_run():
 
 def test_slot_call_abi_accepts_declarative_blockscore_projection():
     assert MSA_PREFILL_BLOCK_SCORE_CALL_ABI.call_args == (
-        "input.q",
-        "input.index_k",
-        "input.prefix_len",
-        "input.scale",
-        "input.block_size",
-        "output.block_scores",
+        "input.q", "input.index_k_cache", "input.req_to_token", "input.slot_ids",
+        "input.cu_seqlens", "input.seq_lens", "input.prefix_lens",
+        "input.max_seqlen_q", "input.max_seqlen_k", "input.block_size_q",
+        "input.block_size_k", "input.topk", "input.init_blocks",
+        "input.local_blocks", "input.scale", "input.cu_seqblocks_q",
+        "input.max_seqblock_q", "input.all_seqblock_q", "output.topk_idx",
     )
     specializes = MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
         role="run",
         bindings=_blockscore_bindings(),
-        specializes={"input.block_size": 128},
+        specializes={"input.block_size_k": 128},
         prelaunch=(
-            ArtifactPrelaunch("fill", "output.block_scores", "-inf"),
+            ArtifactPrelaunch("fill", "output.topk_idx", -1),
         ),
     )
 
-    assert specializes == (("input.block_size", 128),)
+    assert specializes == (("input.block_size_k", 128),)
     assert MSA_PREFILL_BLOCK_SCORE_CALL_ABI.specialization_capabilities(
         specializes
     ) == {"block_size": 128}
@@ -168,7 +162,7 @@ def test_tensor_projection_matrix_covers_descriptor_pointer_and_metadata():
         ArtifactBinding(
             "input.q", "scalar", cast="i64", projection="storage_offset"
         ),
-        ArtifactBinding("output.block_scores", "tensor"),
+        ArtifactBinding("output.topk_idx", "tensor"),
     )
     MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
         role="run", bindings=bindings, specializes={}, prelaunch=()
@@ -185,7 +179,7 @@ def test_tensor_projection_matrix_rejects_implicit_or_ill_typed_coercions():
             role="run",
             bindings=(
                 ArtifactBinding("input.q", "pointer"),
-                ArtifactBinding("output.block_scores", "tensor"),
+                ArtifactBinding("output.topk_idx", "tensor"),
             ),
             specializes={},
             prelaunch=(),
@@ -204,7 +198,7 @@ def test_output_metadata_projection_does_not_claim_write_coverage():
             role="run",
             bindings=(
                 ArtifactBinding(
-                    "output.block_scores",
+                    "output.topk_idx",
                     "scalar",
                     cast="i64",
                     projection="shape",
@@ -240,14 +234,14 @@ def test_bounded_nested_aggregate_projection_covers_cute_algebra_values():
                     source="input.q", projection="stride", axis=1, cast="i64"
                 ),
                 ArtifactAggregateComponent(
-                    source="input.prefix_len", projection="value", cast="i64"
+                    source="input.max_seqlen_k", projection="value", cast="i64"
                 ),
             ),
         ),
     )
     MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
         role="run",
-        bindings=(aggregate, ArtifactBinding("output.block_scores", "tensor")),
+        bindings=(aggregate, ArtifactBinding("output.topk_idx", "tensor")),
         specializes={},
         prelaunch=(),
     )
@@ -295,7 +289,7 @@ def test_slot_call_abi_requires_every_output_to_be_written():
     bindings = tuple(
         binding
         for binding in _blockscore_bindings()
-        if binding.source != "output.block_scores"
+        if binding.source != "output.topk_idx"
     )
     with pytest.raises(ArtifactABIError, match="does not write slot outputs"):
         MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
@@ -307,12 +301,12 @@ def test_multi_export_pipeline_checks_output_coverage_across_run_steps():
     first = tuple(
         binding
         for binding in _blockscore_bindings()
-        if binding.source != "output.block_scores"
+        if binding.source != "output.topk_idx"
     )
     MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
         role="run",
         bindings=first,
-        specializes={"input.block_size": 128},
+        specializes={"input.block_size_k": 128},
         prelaunch=(),
         require_outputs=False,
     )
@@ -321,7 +315,7 @@ def test_multi_export_pipeline_checks_output_coverage_across_run_steps():
             ("run", first, ()),
             (
                 "run",
-                (ArtifactBinding("output.block_scores", "tensor"),),
+                (ArtifactBinding("output.topk_idx", "tensor"),),
                 (),
             ),
         )
@@ -337,7 +331,7 @@ def test_compile_time_specialization_requires_validator_descriptor_fact():
         MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
             role="run",
             bindings=_blockscore_bindings(),
-            specializes={"input.prefix_len": 0},
+            specializes={"input.scale": 0.0},
             prelaunch=(),
         )
 

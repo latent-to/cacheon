@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import threading
 import time
 from dataclasses import replace
@@ -9,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from cacheon.eval import resident_pair_crossover as crossover_mod
 from cacheon.eval.crossover_runtime import ResidentSpeedPolicy, SpeedStageDecision
 from cacheon.eval.oci_resident_session import (
     ResidentBatchEvidence,
@@ -170,7 +168,7 @@ class _Session:
         )
         evidence = BatchEvidence(
             tuple(
-                PromptEvidence(tuple(range(shape.max_new_tokens)), positions)
+                PromptEvidence(tuple(range(shape.max_new_tokens)), positions, 5)
                 for _ in prompts
             )
         )
@@ -504,12 +502,13 @@ def test_v7_swaps_both_arms_so_neither_role_is_measured_unswapped(
 @pytest.mark.parametrize(
     "executed_ranks, why",
     [
+        (-1, "unobserved: the rank evidence path was incomplete"),
         (0, "inert bundle: registered its slot and never dispatched it"),
         (3, "partial: one rank of the group did not execute"),
     ],
 )
-def test_a_candidate_that_did_not_execute_cannot_win_once_armed(
-    tmp_path, cleanup_pairs, executed_ranks, why, monkeypatch
+def test_a_candidate_without_complete_execution_cannot_be_graded(
+    tmp_path, cleanup_pairs, executed_ranks, why
 ):
     """A winning duration is not a win if the kernel never ran.
 
@@ -521,11 +520,9 @@ def test_a_candidate_that_did_not_execute_cannot_win_once_armed(
     The candidate here is given a decisively winning duration precisely so the
     hold cannot be attributed to its speed.
 
-    The guard ships disarmed (``ENFORCE_EXECUTION_EVIDENCE``), so this pins the
-    armed behaviour explicitly. Re-arming must keep this test passing untouched.
+    Unobserved, zero, and partial rank coverage all remain infrastructure HOLD:
+    none can mint a candidate speed product.
     """
-
-    monkeypatch.setattr(crossover_mod, "ENFORCE_EXECUTION_EVIDENCE", True)
     plan, pair, clock, activity, factory_a, factory_b = _setup(
         tmp_path,
         cleanup_pairs,
@@ -541,37 +538,6 @@ def test_a_candidate_that_did_not_execute_cannot_win_once_armed(
             plan, pair=pair, deadline=clock() + 120.0, clock=clock
         )
     assert "no proof its kernel executed" in str(caught.value), why
-
-
-@pytest.mark.parametrize("executed_ranks", [0, 3])
-def test_unproven_execution_is_recorded_not_enforced_while_disarmed(
-    tmp_path, cleanup_pairs, executed_ranks, caplog
-):
-    """Shipping default: the same candidate proceeds, loudly logged.
-
-    Arming a gate and executing it for the first time in one commission cost a
-    23-minute paid hold on 2026-08-16 that no retained log could attribute. The
-    evidence is still minted and carried; it just does not decide a verdict.
-    """
-
-    assert crossover_mod.ENFORCE_EXECUTION_EVIDENCE is False
-    plan, pair, clock, activity, factory_a, factory_b = _setup(
-        tmp_path,
-        cleanup_pairs,
-        baseline=((1.0,) * 3,) * 2,
-        candidate=((0.5,) * 3,),
-        policy=_borderline_policy(version=7),
-        timed_batches=3,
-        candidate_executed_ranks=executed_ranks,
-    )
-
-    with caplog.at_level(logging.WARNING):
-        evidence = run_resident_pair_crossover(
-            plan, pair=pair, deadline=clock() + 120.0, clock=clock
-        )
-    assert evidence is not None
-    assert "no proof its kernel executed" in caplog.text
-    assert "record-only" in caplog.text
 
 
 def test_v6_leaves_the_baseline_unswapped(tmp_path, cleanup_pairs):

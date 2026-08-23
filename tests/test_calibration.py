@@ -186,8 +186,9 @@ def test_strict_parser_rejects_unknown_or_tampered_fields() -> None:
     with pytest.raises(CalibrationError, match="fields mismatch"):
         CalibrationManifest.from_dict(raw)
 
+    # Every context field is part of the frozen calibration authority.
     raw = manifest.to_dict()
-    raw["context"]["arena_digest"] = _digest("f")
+    raw["context"]["workload_digest"] = _digest("f")
     reopened = CalibrationManifest.from_dict(raw)
     assert reopened.digest != manifest.digest
     with pytest.raises(CalibrationError, match="stale or mismatched"):

@@ -11,11 +11,29 @@ from cacheon.artifact_abi import (
     ArtifactShapeFactor,
     COLLECTIVE_ALL_REDUCE_CALL_ABI,
     MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
-    MOE_FUSED_EXPERTS_CALL_ABI,
     SlotCallABI,
     SlotResource,
     parse_artifact_bindings,
     parse_artifact_resources,
+)
+
+MOE_FUSED_EXPERTS_CALL_ABI = SlotCallABI(
+    slot="test.prepared",
+    resources=(
+        SlotResource("input.x", "tensor"),
+        SlotResource("input.topk_ids", "tensor"),
+        SlotResource("input.topk_weights", "tensor"),
+        SlotResource("input.w13", "tensor"),
+        SlotResource("input.w2", "tensor"),
+        SlotResource("prepared.state", "opaque", access="readwrite"),
+        SlotResource("output.out", "tensor", access="write"),
+    ),
+    call_args=(
+        "input.x", "input.topk_ids", "input.topk_weights",
+        "prepared.state", "output.out",
+    ),
+    prepare_args=("input.w13", "input.w2"),
+    prepare_result="prepared.state",
 )
 
 
@@ -107,7 +125,7 @@ def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
     assert plan.by_name["prepared.lookup"].max_bytes == 4096
     assert set(MSA_PREFILL_BLOCK_SCORE_CALL_ABI.resource_table(plan)) >= {
         "input.q",
-        "output.block_scores",
+        "output.topk_idx",
         "workspace.scratch",
         "state.epoch",
         "prepared.lookup",
@@ -115,7 +133,7 @@ def test_slot_authorizes_bounded_artifact_storage_without_per_slot_names():
 
     prepare = (ArtifactBinding("prepared.lookup", "tensor"),)
     run = (
-        ArtifactBinding("output.block_scores", "tensor"),
+        ArtifactBinding("output.topk_idx", "tensor"),
         ArtifactBinding("prepared.lookup", "tensor"),
         ArtifactBinding("workspace.scratch", "tensor"),
         ArtifactBinding("state.epoch", "tensor"),
@@ -155,7 +173,7 @@ def test_bindings_may_name_only_declared_generated_resources():
         MSA_PREFILL_BLOCK_SCORE_CALL_ABI.validate_plan(
             role="run",
             bindings=(
-                ArtifactBinding("output.block_scores", "tensor"),
+                ArtifactBinding("output.topk_idx", "tensor"),
                 ArtifactBinding("workspace.not_declared", "tensor"),
             ),
             specializes={},

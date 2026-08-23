@@ -19,6 +19,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from cacheon.slots import get_slot  # noqa: E402
+from cacheon.capabilities import CallDescriptor  # noqa: E402
 from cacheon.registry import Eligibility  # noqa: E402
 from cacheon.verify_collective import (  # noqa: E402
     _MAX_VERDICT_BYTES,
@@ -294,7 +295,7 @@ def test_collective_temporal_descriptor_commits_explicit_sequence_order():
     mismatched = list(case.calls)
     changed = dict(mismatched[1])
     changed["architecture"] = "different-architecture"
-    mismatched[1] = tuple(sorted(changed.items()))
+    mismatched[1] = CallDescriptor(changed)
     with pytest.raises(ValueError, match="disagree on sealed execution context"):
         VerificationCaseDescriptor(
             case.slot_id,

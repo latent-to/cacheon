@@ -137,36 +137,36 @@ def _lease_from_dict(value: object) -> EvaluationLease:
 
 @dataclass(frozen=True)
 class QualificationRequestPlan:
-    """Immutable identities needed to reopen exactly one qualification carrier."""
+    """Immutable identities needed to reopen exactly one qualification carrier.
+
+    Only facts that cannot be derived from the authenticated remote request and
+    the queue timestamp are stored.  Every duplicated identity in the v1 wire
+    shape — transport digest, creation second, the full lease, the request and
+    plan digests — is projected on demand, and ``from_dict`` rejects any stored
+    duplicate that disagrees with its derivation.
+    """
 
     registration_digest: str
     worker_epoch: str
-    transport_identity_digest: str
     credential_digest: str
     remote_request: RemoteEvaluationRequest
-    lease: EvaluationLease
+    planned_expires_block: int
     artifacts: tuple[PlannedQualificationArtifact, ...]
-    created_at_unix: int
     deadline_unix: int
     queued_at_unix_ns: int
-    request_id: str
-    plan_digest: str
 
     def __post_init__(self) -> None:
         for field, value in (
             ("registration digest", self.registration_digest),
-            ("transport identity digest", self.transport_identity_digest),
             ("credential digest", self.credential_digest),
-            ("request id", self.request_id),
-            ("plan digest", self.plan_digest),
         ):
             require_digest(value, field)
         if not isinstance(self.worker_epoch, str) or EPOCH.fullmatch(self.worker_epoch) is None:
             fail("qualification plan worker epoch is malformed")
         if type(self.remote_request) is not RemoteEvaluationRequest:
             fail("qualification plan request is not exactly typed")
-        if type(self.lease) is not EvaluationLease or self.lease.stage != "qualification":
-            fail("qualification plan lease is not exactly typed")
+        if self.remote_request.stage != "qualification":
+            fail("qualification plan contains another request stage")
         artifacts = tuple(self.artifacts)
         if (
             len(artifacts) < 2
@@ -175,25 +175,48 @@ class QualificationRequestPlan:
         ):
             fail("qualification plan artifact roles are incomplete or reordered")
         object.__setattr__(self, "artifacts", artifacts)
-        require_int(self.created_at_unix, "plan creation time", minimum=1)
+        require_int(self.queued_at_unix_ns, "plan queue time", minimum=1)
+        require_int(self.planned_expires_block, "planned lease expiry", minimum=1)
         require_int(
             self.deadline_unix,
             "plan deadline",
             minimum=self.created_at_unix + 1,
         )
-        require_int(self.queued_at_unix_ns, "plan queue time", minimum=1)
         if self.deadline_unix - self.created_at_unix > MAX_JOB_SECONDS:
             fail("qualification plan deadline exceeds deployment ceiling")
-        if self.remote_request.stage != "qualification":
-            fail("qualification plan contains another request stage")
-        if not _request_matches_lease(self.remote_request, self.lease):
-            fail("qualification plan request differs from its lease")
-        if self.request_id != spool_digest(DOMAIN_REQUEST, self.outer_unsigned()):
-            fail("qualification plan request id differs from its exact envelope")
-        if self.plan_digest != spool_digest(
-            DOMAIN_QUALIFICATION_REQUEST_PLAN, self._unsigned_plan()
-        ):
-            fail("qualification request plan digest mismatch")
+        # Force the lease projection once so an invalid planned expiry fails at
+        # construction, not first use.
+        self.lease
+
+    @property
+    def transport_identity_digest(self) -> str:
+        return self.remote_request.transport_identity_digest
+
+    @property
+    def created_at_unix(self) -> int:
+        return self.queued_at_unix_ns // 1_000_000_000
+
+    @property
+    def lease(self) -> EvaluationLease:
+        request = self.remote_request
+        return EvaluationLease(
+            request.lease_id,
+            request.generation,
+            request.stage,
+            request.owner,
+            request.members,
+            request.claimed_block,
+            request.initial_expires_block,
+            self.planned_expires_block,
+        )
+
+    @property
+    def request_id(self) -> str:
+        return spool_digest(DOMAIN_REQUEST, self.outer_unsigned())
+
+    @property
+    def plan_digest(self) -> str:
+        return spool_digest(DOMAIN_QUALIFICATION_REQUEST_PLAN, self._unsigned_plan())
 
     def outer_unsigned(self) -> dict[str, object]:
         return {
@@ -232,42 +255,6 @@ class QualificationRequestPlan:
         return {**self._unsigned_plan(), "plan_digest": self.plan_digest}
 
     @classmethod
-    def _build(
-        cls,
-        *,
-        registration_digest: str,
-        worker_epoch: str,
-        transport_identity_digest: str,
-        credential_digest: str,
-        remote_request: RemoteEvaluationRequest,
-        lease: EvaluationLease,
-        artifacts: tuple[PlannedQualificationArtifact, ...],
-        created_at_unix: int,
-        deadline_unix: int,
-        queued_at_unix_ns: int,
-        request_id: str,
-        plan_digest: str,
-    ) -> "QualificationRequestPlan":
-        instance = object.__new__(cls)
-        for name, value in (
-            ("registration_digest", registration_digest),
-            ("worker_epoch", worker_epoch),
-            ("transport_identity_digest", transport_identity_digest),
-            ("credential_digest", credential_digest),
-            ("remote_request", remote_request),
-            ("lease", lease),
-            ("artifacts", artifacts),
-            ("created_at_unix", created_at_unix),
-            ("deadline_unix", deadline_unix),
-            ("queued_at_unix_ns", queued_at_unix_ns),
-            ("request_id", request_id),
-            ("plan_digest", plan_digest),
-        ):
-            object.__setattr__(instance, name, value)
-        instance.__post_init__()
-        return instance
-
-    @classmethod
     def from_dict(cls, value: object) -> "QualificationRequestPlan":
         row = require_closed(value, _PLAN_FIELDS, "qualification request plan")
         try:
@@ -279,39 +266,30 @@ class QualificationRequestPlan:
                 PlannedQualificationArtifact.from_dict(item)
                 for item in artifacts_value
             )
-            return cls._build(
+            lease = _lease_from_dict(row["lease"])
+            plan = cls(
                 registration_digest=row["registration_digest"],
                 worker_epoch=row["worker_epoch"],
-                transport_identity_digest=row["transport_identity_digest"],
                 credential_digest=row["credential_digest"],
                 remote_request=request,
-                lease=_lease_from_dict(row["lease"]),
+                planned_expires_block=lease.expires_block,
                 artifacts=artifacts,
-                created_at_unix=row["created_at_unix"],
                 deadline_unix=row["deadline_unix"],
                 queued_at_unix_ns=row["queued_at_unix_ns"],
-                request_id=row["request_id"],
-                plan_digest=row["plan_digest"],
             )
         except RemoteWorkerError:
             raise
         except (TypeError, ValueError, RuntimeError) as exc:
             fail(f"qualification request plan is malformed: {exc}")
-
-
-@dataclass(frozen=True)
-class QualificationPrepublicationProof:
-    """Spool-local proof that no point-of-no-return marker exists."""
-
-    plan_digest: str
-    request_id: str
-    carrier_materialized: bool
-
-    def __post_init__(self) -> None:
-        require_digest(self.plan_digest, "prepublication plan digest")
-        require_digest(self.request_id, "prepublication request id")
-        if type(self.carrier_materialized) is not bool:
-            fail("prepublication carrier state is not exactly boolean")
+        if (
+            plan.lease != lease
+            or row["transport_identity_digest"] != plan.transport_identity_digest
+            or row["created_at_unix"] != plan.created_at_unix
+            or row["request_id"] != plan.request_id
+            or row["plan_digest"] != plan.plan_digest
+        ):
+            fail("qualification plan stored identity disagrees with its derivation")
+        return plan
 
 
 @dataclass(frozen=True)
@@ -465,48 +443,15 @@ def create_qualification_request_plan(
         for size, digest in (stable_artifact_identity(source),)
     )
     queued_at = time.time_ns()
-    created_at = queued_at // 1_000_000_000
-    deadline = created_at + duration
-    outer = {
-        "artifacts": [row.to_dict() for row in artifacts],
-        "created_at_unix": created_at,
-        "deadline_unix": deadline,
-        "lease": _lease_dict(lease),
-        "queued_at_unix_ns": queued_at,
-        "ready_receipt_digest": verified["ready_receipt_digest"],
-        "schema": SCHEMA_REQUEST,
-        "service_identity": verified["service_identity"],
-        "worker_epoch": verified["worker_epoch"],
-        "worker_readiness_digest": verified["worker_readiness_digest"],
-    }
-    request_id = spool_digest(DOMAIN_REQUEST, outer)
-    unsigned_plan = {
-        "artifacts": [row.to_dict() for row in artifacts],
-        "created_at_unix": created_at,
-        "credential_digest": credential.digest,
-        "deadline_unix": deadline,
-        "lease": _lease_dict(lease),
-        "queued_at_unix_ns": queued_at,
-        "registration_digest": verified["registration_digest"],
-        "remote_request": request.to_dict(),
-        "request_id": request_id,
-        "schema": SCHEMA_QUALIFICATION_REQUEST_PLAN,
-        "transport_identity_digest": identity.digest,
-        "worker_epoch": verified["worker_epoch"],
-    }
-    return QualificationRequestPlan._build(
+    return QualificationRequestPlan(
         registration_digest=verified["registration_digest"],
         worker_epoch=verified["worker_epoch"],
-        transport_identity_digest=identity.digest,
         credential_digest=credential.digest,
         remote_request=request,
-        lease=lease,
+        planned_expires_block=lease.expires_block,
         artifacts=artifacts,
-        created_at_unix=created_at,
-        deadline_unix=deadline,
+        deadline_unix=queued_at // 1_000_000_000 + duration,
         queued_at_unix_ns=queued_at,
-        request_id=request_id,
-        plan_digest=spool_digest(DOMAIN_QUALIFICATION_REQUEST_PLAN, unsigned_plan),
     )
 
 
@@ -856,17 +801,13 @@ def _prepublication_locked(
     registration: Mapping[str, Any],
     identity: RemoteWorkerTransportIdentity,
     credential: RemoteWorkerCredential,
-) -> QualificationPrepublicationProof:
+) -> PlannedQualificationObservation:
     observed = _inspect_locked(
         plan, outbox, results_root, registration, identity, credential
     )
     if observed.state not in {"planned_unpublished", "carrier_materialized"}:
         _hold(plan, "already_published", "prepublication proof follows durable evidence")
-    return QualificationPrepublicationProof(
-        plan.plan_digest,
-        plan.request_id,
-        observed.state == "carrier_materialized",
-    )
+    return observed
 
 
 def prove_planned_qualification_prepublication(
@@ -877,7 +818,7 @@ def prove_planned_qualification_prepublication(
     *,
     identity: RemoteWorkerTransportIdentity,
     credential: RemoteWorkerCredential,
-) -> QualificationPrepublicationProof:
+) -> PlannedQualificationObservation:
     _assert_plan_authority(plan, registration, identity, credential)
     with _plan_lock(plan, outbox):
         return _prepublication_locked(
@@ -988,7 +929,6 @@ def publish_planned_qualification(
 
 __all__ = [
     "PlannedQualificationObservation",
-    "QualificationPrepublicationProof",
     "QualificationRecoveryHold",
     "QualificationRequestPlan",
     "create_qualification_request_plan",

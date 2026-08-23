@@ -38,20 +38,8 @@ These bundles are meant to fail or expose a gate:
 | [`miner_setup_demo`](https://github.com/latent-to/cacheon/tree/main/examples/miner_setup_demo) | legacy engine-wide `setup` surface for isolation tests |
 
 `miner_setup_demo` is not a registered component template. No registered
-target permits `setup`; a cross-cutting engine change belongs in
-[Discovery](discovery-lane.md).
-
-## Override example
-
-[`miner_m3_swigluoai_override`](https://github.com/latent-to/cacheon/tree/main/examples/miner_m3_swigluoai_override)
-demonstrates a Torch reference paired with a CuTe-DSL epilogue declaration for
-`moe.fused_experts/gemm1_epilogue`.
-
-This example exercises composition and the CPU/dense reference path. The
-validator-owned GPU base kernel raises `NotImplementedError`, so the example is
-not eligible for GPU qualification through that override point. Read
-[Override points](override-points.md) before using it. Provenance fields in its
-metadata are descriptive inputs, not evidence produced by this bundle.
+target permits `setup`; a cross-cutting engine change is not a valid
+submission — widening the catalog is a reviewed validator-side change.
 
 ## Identity fixtures are not kernels
 

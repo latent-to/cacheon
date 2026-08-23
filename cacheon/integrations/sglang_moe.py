@@ -1,76 +1,156 @@
-"""Wire the Cacheon dispatcher into SGLang's fused-MoE layer.
+"""Install both MoE slots at the pinned FusedMoE waist.
 
-Like attention (and unlike the single-op silu / norm seams), MoE experts are a
-*block* — and a (prepare, forward) one. We patch ``FusedMoE.forward_impl`` in
-``sglang.srt.layers.moe.fused_moe_triton.layer`` — NOT ``.forward``. ``forward``
-is a thin router: under ``is_in_piecewise_cuda_graph()`` it dispatches to two
-module-level custom ops (``moe_forward_piecewise_cuda_graph_impl`` /
-``fused_moe_bypassed_piecewise_cuda_graph_impl``) that call ``forward_impl``
-*directly* (layer.py:1304/1331 on the pin), bypassing a ``.forward`` patch — so a
-kernel installed on ``.forward`` silently does NOT run under piecewise capture
-(the production graphs-ON regime). ``forward_impl`` is the true waist: the eager
-path, the in-piecewise standard path, and both custom-op paths all converge on it
-(layer.py:1087/1089/1304/1331), and the trailing TP all-reduce lives inside it
-(layer.py:1126). Routing (gate -> top-k) runs upstream and is handed in as
-``topk_output``, so this is exactly the "run the experts given the routing"
-boundary — backend-agnostic (it sits above the triton / cutlass / marlin MoE
-backends alike).
-
-This is the cheat-resistant home for an expert-kernel submission: the validator owns
-routing, the expert weights, and the output buffer;
-the miner only repacks the weights once (``prepare``) and fills the output each step
-(``entry``). The combined output feeds the residual stream + downstream layers +
-sampler (all stock) — no final output to substitute, and no sglang source patch or
-engine reconfigure (unlike the framework/rebuild path). One pinned, unmodified
-sglang per the consensus invariant; the kernel is injected at runtime exactly like
-the other seams.
-
-See ``cacheon/dispatch.make_moe_dispatcher`` for the scope wired today (standard
-routing, eager-only, non-EP, behind ``CACHEON_MOE_SEAM=1``) versus the graph-safe /
-quantized-weight-view GPU integration points that come next.
+MiniMax reduces its fused shared+routed partial outside that waist, immediately or
+at the next norm; trusted completion markers suppress exactly that stock reduction.
 """
 
 from __future__ import annotations
 
-from cacheon.dispatch import make_moe_dispatcher
+from functools import wraps
+
+from cacheon.dispatch import (
+    _MOE_OUTER_REDUCE_ATTR,
+    _MOE_OUTER_REDUCE_TOKEN,
+    _MOE_REDUCED_ATTR,
+    _consume_moe_reduced,
+    make_moe_dispatcher,
+)
 from cacheon.registry import REGISTRY, KernelRegistry
 
 _PATCH_FLAG = "_cacheon_moe_patched"
 _MODULE = "sglang.srt.layers.moe.fused_moe_triton.layer"
+_MODEL_MODULE = "sglang.srt.models.minimax_m3"
+_MODEL_PATCH_FLAG = "_cacheon_moe_reduce_patched"
+_MISSING = object()
+
+
+def _install_minimax_reduce() -> None:
+    """Bind the reduce-owning slot to MiniMax's actual outer TP-reduce waist."""
+    import sys
+
+    mod = sys.modules.get(_MODEL_MODULE)
+    model = getattr(mod, "MiniMaxM3MoE", None) if mod is not None else None
+    decoder = getattr(mod, "MiniMaxM3DecoderLayer", None) if mod is not None else None
+    if model is None or decoder is None or getattr(model, _MODEL_PATCH_FLAG, False):
+        return
+    original_forward = getattr(model, "forward_normal", None)
+    original_decoder = getattr(decoder, "forward", None)
+    original_reduce = getattr(mod, "tensor_model_parallel_all_reduce", None)
+    if not all(map(callable, (original_forward, original_decoder, original_reduce))):
+        return
+
+    @wraps(original_forward)
+    def forward_normal(
+        self,
+        hidden_states,
+        should_allreduce_fusion=False,
+        use_reduce_scatter=False,
+    ):
+        experts = getattr(self, "experts", None)
+        prior = getattr(experts, _MOE_OUTER_REDUCE_ATTR, _MISSING)
+        fused_shared = getattr(experts, "num_fused_shared_experts", 0)
+        eligible = (
+            experts is not None
+            and hidden_states.shape[0] > 0
+            and getattr(self, "tp_size", 1) > 1
+            and getattr(self, "shared_experts", _MISSING) is None
+            and fused_shared > 0
+            and fused_shared == getattr(self, "n_shared_experts", None)
+            and not getattr(experts, "reduce_results", True)
+            and not use_reduce_scatter
+        )
+        if experts is not None:
+            setattr(
+                experts,
+                _MOE_OUTER_REDUCE_ATTR,
+                (
+                    _MOE_OUTER_REDUCE_TOKEN,
+                    "deferred" if should_allreduce_fusion else "immediate",
+                )
+                if eligible
+                else None,
+            )
+        try:
+            return original_forward(
+                self,
+                hidden_states,
+                should_allreduce_fusion,
+                use_reduce_scatter,
+            )
+        finally:
+            if experts is not None:
+                if prior is _MISSING:
+                    delattr(experts, _MOE_OUTER_REDUCE_ATTR)
+                else:
+                    setattr(experts, _MOE_OUTER_REDUCE_ATTR, prior)
+
+    @wraps(original_reduce)
+    def outer_reduce(output):
+        return (
+            output
+            if _consume_moe_reduced(output, "immediate")
+            else original_reduce(output)
+        )
+
+    @wraps(original_decoder)
+    def decoder_forward(self, *args, **kwargs):
+        result = original_decoder(self, *args, **kwargs)
+        hidden_states = result[0]
+        if hasattr(hidden_states, _MOE_REDUCED_ATTR):
+            if getattr(hidden_states, "_sglang_needs_allreduce_fusion", None) is not True:
+                raise RuntimeError("deferred reduce-owning MoE output lost its stock marker")
+            delattr(hidden_states, "_sglang_needs_allreduce_fusion")
+            if not _consume_moe_reduced(hidden_states, "deferred"):
+                raise RuntimeError("deferred reduce-owning MoE output was not consumed")
+        return result
+
+    model._cacheon_orig_forward_normal = original_forward
+    decoder._cacheon_orig_forward = original_decoder
+    mod._cacheon_orig_tensor_model_parallel_all_reduce = original_reduce
+    model.forward_normal = forward_normal
+    decoder.forward = decoder_forward
+    mod.tensor_model_parallel_all_reduce = outer_reduce
+    setattr(model, _MODEL_PATCH_FLAG, True)
 
 
 def install(registry: KernelRegistry = REGISTRY) -> None:
-    """Patch ``FusedMoE.forward_impl``. No-ops until the fused-moe layer module is
-    imported, or if this sglang lacks ``forward_impl`` (older pin) -> the seam stays
-    inert and the compat canary flags the missing chokepoint."""
+    """Patch whichever exact MoE consumers have finished importing."""
     import sys
 
     mod = sys.modules.get(_MODULE)
     FusedMoE = getattr(mod, "FusedMoE", None) if mod is not None else None
-    if FusedMoE is None or not hasattr(FusedMoE, "forward_impl"):
-        return
-
-    if getattr(FusedMoE, _PATCH_FLAG, False):
-        return
-
-    orig_impl = FusedMoE.forward_impl
-    FusedMoE.forward_impl = make_moe_dispatcher(orig_impl, registry=registry)
-    FusedMoE._cacheon_orig_forward_impl = orig_impl  # type: ignore[attr-defined]
-    setattr(FusedMoE, _PATCH_FLAG, True)
+    if FusedMoE is not None and hasattr(FusedMoE, "forward_impl"):
+        if not getattr(FusedMoE, _PATCH_FLAG, False):
+            orig_impl = FusedMoE.forward_impl
+            FusedMoE.forward_impl = make_moe_dispatcher(orig_impl, registry=registry)
+            FusedMoE._cacheon_orig_forward_impl = orig_impl  # type: ignore[attr-defined]
+            setattr(FusedMoE, _PATCH_FLAG, True)
+    _install_minimax_reduce()
 
 
 def uninstall() -> None:
     import sys
 
-    if _MODULE not in sys.modules:
-        return
-    from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+    model_mod = sys.modules.get(_MODEL_MODULE)
+    model = getattr(model_mod, "MiniMaxM3MoE", None) if model_mod else None
+    if model is not None and getattr(model, _MODEL_PATCH_FLAG, False):
+        decoder = model_mod.MiniMaxM3DecoderLayer
+        model.forward_normal = model._cacheon_orig_forward_normal
+        decoder.forward = decoder._cacheon_orig_forward
+        model_mod.tensor_model_parallel_all_reduce = (
+            model_mod._cacheon_orig_tensor_model_parallel_all_reduce
+        )
+        delattr(model, "_cacheon_orig_forward_normal")
+        delattr(decoder, "_cacheon_orig_forward")
+        delattr(model_mod, "_cacheon_orig_tensor_model_parallel_all_reduce")
+        setattr(model, _MODEL_PATCH_FLAG, False)
 
-    if not getattr(FusedMoE, _PATCH_FLAG, False):
-        return
-    FusedMoE.forward_impl = FusedMoE._cacheon_orig_forward_impl  # type: ignore[attr-defined]
-    delattr(FusedMoE, "_cacheon_orig_forward_impl")
-    setattr(FusedMoE, _PATCH_FLAG, False)
+    mod = sys.modules.get(_MODULE)
+    FusedMoE = getattr(mod, "FusedMoE", None) if mod is not None else None
+    if FusedMoE is not None and getattr(FusedMoE, _PATCH_FLAG, False):
+        FusedMoE.forward_impl = FusedMoE._cacheon_orig_forward_impl
+        delattr(FusedMoE, "_cacheon_orig_forward_impl")
+        setattr(FusedMoE, _PATCH_FLAG, False)
 
 
 def is_installed() -> bool:
@@ -80,4 +160,9 @@ def is_installed() -> bool:
     FusedMoE = getattr(mod, "FusedMoE", None) if mod is not None else None
     if FusedMoE is None:
         return False
-    return bool(getattr(FusedMoE, _PATCH_FLAG, False))
+    installed = bool(getattr(FusedMoE, _PATCH_FLAG, False))
+    model_mod = sys.modules.get(_MODEL_MODULE)
+    model = getattr(model_mod, "MiniMaxM3MoE", None) if model_mod else None
+    return installed and (
+        model is None or bool(getattr(model, _MODEL_PATCH_FLAG, False))
+    )

@@ -16,10 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Protocol
 
 from cacheon.engine_tree import MaterializedEngineTree
 from cacheon.eval.engine_launch import (
@@ -29,18 +27,13 @@ from cacheon.eval.engine_launch import (
     resolve_engine_launch,
 )
 from cacheon.eval.oci_backend import (
-    EngineExecutionEvidence,
-    TrustedArenaModelMountReceipt,
     expected_runtime_preflight,
-    runtime_identity_from_preflight,
 )
 from cacheon.eval.oci_outer_session import (
     OuterSessionWorkerError,
     SessionExecutionPlan,
 )
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
-from cacheon.discovery import DiscoveryArmPlan, reopen_discovery_engine_binding
-from cacheon.discovery_overlay import DiscoveryActivationReceipt
 from cacheon.stack_manifest import (
     EvaluationStackContext,
     EvaluationStackManifest,
@@ -59,22 +52,8 @@ class MarginalRuntimeError(ValueError):
     """A marginal plan cannot be bound to one exact runtime lifecycle."""
 
 
-ExecutableArm = MarginalArmPlan | DiscoveryArmPlan
-RuntimeSource = MarginalArmPlan | CohortPlan | DiscoveryArmPlan
-
-
-class EngineExecutor(Protocol):
-    """The raw PR2 executor interface consumed by this bridge."""
-
-    def execute(
-        self,
-        launch: EngineLaunchSpec,
-        binding: TrustedLaunchBinding,
-        mount: TrustedArenaModelMountReceipt,
-        plan: SessionExecutionPlan,
-        *,
-        deadline: float,
-    ) -> EngineExecutionEvidence: ...
+ExecutableArm = MarginalArmPlan
+RuntimeSource = MarginalArmPlan | CohortPlan
 
 
 def _digest(value: object, *, field: str) -> str:
@@ -238,7 +217,7 @@ class PreparedCandidateRuntime:
     session_plan: SessionExecutionPlan
 
     def __post_init__(self) -> None:
-        if type(self.arm) not in {MarginalArmPlan, DiscoveryArmPlan}:
+        if type(self.arm) is not MarginalArmPlan:
             raise MarginalRuntimeError("candidate arm has an unsupported type")
         if type(self.binding) is not MaterializedArmBinding:
             raise MarginalRuntimeError("candidate binding has the wrong type")
@@ -264,7 +243,7 @@ class PreparedMarginalRuntime:
     candidates: tuple[PreparedCandidateRuntime, ...]
 
     def __post_init__(self) -> None:
-        if type(self.source) not in {MarginalArmPlan, CohortPlan, DiscoveryArmPlan}:
+        if type(self.source) not in {MarginalArmPlan, CohortPlan}:
             raise MarginalRuntimeError("runtime source has an unsupported type")
         if type(self.incumbent_binding) is not MaterializedArmBinding:
             raise MarginalRuntimeError("incumbent binding has the wrong type")
@@ -280,7 +259,7 @@ class PreparedMarginalRuntime:
             raise MarginalRuntimeError("prepared runtime requires typed candidates")
         expected = (
             (self.source,)
-            if type(self.source) in {MarginalArmPlan, DiscoveryArmPlan}
+            if type(self.source) is MarginalArmPlan
             else self.source.execution_arms
         )
         if tuple(candidate.arm for candidate in self.candidates) != expected:
@@ -295,90 +274,6 @@ class PreparedMarginalRuntime:
         if self.baseline_session_plan.launch_digest != self.baseline_launch.digest:
             raise MarginalRuntimeError("baseline session plan names another launch")
         _validate_prepared_runtime(self)
-
-@dataclass(frozen=True)
-class CandidateLifecycleEvidence:
-    """Raw C execution bound to its trusted arm label outside engine identity."""
-
-    candidate: PreparedCandidateRuntime
-    execution: EngineExecutionEvidence
-
-    def __post_init__(self) -> None:
-        if type(self.candidate) is not PreparedCandidateRuntime:
-            raise MarginalRuntimeError("candidate evidence binding has the wrong type")
-        if type(self.execution) is not EngineExecutionEvidence:
-            raise MarginalRuntimeError("candidate execution evidence has the wrong type")
-        if self.execution.launch_digest != self.candidate.launch.digest:
-            raise MarginalRuntimeError("candidate evidence launch binding is invalid")
-
-    @property
-    def arm(self) -> ExecutableArm:
-        return self.candidate.arm
-
-@dataclass(frozen=True)
-class MarginalLifecycleEvidence:
-    """Complete raw lifecycle facts; deliberately has no score or canonical verdict.
-
-    The default shape is the historical ``B, C1..Ck, B'``. With repeated candidate
-    reads (speed evidence policy, 2026-07-16: one C read cannot measure the
-    candidate's own boot draw — 7.2% spread was measured between two honest
-    candidate legs at fixed work), the run extends to ``B, C1..Ck, B', C1'..Ck',
-    B''`` and the extra legs land in ``candidates_repeat`` / ``baseline_third`` —
-    both present or both absent, so a repeat read is always bookended.
-    """
-
-    prepared: PreparedMarginalRuntime
-    baseline_before: EngineExecutionEvidence
-    candidates: tuple[CandidateLifecycleEvidence, ...]
-    baseline_after: EngineExecutionEvidence
-    candidates_repeat: tuple[CandidateLifecycleEvidence, ...] = ()
-    baseline_third: EngineExecutionEvidence | None = None
-
-    def __post_init__(self) -> None:
-        if type(self.prepared) is not PreparedMarginalRuntime:
-            raise MarginalRuntimeError("lifecycle prepared binding has the wrong type")
-        if type(self.baseline_before) is not EngineExecutionEvidence or type(
-            self.baseline_after
-        ) is not EngineExecutionEvidence:
-            raise MarginalRuntimeError("baseline lifecycle evidence has the wrong type")
-        object.__setattr__(self, "candidates", tuple(self.candidates))
-        object.__setattr__(self, "candidates_repeat", tuple(self.candidates_repeat))
-        if not self.candidates or any(
-            type(row) is not CandidateLifecycleEvidence for row in self.candidates
-        ):
-            raise MarginalRuntimeError("lifecycle candidates are invalid")
-        if (
-            self.baseline_before.launch_digest != self.prepared.baseline_launch.digest
-            or self.baseline_after.launch_digest != self.prepared.baseline_launch.digest
-            or tuple(row.candidate for row in self.candidates)
-            != self.prepared.candidates
-        ):
-            raise MarginalRuntimeError("lifecycle evidence was relabeled or reordered")
-        if bool(self.candidates_repeat) != (self.baseline_third is not None):
-            raise MarginalRuntimeError(
-                "repeated candidate reads require the third baseline bookend (and vice versa)"
-            )
-        if self.candidates_repeat:
-            if any(
-                type(row) is not CandidateLifecycleEvidence
-                for row in self.candidates_repeat
-            ) or tuple(row.candidate for row in self.candidates_repeat) != self.prepared.candidates:
-                raise MarginalRuntimeError("repeat-read lifecycle rows were relabeled or reordered")
-            if (
-                type(self.baseline_third) is not EngineExecutionEvidence
-                or self.baseline_third.launch_digest != self.prepared.baseline_launch.digest
-            ):
-                raise MarginalRuntimeError("third baseline lifecycle evidence has the wrong type")
-
-    @property
-    def final_baseline(self) -> EngineExecutionEvidence:
-        """The last baseline executed — B'' when repeat reads ran, else B-prime.
-        Teardown/quiescence ordering must bind to THIS leg."""
-        return self.baseline_third if self.baseline_third is not None else self.baseline_after
-
-    @property
-    def source(self) -> RuntimeSource:
-        return self.prepared.source
 
 def _require_context(
     launch: EngineLaunchSpec, expected_context: EvaluationStackContext
@@ -443,46 +338,6 @@ def _resolve_materialized_binding(
     _require_resolved_tree(launch, binding)
 
 
-def _require_discovery_tree(
-    launch: EngineLaunchSpec,
-    binding: MaterializedArmBinding,
-    arm: DiscoveryArmPlan,
-) -> None:
-    tree = binding.tree
-    if (
-        tree.stack_digest != arm.candidate_stack_digest
-        or tree.tree_digest != arm.candidate_tree_digest
-    ):
-        raise MarginalRuntimeError("discovery tree differs from its candidate arm")
-    try:
-        discovery = reopen_discovery_engine_binding(tree)
-    except (OSError, TypeError, ValueError) as exc:
-        raise MarginalRuntimeError(
-            f"discovery engine tree failed to reopen: {exc}"
-        ) from None
-    if (
-        discovery.materialized_tree != tree
-        or discovery.incumbent_stack_digest != arm.incumbent.digest
-        or discovery.incumbent_tree_digest != arm.incumbent_tree_digest
-        or discovery.discovery.proposal_digest != arm.proposal_digest
-        or discovery.policy.digest != arm.policy_digest
-        or discovery.build_profile.digest != arm.build_profile_digest
-    ):
-        raise MarginalRuntimeError("discovery tree metadata differs from its arm")
-    metadata = _tree_metadata(tree)
-    expected_manifest = "manifest.toml" if arm.incumbent.entries else None
-    if (
-        metadata.get("stack_digest") != arm.candidate_stack_digest
-        or metadata.get("contributions") != _expected_contributions(arm.incumbent)
-        or metadata.get("runtime_manifest") != expected_manifest
-        or tree.runtime_manifest != expected_manifest
-    ):
-        raise MarginalRuntimeError(
-            "discovery tree changed the incumbent contribution inventory"
-        )
-    _require_resolved_tree(launch, binding)
-
-
 def _require_baseline_session(
     launch: EngineLaunchSpec,
     binding: TrustedLaunchBinding,
@@ -532,15 +387,14 @@ def _candidate_runtime(
         tree_digest=arm.challenger.tree_digest,
         native_build_spec_digest=candidate_local.native_build_spec.digest,
     )
-    if type(arm) is MarginalArmPlan:
-        _resolve_materialized_binding(
-            candidate_launch,
-            candidate_binding,
-            arm.candidate,
-            expected_tree_digest=arm.challenger.tree_digest,
-        )
-    else:
-        _require_discovery_tree(candidate_launch, candidate_binding, arm)
+    if type(arm) is not MarginalArmPlan:
+        raise MarginalRuntimeError("candidate arm has an unsupported type")
+    _resolve_materialized_binding(
+        candidate_launch,
+        candidate_binding,
+        arm.candidate,
+        expected_tree_digest=arm.challenger.tree_digest,
+    )
     receipt = candidate_local.runtime_preflight_receipt
     if type(receipt) is not RuntimePreflightReceipt:
         raise MarginalRuntimeError("candidate lacks a typed runtime preflight")
@@ -549,11 +403,6 @@ def _candidate_runtime(
         baseline_session,
         launch_digest=candidate_launch.digest,
         expected_preflight=candidate_preflight,
-        expected_discovery_overlay_identity_digest=(
-            arm.overlay_identity_digest
-            if type(arm) is DiscoveryArmPlan
-            else None
-        ),
     )
     return PreparedCandidateRuntime(
         arm,
@@ -668,323 +517,11 @@ def prepare_marginal_runtime(
     )
 
 
-def prepare_cohort_runtime(
-    cohort: CohortPlan,
-    *,
-    catalog: TargetCatalog,
-    expected_context: EvaluationStackContext,
-    incumbent_launch: EngineLaunchSpec,
-    incumbent_binding: MaterializedArmBinding,
-    candidate_bindings: Mapping[str, MaterializedArmBinding],
-    baseline_session_plan: SessionExecutionPlan,
-) -> PreparedMarginalRuntime:
-    """Reopen a sealed cohort and bind B,C1..Ck,B-prime in execution order."""
-
-    if type(cohort) is not CohortPlan or type(catalog) is not TargetCatalog:
-        raise MarginalRuntimeError("cohort or catalog has the wrong type")
-    try:
-        cohort.reopen(catalog=catalog, expected_context=expected_context)
-    except (StackPlanError, ValueError, TypeError) as exc:
-        raise MarginalRuntimeError(f"cohort is stale or invalid: {exc}") from None
-    return _prepare(
-        cohort,
-        cohort.execution_arms,
-        expected_context=expected_context,
-        incumbent_launch=incumbent_launch,
-        incumbent_binding=incumbent_binding,
-        candidate_bindings=candidate_bindings,
-        baseline_session_plan=baseline_session_plan,
-    )
-
-
-def prepare_discovery_runtime(
-    arm: DiscoveryArmPlan,
-    *,
-    expected_context: EvaluationStackContext,
-    incumbent_launch: EngineLaunchSpec,
-    incumbent_binding: MaterializedArmBinding,
-    candidate_binding: MaterializedArmBinding,
-    baseline_session_plan: SessionExecutionPlan,
-) -> PreparedMarginalRuntime:
-    """Bind one resolved discovery arm without admitting it to the catalog."""
-
-    if type(arm) is not DiscoveryArmPlan:
-        raise MarginalRuntimeError("discovery arm has the wrong type")
-    try:
-        arm.incumbent.validate_against(expected_context)
-    except (TypeError, ValueError) as exc:
-        raise MarginalRuntimeError(
-            f"discovery arm is stale for this stack context: {exc}"
-        ) from None
-    return _prepare(
-        arm,
-        (arm,),
-        expected_context=expected_context,
-        incumbent_launch=incumbent_launch,
-        incumbent_binding=incumbent_binding,
-        candidate_bindings={arm.selected_delta_digest: candidate_binding},
-        baseline_session_plan=baseline_session_plan,
-    )
-
-
-def _require_execution(
-    execution: object,
-    *,
-    launch: EngineLaunchSpec,
-    binding: TrustedLaunchBinding,
-    mount: TrustedArenaModelMountReceipt,
-    plan: SessionExecutionPlan,
-    seen_sessions: set[str],
-    seen_device_launches: set[str],
-    seen_request_ids: set[str],
-    seen_nonces: set[str],
-    seen_runtime_policies: set[str],
-    expected_schema: str = "cacheon.oci-engine-execution.v1",
-) -> EngineExecutionEvidence:
-    if type(execution) is not EngineExecutionEvidence:
-        raise MarginalRuntimeError("executor returned the wrong evidence type")
-    receipt = binding.runtime_preflight_receipt
-    if type(receipt) is not RuntimePreflightReceipt:
-        raise MarginalRuntimeError("execution binding lacks a typed runtime preflight")
-    expected_runtime = runtime_identity_from_preflight(receipt)
-    if (
-        execution.schema != expected_schema
-        or execution.launch_digest != launch.digest
-        or execution.runtime_identity != expected_runtime
-        or execution.runtime_preflight_receipt_sha256 != receipt.sha256
-        or execution.arena_model_receipt_digest != mount.digest
-        or execution.prebuild.launch_digest != launch.digest
-        or execution.prebuild.build_spec_digest != binding.native_build_spec.digest
-        or execution.prebuild.publication.build_spec_digest
-        != binding.native_build_spec.digest
-        or execution.native_publication_digest
-        != execution.prebuild.publication.publication_digest
-    ):
-        raise MarginalRuntimeError("executor evidence differs from launch/build/model identity")
-    runtime_policy = _digest(
-        execution.resource_policy_digest, field="execution runtime resource policy"
-    )
-    seen_runtime_policies.add(runtime_policy)
-    if len(seen_runtime_policies) != 1:
-        raise MarginalRuntimeError("executor changed runtime resource policy between arms")
-    session = execution.session
-    if (
-        session.launch_digest != launch.digest
-        or session.preflight != plan.expected_preflight
-        or session.warmup_count != plan.warmup_count
-        or session.conditioning_count != plan.conditioning_count
-        or len(session.batches) != len(plan.prompt_batches)
-        or tuple(row.batch_index for row in session.batches)
-        != tuple(range(len(plan.prompt_batches)))
-    ):
-        raise MarginalRuntimeError("session evidence differs from the common workload")
-    expected_discovery = plan.expected_discovery_overlay_identity_digest
-    activation = session.discovery_activation
-    if expected_discovery is None:
-        if activation is not None:
-            raise MarginalRuntimeError(
-                "ordinary session acquired discovery activation evidence"
-            )
-    elif (
-        type(activation) is not DiscoveryActivationReceipt
-        or activation.overlay_identity_digest != expected_discovery
-        or activation.tp_size != plan.engine_config.tp_size
-        or activation.driver_origin.version != plan.expected_preflight.sglang_version
-    ):
-        raise MarginalRuntimeError(
-            "discovery session activation differs from its launch policy"
-        )
-    if session.session_id in seen_sessions:
-        raise MarginalRuntimeError("executor replayed a prior session identity")
-    request_ids = tuple(row.request_id for row in session.batches)
-    nonces = tuple(row.nonce for row in session.batches)
-    if (
-        len(set(request_ids)) != len(request_ids)
-        or len(set(nonces)) != len(nonces)
-        or set(request_ids) & seen_request_ids
-        or set(nonces) & seen_nonces
-    ):
-        raise MarginalRuntimeError("executor replayed request or nonce identity")
-    for index, row in enumerate(session.batches):
-        expected_tokens = len(plan.prompt_batches[index]) * plan.max_new_tokens
-        if (
-            row.token_numerator != expected_tokens
-            or row.evidence.observed_tokens != expected_tokens
-        ):
-            raise MarginalRuntimeError("session token evidence differs from the workload")
-    device_launches = {row.launch_id for row in execution.device_receipts}
-    if len(device_launches) != 1:
-        raise MarginalRuntimeError("device receipts do not share one launch identity")
-    device_launch = next(iter(device_launches))
-    if device_launch in seen_device_launches:
-        raise MarginalRuntimeError("executor replayed a prior device launch identity")
-    seen_sessions.add(session.session_id)
-    seen_device_launches.add(device_launch)
-    seen_request_ids.update(request_ids)
-    seen_nonces.update(nonces)
-    return execution
-
-
-def run_marginal_lifecycle(
-    prepared: PreparedMarginalRuntime,
-    *,
-    executor: EngineExecutor,
-    model_mount: TrustedArenaModelMountReceipt,
-    deadline: float,
-    candidate_reads: int = 1,
-) -> MarginalLifecycleEvidence:
-    """Execute exactly B,C1..Ck,B-prime — or, with ``candidate_reads=2``, the
-    extended B,C1..Ck,B',C1'..Ck',B'' — or raise without a partial receipt.
-
-    ``candidate_reads`` is an evidence-GENERATION policy, not a grading threshold:
-    more reads let the scorer measure the candidate's own boot draw (score_speedup
-    gates on the worse of baseline/candidate spread when two reads exist). It
-    deliberately lives here, not in SpeedCalibration, so calibration digests are
-    untouched and the historical single-read shape stays the default.
-    """
-
-    if type(prepared) is not PreparedMarginalRuntime:
-        raise MarginalRuntimeError("prepared runtime has the wrong type")
-    if type(candidate_reads) is not int or candidate_reads not in (1, 2):
-        raise MarginalRuntimeError("candidate_reads must be exactly 1 or 2")
-    _validate_prepared_runtime(prepared)
-    if type(model_mount) is not TrustedArenaModelMountReceipt:
-        raise MarginalRuntimeError("model_mount has the wrong type")
-    if (
-        isinstance(deadline, bool)
-        or not isinstance(deadline, (int, float))
-        or not math.isfinite(float(deadline))
-        or deadline <= 0
-    ):
-        raise MarginalRuntimeError("deadline must be one finite positive absolute value")
-    if (
-        model_mount.arena_digest != prepared.baseline_launch.arena_digest
-        or model_mount.model_revision_digest
-        != prepared.baseline_launch.model_revision_digest
-        or model_mount.model_manifest_digest
-        != prepared.baseline_launch.model_manifest_digest
-        or model_mount.model_content_digest
-        != prepared.baseline_launch.model_content_digest
-    ):
-        raise MarginalRuntimeError("model mount differs from the prepared launch identity")
-
-    seen_sessions: set[str] = set()
-    seen_device_launches: set[str] = set()
-    seen_request_ids: set[str] = set()
-    seen_nonces: set[str] = set()
-    seen_runtime_policies: set[str] = set()
-
-    def execute(
-        launch: EngineLaunchSpec,
-        binding: TrustedLaunchBinding,
-        plan: SessionExecutionPlan,
-    ) -> EngineExecutionEvidence:
-        raw = executor.execute(
-            launch,
-            binding,
-            model_mount,
-            plan,
-            deadline=deadline,
-        )
-        return _require_execution(
-            raw,
-            launch=launch,
-            binding=binding,
-            mount=model_mount,
-            plan=plan,
-            seen_sessions=seen_sessions,
-            seen_device_launches=seen_device_launches,
-            seen_request_ids=seen_request_ids,
-            seen_nonces=seen_nonces,
-            seen_runtime_policies=seen_runtime_policies,
-        )
-
-    baseline_before = execute(
-        prepared.baseline_launch,
-        prepared.incumbent_binding.launch_binding,
-        prepared.baseline_session_plan,
-    )
-    candidates: list[CandidateLifecycleEvidence] = []
-    for candidate_index, candidate in enumerate(prepared.candidates):
-        try:
-            execution = execute(
-                candidate.launch,
-                candidate.binding.launch_binding,
-                candidate.session_plan,
-            )
-        except OuterSessionWorkerError as exc:
-            raise CandidateArmWorkerError(
-                candidate_index=candidate_index,
-                selected_delta_digest=candidate.arm.selected_delta_digest,
-                arm_digest=candidate.arm.digest,
-                launch_digest=candidate.launch.digest,
-                worker_error=exc,
-            ) from exc
-        candidates.append(
-            CandidateLifecycleEvidence(
-                candidate,
-                execution,
-            )
-        )
-    baseline_after = execute(
-        prepared.baseline_launch,
-        prepared.incumbent_binding.launch_binding,
-        prepared.baseline_session_plan,
-    )
-    candidates_repeat: list[CandidateLifecycleEvidence] = []
-    baseline_third: EngineExecutionEvidence | None = None
-    if candidate_reads == 2:
-        for candidate_index, candidate in enumerate(prepared.candidates):
-            try:
-                execution = execute(
-                    candidate.launch,
-                    candidate.binding.launch_binding,
-                    candidate.session_plan,
-                )
-            except OuterSessionWorkerError as exc:
-                # C-prime is candidate-owned to exactly the same degree as C.  Do
-                # not let a repeat-read worker failure fall through as a shared
-                # B/B-prime/B-double-prime infrastructure failure and strand the
-                # rest of a cohort.
-                raise CandidateArmWorkerError(
-                    candidate_index=candidate_index,
-                    selected_delta_digest=candidate.arm.selected_delta_digest,
-                    arm_digest=candidate.arm.digest,
-                    launch_digest=candidate.launch.digest,
-                    worker_error=exc,
-                ) from exc
-            candidates_repeat.append(
-                CandidateLifecycleEvidence(
-                    candidate,
-                    execution,
-                )
-            )
-        baseline_third = execute(
-            prepared.baseline_launch,
-            prepared.incumbent_binding.launch_binding,
-            prepared.baseline_session_plan,
-        )
-    return MarginalLifecycleEvidence(
-        prepared,
-        baseline_before,
-        tuple(candidates),
-        baseline_after,
-        tuple(candidates_repeat),
-        baseline_third,
-    )
-
-
 __all__ = [
     "CandidateArmWorkerError",
-    "CandidateLifecycleEvidence",
-    "EngineExecutor",
-    "MarginalLifecycleEvidence",
     "MarginalRuntimeError",
     "MaterializedArmBinding",
     "PreparedCandidateRuntime",
     "PreparedMarginalRuntime",
-    "prepare_cohort_runtime",
-    "prepare_discovery_runtime",
     "prepare_marginal_runtime",
-    "run_marginal_lifecycle",
 ]

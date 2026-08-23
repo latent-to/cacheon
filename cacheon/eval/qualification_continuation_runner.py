@@ -17,7 +17,6 @@ class QualificationContinuationRunnerSeams:
     """Runner-owned operations consumed by the extracted continuation stage."""
 
     qualification_decision: Any
-    discovery_candidate_authority_type: type[Any]
     qualification_stage_exit_type: type[Any]
     quality_continuation_type: type[Any]
     audit_continuation_type: type[Any]
@@ -25,9 +24,7 @@ class QualificationContinuationRunnerSeams:
     qualification_runner_error: type[Exception]
     qualification_continuation_error: type[Exception]
     qualification_authority_digest: Callable[[Any], str]
-    run_marginal_lifecycle: Callable[..., Any]
     run_slot_audits: Callable[..., Any]
-    grade_discovery_execution: Callable[..., Any]
     selection_receipt_type: type[Any]
     cohort_trajectory_digest: Callable[[Any], str]
     lifecycle_causal_completion: Callable[[Any], float]
@@ -58,7 +55,6 @@ class QualificationContinuationStageResult:
     teardown_after: Any | None = None
     t_pre: Any | None = None
     t_post: Any | None = None
-    discovery_grades: dict[str, Any] | None = None
 
 
 def _audit_operation_digest(value: Any, lifecycle: Any, seams: Any) -> str:
@@ -95,7 +91,6 @@ def run_continuation_quality_stage(
     make_id: Callable[[], str],
     continuation: Any | None,
     quality_state: Any | None,
-    resident_mode: bool,
     resident_pair_mode: bool,
     quality_reads: int,
     resident_lifecycle: Any | None,
@@ -162,12 +157,6 @@ def run_continuation_quality_stage(
 
     if quality_state is not None:
         assert continuation is not None
-        if not resident_mode:
-            lifecycle = continuation.load_marginal_speed(value.prepared)
-            if lifecycle is None:
-                raise seams.qualification_continuation_error(
-                    "quality continuation exists without its speed continuation"
-                )
         audit_operation = _audit_operation_digest(value, lifecycle, seams)
         audit_state = continuation.load_audit(audit_operation)
         if audit_state is None:
@@ -181,7 +170,7 @@ def run_continuation_quality_stage(
             raise seams.qualification_continuation_error(
                 "quality continuation audit coverage differs from the sealed cohort"
             )
-        if resident_mode and any(
+        if any(
             row.decision is not seams.qualification_decision.PASS
             for row in audit_witnesses.values()
         ):
@@ -196,14 +185,6 @@ def run_continuation_quality_stage(
         requests = quality_state.requests
         reference_execution = quality_state.reference_execution
         teardown_after = quality_state.teardown_after
-        discovery_grades: dict[str, Any] = {}
-        for authority in value.candidates:
-            if type(authority) is seams.discovery_candidate_authority_type:
-                discovery_grades[authority.selected_delta_digest] = (
-                    seams.grade_discovery_execution(
-                        authority.execution_requirement, lifecycle
-                    )
-                )
         selection = seams.selection_receipt_type.reveal(
             value.commitment,
             secret=value.selection_secret,
@@ -251,22 +232,6 @@ def run_continuation_quality_stage(
             )
     else:
         with executor.exclusive_transaction():
-            if not resident_mode:
-                lifecycle = (
-                    None
-                    if continuation is None
-                    else continuation.load_marginal_speed(value.prepared)
-                )
-                if lifecycle is None:
-                    lifecycle = seams.run_marginal_lifecycle(
-                        value.prepared,
-                        executor=executor,
-                        model_mount=value.model_mount,
-                        deadline=float(deadline),
-                        candidate_reads=value.speed_evidence_policy.candidate_reads,
-                    )
-                    if continuation is not None:
-                        continuation.record_marginal_speed(lifecycle)
             audit_operation = _audit_operation_digest(value, lifecycle, seams)
             audit_state = (
                 None if continuation is None
@@ -304,7 +269,7 @@ def run_continuation_quality_stage(
                 audit_started = audit_state.audit_started
                 audit_completed = audit_state.audit_completed
                 audit_last_completed = audit_state.audit_last_completed
-            if resident_mode and any(
+            if any(
                 row.decision is not seams.qualification_decision.PASS
                 for row in audit_witnesses.values()
             ):
@@ -320,14 +285,6 @@ def run_continuation_quality_stage(
                     teardown,
                     passed=False,
                 )
-            discovery_grades = {}
-            for authority in value.candidates:
-                if type(authority) is seams.discovery_candidate_authority_type:
-                    discovery_grades[authority.selected_delta_digest] = (
-                        seams.grade_discovery_execution(
-                            authority.execution_requirement, lifecycle
-                        )
-                    )
             teardown_before = executor.prove_quiescent()
             # Bind quiescence to the FINAL executed baseline (B'' under repeat
             # reads, B-prime otherwise) — baseline_after is mid-run in the
@@ -488,7 +445,6 @@ def run_continuation_quality_stage(
         teardown_after,
         t_pre,
         t_post,
-        discovery_grades,
     )
 
 

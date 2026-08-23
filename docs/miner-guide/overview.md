@@ -49,10 +49,10 @@ That sentence contains the whole discipline:
 | replaces one published callable seam | singleton component target | the catalog already defines its ABI and reward identity |
 | must replace every member of a published coupled seam | registered atomic target | one measured/rewarded delta owns the coupled semantics |
 | specializes one slot for a narrow shape or topology | component variant with an explicit capability domain | the incumbent safely handles non-matching calls |
-| changes scheduler/model-executor behavior or proposes a new seam | discovery proposal | the change crosses the closed component ABI |
+| changes scheduler/model-executor behavior or proposes a new seam | not submittable; a reviewed catalog change must register the seam first | the change crosses the closed component ABI |
 | only changes how reviewed contributions are packaged or served | product integration, not mining | release authority is separate from competition authority |
 
-Do not force a discovery-shaped idea into a component bundle by vendoring SGLang or
+Do not force a cross-cutting idea into a component bundle by vendoring SGLang or
 using `setup`. No registered target currently permits engine-wide setup, and legacy
 `mode = "system"` is not crownable.
 
@@ -139,7 +139,6 @@ and [arena_service.py](https://github.com/latent-to/cacheon/blob/main/cacheon/ar
 
 Reward details depend on the policy announced by the operator; a local speedup is
 never enough to estimate income. Read [How miners earn rewards](incentives.md).
-Cross-cutting work follows the separate [Discovery lane](discovery-lane.md).
 
 ## Your development loop
 
@@ -167,9 +166,8 @@ Use the technical guide in this order:
 6. [Submitting](submitting.md) — copy-paste chain-submit sequence, including eval-cost
 7. [Diagnostics](diagnostics.md)
 
-Read [Override points](override-points.md), [Dependency patches](dep-patches.md),
-and [Discovery lane](discovery-lane.md) only when the registered target or
-proposal class requires them.
+Read [Override points](override-points.md) and [Dependency patches](dep-patches.md)
+only when the registered target requires them.
 
 At the end of the sequence you should be able to answer, with concrete identities:
 

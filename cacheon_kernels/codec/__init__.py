@@ -7,10 +7,8 @@ from cacheon_kernels.codec.nvfp4 import (
     NVFP4_MAX,
     deinterleave_w13_halves,
     dequantize_nvfp4,
-    gemm_alpha,
     interleave_w13_halves,
     quantize_nvfp4,
-    scalarize_scale,
     swizzle_blockscale,
     unswizzle_blockscale,
 )
@@ -24,6 +22,4 @@ __all__ = [
     "deinterleave_w13_halves",
     "swizzle_blockscale",
     "unswizzle_blockscale",
-    "scalarize_scale",
-    "gemm_alpha",
 ]

@@ -82,9 +82,8 @@ The evidence classes are intentionally non-substitutable:
   S3-compatible endpoint and proves anonymous HTTPS reopen through the production
   validator fetcher. Hippius and MinIO are optional configuration presets, not
   protocol identities.
-- Replayed discovery proposals are terminally disposed or deduplicated before
-  screening. Legacy schema-3 single-PASS migration holds are non-crownable and
-  have an evidence-preserving archive command.
+- Legacy schema-3 single-PASS migration holds are non-crownable and have an
+  evidence-preserving archive command.
 - Optional eval-cost admission (default off) requires a coldkey
   `Balances.transfer_keep_alive` of the published TAO amount to the current
   subnet owner coldkey, bound by a content-hash remark and consumed once. v1
@@ -174,7 +173,8 @@ plans fail closed.
 
 The abbreviated-serving stage may keep a stock engine resident and hot-swap a
 bounded candidate queue. Each swap is generation-bound, triggers graph
-recapture, and is checked by shared stock brackets and contamination canaries.
+recapture, and is checked by shared stock brackets, contamination canaries, and
+exact all-rank fired/completed evidence before promotion.
 The calibrated screen policy is retained by the arena provider. Graph-enabled
 B300 screen engines set SGLang `watchdog_timeout=1800` so the default 300s
 scheduler watchdog cannot SIGKILL ranks mid CUDA-graph capture on the live
@@ -198,6 +198,50 @@ not safely hot-swappable. They receive a typed screen waiver and proceed to
 dedicated qualification. A waiver and a screen promotion are routing products,
 not qualification evidence.
 
+### One workload authority (2026-08-21)
+
+Until 2026-08-21 the manifest declared a hand-written two-regime workload
+mixture (decode 256-token/concurrency-32 plus long-prefill 8,192-token) that
+no execution path consumed, while the scored session actually ran the sealed
+corpus's short prompts (40–230 actual input tokens, median 74) at 256 output
+tokens. Retained mainnet evidence surfaced the split on 2026-08-21. Current
+source removes the mixture schema entirely: the sealed prompt authority
+declares the exact scored workload cell (engine-observed input tokens, output
+budget, concurrency, timed reads), the manifest embeds that declaration, the
+sealed batches are validated against the cell at parse, the engine
+configuration (context length, admission width, radix-cache disable) derives
+from the cell, and commissioning fails closed on any session/policy mismatch.
+The declared and consumed workloads are projections of one object and cannot
+diverge. Each read's evidence additionally carries the engine-observed prompt
+token count per request, validated against the cell at the protocol boundary;
+a mismatch or missing count is an infrastructure fault, never a candidate
+verdict.
+
+### Sealed family closure (2026-08-21)
+
+An `ArenaServiceManifest` seals `closed_targets`: registered families its
+commissioned workload cannot measure, taken from the sealed commissioning
+inputs and validated against the target catalog. Intake parks a proposal for
+a closed target at the fingerprint step with reason
+`target_unavailable:<target>` and decision `NO_DECISION` — replay never
+echoes it — and releases the cited eval-cost payment pointer or admission
+credit in the same transaction. Before this, a closed family could only be
+marked in documentation while intake charged and evaluated against a
+workload that could not resolve it.
+
+### Graded speed-failure reasons (2026-08-21)
+
+Until 2026-08-21 every speed FAIL was published as `speed_regression`,
+including in-band misses: retained report 162dee6a recorded a 1.00338×
+speedup against a 1.01024× bar — a 0.685-point miss inside the round's noise
+band — as a regression. Current source grades the reason with the verdict:
+`candidate_slower` requires the speedup below the mirrored bound 1 − u for a
+bar of 1 + u, or a directly measured conditioning regression;
+`speed_threshold_not_met` covers the band. The reason is produced by the
+witness graders and carried through stage exits, reports, and miner feedback;
+report composition refuses a speed FAIL that arrives without it. Reports and
+stage exits settled earlier revalidate under their retained coarse code.
+
 ### Resident adaptive qualification
 
 Since **2026-08-16** resident speed policy **version 7** swaps both arms. Under
@@ -206,21 +250,16 @@ candidate role a measured advantage on identical work: a bundle audited
 `aot_invoked:0` read 0.9–2.7% fast in the C role across six runs and both
 physical orientations, of which position explained 0.117% and the physical lane
 none. Under version 7 the baseline takes a stock-to-stock swap of its own, so
-neither role is measured unswapped. Version 7 also transports a per-rank
-execution count for the activation generation a swap closes. Before this, the
-resident lane emitted no such evidence — it is launched stock, so the one-shot
-driver's `active`-gated receipt directory was never created for it, and
-registration was the only thing the crossover could observe.
-
-The current enforcement boundary is narrower than the schema: at the PR #95
-merge, `ENFORCE_EXECUTION_EVIDENCE = False`. Counts are minted and incomplete
-proof is logged, but the pair-native guard does not decide a verdict. It was
-disarmed after its first live use held paid work before a successful complete
-rank set had been observed and before clean-exit stderr was retained. The
-committed re-arm criterion is one independently known executing candidate that
-reports the full expected rank set. Until then, pair-native non-invocation is a
-visible residual risk, not a closed control. Direct-artifact and one-shot
-execution coverage remain separately enforced.
+neither role is measured unswapped. The swap also reports the per-rank execution
+count for the generation it closes. That count remained diagnostic-only until
+2026-08-21, when retained mainnet evidence showed a candidate at 0/4 ranks had
+still received a speed verdict. Current source unconditionally holds the leg
+unless every rank completed the candidate under exactly the activation
+generation. Unobserved or incomplete evidence is an infrastructure
+HOLD/non-verdict, never candidate PASS or FAIL. Before version 7 the resident
+lane emitted no execution evidence at all — it is launched stock, so the
+one-shot driver's `active`-gated receipt directory was never created for it,
+and registration was the only thing the crossover could observe.
 
 Since **2026-08-18** resident speed policy **version 8** serves candidates that
 cannot be hot-swapped into a loaded engine. A bundle declaring CUDA, C++ or PTX
@@ -260,6 +299,14 @@ authorities now survive controller-code revisions instead of being
 invalidated by every commit. Calibration packages sealed under the earlier
 eleven-field context shape do not parse under this contract and are resealed
 from their durable inputs, not re-measured.
+
+Since **2026-08-21**, commissioning refuses a resident-speed `min_windows`
+floor above the workload cell's timed reads: an unsatisfiable evidence floor
+is a commissioning error, not a runtime refusal discovered after a measured
+run. A proposed policy-only calibration relabel was removed before deployment:
+the nested reference identity still changed with the arena, and downstream
+quality binding required exact context equality. Fast recommissioning must
+make the fresh durable seal inexpensive instead of weakening that identity.
 
 Providers commissioned on **2026-08-10** sealed resident speed policy
 **version 4**: every timed read is graded (the version-3 mid-run
@@ -430,6 +477,22 @@ mode deliberately trusts configured raw storage. A valid old authenticated
 envelope can still be replayed within the bounded follower freshness window,
 and storage, gateway, push-secret, response-hotkey, signer-wallet, and host-root
 availability/custody remain deployment responsibilities.
+
+### Removed discovery lane (2026-08-19)
+
+On **2026-08-19** the fenced discovery lane — the separate discovery proposal
+ABI, overlay build/activation, discovery arm qualification, and every
+discovery branch in intake, settlement, OCI session, and qualification code
+(`discovery.py`, `discovery_overlay.py`, and the lane's tests and guide) — was
+removed. It never admitted a production proposal: the live store holds zero
+discovery reservations or claims. Work that does not fit a registered target
+is now refused at resolution. Durable shapes are preserved unchanged: the
+settlement `lane` field (value set narrowed to `registered`), the submitted-delta
+`product_kind` (narrowed to `component`), the always-`None` session-plan key
+`expected_discovery_overlay_identity_digest` in its digest domains, the
+`DISCOVERY_BOUNTY` settlement event vocabulary, and the legacy V1
+discovery-bounty economics and tables, which stay fenced V1 schema. Complete
+implementation remains in Git history at the parent of the removing commit.
 
 ### Inactive V2 finite debt
 
@@ -884,6 +947,15 @@ follow-weights
 The local miner loop is `scan` plus `verify`. Complete-engine performance and
 quality authority begins with a deployment-injected arena provider.
 
+### MiniMax-M3 plain-MoE NVFP4 contract smoke (2026-08-22)
+
+Source `70bffb8f` on one B300, in sealed image `a7cbc41a` (SGLang
+`g56e290315`, FlashInfer `0.6.12`, Torch `2.11.0+cu130`), passed BF16 eager
+verification, CUDA capture, and three dynamic replays for the validator-owned
+`nvfp4_layer` view (`cosine=1.00000`, maximum absolute error `5.969e-05`).
+This is contract/graph evidence only: no finalized M3 layer, TP4 live seam,
+full model, quality authority, or performance claim was exercised.
+
 ## Deployment boundary
 
 A live netuid-14 deployment exists and has produced the dated mainnet control-plane
@@ -918,4 +990,3 @@ in for that proof.
 - [Settlement](https://github.com/latent-to/cacheon/blob/main/cacheon/settlement.py)
 - [Legacy publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weights.py)
 - [Reserved V2 schema](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/reserved_schema.py)
-- [Release construction](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py)

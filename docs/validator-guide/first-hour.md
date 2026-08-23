@@ -220,7 +220,7 @@ review all of the following as one service identity:
 
 1. exact runtime, base engine, validator overlay, worker distribution, model revision,
    model content, GPU architecture, topology, GPU count, and TP size;
-2. prompt-corpus digest, seed scheme, decode and long-prefill regimes, and exact shapes;
+2. prompt-corpus digest, seed scheme, and the exact scored workload cells;
 3. queue, screen, qualification, cohort, age, and retry bounds;
 4. five ordered non-crown screen timeouts plus resident-screen swap, canary, waiver,
    and lifetime policy;
@@ -313,8 +313,7 @@ pinned public key. Release construction, signing, registry publication, and serv
 launch are reviewed programmatic deployment APIs, not public CLI commands.
 
 Do not call the validator commissioned merely because unit and slice tests pass. The
-release plane requires the complete
-[publication checklist](../engine/release-workflow.md#publication-checklist): clean-wheel
+serving plane requires the complete publication checklist: clean-wheel
 closure, provider-specific native proof, builder-authenticated reproducible OCI outputs,
 closed effective serving policy, serving at the approved topology, and bound serve
 receipts. The evaluation plane separately requires a reviewed production

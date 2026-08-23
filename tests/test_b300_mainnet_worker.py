@@ -25,9 +25,8 @@ from cacheon.arena_service import (
     ScreenGrade,
     ScreenStagePolicy,
     ScreenStageResult,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.evaluation_coordinator import (
@@ -358,23 +357,10 @@ def _authorities(tmp_path: Path, executor_factory):
 def _manifest(authorities: B300DeploymentAuthorities) -> ArenaServiceManifest:
     return ArenaServiceManifest(
         runtime=authorities.runtime_identity,
-        workload=WorkloadMixture(
+        workload=Workload(
             _h("prompt-corpus"),
             "sealed-prompt-seeds-v1",
-            (
-                WorkloadRegime(
-                    "decode",
-                    "decode",
-                    500_000,
-                    (ServingShape(256, 128, 8, 8),),
-                ),
-                WorkloadRegime(
-                    "prefill",
-                    "long_prefill",
-                    500_000,
-                    (ServingShape(8192, 16, 1, 8),),
-                ),
-            ),
+            (WorkloadCell("s8", 8192, 1024, 64, 8),),
         ),
         capacity=ArenaCapacityPolicy(32, 100, 2, 8, 4, 2, 3, 3),
         screens=NonCrownScreenPolicy(
@@ -788,6 +774,21 @@ def test_remote_qualification_refuses_lane_or_cohort_drift(
             )
     finally:
         worker.close()
+
+
+def test_resident_hold_preserves_the_root_exception_chain() -> None:
+    try:
+        try:
+            raise RuntimeError("CUDA out of memory")
+        except RuntimeError as inner:
+            raise ValueError("stock restoration failed") from inner
+    except ValueError as failure:
+        hold = worker_module._resident_evidence_hold(
+            _h("request"), _h("authority"), _h("source"), failure
+        )
+    assert hold.failure_type == "ValueError"
+    assert "stock restoration failed" in hold.failure_message
+    assert "CUDA out of memory" in hold.failure_message
 
 
 def test_remote_qualification_stage_is_derived_from_swapped_executor_authority(

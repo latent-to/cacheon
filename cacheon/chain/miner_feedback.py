@@ -52,11 +52,28 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "visible until the kernel is called. Run `cacheon.cli scan` before "
         "submitting; it reports this statically in seconds.",
     ),
+    # Retained coarse vocabulary: reports settled before the band split
+    # recorded every speed FAIL under this one code.
     "speed_regression": (
         "The bundle was correct, compiled, and graph-safe, and was not faster "
         "than the baseline in the timed bracket.",
         "This is an ordinary competitive result, not a defect. The baseline is a "
         "tuned production stack.",
+    ),
+    "speed_threshold_not_met": (
+        "The bundle was correct, compiled, and graph-safe. Its measured "
+        "speedup fell inside the round's noise band: it did not clear the "
+        "required threshold, and it was not measurably slower either.",
+        "This is an ordinary competitive result, not a regression. The bar "
+        "for the round is 1 + max(min_margin, k*noise); a larger win or "
+        "lower run-to-run variance clears it.",
+    ),
+    "candidate_slower": (
+        "The bundle was correct, compiled, and graph-safe, and the timed "
+        "bracket measured it slower than the baseline beyond the round's "
+        "noise band.",
+        "The baseline is a tuned production stack. Profile the kernel "
+        "against the stock implementation before resubmitting.",
     ),
     "graph_member_not_applicable": (
         "The declared CUDA-graph applicability did not hold for the shapes "
@@ -84,6 +101,14 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "Byte-identical content was already submitted.",
         "A FAIL verdict replays onto identical bytes. Change the kernel, not the "
         "packaging.",
+    ),
+    "target_unavailable": (
+        "The commissioned arena workload cannot currently measure this "
+        "registered target family, so the submission was parked before any "
+        "evaluation.",
+        "This is NOT a judgement on the bundle and it was not charged: the "
+        "cited eval-cost payment stays spendable. Resubmit when the family "
+        "reopens; the arena manifest lists closed targets.",
     ),
     "finalized_block_sla_expired": (
         "The submission left the queue on its service-level window without "

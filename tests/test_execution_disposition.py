@@ -192,7 +192,7 @@ def _request_ready_recovery(fixtures, authority, store, plan):
     )
     assert fixtures._materialize(authority, plan).state == "carrier_materialized"
     proof = authority.transport().prove_planned_qualification_prepublication(plan)
-    assert proof.carrier_materialized is True
+    assert proof.state == "carrier_materialized"
     committed = store.commit_recovery_publication(
         prepared, current_block=authority.fixtures.BLOCK
     )

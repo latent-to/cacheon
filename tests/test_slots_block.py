@@ -59,16 +59,15 @@ def test_attention_decode_passes_correctness_cpu():
 
 
 def test_broken_decode_fails_matched_ratio_cpu():
-    # Ignores the seq_lens mask -> attends to ALL padded positions (incl. garbage),
-    # so requests with seq_len < ctx come out wrong -> ratio below min_ratio.
-    def broken(q, k, v, seq_lens, sm_scale, out):
-        Hq, Hkv = q.shape[1], k.shape[2]
-        g = Hq // Hkv
-        k32 = k.float().repeat_interleave(g, dim=2)
-        v32 = v.float().repeat_interleave(g, dim=2)
-        scores = torch.einsum("bhd,bshd->bhs", q.float(), k32) * sm_scale  # NO mask
-        p = torch.softmax(scores, dim=-1)
-        out.copy_(torch.einsum("bhs,bshd->bhd", p, v32).to(out.dtype))
+    # A candidate that ignores the validator-selected blocks cannot pass merely
+    # because it has the right output shape.
+    def broken(
+        q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices,
+        topk_idx, out, sm_scale, block_size,
+    ):
+        del k_cache, v_cache, req_to_token, seq_lens, req_pool_indices
+        del topk_idx, sm_scale, block_size
+        out.copy_(q)
 
     slot = get_slot("attention.decode")
     result = verify_entry(slot, broken, dtype=torch.float32, device="cpu", seed=0)

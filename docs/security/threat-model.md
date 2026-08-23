@@ -66,7 +66,7 @@ proves registered measurement, not safe production source.
 | Candidate tampers with timer or role | Host assigns physical lanes and the exact v7 B/C/[B′] or v8 B/C/B′ roles, owns clocks, validates bounded raw batches/token counts, observes device state, and controls teardown; a reproduction must exchange lane roles | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
 | Candidate fakes quality | Any required audit is collected in a separate eager/untimed role and host-regraded; candidate speed lifetimes are destroyed before candidate-free pristine T teacher-forces sealed trajectories | Reference bugs, audit sampling limits, and finite hidden-work coverage remain possible |
 | Candidate behaves only on known shapes/prompts | Post-commit selection, hidden work, typed graph requirements, and registered decode/long-prefill mixture | Workload overfitting cannot be eliminated; corpora and regimes need ongoing governance |
-| Candidate exploits noise | Frozen v7 invariant B/C bounds with conditional B′ or precommitted v8 B/C/B′, v5+ bracket-drift exclusion, physical-lane-swapped reproduction, and lower reproduced speedup | Hardware drift, boot-state outliers, cross-validator variance, and a record-only resident execution gate remain operational concerns |
+| Candidate exploits noise | Frozen v7 invariant B/C bounds with conditional B′ or precommitted v8 B/C/B′, v5+ bracket-drift exclusion, physical-lane-swapped reproduction, lower reproduced speedup, and complete per-rank execution evidence before grading | Hardware drift, boot-state outliers, cross-validator variance, and candidate-process receipt forgery remain operational concerns |
 | Candidate hangs or exhausts resources | Stage deadlines, CPU/memory/PID/file/shm/tmpfs bounds, cohort admission, retry budgets, forced container cleanup, durable leases | A GPU/driver hang may require host reset; sustained spam can still consume bounded capacity |
 | Unpaid or replayed intake spam | Optional eval-cost gate (`eval_cost_tao_rao`, default off): one `transfer_keep_alive` to the subnet owner coldkey, remarked to one hotkey + content hash + netuid, consume-once on reserved or deferred admission; a private operator may grant one audited artificial credit for one unpaid reveal | The gate does not meter GPU work after admission. A stolen miner hotkey can spend that hotkey's unused pointer. There is no refund. A credit is a privileged local bypass and must be audited; it is hotkey-scoped, oldest-first, consumed only on admission, and never rescues an invalid payment pointer |
 | Candidate persists into later work | Ephemeral containers, read-only mounts, private tmpfs/cache, lease-scoped resources, restart recovery, post-run quiescence checks | Host/container-runtime compromise can persist beyond these controls |
@@ -103,9 +103,10 @@ The candidate tries to remain ineligible or fail and rely on fallback while the 
 still answers. Pre-selection stock routing is allowed for ordinary availability.
 Direct-artifact and one-shot qualification require positive execution coverage and treat
 selected-path fallback as invalid evidence. Pair-native hot-swap execution counts are
-minted per generation but remain record-only at the PR #95 merge, so they expose rather
-than mechanically close this abuse case until the live re-arm criterion is met.
-End-to-end host timing is bound to the exact candidate launch identity.
+minted per generation, and current source holds a leg unless every expected rank fired
+and completed the candidate under that activation generation. These receipts close
+accidental non-invocation but not deliberate in-process forgery. End-to-end host timing
+is bound to the exact candidate launch identity.
 
 ### “I will grade outputs that I know how to game”
 
@@ -200,4 +201,3 @@ Security status should be stated as “implemented under these assumptions,” n
 - [Shared-weight gateway](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weight_share.py)
 - [Shared-weight push authentication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/weight_push_auth.py)
 - [Object-store adapters](https://github.com/latent-to/cacheon/blob/main/cacheon/object_store.py)
-- [Release host](https://github.com/latent-to/cacheon/blob/main/cacheon/release_host.py)

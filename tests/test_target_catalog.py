@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -444,10 +445,12 @@ def _decimal(value: object) -> str:
 
 
 def test_default_contract_refs_match_every_live_serializable_slot_field():
-    from cacheon.slots import SLOTS
+    from cacheon.slots import SLOTS, slot_for_model
 
     catalog = default_target_catalog()
     for slot_id, slot in sorted(SLOTS.items()):
+        if slot_id in {"moe.fused_experts", "moe.fused_experts_reduce"}:
+            slot = slot_for_model(slot_id, "MiniMax-M3-NVFP4")
         ref = catalog.require(slot_id).contract_ref
         assert ref is not None
         assert (ref.slot_id, ref.kind, ref.entry, ref.prepare) == (
@@ -479,7 +482,7 @@ def test_default_contract_refs_match_every_live_serializable_slot_field():
             None if slot.kl_threshold is None else _decimal(slot.kl_threshold)
         )
         assert all(
-            value.endswith(".v1")
+            re.fullmatch(r".+\.v[1-9][0-9]*", value)
             for value in (
                 ref.input_abi_id,
                 ref.output_abi_id,
@@ -832,6 +835,10 @@ def test_default_displacement_and_compatible_overlap_are_explicit():
     assert atomic.displaces == frozenset(MOE_EPILOGUE_MEMBERS)
     assert catalog.require("moe.fused_experts").compatible_with == frozenset(
         {"moe.fused_experts_reduce"}
+    )
+    assert all(
+        not any(feature.startswith("aot:") for feature in catalog.require(slot).allowed_features)
+        for slot in ("moe.fused_experts", "moe.fused_experts_reduce")
     )
     assert catalog.validate_active_targets(
         ["moe.fused_experts", "moe.fused_experts_reduce"]

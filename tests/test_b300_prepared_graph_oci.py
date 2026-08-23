@@ -170,7 +170,6 @@ def _executor(monkeypatch, backend, policy, publication, source, capture, *, dig
         published.build_spec_digest = launch.native_build_spec_digest
         return SimpleNamespace(
             launch_digest=launch.digest,
-            discovery_overlay_identity_digest=None,
             publication=published,
         )
 

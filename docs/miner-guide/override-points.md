@@ -24,13 +24,11 @@ Its support boundary is explicit:
 
 - manifest parsing, point lookup, composition, and the dense/CPU reference path
   are implemented and tested;
-- the validator-owned GPU `nvfp4_moe_megakernel.run` path raises
-  `NotImplementedError`; and
+- the override consumer raises `NotImplementedError` when no validator-owned
+  NVFP4 GPU provider exists; and
 - therefore the committed example supports ABI development but is not eligible
   for GPU qualification through this base.
 
-See the explicit status in
-[nvfp4_megakernel.py](https://github.com/latent-to/cacheon/blob/main/cacheon_kernels/moe/nvfp4_megakernel.py).
 Provenance measurements embedded in example metadata are not evidence produced by
 the override bundle.
 
@@ -118,26 +116,21 @@ base kernel's weight layout and returns the composed `(entry, prepare)` pair.
 
 ## Development checks
 
-Study the committed
-[swigluoai override example](https://github.com/latent-to/cacheon/tree/main/examples/miner_m3_swigluoai_override),
-then run the source scan and focused composition tests:
+No public miner example advertises this point while its GPU provider is absent.
+The engine-tree test builds a minimal private fixture for composition coverage:
 
 ```bash
-python -m cacheon.cli scan examples/miner_m3_swigluoai_override
-python -m pytest -q tests/test_cacheon_kernels.py tests/test_model_profiles.py
+python -m pytest -q tests/test_cacheon_kernels.py tests/test_engine_tree.py
 ```
 
-The example declares only BF16/FP16 NVFP4 eligibility. A normal CPU `verify`
-descriptor is dense and therefore correctly reports every shape N/A; do not
-misread that as a composition pass. The focused tests exercise the dense
-reference mechanism explicitly. None of these checks tests the missing GPU base,
-graph replay, authoritative quality evidence, or performance.
+This does not test the missing GPU base, graph replay, authoritative quality
+evidence, or performance.
 
 ## When not to use an override
 
 Use a normal slot implementation when you own the complete registered callable.
 Use a [dependency patch](dep-patches.md) only when a registered target explicitly
-requires an approved dependency export/build change. Use the
-[Discovery lane](discovery-lane.md) when the desired hole, base, or engine change
-is not registered. Do not vendor a large dependency into a bundle to simulate a
-validator-owned base.
+requires an approved dependency export/build change. A hole, base, or engine
+change that is not registered cannot be submitted; registering it is a reviewed
+validator-side catalog change. Do not vendor a large dependency into a bundle to
+simulate a validator-owned base.

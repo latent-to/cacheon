@@ -9,13 +9,13 @@ from typing import Callable
 
 import cacheon.eval.b300_screen_deployment as screen_deployment
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
-from cacheon.engine_tree import materialize_engine_tree, reopen_materialized_engine_tree
 from cacheon.eval.b300_mainnet_worker import B300MainnetWorker
 from cacheon.eval.b300_qualification_deployment import (
     B300QualificationConstructionAuthority,
     B300RegisteredProfileAuthority,
     compose_b300_qualification_deployment,
 )
+from cacheon.eval.b300_registered_qualification_inputs import _COMMISSION_SEAL
 from cacheon.eval.b300_registered_qualification import (
     REGISTERED_B300_TARGET_IDS,
     B300RegisteredQualificationError,
@@ -75,7 +75,6 @@ from cacheon.eval.registered_resident_count_quality import (
     RegisteredResidentCountQualityError,
 )
 from cacheon.eval.scoring import marginal_workload_digest
-from cacheon.stack_manifest import EvaluationStackContext, EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
 
 
@@ -323,6 +322,8 @@ def compose_commissioned_qualifications(
             f"sealed qualification policy failed to seal: {exc}"
         ) from None
 
+    _require_cell_conformance(inputs, policy, session_block, speed_block)
+
     lane_a_policy, lane_b_policy = _lane_policies(inputs)
     lane_a_executor = screen_deployment._build_executor(
         inputs.root / "qualification-lane-a",
@@ -373,6 +374,26 @@ def compose_commissioned_qualifications(
     return (commissions[0], commissions[1]), executors
 
 
+def _require_cell_conformance(inputs, policy, session_block, speed_block) -> None:
+    """The declared workload cell and the consumed session are projections of
+    one sealed authority; any mismatch is a commissioning error, never a
+    runtime surprise.  Batch widths were validated against the cell at parse.
+    A min_windows floor above the cell's timed reads is unsatisfiable by
+    construction and must die here, not forty minutes into a measured run.
+    """
+
+    cell = screen_deployment._scored_cell(inputs.workload)
+    if (
+        policy.tokens_per_prompt != cell.output_tokens
+        or len(inputs.prompt_batches)
+        != session_block["warmup_count"] + cell.timed_reads
+        or speed_block["min_windows"] > cell.timed_reads
+    ):
+        raise B300QualificationCommissionError(
+            "sealed session does not conform to the declared workload cell"
+        )
+
+
 def _compose_locked(
     inputs,
     manifest,
@@ -393,60 +414,20 @@ def _compose_locked(
 ) -> B300RemoteQualificationCommission:
     snapshot = catalog.snapshot()
     lane_pair = inputs.qualification_lane_pair
-    context = EvaluationStackContext(
-        runtime_digest=inputs.runtime.runtime_digest,
-        base_engine_digest=inputs.runtime.base_engine_digest,
-        arena_digest=manifest.digest,
-        catalog_snapshot=snapshot,
-        catalog_digest=catalog.digest,
-        target_spec_digests=screen_deployment._catalog_specs(catalog),
-    )
-    stock = EvaluationStackManifest(
-        runtime_digest=context.runtime_digest,
-        base_engine_digest=context.base_engine_digest,
-        arena_digest=context.arena_digest,
-        catalog_snapshot=snapshot,
-        catalog_digest=catalog.digest,
-        entries={},
-    )
-    trees_root = inputs.root / "engine-trees"
-    trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    destination = trees_root / f"resident-stock-{stock.digest}"
-    if destination.exists():
-        tree = reopen_materialized_engine_tree(destination)
-    else:
-        tree = materialize_engine_tree(
-            stock,
-            context=context,
-            catalog=catalog,
-            resolver={},
-            destination=destination,
-        )
-    if tree.stack_digest != stock.digest or tree.runtime_manifest is not None:
-        raise B300QualificationCommissionError(
-            "qualification stock tree differs from the empty commissioned stack"
-        )
-
-    target_rows = snapshot.get("targets")
-    if not isinstance(target_rows, list):
-        raise B300QualificationCommissionError("target catalog snapshot is malformed")
-    target_members = tuple(
-        sorted(
-            {
-                member
-                for row in target_rows
-                if isinstance(row, dict)
-                for member in row.get("members", ())
-                if isinstance(member, str)
-            }
+    target_members, context, stock, tree = (
+        screen_deployment._commissioned_stock_authority(
+            inputs,
+            manifest,
+            catalog,
+            snapshot,
+            error=B300QualificationCommissionError,
+            label="qualification",
         )
     )
-    if not target_members:
-        raise B300QualificationCommissionError(
-            "qualification target member set is empty"
-        )
     engine_config = screen_deployment._engine_config(
-        target_members, disable_cuda_graph=False
+        target_members,
+        screen_deployment._scored_cell(inputs.workload),
+        disable_cuda_graph=False,
     )
     baseline_hardware = LogicalHardwareSpec(
         visible_gpu_count=screen_deployment.GPU_COUNT,
@@ -521,6 +502,9 @@ def _compose_locked(
         max_new_tokens=policy.tokens_per_prompt,
         top_logprobs_num=policy.topk_width,
         temperature=float(session_block["temperature"]),
+        expected_prompt_tokens=screen_deployment._scored_cell(
+            inputs.workload
+        ).input_tokens,
     )
     pristine_launch, pristine_session_plan = _pristine_reference_authority(
         incumbent_launch,
@@ -749,6 +733,7 @@ def _compose_locked(
             candidate_device_configuration_digest=(
                 candidate_executor.device_policy.configuration_sha256
             ),
+            seal=_COMMISSION_SEAL,
         )
         factory = build_b300_registered_qualification_factory(factory_inputs)
     except B300RegisteredQualificationError as exc:

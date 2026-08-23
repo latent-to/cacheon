@@ -135,7 +135,6 @@ nav:
       - Evaluation and release stacks: architecture/stacks.md
       - Sealed direct artifacts: architecture/direct-artifacts.md
       - Runtime injection seam: architecture/seam.md
-      - Release architecture: architecture/releases.md
   - Miner guide:
       - Overview: miner-guide/overview.md
       - How miners earn rewards: miner-guide/incentives.md
@@ -149,7 +148,6 @@ nav:
       - Submit on-chain: miner-guide/submitting.md
       - Why submissions fail: miner-guide/why-submissions-fail.md
       - Troubleshooting: miner-guide/diagnostics.md
-      - Discovery lane: miner-guide/discovery-lane.md
       - Override points: miner-guide/override-points.md
       - Dependency patches: miner-guide/dep-patches.md
   - Validator guide:
@@ -161,15 +159,11 @@ nav:
       - Scoring: validator-guide/scoring.md
       - Fidelity and pristine T: validator-guide/fidelity.md
       - Settlement and weights: validator-guide/settlement-and-weights.md
-      - Release operations: validator-guide/releases.md
       - Verification and diagnostics: validator-guide/running-evals.md
       - Testnet: validator-guide/testnet.md
   - Cacheon Engine:
-      - Overview: engine/overview.md
       - Integrating a contribution: engine/integration.md
       - Model provisioning: engine/model-provision.md
-      - Build and sign: engine/release-workflow.md
-      - Verify and run: engine/verify-run.md
   - Security:
       - Threat model: security/threat-model.md
       - OCI isolation: security/isolation.md
@@ -186,6 +180,7 @@ nav:
       - Codebase map: reference/codebase-map.md
       - Glossary: reference/glossary.md
   - Results and development:
+      - Evaluation report: results/evaluations.md
       - MiniMax-M3 case study: results/minimax-m3.md
       - Design evolution: history/changelog.md
       - GPU setup: dev/gpu-setup.md

@@ -49,7 +49,8 @@ checks for the most consequential surfaces:
 | Upstream surface | Why Cacheon needs it | What movement can break |
 |---|---|---|
 | `SiluAndMul` and `RMSNorm` | Narrow component call sites | Argument order, residual semantics, fallback routing |
-| `RadixAttention.forward` | Attention block insertion before sampling | Q/K/V and batch-state translation, graph behavior |
+| `flash_decode_with_gqa_share_sparse` | MiniMax-M3 graph-native sparse-attend insertion before projection/sampling | Paged-cache ABI, selected-block format, graph behavior |
+| `MiniMaxSparseAttnBackend.__init__` | Decode-only audit routing; MSA prefill remains live | `_use_msa_decode` and `_msa_owns_decode` fields |
 | `FusedMoE.forward_impl` | MoE waist that survives piecewise capture | Expert inputs, routing outputs, reduction ownership |
 | `GroupCoordinator.all_reduce` | Validator-owned TP collective boundary | Process-group ownership and all-rank behavior |
 | `Engine.generate` logprob API | Trusted KL/quality observation | Top-logprob collection and sealed trajectory schema |

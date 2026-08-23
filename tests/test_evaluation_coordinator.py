@@ -19,9 +19,8 @@ from cacheon.arena_service import (
     ScreenGrade,
     ScreenStagePolicy,
     ScreenStageResult,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.evaluation_coordinator import (
@@ -81,23 +80,10 @@ def _manifest() -> ArenaServiceManifest:
         gpu_count=4,
         tensor_parallel_size=4,
     )
-    workload = WorkloadMixture(
+    workload = Workload(
         _h("corpus"),
         "test-seed-v1",
-        (
-            WorkloadRegime(
-                "decode",
-                "decode",
-                500_000,
-                (ServingShape(128, 32, 1, 1),),
-            ),
-            WorkloadRegime(
-                "prefill",
-                "long_prefill",
-                500_000,
-                (ServingShape(1024, 8, 1, 1),),
-            ),
-        ),
+        (WorkloadCell("s8", 8192, 1024, 64, 8),),
     )
     return ArenaServiceManifest(
         runtime,
@@ -1027,3 +1013,97 @@ def test_remote_commit_rejects_late_lease_without_consuming_attempt(
     assert dispositions == ()
     assert active == ()
     assert [row.event_type for row in events] == ["claimed", "expired"]
+
+
+def test_claim_screen_replays_a_prior_fail_onto_identical_bytes(tmp_path: Path) -> None:
+    """A byte-identical resubmission of a FAILed bundle dies before any lease.
+
+    The replay rule (``cacheon.chain.duplicate_replay``) used to run only in an
+    operator sidecar sweeping every two minutes, which the one-second supervisor
+    tick beat almost every time, so duplicates bought a full screen and resident
+    qualification anyway. ``claim_screen`` now applies it on the claiming store
+    before any lease exists: the duplicate inherits the prior FAIL and costs
+    neither a screen nor a qualification. A prior PASS is never replayed.
+    """
+
+    source = tmp_path / "source-dup"
+    source.mkdir(parents=True)
+    leaf = source / "manifest.toml"
+    leaf.write_text("bundle_id = 'candidate-dup'\n")
+    source.chmod(0o700)
+    leaf.chmod(0o600)
+    committed = content_hash(source)
+    publication = publish_worker_bundle(source, tmp_path / "publications", committed)
+    fingerprint = SubmittedDeltaFingerprint(
+        "component",
+        "target.dup",
+        _h("base:dup"),
+        ("slot.dup",),
+        _h("archive:dup"),
+        _h("selected:dup"),
+        _h("exact:dup"),
+        (_h("source:dup"),),
+        (_h("binary:dup"),),
+    )
+    with _store(tmp_path) as store:
+        reserved = store.reserve_finalized(
+            tuple(
+                FinalizedArrival(
+                    f"miner-{index}",
+                    committed,
+                    f"https://example.invalid/{index}",
+                    BLOCK,
+                    _block_hash(BLOCK),
+                    index,
+                )
+                for index in range(2)
+            ),
+            finalized_block=BLOCK,
+            finalized_block_hash=_block_hash(BLOCK),
+        )
+        first, second = (
+            (
+                store.mark_fetching(row.reservation_id),
+                store.mark_published(
+                    row.reservation_id,
+                    delta_fingerprint=fingerprint,
+                    publication_digest=publication.digest,
+                    publication_root=publication.root,
+                ),
+            )[1]
+            for row in reserved
+        )
+
+    class _FailingProvider:
+        provider_digest = _h("provider")
+
+        def run_screen(self, _manifest, stage, candidate):
+            return ScreenStageResult(
+                stage.stage,
+                ScreenGrade.FAIL,
+                _h(f"screen-fail:{stage.stage}:{candidate.digest}"),
+                1,
+            )
+
+        def build_qualification(self, request, state=None):
+            raise AssertionError("qualification was not expected")
+
+    service = ArenaService(_manifest(), _FailingProvider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(tmp_path, service, cursor)
+
+    assert _run_screen(coordinator) is not None
+    with _store(tmp_path) as store:
+        prior = store.get(first.reservation_id)
+        untouched = store.get(second.reservation_id)
+    assert (prior.status, prior.decision) == ("failed", "FAIL")
+    assert untouched.status == "published"
+
+    # The identical bytes die inside the next claim, before any lease exists.
+    assert coordinator.claim_screen() is None
+    with _store(tmp_path) as store:
+        replayed = store.get(second.reservation_id)
+        leases = store._db.execute("SELECT COUNT(*) AS n FROM evaluation_leases").fetchone()
+    assert (replayed.status, replayed.decision) == ("failed", "FAIL")
+    assert replayed.reason == f"duplicate_of:{prior.reservation_id[:16]}:{prior.reason}"
+    assert leases["n"] == 1  # only the prior's own screen lease; none for the duplicate

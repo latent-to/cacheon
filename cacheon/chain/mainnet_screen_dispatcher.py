@@ -32,9 +32,8 @@ from cacheon.arena_service import (
     ArenaServiceManifest,
     NonCrownScreenPolicy,
     ScreenStagePolicy,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.chain.evaluation_coordinator import (
     EvaluationCoordinator,
@@ -99,10 +98,9 @@ _SCOPE_FIELDS = frozenset(IntakeScope.__dataclass_fields__)
 _READINESS_FIELDS = frozenset(WorkerReadiness.__dataclass_fields__)
 _MANIFEST_FIELDS = frozenset(ArenaServiceManifest.__dataclass_fields__)
 _WORKLOAD_FIELDS = frozenset(
-    {"prompt_corpus_digest", "prompt_seed_scheme", "regimes"}
+    {"cells", "prompt_corpus_digest", "prompt_seed_scheme"}
 )
-_REGIME_FIELDS = frozenset({"name", "phase", "shapes", "weight_ppm"})
-_SHAPE_FIELDS = frozenset(ServingShape.__dataclass_fields__)
+_CELL_FIELDS = frozenset(WorkloadCell.__dataclass_fields__)
 _SCREENS_FIELDS = frozenset({"crownable", "stages"})
 _STAGE_FIELDS = frozenset(ScreenStagePolicy.__dataclass_fields__)
 
@@ -137,35 +135,16 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
     )
 
     workload_row = _closed(row["workload"], _WORKLOAD_FIELDS, "arena workload")
-    regimes_raw = workload_row["regimes"]
-    if type(regimes_raw) is not list:
-        raise MainnetScreenDispatcherError("arena workload regimes are not a list")
-    regimes: list[WorkloadRegime] = []
-    for index, raw_regime in enumerate(regimes_raw):
-        regime = _closed(raw_regime, _REGIME_FIELDS, f"arena regime {index}")
-        shapes_raw = regime["shapes"]
-        if type(shapes_raw) is not list:
-            raise MainnetScreenDispatcherError(
-                f"arena regime {index} shapes are not a list"
-            )
-        shapes = tuple(
-            ServingShape(
-                **_closed(shape, _SHAPE_FIELDS, f"arena regime {index} shape")
-            )
-            for shape in shapes_raw
-        )
-        regimes.append(
-            WorkloadRegime(
-                name=regime["name"],
-                phase=regime["phase"],
-                weight_ppm=regime["weight_ppm"],
-                shapes=shapes,
-            )
-        )
-    workload = WorkloadMixture(
+    cells_raw = workload_row["cells"]
+    if type(cells_raw) is not list:
+        raise MainnetScreenDispatcherError("arena workload cells are not a list")
+    workload = Workload(
         workload_row["prompt_corpus_digest"],
         workload_row["prompt_seed_scheme"],
-        tuple(regimes),
+        tuple(
+            WorkloadCell(**_closed(cell, _CELL_FIELDS, f"arena workload cell {index}"))
+            for index, cell in enumerate(cells_raw)
+        ),
     )
 
     capacity = ArenaCapacityPolicy(
@@ -184,6 +163,9 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
             for stage in screens_row["stages"]
         )
     )
+    closed_targets_raw = row["closed_targets"]
+    if type(closed_targets_raw) is not list:
+        raise MainnetScreenDispatcherError("arena closed targets are not a list")
     manifest = ArenaServiceManifest(
         runtime=runtime,
         workload=workload,
@@ -191,6 +173,7 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
         screens=screens,
         qualification_policy_digest=row["qualification_policy_digest"],
         provider_digest=row["provider_digest"],
+        closed_targets=tuple(closed_targets_raw),
         schema_version=row["schema_version"],
     )
     if manifest.to_dict() != row:

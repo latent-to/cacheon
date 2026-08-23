@@ -15,9 +15,9 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 | `activation.silu_and_mul` | op | `entry(x, out)` | allclose |
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | allclose |
 | `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | matched ratio ≥ 0.99 |
-| `attention.decode` | block | `entry(q, k, v, seq_lens, sm_scale, out)` | matched ratio ≥ 0.99 |
+| `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | matched ratio ≥ 0.99 |
 | `attention.msa_block_score` | block | `entry(q, index_k, seq_lens, block_size, out)` | top-8 overlap ≥ 0.875 |
-| `attention.msa_prefill_block_score` | block | `entry(q, index_k, prefix_len, scale, block_size, out)` | top-8 overlap ≥ 0.90 |
+| `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | selected-set overlap ≥ 0.90 |
 | `moe.fused_experts` | block | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out)` | matched ratio ≥ 0.97 |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out, group)` | matched ratio ≥ 0.97 |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | matched ratio ≥ 0.99 |
@@ -50,8 +50,8 @@ it but may not create a private group or let only some ranks fall back.
 !!! warning "Unavailable in the current MiniMax-M3 mainnet arena"
     `norm.rmsnorm` cannot execute because the deployed model uses
     `GemmaRMSNorm` rather than the registered `RMSNorm.forward_cuda` callsite.
-    `attention.msa_block_score` cannot execute because its decode-side SGLang
-    adapter is non-installing for the pinned runtime. Do not pay for or submit
+    `attention.msa_block_score` cannot execute because the pinned runtime has
+    no installing decode-side SGLang adapter. Do not pay for or submit
     either target to this arena. The entries remain registered ABI and verifier
     contracts; no other target is withdrawn by this notice. See
     [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
@@ -111,10 +111,10 @@ Python control flow, preserve inputs, and fill only the declared outputs. The
 validator refreshes registered dynamic inputs and poisons outputs between
 replays before comparing against fresh trusted references.
 
-An implementation that cannot establish graph safety is not silently credited
-for work the baseline performs. The `attention.decode` eager gather form does
-not establish the paged-direct graph-safe boundary required for graph-qualified
-coverage.
+An implementation that cannot establish graph safety is not credited for work the
+baseline performs. `attention.decode` uses paged caches and validator-selected block
+IDs at SGLang's captured sparse-attend call; an eager warmup alone cannot produce the
+qualifying execution receipt.
 
 ### Graph failure examples
 

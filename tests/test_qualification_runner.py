@@ -17,16 +17,13 @@ from cacheon.eval.oci_backend import OCIBackendError, OCIEngineExecutor
 from cacheon.eval.oci_outer_session import OuterSessionWorkerError
 from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.qualification import (
-    DiscoveryQualificationProfile,
     GraphVerificationGrade,
     QualificationDecision,
-    QualificationError,
     SelectionCommitment,
     SelectionEntropyReceipt,
 )
 from cacheon.eval.reference_protocol import ReferenceRoleInput, ReferenceTokenEvidence
 from cacheon.eval.reference_quality import ReferenceQualityVerdict
-from tests.test_qualification import _discovery_execution, _reference
 
 
 _REAL_PUBLISH_CAUSAL = runner.publish_causal_qualification
@@ -354,11 +351,6 @@ class _Harness:
             self.calls.append("prevalidate")
             return self.calibration, self.grades
         monkeypatch.setattr(runner, "_validate_pre_execution", prevalidate)
-        monkeypatch.setattr(
-            runner,
-            "run_marginal_lifecycle",
-            lambda *_args, **_kwargs: self.calls.append("lifecycle") or self.lifecycle,
-        )
         def run_audits(value, _lifecycle, *, completion_sink=None, **_kwargs):
             self.calls.append("audit")
             witnesses = {}
@@ -550,100 +542,6 @@ class _Harness:
             return _quality_verdict(decision, index, self.calibration.digest)
 
         monkeypatch.setattr(runner, "score_reference_quality", score_quality)
-        speed_rows = iter(enumerate(speed))
-
-        def project_speed(*_args, **_kwargs):
-            index, decision = next(speed_rows)
-            self.calls.append(f"speed.{index}")
-            baseline_launch = _d("baseline-launch")
-            candidate_launch = _d(f"candidate-launch-{index}")
-
-            def rate(label, launch, tokens):
-                return runner.ChargedExecutionRate(
-                    launch,
-                    f"{100 + index * 10 + label:032x}",
-                    tokens // 3,
-                    tokens - tokens // 3,
-                    tokens,
-                    1.0,
-                    2.0,
-                    3.0,
-                    tokens / 3.0,
-                )
-
-            before = rate(1, baseline_launch, 30)
-            candidate = rate(
-                2,
-                candidate_launch,
-                36 if decision is QualificationDecision.PASS else 27
-                if decision is QualificationDecision.FAIL else 30,
-            )
-            after = rate(
-                3,
-                baseline_launch,
-                60 if decision is QualificationDecision.NO_DECISION else 30,
-            )
-            candidate_repeat = (
-                rate(
-                    4,
-                    candidate_launch,
-                    36 if decision is QualificationDecision.PASS else 27
-                    if decision is QualificationDecision.FAIL else 30,
-                )
-                if repeat
-                else None
-            )
-            baseline_third = rate(5, baseline_launch, 30) if repeat else None
-            context_digest = _d("calibration-context")
-            workload_digest = _d("workload")
-            evidence_digest = runner._projection_digest(
-                _d(f"delta-{index}"),
-                candidate_launch,
-                self.calibration.digest,
-                context_digest,
-                workload_digest,
-                self.value.expected_runtime_resource_policy_digest,
-                (
-                    (before, candidate, after, candidate_repeat, baseline_third)
-                    if repeat
-                    else (before, candidate, after)
-                ),
-            )
-            verdict = runner.score_speedup(
-                [
-                    before.tokens_per_second,
-                    after.tokens_per_second,
-                    *(
-                        [baseline_third.tokens_per_second]
-                        if baseline_third is not None
-                        else []
-                    ),
-                ],
-                [
-                    candidate.tokens_per_second,
-                    *(
-                        [candidate_repeat.tokens_per_second]
-                        if candidate_repeat is not None
-                        else []
-                    ),
-                ],
-            )
-            return runner.MarginalSpeedProjection(
-                _d(f"delta-{index}"),
-                candidate_launch,
-                self.calibration.digest,
-                context_digest,
-                workload_digest,
-                evidence_digest,
-                before,
-                candidate,
-                after,
-                verdict,
-                candidate_repeat,
-                baseline_third,
-            )
-
-        monkeypatch.setattr(runner, "project_marginal_speed", project_speed)
         monkeypatch.setattr(
             runner,
             "qualification_authority_digest",
@@ -712,7 +610,8 @@ def _install_resident_runner_path(
     assert len(harness.value.candidates) == 1
     harness.value.speed_evidence_policy = runner.SpeedEvidencePolicy.resident()
     harness.value.resident_audit_plan = SimpleNamespace(
-        launch=SimpleNamespace(digest=_d("resident-audit-launch"))
+        digest=_d("resident-audit-authority"),
+        launch=SimpleNamespace(digest=_d("resident-audit-launch")),
     )
     harness.resident_speed_plans = []
     harness.value.resident_speed_plan = SimpleNamespace(
@@ -807,6 +706,23 @@ def _install_resident_runner_path(
                 for role in roles
             )
 
+        _scalars = (
+            "selected_delta_digest",
+            "candidate_launch_digest",
+            "calibration_digest",
+            "calibration_context_digest",
+            "workload_digest",
+            "baseline_runtime_resource_policy_digest",
+            "candidate_runtime_resource_policy_digest",
+            "plan_digest",
+            "baseline_lane_digest",
+            "candidate_lane_digest",
+            "baseline_quiescence_digest",
+            "candidate_quiescence_digest",
+            "raw_crossover_digest",
+            "evidence_digest",
+        )
+
         @classmethod
         def from_evidence(cls, observed, plan):
             assert observed is crossover
@@ -819,16 +735,47 @@ def _install_resident_runner_path(
 
         @property
         def has_repeat(self) -> bool:
-            return escalated
+            return len(self.rates) == 5
 
         def regrade(self, *_args, **_kwargs):
-            return speed_decision, "1.1000000000000001"
+            reason = (
+                None
+                if speed_decision is QualificationDecision.PASS
+                else "speed_noise"
+                if speed_decision is QualificationDecision.NO_DECISION
+                else "speed_threshold_not_met"
+            )
+            return speed_decision, "1.1000000000000001", reason
 
         def to_dict(self):
             return {
-                "evidence_digest": self.evidence_digest,
-                "selected_delta_digest": self.selected_delta_digest,
+                **{name: getattr(self, name) for name in type(self)._scalars},
+                "started_monotonic_s": format(self.started_monotonic_s, ".17g"),
+                "completed_monotonic_s": format(
+                    self.completed_monotonic_s, ".17g"
+                ),
+                "resident_policy": {"digest": self.resident_policy.digest},
+                "rates": [dict(vars(row)) for row in self.rates],
             }
+
+        @classmethod
+        def from_dict(cls, value):
+            witness = cls.__new__(cls)
+            for name in cls._scalars:
+                setattr(witness, name, value[name])
+            witness.started_monotonic_s = float(value["started_monotonic_s"])
+            witness.completed_monotonic_s = float(value["completed_monotonic_s"])
+            witness.resident_policy = SimpleNamespace(
+                digest=value["resident_policy"]["digest"],
+                max_qualification_seconds=7_200,
+            )
+            witness.rates = tuple(
+                SimpleNamespace(**row) for row in value["rates"]
+            )
+            return witness
+
+        def __eq__(self, other):
+            return type(other) is type(self) and self.to_dict() == other.to_dict()
 
     def run_resident(plan, *, baseline_executor, candidate_executor, model_mount, deadline):
         assert plan is harness.value.resident_speed_plan
@@ -841,17 +788,12 @@ def _install_resident_runner_path(
         harness.calls.append("resident.speed")
         return crossover
 
-    def forbidden_legacy(*_args, **_kwargs):
-        raise AssertionError("resident v3 must not execute the legacy cold lifecycle")
-
-    def forbidden_projection(*_args, **_kwargs):
-        raise AssertionError("resident v3 must not execute legacy speed projection")
-
+    # The legacy cold lifecycle and legacy speed projection no longer exist in
+    # the runner module at all; their absence IS the guarantee the two
+    # forbidden_* monkeypatches used to assert here.
     monkeypatch.setattr(runner, "ResidentMarginalLifecycleEvidence", FakeResidentLifecycle)
     monkeypatch.setattr(runner, "ResidentSpeedWitness", FakeResidentSpeedWitness)
     monkeypatch.setattr(runner, "run_resident_crossover_speed", run_resident)
-    monkeypatch.setattr(runner, "run_marginal_lifecycle", forbidden_legacy)
-    monkeypatch.setattr(runner, "project_marginal_speed", forbidden_projection)
 
     published_stage_exits = []
     stage_reference = EvidenceArtifactRef(
@@ -924,6 +866,9 @@ def test_resident_speed_fail_exits_before_audit_t_and_legacy_lifecycle(
     assert len(exits) == 1
     assert exits[0].stage == "speed"
     assert exits[0].decision is QualificationDecision.FAIL
+    # The exit carries the witness's graded band reason, not a coarse
+    # "speed_regression" invented from the bare decision enum.
+    assert exits[0].reason == "speed_threshold_not_met"
     assert harness.calls == [
         "prevalidate",
         "resident.speed",
@@ -1077,235 +1022,54 @@ def test_resident_operational_timing_round_trip_and_total_budget() -> None:
         )
 
 
-def _discovery_harness(monkeypatch, tmp_path: Path) -> _Harness:
+def test_repeat_report_cannot_drop_c_prime_quality(monkeypatch) -> None:
+    # C-prime quality regresses on the escalated resident schedule; the
+    # conservative aggregate fails, and a reopened payload cannot shed the
+    # repeat-quality coverage that carried the regression.
+    harness = _Harness(
+        monkeypatch,
+        graph=(QualificationDecision.PASS,),
+        speed=(QualificationDecision.PASS,),
+        quality=(QualificationDecision.PASS, QualificationDecision.FAIL),
+        repeat=True,
+    )
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=True,
+    )
+    _run_resident_harness(harness, baseline)
+    report = harness.published_attempt.reports[0]
+
+    assert harness.reference_request_counts == [2]
+    assert report.repeat_quality is not None
+    assert report.repeat_quality.quality_decision is QualificationDecision.FAIL
+    assert report.quality_decision is QualificationDecision.FAIL
+    assert report.decision is QualificationDecision.FAIL
+    assert report.reason == "quality_repeat_regression"
+
+    payload = report.to_dict()
+    assert "repeat_quality" in payload
+    del payload["repeat_quality"]
+    with pytest.raises(
+        runner.QualificationRunnerError, match="repeat quality coverage"
+    ):
+        runner.CandidateQualificationReport.from_dict(payload)
+
+
+def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> None:
     harness = _Harness(
         monkeypatch,
         graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    execution_root = tmp_path / "execution"
-    execution_root.mkdir()
-    requirement, lifecycle = _discovery_execution(execution_root)
-    after_receipts = tuple(
-        SimpleNamespace(**row.__dict__, completed_monotonic_s=2.0)
-        for row in lifecycle.baseline_after.device_receipts
-    )
-    lifecycle = replace(
-        lifecycle,
-        baseline_after=replace(
-            lifecycle.baseline_after, device_receipts=after_receipts
-        ),
-    )
-    prepared = lifecycle.prepared
-    arm = prepared.source
-    reference = _reference()
-    context_digest = _d("discovery-calibration-context")
-    workload_digest = runner.marginal_workload_digest(
-        prepared.baseline_session_plan
-    )
-    profile = DiscoveryQualificationProfile(
-        reference,
-        context_digest,
-        harness.calibration.digest,
-        requirement.digest,
-        ("mean_nll", "task_score", "topk_kl"),
-        "2",
-        prepared.baseline_session_plan.max_new_tokens,
-        prepared.baseline_session_plan.top_logprobs_num,
-        1,
-        _d("support-policy"),
-        _d("hidden-task-policy"),
-        harness.value.expected_runtime_resource_policy_digest,
-        True,
-        2,
-    )
-    authority = runner.DiscoveryCandidateQualificationAuthority(
-        arm.selected_delta_digest, profile, requirement
-    )
-    prompt_digests = runner._planned_prompt_digests(prepared)
-    secret_commitment = hashlib.sha256(
-        b"cacheon-selection-secret-v1\0" + harness.secret
-    ).hexdigest()
-    commitment = SelectionCommitment(
-        prepared.source.digest,
-        reference.digest,
-        workload_digest,
-        reference.selection_policy_digest,
-        secret_commitment,
-        prompt_digests,
-        1,
-    )
-    entropy = SelectionEntropyReceipt(
-        commitment.entropy_source_digest,
-        commitment.digest,
-        _d("discovery-entropy"),
-        _d("discovery-entropy-authority"),
-    )
-
-    harness.lifecycle = lifecycle
-    harness.discovery_requirement = requirement
-    harness.discovery_lifecycle = lifecycle
-    harness.grades = {}
-    harness.commitment = commitment
-    harness.entropy = entropy
-    harness.hidden_judge.binding = runner.HiddenJudgeBinding(
-        reference.hidden_corpus_commitment,
-        reference.hidden_judge_digest,
-        profile.hidden_task_policy_digest,
-    )
-    harness.value.prepared = prepared
-    harness.value.candidates = (authority,)
-    harness.value.audit_policies = (
-        runner.SlotAuditPolicy(
-            "7" * 32,
-            250_000,
-            32,
-            ("norm.rmsnorm",),
-            prepared.candidates[0].session_plan.engine_config.tp_size,
-        ),
-    )
-    harness.value.commitment = commitment
-    harness.value.evidence_root = tmp_path / "quality"
-
-    harness.attempt_reference = EvidenceArtifactRef(
-        runner.DISCOVERY_ATTEMPT_DOMAIN,
-        _d("discovery-attempt-artifact"),
-        2,
-        "application/json",
-        runner.DISCOVERY_ATTEMPT_SCHEMA,
-    )
-    harness.published_attempt = None
-
-    def publish_attempt(root, attempt):
-        assert root is harness.value.evidence_root
-        assert type(attempt) is runner.DiscoveryQualificationAttempt
-        harness.published_attempt = attempt
-        return harness.attempt_reference
-
-    def reopen_attempt(root, reference, *, expected):
-        assert root is harness.value.evidence_root
-        assert reference == harness.attempt_reference
-        assert expected is harness.value
-        return harness.published_attempt
-
-    monkeypatch.setattr(
-        runner, "qualification_authority_digest", _REAL_QUALIFICATION_AUTHORITY
-    )
-    monkeypatch.setattr(runner, "publish_causal_qualification", publish_attempt)
-    monkeypatch.setattr(runner, "reopen_causal_qualification", reopen_attempt)
-    return harness
-
-
-def _run_discovery(harness: _Harness):
-    ids = iter(f"{index + 1:032x}" for index in range(3))
-    reference = runner.run_causal_qualification(
-        harness.value,
-        executor=harness.executor,
-        entropy_provider=harness.entropy_provider,
-        hidden_judge=harness.hidden_judge,
-        deadline=100.0,
-        id_factory=lambda: next(ids),
-    )
-    assert reference == harness.attempt_reference
-    assert type(harness.published_attempt) is runner.DiscoveryQualificationAttempt
-    return harness.published_attempt
-
-
-def test_causal_order_uses_one_multi_candidate_t_lifetime(monkeypatch) -> None:
-    harness = _Harness(
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
         monkeypatch,
-        graph=(QualificationDecision.PASS, QualificationDecision.PASS),
-        speed=(QualificationDecision.PASS, QualificationDecision.PASS),
-        quality=(QualificationDecision.PASS, QualificationDecision.PASS),
-    )
-    attempt = harness.run()
-
-    assert harness.reference_calls == 1
-    assert harness.reference_request_counts == [2]
-    assert harness.calls[:9] == [
-        "prevalidate",
-        "transaction.enter",
-        "lifecycle",
-        "audit",
-        "quiescence.1",
-        "entropy",
-        "reference",
-        "quiescence.2",
-        "transaction.exit",
-    ]
-    assert [row.decision for row in attempt.reports] == [
-        QualificationDecision.PASS,
-        QualificationDecision.PASS,
-    ]
-
-
-def test_repeat_attempt_grades_c_and_c_prime_and_uses_v2_wire_schema(
-    monkeypatch, tmp_path: Path
-) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        # Primary C is faithful; C-prime regresses.  The conservative aggregate
-        # must fail even though the mean speed witness itself passes.
-        quality=(QualificationDecision.PASS, QualificationDecision.FAIL),
-        repeat=True,
-    )
-    attempt = harness.run()
-    report = attempt.reports[0]
-
-    assert harness.reference_request_counts == [2]
-    assert len(report.speed_witness.rates) == 5
-    assert report.speed_witness.policy == runner.SpeedEvidencePolicy.repeat()
-    assert report.repeat_quality is not None
-    assert report.repeat_quality.quality_decision is QualificationDecision.FAIL
-    assert report.quality_decision is QualificationDecision.FAIL
-    assert report.decision is QualificationDecision.FAIL
-    assert report.reason == "quality_repeat_regression"
-    assert "repeat_quality" in report.to_dict()
-
-    monkeypatch.setattr(runner, "publish_evidence", publish_evidence)
-    reference = _REAL_PUBLISH_CAUSAL(tmp_path / "repeat-attempt", attempt)
-    assert reference.schema == runner.ATTEMPT_SCHEMA_V2
-    payload = runner._canonical_payload(
-        reopen_evidence(tmp_path / "repeat-attempt", reference)
-    )
-    assert runner.CohortQualificationAttempt.from_dict(payload) == attempt
-
-
-def test_repeat_report_cannot_drop_c_prime_quality_or_regrade_as_legacy(
-    monkeypatch,
-) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS,),
-        speed=(QualificationDecision.PASS,),
-        quality=(QualificationDecision.PASS, QualificationDecision.PASS),
-        repeat=True,
-    )
-    report = harness.run().reports[0]
-    payload = report.to_dict()
-    del payload["repeat_quality"]
-    with pytest.raises(
-        runner.QualificationRunnerError, match="repeat quality coverage"
-    ):
-        runner.CandidateQualificationReport.from_dict(payload)
-    with pytest.raises(runner.QualificationRunnerError, match="policy differs"):
-        report.speed_witness.regrade(
-            harness.calibration,
-            harness.value.calibration_context,
-            expected_policy=runner.SpeedEvidencePolicy.legacy(),
-        )
-
-
-def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> None:
-    harness = _Harness(
-        monkeypatch,
-        graph=(QualificationDecision.PASS, QualificationDecision.PASS),
-        speed=(QualificationDecision.PASS, QualificationDecision.PASS),
-        quality=(QualificationDecision.PASS, QualificationDecision.PASS),
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
     )
 
     def fail_reference(*_args, **_kwargs):
@@ -1313,165 +1077,63 @@ def test_pristine_reference_worker_error_remains_unattributed(monkeypatch) -> No
 
     monkeypatch.setattr(OCIEngineExecutor, "execute_reference", fail_reference)
     with pytest.raises(OuterSessionWorkerError, match="pristine teacher"):
-        harness.run()
-    assert "lifecycle" in harness.calls
+        _run_resident_harness(harness, baseline)
+    assert "resident.speed" in harness.calls
     assert "reference" not in harness.calls
 
 
-def test_discovery_authority_attempt_roundtrip_and_cross_lane_rejection(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("speed_decision", "retryable"),
+    (
+        (QualificationDecision.PASS, False),
+        (QualificationDecision.FAIL, False),
+        (QualificationDecision.NO_DECISION, True),
+    ),
+)
+def test_candidate_headlines_recompute_pass_fail_and_no_decision(
+    monkeypatch, speed_decision, retryable
 ) -> None:
-    registered = _Harness(
+    harness = _Harness(
         monkeypatch,
         graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
-    ).run()
-    harness = _discovery_harness(monkeypatch, tmp_path / "discovery")
-    attempt = _run_discovery(harness)
-
-    assert attempt.reports[0].execution_grade.execution_passed
-    assert attempt.reports[0].decision is QualificationDecision.PASS
-    assert attempt.authority_digest == _REAL_QUALIFICATION_AUTHORITY(harness.value)
-
-    captured: dict[str, object] = {}
-    real_digest = runner.canonical_digest
-
-    def capture(domain: str, value: object) -> str:
-        if domain == "cacheon.qualification.discovery-causal-authority.audit-v1":
-            captured["payload"] = value
-        return real_digest(domain, value)
-
-    monkeypatch.setattr(runner, "canonical_digest", capture)
-    assert _REAL_QUALIFICATION_AUTHORITY(harness.value) == attempt.authority_digest
-    payload = captured["payload"]
-
-    def keys(value: object) -> set[str]:
-        if isinstance(value, dict):
-            return set(value) | {
-                key for row in value.values() for key in keys(row)
-            }
-        if isinstance(value, (list, tuple)):
-            return {key for row in value for key in keys(row)}
-        return set()
-
-    authority_keys = keys(payload)
-    forbidden = (
-        "target",
-        "catalog",
-        "contribution",
-        "graph_artifact",
-        "graph_evidence",
-        "graph_requirement",
     )
-    assert not {
-        key
-        for key in authority_keys
-        if any(marker in key for marker in forbidden)
-    }
-
-    monkeypatch.setattr(runner, "canonical_digest", real_digest)
-    monkeypatch.setattr(runner, "publish_evidence", publish_evidence)
-    discovery_root = tmp_path / "durable-discovery"
-    discovery_ref = _REAL_PUBLISH_CAUSAL(discovery_root, attempt)
-    assert (
-        discovery_ref.domain,
-        discovery_ref.schema,
-        reopen_evidence(discovery_root, discovery_ref),
-    ) == (
-        runner.DISCOVERY_ATTEMPT_DOMAIN,
-        runner.DISCOVERY_ATTEMPT_SCHEMA,
-        runner.canonical_json_bytes(attempt.to_dict()),
-    )
-    assert runner.DiscoveryQualificationAttempt.from_dict(
-        runner._canonical_payload(reopen_evidence(discovery_root, discovery_ref))
-    ) == attempt
-
-    registered_root = tmp_path / "durable-registered"
-    registered_ref = _REAL_PUBLISH_CAUSAL(registered_root, registered)
-    with pytest.raises(runner.QualificationRunnerError, match="artifact type"):
-        _REAL_REOPEN_CAUSAL(
-            registered_root, registered_ref, expected=harness.value
+    if speed_decision is not QualificationDecision.PASS:
+        # A non-PASS speed verdict stage-exits under the terminal disposition;
+        # the report-level headline only exists on the observation lane.
+        harness.value.speed_stage_disposition = (
+            runner.SpeedStageDisposition.CALIBRATION_OBSERVATION
         )
-
-
-def test_discovery_attempt_rejects_missing_grade_and_wrong_activation_binding(
-    monkeypatch, tmp_path: Path
-) -> None:
-    harness = _discovery_harness(monkeypatch, tmp_path)
-    attempt = _run_discovery(harness)
-    report = attempt.reports[0]
-    grade = report.execution_grade
-    requirement = harness.discovery_requirement
-    prepared = harness.discovery_lifecycle.prepared.candidates[0]
-
-    missing_grade = attempt.to_dict()
-    del missing_grade["reports"][0]["execution_grade"]
-    with pytest.raises(runner.QualificationRunnerError, match="fields"):
-        runner.DiscoveryQualificationAttempt.from_dict(missing_grade)
-
-    missing_activation = attempt.to_dict()
-    missing_activation["reports"][0]["execution_grade"][
-        "activation_receipt"
-    ] = None
-    with pytest.raises(QualificationError, match="lacks activation"):
-        runner.DiscoveryQualificationAttempt.from_dict(missing_activation)
-
-    with pytest.raises(QualificationError, match="retained binding"):
-        runner.reopen_discovery_execution_binding(
-            requirement,
-            replace(grade, candidate_lifecycle_digest=_d("wrong lifecycle")),
-            prepared,
-            candidate_lifecycle_digest=grade.candidate_lifecycle_digest,
-            session_id=grade.session_id,
-        )
-
-    wrong_receipt = replace(
-        grade.activation_receipt,
-        overlay_identity_digest=_d("wrong activation overlay"),
-    )
-    with pytest.raises(QualificationError, match="not authoritative"):
-        runner.reopen_discovery_execution_binding(
-            requirement,
-            replace(grade, activation_receipt=wrong_receipt),
-            prepared,
-            candidate_lifecycle_digest=grade.candidate_lifecycle_digest,
-            session_id=grade.session_id,
-        )
-
-
-def test_candidate_headlines_recompute_pass_fail_and_no_decision(monkeypatch) -> None:
-    harness = _Harness(
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
         monkeypatch,
-        graph=(QualificationDecision.PASS,) * 3,
-        speed=(
-            QualificationDecision.PASS,
-            QualificationDecision.FAIL,
-            QualificationDecision.PASS,
-        ),
-        quality=(
-            QualificationDecision.PASS,
-            QualificationDecision.PASS,
-            QualificationDecision.NO_DECISION,
-        ),
+        harness,
+        speed_decision=speed_decision,
+        escalated=False,
     )
-
-    reports = harness.run().reports
-    assert tuple(row.decision for row in reports) == (
-        QualificationDecision.PASS,
-        QualificationDecision.FAIL,
-        QualificationDecision.NO_DECISION,
-    )
-    assert tuple(row.retryable for row in reports) == (False, False, True)
+    _run_resident_harness(harness, baseline)
+    report = harness.published_attempt.reports[0]
+    assert report.decision is speed_decision
+    assert report.retryable is retryable
     with pytest.raises(runner.QualificationRunnerError, match="headline"):
         runner.CandidateQualificationReport(
-            **{**reports[0].__dict__, "decision": QualificationDecision.FAIL}
+            **{
+                **report.__dict__,
+                "decision": (
+                    QualificationDecision.FAIL
+                    if speed_decision is not QualificationDecision.FAIL
+                    else QualificationDecision.PASS
+                ),
+            }
         )
 
 
 def test_slot_audit_violation_is_a_hard_nonretryable_qualification_fail(
     monkeypatch,
 ) -> None:
+    # An audit violation terminates at the audit stage exit on every
+    # disposition; the exit names the hard slot_audit_failed reason and
+    # carries the violating receipt.
     harness = _Harness(
         monkeypatch,
         graph=(QualificationDecision.PASS,),
@@ -1479,25 +1141,42 @@ def test_slot_audit_violation_is_a_hard_nonretryable_qualification_fail(
         quality=(QualificationDecision.PASS,),
         audit=(QualificationDecision.FAIL,),
     )
-    report = harness.run().reports[0]
+    baseline, stage_reference, exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    reference = _run_resident_harness(harness, baseline)
 
-    assert report.audit_decision is QualificationDecision.FAIL
-    assert report.audit_witness.receipts[0].violations == 1
-    assert report.decision is QualificationDecision.FAIL
-    assert report.reason == "slot_audit_failed"
-    assert not report.retryable
+    assert reference == stage_reference
+    assert len(exits) == 1
+    assert exits[0].stage == "audit"
+    assert exits[0].decision is QualificationDecision.FAIL
+    assert exits[0].reason == "slot_audit_failed"
+    assert exits[0].audit_witness.receipts[0].violations == 1
+    assert harness.published_attempt is None
 
 
 def test_t_exchange_substitution_is_rejected(monkeypatch) -> None:
+    # The escalated resident schedule issues two T requests; a swapped exchange
+    # order must be rejected exactly as it was on the retired cold schedule.
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS, QualificationDecision.PASS),
-        speed=(QualificationDecision.PASS, QualificationDecision.PASS),
+        graph=(QualificationDecision.PASS,),
+        speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS, QualificationDecision.PASS),
+        repeat=True,
         swap_exchanges=True,
     )
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=True,
+    )
     with pytest.raises(runner.QualificationRunnerError, match="request|exchange"):
-        harness.run()
+        _run_resident_harness(harness, baseline)
 
 
 def test_pre_t_quiescence_failure_prevents_reference_launch(monkeypatch) -> None:
@@ -1508,8 +1187,14 @@ def test_pre_t_quiescence_failure_prevents_reference_launch(monkeypatch) -> None
         quality=(QualificationDecision.PASS,),
         fail_pre_t_quiescence=True,
     )
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
     with pytest.raises(runner.QualificationRunnerError, match="quiescence"):
-        harness.run()
+        _run_resident_harness(harness, baseline)
     assert harness.reference_calls == 0
     assert "entropy" not in harness.calls
 
@@ -1521,6 +1206,12 @@ def test_stale_hidden_judge_binding_is_rejected_before_b(monkeypatch) -> None:
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
     harness.hidden_judge.binding = runner.HiddenJudgeBinding(
         _d("stale-corpus"),
         _d("hidden-judge"),
@@ -1528,20 +1219,26 @@ def test_stale_hidden_judge_binding_is_rejected_before_b(monkeypatch) -> None:
     )
 
     with pytest.raises(runner.QualificationRunnerError, match="hidden judge authority"):
-        harness.run()
-    assert "lifecycle" not in harness.calls
+        _run_resident_harness(harness, baseline)
+    assert "resident.speed" not in harness.calls
     assert harness.reference_calls == 0
 
 
-def test_identical_hidden_judge_inputs_are_memoized_across_the_cohort(monkeypatch) -> None:
+def test_identical_hidden_judge_inputs_are_memoized(monkeypatch) -> None:
     harness = _Harness(
         monkeypatch,
-        graph=(QualificationDecision.PASS, QualificationDecision.PASS),
-        speed=(QualificationDecision.PASS, QualificationDecision.PASS),
-        quality=(QualificationDecision.PASS, QualificationDecision.PASS),
+        graph=(QualificationDecision.PASS,),
+        speed=(QualificationDecision.PASS,),
+        quality=(QualificationDecision.PASS,),
         exercise_judge_cache=True,
     )
-    harness.run()
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    _run_resident_harness(harness, baseline)
     assert harness.hidden_judge.calls == 1
 
 
@@ -1619,12 +1316,20 @@ def test_shared_manager_reservation_excludes_another_thread() -> None:
 
 
 def test_reports_and_attempt_expose_no_score_crown_or_settlement_fields(monkeypatch) -> None:
-    attempt = _Harness(
+    harness = _Harness(
         monkeypatch,
         graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
-    ).run()
+    )
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    _run_resident_harness(harness, baseline)
+    attempt = harness.published_attempt
 
     def keys(value: object) -> set[str]:
         if isinstance(value, dict):
@@ -1646,33 +1351,42 @@ def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
-    attempt = harness.run()
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    _run_resident_harness(harness, baseline)
+    attempt = harness.published_attempt
     value = harness.value
     captured: dict[str, object] = {}
     real_digest = runner.canonical_digest
+    authority_domain = "cacheon.qualification.causal-authority.v3.eager-audit-v2"
 
     def capture(domain: str, payload: object) -> str:
-        if domain == "cacheon.qualification.causal-authority.audit-v1":
+        if domain == authority_domain:
             captured["payload"] = payload
         return real_digest(domain, payload)
 
     monkeypatch.setattr(runner, "CandidateQualificationAuthority", SimpleNamespace)
     monkeypatch.setattr(runner, "canonical_digest", capture)
     authority_digest = _REAL_QUALIFICATION_AUTHORITY(value)
-    assert authority_digest == real_digest(
-        "cacheon.qualification.causal-authority.audit-v1", captured["payload"]
-    )
+    assert authority_digest == real_digest(authority_domain, captured["payload"])
     authority_payload = captured["payload"]
     assert set(authority_payload) == {
         "calibration",
         "candidates",
         "commitment",
         "incumbent_preflight",
-            "model_mount",
-            "policies",
-            "reference",
-            "slot_audit_policies",
-            "source",
+        "model_mount",
+        "policies",
+        "reference",
+        "slot_audit_policies",
+        "source",
+        "speed_evidence_policy",
+        "resident_speed_plan",
+        "resident_audit_authority",
     }
     assert set(authority_payload["candidates"][0]) == {
         "arm",
@@ -1736,6 +1450,7 @@ def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
         "reference_execution",
         "teardown_after_t",
         "reports",
+        "operational_timing",
     )
 
     monkeypatch.setattr(runner, "publish_evidence", publish_evidence)
@@ -1743,7 +1458,7 @@ def test_registered_authority_digest_versions_slot_audit_policy_and_report_wire(
     reference = _REAL_PUBLISH_CAUSAL(root, attempt)
     assert (reference.domain, reference.schema) == (
         runner.ATTEMPT_DOMAIN,
-        runner.ATTEMPT_SCHEMA,
+        runner.ATTEMPT_SCHEMA_V3,
     )
     assert reopen_evidence(root, reference) == runner.canonical_json_bytes(
         attempt.to_dict()
@@ -1935,7 +1650,14 @@ def test_durable_attempt_roundtrip_rejects_nested_decision_tamper(
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
-    attempt = harness.run()
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    _run_resident_harness(harness, baseline)
+    attempt = harness.published_attempt
     root = tmp_path / "attempt-evidence"
 
     # Restore the real byte publisher only after the fake causal run is complete.
@@ -1953,7 +1675,7 @@ def test_durable_attempt_roundtrip_rejects_nested_decision_tamper(
         runner.canonical_json_bytes(tampered),
         domain=runner.ATTEMPT_DOMAIN,
         media_type="application/json",
-        schema=runner.ATTEMPT_SCHEMA,
+        schema=runner.ATTEMPT_SCHEMA_V3,
     )
     with pytest.raises(runner.QualificationRunnerError, match="headline"):
         _REAL_REOPEN_CAUSAL(root, forged, expected=harness.value)
@@ -1962,47 +1684,63 @@ def test_durable_attempt_roundtrip_rejects_nested_decision_tamper(
 def test_reopen_rejects_self_consistent_speed_witness_arm_relabel(
     monkeypatch, tmp_path
 ) -> None:
+    """A witness relabeled to another delta — with every nested digest kept
+    wire-consistent — must still die on the EXTERNAL authority comparison.
+    The report-level cohort identity is left untouched, so nothing before the
+    per-report speed check can catch the substitution; the companion test in
+    test_qualification.py proves the real witness's internal digest admits an
+    equally self-consistent forgery at construction."""
+
     harness = _Harness(
         monkeypatch,
         graph=(QualificationDecision.PASS,),
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
-    attempt = harness.run()
-    payload = attempt.to_dict()
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    # Reopen's resident branch demands an exactly-typed ResidentCrossoverPlan
+    # before it will even read the witness, so the harness's namespace plan is
+    # replaced by a real plan built through the production crossover math; the
+    # harness's candidate-launch and runtime-policy identities are realigned to
+    # it so every honest cross-check passes and only the relabel can fail.
+    from tests.test_qualification import _lifecycle as _resident_fixture
+
+    plan = _resident_fixture(tmp_path / "resident-fixture")[0].plan
+    harness.value.resident_speed_plan = plan
+    harness.value.prepared.candidates[0].launch.digest = plan.candidate.launch.digest
+    harness.value.expected_runtime_resource_policy_digest = (
+        plan.candidate.runtime_resource_policy_digest
+    )
+    _run_resident_harness(harness, baseline)
+    payload = harness.published_attempt.to_dict()
     report = payload["reports"][0]
     speed = report["speed_witness"]
     speed["selected_delta_digest"] = _d("relabeled-delta")
-    rates = tuple(runner._rate_from_dict(row) for row in speed["rates"])
-    speed["evidence_digest"] = runner._projection_digest(
-        speed["selected_delta_digest"],
-        speed["candidate_launch_digest"],
-        speed["calibration_digest"],
-        speed["calibration_context_digest"],
-        speed["workload_digest"],
-        speed["runtime_resource_policy_digest"],
-        rates,
-    )
+    speed["evidence_digest"] = _d("relabeled-evidence")
     report["speed_evidence_digest"] = speed["evidence_digest"]
+    # The attempt-level timing witness cross-binds the report's speed evidence
+    # digest; a competent forger rebinds it, and the reopen must still refuse.
+    payload["operational_timing"]["speed_evidence_digest"] = speed["evidence_digest"]
 
     root = tmp_path / "speed-relabel"
+    monkeypatch.setattr(runner, "publish_evidence", publish_evidence)
     forged = publish_evidence(
         root,
         runner.canonical_json_bytes(payload),
         domain=runner.ATTEMPT_DOMAIN,
         media_type="application/json",
-        schema=runner.ATTEMPT_SCHEMA,
+        schema=runner.ATTEMPT_SCHEMA_V3,
     )
     monkeypatch.setattr(runner, "_validate_reference_execution", lambda *_args: None)
     monkeypatch.setattr(
         runner,
         "reopen_calibration_evidence",
         lambda *_args, **_kwargs: harness.calibration,
-    )
-    monkeypatch.setattr(
-        runner,
-        "reopen_graph_verification",
-        lambda *_args, **_kwargs: next(iter(harness.grades.values())),
     )
     monkeypatch.setattr(
         runner, "reopen_reference_quality_evidence", lambda *_args, **_kwargs: object()
@@ -2014,7 +1752,9 @@ def test_reopen_rejects_self_consistent_speed_witness_arm_relabel(
             QualificationDecision.PASS, 0, harness.calibration.digest
         ),
     )
-    with pytest.raises(runner.QualificationRunnerError, match="speed witness"):
+    with pytest.raises(
+        runner.QualificationRunnerError, match="differs from its marginal arm"
+    ):
         _REAL_REOPEN_CAUSAL(root, forged, expected=harness.value)
 
 
@@ -2028,7 +1768,14 @@ def test_reference_execution_witness_rejects_launch_and_causal_tamper(
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
-    attempt = harness.run()
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    _run_resident_harness(harness, baseline)
+    attempt = harness.published_attempt
     witness = attempt.reference_execution
     identity = SimpleNamespace(
         runtime_digest=_d("reference-runtime"),
@@ -2097,7 +1844,15 @@ def test_reference_execution_witness_rejects_launch_and_causal_tamper(
         plan_digest=plan_digest,
         session_digest=session_digest,
     )
-    honest = replace(attempt, reference_execution=honest_witness)
+    honest = replace(
+        attempt,
+        reference_execution=honest_witness,
+        # The v3 operational-timing witness binds the reference session digest;
+        # rebinding the witness must carry the timing binding with it.
+        operational_timing=replace(
+            attempt.operational_timing, reference_session_digest=session_digest
+        ),
+    )
     runner._validate_reference_execution(honest, harness.value)
 
     if tamper == "launch":

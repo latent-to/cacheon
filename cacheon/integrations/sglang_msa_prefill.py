@@ -16,9 +16,9 @@ initialising; patching the source is sufficient because the pending import then 
 the dispatcher.  All other loaded-consumer states are checked by object identity and
 unexpected drift fails closed instead of reporting an installed but unreachable seam.
 
-``CACHEON_MSA_PREFILL_SEAM=1`` still gates dispatch at call time.  The stock top-k
-selection and attend remain validator-owned; the candidate fills only the causal
-block-score sheet for ``attention.msa_prefill_block_score``.
+``CACHEON_MSA_PREFILL_SEAM=1`` still gates dispatch at call time.  The candidate
+receives the batched paged indexer inputs once and fills validator-allocated
+``topk_idx``; the validator audits that consumed selection and retains the attend.
 """
 
 from __future__ import annotations

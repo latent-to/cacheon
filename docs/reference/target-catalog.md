@@ -57,7 +57,7 @@ Catalog registration defines identity and admission; it does not by itself
 prove that a serving seam is installed or that the deployed model reaches it.
 In the current MiniMax-M3 mainnet arena, `norm.rmsnorm` cannot execute because
 the model uses `GemmaRMSNorm`, and `attention.msa_block_score` cannot execute
-because its decode-side integration is non-installing. Do not pay for or submit
+because the pinned runtime has no installing decode adapter. Do not pay for or submit
 either target to this arena. This restriction does not withdraw any other
 registered target. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).

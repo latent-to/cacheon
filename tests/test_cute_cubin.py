@@ -277,20 +277,20 @@ def _launch_plan() -> dict[str, object]:
             "input.q", "tensor", unsqueeze=(-1,), assumed_align=16, leading_dim=1
         ),
         ArtifactBinding(
-            "input.index_k",
+            "input.index_k_cache",
             "tensor",
             unsqueeze=(-1,),
             assumed_align=16,
             leading_dim=1,
         ),
         ArtifactBinding(
-            "output.block_scores", "tensor", assumed_align=4, leading_dim=1
+            "output.topk_idx", "tensor", assumed_align=4, leading_dim=1
         ),
-        ArtifactBinding("input.prefix_len", "scalar", cast="i32"),
+        ArtifactBinding("input.max_seqlen_k", "scalar", cast="i32"),
         ArtifactBinding("input.scale", "scalar", cast="f32"),
         ArtifactBinding("stream.current", "stream"),
     )
-    prelaunch = (ArtifactPrelaunch("fill", "output.block_scores", "-inf"),)
+    prelaunch = (ArtifactPrelaunch("fill", "output.topk_idx", -1),)
     return {
         "bindings": [binding.to_dict() for binding in bindings],
         "device_plan": _device_plan().to_dict(),
@@ -301,10 +301,10 @@ def _launch_plan() -> dict[str, object]:
         "specialization_capability_requirements": [
             {
                 "capability_field": "block_size",
-                "source": "input.block_size",
+                "source": "input.block_size_k",
             }
         ],
-        "specializes": {"input.block_size": 128},
+        "specializes": {"input.block_size_k": 128},
         "step": 0,
     }
 
@@ -896,7 +896,11 @@ def test_device_publication_load_resolve_invoke_and_shutdown(
             return self
 
     q, index_k, output = object(), object(), Output()
-    entry(q, index_k, 7, 0.125, 128, output)
+    metadata = [object() for _ in range(5)]
+    entry(
+        q, index_k, *metadata, 3, 7, 128, 128, 8, 1, 2, 0.125,
+        object(), 1, 1, output,
+    )
     shutdown_direct_artifact_runtimes()
 
     assert calls == [(q, index_k, output, 7, 0.125, "stream")]
@@ -947,12 +951,12 @@ def test_device_publication_rejects_launch_plan_semantic_tampering(
     plan["bindings"] = [  # type: ignore[index]
         binding
         for binding in plan["bindings"]  # type: ignore[index]
-        if binding["source"] != "output.block_scores"
+        if binding["source"] != "output.topk_idx"
     ]
     plan["prelaunch"] = [  # type: ignore[index]
         operation
         for operation in plan["prelaunch"]  # type: ignore[index]
-        if operation["target"] != "output.block_scores"
+        if operation["target"] != "output.topk_idx"
     ]
     export = tampered["exports"][0]  # type: ignore[index]
     export["launch_plan_sha256"] = hashlib.sha256(

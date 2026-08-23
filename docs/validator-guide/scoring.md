@@ -111,7 +111,7 @@ A candidate can pass only when all required products agree:
 
 | Product | Failure meaning |
 |---|---|
-| Execution evidence | Wrong/missing role, launch, device, protocol, or completion; the pair-native per-generation count is record-only at the PR #95 merge |
+| Execution evidence | Wrong/missing role, launch, device, protocol, or completion; current source requires the complete pair-native per-generation rank count before grading |
 | Graph evidence | Missing target member/variant/shape coverage or capture/replay failure |
 | Speed evidence | Below the calibrated bar, or missing/unfit evidence that prevents a valid decision |
 | Audit-only evidence | Missing slot × rank/PID coverage, retained violation, or protocol error |
@@ -156,9 +156,6 @@ against the new stack rather than treated as an independent per-target argmax.
 The winning transaction may emit crown, retirement, neutralization, adoption, and stack
 transition events. Atomic targets explicitly displace overlapping singleton targets;
 manifest order and bundle packaging never decide overlap.
-
-Discovery is different: a qualifying discovery may create a bounded bounty event, but it
-does not install a stack manifest or create a standing reward family.
 
 ## Reward policy follows the activated generation
 

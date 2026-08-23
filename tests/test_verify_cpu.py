@@ -13,6 +13,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from cacheon.capabilities import CallDescriptor  # noqa: E402
+from cacheon.minimax_sparse_prefill_slot import INPUT_NAMES  # noqa: E402
 from cacheon.registry import Eligibility, eligibility_from_metadata  # noqa: E402
 from cacheon.sandbox import load_entry  # noqa: E402
 from cacheon.slots import get_slot  # noqa: E402
@@ -518,25 +520,19 @@ def test_one_loaded_entry_cannot_cache_first_captured_shape():
     assert not result.shape_results[1].passed
 
 
-def test_topk_graph_poison_catches_partial_score_sheet_write():
-    # MSA serves eagerly; this is a comparator/orchestration regression using its
-    # typed FP32 padded score sheet. During replay the entry writes only the correct
-    # top-k cells. Untouched NaN poison must not be normalized into harmless -inf.
+def test_topk_graph_poison_catches_partial_selection_write():
+    # MSA serves eagerly; force graph orchestration here solely to prove that a
+    # candidate cannot leave poisoned int32 padding behind on replay.
     slot = get_slot("attention.msa_prefill_block_score")
     backend = _FakeGraphBackend()
 
-    def partial_during_capture(q, index_k, prefix_len, scale, block_size, out):
-        inputs = {
-            "q": q,
-            "index_k": index_k,
-            "prefix_len": prefix_len,
-            "scale": scale,
-            "block_size": block_size,
-        }
+    def partial_during_capture(*args):
+        *values, out = args
+        inputs = dict(zip(INPUT_NAMES, values, strict=True))
         expected = slot.invoke_reference(inputs)[0]
         if backend.phase in {"capture", "replay"}:
-            indices = expected.topk(slot.correctness.top_k, dim=-1).indices
-            out.scatter_(1, indices, expected.gather(1, indices))
+            valid = expected >= 0
+            out[valid] = expected[valid]
         else:
             out.copy_(expected)
 
@@ -546,14 +542,14 @@ def test_topk_graph_poison_catches_partial_score_sheet_write():
         dtype=torch.bfloat16,
         device="cpu",
         seed=0,
-        shapes=[slot.shapes[0]],
+        shapes=[slot.shapes[1]],
         graph_safe=True,
         graph_replays=3,
         _graph_backend=backend,
     )
     assert not result.passed
     assert result.shape_results[0].graph_replays == 1
-    assert "NaN or +inf" in result.shape_results[0].detail
+    assert "padding" in result.shape_results[0].detail
 
 
 def test_later_graph_replay_corruption_is_not_hidden_by_first_replay():
@@ -639,22 +635,22 @@ def test_ordinary_case_descriptor_binds_full_context_and_digest():
     ):
         changed = dict(call)
         changed[field] = value
-        rebound = VerificationCaseDescriptor.from_call_dicts(
+        rebound = VerificationCaseDescriptor(
             slot_id=case.slot_id,
             variant_id=case.variant_id,
             case_kind=case.case_kind,
-            calls=(changed,),
+            calls=(CallDescriptor(changed),),
         )
         assert rebound.digest != case.digest
 
     missing = dict(call)
     missing.pop("architecture")
     with pytest.raises(ValueError, match="missing sealed execution context"):
-        VerificationCaseDescriptor.from_call_dicts(
+        VerificationCaseDescriptor(
             slot_id=case.slot_id,
             variant_id=case.variant_id,
             case_kind=case.case_kind,
-            calls=(missing,),
+            calls=(CallDescriptor(missing),),
         )
 
 

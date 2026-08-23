@@ -16,22 +16,12 @@ import pytest
 import cacheon.engine_tree as engine_tree
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
-from cacheon.discovery import (
-    DEFAULT_DISCOVERY_POLICY,
-    DISCOVERY_ABI_VERSION,
-    DiscoveryArmPlan,
-    DiscoveryBuildProfile,
-    discovery_candidate_stack_digest,
-    inspect_discovery,
-    reopen_discovery_engine_binding,
-)
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.engine_tree import (
     EngineTreeError,
     inspect_contribution,
     integrated_source_tree_digest,
-    materialize_discovery_engine_tree,
     materialize_engine_tree,
     promote_integrated_contribution,
     reopen_materialized_engine_tree,
@@ -62,7 +52,6 @@ from cacheon.target_catalog import TargetCatalog, default_target_catalog
 FIXTURES = Path(__file__).parent / "fixtures"
 MSA = FIXTURES / "stack_msa_singleton"
 FUSED = FIXTURES / "stack_fused_epilogue_atomic"
-OVERRIDE = Path(__file__).parents[1] / "examples" / "miner_m3_swigluoai_override"
 
 
 def _digest(label: str) -> str:
@@ -173,45 +162,6 @@ def _write_moe_fixture(root: Path, target: str, entry: str) -> Path:
         'cuda_sources = ["kernels/fused_epilogue_sm103.cu"]\n'
     )
     return root
-
-
-def _write_discovery_fixture(root: Path) -> Path:
-    (root / "patches").mkdir(parents=True)
-    (root / "manifest.toml").write_text(
-        'bundle_id = "engine-tree-discovery"\n'
-        f'abi_version = "{DISCOVERY_ABI_VERSION}"\n'
-        'build_profile = "engine-tree-sm120-tp8"\n'
-        'patches = ["patches/change.patch"]\n'
-        'dependencies = ["cuda13"]\n'
-        'conflicts = []\n'
-        'requested_promotion = "new_singleton"\n'
-        "\n[applicability]\n"
-        'arenas = ["minimax-m3-rtx-tp8-v1"]\n'
-        'models = ["minimax-m3-nvfp4"]\n'
-        'architectures = ["sm120"]\n'
-        "tensor_parallel_sizes = [8]\n"
-    )
-    (root / "patches" / "change.patch").write_text(
-        "--- a/sglang/srt/layers/activation.py\n"
-        "+++ b/sglang/srt/layers/activation.py\n"
-        "@@ -1 +1 @@\n"
-        "-VALUE = 1\n"
-        "+VALUE = 2\n"
-    )
-    return root
-
-
-def _discovery_profile() -> DiscoveryBuildProfile:
-    return DiscoveryBuildProfile(
-        profile_id="engine-tree-sm120-tp8",
-        sglang_version=DEFAULT_DISCOVERY_POLICY.sglang_version,
-        arena="minimax-m3-rtx-tp8-v1",
-        model="minimax-m3-nvfp4",
-        architecture="sm120",
-        tensor_parallel_size=8,
-        features=("cuda13",),
-        build_inputs=(("image", _digest("discovery-image")),),
-    )
 
 
 def _tree_snapshot(root: Path) -> dict[str, tuple[bytes, int]]:
@@ -409,199 +359,6 @@ def test_stock_only_stack_has_no_runtime_bundle(tmp_path: Path) -> None:
     assert [row.path for row in result.files] == ["metadata/cacheon_engine_tree.json"]
 
 
-def test_discovery_materialization_preserves_incumbent_and_binds_source_intent(
-    tmp_path: Path,
-) -> None:
-    catalog = default_target_catalog()
-    context = _evaluation_context(catalog)
-    ref = _proposal_ref(MSA, catalog)
-    stack = _evaluation_stack(catalog, context, ref)
-    incumbent = materialize_engine_tree(
-        stack,
-        context=context,
-        catalog=catalog,
-        resolver=_sources((ref, MSA)),
-        destination=tmp_path / "incumbent",
-    )
-    incumbent_snapshot = _tree_snapshot(incumbent.root)
-    proposal_root = _write_discovery_fixture(tmp_path / "proposal")
-    proposal = inspect_discovery(proposal_root)
-    profile = _discovery_profile()
-
-    result = materialize_discovery_engine_tree(
-        incumbent.root,
-        proposal,
-        policy=DEFAULT_DISCOVERY_POLICY,
-        build_profile=profile,
-        destination=tmp_path / "candidate",
-    )
-
-    expected_stack = discovery_candidate_stack_digest(
-        incumbent_stack_digest=incumbent.stack_digest,
-        incumbent_tree_digest=incumbent.tree_digest,
-        proposal_digest=proposal.proposal_digest,
-        policy_digest=DEFAULT_DISCOVERY_POLICY.digest,
-        build_profile_digest=profile.digest,
-    )
-    assert result.stack_digest == expected_stack
-    assert result.stack_digest != incumbent.stack_digest
-    assert result.tree_digest != incumbent.tree_digest
-    assert result.runtime_manifest == incumbent.runtime_manifest
-    binding = reopen_discovery_engine_binding(result)
-    assert binding.materialized_tree == result
-    assert binding.discovery.proposal_digest == proposal.proposal_digest
-    assert binding.policy == DEFAULT_DISCOVERY_POLICY
-    assert binding.build_profile == profile
-    assert binding.incumbent_stack_digest == incumbent.stack_digest
-    assert binding.incumbent_tree_digest == incumbent.tree_digest
-
-    incumbent_rows = {
-        row.path: (row.sha256, row.size, row.mode)
-        for row in incumbent.files
-        if row.path != "metadata/cacheon_engine_tree.json"
-    }
-    candidate_rows = {
-        row.path: (row.sha256, row.size, row.mode) for row in result.files
-    }
-    assert all(candidate_rows[path] == identity for path, identity in incumbent_rows.items())
-    assert {
-        row.path.removeprefix("discovery/"): (row.sha256, row.size)
-        for row in result.files
-        if row.path.startswith("discovery/")
-    } == {row.path: (row.sha256, row.size) for row in proposal.files}
-    for row in proposal.files:
-        assert (result.root / "discovery" / row.path).read_bytes() == (
-            proposal.root / row.path
-        ).read_bytes()
-
-    incumbent_metadata = json.loads(
-        (incumbent.root / "metadata/cacheon_engine_tree.json").read_text()
-    )
-    candidate_metadata = json.loads(
-        (result.root / "metadata/cacheon_engine_tree.json").read_text()
-    )
-    discovery_metadata = json.loads(
-        (result.root / "metadata/cacheon_discovery.json").read_text()
-    )
-    assert candidate_metadata["contributions"] == incumbent_metadata["contributions"]
-    assert discovery_metadata == {
-        "build_profile": profile.to_dict(),
-        "build_profile_digest": profile.digest,
-        "incumbent_stack_digest": incumbent.stack_digest,
-        "incumbent_tree_digest": incumbent.tree_digest,
-        "policy": DEFAULT_DISCOVERY_POLICY.to_dict(),
-        "policy_digest": DEFAULT_DISCOVERY_POLICY.digest,
-        "proposal_digest": proposal.proposal_digest,
-        "proposal_files": [row.to_dict() for row in proposal.files],
-        "schema": "cacheon.discovery-engine-tree.v1",
-    }
-    assert reopen_materialized_engine_tree(incumbent.root) == incumbent
-    assert _tree_snapshot(incumbent.root) == incumbent_snapshot
-
-
-def test_discovery_candidate_stack_precedes_post_build_overlay_identity(
-    tmp_path: Path,
-) -> None:
-    catalog = default_target_catalog()
-    context = _evaluation_context(catalog)
-    stack = _evaluation_stack(catalog, context)
-    incumbent = materialize_engine_tree(
-        stack,
-        context=context,
-        catalog=catalog,
-        resolver={},
-        destination=tmp_path / "incumbent",
-    )
-    proposal = inspect_discovery(_write_discovery_fixture(tmp_path / "proposal"))
-    profile = _discovery_profile()
-    candidate = materialize_discovery_engine_tree(
-        incumbent.root,
-        proposal,
-        policy=DEFAULT_DISCOVERY_POLICY,
-        build_profile=profile,
-        destination=tmp_path / "candidate",
-    )
-
-    first = DiscoveryArmPlan.create(
-        incumbent=stack,
-        incumbent_tree_digest=incumbent.tree_digest,
-        candidate_tree_digest=candidate.tree_digest,
-        proposal_digest=proposal.proposal_digest,
-        policy_digest=DEFAULT_DISCOVERY_POLICY.digest,
-        build_profile_digest=profile.digest,
-        overlay_identity_digest=_digest("overlay-result-one"),
-    )
-    second = replace(first, overlay_identity_digest=_digest("overlay-result-two"))
-
-    assert first.candidate_stack_digest == candidate.stack_digest
-    assert second.candidate_stack_digest == candidate.stack_digest
-    assert first.selected_delta_digest == second.selected_delta_digest
-    assert first.digest != second.digest
-
-
-def test_discovery_materialization_rejects_changed_proposal_without_output(
-    tmp_path: Path,
-) -> None:
-    catalog = default_target_catalog()
-    context = _evaluation_context(catalog)
-    incumbent = materialize_engine_tree(
-        _evaluation_stack(catalog, context),
-        context=context,
-        catalog=catalog,
-        resolver={},
-        destination=tmp_path / "incumbent",
-    )
-    incumbent_snapshot = _tree_snapshot(incumbent.root)
-    proposal_root = _write_discovery_fixture(tmp_path / "proposal")
-    proposal = inspect_discovery(proposal_root)
-    with (proposal_root / "patches" / "change.patch").open("a") as handle:
-        handle.write("\n")
-    destination = tmp_path / "candidate"
-
-    with pytest.raises(EngineTreeError, match="proposal changed after inspection"):
-        materialize_discovery_engine_tree(
-            incumbent.root,
-            proposal,
-            policy=DEFAULT_DISCOVERY_POLICY,
-            build_profile=_discovery_profile(),
-            destination=destination,
-        )
-
-    assert not destination.exists()
-    assert reopen_materialized_engine_tree(incumbent.root) == incumbent
-    assert _tree_snapshot(incumbent.root) == incumbent_snapshot
-
-
-@pytest.mark.parametrize("destination_source", ("incumbent", "proposal"))
-def test_discovery_materialization_rejects_destination_overlap(
-    tmp_path: Path, destination_source: str,
-) -> None:
-    catalog = default_target_catalog()
-    context = _evaluation_context(catalog)
-    incumbent = materialize_engine_tree(
-        _evaluation_stack(catalog, context),
-        context=context,
-        catalog=catalog,
-        resolver={},
-        destination=tmp_path / "incumbent",
-    )
-    incumbent_snapshot = _tree_snapshot(incumbent.root)
-    proposal = inspect_discovery(_write_discovery_fixture(tmp_path / "proposal"))
-    source = incumbent.root if destination_source == "incumbent" else proposal.root
-
-    with pytest.raises(EngineTreeError, match="overlaps an immutable input tree"):
-        materialize_discovery_engine_tree(
-            incumbent.root,
-            proposal,
-            policy=DEFAULT_DISCOVERY_POLICY,
-            build_profile=_discovery_profile(),
-            destination=source / "nested-output",
-        )
-
-    assert reopen_materialized_engine_tree(incumbent.root) == incumbent
-    assert _tree_snapshot(incumbent.root) == incumbent_snapshot
-
-
 def test_independent_contributions_compose_without_source_name_collisions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -675,15 +432,26 @@ def test_independent_contributions_compose_without_source_name_collisions(
 def test_override_entry_shim_preserves_required_ref_and_optional_device_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    override = tmp_path / "override"
+    (override / "kernels").mkdir(parents=True)
+    (override / "kernels" / "epilogue.py").write_text(
+        "def gemm1_epilogue_ref(gate, up):\n    return gate\n"
+    )
+    (override / "manifest.toml").write_text(
+        'bundle_id = "override-fixture"\nabi_version = "cacheon-op-abi-v0"\n'
+        '[[ops]]\nslot = "moe.fused_experts"\nsource = "kernels/epilogue.py"\n'
+        'entry = "gemm1_epilogue"\nbase_kernel = "nvfp4_moe_megakernel"\n'
+        'override_point = "gemm1_epilogue"\ndtypes = ["bfloat16"]\n'
+    )
     catalog = default_target_catalog()
     context = _evaluation_context(catalog)
-    ref = _proposal_ref(OVERRIDE, catalog)
+    ref = _proposal_ref(override, catalog)
     stack = _evaluation_stack(catalog, context, ref)
     result = materialize_engine_tree(
         stack,
         context=context,
         catalog=catalog,
-        resolver=_sources((ref, OVERRIDE)),
+        resolver=_sources((ref, override)),
         destination=tmp_path / "engine",
     )
     op = load_manifest(result.root).ops[0]

@@ -32,9 +32,9 @@ subnet control plane from the hostile-code referee, giving readers three
 cooperating surfaces with different trust boundaries.
 
 <div class="cacheon-grid" markdown>
-<a class="cacheon-card" href="engine/overview/">
+<a class="cacheon-card" href="engine/integration/">
 <strong>Cacheon Engine</strong>
-<span>The chain-independent release contract: reviewed source, pinned runtime, sealed model identity, and signed authority.</span>
+<span>Integration review: how a reproduced crown becomes ordinary reviewed source, and how model bytes are provisioned.</span>
 </a>
 <a class="cacheon-card" href="architecture/pipeline/">
 <strong>The referee</strong>
@@ -58,15 +58,12 @@ flowchart LR
   Q -. "does not ship automatically" .-> R
 ```
 
-A miner submits a **proposal** for one registered target delta, or a bounded discovery
-prototype through the separate discovery ABI. The referee may establish a **crown**
-after two independent passing qualifications. Cacheon maintainers may then turn the
-proposal into an **integrated contribution** after security, provenance,
-compatibility, and maintenance review. Only integrated contributions may enter a signed
-**Engine release**. Discovery policy defines reviewed promotion and bounded-bounty
-outcomes, but the durable registered-promotion transport is not implemented and fails
-closed; the implemented disposition path is bounty-only. Discovery is not another
-standing target family.
+A miner submits a **proposal** for one registered target delta. The referee may
+establish a **crown** after two independent passing qualifications. Cacheon
+maintainers may then turn the proposal into an **integrated contribution** after
+security, provenance, compatibility, and maintenance review. Work that does not fit
+a registered target is not a valid proposal; widening the catalog is a reviewed
+validator-side change.
 
 [Learn the product model →](architecture/product-model.md)
 
@@ -92,8 +89,8 @@ hot-swap screen may route candidates before this schedule, but its measurements
 cannot qualify or settle a contribution.
 
 This separates the **execution unit** (a complete disposable engine) from the
-**economic unit** (one singleton target, atomic target, or bounded discovery
-contribution). A new optimization can build on previous wins without repackaging or
+**economic unit** (one singleton target or atomic target). A new optimization can
+build on previous wins without repackaging or
 copying them.
 
 [Follow a proposal through the system →](architecture/pipeline.md)
@@ -105,7 +102,7 @@ copying them.
 | Write a Triton, CuTeDSL, or Python reference kernel | [Miner guide](miner-guide/overview.md) |
 | Validate the repository locally without a GPU | [Local quickstart](get-started/quickstart.md) |
 | Deploy intake, an arena provider, and qualification workers | [Validator guide](validator-guide/overview.md) |
-| Understand or verify the Engine release contract | [Cacheon Engine](engine/overview.md) |
+| Integrate a reproduced crown into reviewed source | [Cacheon Engine](engine/integration.md) |
 | Audit trust boundaries and failure behavior | [Security model](security/threat-model.md) |
 | Check what is implemented, measured, and still unproven | [State of record](reference/state-of-record.md) |
 

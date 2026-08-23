@@ -28,9 +28,9 @@ manifest; it does not require the Python function itself to be named `entry`.
 | `activation.silu_and_mul` | op | `entry(x, out)` | MLP activation output |
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | pure RMSNorm output |
 | `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | dense/GQA/MQA attention output |
-| `attention.decode` | block | `entry(q, k, v, seq_lens, sm_scale, out)` | paged decode-attention output |
+| `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | MiniMax-M3 graph-native sparse attention over validator-selected blocks |
 | `attention.msa_block_score` | block | `entry(q, index_k, seq_lens, block_size, out)` | decode-time block scores; validator owns top-k selection and attend |
-| `attention.msa_prefill_block_score` | block | `entry(q, index_k, prefix_len, scale, block_size, out)` | causal per-row prefill block scores; validator owns top-k selection and attend |
+| `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | one batched paged prefill score-to-selection call; validator audits indices and owns attend |
 | `moe.fused_experts` | block | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out)` | local expert result; stock path owns the trailing reduction |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` plus `entry(x, topk_ids, topk_weights, prepared, out, group)` | already reduced expert result |
 | `collective.all_reduce` | collective | `entry(x, out, group)` | sum across the supplied process group |
@@ -52,20 +52,21 @@ Do not pay for or submit either target to the current arena. They remain in the
 registry as ABI and verifier contracts; this arena-specific notice does not
 withdraw any other registered target.
 
-The two MSA slots output **scores**, not selected indices or attended values.
-The production engine's runtime top-k controls the validator-owned selection tail.
-`SlotSpec.correctness.top_k` is a separate verification parameter: it selects the
-width of the score-sheet overlap comparison (the registered width is eight blocks), but does not
-configure production selection or gate whether the score kernel routes. A runtime
-call may therefore use a different top-k while the candidate still fills the complete
-score sheet and the stock tail applies the engine's value.
+The decode MSA slot outputs scores and retains stock selection. Prefill V2
+instead receives the engine's live top-k and writes validator-allocated `int32`
+indices for the whole paged batch in one call. The validator compares the
+consumed sets with its independent reference and retains sparse attention and
+the rest of the model. `-1` is required padding for short causal rows.
 
 The prefill slot is a distinct long-prefill boundary and its canonical live
 descriptor is eager; do not assume a decode optimization exercises it.
 
-Registration and live installation are different facts. Confirm that the
-operator's arena actually binds and activates a target before investing in a
-production submission; a contract alone does not make a callsite hot.
+Registration and live installation are also different facts. The
+`attention.msa_block_score` decode contract is registered and CPU-verifiable, but its
+current pinned runtime has no installing adapter for that chokepoint. The
+prefill sibling has a real guarded adapter. Confirm that the operator's arena
+actually binds and activates the target before investing in a production
+submission; a contract alone does not make a callsite hot.
 
 Collective slots are distributed contracts. `group` is the process group the
 validator supplies, and every listed output is validator-allocated. Test with
@@ -109,7 +110,7 @@ mode = "atomic"
 
 Adding two unrelated `[[ops]]` rows does not create a target. Nor may a miner
 declare membership, displacement, overlap, or a new target ID. An unregistered
-combination belongs in the [Discovery lane](discovery-lane.md).
+combination is not a valid submission until the catalog registers it.
 
 ## Selecting a target
 
@@ -121,7 +122,8 @@ Start from the published arena, not from an isolated kernel idea:
 3. Choose the smallest registered target that contains the required delta.
 4. Describe every specialization in an explicit capability domain.
 5. If the change needs engine-wide setup, arbitrary SGLang edits, or semantics
-   outside a registered target, stop and use discovery instead.
+   outside a registered target, stop: it is not submittable until the catalog
+   registers that surface.
 
 For a first offline implementation, `activation.silu_and_mul` and
 `norm.rmsnorm` have the smallest single-process ABIs. They are useful for
@@ -149,19 +151,19 @@ Walk the desired change from semantics outward:
 6. **State the honest domain.** Use capability predicates for real specialization
    boundaries. Do not use them to hide failing shapes or claim a target that never routes.
 
-The outcome should be one of exactly three shapes: one registered singleton, the exact
-complete member set of a registered atomic target, or discovery. “Closest available
-slot” is not a fourth option.
+The outcome should be one of exactly two shapes: one registered singleton or the exact
+complete member set of a registered atomic target. “Closest available slot” is not a
+third option, and unregistered work is not submittable.
 
 ### Worked choices
 
 | Idea | Choice | Reasoning |
 |---|---|---|
 | fuse SiLU and multiply for a particular token range | `activation.silu_and_mul` singleton with a constrained variant | both operations and the output are already inside one slot |
-| add a residual connection to pure RMSNorm | not `norm.rmsnorm`; use a matching registered collective boundary only if its full semantics apply, otherwise discovery | the singleton RMSNorm contract explicitly does not own residual addition |
+| add a residual connection to pure RMSNorm | not `norm.rmsnorm`; use a matching registered collective boundary only if its full semantics apply, otherwise not submittable | the singleton RMSNorm contract explicitly does not own residual addition |
 | replace local expert compute and its trailing reduction as one implementation | `moe.fused_experts_reduce` | this slot, unlike `moe.fused_experts`, owns the supplied-group reduction |
 | jointly alter the shallow and deep MoE collective epilogues | `collective.moe_epilogue.v1`, implementing both members | the catalog already registers and prices the coupled overlap unit |
-| patch scheduler batching or invent a new attention seam | discovery | engine control flow lies outside every component callable ABI |
+| patch scheduler batching or invent a new attention seam | not submittable | engine control flow lies outside every component callable ABI |
 
 This exercise prevents two common errors. Choosing a boundary that is too narrow makes
 the desired optimization impossible without hidden side effects. Choosing one that is

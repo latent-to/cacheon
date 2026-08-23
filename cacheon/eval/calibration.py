@@ -127,7 +127,6 @@ class CalibrationContext:
     def digest(self) -> str:
         return canonical_digest("cacheon.qualification.calibration-context", self.to_dict())
 
-
 @dataclass(frozen=True)
 class SpeedCalibration:
     min_margin: str

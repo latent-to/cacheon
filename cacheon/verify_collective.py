@@ -31,7 +31,7 @@ from cacheon.capabilities import (
     collective_call_descriptor,
 )
 from cacheon.registry import Eligibility
-from cacheon.slots import SlotSpec
+from cacheon.slots import SlotSpec, model_profile
 from cacheon.tensor_spec import allocate_output_spec, validate_output_allocation
 from cacheon.verify import (
     _DEFAULT_GRAPH_REPLAYS,
@@ -99,6 +99,7 @@ def _collective_descriptor(
     )
     if "hidden" in shape:
         dimensions.update(hidden_dim=shape["hidden"], last_dim=shape["hidden"])
+    profile = model_profile(model_key, slot_name) if slot_name else None
     return collective_call_descriptor(
         dtype=dtype_name,
         architecture=architecture or _device_architecture(device),
@@ -108,6 +109,7 @@ def _collective_descriptor(
         # N/A instead of qualifying offline and then never routing live. PR3 manifests
         # will supply the trusted identity to both sides together.
         model=None,
+        quant=profile.quant if profile and profile.quant else "dense",
         world_size=world_size,
         dimensions=dimensions,
     )
@@ -799,10 +801,10 @@ def verify_collective(
                 model_key=model_key,
                 architecture=architecture or ("cpu" if device == "cpu" else None),
                 world_size=world_size,
-            ).as_dict()
+            )
             for shape in sequence
         )
-        return VerificationCaseDescriptor.from_call_dicts(
+        return VerificationCaseDescriptor(
             slot_id=slot.name,
             variant_id=variant_name or "default",
             case_kind=case_kind,

@@ -99,7 +99,7 @@ The target catalog determines the transition:
 - an atomic target replaces its registered member set and displaces the overlapping singleton targets;
 - compatible targets use explicit validator-owned composition precedence;
 - required targets and displacement closures are validated before planning;
-- unregistered work is routed through the discovery planner, not disguised as a singleton.
+- unregistered work fails resolution rather than being disguised as a singleton.
 
 The planner records both the old and new contribution references, the selected-delta digest, the exact target specification, and the expected execution order. See [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py).
 
@@ -120,7 +120,7 @@ T         = materialize(pristine reference)        # neither proposal is a gradi
 
 The validator, not the proposal, performs `replace`. A bundle that also declares an
 activation implementation cannot silently widen this arm: it either fails exact target
-resolution or enters an explicitly registered wider target/discovery path. If C passes,
+resolution or enters an explicitly registered wider target. If C passes,
 the transition record names `R0 -> R1`; it does not give R1 ownership of A or of the
 complete emitted engine tree.
 
@@ -134,7 +134,7 @@ The routing screen may amortize a frozen incumbent across a chain-ordered cohort
 `C1..Ck`. Cohorting does not weaken marginal identity:
 
 - every candidate is derived from the same frozen incumbent digest;
-- each candidate still changes one registered target or one discovery identity;
+- each candidate still changes exactly one registered target;
 - candidate order is derived from committed authority rather than network arrival;
 - shared screen brackets remain routing evidence only;
 - each promoted candidate receives a fresh authoritative qualification whose

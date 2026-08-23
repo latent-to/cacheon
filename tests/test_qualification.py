@@ -15,9 +15,6 @@ from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_MEDIA_TYPE,
     GRAPH_EVIDENCE_SCHEMA,
     declared_qualification_entropy_digest,
-    DiscoveryExecutionGrade,
-    DiscoveryExecutionRequirement,
-    DiscoveryQualificationProfile,
     GraphMemberEvidence,
     GraphShapeEvidence,
     GraphVariantEvidence,
@@ -38,11 +35,8 @@ from cacheon.eval.qualification import (
     candidate_lifecycle_digest,
     cohort_trajectory_digest,
     derived_hidden_task_plan_digest,
-    grade_discovery_execution,
     lifecycle_prompt_digests,
     qualification_identity_digest,
-    reopen_discovery_execution,
-    reopen_discovery_execution_binding,
     reopen_graph_verification,
     regrade_graph_verification,
     selected_trajectory_digest,
@@ -59,168 +53,6 @@ def _d(label: str) -> str:
 
 def _reference() -> ReferenceManifest:
     return ReferenceManifest(*(_d(f"reference:{index}") for index in range(18)))
-
-
-def _discovery_execution(tmp_path: Path):
-    from types import SimpleNamespace
-
-    from cacheon.discovery import (
-        DEFAULT_DISCOVERY_POLICY,
-        DiscoveryArmPlan,
-        DiscoveryBuildProfile,
-        build_discovery_overlay_stage,
-        inspect_discovery,
-    )
-    from cacheon.discovery_overlay import (
-        DiscoveryActivationReceipt,
-        DiscoveryDriverOrigin,
-        DiscoverySchedulerMember,
-        activation_policy_digest,
-    )
-    from cacheon.engine_tree import materialize_discovery_engine_tree
-    from cacheon.eval.marginal_runtime import (
-        CandidateLifecycleEvidence,
-        MarginalLifecycleEvidence,
-        prepare_discovery_runtime,
-    )
-    from cacheon.eval.native_artifact import publish_native_artifact
-    from cacheon.eval.oci_prebuild import OCIPrebuildResult
-    from tests.test_engine_tree import _write_discovery_fixture
-    from tests.test_marginal_runtime import _case, _execution, _local_binding, _native
-
-    case_root = tmp_path / "case"
-    case_root.mkdir()
-    case = _case(case_root)
-    proposal_root = _write_discovery_fixture(tmp_path / "proposal")
-    manifest = (proposal_root / "manifest.toml").read_text()
-    (proposal_root / "manifest.toml").write_text(
-        manifest.replace("engine-tree-sm120-tp8", "qualification-sm120-tp1")
-        .replace("minimax-m3-rtx-tp8-v1", "minimax-m3-rtx-tp1-v1")
-        .replace("tensor_parallel_sizes = [8]", "tensor_parallel_sizes = [1]")
-    )
-    proposal = inspect_discovery(proposal_root)
-    build_profile = DiscoveryBuildProfile(
-        "qualification-sm120-tp1",
-        DEFAULT_DISCOVERY_POLICY.sglang_version,
-        "minimax-m3-rtx-tp1-v1",
-        "minimax-m3-nvfp4",
-        "sm120",
-        1,
-        ("cuda13",),
-        (("image", _d("discovery-image")),),
-    )
-    candidate_tree = materialize_discovery_engine_tree(
-        case.baseline_tree.root,
-        proposal,
-        policy=DEFAULT_DISCOVERY_POLICY,
-        build_profile=build_profile,
-        destination=tmp_path / "candidate",
-    )
-    native = _native(candidate_tree.tree_digest, case.preflight)
-    stage = tmp_path / "native-stage"
-    stock = tmp_path / "stock-site"
-    (stock / "sglang/srt/layers").mkdir(parents=True)
-    (stock / "sglang/srt/layers/activation.py").write_text("VALUE = 1\n")
-    stage.mkdir()
-    overlay = build_discovery_overlay_stage(
-        proposal,
-        stock_site_root=stock,
-        native_stage_root=stage,
-        policy=DEFAULT_DISCOVERY_POLICY,
-        build_profile=build_profile,
-    )
-    publication = publish_native_artifact(
-        stage, tmp_path / "publications", build_spec_digest=native.digest
-    )
-    arm = DiscoveryArmPlan.create(
-        incumbent=case.incumbent,
-        incumbent_tree_digest=case.baseline_tree.tree_digest,
-        candidate_tree_digest=candidate_tree.tree_digest,
-        proposal_digest=proposal.proposal_digest,
-        policy_digest=DEFAULT_DISCOVERY_POLICY.digest,
-        build_profile_digest=build_profile.digest,
-        overlay_identity_digest=overlay.digest,
-    )
-    binding = _local_binding(candidate_tree, native, case.launch, case.preflight)
-    prepared = prepare_discovery_runtime(
-        arm,
-        expected_context=case.context,
-        incumbent_launch=case.launch,
-        incumbent_binding=case.baseline_binding,
-        candidate_binding=binding,
-        baseline_session_plan=case.session,
-    )
-    candidate = prepared.candidates[0]
-
-    def execution(launch, launch_binding, plan, label):
-        result = _execution(launch, launch_binding, case.mount, plan, label=label)
-        return replace(
-            result,
-            device_receipts=tuple(
-                SimpleNamespace(launch_id=row.launch_id, sequence=index)
-                for index, row in enumerate(result.device_receipts)
-            ),
-        )
-
-    before = execution(
-        prepared.baseline_launch,
-        prepared.incumbent_binding.launch_binding,
-        prepared.baseline_session_plan,
-        "discovery-before",
-    )
-    after = execution(
-        prepared.baseline_launch,
-        prepared.incumbent_binding.launch_binding,
-        prepared.baseline_session_plan,
-        "discovery-after",
-    )
-    candidate_execution = execution(
-        candidate.launch,
-        candidate.binding.launch_binding,
-        candidate.session_plan,
-        "discovery-candidate",
-    )
-    activation = DiscoveryActivationReceipt(
-        "cacheon.discovery-driver-activation.v1",
-        overlay.digest,
-        100,
-        DiscoveryDriverOrigin("sglang", case.preflight.sglang_version, "sglang/__init__.py"),
-        "sglang.srt.managers.scheduler",
-        "run_scheduler_process",
-        1,
-        (DiscoverySchedulerMember(101, 0, 0, 0, 0, 0, 0, None),),
-    )
-    candidate_execution = replace(
-        candidate_execution,
-        prebuild=OCIPrebuildResult(
-            candidate.launch.digest, native.digest, publication, None, None, overlay.digest
-        ),
-        native_publication_digest=publication.publication_digest,
-        session=replace(candidate_execution.session, discovery_activation=activation),
-    )
-    lifecycle = MarginalLifecycleEvidence(
-        prepared,
-        before,
-        (CandidateLifecycleEvidence(candidate, candidate_execution),),
-        after,
-    )
-    requirement = DiscoveryExecutionRequirement(
-        arm.digest,
-        arm.proposal_digest,
-        arm.selected_delta_digest,
-        arm.candidate_stack_digest,
-        arm.candidate_tree_digest,
-        candidate.launch.digest,
-        native.digest,
-        arm.policy_digest,
-        arm.build_profile_digest,
-        candidate.launch.worker_distribution_digest,
-        candidate.launch.engine_config_digest,
-        activation_policy_digest(),
-        candidate.launch.hardware.tp_size,
-        True,
-    )
-    return requirement, lifecycle
 
 
 def _member(slot: str) -> GraphVerificationMemberBinding:
@@ -258,6 +90,258 @@ def _requirement(*, atomic: bool = True) -> GraphVerificationRequirement:
         shapes = tuple(sorted((_d(slot + ":shape-a"), _d(slot + ":shape-b"))))
         variants.append(GraphVariantRequirement(slot, "default", shapes, True, shapes))
     return GraphVerificationRequirement(binding, tuple(variants), 3)
+
+
+class _FixtureLane:
+    """Deterministic stand-in for one opened engine session, feeding the
+    production ``_rate`` derivation real prompt content on a synthetic clock."""
+
+    def __init__(self, plan, session_id: str, duration: float) -> None:
+        self.plan = plan
+        self.session_id = session_id
+        self.duration = duration
+        self.clock = 1.0
+        self.rows: list[object] = []
+
+    @property
+    def next_batch_index(self) -> int:
+        return len(self.rows)
+
+    def execute_next(self):
+        from cacheon.eval.oci_outer_session import BatchExecutionEvidence
+        from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
+
+        index = len(self.rows)
+        prompts = tuple(
+            PromptEvidence(
+                tuple(range(self.plan.max_new_tokens)),
+                tuple(
+                    tuple(
+                        (0.0 - rank, rank)
+                        for rank in range(self.plan.top_logprobs_num)
+                    )
+                    for _ in range(self.plan.max_new_tokens)
+                ),
+                self.plan.expected_prompt_tokens or 5,
+            )
+            for _ in self.plan.prompt_batches[index]
+        )
+        started = self.clock + 0.01
+        self.clock = started + self.duration
+        row = BatchExecutionEvidence(
+            index,
+            f"{index + 17:032x}",
+            f"{index + 4097:032x}",
+            started,
+            self.clock,
+            len(prompts) * self.plan.max_new_tokens,
+            BatchEvidence(prompts),
+        )
+        self.rows.append(row)
+        return row
+
+    def finish(self):
+        from cacheon.eval.oci_outer_session import SessionExecutionEvidence
+
+        rows = tuple(self.rows)
+        first_timed = rows[self.plan.warmup_count]
+        return SessionExecutionEvidence(
+            self.session_id,
+            self.plan.launch_digest,
+            self.plan.expected_preflight,
+            1.0,
+            rows,
+            self.plan.warmup_count,
+            self.plan.conditioning_count,
+            rows[0].request_started_at,
+            first_timed.response_completed_at,
+            sum(row.token_numerator for row in rows[: self.plan.warmup_count + 1]),
+            self.clock + 0.01,
+        )
+
+
+def _resident_execution(arm, session, physical_ids, receipt_label: str):
+    from types import SimpleNamespace
+
+    from cacheon.eval.oci_backend import EngineExecutionEvidence
+
+    receipts = tuple(
+        SimpleNamespace(
+            completed_monotonic_s=float(index + 1),
+            launch_id=receipt_label * 32,
+            selected_physical_gpu_ids=physical_ids,
+            sequence=index,
+            started_monotonic_s=float(index),
+        )
+        for index in (1, 2, 3)
+    )
+    return EngineExecutionEvidence(
+        "cacheon.oci-resident-engine-execution.v1",
+        arm.launch.digest,
+        SimpleNamespace(),
+        "1" * 64,
+        "2" * 64,
+        arm.runtime_resource_policy_digest,
+        SimpleNamespace(),
+        "3" * 64,
+        "4" * 64,
+        (),
+        receipts,  # type: ignore[arg-type]
+        session,
+    )
+
+
+def _lifecycle(tmp_path: Path, *, top_logprobs_num: int = 1):
+    """One valid singleton ResidentMarginalLifecycleEvidence with real prompt
+    content, assembled through the production rate/grade/regrade math so the
+    lifecycle survives its own __post_init__ and every later re-wrap."""
+
+    from cacheon.eval.calibration import CalibrationContext, SpeedCalibration
+    from cacheon.eval.crossover_runtime import (
+        ResidentArmPlan,
+        ResidentCrossoverEvidence,
+        ResidentCrossoverPlan,
+        ResidentMarginalLifecycleEvidence,
+        _expanded,
+        _expected_lane_digest,
+        _rate,
+    )
+    from cacheon.eval.oci_process import OCIQuiescenceReceipt
+    from cacheon.eval.scoring import marginal_workload_digest
+    from cacheon.eval.speed_verdict import speed_grade
+    from tests.test_calibration import _manifest as calibration_manifest
+    from tests.test_crossover_runtime import _policy_v8
+    from tests.test_marginal_runtime import (
+        _case as runtime_case,
+        _local_binding as runtime_local_binding,
+        _prepared as prepared_runtime,
+    )
+
+    case = runtime_case(tmp_path)
+    case.session = replace(
+        case.session,
+        prompt_batches=(("warmup",), ("timed-1",), ("timed-2",), ("timed-3",)),
+        max_new_tokens=10,
+        top_logprobs_num=top_logprobs_num,
+    )
+    prepared = prepared_runtime(case)
+    candidate = prepared.candidates[0]
+    runtime_policy = _d("runtime-resource-policy")
+    baseline_arm = ResidentArmPlan(
+        prepared.baseline_launch,
+        runtime_local_binding(
+            case.baseline_tree,
+            case.baseline_binding.launch_binding.native_build_spec,
+            case.launch,
+            case.preflight,
+            physical_id="1",
+        ).launch_binding,
+        prepared.baseline_session_plan,
+        _d("baseline namespace"),
+        runtime_policy,
+        _d("baseline device configuration"),
+    )
+    candidate_arm = ResidentArmPlan(
+        candidate.launch,
+        candidate.binding.launch_binding,
+        candidate.session_plan,
+        _d("candidate namespace"),
+        runtime_policy,
+        _d("candidate device configuration"),
+    )
+    policy = _policy_v8()
+    plan = ResidentCrossoverPlan(
+        case.arm.selected_delta_digest, baseline_arm, candidate_arm, policy
+    )
+    baseline_lane_digest = _expected_lane_digest(baseline_arm)
+    candidate_lane_digest = _expected_lane_digest(candidate_arm)
+    baseline_lane = _FixtureLane(
+        _expanded(baseline_arm.session_plan, 2), "b" * 32, 1.0
+    )
+    candidate_lane = _FixtureLane(
+        _expanded(candidate_arm.session_plan, 1), "c" * 32, 0.75
+    )
+    rate_b = _rate(
+        "B",
+        baseline_lane_digest,
+        baseline_lane,
+        baseline_arm.session_plan,
+        with_windows=True,
+    )
+    rate_c = _rate(
+        "C",
+        candidate_lane_digest,
+        candidate_lane,
+        candidate_arm.session_plan,
+        with_windows=True,
+    )
+    rate_b_prime = _rate(
+        "B_prime",
+        baseline_lane_digest,
+        baseline_lane,
+        baseline_arm.session_plan,
+        with_windows=True,
+    )
+    final, decision = speed_grade(
+        policy, [rate_b, rate_b_prime], [rate_c], concluding=True
+    )
+    crossover = ResidentCrossoverEvidence(
+        plan.digest,
+        plan.selected_delta_digest,
+        policy,
+        marginal_workload_digest(baseline_arm.session_plan),
+        baseline_lane_digest,
+        candidate_lane_digest,
+        _resident_execution(baseline_arm, baseline_lane.finish(), (1,), "e"),
+        _resident_execution(candidate_arm, candidate_lane.finish(), (0,), "f"),
+        OCIQuiescenceReceipt(
+            "cacheon.oci-quiescence.v1", "lane-baseline", "a" * 32,
+            baseline_arm.executor_namespace_digest, 1, 5.0, (), (), (),
+        ),
+        OCIQuiescenceReceipt(
+            "cacheon.oci-quiescence.v1", "lane-candidate", "a" * 32,
+            candidate_arm.executor_namespace_digest, 2, 6.0, (), (), (),
+        ),
+        (rate_b, rate_c, rate_b_prime),
+        final,
+        final,
+        False,
+        decision,
+        "clear_" + decision.value.lower(),
+        0.0,
+        50.0,
+    )
+    lifecycle = ResidentMarginalLifecycleEvidence(prepared, plan, crossover)
+    context = CalibrationContext(
+        _d("reference-manifest"),
+        case.launch.arena_digest,
+        case.launch.runtime_digest,
+        case.launch.base_engine_digest,
+        case.launch.model_revision_digest,
+        case.launch.model_manifest_digest,
+        case.launch.model_content_digest,
+        case.launch.hardware.digest,
+        marginal_workload_digest(prepared.baseline_session_plan),
+        _d("verification-policy"),
+    )
+    calibration = replace(
+        calibration_manifest(), context=context, speed=SpeedCalibration("0.02", "2", "0.1")
+    )
+    return lifecycle, case.arm.selected_delta_digest, case, calibration, runtime_policy
+
+
+def _with_candidate_batches(lifecycle, batches):
+    """Re-wrap one lifecycle around corrupted candidate batch content. Content
+    corruption leaves the timing spans intact, so the production regrade in
+    every __post_init__ re-accepts the evidence while its digests move."""
+
+    execution = lifecycle.crossover.candidate_execution
+    session = replace(execution.session, batches=tuple(batches))
+    crossover = replace(
+        lifecycle.crossover,
+        candidate_execution=replace(execution, session=session),
+    )
+    return replace(lifecycle, crossover=crossover)
 
 
 def _shape(
@@ -608,159 +692,6 @@ def test_reference_profile_and_precommitted_selection_round_trip():
     assert rebound.selected_prompt_digests == receipt.selected_prompt_digests
 
 
-def test_discovery_execution_reopens_exact_native_overlay_and_activation(tmp_path: Path):
-    requirement, lifecycle = _discovery_execution(tmp_path)
-    grade = grade_discovery_execution(requirement, lifecycle)
-
-    assert (grade.decision, grade.reason) == (
-        QualificationDecision.PASS,
-        "discovery_execution_pass",
-    )
-    assert grade.execution_passed
-    assert (
-        grade.activation_receipt
-        == lifecycle.candidates[0].execution.session.discovery_activation
-    )
-    assert grade.activation_receipt_digest == canonical_digest(
-        "cacheon.discovery.activation-receipt", grade.activation_receipt.to_dict()
-    )
-    assert "activation_receipt" in grade.to_dict()
-    assert "activation_receipt_digest" not in grade.to_dict()
-    assert DiscoveryExecutionRequirement.from_dict(requirement.to_dict()) == requirement
-    assert DiscoveryExecutionGrade.from_dict(grade.to_dict()) == grade
-    malformed = grade.to_dict()
-    malformed_receipt = dict(malformed["activation_receipt"])
-    malformed_receipt.pop("activation_policy_digest")
-    malformed["activation_receipt"] = malformed_receipt
-    with pytest.raises(QualificationError, match="activation receipt is invalid"):
-        DiscoveryExecutionGrade.from_dict(malformed)
-    assert reopen_discovery_execution(requirement, grade, lifecycle) == grade
-    assert reopen_discovery_execution_binding(
-        requirement,
-        grade,
-        lifecycle.candidates[0].candidate,
-        candidate_lifecycle_digest=grade.candidate_lifecycle_digest,
-        session_id=grade.session_id,
-    ) == grade
-    assert not {
-        "catalog_digest",
-        "contribution_ref_digest",
-        "target_id",
-        "target_spec_digest",
-    } & set(requirement.to_dict())
-    assert not {"graph_proof", "score", "crown"} & set(grade.to_dict())
-
-
-def test_discovery_execution_fails_closed_on_missing_or_relabelled_evidence(tmp_path: Path):
-    requirement, lifecycle = _discovery_execution(tmp_path)
-    candidate = lifecycle.candidates[0]
-    missing = replace(
-        candidate.execution,
-        session=replace(candidate.execution.session, discovery_activation=None),
-    )
-    missing_lifecycle = replace(
-        lifecycle, candidates=(replace(candidate, execution=missing),)
-    )
-    grade = grade_discovery_execution(requirement, missing_lifecycle)
-    assert (grade.decision, grade.reason) == (
-        QualificationDecision.NO_DECISION,
-        "discovery_activation_missing",
-    )
-    assert grade.activation_receipt is None
-    assert DiscoveryExecutionGrade.from_dict(grade.to_dict()) == grade
-
-    baseline_armed = replace(
-        lifecycle.baseline_before,
-        session=replace(
-            lifecycle.baseline_before.session,
-            discovery_activation=candidate.execution.session.discovery_activation,
-        ),
-    )
-    grade = grade_discovery_execution(
-        requirement, replace(lifecycle, baseline_before=baseline_armed)
-    )
-    assert (grade.decision, grade.reason) == (
-        QualificationDecision.NO_DECISION,
-        "discovery_baseline_activation_present",
-    )
-
-    grade = grade_discovery_execution(
-        replace(requirement, proposal_digest=_d("other-proposal")), lifecycle
-    )
-    assert (grade.decision, grade.reason) == (
-        QualificationDecision.NO_DECISION,
-        "discovery_identity_mismatch",
-    )
-    passed = grade_discovery_execution(requirement, lifecycle)
-    with pytest.raises(QualificationError, match="differs from retained evidence"):
-        reopen_discovery_execution(
-            requirement, replace(passed, reason="discovery_execution_mismatch"), lifecycle
-        )
-    candidate_runtime = lifecycle.candidates[0].candidate
-    with pytest.raises(QualificationError, match="retained binding"):
-        reopen_discovery_execution_binding(
-            requirement,
-            passed,
-            candidate_runtime,
-            candidate_lifecycle_digest=_d("other-lifecycle"),
-            session_id=passed.session_id,
-        )
-    with pytest.raises(QualificationError, match="retained binding"):
-        reopen_discovery_execution_binding(
-            requirement,
-            passed,
-            candidate_runtime,
-            candidate_lifecycle_digest=passed.candidate_lifecycle_digest,
-            session_id="1" * 32,
-        )
-    altered_receipt = replace(
-        passed.activation_receipt, overlay_identity_digest=_d("other-overlay")
-    )
-    with pytest.raises(QualificationError, match="not authoritative"):
-        reopen_discovery_execution_binding(
-            requirement,
-            replace(passed, activation_receipt=altered_receipt),
-            candidate_runtime,
-            candidate_lifecycle_digest=passed.candidate_lifecycle_digest,
-            session_id=passed.session_id,
-        )
-    with pytest.raises(QualificationError, match="lacks activation"):
-        replace(passed, activation_receipt=None)
-
-
-def test_discovery_profile_is_distinct_and_requires_fixed_graphs_on_authority(tmp_path: Path):
-    from cacheon.discovery_overlay import activation_policy_digest
-
-    requirement, _lifecycle = _discovery_execution(tmp_path)
-    profile = DiscoveryQualificationProfile(
-        _reference(),
-        _d("discovery-calibration-context"),
-        _d("discovery-calibration"),
-        requirement.digest,
-        ("mean_nll", "task_score", "topk_kl"),
-        "2",
-        10,
-        2,
-        2,
-        _d("support-policy"),
-        _d("hidden-task-policy"),
-        _d("runtime-resource-policy"),
-        True,
-        2,
-    )
-    assert DiscoveryQualificationProfile.from_dict(profile.to_dict()) == profile
-    assert "graph_requirement_digest" not in profile.to_dict()
-    prompts = tuple(sorted((_d("discovery-prompt-a"), _d("discovery-prompt-b"))))
-    assert derived_hidden_task_plan_digest(profile, prompts) == derived_hidden_task_plan_digest(
-        DiscoveryQualificationProfile.from_dict(profile.to_dict()), prompts
-    )
-    with pytest.raises(QualificationError, match="requires CUDA graphs"):
-        replace(requirement, graphs_required=False)
-    with pytest.raises(QualificationError, match="fixed policy"):
-        replace(requirement, activation_policy_digest=_d("other-activation-policy"))
-    assert requirement.activation_policy_digest == activation_policy_digest()
-
-
 def test_selection_rejects_late_substitution_or_forged_result():
     reference = _reference()
     prompts = tuple(sorted(_d(f"prompt:{index}") for index in range(4)))
@@ -904,34 +835,26 @@ def test_graph_artifact_cannot_substitute_parsed_grade_or_other_raw(tmp_path: Pa
 
 
 def test_lifecycle_derives_prompt_pool_and_exact_selected_trajectories(tmp_path: Path):
-    from tests.test_scoring import _lifecycle
-
     lifecycle, delta, _case, _calibration, _runtime_policy = _lifecycle(tmp_path)
     prompts = lifecycle_prompt_digests(lifecycle)
-    assert len(prompts) == 3
+    assert len(prompts) == 4
     cohort = cohort_trajectory_digest(lifecycle)
     selected = selected_trajectory_digest(
         lifecycle, selected_delta_digest=delta, selected_prompt_digests=prompts[:2]
     )
     assert len({cohort, selected}) == 2
 
-    row = lifecycle.candidates[0]
-    session = row.execution.session
+    session = lifecycle.candidates[0].execution.session
     batches = list(session.batches)
-    # Corrupt a selected prompt occurrence. Sorted prompts[:2] excludes the
-    # middle batch when three occurrence digests sort with the middle one third.
+    # Corrupt a selected prompt occurrence. Sorted prompts[:2] excludes some
+    # occurrence digests, so both digests must still move on any corruption.
     evidence = batches[0].evidence
     prompt = evidence.prompts[0]
     corrupted = replace(prompt, output_ids=(999,) + prompt.output_ids[1:])
     batches[0] = replace(
         batches[0], evidence=replace(evidence, prompts=(corrupted,))
     )
-    changed = replace(
-        lifecycle,
-        candidates=(replace(row, execution=replace(
-            row.execution, session=replace(session, batches=tuple(batches))
-        )),),
-    )
+    changed = _with_candidate_batches(lifecycle, batches)
     assert cohort_trajectory_digest(changed) != cohort
     assert selected_trajectory_digest(
         changed, selected_delta_digest=delta, selected_prompt_digests=prompts[:2]
@@ -959,8 +882,6 @@ def test_trajectory_topk_accepts_ties_without_relabeling_runtime_top_one():
 
 
 def test_trajectory_projection_rejects_subset_relabel_and_short_topk(tmp_path: Path):
-    from tests.test_scoring import _lifecycle
-
     lifecycle, delta, _case, _calibration, _runtime_policy = _lifecycle(tmp_path)
     with pytest.raises(QualificationError, match="prompts differ"):
         selected_trajectory_digest(
@@ -968,8 +889,7 @@ def test_trajectory_projection_rejects_subset_relabel_and_short_topk(tmp_path: P
             selected_delta_digest=delta,
             selected_prompt_digests=(_d("not-a-live-prompt"),),
         )
-    execution = lifecycle.candidates[0].execution
-    batches = list(execution.session.batches)
+    batches = list(lifecycle.candidates[0].execution.session.batches)
     prompt = batches[0].evidence.prompts[0]
     batches[0] = replace(
         batches[0], evidence=replace(
@@ -977,13 +897,7 @@ def test_trajectory_projection_rejects_subset_relabel_and_short_topk(tmp_path: P
             prompts=(replace(prompt, top_logprobs=prompt.top_logprobs[:-1]),),
         ),
     )
-    broken = replace(
-        lifecycle,
-        candidates=(replace(
-            lifecycle.candidates[0],
-            execution=replace(execution, session=replace(execution.session, batches=tuple(batches))),
-        ),),
-    )
+    broken = _with_candidate_batches(lifecycle, batches)
     with pytest.raises(QualificationError, match="coverage"):
         cohort_trajectory_digest(broken)
 
@@ -996,7 +910,6 @@ def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path
     # raw-artifact side's one-None-per-token rollout_topk shape
     # (raw_trajectory_projection_digest) or live raw-quality re-verification
     # fails after the measurement has already run.
-    from tests.test_scoring import _lifecycle
     from cacheon.eval.reference_quality import retained_support_policy_digest
 
     lifecycle, delta, _case, _calibration, _runtime_policy = _lifecycle(
@@ -1004,21 +917,14 @@ def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path
     )
     cohort = cohort_trajectory_digest(lifecycle)
 
-    row = lifecycle.candidates[0]
-    session = row.execution.session
-    batches = list(session.batches)
+    batches = list(lifecycle.candidates[0].execution.session.batches)
     evidence = batches[1].evidence
     prompt = evidence.prompts[0]
     corrupted = replace(prompt, output_ids=(999,) + prompt.output_ids[1:])
     batches[1] = replace(
         batches[1], evidence=replace(evidence, prompts=(corrupted,))
     )
-    changed = replace(
-        lifecycle,
-        candidates=(replace(row, execution=replace(
-            row.execution, session=replace(session, batches=tuple(batches))
-        )),),
-    )
+    changed = _with_candidate_batches(lifecycle, batches)
     assert cohort_trajectory_digest(changed) != cohort
 
     prompts = lifecycle_prompt_digests(lifecycle)
@@ -1074,7 +980,6 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         _config as reference_config,
         _facts as reference_facts,
     )
-    from tests.test_scoring import _lifecycle
 
     lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
     reference = ReferenceManifest(
@@ -1213,7 +1118,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         _d("reference-session-plan"), request_plan,
         reference_facts(reference, config), 0.5, (exchange,), 3.0,
     )
-    baseline = lifecycle.baseline_before
+    baseline = lifecycle.crossover.baseline_execution
     reference_execution = PristineReferenceExecutionEvidence(
         "cacheon.oci-pristine-reference-execution.v1",
         reference.pristine_launch_digest,
@@ -1356,7 +1261,6 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         _config as reference_config,
         _facts as reference_facts,
     )
-    from tests.test_scoring import _lifecycle
 
     lifecycle, delta, case, calibration, runtime_policy = _lifecycle(
         tmp_path, top_logprobs_num=0
@@ -1490,7 +1394,7 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         _d("reference-session-plan"), request_plan,
         reference_facts(reference, config), 0.5, (exchange,), 3.0,
     )
-    baseline = lifecycle.baseline_before
+    baseline = lifecycle.crossover.baseline_execution
     reference_execution = PristineReferenceExecutionEvidence(
         "cacheon.oci-pristine-reference-execution.v1",
         reference.pristine_launch_digest,
@@ -1603,3 +1507,62 @@ def test_teacher_nll_only_profile_admits_width_zero_and_refuses_kl_metrics():
     assert nll_only.topk_width == 0
     with pytest.raises(QualificationError, match="cannot require distribution metrics"):
         profile(0, ("mean_nll", "task_score", "topk_kl"))
+
+
+def test_resident_speed_witness_relabel_forgery_is_internally_undetectable(tmp_path):
+    """The real witness's internal digest stops a naive delta relabel, but a
+    forger who recomputes the projection digest constructs a fully valid
+    witness for a delta the arm never ran. Internal validation therefore
+    CANNOT catch arm relabeling; the reopen-time authority comparison
+    ("speed witness differs from its marginal arm", pinned in
+    test_qualification_runner's arm-relabel test) is the only line of
+    defense, and this pair of tests keeps both halves honest."""
+
+    from cacheon.eval.qualification_runner import (
+        QualificationRunnerError,
+        ResidentSpeedWitness,
+        _resident_speed_projection_digest,
+    )
+
+    lifecycle, _delta, _case, _calibration, _runtime_policy = _lifecycle(tmp_path)
+    witness = ResidentSpeedWitness.from_evidence(lifecycle.crossover, lifecycle.plan)
+    honest = witness.to_dict()
+    relabel = _d("relabeled-delta")
+
+    with pytest.raises(QualificationRunnerError, match="does not recompute"):
+        ResidentSpeedWitness.from_dict(
+            {**honest, "selected_delta_digest": relabel}
+        )
+
+    forged_digest = _resident_speed_projection_digest(
+        selected_delta_digest=relabel,
+        candidate_launch_digest=witness.candidate_launch_digest,
+        calibration_digest=witness.calibration_digest,
+        calibration_context_digest=witness.calibration_context_digest,
+        workload_digest=witness.workload_digest,
+        baseline_runtime_resource_policy_digest=(
+            witness.baseline_runtime_resource_policy_digest
+        ),
+        candidate_runtime_resource_policy_digest=(
+            witness.candidate_runtime_resource_policy_digest
+        ),
+        plan_digest=witness.plan_digest,
+        baseline_lane_digest=witness.baseline_lane_digest,
+        candidate_lane_digest=witness.candidate_lane_digest,
+        baseline_quiescence_digest=witness.baseline_quiescence_digest,
+        candidate_quiescence_digest=witness.candidate_quiescence_digest,
+        raw_crossover_digest=witness.raw_crossover_digest,
+        resident_policy=witness.resident_policy,
+        rates=witness.rates,
+        started_monotonic_s=witness.started_monotonic_s,
+        completed_monotonic_s=witness.completed_monotonic_s,
+    )
+    forged = ResidentSpeedWitness.from_dict(
+        {
+            **honest,
+            "selected_delta_digest": relabel,
+            "evidence_digest": forged_digest,
+        }
+    )
+    assert forged.selected_delta_digest == relabel
+    assert forged.rates == witness.rates

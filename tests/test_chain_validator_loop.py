@@ -478,6 +478,7 @@ def test_live_loop_calls_batch_qualification_and_retains_fail_outcome(
             "digest": "e" * 64,
             "qualification_policy_digest": "f" * 64,
             "capacity": type("Capacity", (), {"max_cohort_size": 1})(),
+            "closed_targets": (),
         },
     )()
     registry = object.__new__(ArenaServiceRegistry)

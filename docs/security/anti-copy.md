@@ -30,7 +30,7 @@ hotkey's latest reveal.
 
 `SubmittedDeltaFingerprint` covers miner-supplied attributable bytes only:
 
-- product kind (`component` or `discovery`);
+- product kind (`component`);
 - registered target and target-spec identity for a component;
 - exact target members;
 - exact selected payload and delta digests;
@@ -75,7 +75,6 @@ Assume hotkey A finalizes before hotkey B in the same registered reward namespac
 | Similar Python control-flow skeleton but different authoritative delta identities | Advisory review signal only | Structural similarity is intentionally non-dispositive |
 | Both candidates include the same validator-supplied incumbent in their materialized engines | No match from that fact | Incumbent bytes are outside submitted-delta scope |
 | Independently convergent deltas normalize identically | B receives the deterministic later-copy disposition | Automatic identity cannot infer intent; finalized priority resolves the tie |
-| B is a discovery patch while A is a registered component | Compared within their separate namespaces, not collapsed by related purpose | Product kind and reward namespace are identity inputs |
 
 Automatic disposition says nothing about whether A will pass qualification. It prevents B
 from acquiring later economic priority for the same attributable bytes; it does not turn A
@@ -90,13 +89,6 @@ The comparison records them as advisory context for review.
 Structural normalization blanks Python identifiers and constants while retaining
 operations and attribute structure. The automatic signal has no equivalent semantic CUDA
 parser. Renaming CUDA identifiers and changing constants can evade that advisory layer.
-
-## Discovery
-
-Discovery proposals use their separate closed manifest and declared patches. Copy
-identity is derived from the exact proposal plus normalized patch content. Discovery
-still occupies a separate reward namespace and cannot collide with a registered
-component merely because both touch related upstream code.
 
 ## What copy detection does not do
 

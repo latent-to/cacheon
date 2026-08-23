@@ -628,6 +628,8 @@ class B300RemoteQualificationAdapter:
                     request,
                     reason=result.reason,
                     diagnostic_digest=result.diagnostic_digest,
+                    failure_type=result.failure_type,
+                    failure_message=result.failure_message,
                 )
             except (TypeError, ValueError, RuntimeError) as exc:
                 raise B300RemoteQualificationAdapterError(

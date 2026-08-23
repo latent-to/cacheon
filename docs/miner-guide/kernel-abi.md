@@ -167,19 +167,27 @@ validator-provided causal flag.
 ### `attention.decode`
 
 ```python
-def attention_decode(q, k, v, seq_lens, sm_scale, out):
-    # q: (B, Hq, D); k/v: (B, S, Hkv, D); seq_lens: (B,)
+def attention_decode(
+    q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices,
+    topk_idx, out, sm_scale, block_size,
+):
+    # q: (B,Hq,D); paged K/V: (max_slots,Hkv,D)
+    # topk_idx: (Hkv,B,K) block IDs selected by validator-owned stock code
     ...
 ```
 
-Request `i` attends only to the first `seq_lens[i]` cached keys and values.
+This is the graph-native MiniMax-M3 sparse-attend boundary. The validator owns
+cache writes, score production, top-k selection, request/page metadata, and output
+allocation. The candidate attends exactly the supplied nonnegative block IDs;
+`-1` entries and tokens at or beyond `seq_lens` are excluded. The entry contains no
+host synchronization or request-dependent allocation and must declare graph safety
+to enter a scored CUDA graph.
 
-The current live seam builds this dense, padded view by gathering from SGLang's
-paged KV cache. That path is an **eager diagnostic path only**: its request-dependent
-gather and host scalar read cannot be captured safely, so Cacheon keeps stock
-attention during CUDA graph capture. A graph-qualified production submission would
-need a separate paged-direct contract that exposes validator-owned paging metadata
-without the dense gather. Cacheon does not currently provide that larger contract.
+The live call descriptor includes `batch_size`/`num_tokens`, page-table capacity as
+`kv_len`, `top_k`, block/page size, head counts, head dimension, layout, model, and
+phase, so capability predicates on those fields are enforced. `quant` describes the
+K/V tensors at this boundary (`dense` for the commissioned BF16 cache); the model's
+NVFP4 expert-weight format is not an attention-kernel requirement.
 
 ### `attention.msa_block_score`
 
@@ -200,16 +208,26 @@ is a score sheet, and correctness is judged through the selected block sets.
 ### `attention.msa_prefill_block_score`
 
 ```python
-def msa_prefill_block_score(q, index_k, prefix_len, scale, block_size, out):
-    # q: (T, D); index_k: (S, D)
-    # out: (T, ceil(S / block_size)), float32, possibly padded row stride
+def msa_prefill_block_score(
+    q, index_k_cache, req_to_token, slot_ids, cu_seqlens, seq_lens,
+    prefix_lens, max_seqlen_q, max_seqlen_k, block_size_q, block_size_k,
+    topk, init_blocks, local_blocks, scale, cu_seqblocks_q,
+    max_seqblock_q, all_seqblock_q, out_topk,
+):
+    # q: (total_q, num_q_heads, D); index_k_cache: paged (slots, 1, D)
+    # out_topk: contiguous int32 (num_q_heads, all_seqblock_q, topk)
     ...
 ```
 
-For query row `m`, key `n` is visible only when
-`n <= prefix_len + m`. Invisible score cells use negative infinity. The final
-block may be ragged. The output contract deliberately exercises a non-overlapping
-row-major strided view, so a kernel that assumes contiguous storage is invalid.
+This V2 call owns score production and selection for the full ragged batch.
+`req_to_token[slot_ids[b]]` maps logical keys to the paged cache. Query block
+`qb` selects only blocks visible through
+`prefix_lens[b] + qb * block_size_q`; initial and local blocks follow the
+supplied policy. Every valid index is global within that request's logical key
+sequence, and unused output cells must be `-1`. The candidate is called once;
+there is no validator gather, score slab, request-by-head loop, or separate
+top-k launch. The validator independently reconstructs and audits the selected
+sets before the pinned sparse-attention consumer runs.
 
 ## Prepare/forward MoE slots
 
@@ -225,6 +243,21 @@ def fused_experts(x, topk_ids, topk_weights, prepared, out):
     # x: (M, H); routing arrays: (M, K); out: (M, H)
     ...
 ```
+
+For the MiniMax-M3 NVFP4 profile, `prepare` instead receives the exact tagged
+form below from both verification and live dispatch:
+
+```python
+prepare("nvfp4_layer", weights)
+```
+
+`weights` is a validator-owned view, not the SGLang layer. It exposes packed
+`uint8` E2M1 `w13_weight`/`w2_weight`, swizzled E4M3 weight scales,
+`g1_alphas`/`g2_alphas`, inverse activation scales, intermediate size, group
+size 16, and the logical ModelOpt `gate_up` layout. `prepare` may repack that
+view into any candidate-owned backend layout. The
+validator derives each weight's outer scale as `g*_alpha * a*_inv` and
+dequantizes independently for its fp32 reference.
 
 `topk_weights` contains validator-supplied raw positive FP32 routing multipliers.
 They are not promised to be probabilities: do not assume that a row sums to one,
@@ -248,6 +281,9 @@ def fused_experts_reduce(
 
 The validator does not replay a second stock reduce after this slot. That wider
 authority is why it is a distributed contract.
+
+The M3 NVFP4 MoE profiles currently accept source/JIT entries only. Direct-AOT
+rows remain unavailable until their native prepare ABI carries the same tagged view.
 
 The prepare/forward split exists because weight transformation and request-time work have
 different lifetimes. Packing fixed expert weights once can be a legitimate optimization;
@@ -322,8 +358,7 @@ current catalog uses:
 - elementwise tolerance for numerically equivalent op kernels;
 - `matched_ratio` for attention, MoE, and collectives whose legitimate reduction
   order can change rounding;
-- per-row `topk_overlap` for MSA score sheets, where selected blocks are the
-  semantic output.
+- per-row `topk_overlap` for MSA score-derived or direct block selections.
 
 Tolerance, ratio, overlap, reference, and model binding are not miner-selected
 manifest values. Passing local `verify` demonstrates compatibility with its
@@ -337,8 +372,8 @@ The comparators reflect the semantic output of each boundary:
 - **matched ratio or cosine** permits the bounded rounding/reduction effects expected of
   a low-bit or reordered implementation without allowing the miner to choose its own
   tolerance; and
-- **top-k overlap** grades which blocks the score sheet causes trusted selection to pick,
-  because raw score equality is not the downstream semantic requirement.
+- **top-k overlap** grades the block sets consumed downstream, because raw
+  score equality and index ordering are not the semantic requirement.
 
 Slot verification and end-to-end quality answer different questions. A per-call error can
 fit a slot tolerance yet compound across layers, so qualification still uses candidate-

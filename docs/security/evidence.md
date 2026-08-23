@@ -71,7 +71,7 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 | Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm/cohort plans |
 | Arena | Service manifest, capacity decision, ordered screen-stage evidence and receipt |
 | Launch | Runtime preflight, model mount, native build/publication, hardware/resource/seccomp identity |
-| Execution | Versioned `ResidentSpeedWitness` rows (current v7 B/C with optional B′ or current v8 B/C/B′), physical-lane roles, and the richer session/device observations validated against the frozen plan. The pair-native per-generation execution count is retained but record-only at the PR #95 merge. Legacy v1/v2 attempts retain `SpeedWitness` charged-rate rows |
+| Execution | Versioned `ResidentSpeedWitness` rows (current v7 B/C with optional B′ or current v8 B/C/B′), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete pair-native per-generation execution evidence from every expected rank before speed grading. Legacy v1/v2 attempts retain `SpeedWitness` charged-rate rows |
 | Slot audit | Bounded raw eager/untimed candidate facts, exact slot × rank/process coverage, canonical decimal receipt identity, and trusted-host grade when the plan registers an audit requirement |
 | Graph | Member, variant, shape, capture, and replay observations |
 | Selection | Pre-execution commitment, post-commit entropy, secret reveal, selected prompts, sealed trajectory digest |

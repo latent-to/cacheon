@@ -52,6 +52,19 @@ _BANNED_IMPORT_ROOTS = frozenset(
     }
 )
 
+_BANNED_CACHEON_IMPORTS = (
+    "cacheon.audit", "cacheon.bootstrap", "cacheon.chain", "cacheon.dispatch",
+    "cacheon.eval", "cacheon.integrations", "cacheon.receipts", "cacheon.registry",
+    "cacheon.seam",
+)
+
+
+def _banned_cacheon_import(name: str) -> bool:
+    return name == "cacheon" or any(
+        name == prefix or name.startswith(prefix + ".")
+        for prefix in _BANNED_CACHEON_IMPORTS
+    )
+
 # Attribute calls that indicate egress / process control / dlopen. Kept narrow
 # and unambiguous on purpose: broad names like ``load``/``run``/``replace`` are
 # common in kernels (``tl.load``, ``s.replace``) and would false-positive, so
@@ -120,11 +133,15 @@ def scan_source(source: str, *, filename: str = "<kernel>") -> ScanResult:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".", 1)[0]
-                if root in _BANNED_IMPORT_ROOTS:
+                if root in _BANNED_IMPORT_ROOTS or _banned_cacheon_import(alias.name):
                     out.append(f"{filename}:{node.lineno}: banned import {alias.name!r}")
         elif isinstance(node, ast.ImportFrom):
-            root = (node.module or "").split(".", 1)[0]
-            if root in _BANNED_IMPORT_ROOTS:
+            module = node.module or ""
+            root = module.split(".", 1)[0]
+            names = (f"{module}.{alias.name}" for alias in node.names)
+            if root in _BANNED_IMPORT_ROOTS or (
+                module != "cacheon" and _banned_cacheon_import(module)
+            ) or any(_banned_cacheon_import(name) for name in names):
                 out.append(f"{filename}:{node.lineno}: banned import-from {node.module!r}")
         # eval(...) / exec(...) / open(...) / globals(...) used as a bare name
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
@@ -441,5 +458,4 @@ def load_entry(source_path: str | Path, entry: str) -> Callable:
     ``load_module`` once + ``callable_from`` — repeated ``load_entry`` calls re-execute
     the module body into separate instances (see ``load_module``)."""
     return callable_from(load_module(source_path), entry)
-
 

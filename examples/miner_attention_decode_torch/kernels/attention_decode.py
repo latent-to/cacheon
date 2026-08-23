@@ -1,30 +1,54 @@
-"""CPU/GPU dry-run kernel for the attention.decode BLOCK slot (pure torch).
-
-Contract: ``attention_decode(q, k, v, seq_lens, sm_scale, out)`` writes paged-decode
-attention into the validator-allocated ``out``:
-
-    q:(B,Hq,D)  k,v:(B,S,Hkv,D)  seq_lens:(B,)  ->  out:(B,Hq,D)   (GQA/MQA)
-
-Each request's single query attends to its first ``seq_lens[i]`` cached k/v; padding
-(positions >= seq_lens[i]) is masked out. We compute via ``scaled_dot_product_attention``
-in the *input dtype* (so a faithful kernel sits at the backend's precision, not the
-fp32-vs-bf16 gap) — a real submission would be a fused / flash / paged decode kernel.
-"""
+"""Graph-capturable Torch reference bundle for MiniMax-M3 sparse decode attend."""
 
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
 
 
-def attention_decode(q, k, v, seq_lens, sm_scale, out):
-    B, Hq, D = q.shape
-    S, Hkv = k.shape[1], k.shape[2]
-    g = Hq // Hkv
-    qh = q.unsqueeze(2)                                  # (B,Hq,1,D)
-    kh = k.repeat_interleave(g, dim=2).permute(0, 2, 1, 3)  # (B,Hq,S,D)
-    vh = v.repeat_interleave(g, dim=2).permute(0, 2, 1, 3)  # (B,Hq,S,Dv)
-    sidx = torch.arange(S, device=q.device).view(1, 1, 1, S)
-    attend = sidx < seq_lens.view(B, 1, 1, 1)           # True = valid (B,1,1,S)
-    o = F.scaled_dot_product_attention(qh, kh, vh, attn_mask=attend, scale=sm_scale)  # (B,Hq,1,Dv)
-    out.copy_(o.squeeze(2).to(out.dtype))
+def attention_decode(
+    q,
+    k_cache,
+    v_cache,
+    req_to_token,
+    seq_lens,
+    req_pool_indices,
+    topk_idx,
+    out,
+    sm_scale,
+    block_size,
+):
+    batch, num_q_heads, _head_dim = q.shape
+    num_kv_heads, _, top_k = topk_idx.shape
+    offsets = torch.arange(block_size, device=q.device, dtype=torch.int64)
+    block_ids = topk_idx.to(torch.int64)
+    logical = block_ids[..., None] * block_size + offsets
+    valid = (block_ids[..., None] >= 0) & (
+        logical < seq_lens.view(1, batch, 1, 1)
+    )
+    logical = logical.clamp(min=0, max=req_to_token.shape[1] - 1)
+    request_rows = req_pool_indices.view(1, batch, 1, 1).expand_as(logical).long()
+    physical = req_to_token[request_rows, logical].long()
+    kv_heads = torch.arange(num_kv_heads, device=q.device).view(
+        num_kv_heads, 1, 1, 1
+    ).expand_as(physical)
+    selected_k = k_cache[physical, kv_heads].reshape(
+        num_kv_heads, batch, top_k * block_size, -1
+    ).permute(1, 0, 2, 3)
+    selected_v = v_cache[physical, kv_heads].reshape(
+        num_kv_heads, batch, top_k * block_size, -1
+    ).permute(1, 0, 2, 3)
+    mask = valid.reshape(num_kv_heads, batch, top_k * block_size).permute(1, 0, 2)
+    group = num_q_heads // num_kv_heads
+    grouped_q = q.reshape(batch, num_kv_heads, group, -1)
+    logits = (
+        torch.einsum("bhgd,bhnd->bhgn", grouped_q.float(), selected_k.float())
+        * sm_scale
+    )
+    probabilities = torch.softmax(
+        logits.masked_fill(~mask.unsqueeze(2), float("-inf")), dim=-1
+    )
+    out.copy_(
+        torch.einsum("bhgn,bhnd->bhgd", probabilities, selected_v.float())
+        .reshape(batch, num_q_heads, -1)
+        .to(out.dtype)
+    )

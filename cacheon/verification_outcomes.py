@@ -18,6 +18,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable
 
+from cacheon.capabilities import CallDescriptor
+
 
 class PhaseDisposition(str, Enum):
     """Closed disposition vocabulary for one verifier execution phase."""
@@ -39,12 +41,18 @@ class VerificationCaseKind(str, Enum):
 
 @dataclass(frozen=True)
 class VerificationCaseDescriptor:
-    """Canonical binding from one result row to its exact ordered live calls."""
+    """Canonical binding from one result row to its exact ordered live calls.
+
+    ``CallDescriptor`` is the sole call representation: it already owns field
+    canonicalization, so this class only enforces what a lone call cannot —
+    the sealed execution context is present, exact, and identical across the
+    ordered sequence, and the call count agrees with the case kind.
+    """
 
     slot_id: str
     variant_id: str
     case_kind: VerificationCaseKind
-    calls: tuple[tuple[tuple[str, bool | int | str], ...], ...]
+    calls: tuple[CallDescriptor, ...]
 
     def __post_init__(self) -> None:
         for field_name in ("slot_id", "variant_id"):
@@ -63,29 +71,13 @@ class VerificationCaseDescriptor:
         if (self.case_kind in single_kinds) != (len(calls) == 1):
             raise ValueError("verification case kind disagrees with ordered call count")
         required = {"dtype", "architecture", "tp_size", "world_size", "graph_mode"}
-        normalized = []
         sealed_context = None
         for call in calls:
-            if type(call) is not tuple:
-                raise TypeError("call descriptor items must be an exact tuple")
-            items = tuple(call)
-            if not items or any(
-                type(item) is not tuple or len(item) != 2 for item in items
-            ):
-                raise ValueError("call descriptor items are malformed")
-            keys = tuple(item[0] for item in items)
-            if any(type(key) is not str or not key for key in keys):
-                raise TypeError("call descriptor keys must be nonempty strings")
-            if keys != tuple(sorted(set(keys))):
-                raise ValueError("call descriptor fields must be uniquely ordered")
-            values = dict(items)
+            if type(call) is not CallDescriptor:
+                raise TypeError("ordered calls must be exact CallDescriptor objects")
+            values = call.as_dict()
             if not required.issubset(values):
                 raise ValueError("call descriptor is missing sealed execution context")
-            for key, value in items:
-                if type(value) not in {bool, int, str}:
-                    raise TypeError(f"call descriptor field {key!r} is not canonical")
-                if type(value) is str and (not value or value != value.strip()):
-                    raise ValueError(f"call descriptor field {key!r} is empty or padded")
             if any(
                 type(values[name]) is not str
                 for name in ("dtype", "architecture", "graph_mode")
@@ -99,24 +91,7 @@ class VerificationCaseDescriptor:
                 sealed_context = current_context
             elif current_context != sealed_context:
                 raise ValueError("ordered calls disagree on sealed execution context")
-            normalized.append(items)
-        object.__setattr__(self, "calls", tuple(normalized))
-
-    @classmethod
-    def from_call_dicts(
-        cls,
-        *,
-        slot_id: str,
-        variant_id: str,
-        case_kind: VerificationCaseKind,
-        calls: Iterable[dict[str, bool | int | str]],
-    ) -> "VerificationCaseDescriptor":
-        ordered = []
-        for value in calls:
-            if type(value) is not dict:
-                raise TypeError("call descriptor must come from an exact as_dict mapping")
-            ordered.append(tuple(sorted(value.items())))
-        return cls(slot_id, variant_id, case_kind, tuple(ordered))
+        object.__setattr__(self, "calls", calls)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -125,7 +100,7 @@ class VerificationCaseDescriptor:
             "variant_id": self.variant_id,
             "case_kind": self.case_kind.value,
             "calls": [
-                {"ordinal": ordinal, "descriptor": dict(call)}
+                {"ordinal": ordinal, "descriptor": call.as_dict()}
                 for ordinal, call in enumerate(self.calls)
             ],
         }

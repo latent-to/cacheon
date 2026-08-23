@@ -1226,12 +1226,15 @@ _SINGLETON_CONTRACTS = {
         kind="block",
         entry="attention_decode",
         prepare=None,
-        graph_dynamic_inputs=("q", "k", "v", "seq_lens"),
-        input_abi_id="attention.decode.input.v1",
-        output_abi_id="attention.decode.output.v1",
-        reference_id="attention.decode.reference.v1",
-        verification_profile_id="attention.decode.verify.v1",
-        binding_family_id="sglang.attention.decode.v1",
+        graph_dynamic_inputs=(
+            "q", "k_cache", "v_cache", "req_to_token", "seq_lens",
+            "req_pool_indices", "topk_idx",
+        ),
+        input_abi_id="attention.minimax-sparse-decode.input.v1",
+        output_abi_id="attention.minimax-sparse-decode.output.v1",
+        reference_id="attention.minimax-sparse-decode.reference.v1",
+        verification_profile_id="attention.minimax-sparse-decode.verify.v1",
+        binding_family_id="sglang.attention.minimax-sparse-decode.v1",
         correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.99"),
         kl_threshold="0.03",
     ),
@@ -1256,12 +1259,12 @@ _SINGLETON_CONTRACTS = {
         kind="block",
         entry="msa_prefill_block_score",
         prepare=None,
-        graph_dynamic_inputs=("q", "index_k"),
-        input_abi_id="attention.msa_prefill_block_score.input.v1",
-        output_abi_id="attention.msa_prefill_block_score.output.v1",
-        reference_id="attention.msa_prefill_block_score.reference.v1",
-        verification_profile_id="attention.msa_prefill_block_score.verify.v1",
-        binding_family_id="sglang.attention.msa.prefill-score.v1",
+        graph_dynamic_inputs=("q", "index_k_cache"),
+        input_abi_id="attention.msa_prefill_block_score.input.v2",
+        output_abi_id="attention.msa_prefill_block_score.output.v2",
+        reference_id="attention.msa_prefill_block_score.reference.v2",
+        verification_profile_id="attention.msa_prefill_block_score.verify.v2",
+        binding_family_id="sglang.attention.msa.prefill-selection.v2",
         correctness=CorrectnessContractRef(
             mode="topk_overlap", top_k=8, min_overlap="0.9"
         ),
@@ -1326,12 +1329,12 @@ _SINGLETON_CONTRACTS = {
         entry="fused_experts",
         prepare="prepare",
         graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
-        input_abi_id="moe.fused_experts.input.v1",
+        input_abi_id="moe.fused_experts.modelopt-nvfp4-gate-up.input.v3",
         output_abi_id="moe.fused_experts.output.v1",
-        reference_id="moe.fused_experts.reference.v1",
-        verification_profile_id="moe.fused_experts.verify.v1",
+        reference_id="moe.fused_experts.m3-swigluoai.reference.v2",
+        verification_profile_id="moe.fused_experts.m3-nvfp4.verify.v3",
         binding_family_id="sglang.moe.fused-experts.dispatch.v1",
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.97"),
+        correctness=CorrectnessContractRef(mode="cosine", min_cosine="0.985"),
     ),
     "moe.fused_experts_reduce": _contract_ref(
         "moe.fused_experts_reduce",
@@ -1339,12 +1342,12 @@ _SINGLETON_CONTRACTS = {
         entry="fused_experts_reduce",
         prepare="prepare",
         graph_dynamic_inputs=("x", "topk_ids", "topk_weights"),
-        input_abi_id="moe.fused_experts_reduce.input.v1",
+        input_abi_id="moe.fused_experts_reduce.modelopt-nvfp4-gate-up.input.v3",
         output_abi_id="moe.fused_experts_reduce.output.v1",
-        reference_id="moe.fused_experts_reduce.reference.v1",
-        verification_profile_id="moe.fused_experts_reduce.verify.v1",
+        reference_id="moe.fused_experts_reduce.m3-swigluoai.reference.v2",
+        verification_profile_id="moe.fused_experts_reduce.m3-nvfp4.verify.v3",
         binding_family_id="sglang.moe.fused-experts.dispatch.v1",
-        correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.97"),
+        correctness=CorrectnessContractRef(mode="cosine", min_cosine="0.985"),
     ),
     "norm.rmsnorm": _contract_ref(
         "norm.rmsnorm",
@@ -1371,6 +1374,8 @@ def default_target_catalog() -> TargetCatalog:
         features = _STANDARD_COMPONENT_FEATURES
         if target_id == "collective.moe_finalize_ar_rmsnorm":
             features = features | _FLASHINFER_FEATURES
+        if target_id in moe_pair:
+            features = features - _ARTIFACT_PROVIDER_TARGET_FEATURES
         specs.append(
             TargetSpec(
                 target_id=target_id,

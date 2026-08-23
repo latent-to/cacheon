@@ -1,32 +1,8 @@
-"""Bounded automatic re-entry for remote qualification HOLDs.
+"""Bounded retry policy for remote qualification HOLDs.
 
-A remote qualification HOLD is not a candidate verdict: it records that the
-stage could not produce PASS/FAIL evidence (worker infrastructure loss,
-missing graph evidence, transport interruption).  Before 2026-08-12 those rows
-parked in ``held`` until an operator released them by hand — on an autonomous
-validator that converts every novel infrastructure fault into a permanent
-wedge.  This policy demotes ``held`` from an operator-touch state to a
-bounded retry state:
-
-- every committed remote HOLD releases its reservations straight back to FIFO
-  (fresh claim, fresh request, real re-execution) until one reservation has
-  burned ``max_attempts`` total attempts; then it stays held and alarms;
-- ``breaker_threshold`` distinct reservations that **exhaust** their budget on
-  the same reason, with no PASS/FAIL terminal between them, open a circuit
-  breaker: fresh qualification claims stop and every suppression alarms,
-  because N stuck reservations in a row are one systemic fault burning the
-  whole queue, not N candidate problems.
-
-  Counting raw hold *events* instead of stuck *reservations* is wrong and was
-  a live outage on 2026-08-15: one reservation's own three bounded retries
-  plus a second reservation's two produced five holds, opened the breaker, and
-  halted every qualification claim for ~2.5 h. A retry in progress is the
-  policy working, not evidence of a systemic fault; only a spent budget is.
-
-All state is in-memory by design.  A supervisor restart closes the breaker and
-forgets attempt counts — restarting is the operator's explicit "cause fixed"
-signal, and the error direction is re-running paid work at most once more per
-restart, never wedging the queue.
+Only retryable infrastructure failures re-enter FIFO. Deterministic failures
+such as GPU OOM stay held after one attempt. Distinct reservations exhausting
+the same systemic reason open the circuit breaker.
 """
 
 from __future__ import annotations
@@ -38,27 +14,7 @@ DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_BREAKER_THRESHOLD = 5
 _SUPPRESSED_CLAIM_REMINDER_EVERY = 60
 
-# Reasons that still retry within their budget, but must never open the
-# breaker.
-#
-# The breaker exists for a fault that is burning the *whole* queue, where
-# stopping is cheaper than continuing.  ``legacy_no_decision`` is not that: it
-# is raised when the runner got no resident pair and fell back to a crossover
-# that cannot serve speed policy v6+, which happens exactly when the bundle is
-# not hot-swappable (native rebuild, AOT exports, dep patches, engine setup).
-# That is a property of one bundle class, so the other bundles in the queue are
-# unaffected and would grade normally.
-#
-# Refusing every claim on their account inverts the cure: on 2026-08-16 five
-# native bundles opened the breaker eleven times, and each time it halted every
-# qualification -- including the swappable bundles that were producing verdicts
-# -- until the stall watchdog restarted the supervisor, whereupon the same five
-# re-exhausted and reopened it.  A ~30-minute oscillation that can never drain.
-#
-# These keep their bounded retries (a transient ``raw_speed_evidence`` failure
-# reports the same reason and does deserve them) and are still durably marked
-# so a restart does not rehydrate their budget.  They simply do not count as
-# evidence of a systemic fault, because they are not one.
+# Bundle-class limitations must not stop unrelated swappable submissions.
 NON_SYSTEMIC_HOLD_REASONS = frozenset(
     {"remote_qualification_hold:legacy_no_decision"}
 )
@@ -223,6 +179,7 @@ class QualificationHoldRequeuePolicy:
         *,
         reservation_ids: tuple[str, ...],
         reason: str,
+        retryable: bool = True,
     ) -> tuple[str, ...]:
         """Release the held reservations back to FIFO within their budget.
 
@@ -244,6 +201,9 @@ class QualificationHoldRequeuePolicy:
         for reservation_id in reservation_ids:
             burned = self._attempts.get(reservation_id, 0) + 1
             self._attempts[reservation_id] = burned
+            if not retryable:
+                self._note_exhausted(store, reservation_id, reason, burned)
+                continue
             if burned >= self.max_attempts:
                 self._note_exhausted(store, reservation_id, reason, burned)
                 continue

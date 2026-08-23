@@ -12,9 +12,7 @@ from cacheon.chain.payload import (
     PAYLOAD_VERSION,
     PayloadError,
     decode_payload,
-    decode_payload_for_testing,
     encode_payload,
-    encode_payload_for_testing,
 )
 
 HASH = "a" * 64
@@ -62,13 +60,15 @@ def test_decode_never_raises_on_garbage():
     assert decode_payload("hk", 1, None) is None  # type: ignore[arg-type]
 
 
-def test_file_url_is_available_only_through_explicit_test_api():
+def test_file_url_is_refused_on_encode_and_decode():
     with pytest.raises(PayloadError):
         encode_payload(HASH, "file:///tmp/b.tar.gz")
-    data = encode_payload_for_testing(HASH, "file:///tmp/b.tar.gz")
+    # A canonically-shaped payload carrying a file:// URL is hostile input:
+    # the production decoder must drop it on scheme policy alone.
+    data = encode_payload(HASH, "https://example.com/x").replace(
+        "https://example.com/x", "file:///tmp/b.tar.gz"
+    )
     assert decode_payload("hk", 7, data) is None
-    ref = decode_payload_for_testing("hk", 7, data)
-    assert ref is not None and ref.url.startswith("file://")
 
 
 @pytest.mark.parametrize(

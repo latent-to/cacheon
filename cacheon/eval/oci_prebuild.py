@@ -79,8 +79,6 @@ _ALLOWED_STAGE_TOP_LEVEL = frozenset(
         PREBUILD_RECEIPT,
     }
 ) | _ARTIFACT_PUBLICATION_DIRECTORIES
-_DISCOVERY_ENGINE_METADATA = "metadata/cacheon_discovery.json"
-_DISCOVERY_RECEIPT_FIELD = "discovery_overlay_identity_digest"
 _CUTE_AOT_RECEIPT_FIELD = "cute_aot_compile_profile_digest"
 
 
@@ -374,18 +372,6 @@ class OCIPrebuildResult:
     publication: NativeArtifactPublication
     container_elapsed_seconds: float | None
     security_argv_digest: str | None
-    discovery_overlay_identity_digest: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.discovery_overlay_identity_digest is not None:
-            object.__setattr__(
-                self,
-                "discovery_overlay_identity_digest",
-                _digest(
-                    self.discovery_overlay_identity_digest,
-                    field="discovery overlay identity digest",
-                ),
-            )
 
     @property
     def reused(self) -> bool:
@@ -679,44 +665,9 @@ def build_prebuild_argv(
     return tuple(argv)
 
 
-def _discovery_binding(
-    resolved: ResolvedEngineLaunch,
-    *,
-    preflight: RuntimePreflightReceipt | None = None,
-):
-    """Reopen discovery authority only when its typed metadata is inventoried."""
-
-    if not any(
-        row.path == _DISCOVERY_ENGINE_METADATA
-        for row in resolved.materialized_tree.files
-    ):
-        return None
-    from cacheon.discovery import DiscoveryError, reopen_discovery_engine_binding
-
-    try:
-        binding = reopen_discovery_engine_binding(resolved.materialized_tree)
-    except (DiscoveryError, OSError, TypeError, ValueError) as exc:
-        raise OCIPrebuildError(
-            f"discovery engine binding cannot reopen: {exc}"
-        ) from None
-    profile = binding.build_profile
-    if (
-        profile.architecture != resolved.native_build_spec.target_architecture
-        or profile.tensor_parallel_size != resolved.spec.hardware.tp_size
-    ):
-        raise OCIPrebuildError(
-            "discovery build profile differs from launch architecture or TP size"
-        )
-    if preflight is not None and profile.sglang_version != preflight.sglang_version:
-        raise OCIPrebuildError(
-            "discovery build profile differs from image SGLang preflight"
-        )
-    return binding
-
-
 def _read_prebuild_receipt(
     root: Path, *, resolved: ResolvedEngineLaunch
-) -> tuple[dict[str, object], object | None]:
+) -> dict[str, object]:
     path = root / PREBUILD_RECEIPT
     try:
         raw = path.read_bytes()
@@ -735,9 +686,6 @@ def _read_prebuild_receipt(
         "target_architecture",
         "tree_digest",
     }
-    discovery = _discovery_binding(resolved)
-    if discovery is not None:
-        keys.add(_DISCOVERY_RECEIPT_FIELD)
     if has_artifact_publication:
         keys.add(_CUTE_AOT_RECEIPT_FIELD)
     if not isinstance(row, dict) or set(row) != keys or row.get("schema") != PREBUILD_SCHEMA:
@@ -761,11 +709,6 @@ def _read_prebuild_receipt(
         raise OCIPrebuildError("native prebuild stage differs from its receipt")
     if type(row.get("rebuild_applied")) is not bool:
         raise OCIPrebuildError("native prebuild receipt rebuild flag is invalid")
-    if discovery is not None:
-        _digest(
-            row.get(_DISCOVERY_RECEIPT_FIELD),
-            field="discovery overlay identity digest",
-        )
     compile_profile = resolved.native_compile_profile
     if (compile_profile is None) == has_artifact_publication:
         raise OCIPrebuildError(
@@ -808,54 +751,7 @@ def _read_prebuild_receipt(
                 raise OCIPrebuildError(
                     "CuTe AOT export values differ from validator compile profile"
                 )
-    return row, discovery
-
-
-def _reopen_discovery_publication(
-    publication: NativeArtifactPublication,
-    receipt: dict[str, object],
-    discovery: object | None,
-) -> str | None:
-    """Trust a discovery receipt only after the immutable publication reopens."""
-
-    if discovery is None:
-        if _DISCOVERY_RECEIPT_FIELD in receipt or any(
-            row.path.startswith("dep_overlays/discovery/")
-            for row in publication.files
-        ):
-            raise OCIPrebuildError("ordinary prebuild acquired discovery state")
-        return None
-    from cacheon.discovery import (
-        DiscoveryEngineBinding,
-        DiscoveryError,
-        reopen_discovery_overlay,
-    )
-
-    if type(discovery) is not DiscoveryEngineBinding:
-        raise OCIPrebuildError("discovery publication lacks a typed engine binding")
-    expected = _digest(
-        receipt.get(_DISCOVERY_RECEIPT_FIELD),
-        field="discovery overlay identity digest",
-    )
-    try:
-        overlay = reopen_discovery_overlay(
-            publication,
-            expected_identity_digest=expected,
-        )
-    except (DiscoveryError, OSError, TypeError, ValueError) as exc:
-        raise OCIPrebuildError(
-            f"discovery overlay publication cannot reopen: {exc}"
-        ) from None
-    identity = overlay.identity
-    if (
-        identity.proposal_digest != discovery.discovery.proposal_digest
-        or identity.policy_digest != discovery.policy.digest
-        or identity.build_profile_digest != discovery.build_profile.digest
-    ):
-        raise OCIPrebuildError(
-            "discovery overlay identity differs from its engine-tree authority"
-        )
-    return overlay.identity_digest
+    return row
 
 
 def run_oci_prebuild(
@@ -887,7 +783,6 @@ def run_oci_prebuild(
         raise OCIPrebuildError("OCI process manager does not match prebuild config")
     _remaining_deadline(manager, deadline, stage="binding validation")
     resolved, preflight = _validate_binding(launch, binding, config)
-    expected_discovery = _discovery_binding(resolved, preflight=preflight)
     _remaining_deadline(manager, deadline, stage="binding validation")
     digest = resolved.native_build_spec.digest
     existing = config.publication_root / digest[:2] / digest
@@ -896,14 +791,7 @@ def run_oci_prebuild(
         publication = reopen_native_artifact(
             existing, expected_build_spec_digest=digest, limits=limits
         )
-        receipt, receipt_discovery = _read_prebuild_receipt(
-            publication.root, resolved=resolved
-        )
-        if receipt_discovery != expected_discovery:
-            raise OCIPrebuildError("cached discovery binding changed during reopen")
-        discovery_digest = _reopen_discovery_publication(
-            publication, receipt, receipt_discovery
-        )
+        _read_prebuild_receipt(publication.root, resolved=resolved)
         _remaining_deadline(manager, deadline, stage="cached artifact validation")
         return OCIPrebuildResult(
             launch.digest,
@@ -911,7 +799,6 @@ def run_oci_prebuild(
             publication,
             None,
             None,
-            discovery_digest,
         )
 
     if manager is None:
@@ -1002,11 +889,7 @@ def run_oci_prebuild(
                 f"native prebuild container exited {execution.returncode}{detail}"
             )
         reopen_launch_tree(launch, resolved.materialized_tree_root)
-        stage_receipt, stage_discovery = _read_prebuild_receipt(
-            stage_path, resolved=resolved
-        )
-        if stage_discovery != expected_discovery:
-            raise OCIPrebuildError("discovery binding changed across container execution")
+        stage_receipt = _read_prebuild_receipt(stage_path, resolved=resolved)
         _remaining_deadline(manager, deadline, stage="artifact publication")
         publication_work.mkdir(mode=0o700)
         published = publish_native_artifact(
@@ -1024,16 +907,11 @@ def run_oci_prebuild(
         )
         if published.reused:
             publication = replace(publication, reused=True)
-        receipt, receipt_discovery = _read_prebuild_receipt(
-            publication.root, resolved=resolved
-        )
-        if receipt != stage_receipt or receipt_discovery != expected_discovery:
+        receipt = _read_prebuild_receipt(publication.root, resolved=resolved)
+        if receipt != stage_receipt:
             raise OCIPrebuildError(
                 "published prebuild receipt differs from its container output"
             )
-        discovery_digest = _reopen_discovery_publication(
-            publication, receipt, receipt_discovery
-        )
         _remaining_deadline(manager, deadline, stage="published artifact validation")
         argv_digest = hashlib.sha256(
             json.dumps(argv, separators=(",", ":")).encode("utf-8")
@@ -1045,7 +923,6 @@ def run_oci_prebuild(
             publication,
             execution.elapsed_seconds,
             argv_digest,
-            discovery_digest,
         )
     finally:
         manager.release(lease)
@@ -1056,74 +933,6 @@ def _container_value(name: str, *, pattern: re.Pattern[str] | None = None) -> st
     if not value or "\x00" in value or (pattern is not None and pattern.fullmatch(value) is None):
         raise OCIPrebuildError(f"container prebuild environment {name} is invalid")
     return value
-
-
-def _stock_sglang_site_root(
-    *, expected_version: str, pinned_build_roots: tuple[str, ...]
-) -> Path:
-    """Locate image-owned SGLang as data without importing its package."""
-
-    import importlib.metadata
-    import importlib.util
-
-    try:
-        distribution = importlib.metadata.distribution("sglang")
-    except importlib.metadata.PackageNotFoundError:
-        raise OCIPrebuildError("image has no installed SGLang distribution") from None
-    if distribution.version != expected_version:
-        raise OCIPrebuildError(
-            "image SGLang distribution version differs from discovery policy"
-        )
-    try:
-        requested_package = Path(distribution.locate_file("sglang"))
-        if not requested_package.exists():
-            # Editable image installs keep distribution metadata in
-            # site-packages while the package itself remains under a pinned
-            # source root. Resolving the top-level spec does not import or run
-            # SGLang; the package initializer remains unopened data.
-            spec = importlib.util.find_spec("sglang")
-            locations = (
-                ()
-                if spec is None
-                else tuple(spec.submodule_search_locations or ())
-            )
-            if (
-                spec is None
-                or len(locations) != 1
-                or spec.origin is None
-                or Path(spec.origin) != Path(locations[0]) / "__init__.py"
-            ):
-                raise OCIPrebuildError(
-                    "image SGLang editable package cannot be resolved exactly"
-                )
-            requested_package = Path(locations[0])
-        initializer = requested_package / "__init__.py"
-        if requested_package.is_symlink() or initializer.is_symlink():
-            raise OCIPrebuildError(
-                "image SGLang package and initializer must not be symlinks"
-            )
-        package = requested_package.resolve(strict=True)
-        resolved_initializer = initializer.resolve(strict=True)
-        site = package.parent
-        if (
-            package.name != "sglang"
-            or not package.is_dir()
-            or resolved_initializer != package / "__init__.py"
-            or not resolved_initializer.is_file()
-        ):
-            raise OCIPrebuildError("image SGLang distribution has no package tree")
-        roots = tuple(Path(value).resolve(strict=True) for value in pinned_build_roots)
-    except OCIPrebuildError:
-        raise
-    except (OSError, RuntimeError) as exc:
-        raise OCIPrebuildError(
-            f"image SGLang distribution cannot be resolved: {exc}"
-        ) from None
-    if not any(package == root or root in package.parents for root in roots):
-        raise OCIPrebuildError(
-            "image SGLang package is outside validator-pinned build roots"
-        )
-    return site
 
 
 def container_build() -> Path:
@@ -1193,24 +1002,6 @@ def container_build() -> Path:
     reopened = reopen_materialized_engine_tree(
         CONTAINER_TREE, expected_tree_digest=tree_digest
     )
-    resolved_discovery = None
-    if any(row.path == _DISCOVERY_ENGINE_METADATA for row in reopened.files):
-        from cacheon.discovery import DiscoveryError, reopen_discovery_engine_binding
-
-        try:
-            resolved_discovery = reopen_discovery_engine_binding(reopened)
-        except (DiscoveryError, OSError, TypeError, ValueError) as exc:
-            raise OCIPrebuildError(
-                f"container discovery binding cannot reopen: {exc}"
-            ) from None
-        if (
-            resolved_discovery.build_profile.architecture != architecture
-            or resolved_discovery.build_profile.sglang_version
-            != resolved_discovery.policy.sglang_version
-        ):
-            raise OCIPrebuildError(
-                "container discovery profile differs from build architecture or policy"
-            )
     stage = Path(CONTAINER_STAGE)
     if stage.is_symlink() or not stage.is_dir():
         raise OCIPrebuildError("container native stage mount is unavailable")
@@ -1270,27 +1061,6 @@ def container_build() -> Path:
             compile_profile_digest=compile_profile.digest,
             verify_distributions=True,
         )
-    discovery_overlay_identity_digest = None
-    if resolved_discovery is not None:
-        from cacheon.discovery import DiscoveryError, build_discovery_overlay_stage
-
-        stock_site = _stock_sglang_site_root(
-            expected_version=resolved_discovery.policy.sglang_version,
-            pinned_build_roots=roots,
-        )
-        try:
-            identity = build_discovery_overlay_stage(
-                resolved_discovery.discovery,
-                stock_site_root=stock_site,
-                native_stage_root=stage,
-                policy=resolved_discovery.policy,
-                build_profile=resolved_discovery.build_profile,
-            )
-        except (DiscoveryError, OSError, TypeError, ValueError) as exc:
-            raise OCIPrebuildError(
-                f"discovery overlay build failed: {exc}"
-            ) from None
-        discovery_overlay_identity_digest = identity.digest
     entries = sorted(child.name for child in stage.iterdir())
     if any(name not in _ALLOWED_STAGE_TOP_LEVEL - {PREBUILD_RECEIPT} for name in entries):
         raise OCIPrebuildError("reviewed patcher emitted an unexpected stage entry")
@@ -1302,8 +1072,6 @@ def container_build() -> Path:
         "target_architecture": architecture,
         "tree_digest": tree_digest,
     }
-    if discovery_overlay_identity_digest is not None:
-        receipt[_DISCOVERY_RECEIPT_FIELD] = discovery_overlay_identity_digest
     if compile_profile is not None:
         receipt[_CUTE_AOT_RECEIPT_FIELD] = compile_profile.digest
     destination = stage / PREBUILD_RECEIPT

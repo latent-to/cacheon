@@ -78,8 +78,8 @@ Promising classes include:
 
 Do not expand the manifest until a desired optimization “fits.” The target
 catalog fixes the smallest allowed delta. If the change needs an unregistered
-engine seam, scheduler behavior, broad source patch, or engine-wide setup, move
-it to [Discovery](discovery-lane.md).
+engine seam, scheduler behavior, broad source patch, or engine-wide setup, it is
+not submittable until the catalog registers that surface.
 
 ## Match the workload regime
 
@@ -91,8 +91,8 @@ For attention work:
 - `attention.msa_block_score` defines a decode-side block-score boundary, but
   it is unavailable in the current MiniMax-M3 arena because no installing
   decode adapter exists;
-- `attention.msa_prefill_block_score` is the causal per-row long-prefill
-  boundary;
+- `attention.msa_prefill_block_score` is the batched paged long-prefill
+  score-to-selection boundary;
 - an optimization to one should not be measured on a workload dominated by the
   other.
 

@@ -28,8 +28,7 @@ Before a candidate runs, the validator binds:
 
 For a registered candidate, C is the incumbent stack with exactly one target replaced.
 Every other contribution, adapter, fallback, and engine setting is supplied by the
-validator. Discovery uses its separate prepared overlay identity and cannot install an
-evaluation-stack manifest merely by passing.
+validator.
 
 There are three nested identities to keep straight:
 
@@ -75,9 +74,12 @@ calibrated threshold is the one the provider sealed.
 C′ and B″ are unreachable under v6, v7 and v8. The five-arm bracket survives only
 in v2–v5 evidence.
 
-The legacy constructor default remains v1 so historical serialized evidence reopens
-without reinterpretation. A production arena provider must explicitly bind its
-resident authority. Merely changing the policy label does not upgrade old evidence.
+Fresh execution is resident-only: the runner refuses any other speed-evidence
+policy at entry, and the constructor default is the resident policy — the only
+one a fresh plan can run. Versions 1 and 2 survive as reopen vocabulary: a
+reopen binds the retained evidence's own policy explicitly, and historical
+serialized artifacts regrade byte-for-byte without reinterpretation. Merely
+changing the policy label does not upgrade old evidence.
 
 ## Current adaptive timeline
 
@@ -86,6 +88,12 @@ topology, separate runtime namespaces, lane-specific NUMA policy, exact
 workload, and a total qualification budget. V7 keeps the standing pair resident;
 v8 launches its baseline and candidate processes for the request. The controller
 permits only one lane to execute timed GPU work at a time.
+
+Every read's evidence carries the engine-observed prompt token count for each request,
+and the protocol layer rejects any read whose counts differ from the sealed workload
+cell before it can be graded. A nominal host-side token count is never authority, and a
+count mismatch is an infrastructure fault — it can hold the leg, never mint a candidate
+verdict.
 
 ```mermaid
 sequenceDiagram
@@ -131,6 +139,15 @@ Speed is graded before the expensive audit and pristine-reference stages. An ord
 speed non-PASS emits a durable stage-exit and does not run audit or T. A separately bound
 calibration-observation disposition may continue after a speed failure to collect
 diagnostic audit and T evidence, but it cannot crown the candidate.
+
+A speed FAIL names what the round proved, graded with the verdict itself rather than
+derived from the bare decision. A bar of 1 + u can only call a candidate slower once
+its measured speedup falls below the mirrored bound 1 − u, or a conditioning
+regression is measured directly; that failure is `candidate_slower`. A miss inside
+the band is `speed_threshold_not_met`: the bar was not cleared, and the candidate was
+not measurably slower either. Reports settled before this split carry the retained
+coarse code `speed_regression`, which remains valid for them and is never recorded on
+a new verdict.
 
 The audit-only role is distinct from both timed lanes. Trusted-host grading imports no
 PyTorch and requires the expected slot × TP-rank/PID coverage, minimum call counts, and
@@ -228,36 +245,29 @@ slot is the only thing a swap by itself proves. Registration is not execution: a
 can load, register its slot, capture, and then never dispatch, and such a run still
 produces a complete speed number.
 
-Each swap therefore reports per-rank execution evidence for the generation it
-closes — the scope is final only once the lane has swapped away from it. A rank
-that fell back to the trusted baseline, or failed to load the bundle, does not
-count as having executed it.
-
-At the PR #95 merge, this pair-native guard is deliberately **record-only**:
-`ENFORCE_EXECUTION_EVIDENCE` is `False`. The path mints and transports the
-tri-state count and logs incomplete proof, but it does not currently prevent a
-speed PASS. It was disarmed after its first live use held paid work before the
-successful state had ever been observed and before the diagnostic artifact was
-retained. Re-arming requires a live candidate that is independently known to
-have run and reports the complete expected rank set. Direct-artifact and
-one-shot engine paths retain their separate positive execution requirements.
+Each swap therefore reports per-rank execution evidence for the generation it closes —
+the scope is final only once the lane has swapped away from it. A resident candidate leg
+is screened or graded only when every rank fired and completed the candidate under exactly
+the activation generation. A rank that fell back to the trusted baseline, or failed to
+load the bundle, does not count as having executed it.
 
 The reported count is a tri-state, and the states carry different authority:
 
 | Reported | Meaning | Decision |
 |---|---|---|
-| Unobserved | The evidence path itself is unusable | Record-only warning; would hold if armed |
-| Observed, short of the rank group | Complete execution is not proven | Record-only warning; would hold if armed |
-| Observed, complete | Execution is proven for that generation | Satisfies the future guard; other gates still decide |
+| Unobserved | The evidence path itself is unusable | Infrastructure HOLD / non-verdict |
+| Observed, short of the rank group | The candidate did not execute on every rank | HOLD / non-verdict |
+| Observed, complete | Execution is proven for that generation | Speed evidence may be graded |
 
-Unobserved is never read as zero. Absent evidence is an infrastructure fault and may not
-be converted into a candidate verdict.
+Unobserved is never read as zero. Absent or incomplete evidence may not be
+converted into candidate PASS or FAIL. The durable store represents this as a
+reservation HOLD with no candidate decision, which is semantically
+`NO_DECISION` without reviving the retired literal decision field.
 
-This evidence is written from inside the candidate's own process. While the
-guard is record-only it exposes accidental non-invocation but does not close it
-as a verdict condition. Even when armed, it is not proof against a deliberate
-forger; complete-engine isolation and external qualification remain the
-boundary.
+This evidence is written from inside the candidate's own process. It closes
+accidental non-invocation as a verdict condition, but it is not proof against a
+deliberate forger; complete-engine isolation and external qualification remain
+the boundary.
 
 ## Independent reproduction
 
@@ -287,8 +297,8 @@ independence fields differ:
 | Lane, arena, reservation and finalized order | Qualification authority digest |
 | Hotkey, target, members, selected delta | Qualification plan digest |
 | Arm and incumbent/candidate stack + tree digests | Attempt artifact digest |
-| Incumbent and candidate manifests (registered lane) | Qualification report digest |
-| Discovery proposal identity (discovery lane) | Selection commitment digest |
+| Incumbent and candidate manifests | Qualification report digest |
+|  | Selection commitment digest |
 |  | Selection-secret commitment digest |
 |  | Selection evidence digest |
 
@@ -333,8 +343,8 @@ frames. A summary JSON line without these products is not authority.
 See [Evidence and replay](../security/evidence.md) for retention and audit requirements.
 
 An authoritative attempt is not one headline. Durable authority includes the authority
-manifest; selected plan and commitment/entropy/selection receipts; referenced graph or
-discovery-execution evidence; the aggregate speed witness; the pristine-T execution
+manifest; selected plan and commitment/entropy/selection receipts; referenced graph
+evidence; the aggregate speed witness; the pristine-T execution
 witness and raw quality artifact/binding; per-candidate reports; and the enclosing attempt
 artifact. Settlement keeps references to both attempt roots.
 

@@ -32,37 +32,3 @@ def test_compat_rejects_an_installed_sglang_version_outside_the_pin(monkeypatch)
 
     assert not row.ok
     assert row.detail == f"found {version}  <-- DIFFERS from pin"
-
-
-def _forward_context_check(monkeypatch, accessor):
-    sglang = ModuleType("sglang")
-    sglang.__version__ = PINNED_SGLANG
-    sglang.__path__ = []
-    srt = ModuleType("sglang.srt")
-    srt.__path__ = []
-    model_executor = ModuleType("sglang.srt.model_executor")
-    model_executor.__path__ = []
-    forward_context = ModuleType("sglang.srt.model_executor.forward_context")
-    forward_context.get_attn_backend = accessor
-    sglang.srt = srt
-    srt.model_executor = model_executor
-    model_executor.forward_context = forward_context
-    for name, module in (
-        ("sglang", sglang),
-        ("sglang.srt", srt),
-        ("sglang.srt.model_executor", model_executor),
-        ("sglang.srt.model_executor.forward_context", forward_context),
-    ):
-        monkeypatch.setitem(sys.modules, name, module)
-
-    checks = run_checks()
-    return next(
-        row
-        for row in checks
-        if row.name == "attention backend accessor: get_attn_backend"
-    )
-
-
-def test_compat_requires_callable_attention_backend_accessor(monkeypatch) -> None:
-    assert _forward_context_check(monkeypatch, lambda: object()).ok
-    assert not _forward_context_check(monkeypatch, None).ok

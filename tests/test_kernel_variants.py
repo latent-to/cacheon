@@ -251,7 +251,7 @@ def test_legacy_lookup_and_peek_stay_compatible_and_fail_closed_on_ambiguity():
 def test_fired_receipt_is_semantic_slot_level_across_variants(monkeypatch):
     from cacheon import registry as registry_module
 
-    registry_module._FIRED_SLOTS.discard(SLOT)
+    registry_module._FIRED_SLOTS.clear()
     writes: list[tuple[str, dict, str | None]] = []
     monkeypatch.setattr(
         receipts,
@@ -267,7 +267,7 @@ def test_fired_receipt_is_semantic_slot_level_across_variants(monkeypatch):
     registry.select(SLOT, CallDescriptor(dtype="bfloat16", head_dim=128))
 
     assert writes == [("fired", {"slot": SLOT}, SLOT)]
-    registry_module._FIRED_SLOTS.discard(SLOT)
+    registry_module._FIRED_SLOTS.clear()
 
 
 def test_seam_loader_registers_every_variant(tmp_path):

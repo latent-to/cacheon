@@ -96,17 +96,36 @@ def _resident_evidence_hold(
     request_digest: str,
     authority_digest: str,
     source_digest: str,
+    failure: BaseException | None = None,
 ) -> B300QualificationGraphGateHold:
+    failure_type = ""
+    failure_message = ""
+    diagnostic_digest = ""
+    if failure is not None:
+        chain = []
+        current: BaseException | None = failure
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            chain.append(f"{type(current).__name__}: {current}")
+            diagnostic = getattr(current, "diagnostic", None)
+            stream_sha256 = getattr(diagnostic, "stream_sha256", None)
+            if isinstance(stream_sha256, str) and stream_sha256:
+                diagnostic_digest = stream_sha256
+            current = current.__cause__ or current.__context__
+        failure_type = type(failure).__name__
+        failure_message = " <- ".join(chain)
+        if len(failure_message) > 2_000:
+            failure_message = failure_message[:500] + " ... " + failure_message[-1_495:]
     return B300QualificationGraphGateHold(
         RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE,
-        canonical_digest(
+        diagnostic_digest or canonical_digest(
             "cacheon.eval.b300-resident-qualification-hold.v1",
-            {
-                "authority": authority_digest,
-                "request": request_digest,
-                "source": source_digest,
-            },
+            {"authority": authority_digest, "request": request_digest,
+             "source": source_digest},
         ),
+        failure_type,
+        failure_message,
     )
 
 
@@ -634,7 +653,7 @@ class B300MainnetWorker:
                 except (
                     B300ResidentQualificationError,
                     ResidentPairQualityLifecycleError,
-                ):
+                ) as exc:
                     _LOG.exception(
                         "resident qualification prefix failed for request %s; the "
                         "qualification is held without a candidate decision",
@@ -644,6 +663,7 @@ class B300MainnetWorker:
                         request_digest,
                         work.factory.manifest.authority_digest,
                         plan.prepared.source.digest,
+                        exc,
                     )
         try:
             batch = run_qualification_intake(

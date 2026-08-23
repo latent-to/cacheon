@@ -22,10 +22,8 @@ from cacheon.eval.device_state import (
     DeviceStateSample,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
-from cacheon.eval.marginal_runtime import run_marginal_lifecycle
 from cacheon.eval.native_artifact import NativeArtifactPublication
 from cacheon.eval.oci_backend import (
-    CandidateFreeRuntimeIdentity,
     EngineExecutionEvidence,
     OCIEngineExecutor,
     PristineReferenceExecutionEvidence,
@@ -413,48 +411,6 @@ def test_request_binding_reopens_exact_checkpoint_and_isolates_other_request(
         )
 
 
-def test_marginal_speed_record_reopens_only_against_its_sealed_runtime(
-    tmp_path: Path,
-) -> None:
-    case = _case(tmp_path / "runtime")
-    prepared = _prepared(case)
-    executor = _TypedExecutor(tmp_path / "artifacts")
-    lifecycle = run_marginal_lifecycle(
-        prepared, executor=executor, model_mount=case.mount, deadline=999.0
-    )
-    assert executor.calls == 3  # B, C, B-prime actually executed once
-
-    continuation = _scope(tmp_path)
-    assert continuation.load_marginal_speed(prepared) is None
-    continuation.record_marginal_speed(lifecycle)
-    reopened = continuation.load_marginal_speed(prepared)
-    assert reopened == lifecycle
-    assert type(reopened.baseline_before) is EngineExecutionEvidence
-    assert type(reopened.baseline_before.runtime_identity) is (
-        CandidateFreeRuntimeIdentity
-    )
-
-    with pytest.raises(QualificationContinuationError, match="exact lifecycle"):
-        continuation.record_marginal_speed(SimpleNamespace())
-
-    # Forge: relabel the candidate leg as a baseline execution and recompute
-    # the record digest.  The digest fence passes by construction, but the
-    # typed reconstruction re-runs the lifecycle's own binding validation.
-    record_path = continuation.directory / "speed.json"
-    forged = json.loads(record_path.read_bytes().decode())
-    forged["payload"]["candidates"][0] = forged["payload"]["baseline_before"]
-    body = {key: forged[key] for key in forged if key != "record_digest"}
-    forged["record_digest"] = canonical_digest(
-            "cacheon.eval.qualification-continuation-record.v2", body
-    )
-    record_path.chmod(0o600)
-    record_path.write_bytes(canonical_json_bytes(forged))
-    with pytest.raises(
-        QualificationContinuationError, match="does not bind the sealed runtime"
-    ):
-        continuation.load_marginal_speed(prepared)
-
-
 def _audit_witness() -> tuple[str, object]:
     policy = runner.SlotAuditPolicy(
         f"{700:032x}", 250_000, 32, ("norm.rmsnorm",), 1
@@ -540,11 +496,14 @@ def _pristine_reference_execution(
 def test_quality_record_round_trips_real_evidence(tmp_path: Path) -> None:
     case = _case(tmp_path / "runtime")
     prepared = _prepared(case)
-    executor = _TypedExecutor(tmp_path / "artifacts")
-    lifecycle = run_marginal_lifecycle(
-        prepared, executor=executor, model_mount=case.mount, deadline=999.0
+    baseline_execution = _TypedExecutor(tmp_path / "artifacts").execute(
+        prepared.baseline_launch,
+        case.baseline_binding.launch_binding,
+        case.mount,
+        prepared.baseline_session_plan,
+        deadline=999.0,
     )
-    reference_execution = _pristine_reference_execution(lifecycle.baseline_before)
+    reference_execution = _pristine_reference_execution(baseline_execution)
     entropy = SelectionEntropyReceipt(
         _d("entropy-source"), _d("commitment"), _d("entropy"), _d("entropy-authority")
     )
@@ -676,11 +635,16 @@ def _fresh_quiescence(monkeypatch):
     return lambda: state.update(count=0)
 
 
-def _run(harness: _Harness, continuation: _MemoryContinuation):
+def _run(
+    harness: _Harness,
+    continuation: _MemoryContinuation,
+    resident_baseline_executor=None,
+):
     ids = iter(f"{index + 1:032x}" for index in range(64))
     return runner.run_causal_qualification(
         harness.value,
         executor=harness.executor,
+        resident_baseline_executor=resident_baseline_executor,
         entropy_provider=lambda _commitment, _teardown: harness.entropy,
         hidden_judge=harness.hidden_judge,
         deadline=100.0,
@@ -721,10 +685,45 @@ def _without_completion(producer):
     return wrapped
 
 
+def _resident_pass_harness(monkeypatch):
+    """Resident continuation scaffolding: the only mode with durable writers."""
+
+    harness = _Harness(
+        monkeypatch,
+        graph=(QualificationDecision.PASS,),
+        speed=(QualificationDecision.PASS,),
+        quality=(QualificationDecision.PASS,),
+    )
+    baseline, _stage_reference, exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
+    monkeypatch.setattr(runner, "QualificationContinuation", _MemoryContinuation)
+    clock = iter(3.05 + index * 0.05 for index in range(64))
+    harness.executor.manager.clock = lambda: next(clock)
+    return harness, baseline, exits
+
+
+def _run_resident(harness, baseline, continuation, *, entropy_provider=None):
+    ids = iter(f"{index + 1:032x}" for index in range(64))
+    return runner.run_causal_qualification(
+        harness.value,
+        executor=harness.executor,
+        resident_baseline_executor=baseline,
+        entropy_provider=entropy_provider or harness.entropy_provider,
+        hidden_judge=harness.hidden_judge,
+        deadline=100.0,
+        id_factory=lambda: next(ids),
+        continuation=continuation,
+    )
+
+
 def test_pristine_t_completion_survives_a_crash_before_producer_return(
     monkeypatch,
 ) -> None:
-    harness = _pass_harness(monkeypatch)
+    harness, baseline, _exits = _resident_pass_harness(monkeypatch)
     continuation = _MemoryContinuation()
     producer = OCIEngineExecutor.execute_reference
     monkeypatch.setattr(
@@ -734,14 +733,14 @@ def test_pristine_t_completion_survives_a_crash_before_producer_return(
     )
 
     with pytest.raises(RuntimeError, match="after durable pristine T"):
-        _run(harness, continuation)
-    assert harness.calls.count("lifecycle") == 1
+        _run_resident(harness, baseline, continuation)
+    assert harness.calls.count("resident.speed") == 1
     assert harness.calls.count("audit") == 1
     assert harness.reference_calls == 1
     assert "quality" in continuation.records
 
-    assert _run(harness, continuation) == harness.attempt_reference
-    assert harness.calls.count("lifecycle") == 1
+    assert _run_resident(harness, baseline, continuation) == harness.attempt_reference
+    assert harness.calls.count("resident.speed") == 1
     assert harness.reference_calls == 1
     assert harness.calls.count("audit") == 1
     assert continuation.records["final"] == harness.attempt_reference
@@ -750,7 +749,7 @@ def test_pristine_t_completion_survives_a_crash_before_producer_return(
 def test_quality_executes_at_most_once_across_a_finalization_crash(
     monkeypatch,
 ) -> None:
-    harness = _pass_harness(monkeypatch)
+    harness, baseline, _exits = _resident_pass_harness(monkeypatch)
     reset_quiescence = _fresh_quiescence(monkeypatch)
     continuation = _MemoryContinuation()
 
@@ -765,16 +764,6 @@ def test_quality_executes_at_most_once_across_a_finalization_crash(
             QualificationDecision.PASS, 0, harness.calibration.digest
         ),
     )
-    project = runner.project_marginal_speed
-    projections: dict[str, object] = {}
-
-    def stateless_project(*args, **kwargs):
-        key = kwargs["selected_delta_digest"]
-        if key not in projections:
-            projections[key] = project(*args, **kwargs)
-        return projections[key]
-
-    monkeypatch.setattr(runner, "project_marginal_speed", stateless_project)
 
     publish = runner.publish_causal_qualification
     state = {"crashes": 1}
@@ -787,22 +776,21 @@ def test_quality_executes_at_most_once_across_a_finalization_crash(
 
     monkeypatch.setattr(runner, "publish_causal_qualification", crashing_publish)
 
+    entropy = lambda _commitment, _teardown: harness.entropy
     with pytest.raises(RuntimeError, match="simulated crash"):
-        _run(harness, continuation)
+        _run_resident(harness, baseline, continuation, entropy_provider=entropy)
     assert harness.reference_calls == 1
-    assert "speed" in continuation.records
     assert "quality" in continuation.records
     assert "final" not in continuation.records
 
     reset_quiescence()
-    reference = _run(harness, continuation)
+    reference = _run_resident(harness, baseline, continuation, entropy_provider=entropy)
     assert reference == harness.attempt_reference
-    # Neither expensive stage ran again: no new lifecycle, no new pristine T,
-    # no second audit session, no second transaction.
-    assert harness.calls.count("lifecycle") == 1
+    # Neither expensive stage ran again: no new resident speed, no new
+    # pristine T, no second audit session.
+    assert harness.calls.count("resident.speed") == 1
     assert harness.reference_calls == 1
     assert harness.calls.count("audit") == 1
-    assert harness.calls.count("transaction.enter") == 1
     assert continuation.records["final"] == harness.attempt_reference
 
 
@@ -863,22 +851,22 @@ def test_resident_audit_completion_survives_a_crash_before_producer_return(
 def test_continuation_rejects_producers_that_skip_the_completion_sink(
     monkeypatch,
 ) -> None:
-    audit_harness = _pass_harness(monkeypatch)
+    audit_harness, audit_baseline, _exits = _resident_pass_harness(monkeypatch)
     producer = runner._run_slot_audits
     monkeypatch.setattr(runner, "_run_slot_audits", _without_completion(producer))
     with pytest.raises(runner.QualificationRunnerError, match="audit sink"):
-        _run(audit_harness, _MemoryContinuation())
+        _run_resident(audit_harness, audit_baseline, _MemoryContinuation())
     assert audit_harness.calls.count("audit") == 1
     assert audit_harness.reference_calls == 0
 
-    t_harness = _pass_harness(monkeypatch)
+    t_harness, t_baseline, _exits = _resident_pass_harness(monkeypatch)
     producer = OCIEngineExecutor.execute_reference
     monkeypatch.setattr(
         OCIEngineExecutor, "execute_reference", _without_completion(producer)
     )
     continuation = _MemoryContinuation()
     with pytest.raises(runner.QualificationRunnerError, match="pristine T returned"):
-        _run(t_harness, continuation)
+        _run_resident(t_harness, t_baseline, continuation)
     assert t_harness.reference_calls == 1
     assert "quality" not in continuation.records
 
@@ -886,13 +874,26 @@ def test_continuation_rejects_producers_that_skip_the_completion_sink(
 def test_continuation_identity_mismatch_holds_before_any_execution(
     monkeypatch,
 ) -> None:
-    harness = _pass_harness(monkeypatch)
+    harness, baseline, _exits = _resident_pass_harness(monkeypatch)
     continuation = _MemoryContinuation(authority_digest=_d("foreign-authority"))
     with pytest.raises(
         QualificationContinuationError, match="differs from the sealed cohort"
     ):
-        _run(harness, continuation)
-    assert "lifecycle" not in harness.calls
+        _run_resident(harness, baseline, continuation)
+    assert "resident.speed" not in harness.calls
+    assert harness.reference_calls == 0
+
+
+def test_nonresident_qualification_is_refused_at_entry(monkeypatch) -> None:
+    # D8: the marginal (nonresident) execution path is retired; a non-v3 speed
+    # policy is refused before prevalidation, execution, or any durable write.
+    harness = _pass_harness(monkeypatch)
+    with pytest.raises(
+        runner.QualificationRunnerError,
+        match="causal qualification requires the resident speed policy",
+    ):
+        _run(harness, _MemoryContinuation())
+    assert harness.calls == []
     assert harness.reference_calls == 0
 
 
@@ -903,26 +904,22 @@ def test_untyped_continuation_is_rejected_before_any_execution(monkeypatch) -> N
         speed=(QualificationDecision.PASS,),
         quality=(QualificationDecision.PASS,),
     )
+    baseline, _stage_reference, _exits = _install_resident_runner_path(
+        monkeypatch,
+        harness,
+        speed_decision=QualificationDecision.PASS,
+        escalated=False,
+    )
     with pytest.raises(
         runner.QualificationRunnerError, match="not exactly typed"
     ):
-        _run(harness, _MemoryContinuation())
-    assert "lifecycle" not in harness.calls
+        _run(harness, _MemoryContinuation(), baseline)
+    assert "resident.speed" not in harness.calls
 
 
-def test_quality_record_without_speed_record_holds_in_both_modes(
+def test_quality_record_without_speed_record_holds(
     monkeypatch,
 ) -> None:
-    harness = _pass_harness(monkeypatch)
-    continuation = _MemoryContinuation()
-    continuation.records["quality"] = object()
-    with pytest.raises(
-        QualificationContinuationError, match="without its speed continuation"
-    ):
-        _run(harness, continuation)
-    assert "lifecycle" not in harness.calls
-    assert harness.reference_calls == 0
-
     resident_harness = _Harness(
         monkeypatch,
         graph=(QualificationDecision.PASS,),

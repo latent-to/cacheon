@@ -63,11 +63,11 @@ from cacheon.chain.remote_qualification_evidence import (
 )
 from cacheon.chain.remote_qualification_hold import (
     RemoteQualificationHoldProduct,
+    RemoteQualificationHoldReason,
     durable_remote_qualification_hold_reason,
 )
 from cacheon.chain.remote_worker_request_plan import (
     PlannedQualificationObservation,
-    QualificationPrepublicationProof,
     QualificationRecoveryHold,
     QualificationRequestPlan,
 )
@@ -100,7 +100,7 @@ class RecoverableQualificationTransport(Protocol):
 
     def prove_planned_qualification_prepublication(
         self, plan: QualificationRequestPlan
-    ) -> QualificationPrepublicationProof: ...
+    ) -> PlannedQualificationObservation: ...
 
     def publish_planned_qualification(
         self, plan: QualificationRequestPlan
@@ -528,6 +528,11 @@ class RecoverableQualificationDispatcher:
                 store,
                 reservation_ids=lease.reservation_ids,
                 reason=reason,
+                retryable=not (
+                    product.reason
+                    is RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE
+                    and bool(product.failure_type)
+                ),
             )
         finally:
             store.close()
@@ -1050,10 +1055,10 @@ class RecoverableQualificationDispatcher:
                         plan
                     )
                     if (
-                        type(proof) is not QualificationPrepublicationProof
+                        type(proof) is not PlannedQualificationObservation
                         or proof.plan_digest != plan.plan_digest
                         or proof.request_id != plan.request_id
-                        or not proof.carrier_materialized
+                        or proof.state != "carrier_materialized"
                     ):
                         raise QualificationRecoveryHold(
                             "prepublication_proof_changed",

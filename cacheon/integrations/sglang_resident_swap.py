@@ -1,32 +1,13 @@
-"""EXPERIMENTAL resident-engine kernel hot-swap hook (screen-tier probe).
+"""Swap a resident engine's kernel bundle and rebuild its decode graphs.
 
-BEFORE hook on ``ModelRunner.init_decode_cuda_graph``: when the validator sets
-``CACHEON_RESIDENT_SWAP`` to a control directory, each scheduler rank applies any
-pending swap command in-process immediately before CUDA graphs are (re)captured.
-The capture backend's eager warmups then JIT-compile the swapped kernel outside
-the recording, and the recorded graphs bake the new kernel in.
-
-This exists for the validator-owned resident SCREENING engine only: a persistent
-model that evaluates a queue of candidate kernels without ever reloading weights
-(swap -> recapture -> timed read). It is inert unless ``CACHEON_RESIDENT_SWAP``
-is set, which production qualification/crown paths never set.
-
-Swap protocol (validator/host side):
-  1. stage the bundle tree somewhere rank-readable;
-  2. write ``$CACHEON_RESIDENT_SWAP/command.json``:
-       {"generation": <int, strictly increasing>, "bundle": "/abs/path" | null}
-     (``null`` returns the engine to stock dispatch);
-  3. trigger recapture on the live engine — sglang's own
-     ``POST /update_weights_from_disk {"recapture_cuda_graph": true}`` path calls
-     ``init_decode_cuda_graph()`` on every rank (model_runner.py), firing this hook.
-Each rank writes ``$CACHEON_RESIDENT_SWAP/ack.rank<R>.json`` recording the applied
-generation, registered slots, and swap wall time; failures record the error and
-leave the registry EMPTY+DISABLED (stock dispatch), never a half-swapped state.
+Each rank acknowledges only after recapture succeeds or records the exact failure.
+Candidate-prepared state and the prior graph are released before every rebuild.
 """
 
 from __future__ import annotations
 
 import functools
+import gc
 import json
 import logging
 import os
@@ -54,6 +35,7 @@ _SCHED_HOOK_FLAG = "_cacheon_resident_swap_flush"
 
 # Last generation this rank applied (process-global; one scheduler rank per process).
 _applied_generation = -1
+_MOE_PREPARED_ATTR = "_cacheon_moe_prepared_by_impl"
 
 
 def _read_command(control_dir: str) -> tuple[int, str | None] | None:
@@ -86,14 +68,39 @@ def _write_ack(control_dir: str, rank: object, payload: dict[str, object]) -> No
         logger.exception("cacheon: resident swap ack write failed at %s", path)
 
 
-def _apply_pending_swap(model_runner: object, control_dir: str) -> None:
-    global _applied_generation
+def _release_cuda_state(model_runner: object) -> int:
+    """Drop candidate layouts and the old graph before recapture."""
+
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    evicted = 0
+    modules = getattr(getattr(model_runner, "model", None), "modules", None)
+    if callable(modules):
+        for layer in modules():
+            cache = getattr(layer, _MOE_PREPARED_ATTR, None)
+            if isinstance(cache, dict):
+                evicted += len(cache)
+                cache.clear()
+            if hasattr(layer, _MOE_PREPARED_ATTR):
+                delattr(layer, _MOE_PREPARED_ATTR)
+    setattr(model_runner, "decode_cuda_graph_runner", None)
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return evicted
+
+
+def _apply_pending_swap(
+    model_runner: object, control_dir: str
+) -> tuple[int, object, float, dict[str, object]] | None:
     command = _read_command(control_dir)
     if command is None:
-        return
+        return None
     generation, bundle = command
     if generation <= _applied_generation:
-        return
+        return None
     prior_generation = _applied_generation
     rank = getattr(model_runner, "tp_rank", "unknown")
     started = time.perf_counter()
@@ -102,24 +109,11 @@ def _apply_pending_swap(model_runner: object, control_dir: str) -> None:
         "bundle": bundle or "",
         "pid": os.getpid(),
     }
+    ack["evicted_prepared_entries"] = _release_cuda_state(model_runner)
     try:
         from cacheon import receipts, seam
 
-        # Execution evidence for the resident lane is established here, at the
-        # only moment it can be: the lane is launched stock, so the one-shot
-        # driver mints it no receipt directory, and it would otherwise serve
-        # every candidate of its life with receipts disabled — which is exactly
-        # how a bundle that never dispatched a kernel was recorded as a PASS
-        # (2026-08-16). Receipts are also once-per-slot-per-root, so the scope
-        # must advance with the generation or only the lane's first candidate
-        # would ever emit anything.
-        #
-        # This swap closes the previous generation: that scope's receipts are
-        # final now, and this rank has finished writing its own, so counting
-        # them here is race-free against peer ranks sharing the root. They ride
-        # home on this ack, which the worker already gathers from every rank.
-        # Failure here must not wedge a swap, so it is best effort — and an
-        # unobservable count reports as absent, never as zero.
+        # Closing-generation receipts are final before the new scope is armed.
         try:
             receipts.set_root(os.path.join(control_dir, "receipts"))
             ack["prior_generation"] = prior_generation
@@ -140,6 +134,21 @@ def _apply_pending_swap(model_runner: object, control_dir: str) -> None:
         REGISTRY.clear()
         ack["ok"] = False
         ack["error"] = str(exc)[:2048]
+    return generation, rank, started, ack
+
+
+def _finish_swap(
+    control_dir: str,
+    pending: tuple[int, object, float, dict[str, object]] | None,
+    error: Exception | None = None,
+) -> None:
+    global _applied_generation
+    if pending is None:
+        return
+    generation, rank, started, ack = pending
+    if error is not None:
+        ack["ok"] = False
+        ack["error"] = f"recapture failed: {error}"[:2048]
     _applied_generation = generation
     ack["swap_seconds"] = time.perf_counter() - started
     _write_ack(control_dir, rank, ack)
@@ -151,15 +160,7 @@ def _swap_pending(control_dir: str) -> bool:
 
 
 def install(registry: KernelRegistry = REGISTRY) -> None:
-    """Install both hooks; inert unless CACHEON_RESIDENT_SWAP is set.
-
-    Hook 1 (swap): BEFORE ModelRunner.init_decode_cuda_graph — applies the
-    pending bundle swap so the recapture bakes the new kernel in.
-    Hook 2 (trigger): AFTER Scheduler.flush_cache — when the idle-gated flush
-    succeeded and a swap command is pending, invoke init_decode_cuda_graph on
-    this rank's live ModelRunner, which fires hook 1 then recaptures. The
-    host triggers a swap by staging command.json then POSTing /flush_cache.
-    """
+    """Install the pre-recapture swap and post-flush trigger hooks."""
 
     del registry
     control_dir = os.environ.get("CACHEON_RESIDENT_SWAP", "").strip()
@@ -173,9 +174,16 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
 
         @functools.wraps(fn)
         def init_decode_cuda_graph(self, *args, **kwargs):
+            pending = None
             if not getattr(self, "is_draft_worker", False):
-                _apply_pending_swap(self, control_dir)
-            return fn(self, *args, **kwargs)
+                pending = _apply_pending_swap(self, control_dir)
+            try:
+                result = fn(self, *args, **kwargs)
+            except Exception as exc:
+                _finish_swap(control_dir, pending, exc)
+                raise
+            _finish_swap(control_dir, pending)
+            return result
 
         setattr(init_decode_cuda_graph, _HOOK_FLAG, True)
         init_decode_cuda_graph._cacheon_orig = fn  # type: ignore[attr-defined]
@@ -194,12 +202,7 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
                     getattr(self, "tp_worker", None), "model_runner", None
                 )
                 if runner is not None:
-                    try:
-                        runner.init_decode_cuda_graph()
-                    except Exception:  # noqa: BLE001 - keep the scheduler alive
-                        logger.exception(
-                            "cacheon: resident swap recapture failed after flush"
-                        )
+                    runner.init_decode_cuda_graph()
             return result
 
         setattr(flush_cache, _SCHED_HOOK_FLAG, True)

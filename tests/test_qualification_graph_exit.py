@@ -19,7 +19,6 @@ from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_DOMAIN,
     GRAPH_EVIDENCE_MEDIA_TYPE,
     GRAPH_EVIDENCE_SCHEMA,
-    DiscoveryQualificationProfile,
     GraphVerificationEvidenceRef,
     GraphVerificationRawEvidence,
     QualificationDecision,
@@ -40,17 +39,12 @@ from cacheon.eval.qualification_intake import (
     GraphShapeObservation,
     GraphVariantObservation,
 )
-from cacheon.eval.qualification_runner import (
-    DiscoveryCandidateQualificationAuthority,
-)
 from cacheon.stack_identity import canonical_json_bytes
 from tests.test_b300_registered_qualification import (
     _graph_facts_for_members,
     _harness,
 )
 from tests.test_marginal_runtime import FUSED
-from tests.test_qualification import _discovery_execution
-from tests.test_qualification_runner import _reference
 
 
 def _h(label: str) -> str:
@@ -407,44 +401,3 @@ def test_schema_is_path_free_bounded_and_publication_is_idempotent(
 
     assert not any(forbidden & set(key.lower().split("_")) for key in keys(row))
     assert_qualification_graph_exit_schema_safe()
-
-
-def test_discovery_authority_is_rejected_without_guessing(
-    tmp_path: Path,
-) -> None:
-    harness, value, _authority = _plan(tmp_path / "registered", failure=True)
-    discovery_root = tmp_path / "discovery"
-    discovery_root.mkdir()
-    requirement, lifecycle = _discovery_execution(discovery_root)
-    reference = _reference()
-    profile = DiscoveryQualificationProfile(
-        reference,
-        _h("discovery-context"),
-        _h("discovery-calibration"),
-        requirement.digest,
-        ("mean_nll", "task_score", "topk_kl"),
-        "2",
-        lifecycle.prepared.baseline_session_plan.max_new_tokens,
-        lifecycle.prepared.baseline_session_plan.top_logprobs_num,
-        1,
-        _h("support-policy"),
-        _h("hidden-task-policy"),
-        _h("runtime-policy"),
-        True,
-        2,
-    )
-    discovery = DiscoveryCandidateQualificationAuthority(
-        requirement.selected_delta_digest,
-        profile,
-        requirement,
-    )
-
-    with pytest.raises(QualificationGraphExitError, match="registered authority only"):
-        publish_qualification_graph_exit(
-            value.evidence_root,
-            expected_plan=value,
-            expected_authority=discovery,  # type: ignore[arg-type]
-            expected_reservation=harness.candidate.reservation,
-            authenticated_request_digest=_h("authenticated-request"),
-            expected_candidate_binding=harness.candidate,
-        )

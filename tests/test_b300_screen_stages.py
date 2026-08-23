@@ -22,9 +22,8 @@ from cacheon.arena_service import (
     NonCrownScreenPolicy,
     ScreenGrade,
     ScreenStagePolicy,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
@@ -85,24 +84,11 @@ def _h(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
-def _workload() -> WorkloadMixture:
-    return WorkloadMixture(
+def _workload() -> Workload:
+    return Workload(
         _h("prompt-corpus"),
         "sealed-prompts-v1",
-        (
-            WorkloadRegime(
-                "decode",
-                "decode",
-                500_000,
-                (ServingShape(64, 32, 4, 2),),
-            ),
-            WorkloadRegime(
-                "prefill",
-                "long_prefill",
-                500_000,
-                (ServingShape(1024, 4, 1, 2),),
-            ),
-        ),
+        (WorkloadCell("s8", 8192, 1024, 64, 8),),
     )
 
 

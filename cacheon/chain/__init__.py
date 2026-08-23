@@ -402,14 +402,6 @@ def read_validator_weight_snapshot(
     )
 
 
-def read_validator_weights(
-    subtensor, netuid: int, validator_hotkey: str
-) -> dict[str, float]:
-    """Compatibility projection of :func:`read_validator_weight_snapshot`."""
-
-    return read_validator_weight_snapshot(subtensor, netuid, validator_hotkey).weights
-
-
 # --------------------------------------------------------------------------- #
 # RPC wrappers — lazy bittensor; the only code that touches the chain
 # --------------------------------------------------------------------------- #

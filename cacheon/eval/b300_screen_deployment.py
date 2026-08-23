@@ -32,9 +32,9 @@ from cacheon.arena_service import (
     ArenaServiceManifest,
     NonCrownScreenPolicy,
     ScreenStagePolicy,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    ArenaServiceError,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.engine_tree import (
@@ -171,7 +171,10 @@ def _stable_json(path_value: str | os.PathLike[str], field: str) -> tuple[Path, 
     stable = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")
     if any(getattr(before, name) != getattr(after, name) for name in stable):
         raise B300ScreenDeploymentError(f"{field} changed while being read")
-    if not raw or len(raw) > 64 << 20:
+    # 256MiB: these are validator-sealed, sha-bound inputs (never miner
+    # bytes); the sealed S8 prompt authority embeds 16x128 8k-token prompts
+    # (~77MB), which the old 64MiB bound predated.
+    if not raw or len(raw) > 256 << 20:
         raise B300ScreenDeploymentError(f"{field} is empty or exceeds its byte bound")
     try:
         value = json.loads(
@@ -506,21 +509,26 @@ def _seam_bindings(target_members: tuple[str, ...]) -> tuple[str, ...]:
 
 def _engine_config(
     target_members: tuple[str, ...],
+    cell: WorkloadCell,
     *,
     disable_cuda_graph: bool,
 ) -> EngineSessionConfig:
     bindings = _seam_bindings(target_members)
     kwargs: dict[str, object] = {
         "chunked_prefill_size": 4096,
-        "context_length": 8192,
+        # One KV page above the cell's exact request total keeps the boundary
+        # request clear of admission off-by-ones.
+        "context_length": cell.input_tokens + cell.output_tokens + 128,
         "cuda_graph_backend_prefill": "disabled",
+        # Sealed batches repeat across arms inside one resident engine; prefix
+        # reuse must be impossible, not merely symmetric by luck.
+        "disable_radix_cache": True,
         "kv_cache_dtype": "auto",
         "page_size": 128,
         "quantization": _MODEL_QUANTIZATION,
         "trust_remote_code": True,
     }
     if "arfusion" in bindings:
-        kwargs["disable_radix_cache"] = True
         kwargs["enable_flashinfer_allreduce_fusion"] = True
     if not disable_cuda_graph:
         # SGLang's default 300s scheduler watchdog SIGKILLs ranks mid CUDA-graph
@@ -535,13 +543,81 @@ def _engine_config(
         disable_cuda_graph=disable_cuda_graph,
         mem_fraction_static=0.75,
         log_level="error",
-        max_running_requests=32,
+        max_running_requests=cell.concurrency,
         tp_size=TP_SIZE,
         moe_runner_backend="flashinfer_cutlass",
         disable_custom_all_reduce=True,
         engine_kwargs=kwargs,
         seam_bindings=bindings,
     )
+
+
+def _commissioned_stock_authority(
+    inputs: "_CommissionedInputs",
+    manifest: ArenaServiceManifest,
+    catalog: TargetCatalog,
+    snapshot: dict,
+    *,
+    error: type[Exception],
+    label: str,
+):
+    """Target members plus the empty-stack stock tree, from one exact catalog.
+
+    The screen and qualification commissions build the identical stock
+    identity — same context, same empty manifest, same on-disk
+    ``resident-stock-{digest}`` tree — so the authority lives once here.
+    ``error``/``label`` keep each commission's fail-closed error class and
+    wording exactly as before.
+    """
+
+    rows = snapshot.get("targets")
+    if not isinstance(rows, list):
+        raise error("target catalog snapshot is malformed")
+    target_members = tuple(
+        sorted(
+            {
+                member
+                for row in rows
+                if isinstance(row, dict)
+                for member in row.get("members", ())
+                if isinstance(member, str)
+            }
+        )
+    )
+    if not target_members:
+        raise error(f"{label} target member set is empty")
+    context = EvaluationStackContext(
+        runtime_digest=inputs.runtime.runtime_digest,
+        base_engine_digest=inputs.runtime.base_engine_digest,
+        arena_digest=manifest.digest,
+        catalog_snapshot=snapshot,
+        catalog_digest=catalog.digest,
+        target_spec_digests=_catalog_specs(catalog),
+    )
+    stock = EvaluationStackManifest(
+        runtime_digest=context.runtime_digest,
+        base_engine_digest=context.base_engine_digest,
+        arena_digest=context.arena_digest,
+        catalog_snapshot=snapshot,
+        catalog_digest=catalog.digest,
+        entries={},
+    )
+    trees_root = inputs.root / "engine-trees"
+    trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    destination = trees_root / f"resident-stock-{stock.digest}"
+    if destination.exists():
+        tree = reopen_materialized_engine_tree(destination)
+    else:
+        tree = materialize_engine_tree(
+            stock,
+            context=context,
+            catalog=catalog,
+            resolver={},
+            destination=destination,
+        )
+    if tree.stack_digest != stock.digest or tree.runtime_manifest is not None:
+        raise error(f"{label} stock tree differs from the empty commissioned stack")
+    return target_members, context, stock, tree
 
 
 def _native_build(
@@ -589,6 +665,8 @@ class _CommissionedInputs:
     model_root: Path
     prompt_batches: tuple[tuple[str, ...], ...]
     prompt_identity: dict[str, str]
+    workload: Workload
+    closed_targets: tuple[str, ...]
     plan_resolver_digest: str
     evidence_policy_digest: str
     resident_factory_digest: str
@@ -742,8 +820,9 @@ class _CommissionedScreenPlanResolver:
             model_manifest_digest=self.inputs.runtime.model_manifest_digest,
             model_content_digest=self.inputs.runtime.model_content_digest,
         )
-        eager_config = _engine_config(target.members, disable_cuda_graph=True)
-        graph_config = _engine_config(target.members, disable_cuda_graph=False)
+        cell = _scored_cell(self.inputs.workload)
+        eager_config = _engine_config(target.members, cell, disable_cuda_graph=True)
+        graph_config = _engine_config(target.members, cell, disable_cuda_graph=False)
         seccomp_digest = _file_sha256(self.executor.config.prebuild.seccomp_profile)
 
         def launch(config: EngineSessionConfig) -> EngineLaunchSpec:
@@ -816,6 +895,7 @@ class _CommissionedScreenPlanResolver:
                 max_new_tokens=4,
                 top_logprobs_num=0,
                 temperature=0.0,
+                expected_prompt_tokens=cell.input_tokens,
                 audit_policy=audit,
             )
 
@@ -861,55 +941,14 @@ def _resident_factory(
                 "resident service manifest differs from commission"
             )
         snapshot = catalog.snapshot()
-        rows = snapshot.get("targets")
-        if not isinstance(rows, list):
-            raise B300ScreenDeploymentError("target catalog snapshot is malformed")
-        target_members = tuple(
-            sorted(
-                {
-                    member
-                    for row in rows
-                    if isinstance(row, dict)
-                    for member in row.get("members", ())
-                    if isinstance(member, str)
-                }
-            )
+        target_members, _context, _stock, tree = _commissioned_stock_authority(
+            inputs,
+            manifest,
+            catalog,
+            snapshot,
+            error=B300ScreenDeploymentError,
+            label="resident",
         )
-        if not target_members:
-            raise B300ScreenDeploymentError("resident target member set is empty")
-        context = EvaluationStackContext(
-            runtime_digest=inputs.runtime.runtime_digest,
-            base_engine_digest=inputs.runtime.base_engine_digest,
-            arena_digest=manifest.digest,
-            catalog_snapshot=snapshot,
-            catalog_digest=catalog.digest,
-            target_spec_digests=_catalog_specs(catalog),
-        )
-        stock = EvaluationStackManifest(
-            runtime_digest=context.runtime_digest,
-            base_engine_digest=context.base_engine_digest,
-            arena_digest=context.arena_digest,
-            catalog_snapshot=snapshot,
-            catalog_digest=catalog.digest,
-            entries={},
-        )
-        trees_root = inputs.root / "engine-trees"
-        trees_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        destination = trees_root / f"resident-stock-{stock.digest}"
-        if destination.exists():
-            tree = reopen_materialized_engine_tree(destination)
-        else:
-            tree = materialize_engine_tree(
-                stock,
-                context=context,
-                catalog=catalog,
-                resolver={},
-                destination=destination,
-            )
-        if tree.stack_digest != stock.digest or tree.runtime_manifest is not None:
-            raise B300ScreenDeploymentError(
-                "resident stock tree differs from the empty commissioned stack"
-            )
 
         policy = inputs.device_policy
         hardware = LogicalHardwareSpec(
@@ -944,7 +983,9 @@ def _resident_factory(
             runtime_preflight_receipt=inputs.preflight,
             physical_hardware=physical,
         )
-        config = _engine_config(target_members, disable_cuda_graph=False)
+        config = _engine_config(
+            target_members, _scored_cell(inputs.workload), disable_cuda_graph=False
+        )
         launch = EngineLaunchSpec(
             runtime_digest=inputs.runtime.runtime_digest,
             base_engine_digest=inputs.runtime.base_engine_digest,
@@ -1087,24 +1128,7 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
     )
     manifest = ArenaServiceManifest(
         runtime=inputs.runtime,
-        workload=WorkloadMixture(
-            prompt_corpus_digest=inputs.prompt_identity["sha256"],
-            prompt_seed_scheme="sealed-m4l-v1",
-            regimes=(
-                WorkloadRegime(
-                    "decode",
-                    "decode",
-                    500_000,
-                    (ServingShape(256, 32, 32, 4),),
-                ),
-                WorkloadRegime(
-                    "long-prefill",
-                    "long_prefill",
-                    500_000,
-                    (ServingShape(8192, 4, 1, 4),),
-                ),
-            ),
-        ),
+        workload=inputs.workload,
         capacity=ArenaCapacityPolicy(32, 64, 1, 4, 4, 2, 2, 3),
         screens=NonCrownScreenPolicy(
             tuple(
@@ -1120,6 +1144,7 @@ def _compose(inputs: _CommissionedInputs) -> _Composition:
             inputs.declared_qualification.qualification_policy_digest
         ),
         provider_digest=b300_arena_provider_digest(authorities),
+        closed_targets=inputs.closed_targets,
     )
     manifest_box.append(manifest)
     return _Composition(
@@ -1156,6 +1181,70 @@ def _prompt_batches(value: object) -> tuple[tuple[str, ...], ...]:
             "prompt authority must contain at least three bounded nonempty batches"
         )
     return batches
+
+
+_CELL_FIELDS = frozenset(WorkloadCell.__dataclass_fields__)
+
+
+def _workload(
+    prompt: dict[str, object],
+    batches: tuple[tuple[str, ...], ...],
+    sha256: str,
+) -> Workload:
+    """The sealed prompt authority is the single workload authority.
+
+    The manifest declaration and the executed session plan are both projections
+    of the object built here, and the sealed batches are validated against the
+    declared cell before anything commissions.
+    """
+
+    row = _mapping(prompt.get("workload_cell"), "workload cell")
+    if set(row) != _CELL_FIELDS:
+        raise B300ScreenDeploymentError("workload cell fields are not closed")
+    try:
+        cell = WorkloadCell(**row)  # type: ignore[arg-type]
+        workload = Workload(
+            prompt_corpus_digest=sha256,
+            prompt_seed_scheme=prompt.get("prompt_seed_scheme"),  # type: ignore[arg-type]
+            cells=(cell,),
+        )
+    except ArenaServiceError as exc:
+        raise B300ScreenDeploymentError(f"workload declaration is invalid: {exc}") from None
+    if any(len(batch) != cell.concurrency for batch in batches):
+        raise B300ScreenDeploymentError(
+            "sealed prompt batches do not all match the declared cell concurrency"
+        )
+    return workload
+
+
+def _scored_cell(workload: Workload) -> WorkloadCell:
+    if len(workload.cells) != 1:
+        raise B300ScreenDeploymentError(
+            "this evaluator commissions exactly one scored workload cell"
+        )
+    return workload.cells[0]
+
+
+def _string_rows(value: object, label: str) -> list[str]:
+    if type(value) is not list or any(type(row) is not str for row in value):
+        raise B300ScreenDeploymentError(f"{label} must be a list of strings")
+    return value
+
+
+def _closed_targets(
+    prompt: dict[str, object], catalog: TargetCatalog
+) -> tuple[str, ...]:
+    """Sealed family closures: registered targets this workload cannot measure."""
+
+    rows = _string_rows(prompt.get("closed_targets"), "closed targets")
+    for target in rows:
+        try:
+            catalog.require(target)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise B300ScreenDeploymentError(
+                f"closed target is not registered: {exc}"
+            ) from None
+    return tuple(rows)
 
 
 def _prompt_identity(prompt: dict[str, object], sha256: str) -> dict[str, str]:
@@ -1438,6 +1527,7 @@ def _derive_inputs(
         prompt, authority_refs["prompt_authority"]["sha256"]
     )
     batches = _prompt_batches(prompt)
+    workload = _workload(prompt, batches, prompt_identity["sha256"])
     catalog = default_target_catalog()
     # Calibration is qualification evidence bound by the sealed deployment
     # payload.  It cannot be part of the screen resolver identity: its context
@@ -1507,6 +1597,8 @@ def _derive_inputs(
         model_root=model_root,
         prompt_batches=batches,
         prompt_identity=prompt_identity,
+        workload=workload,
+        closed_targets=_closed_targets(prompt, catalog),
         plan_resolver_digest=plan_resolver_digest,
         evidence_policy_digest=evidence_policy_digest,
         resident_factory_digest=resident_factory_digest,
@@ -1746,33 +1838,22 @@ def _runtime_from_dict(value: object) -> ArenaRuntimeIdentity:
 def _manifest_from_dict(value: object) -> ArenaServiceManifest:
     row = _mapping(value, "arena service manifest")
     workload_row = _mapping(row.get("workload"), "workload")
-    raw_regimes = workload_row.get("regimes")
-    if type(raw_regimes) is not list:
-        raise B300ScreenDeploymentError("workload regimes are malformed")
-    regimes: list[WorkloadRegime] = []
-    for raw_regime in raw_regimes:
-        regime = _mapping(raw_regime, "workload regime")
-        raw_shapes = regime.get("shapes")
-        if type(raw_shapes) is not list:
-            raise B300ScreenDeploymentError("workload shapes are malformed")
-        regimes.append(
-            WorkloadRegime(
-                regime["name"],  # type: ignore[arg-type]
-                regime["phase"],  # type: ignore[arg-type]
-                regime["weight_ppm"],  # type: ignore[arg-type]
-                tuple(ServingShape(**_mapping(shape, "serving shape")) for shape in raw_shapes),
-            )
-        )
+    raw_cells = workload_row.get("cells")
+    if type(raw_cells) is not list:
+        raise B300ScreenDeploymentError("workload cells are malformed")
     screens_row = _mapping(row.get("screens"), "screen policy")
     if screens_row.get("crownable") is not False or type(screens_row.get("stages")) is not list:
         raise B300ScreenDeploymentError("screen policy is malformed")
     try:
         return ArenaServiceManifest(
             runtime=_runtime_from_dict(row["runtime"]),
-            workload=WorkloadMixture(
+            workload=Workload(
                 workload_row["prompt_corpus_digest"],  # type: ignore[arg-type]
                 workload_row["prompt_seed_scheme"],  # type: ignore[arg-type]
-                tuple(regimes),
+                tuple(
+                    WorkloadCell(**_mapping(cell, "workload cell"))
+                    for cell in raw_cells
+                ),
             ),
             capacity=ArenaCapacityPolicy(**_mapping(row["capacity"], "capacity")),
             screens=NonCrownScreenPolicy(
@@ -1783,6 +1864,7 @@ def _manifest_from_dict(value: object) -> ArenaServiceManifest:
             ),
             qualification_policy_digest=row["qualification_policy_digest"],  # type: ignore[arg-type]
             provider_digest=row["provider_digest"],  # type: ignore[arg-type]
+            closed_targets=tuple(_string_rows(row["closed_targets"], "closed targets")),
             schema_version=row["schema_version"],  # type: ignore[arg-type]
         )
     except (KeyError, TypeError, ValueError) as exc:

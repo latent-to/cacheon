@@ -365,10 +365,7 @@ class B300PreparedGraphOCIExecutor:
             limits=self.config.native_limits,
             deadline=deadline,
         )
-        if (
-            prebuild.launch_digest != request.launch.digest
-            or prebuild.discovery_overlay_identity_digest is not None
-        ):
+        if prebuild.launch_digest != request.launch.digest:
             raise B300PreparedGraphOCIError("native publication differs from the arm")
         publication = reopen_native_artifact(
             prebuild.publication.root,

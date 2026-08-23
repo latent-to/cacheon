@@ -164,6 +164,25 @@ def test_hold_projection_is_target_neutral_for_a_two_candidate_cohort(
     ) == product
 
 
+def test_nonworker_hold_retains_bounded_failure_detail(tmp_path: Path) -> None:
+    request, identity, credential = _qualification_request(tmp_path)
+    product = capture_remote_qualification_hold(
+        request,
+        reason=RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE,
+        diagnostic_digest=_h("oom-stderr"),
+        failure_type="B300ResidentQualificationHold",
+        failure_message="stock recapture failed: CUDA out of memory",
+    )
+    reopened = reopen_remote_response(
+        request,
+        seal_remote_response(request, product, identity, credential),
+        identity,
+        credential,
+    )
+    assert reopened.failure_type == "B300ResidentQualificationHold"
+    assert "CUDA out of memory" in reopened.failure_message
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     (

@@ -164,6 +164,8 @@ def record(slot: str, actual: Sequence[torch.Tensor],
                 per_row = ((hit & valid).sum(-1).float()
                            / valid.sum(-1).clamp(min=1).float())
                 ov = float(per_row[rows].mean())
+                if bool((ai[~valid] != -1).any()):
+                    ov = 0.0
                 worst = min(worst, ov)
                 ok = ok and ov >= corr.min_overlap
                 s["min_ratio"] = corr.min_overlap

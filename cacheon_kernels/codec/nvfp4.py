@@ -1,17 +1,4 @@
-"""NVFP4 codec + weight-layout primitives — re-homed clean, pure torch, CPU-validatable.
-
-These are the weight-layout math the M3 swigluoai win *borrowed* from sglang
-(``interleave_w13_halves`` / ``convert_sf_to_mma_layout`` / the scalar-alpha algebra),
-reimplemented as engine-independent primitives we own. They are the spine of the
-portable library and are themselves contributable (a faster/more-faithful codec is a
-win). Here they are correct **references** — the high-perf CuTe-DSL kernels are a
-swappable backend behind this interface, not the interface.
-
-NVFP4 = e2m1 4-bit values {0, ±0.5, ±1, ±1.5, ±2, ±3, ±4, ±6}, a per-16-element block
-scale, and a per-tensor/per-expert fp32 global scale. The quant/dequant here round-trip
-within NVFP4's representational error (exact when the input already lies on the grid);
-the layout transforms (interleave / swizzle) round-trip EXACTLY (pure reshape/permute).
-"""
+"""Pure-Torch packed NVFP4 reference and reversible W13 interleave."""
 
 from __future__ import annotations
 
@@ -23,41 +10,42 @@ NVFP4_MAX = 6.0
 NVFP4_BLOCK = 16
 
 
-def _nearest_e2m1(x: torch.Tensor) -> torch.Tensor:
-    """Round each element to the nearest e2m1 magnitude, preserving sign."""
+def _e2m1_nibbles(x: torch.Tensor) -> torch.Tensor:
     grid = torch.tensor(_E2M1_POS, device=x.device, dtype=torch.float32)
     idx = (x.abs().unsqueeze(-1) - grid).abs().argmin(dim=-1)
-    return torch.sign(x) * grid[idx]
+    return idx.to(torch.uint8) | ((x < 0).to(torch.uint8) << 3)
 
 
 def quantize_nvfp4(
     x: torch.Tensor, *, block: int = NVFP4_BLOCK, global_scale: float = 1.0
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Reference NVFP4 quantize. Returns ``(codes, block_scales)``:
-
-    * ``codes`` — the e2m1 grid values (fp32, in [-6, 6]) per element (last dim unchanged).
-    * ``block_scales`` — one fp32 scale per ``block`` elements (shape ``(..., n//block)``).
-
-    ``dequantize_nvfp4(codes, block_scales, global_scale=...)`` is the inverse. Codes are
-    kept in value space (not packed bits) so the round-trip is CPU-checkable; a real
-    backend packs ``codes`` to 4-bit + ``block_scales`` to UE4M3.
-    """
+    """Return ModelOpt-compatible packed e2m1 bytes and one scale per block."""
     *lead, n = x.shape
     if n % block != 0:
         raise ValueError(f"last dim {n} is not a multiple of block {block}")
     xb = (x.float() / global_scale).reshape(*lead, n // block, block)
     block_scale = xb.abs().amax(dim=-1, keepdim=True).clamp_min(1e-12) / NVFP4_MAX
-    codes = _nearest_e2m1(xb / block_scale)  # in [-6, 6] on the e2m1 grid
-    return codes.reshape(*lead, n), block_scale.squeeze(-1)
+    nibbles = _e2m1_nibbles(xb / block_scale).reshape(*lead, n)
+    packed = nibbles[..., 0::2] | (nibbles[..., 1::2] << 4)
+    return packed, block_scale.squeeze(-1)
 
 
 def dequantize_nvfp4(
-    codes: torch.Tensor, block_scales: torch.Tensor, *, block: int = NVFP4_BLOCK,
+    packed: torch.Tensor, block_scales: torch.Tensor, *, block: int = NVFP4_BLOCK,
     global_scale: float = 1.0,
 ) -> torch.Tensor:
-    """Inverse of :func:`quantize_nvfp4`: ``x ≈ codes * block_scale * global_scale``."""
-    *lead, n = codes.shape
-    cb = codes.float().reshape(*lead, n // block, block)
+    """Dequantize packed e2m1 bytes with linear block and outer scales."""
+    if packed.dtype != torch.uint8:
+        raise ValueError("packed NVFP4 weights must use uint8 storage")
+    *lead, half_n = packed.shape
+    n = half_n * 2
+    lut = torch.tensor(
+        (*_E2M1_POS, *(-value for value in _E2M1_POS)),
+        device=packed.device,
+        dtype=torch.float32,
+    )
+    nibbles = torch.stack((packed & 0xF, packed >> 4), dim=-1).flatten(-2)
+    cb = lut[nibbles.long()].reshape(*lead, n // block, block)
     x = cb * block_scales.unsqueeze(-1) * global_scale
     return x.reshape(*lead, n)
 
@@ -90,33 +78,35 @@ def deinterleave_w13_halves(w: torch.Tensor, *, group: int = 64) -> torch.Tensor
     return torch.cat([g, u], dim=1)
 
 
-def swizzle_blockscale(sf: torch.Tensor) -> torch.Tensor:
-    """Swizzle a ``(B, M, K)`` block-scale tensor into the FP4 swizzled layout
-    (lifted from sglang ``utils.py``: ``reshape(B, M//128, 4, 32, K//4, 4).permute(
-    0,1,4,3,2,5)``). Requires ``M % 128 == 0`` and ``K % 4 == 0``. The permute is an
-    involution on axes 2/4 -> :func:`unswizzle_blockscale` inverts it exactly."""
-    B, M, K = sf.shape
-    if M % 128 != 0 or K % 4 != 0:
-        raise ValueError(f"block-scale (M,K)=({M},{K}) needs M%128==0 and K%4==0")
-    return sf.reshape(B, M // 128, 4, 32, K // 4, 4).permute(0, 1, 4, 3, 2, 5).contiguous()
+def swizzle_blockscale(scale: torch.Tensor) -> torch.Tensor:
+    """Match SGLang's padded 128-row/4-column ModelOpt scale swizzle."""
+    squeeze = scale.ndim == 2
+    if squeeze:
+        scale = scale.unsqueeze(0)
+    if scale.ndim != 3:
+        raise ValueError("NVFP4 block scales must be rank two or three")
+    batch, rows, cols = scale.shape
+    padded_rows = (rows + 127) // 128 * 128
+    padded_cols = (cols + 3) // 4 * 4
+    padded = scale.new_zeros(batch, padded_rows, padded_cols)
+    padded[:, :rows, :cols] = scale
+    swizzled = padded.reshape(
+        batch, padded_rows // 128, 4, 32, padded_cols // 4, 4
+    ).permute(0, 1, 4, 3, 2, 5).contiguous().reshape(
+        batch, padded_rows, padded_cols
+    )
+    return swizzled[0] if squeeze else swizzled
 
 
-def unswizzle_blockscale(s: torch.Tensor, *, M: int, K: int) -> torch.Tensor:
-    """Inverse of :func:`swizzle_blockscale` (same involutive permute, then reshape back)."""
-    B = s.shape[0]
-    return s.permute(0, 1, 4, 3, 2, 5).contiguous().reshape(B, M, K)
-
-
-def scalarize_scale(quant_scale: torch.Tensor) -> torch.Tensor:
-    """Collapse a per-expert/per-token quant scale to a single scalar via the TRTLLM
-    convention ``min(quant_scale) = 1 / max(raw_scale)`` (the scalar activation scale the
-    CuTe-DSL standard path consumes). Pure math, portable."""
-    return quant_scale.reshape(-1).amin()
-
-
-def gemm_alpha(weight_global_scale: torch.Tensor, used_input_scale: torch.Tensor) -> torch.Tensor:
-    """Per-expert GEMM alpha consistent with a *scalar* activation quant:
-    ``alpha[e] = weight_global_scale[e] / used_input_scale`` (the alpha re-derivation the
-    CuTe-DSL standard path needs). The EP-slicing / checkpoint-format coercion is NOT here
-    (that is engine glue — re-derive it against our own loader)."""
-    return weight_global_scale.float() / used_input_scale.float()
+def unswizzle_blockscale(scale: torch.Tensor, *, rows: int, cols: int) -> torch.Tensor:
+    """Invert :func:`swizzle_blockscale` and remove its deterministic padding."""
+    squeeze = scale.ndim == 2
+    if squeeze:
+        scale = scale.unsqueeze(0)
+    batch, padded_rows, padded_cols = scale.shape
+    linear = scale.reshape(
+        batch, padded_rows // 128, padded_cols // 4, 32, 4, 4
+    ).permute(0, 1, 4, 3, 2, 5).contiguous().reshape(
+        batch, padded_rows, padded_cols
+    )[:, :rows, :cols]
+    return linear[0] if squeeze else linear

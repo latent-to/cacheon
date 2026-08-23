@@ -150,6 +150,6 @@ demonstrates manifest identity, patch declaration, and rebuild selection. Its
 native and Python bodies are deliberately test stubs and do not implement the
 production deep ABI. Treat it as a schema fixture, not a miner kernel template.
 
-If the desired edit is outside this closed policy, submit it through the
-[Discovery lane](discovery-lane.md) rather than disguising it as a dependency
-patch.
+If the desired edit is outside this closed policy it cannot be submitted;
+widening the policy is a reviewed validator-side change. Do not disguise it as a
+dependency patch.

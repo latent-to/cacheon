@@ -10,11 +10,6 @@ from dataclasses import replace
 import pytest
 
 import cacheon.eval.oci_outer_session as outer
-from cacheon.discovery_overlay import (
-    DiscoveryActivationReceipt,
-    DiscoveryDriverOrigin,
-    DiscoverySchedulerMember,
-)
 from cacheon.eval.oci_outer_session import (
     AttachedSessionTransport,
     OpenedOuterSession,
@@ -126,28 +121,8 @@ def _batch_evidence(request: BatchRequest) -> BatchEvidence:
             ((-0.7, 100 + index), (-1.0, 200 + index))
             for index in range(request.max_new_tokens)
         )
-        prompts.append(PromptEvidence(ids, positions))
+        prompts.append(PromptEvidence(ids, positions, 5))
     return BatchEvidence(tuple(prompts))
-
-
-def _discovery_receipt() -> DiscoveryActivationReceipt:
-    return DiscoveryActivationReceipt(
-        "cacheon.discovery-driver-activation.v1",
-        _digest("discovery-overlay"),
-        100,
-        DiscoveryDriverOrigin(
-            "sglang", "0.0.0.dev1+g56e290315", "sglang/__init__.py"
-        ),
-        "sglang.srt.managers.scheduler",
-        "run_scheduler_process",
-        8,
-        tuple(
-            DiscoverySchedulerMember(
-                200 + rank, rank, rank, rank, 0, rank, 0, None
-            )
-            for rank in range(8)
-        ),
-    )
 
 
 class _Clock:
@@ -174,7 +149,6 @@ class _FakeTransport:
         pending_calls: set[int] | None = None,
         preflight_override: dict | None = None,
         ready_override: dict | None = None,
-        discovery_activation: DiscoveryActivationReceipt | None = None,
     ) -> None:
         self.clock = clock
         self.facts = facts
@@ -185,7 +159,6 @@ class _FakeTransport:
         self.pending_calls = pending_calls or set()
         self.preflight_override = preflight_override
         self.ready_override = ready_override
-        self.discovery_activation = discovery_activation
         self.started = False
         self.finalized = False
         self.aborted = False
@@ -246,7 +219,6 @@ class _FakeTransport:
         return self.ready_override or ready_message(
             session_id=self.session_id,
             launch_digest=self.launch_digest,
-            discovery_activation=self.discovery_activation,
         )
 
     def read_evidence(self, request: BatchRequest, *, deadline: float) -> BatchEvidence:
@@ -338,7 +310,6 @@ def test_happy_path_accepts_preflight_before_ready_and_returns_raw_host_interval
         result.batches[1].elapsed_seconds + result.batches[2].elapsed_seconds
     )
     assert result.preflight == plan.expected_preflight
-    assert result.discovery_activation is None
 
 
 def test_opened_session_runs_a_validated_prefix_without_reloading_engine() -> None:
@@ -488,61 +459,6 @@ def test_audit_role_transports_policy_bound_raw_slot_rank_facts() -> None:
     assert {(row.slot, row.rank) for row in result.audit_receipts} == {
         ("norm.rmsnorm", rank) for rank in range(8)
     }
-
-
-def test_discovery_ready_receipt_is_retained_and_role_exact() -> None:
-    receipt = _discovery_receipt()
-    clock = _Clock()
-    plan = _plan(
-        expected_discovery_overlay_identity_digest=receipt.overlay_identity_digest
-    )
-    transport = _FakeTransport(
-        clock, plan.expected_preflight, discovery_activation=receipt
-    )
-
-    result = run_outer_session(
-        plan,
-        transport=transport,
-        deadline=1000.0,
-        init_timeout_s=30.0,
-        batch_timeout_s=30.0,
-        clock=clock,
-    )
-
-    assert result.discovery_activation == receipt
-
-
-def test_ready_receipt_cannot_cross_discovery_and_ordinary_roles() -> None:
-    receipt = _discovery_receipt()
-    ordinary = _plan()
-    unexpected = _FakeTransport(
-        _Clock(), ordinary.expected_preflight, discovery_activation=receipt
-    )
-    with pytest.raises(OuterSessionProtocolError, match="stale|malformed"):
-        run_outer_session(
-            ordinary,
-            transport=unexpected,
-            deadline=1000.0,
-            init_timeout_s=30.0,
-            batch_timeout_s=30.0,
-            clock=unexpected.clock,
-        )
-    assert unexpected.aborted
-
-    discovery = _plan(
-        expected_discovery_overlay_identity_digest=receipt.overlay_identity_digest
-    )
-    missing = _FakeTransport(_Clock(), discovery.expected_preflight)
-    with pytest.raises(OuterSessionProtocolError, match="fields"):
-        run_outer_session(
-            discovery,
-            transport=missing,
-            deadline=1000.0,
-            init_timeout_s=30.0,
-            batch_timeout_s=30.0,
-            clock=missing.clock,
-        )
-    assert missing.aborted
 
 
 def test_preflight_rejection_never_sends_accept_or_requests() -> None:

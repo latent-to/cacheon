@@ -15,6 +15,7 @@ from cacheon.registry import (
     KernelRegistry,
     SelectionOutcome,
     VariantRegistrationError,
+    eligibility_domains_overlap,
     eligibility_from_metadata,
 )
 
@@ -270,6 +271,29 @@ def test_graph_and_quant_context_are_enforced_by_canonical_selection():
     )
     assert quant.outcome is SelectionOutcome.OUT_OF_DOMAIN
     assert [m.field for m in quant.capability_match.mismatches] == ["quant"]
+
+
+def test_implicit_dense_and_nvfp4_domains_do_not_overlap():
+    implicit_dense = Eligibility()
+    explicit_dense = Eligibility(quant=frozenset({"dense"}))
+    nvfp4 = Eligibility(quant=frozenset({"nvfp4"}))
+    assert eligibility_domains_overlap(implicit_dense, explicit_dense)
+    assert not eligibility_domains_overlap(implicit_dense, nvfp4)
+    registry = KernelRegistry()
+    for variant, eligibility in (("dense", implicit_dense), ("nvfp4", nvfp4)):
+        registry.register(KernelImpl(
+            slot="moe.fused_experts", bundle_id="candidate", variant=variant,
+            entry=lambda *_args: None, eligibility=eligibility,
+        ))
+    registry.enable()
+    assert registry.select(
+        "moe.fused_experts", CallDescriptor(quant="dense"),
+        write_fired_receipt=False,
+    ).impl.variant == "dense"
+    assert registry.select(
+        "moe.fused_experts", CallDescriptor(quant="nvfp4"),
+        write_fired_receipt=False,
+    ).impl.variant == "nvfp4"
 
 
 def test_legacy_domain_spellings_use_descriptor_canonicalization():

@@ -1,16 +1,15 @@
-"""CPU tests for the resident screen queue scheduler (fake session, no GPU)."""
-
 from __future__ import annotations
 
 import pytest
 
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
+from cacheon.eval.resident_execution_evidence import ResidentExecutionEvidence
 from cacheon.eval.resident_queue import (
     ResidentQueueError,
+    ResidentScreenLoop,
     ScreenCandidate,
     ScreenPolicy,
-    run_resident_screen,
 )
 
 DIGEST_A = "a" * 64
@@ -23,6 +22,7 @@ def _evidence(tokens: int = 4) -> BatchEvidence:
             PromptEvidence(
                 tuple(range(tokens)),
                 tuple(((-0.5, 0),) for _ in range(tokens)),
+                5,
             ),
         )
     )
@@ -33,13 +33,15 @@ class FakeSession:
 
     def __init__(self, stock_rate: float, candidate_rates: dict[str, float],
                  slots: dict[str, tuple[str, ...]] | None = None,
-                 stock_drift_after: int | None = None) -> None:
+                 stock_drift_after: int | None = None,
+                 execution_ranks: int = 1) -> None:
         self.stock_rate = stock_rate
         self.candidate_rates = candidate_rates
         self.slots = slots or {
             digest: ("moe.fused_experts",) for digest in candidate_rates
         }
         self.stock_drift_after = stock_drift_after
+        self.execution_ranks = execution_ranks
         self.generation = 0
         self.active: str | None = None
         self.batch_count = 0
@@ -48,6 +50,7 @@ class FakeSession:
         self.clock = 0.0
 
     def swap(self, bundle_digest: str | None) -> SwapReceipt:
+        prior_generation, prior_active = self.generation, self.active
         self.generation += 1
         self.active = bundle_digest
         self.swaps.append(bundle_digest)
@@ -59,6 +62,10 @@ class FakeSession:
             () if bundle_digest is None else self.slots[bundle_digest],
             self.clock - 30.0,
             self.clock,
+            ResidentExecutionEvidence(
+                prior_generation, self.execution_ranks if prior_active else 0
+            ),
+            1,
         )
 
     def execute_batch(self, prompts, *, canary: bool = False):
@@ -97,10 +104,34 @@ def _candidate(digest: str, name: str = "cand") -> ScreenCandidate:
     return ScreenCandidate(name, digest, ("moe.fused_experts",))
 
 
+class _Screened:
+    def __init__(
+        self,
+        session: FakeSession,
+        candidates: list[ScreenCandidate],
+        *,
+        prompts: tuple[str, ...],
+        policy: ScreenPolicy = ScreenPolicy(),
+    ) -> None:
+        loop = ResidentScreenLoop(session, prompts=prompts, policy=policy)
+        self.verdicts = []
+        for candidate in candidates:
+            result = loop.screen(candidate)
+            if result is None:
+                break
+            self.verdicts.append(result)
+            if loop.stopped_reason is not None:
+                break
+        self.unprocessed_candidate_ids = tuple(
+            row.candidate_id for row in candidates[loop.processed :]
+        )
+        self.stopped_reason = loop.stopped_reason
+
+
 class TestScreenQueue:
     def test_clear_winner_passes_without_escalation(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 112.0})
-        report = run_resident_screen(
+        report = _Screened(
             session, [_candidate(DIGEST_A)], prompts=("p",),
         )
         [verdict] = report.verdicts
@@ -112,7 +143,7 @@ class TestScreenQueue:
 
     def test_clear_loser_fails_without_escalation(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 80.0})
-        report = run_resident_screen(
+        report = _Screened(
             session, [_candidate(DIGEST_A)], prompts=("p",),
         )
         [verdict] = report.verdicts
@@ -122,7 +153,7 @@ class TestScreenQueue:
 
     def test_borderline_escalates_to_five_legs(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 101.0})
-        report = run_resident_screen(
+        report = _Screened(
             session, [_candidate(DIGEST_A)], prompts=("p",),
         )
         [verdict] = report.verdicts
@@ -134,7 +165,7 @@ class TestScreenQueue:
 
     def test_queue_reuses_brackets_across_candidates(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 112.0, DIGEST_B: 80.0})
-        report = run_resident_screen(
+        report = _Screened(
             session,
             [_candidate(DIGEST_A, "a"), _candidate(DIGEST_B, "b")],
             prompts=("p",),
@@ -148,7 +179,7 @@ class TestScreenQueue:
         session = FakeSession(
             100.0, {DIGEST_A: 112.0}, slots={DIGEST_A: ("other.slot",)}
         )
-        report = run_resident_screen(
+        report = _Screened(
             session, [_candidate(DIGEST_A)], prompts=("p",),
         )
         [verdict] = report.verdicts
@@ -157,13 +188,24 @@ class TestScreenQueue:
         assert session.swaps == [DIGEST_A, None]
         assert session.active is None
 
+    def test_candidate_without_rank_execution_fails_before_promotion(self) -> None:
+        session = FakeSession(100.0, {DIGEST_A: 112.0}, execution_ranks=0)
+        [verdict] = _Screened(
+            session, [_candidate(DIGEST_A)], prompts=("p",),
+        ).verdicts
+        assert not verdict.passed
+        assert "execution not proven" in (verdict.failure or "")
+        closing = verdict.to_dict()["swap_receipts"][1]
+        assert closing["prior_execution_ranks"] == 0
+        assert closing["expected_ranks"] == 1
+
     def test_canary_drift_stops_lifetime_and_withdraws_verdict(self) -> None:
         session = FakeSession(
             100.0,
             {DIGEST_A: 112.0, DIGEST_B: 112.0},
             stock_drift_after=2,
         )
-        report = run_resident_screen(
+        report = _Screened(
             session,
             [_candidate(DIGEST_A, "a"), _candidate(DIGEST_B, "b")],
             prompts=("p",),
@@ -177,7 +219,7 @@ class TestScreenQueue:
 
     def test_lifetime_budget_stops_queue(self) -> None:
         session = FakeSession(100.0, {DIGEST_A: 112.0, DIGEST_B: 112.0})
-        report = run_resident_screen(
+        report = _Screened(
             session,
             [_candidate(DIGEST_A, "a"), _candidate(DIGEST_B, "b")],
             prompts=("p",),
@@ -187,18 +229,8 @@ class TestScreenQueue:
         assert report.unprocessed_candidate_ids == ("b",)
         assert report.stopped_reason == "lifetime candidate budget exhausted"
 
-    def test_duplicate_candidate_ids_rejected(self) -> None:
-        with pytest.raises(ResidentQueueError, match="unique"):
-            run_resident_screen(
-                FakeSession(100.0, {DIGEST_A: 110.0}),
-                [_candidate(DIGEST_A, "x"), _candidate(DIGEST_B, "x")],
-                prompts=("p",),
-            )
-
     def test_empty_prompts_rejected(self) -> None:
         with pytest.raises(ResidentQueueError, match="prompt plan"):
-            run_resident_screen(
-                FakeSession(100.0, {DIGEST_A: 110.0}),
-                [_candidate(DIGEST_A)],
-                prompts=(),
+            ResidentScreenLoop(
+                FakeSession(100.0, {DIGEST_A: 110.0}), prompts=(),
             )

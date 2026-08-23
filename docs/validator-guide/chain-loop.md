@@ -16,9 +16,9 @@ submit weights after each pass.
    Slow hosting therefore cannot rewrite priority.
 4. **Fetch privately.** Accept HTTPS only, validate DNS and every redirect, enforce
    archive limits, extract regular files safely, and rederive the committed hash.
-5. **Classify and fingerprint.** Parse a normal target-scoped proposal or the distinct
-   discovery schema. Parser success—not a miner-selected mode switch—chooses the lane.
-   Copy identity covers the submitted delta, never the validator's incumbent stack.
+5. **Classify and fingerprint.** Parse the target-scoped proposal; a bundle the
+   component parser rejects is refused. Copy identity covers the submitted delta,
+   never the validator's incumbent stack.
 6. **Publish immutably.** Copy the validated private tree to a content-addressed worker
    publication and reopen it before use.
 7. **Reconcile copies.** Compare durable fingerprints in finalized order. This step is
@@ -433,6 +433,14 @@ the pointer. The paying coldkey is not the claimant. When the gate is disabled, 
 pointer is ignored for payment accounting: unverified coordinates are neither consumed
 nor allowed to pre-claim a future payment.
 
+Byte-identical resubmissions replay their prior verdict before any lease is claimed:
+a bundle whose exact content hash already reached a terminal `FAIL` under the exact
+current arena service digest inherits that `FAIL` (reason
+`duplicate_of:<reservation>:<original reason>`) and costs neither a screen nor a
+qualification. A prior `PASS` is never replayed — settlement requires an independently
+bound PASS pair, so a resubmitted winner queues for a real evaluation. Any changed
+byte, or any change to the arena, produces a fresh evaluation.
+
 An operator can grant one artificial make-good with
 `chain-eval-cost-credit`. The oldest unspent credit for that hotkey admits one
 otherwise-unpaid reveal and is consumed inside the same admission transaction.
@@ -441,10 +449,6 @@ pointer must pass ordinary payment verification instead of falling back to a
 credit. Credit grants are private validator mutations with an audit note, not a
 miner-controlled payment token; see the
 [CLI reference](../reference/cli.md#chain-eval-cost-credit).
-
-Discovery proposal identity is checked before screening. A proposal already retained as
-seen or awarded is terminally disposed, and legacy pending duplicates are deduplicated
-before lease. Repackaging cannot buy another screen or bounty.
 
 ## Verdict and retry semantics
 

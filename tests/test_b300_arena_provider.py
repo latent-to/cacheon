@@ -17,15 +17,15 @@ from cacheon.arena_service import (
     ArenaCapacityPolicy,
     ArenaQualificationWork,
     ArenaRuntimeIdentity,
+    ArenaService,
     ArenaServiceManifest,
     NonCrownScreenPolicy,
     PromotionDecision,
     ScreenGrade,
     ScreenStagePolicy,
     ScreenStageResult,
-    ServingShape,
-    WorkloadMixture,
-    WorkloadRegime,
+    Workload,
+    WorkloadCell,
 )
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
@@ -41,7 +41,6 @@ from cacheon.eval.b300_arena_provider import (
     B300ScreenDeploymentAuthorities,
     B300ScreenStageHandler,
     b300_arena_provider_digest,
-    compose_b300_arena_service,
 )
 from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
@@ -378,23 +377,10 @@ def _manifest(
     authorities: B300DeploymentAuthorities,
     **changes,
 ) -> ArenaServiceManifest:
-    workload = WorkloadMixture(
+    workload = Workload(
         _h("prompt-corpus"),
         "sealed-prompt-seeds-v1",
-        (
-            WorkloadRegime(
-                "decode",
-                "decode",
-                500_000,
-                (ServingShape(256, 128, 8, 8),),
-            ),
-            WorkloadRegime(
-                "prefill",
-                "long_prefill",
-                500_000,
-                (ServingShape(8192, 16, 1, 8),),
-            ),
-        ),
+        (WorkloadCell("s8", 8192, 1024, 64, 8),),
     )
     values = {
         "runtime": authorities.runtime_identity,
@@ -469,7 +455,7 @@ def test_all_five_real_screens_run_in_order_and_preserve_pass(
         tmp_path, executor_factory
     )
     manifest = _manifest(authorities)
-    service = compose_b300_arena_service(manifest, authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
 
     receipt = service.screen(_binding(tmp_path / "candidate"))
 
@@ -488,7 +474,8 @@ def test_fail_is_not_rewritten(tmp_path: Path, executor_factory) -> None:
         executor_factory,
         grades={"abi": ScreenGrade.FAIL},
     )
-    service = compose_b300_arena_service(_manifest(authorities), authorities)
+    manifest = _manifest(authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
 
     receipt = service.screen(_binding(tmp_path / "fail"))
 
@@ -506,7 +493,8 @@ def test_no_decision_screen_evidence_is_waived_into_qualification(
         executor_factory,
         grades={"abi": ScreenGrade.NO_DECISION},
     )
-    service = compose_b300_arena_service(_manifest(authorities), authorities)
+    manifest = _manifest(authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
 
     receipt = service.screen(_binding(tmp_path / "no-decision"))
 
@@ -674,7 +662,8 @@ def test_qualification_preserves_exact_request_order_and_real_authorities(
     authorities, _runner, resident, builder = _authorities(
         tmp_path, executor_factory
     )
-    service = compose_b300_arena_service(_manifest(authorities), authorities)
+    manifest = _manifest(authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
     first = _binding(tmp_path / "first", 0)
     second = _binding(tmp_path / "second", 1)
     receipts = (service.screen(first), service.screen(second))
@@ -713,7 +702,8 @@ def test_reordered_factory_is_refused(
         executor_factory,
         builder=builder,
     )
-    service = compose_b300_arena_service(_manifest(authorities), authorities)
+    manifest = _manifest(authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
     first = _binding(tmp_path / "first", 0)
     second = _binding(tmp_path / "second", 1)
     receipts = (service.screen(first), service.screen(second))
@@ -878,7 +868,8 @@ def test_factory_exception_stays_a_provider_error(
     authorities, _runner, _resident, _builder = _authorities(
         tmp_path, executor_factory, builder=builder
     )
-    service = compose_b300_arena_service(_manifest(authorities), authorities)
+    manifest = _manifest(authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
     candidate = _binding(tmp_path / "candidate")
     receipt = service.screen(candidate)
 
@@ -900,7 +891,8 @@ def test_graph_evidence_hold_survives_arena_provider(
         executor_factory,
         builder=HoldBuilder(),  # type: ignore[arg-type]
     )
-    service = compose_b300_arena_service(_manifest(authorities), authorities)
+    manifest = _manifest(authorities)
+    service = ArenaService(manifest, B300ArenaServiceProvider(manifest, authorities))
     candidate = _binding(tmp_path / "candidate")
     receipt = service.screen(candidate)
 

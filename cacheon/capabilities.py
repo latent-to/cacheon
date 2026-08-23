@@ -48,14 +48,17 @@ NUMERIC_FIELDS = frozenset(
         "head_dim",
         "hidden_dim",
         "intermediate_dim",
+        "init_blocks",
         "kv_len",
         "last_dim",
+        "local_blocks",
         "num_experts",
         "num_kv_heads",
         "num_q_heads",
         "num_tokens",
         "page_size",
         "q_len",
+        "q_block_size",
         "top_k",
         "tp_size",
         "world_size",
@@ -77,12 +80,10 @@ CONTEXT_FIELDS = frozenset(
 
 SUPPORTED_FIELDS = NUMERIC_FIELDS | CONTEXT_FIELDS
 
-# Canonical memory-layout name for the MSA prefill score-call ABI.  Q and the
-# validator-gathered index-K are dense row-major matrices.  The score output is a
-# non-overlapping row-major view whose row pitch may be padded by the enclosing
-# batch slab (a contiguous view is also legal).  Both offline verify and the live
-# sglang binding use this exact descriptor value.
-MSA_PREFILL_ROW_MAJOR_LAYOUT = "row_major"
+# Canonical memory-layout name for the batched MSA prefill selection ABI.  Q is
+# dense, index-K stays in the engine's paged cache, and the output is contiguous
+# top-k indices.  Offline verification and live dispatch use the same value.
+MSA_PREFILL_PAGED_LAYOUT = "paged"
 
 _FIELD_ALIASES = {
     "arch": "architecture",
@@ -304,37 +305,41 @@ def msa_prefill_call_descriptor(
     q_len: int,
     kv_len: int,
     top_k: int,
+    q_block_size: int,
+    init_blocks: int,
+    local_blocks: int,
+    batch_size: int,
+    num_q_heads: int,
+    num_tokens: int,
     num_kv_heads: int = 1,
+    model: str = "MiniMax-M3",
     tp_size: int | None = None,
     world_size: int | None = None,
 ) -> CallDescriptor:
-    """Describe one canonical ``attention.msa_prefill_block_score`` call.
-
-    The serving seam invokes the candidate once per request and query head, after
-    gathering that request's index-K.  Consequently ``batch_size`` and
-    ``num_q_heads`` are one here even when the surrounding engine batch contains
-    many requests/heads.  This distinction is load-bearing for q-length variants:
-    miners specialize against the tensor call they actually receive, not an
-    unrelated aggregate batch shape.
-    """
+    """Describe the one batched, paged MSA prefill selection call."""
 
     return CallDescriptor(
         dtype=dtype,
         architecture=architecture,
         last_dim=head_dim,
-        num_tokens=q_len,
+        num_tokens=num_tokens,
         head_dim=head_dim,
         block_size=block_size,
+        page_size=block_size,
+        q_block_size=q_block_size,
         q_len=q_len,
         kv_len=kv_len,
-        batch_size=1,
-        num_q_heads=1,
+        batch_size=batch_size,
+        num_q_heads=num_q_heads,
         num_kv_heads=num_kv_heads,
         top_k=top_k,
+        init_blocks=init_blocks,
+        local_blocks=local_blocks,
         phase="prefill",
-        layout=MSA_PREFILL_ROW_MAJOR_LAYOUT,
+        layout=MSA_PREFILL_PAGED_LAYOUT,
         graph_mode="eager",
         quant="dense",
+        model=model,
         tp_size=tp_size,
         world_size=world_size,
     )

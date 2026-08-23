@@ -31,7 +31,7 @@ candidate, and absent from the current production release without contradiction.
 
 | Object | Contents | Authority | May enter production? |
 |---|---|---|---|
-| Proposal | A miner-supplied target delta or discovery prototype | Hostile input identified by finalized intake and content digests | No |
+| Proposal | A miner-supplied target delta | Hostile input identified by finalized intake and content digests | No |
 | Crown | Reopened evidence that the proposal improved one arena and attributable target | Referee qualification, independent reproduction, and settlement | Not by itself |
 | Integrated contribution | Reviewed source and tests that preserve the crowned selected payload, with immutable contributor identity | Source control and integration review | Yes, as release input |
 | Engine release | Pinned upstream runtime plus a canonical reviewed stack and sealed release inputs | Signed release descriptor and publication | Yes |
@@ -62,7 +62,7 @@ The ship decision separately requires:
 - immutable contribution attribution;
 - exact release, native, model, and policy identities.
 
-This permits emissions to follow crown policy while production deployment follows release policy. See [Release architecture](releases.md).
+This permits emissions to follow crown policy while production deployment follows a separate review.
 
 ## Marginal contribution, complete execution
 
@@ -81,8 +81,7 @@ trust domain. C′/B″ are historical v2–v5 evidence shapes, not current read
 The **reward unit** is the smallest validator-controlled attributable delta:
 
 - one registered singleton slot;
-- one registered atomic target spanning an explicit set of semantic regions; or
-- one explicitly reviewed discovery contribution.
+- one registered atomic target spanning an explicit set of semantic regions.
 
 The candidate stack is built by the validator. It equals the incumbent stack except for one selected target transition. The miner does not supply the incumbent entries and does not gain attribution for the whole engine simply because the complete engine is the safe execution envelope.
 
@@ -142,20 +141,13 @@ Miner packaging and manifest row order do not define economic scope. A bundle th
 
 The registered catalog contains every singleton slot and the atomic `collective.moe_epilogue.v1` target. The atomic target owns both `collective.ar_residual_rmsnorm` and `collective.moe_finalize_ar_rmsnorm`, and explicitly displaces the corresponding singleton targets while active. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
-## Discovery lane
+## Unregistered work
 
-Cross-cutting work may initially be impossible to express as one registered target. Cacheon admits it through a fenced discovery lane rather than pretending the contribution has narrow attribution.
-
-Discovery is intentionally bounded:
-
-- its execution and evidence remain isolated and content-addressed;
-- validator policy defines the permitted source-patch surface;
-- it does not silently mutate the registered target catalog;
-- it does not create a permanent equal-emission whole-engine family;
-- the durable disposition path can retain review and pay a bounded reviewed bounty;
-  registered promotion into a reviewed slot or atomic boundary remains fail-closed
-  until typed promotion transport, target registration, and fresh
-  qualification/CROWN linkage exist.
+Cross-cutting work that cannot be expressed as one registered target is not a
+valid submission. The only path for it is a reviewed validator-side catalog
+change (a new slot or atomic target), followed by fresh qualification and CROWN
+linkage. A fenced "discovery lane" for such proposals existed until 2026-08-19;
+it never admitted a production proposal and was removed.
 
 Rebuild and dependency-patch capabilities are likewise validator-reviewed. A normal target can only use features explicitly admitted by its target specification, and permanent framework mutation is not a miner-selected permission.
 
@@ -211,8 +203,8 @@ The product model is intact only if all six statements hold:
 
 Before extending Cacheon, locate the feature in this model:
 
-1. **What is the reward unit?** Name the exact registered singleton, atomic target, or
-   discovery identity. “The whole engine” is not an acceptable default.
+1. **What is the reward unit?** Name the exact registered singleton or atomic target.
+   “The whole engine” is not an acceptable default.
 2. **Who supplies surrounding code?** The validator must assemble the incumbent; a miner
    must not be required to redistribute other contributors' bundles.
 3. **Where does hostile code execute?** Runtime proposal code belongs only in the complete
@@ -233,4 +225,3 @@ confuses the execution unit with the reward unit.
 - [`stack_manifest.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_manifest.py) — proposal, integration, evaluation-stack, and release-stack identities
 - [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) — reward-unit policy
 - [`engine_tree.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/engine_tree.py) — deterministic proposal and integrated-source materialization
-- [`release.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/release.py) — chain-independent release artifacts and signatures

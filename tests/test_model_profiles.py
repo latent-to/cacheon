@@ -1,8 +1,4 @@
-"""CPU tests for per-model activation profiles (slots.MODEL_PROFILES / slot_for_model) and
-the override-point verify path: a swigluoai epilogue PASSES under the MiniMax-M3 profile
-(cosine vs a swigluoai reference) and FAILS generic (vs the SiLU reference) — the control
-that proves the profile, not the kernel, was the missing piece.
-"""
+"""Per-model activation, correctness, and override verification tests."""
 
 from __future__ import annotations
 
@@ -14,6 +10,8 @@ torch = pytest.importorskip("torch")
 
 from cacheon.slots import Activation, _moe_reference, get_slot, slot_for_model  # noqa: E402
 from cacheon.verify import verify_entry_from_source  # noqa: E402
+
+_SMALL_SHAPE = {"num_tokens": 8, "num_experts": 4, "hidden": 64, "inter": 64, "topk": 2}
 
 
 def test_slot_for_model_generic_unchanged():
@@ -27,6 +25,7 @@ def test_slot_for_model_m3_swaps_activation_and_correctness():
     m3 = slot_for_model("moe.fused_experts", "MiniMax-M3")
     assert generic.correctness.mode == "matched_ratio"
     assert m3.correctness.mode == "cosine" and m3.correctness.min_cosine == 0.985
+    assert generic.call_abi is m3.call_abi is None
     # alias resolves to the same profile
     assert slot_for_model("moe.fused_experts", "MiniMax-M3-NVFP4").correctness.mode == "cosine"
 
@@ -74,7 +73,7 @@ def test_override_verify_passes_with_m3_profile(tmp_path):
     res = verify_entry_from_source(
         "moe.fused_experts", src, "gemm1_epilogue",
         override_point="gemm1_epilogue", model_key="MiniMax-M3",
-        dtype_name="float32", device="cpu",
+        dtype_name="float32", device="cpu", shapes=[_SMALL_SHAPE],
     )
     assert res.passed, res.shape_results
     # cosine metric on the M3 profile
@@ -88,7 +87,7 @@ def test_override_verify_fails_generic(tmp_path):
     res = verify_entry_from_source(
         "moe.fused_experts", src, "gemm1_epilogue",
         override_point="gemm1_epilogue", model_key=None,
-        dtype_name="float32", device="cpu",
+        dtype_name="float32", device="cpu", shapes=[_SMALL_SHAPE],
     )
     assert not res.passed
 
@@ -100,29 +99,5 @@ def test_override_missing_torch_reference_errors(tmp_path):
         verify_entry_from_source(
             "moe.fused_experts", str(p), "gemm1_epilogue",
             override_point="gemm1_epilogue", model_key="MiniMax-M3",
-            dtype_name="float32", device="cpu",
+            dtype_name="float32", device="cpu", shapes=[_SMALL_SHAPE],
         )
-
-
-def test_example_swigluoai_override_bundle_verifies():
-    """The shipped example override bundle: policy-clean (no open/sglang/vendored tree),
-    is_override, and verifies under its declared M3 profile via the CPU dense path."""
-    import json
-    from pathlib import Path
-
-    from cacheon.manifest import load_manifest, resolve_source
-    from cacheon.sandbox import scan_path
-
-    bundle = "examples/miner_m3_swigluoai_override"
-    m = load_manifest(bundle)
-    op = m.op_for("moe.fused_experts")
-    assert op.is_override and op.base_kernel == "nvfp4_moe_megakernel"
-    src = resolve_source(bundle, op)
-    assert scan_path(str(src)).ok  # no banned builtins / vendored tree
-    model_key = json.loads((Path(bundle) / op.metadata).read_text())["model"]
-    res = verify_entry_from_source(
-        "moe.fused_experts", str(src), op.entry, override_point=op.override_point,
-        model_key=model_key, dtype_name="float32", device="cpu",
-    )
-    assert res.passed, res.shape_results
-    assert all(r.metric == "cosine" for r in res.shape_results)

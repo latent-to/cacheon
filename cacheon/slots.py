@@ -61,11 +61,16 @@ from cacheon.artifact_abi import (
     COLLECTIVE_MOE_FINALIZE_AR_RMSNORM_CALL_ABI,
     MSA_BLOCK_SCORE_CALL_ABI,
     MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
-    MOE_FUSED_EXPERTS_CALL_ABI,
-    MOE_FUSED_EXPERTS_REDUCE_CALL_ABI,
     RMSNORM_CALL_ABI,
     SILU_AND_MUL_CALL_ABI,
     SlotCallABI,
+)
+from cacheon.minimax_sparse_decode_slot import build_slot as build_minimax_sparse_decode_slot
+from cacheon.minimax_sparse_prefill_slot import build_slot as build_minimax_sparse_prefill_slot
+from cacheon.moe_nvfp4_contract import (
+    prepare_args_from_inputs as _moe_prepare_args_from_inputs,
+    prepare_args_from_layer as _moe_prepare_args_from_layer,
+    verification_inputs as _moe_nvfp4_verification_inputs,
 )
 from cacheon.tensor_spec import OutputSpec, TensorSpec
 
@@ -94,12 +99,9 @@ class Correctness:
       (FP4/FP8): element-wise tolerance is meaningless when every element carries
       ~6-12% quantization error, but the *direction* (and energy) of the block output
       is preserved — which is what actually drives the model's logits.
-    * ``"topk_overlap"`` — for a kernel whose output is a **selection**, not a tensor value
-      (an MSA block-score indexer: scores -> the validator takes top-k blocks -> attends). The
-      values don't matter, only which top-``top_k`` they pick: the mean per-row overlap
-      ``|topk(actual) ∩ topk(expected)| / top_k`` must be >= ``min_overlap``. Element-wise
-      cosine/KL are the wrong metric — a kernel can perturb every score (fp8 index-K) as long
-      as the SELECTED set matches.
+    * ``"topk_overlap"`` — for an MSA score sheet or direct index output. Values
+      and index order do not matter; the selected block sets must meet
+      ``min_overlap`` before the validator-owned attention consumes them.
 
     DESIGN NOTE — this is the *op-correctness* gate, a cheap **sanity** check ("is this
     even computing the slot's function?"), explicitly necessary-but-not-sufficient
@@ -333,11 +335,8 @@ RMSNORM = SlotSpec(
 # This is the first *block* slot — the attention compute core every backend
 # (FlashAttention / FlashInfer / FlashMLA / Triton) implements. It demonstrates the
 # generalization: several fused ops behind one typed boundary, multiple tensor
-# inputs, and a matched-ratio gate (a real flash/online-softmax/fp8 kernel is not
-# bit-exact). The seam (cacheon/integrations/sglang_attention.py) routes the model's
-# attention through this contract at the RadixAttention chokepoint; the paged-decode
-# / MLA-latent variants are sibling slots that reuse the same dispatcher with a wider
-# input tuple (compressed KV + page table). See dispatch.make_attention_dispatcher.
+# inputs, and a matched-ratio gate. This generic dense contract is offline-only in
+# the MiniMax-M3 arena; its graph-native decode sibling owns paged sparse attend.
 # ---------------------------------------------------------------------------
 
 
@@ -408,76 +407,14 @@ ATTENTION_SDPA = SlotSpec(
 
 
 # ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.decode   (paged-decode attention — the runtime-wired one)
-#   q:(B,Hq,D)  k,v:(B,S,Hkv,D)  seq_lens:(B,) -> o:(B,Hq,D)
-#   Each request's single query attends to its first seq_lens[i] cached k/v.
-#   contract: entry(q, k, v, seq_lens, sm_scale, out)
-#
-# This is the slot the attention seam routes *decode* attention to: the validator
-# resolves the request-local SGLang backend, gathers its paged KV into the padded
-# (B,S,Hkv,D) view, and lets the miner fill `out`. See
-# dispatch.make_attention_dispatcher / _run_decode_kernel.
+# Slot (BLOCK): attention.decode
+#   MiniMax-M3's graph-native sparse decode boundary over paged main/index KV.
+#   The focused constructor keeps this oversized registry to wiring only.
 # ---------------------------------------------------------------------------
 
 
-def _decode_attn_reference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                           seq_lens: torch.Tensor, sm_scale: float) -> torch.Tensor:
-    # q:(B,Hq,D)  k,v:(B,S,Hkv,D)  seq_lens:(B,) -> o:(B,Hq,D).  GQA/MQA via Hq % Hkv == 0.
-    B, Hq, D = q.shape
-    S, Hkv = k.shape[1], k.shape[2]
-    g = Hq // Hkv
-    q32 = q.float()
-    k32 = k.float().repeat_interleave(g, dim=2)  # (B,S,Hq,D)
-    v32 = v.float().repeat_interleave(g, dim=2)  # (B,S,Hq,D)
-    scores = torch.einsum("bhd,bshd->bhs", q32, k32) * sm_scale  # (B,Hq,S)
-    sidx = torch.arange(S, device=q.device).view(1, 1, S)
-    scores = scores.masked_fill(sidx >= seq_lens.view(B, 1, 1), float("-inf"))  # mask padding/beyond-context
-    p = torch.softmax(scores, dim=-1)
-    o = torch.einsum("bhs,bshd->bhd", p, v32)  # (B,Hq,D)
-    return o.to(q.dtype)
-
-
-def _decode_attn_inputs(*, batch: int, num_q_heads: int, num_kv_heads: int, head_dim: int, ctx: int,
-                        dtype: torch.dtype, device: str, seed: int) -> dict:
-    g = torch.Generator(device=device).manual_seed(seed)
-
-    def rnd(*shape: int) -> torch.Tensor:
-        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
-
-    seq_lens = torch.randint(1, ctx + 1, (batch,), generator=g, device=device).to(torch.int32)
-    seq_lens[0] = ctx  # ensure one full-length request (exercises the whole window + the mask)
-    return {
-        "q": rnd(batch, num_q_heads, head_dim),
-        "k": rnd(batch, ctx, num_kv_heads, head_dim),
-        "v": rnd(batch, ctx, num_kv_heads, head_dim),
-        "seq_lens": seq_lens,
-        "sm_scale": 1.0 / (head_dim ** 0.5),
-    }
-
-
-ATTENTION_DECODE = SlotSpec(
-    name="attention.decode",
-    entry="attention_decode",
-    summary=(
-        "decode attention: each request's query attends to its first seq_lens[i] cached k/v;  "
-        "q:(B,Hq,D) k,v:(B,S,Hkv,D) seq_lens:(B,) -> o:(B,Hq,D);  entry(q, k, v, seq_lens, sm_scale, out)"
-    ),
-    kind="block",
-    make_inputs=_decode_attn_inputs,
-    out_shapes=lambda i: [tuple(i["q"].shape)],
-    invoke_reference=lambda i: [_decode_attn_reference(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"])],
-    invoke_entry=lambda entry, i, outs, prepared: entry(i["q"], i["k"], i["v"], i["seq_lens"], i["sm_scale"], outs[0]),
-    graph_dynamic_inputs=("q", "k", "v", "seq_lens"),
-    shapes=(
-        {"batch": 4, "num_q_heads": 8, "num_kv_heads": 8, "head_dim": 64, "ctx": 16},
-        {"batch": 2, "num_q_heads": 8, "num_kv_heads": 2, "head_dim": 128, "ctx": 32},   # GQA
-        {"batch": 8, "num_q_heads": 16, "num_kv_heads": 16, "head_dim": 128, "ctx": 64},
-        {"batch": 3, "num_q_heads": 8, "num_kv_heads": 1, "head_dim": 128, "ctx": 48},   # MQA
-    ),
-    correctness=Correctness("matched_ratio", min_ratio=0.99),
-    tolerances=_BF16_TOL,
-    kl_threshold=3e-2,  # attention's higher intrinsic floor (see attention.sdpa)
-    call_abi=ATTENTION_DECODE_CALL_ABI,
+ATTENTION_DECODE = build_minimax_sparse_decode_slot(
+    SlotSpec, Correctness, _BF16_TOL, ATTENTION_DECODE_CALL_ABI
 )
 
 
@@ -522,34 +459,6 @@ def _moe_reference(x, w13, w2, topk_ids, topk_weights, act: Activation = _SILU):
         act_out = _gated_activation(gate, up, act)      # (M,I)
         out += wk[:, None] * torch.einsum("mi,mhi->mh", act_out, w2_e)
     return out
-
-
-def _moe_prepare_args_from_layer(layer):
-    """Map a LIVE sglang FusedMoE layer to the miner ``prepare()`` call shape — the
-    validator-owned layer->contract mapping. Live-eval seam only (``dispatch._moe_prepared``);
-    ``cacheon verify`` uses ``invoke_prepare`` on synthetic weights and never calls this.
-
-    * DENSE layer -> ``(w13_weight.data, w2_weight.data)`` — identical to the old default; the
-      miner's prepare reorders/repacks the two tensors.
-    * QUANTIZED layer (NVFP4 ``ModelOptNvFp4FusedMoEMethod``, weights are packed uint8) ->
-      ``("nvfp4_layer", layer)``: the validator hands the miner's prepare the LIVE layer. A
-      quantized kernel's weight layout is *kernel-specific* (the flashinfer CuteDSL v2 path wants
-      a ``CuteDslMoEWrapper`` + [Up,Gate]-interleaved weights + MMA-layout block-scales +
-      scalarized scales; a cutlass kernel wants something else), so the per-kernel transform
-      belongs in the miner's prepare, which builds it ONCE — reusing the model runtime's own
-      prepared state (e.g. sglang ``ensure_cutedsl_wrapper``) rather than re-deriving the fragile
-      scale algebra. This keeps the generic slot free of any one kernel's layout while still
-      giving the miner everything the quantized weights need (the dense 2-tuple omits the scales).
-
-    hasattr-guarded so a dense (or unrecognized) layer always falls back to the dense 2-tuple."""
-    w13 = getattr(getattr(layer, "w13_weight", None), "data", None)
-    is_quant = getattr(w13, "dtype", None) == torch.uint8 and (
-        getattr(layer, "w13_weight_scale", None) is not None
-        or getattr(layer, "g1_alphas", None) is not None
-    )
-    if is_quant:
-        return ("nvfp4_layer", layer)
-    return (layer.w13_weight.data, layer.w2_weight.data)  # dense — unchanged default
 
 
 def _raw_topk_weights(
@@ -609,13 +518,12 @@ MOE_FUSED_EXPERTS = SlotSpec(
         {"num_tokens": 4, "num_experts": 8, "hidden": 256, "inter": 128, "topk": 2},
         {"num_tokens": 16, "num_experts": 32, "hidden": 512, "inter": 256, "topk": 4},
         {"num_tokens": 8, "num_experts": 4, "hidden": 384, "inter": 192, "topk": 1},
-        {"num_tokens": 33, "num_experts": 16, "hidden": 320, "inter": 160, "topk": 4},
+        {"num_tokens": 33, "num_experts": 16, "hidden": 320, "inter": 192, "topk": 4},
     ),
     # A real fused-MoE kernel runs in fp8/fp4 with reordered reductions -> not bit-exact;
     # gate on a matched ratio vs the fp32 reference, calibrated to the stock noise floor.
     correctness=Correctness("matched_ratio", min_ratio=0.97),
     tolerances=_BF16_TOL,
-    call_abi=MOE_FUSED_EXPERTS_CALL_ABI,
 )
 
 
@@ -874,22 +782,7 @@ COLLECTIVE_MOE_FINALIZE_AR_RMSNORM = SlotSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slot (COLLECTIVE block — owns its trailing reduce): moe.fused_experts_reduce
-#   prepare(w13, w2) -> prepared                                  (once at load)
-#   forward(x, topk_ids, topk_weights, prepared, out, group)      (per step)
-#   x:(M,H) per rank -> out:(M,H) = SUM_over_ranks( local_experts(x) )
-#
-# This is the fix for the structural ceiling: the decode win is the OVERLAP of the
-# expert GEMM with the trailing TP all-reduce (~75% of decode at TP/EP scale), and a
-# plain moe.fused_experts slot can't express it because the validator replays a SEPARATE
-# stock all-reduce after the kernel — the two ops are severed. Here ONE kernel owns BOTH
-# the experts AND the reduce (it is handed the process group), so it can fuse/overlap them.
-# The validator does NOT replay the reduce. Wider capability -> verified DISTRIBUTED vs the
-# fp32 cross-rank sum of the per-rank expert outputs, and the end-to-end gate is mandatory.
-# Still inside the four invariants: validator owns out + the group + the call site; the
-# reduced output feeds the residual stream upstream of the sampler (nothing to substitute).
-# ---------------------------------------------------------------------------
+# This collective slot owns local experts and their one trailing TP reduction.
 
 
 def _moe_reduce_inputs(*, num_tokens: int, num_experts: int, hidden: int, inter: int, topk: int,
@@ -942,7 +835,6 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
     ),
     correctness=Correctness("matched_ratio", min_ratio=0.97),
     tolerances=_BF16_TOL,
-    call_abi=MOE_FUSED_EXPERTS_REDUCE_CALL_ABI,
 )
 
 
@@ -957,8 +849,7 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 # blocks. So the kernel stays strictly upstream of the sampler (a wrong score just mis-selects,
 # caught by the gate + e2e KL). The output is a SELECTION, gated on `topk_overlap` (top-k block
 # SETS agree vs the bf16 reference), NOT cosine/KL: an fp8 index-K may perturb every score yet
-# pick the same blocks. Reusable pattern: finer seam + set-metric + validator-owns-the-step. The
-# live seam (the MSA backend's score kernel) is GPU/M3-specific — see integrations/sglang_msa.py.
+# pick the same blocks. No live adapter currently registers this decode-side score boundary.
 # ---------------------------------------------------------------------------
 
 _MSA_TOPK = 8  # the block-selection K this slot's correctness checks (<= every shape's n_blocks)
@@ -1033,184 +924,8 @@ ATTENTION_MSA_BLOCK_SCORE = SlotSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.msa_prefill_block_score   (the PREFILL-side MSA indexer)
-#   q:(T,D)  index_k:(S,D)  prefix_len  scale  block_size -> block_scores:(T, ceil(S/block_size))
-#   contract: entry(q, index_k, prefix_len, scale, block_size, out)
-#
-# The prefill/extend sibling of attention.msa_block_score. At decode the indexer scores one
-# query against the whole context; at CHUNKED PREFILL it scores a T-token chunk against the
-# S = prefix_len + T tokens cached so far, under the causal rule (key n visible to chunk row m
-# iff n <= prefix_len + m), emitting a per-row, per-block score SHEET. This kernel family is
-# ~30% of long-context serving prefill (the 2026-07-10 M3 campaign's measured lever: replacing
-# it moved e2e prefill +19.6%/+22.4% at equal fidelity), so the slot exists to make that class
-# of win submittable. Same cheat-resistant split as the decode slot: the miner fills SCORES
-# only; the validator owns the top-k block selection and the attend, so the kernel stays
-# strictly upstream of the sampler and a wrong score merely mis-selects — caught by the
-# topk_overlap gate (per ROW of the sheet) + the e2e gate.
-#
-# Contract notes:
-#   * q is ONE index head (T,D) — at TP the serving seam calls per (request, head).
-#   * index_k is the GATHERED, contiguous (S,D) index-K for the request (gather-first: the
-#     seam materializes it from the paged cache; paging layout is not part of the contract).
-#   * scale is the full score multiplier (the model's sm_scale and any log-base fold), opaque
-#     to the gate (monotonic — selection-invariant) but passed so faithful kernels reproduce
-#     stock score VALUES (audit-mode compares under this slot's own gate).
-#   * out is (T, ceil(S/block_size)) — the ragged tail block is scored over its real keys
-#     only; every cell must be written (wholly-invisible cells = -inf, the stock convention).
-# ---------------------------------------------------------------------------
-
-
-def _msa_prefill_block_score_reference(q, index_k, prefix_len, scale, block_size):
-    # q:(T,D) index_k:(S,D) -> (T, ceil(S/block_size)) fp32 causal block-max of scaled QK.
-    T, D = q.shape
-    S = index_k.shape[0]
-    s = (q.float() @ index_k.float().t()) * float(scale)          # (T,S)
-    m = torch.arange(T, device=q.device).view(T, 1)
-    n = torch.arange(S, device=q.device).view(1, S)
-    s = s.masked_fill(n > int(prefix_len) + m, float("-inf"))     # causal (chunk offset = prefix)
-    nblk = (S + block_size - 1) // block_size
-    pad = nblk * block_size - S
-    if pad:
-        s = torch.nn.functional.pad(s, (0, pad), value=float("-inf"))
-    return s.view(T, nblk, block_size).amax(dim=-1)               # (T, nblk)
-
-
-def _msa_prefill_inputs(*, q_len: int, prefix_blocks: int, head_dim: int, block_size: int,
-                        dtype: torch.dtype, device: str, seed: int,
-                        causal_probe: bool = False,
-                        prefix_len_override: int | None = None) -> dict:
-    g = torch.Generator(device=device).manual_seed(seed)
-
-    def rnd(*shape: int) -> torch.Tensor:
-        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
-
-    # Non-vacuous floor, robust to count-dim jitter: EVERY row (including row 0, which sees
-    # only prefix_len+1 keys) must have comfortably more than _MSA_TOPK visible blocks, else
-    # top-k of ~k blocks makes the overlap gate vacuous. prefix stays ragged (not a block
-    # multiple) so the tail-block path is always exercised.
-    q_len = max(1, q_len)
-    prefix_blocks = max(_MSA_TOPK + 4, prefix_blocks)
-    prefix_len = (
-        prefix_blocks * block_size + 39
-        if prefix_len_override is None
-        else int(prefix_len_override)
-    )
-    if prefix_len < 0:
-        raise ValueError("MSA prefix_len must be non-negative")
-    seq_len = prefix_len + q_len                                  # chunked serving: S = prefix + T
-    q = rnd(q_len, head_dim)
-    index_k = rnd(seq_len, head_dim)
-    if causal_probe:
-        # Make every non-final row's first future key uniquely attractive to that
-        # row. Feature dimensions cycle when q_len > head_dim; each newly exposed
-        # future block still displaces a trusted-prefix block. A kernel that ignores
-        # the per-row causal mask therefore fails even when random probes dilute it.
-        # Preserve seed-dependent low-amplitude values so these adversarial cases
-        # remain genuine fresh-input CUDA-graph replay probes.  The explicit
-        # causal signals below dominate this noise by three to five orders.
-        q.mul_(2**-10)
-        index_k.mul_(2**-10)
-        row = torch.arange(q_len, device=device)
-        feature = row % head_dim
-        q[row, feature] = 1
-        visible_prefix_blocks = (prefix_len + block_size) // block_size
-        moderate_blocks = min(visible_prefix_blocks, _MSA_TOPK + 2)
-        index_k[
-            torch.arange(moderate_blocks, device=device) * block_size
-        ] = 1
-        if q_len > 1:
-            future_row = torch.arange(q_len - 1, device=device)
-            future_position = prefix_len + 1 + future_row
-            index_k[future_position, future_row % head_dim] = 100
-    return {
-        "q": q,
-        "index_k": index_k,
-        "prefix_len": prefix_len,
-        "scale": head_dim ** -0.5 * 1.4426950409,                 # a realistic opaque multiplier
-        "block_size": block_size,
-    }
-
-
-def _msa_prefill_out_shape(inputs: dict) -> tuple[int, int]:
-    return (
-        inputs["q"].shape[0],
-        (inputs["index_k"].shape[0] + inputs["block_size"] - 1)
-        // inputs["block_size"],
-    )
-
-
-def _msa_prefill_output_spec(inputs: dict) -> OutputSpec:
-    return OutputSpec(
-        outputs=(
-            TensorSpec(
-                shape=_msa_prefill_out_shape(inputs),
-                dtype=torch.float32,
-                stride_policy="strided",
-                stride_padding=7,
-                alignment_bytes=4,
-                aliasing="disjoint",
-                name="block_scores",
-            ),
-        )
-    )
-
-
-ATTENTION_MSA_PREFILL_BLOCK_SCORE = SlotSpec(
-    name="attention.msa_prefill_block_score",
-    entry="msa_prefill_block_score",
-    summary=(
-        "MSA indexer PREFILL block scores: q:(T,D) index_k:(S,D) prefix_len scale block_size "
-        "-> block_scores:(T,ceil(S/block_size)) = causal block-max of scale*(q@index_k^T), "
-        "key n visible to row m iff n <= prefix_len+m; invisible cells = -inf.  "
-        "entry(q, index_k, prefix_len, scale, block_size, out).  The validator owns the top-k "
-        "block SELECTION + the attend; gated on topk_overlap per ROW, not score values."
-    ),
-    kind="block",
-    make_inputs=_msa_prefill_inputs,
-    out_shapes=lambda i: [_msa_prefill_out_shape(i)],
-    output_spec=_msa_prefill_output_spec,
-    invoke_reference=lambda i: [_msa_prefill_block_score_reference(
-        i["q"], i["index_k"], i["prefix_len"], i["scale"], i["block_size"])],
-    invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["q"], i["index_k"], i["prefix_len"], i["scale"], i["block_size"], outs[0]),
-    graph_dynamic_inputs=("q", "index_k"),
-    shapes=(
-        # Every shape keeps EVERY row's visible blocks > _MSA_TOPK (=8) via the prefix floor
-        # in make_inputs; S is never a block multiple (ragged tail always exercised).
-        {"q_len": 16, "prefix_blocks": 12, "head_dim": 128, "block_size": 128},   # 12+ blocks
-        {"q_len": 128, "prefix_blocks": 16, "head_dim": 128, "block_size": 128},  # chunk-ish
-        {"q_len": 33, "prefix_blocks": 20, "head_dim": 64, "block_size": 128},    # ragged T
-        {"q_len": 64, "prefix_blocks": 24, "head_dim": 128, "block_size": 64},    # small blocks
-        # Orthogonal future-key probes keep causality observable for exact short-q
-        # variants; random short chunks can otherwise dilute one bad row above 0.9.
-        {"q_len": 16, "prefix_blocks": 12, "head_dim": 128, "block_size": 128,
-         "causal_probe": True},
-        {"q_len": 128, "prefix_blocks": 16, "head_dim": 128, "block_size": 128,
-         "causal_probe": True},
-        {"q_len": 33, "prefix_blocks": 20, "head_dim": 64, "block_size": 128,
-         "causal_probe": True},
-        {"q_len": 64, "prefix_blocks": 24, "head_dim": 128, "block_size": 64,
-         "causal_probe": True},
-        # CAUSALITY catchers for every (head_dim, block_size) family represented above.
-        # A shape-specialized variant sees only its own family, so one global long shape is
-        # insufficient. With a modest prefix and a chunk spanning several blocks, early rows
-        # can illegally see enough future blocks that measured overlap falls below 0.9.
-        {"q_len": 512, "prefix_blocks": 12, "head_dim": 64, "block_size": 128},
-        {"q_len": 512, "prefix_blocks": 12, "head_dim": 128, "block_size": 64},
-        {"q_len": 512, "prefix_blocks": 12, "head_dim": 128, "block_size": 128},
-    ),
-    # The output is a SELECTION sheet: gate on per-row top-k block SETS, not values (an fp8
-    # index-K may perturb every score yet select the same blocks). The floor is 0.9, NOT the
-    # decode slot's 7/8: with top_k=8 a SYSTEMATIC one-block-per-row error (an acausal kernel,
-    # a garbage ragged-tail block) lands at exactly mean 0.875 — the sheet has so many rows
-    # that per-row means concentrate, so 7/8 would admit it. Thin fp8-style drift flips a
-    # block on a FEW rows (mean ~0.98) and still clears 0.9 (test_msa_prefill_block_score
-    # proves both directions).
-    correctness=Correctness("topk_overlap", top_k=_MSA_TOPK, min_overlap=0.9),
-    tolerances=_BF16_TOL,
-    kl_threshold=3e-2,  # rides the attention path (same intrinsic floor as the decode slot)
-    call_abi=MSA_PREFILL_BLOCK_SCORE_CALL_ABI,
+ATTENTION_MSA_PREFILL_BLOCK_SCORE = build_minimax_sparse_prefill_slot(
+    SlotSpec, Correctness, _BF16_TOL, MSA_PREFILL_BLOCK_SCORE_CALL_ABI
 )
 
 
@@ -1265,6 +980,7 @@ class SlotProfile:
 
     activation: Activation = field(default_factory=Activation)
     correctness: Optional[Correctness] = None
+    quant: Optional[str] = None
 
 
 _MOE_SLOTS = ("moe.fused_experts", "moe.fused_experts_reduce")
@@ -1290,6 +1006,45 @@ def specialize_slot(slot: SlotSpec, profile: SlotProfile) -> SlotSpec:
             repl["collective_partial"] = _partial
     if profile.correctness is not None:
         repl["correctness"] = profile.correctness
+    if slot.name in _MOE_SLOTS and profile.quant == "nvfp4":
+        make_dense_inputs = slot.make_inputs
+
+        def _quant_inputs(**kwargs):
+            dense = make_dense_inputs(**kwargs)
+            tokens, top_k = dense["topk_ids"].shape
+            experts = dense["w13"].shape[0]
+            routed_k = top_k - 1
+            generator = torch.Generator(device=kwargs["device"]).manual_seed(
+                int(kwargs["seed"]) + 17_171
+            )
+            routed = torch.rand(
+                tokens, experts - 1, generator=generator, device=kwargs["device"]
+            ).topk(routed_k, dim=-1).indices.to(torch.int32)
+            scores = torch.rand(
+                tokens, routed_k, generator=generator, device=kwargs["device"]
+            )
+            dense["topk_ids"] = torch.cat(
+                (routed, torch.full_like(routed[:, :1], experts - 1)), dim=-1
+            )
+            dense["topk_weights"] = torch.cat(
+                (2 * scores / scores.sum(-1, keepdim=True), torch.ones_like(scores[:, :1])),
+                dim=-1,
+            )
+            dense.update(
+                __moe_tp_size__=int(kwargs.get("world_size", 4)),
+                __moe_ep_size__=1,
+                __moe_ep_rank__=0,
+                __moe_reduce_results__=False,
+                __moe_num_fused_shared_experts__=1,
+            )
+            return _moe_nvfp4_verification_inputs(dense)
+
+        repl["make_inputs"] = _quant_inputs
+        repl["invoke_prepare"] = lambda prepare_fn, i: prepare_fn(
+            *_moe_prepare_args_from_inputs(i)
+        )
+        repl["call_abi"] = None
+        repl["shapes"] = _M3_MOE_SHAPES
     return replace(slot, **repl) if repl else slot
 
 
@@ -1301,6 +1056,12 @@ _M3_MOE_PROFILE = SlotProfile(
     # No norm guard yet (max_rel_norm_err uncalibrated — TODO measure the floor).
     correctness=Correctness("cosine", min_cosine=0.985),
 )
+_M3_MOE_SHAPES = (
+    {"num_tokens": 1, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+    {"num_tokens": 8, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+    {"num_tokens": 32, "num_experts": 129, "hidden": 6144, "inter": 768, "topk": 5},
+)
+_M3_MOE_NVFP4_PROFILE = replace(_M3_MOE_PROFILE, quant="nvfp4")
 
 # model key (as a miner may declare it / as the validator keys its served model) -> {slot: profile}
 MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
@@ -1310,8 +1071,8 @@ MODEL_PROFILES: dict[str, dict[str, SlotProfile]] = {
         # specialize_slot retargets its distributed reference (collective_partial) too.
         # Registering only the plain slot would verify an M3 reduce kernel against a
         # SiLU reference and false-fail every honest submission.
-        "moe.fused_experts": _M3_MOE_PROFILE,
-        "moe.fused_experts_reduce": _M3_MOE_PROFILE,
+        "moe.fused_experts": _M3_MOE_NVFP4_PROFILE,
+        "moe.fused_experts_reduce": _M3_MOE_NVFP4_PROFILE,
     },
 }
 # NVFP4 builds carry a "-NVFP4" suffix in their declared model id; alias them.

@@ -17,8 +17,7 @@ Choose the smallest relevant path:
 5. `docs/miner-guide/overview.md` — contribution workflow.
 6. `docs/validator-guide/overview.md` — intake, qualification, settlement, and
    publication.
-7. `docs/engine/overview.md` — chain-independent serving releases.
-8. `docs/security/threat-model.md` — implemented controls and residual risk.
+7. `docs/security/threat-model.md` — implemented controls and residual risk.
 
 If a task continues earlier automated-contributor work, follow the
 cross-harness continuity instructions supplied by the environment. Historical logs route an
@@ -34,8 +33,8 @@ or treated as production authority.
 - A miner proposal is hostile input, not production source.
 - The validator owns the model, workload, timing, outputs, references, target
   policy, and verdict.
-- A contribution changes one registered singleton/atomic target or enters the
-  fenced discovery lane.
+- A contribution changes one registered singleton/atomic target; there is no
+  separate proposal lane for unregistered work.
 - Candidate build and execution remain outside the trusted controller in
   validator-owned, no-egress OCI lifetimes.
 - CUDA graphs are part of the scored contract.

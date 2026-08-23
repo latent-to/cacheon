@@ -3,9 +3,7 @@
 The host controller and the in-container worker exchange strict JSON control
 frames and fixed-width binary token evidence.  The protocol carries no Python
 objects, worker timing, verdict, score, hidden quality input, or model-generated
-text.  A discovery-only ready frame may carry the bounded
-stock-driver scheduler-membership proof required to identify the activated
-overlay.  The module remains independent of evaluator and chain packages so
+text.  The module remains independent of evaluator and chain packages so
 importing it cannot pull candidate or inference-runtime code into the trusted
 controller.
 """
@@ -18,14 +16,11 @@ import re
 import struct
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from cacheon.seams import normalize_seam_bindings
 from cacheon.stack_identity import canonical_digest
 from cacheon._strict import require_digest
-
-if TYPE_CHECKING:
-    from cacheon.discovery_overlay import DiscoveryActivationReceipt
 
 
 SESSION_SCHEMA = "cacheon-isolated-engine-session-v1"
@@ -43,6 +38,7 @@ MAX_PROMPTS_PER_BATCH = 4096
 MAX_PROMPT_CHARS = 2_000_000
 MAX_TOTAL_PROMPT_CHARS = 96_000_000
 MAX_NEW_TOKENS = 32_768
+MAX_PROMPT_TOKENS = 16_777_216
 MAX_TOP_LOGPROBS = 4096
 MAX_ERROR_CHARS = 16_384
 MAX_AUDIT_RECEIPTS = 4_096
@@ -630,6 +626,7 @@ class BatchRequest:
     max_new_tokens: int
     top_logprobs_num: int
     temperature: float
+    expected_prompt_tokens: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("session_id", "request_id", "nonce"):
@@ -672,6 +669,11 @@ class BatchRequest:
         object.__setattr__(self, "temperature", _bounded_float(
             self.temperature, field_name="temperature", minimum=0.0, maximum=100.0
         ))
+        if self.expected_prompt_tokens is not None:
+            object.__setattr__(self, "expected_prompt_tokens", _bounded_int(
+                self.expected_prompt_tokens, field_name="expected_prompt_tokens",
+                minimum=1, maximum=MAX_PROMPT_TOKENS,
+            ))
         expected_evidence_payload_bytes(self)
 
     def to_dict(self) -> dict[str, object]:
@@ -683,6 +685,7 @@ class BatchRequest:
             "max_new_tokens": self.max_new_tokens,
             "top_logprobs_num": self.top_logprobs_num,
             "temperature": self.temperature,
+            "expected_prompt_tokens": self.expected_prompt_tokens,
         }
 
 
@@ -690,6 +693,9 @@ class BatchRequest:
 class PromptEvidence:
     output_ids: tuple[int, ...]
     top_logprobs: tuple[tuple[tuple[float, int], ...], ...]
+    # Engine-observed prompt token count for this request, as the exact sealed
+    # runtime consumed it.  A nominal host-side count is not authority.
+    prompt_tokens: int
 
 
 @dataclass(frozen=True)
@@ -976,23 +982,13 @@ def ready_message(
     *,
     session_id: str,
     launch_digest: str,
-    discovery_activation: DiscoveryActivationReceipt | None = None,
 ) -> dict[str, object]:
-    message: dict[str, object] = {
+    return {
         "launch_digest": _digest(launch_digest, field_name="launch_digest"),
         "schema": SESSION_SCHEMA,
         "session_id": _binding_id(session_id, field_name="session_id"),
         "type": "ready",
     }
-    if discovery_activation is not None:
-        from cacheon.discovery_overlay import DiscoveryActivationReceipt
-
-        if type(discovery_activation) is not DiscoveryActivationReceipt:
-            raise SessionProtocolError(
-                "discovery ready activation is not a typed receipt"
-            )
-        message["discovery_activation"] = discovery_activation.to_dict()
-    return message
 
 
 def validate_ready(
@@ -1000,73 +996,11 @@ def validate_ready(
     *,
     session_id: str,
     launch_digest: str,
-    expected_discovery_identity_digest: str | None = None,
-    expected_discovery_tp_size: int | None = None,
-    expected_discovery_sglang_version: str | None = None,
-) -> DiscoveryActivationReceipt | None:
-    expected_values = (
-        expected_discovery_identity_digest,
-        expected_discovery_tp_size,
-        expected_discovery_sglang_version,
-    )
-    if all(value is None for value in expected_values):
-        if message != ready_message(
-            session_id=session_id, launch_digest=launch_digest
-        ):
-            raise SessionProtocolError(
-                "worker ready marker is early, stale, or malformed"
-            )
-        return None
-    if any(value is None for value in expected_values):
+) -> None:
+    if message != ready_message(session_id=session_id, launch_digest=launch_digest):
         raise SessionProtocolError(
-            "discovery ready expectation is incomplete"
+            "worker ready marker is early, stale, or malformed"
         )
-    identity = _digest(
-        expected_discovery_identity_digest,
-        field_name="expected_discovery_identity_digest",
-    )
-    tp_size = _bounded_int(
-        expected_discovery_tp_size,
-        field_name="expected_discovery_tp_size",
-        minimum=1,
-        maximum=64,
-    )
-    version = expected_discovery_sglang_version
-    if not isinstance(version, str) or _TOKEN.fullmatch(version) is None:
-        raise SessionProtocolError(
-            "expected discovery SGLang version is invalid"
-        )
-    fields = frozenset(
-        "discovery_activation launch_digest schema session_id type".split()
-    )
-    row = _exact_object(message, fields=fields, label="discovery ready")
-    expected_envelope = ready_message(
-        session_id=session_id, launch_digest=launch_digest
-    )
-    if any(row[name] != value for name, value in expected_envelope.items()):
-        raise SessionProtocolError("worker ready marker is early, stale, or malformed")
-    from cacheon.discovery_overlay import (
-        DiscoveryActivationReceipt,
-        DiscoveryOverlayActivationError,
-    )
-
-    try:
-        receipt = DiscoveryActivationReceipt.from_dict(
-            row["discovery_activation"]
-        )
-    except DiscoveryOverlayActivationError as exc:
-        raise SessionProtocolError(
-            f"discovery ready activation is malformed: {exc}"
-        ) from None
-    if (
-        receipt.overlay_identity_digest != identity
-        or receipt.tp_size != tp_size
-        or receipt.driver_origin.version != version
-    ):
-        raise SessionProtocolError(
-            "discovery ready activation differs from host policy"
-        )
-    return receipt
 
 
 CONTAINER_SWAP_INTAKE_PATH = "/cacheon/swap-intake"
@@ -1277,8 +1211,8 @@ def validate_swap_evidence(
 
 
 _BATCH_REQUEST_FIELDS = frozenset("""
-batch_index launch_digest max_new_tokens nonce prompts request_id schema session_id
-temperature top_logprobs_num type
+batch_index expected_prompt_tokens launch_digest max_new_tokens nonce prompts
+request_id schema session_id temperature top_logprobs_num type
 """.split())
 
 
@@ -1293,10 +1227,11 @@ def batch_request(
     max_new_tokens: int,
     top_logprobs_num: int,
     temperature: float,
+    expected_prompt_tokens: int | None = None,
 ) -> dict[str, object]:
     return BatchRequest(
         session_id, launch_digest, request_id, nonce, batch_index, tuple(prompts),
-        max_new_tokens, top_logprobs_num, temperature,
+        max_new_tokens, top_logprobs_num, temperature, expected_prompt_tokens,
     ).to_dict()
 
 
@@ -1311,6 +1246,7 @@ def validate_batch_request(message: object) -> BatchRequest:
         row["session_id"], row["launch_digest"], row["request_id"], row["nonce"],
         row["batch_index"], tuple(prompts), row["max_new_tokens"],
         row["top_logprobs_num"], row["temperature"],
+        row["expected_prompt_tokens"],
     )  # type: ignore[arg-type]
 
 
@@ -1390,7 +1326,10 @@ def expected_evidence_payload_bytes(request: BatchRequest) -> int:
         raise SessionProtocolError("evidence request is not typed")
     prompt_count = len(request.prompts)
     per_position = _TOKEN_ID.size + request.top_logprobs_num * _TOPK_ENTRY.size
-    total = _EVIDENCE_BINDING.size + prompt_count * request.max_new_tokens * per_position
+    # Each prompt record leads with its engine-observed prompt token count.
+    total = _EVIDENCE_BINDING.size + prompt_count * (
+        _TOKEN_ID.size + request.max_new_tokens * per_position
+    )
     if total > MAX_BATCH_RESPONSE_BYTES:
         raise SessionProtocolError("exact binary evidence exceeds its hard bound")
     return total
@@ -1407,6 +1346,17 @@ def _validated_evidence(evidence: BatchEvidence, *, request: BatchRequest) -> Ba
             raise SessionProtocolError("binary evidence returned a short/oversized output")
         if len(prompt.top_logprobs) != request.max_new_tokens:
             raise SessionProtocolError("binary evidence has wrong top-k position count")
+        prompt_tokens = _bounded_int(
+            prompt.prompt_tokens, field_name="engine-observed prompt tokens",
+            minimum=1, maximum=MAX_PROMPT_TOKENS,
+        )
+        if (
+            request.expected_prompt_tokens is not None
+            and prompt_tokens != request.expected_prompt_tokens
+        ):
+            raise SessionProtocolError(
+                "engine-observed prompt tokens differ from the sealed workload cell"
+            )
         clean_ids = [
             _bounded_int(token, field_name="output token ID", minimum=0,
                          maximum=2_147_483_647)
@@ -1434,7 +1384,9 @@ def _validated_evidence(evidence: BatchEvidence, *, request: BatchRequest) -> Ba
             if sum(math.exp(entry[0]) for entry in clean_position) > 1.0001:
                 raise SessionProtocolError("binary top-k probability mass exceeds one")
             clean_positions.append(tuple(clean_position))
-        clean_prompts.append(PromptEvidence(tuple(clean_ids), tuple(clean_positions)))
+        clean_prompts.append(
+            PromptEvidence(tuple(clean_ids), tuple(clean_positions), prompt_tokens)
+        )
     return BatchEvidence(tuple(clean_prompts))
 
 
@@ -1447,6 +1399,7 @@ def evidence_frame(evidence: BatchEvidence, *, request: BatchRequest) -> bytes:
         request.top_logprobs_num,
     ))
     for prompt in clean.prompts:
+        payload.extend(_TOKEN_ID.pack(prompt.prompt_tokens))
         for token_id, position in zip(prompt.output_ids, prompt.top_logprobs, strict=True):
             payload.extend(_TOKEN_ID.pack(token_id))
             for logprob, top_token_id in position:
@@ -1480,6 +1433,8 @@ def decode_evidence_payload(payload: bytes, *, request: BatchRequest) -> BatchEv
     offset = _EVIDENCE_BINDING.size
     prompts: list[PromptEvidence] = []
     for _ in range(prompt_count):
+        (prompt_tokens,) = _TOKEN_ID.unpack_from(payload, offset)
+        offset += _TOKEN_ID.size
         output_ids: list[int] = []
         positions: list[tuple[tuple[float, int], ...]] = []
         for _ in range(token_count):
@@ -1492,7 +1447,9 @@ def decode_evidence_payload(payload: bytes, *, request: BatchRequest) -> BatchEv
                 offset += _TOPK_ENTRY.size
                 position.append((float(logprob), top_token_id))
             positions.append(tuple(position))
-        prompts.append(PromptEvidence(tuple(output_ids), tuple(positions)))
+        prompts.append(
+            PromptEvidence(tuple(output_ids), tuple(positions), prompt_tokens)
+        )
     if offset != len(payload):  # pragma: no cover - exact size already proves it
         raise SessionProtocolError("binary evidence contains trailing bytes")
     return _validated_evidence(BatchEvidence(tuple(prompts)), request=request)

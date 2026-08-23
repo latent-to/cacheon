@@ -181,6 +181,7 @@ class TestWorkerSwapApplication:
         tp: int = 2,
         slots=("s.one",),
         prior_generation: int | None = None,
+        fired: int = 1,
         completed: int = 1,
         fallback: int = 0,
     ) -> None:
@@ -189,6 +190,7 @@ class TestWorkerSwapApplication:
             if prior_generation is not None:
                 row["prior_generation"] = prior_generation
                 row["prior_receipts"] = {
+                    "fired": fired,
                     "completed": completed,
                     "fallback": fallback,
                     "load_failed": 0,
@@ -324,6 +326,20 @@ class TestWorkerSwapApplication:
                 object(), _swap(digest=None), control_dir=control, tp_size=2
             )
 
+    def test_flush_exception_fails_without_waiting_for_swap_timeout(self, tmp_path) -> None:
+        from cacheon.eval import oci_session_worker as worker
+
+        control = self._control(tmp_path)
+
+        class Engine:
+            def flush_cache(self_inner) -> bool:
+                raise RuntimeError("CUDA out of memory")
+
+        with pytest.raises(SessionProtocolError, match="CUDA out of memory"):
+            worker._apply_resident_swap(
+                Engine(), _swap(digest=None), control_dir=control, tp_size=2
+            )
+
     def test_stale_generation_acks_are_ignored(self, tmp_path, monkeypatch) -> None:
         from cacheon.eval import oci_session_worker as worker
 
@@ -390,6 +406,7 @@ class TestServeResidentLoop:
                 return [
                     {
                         "meta_info": {
+                            "prompt_tokens": 5,
                             "output_ids": list(range(tokens)),
                             "output_top_logprobs": [
                                 [(-0.5 - column, column) for column in range(width)]
@@ -630,6 +647,7 @@ class TestResidentOuterSession:
                                 )
                                 for _ in range(request.max_new_tokens)
                             ),
+                            request.expected_prompt_tokens or 5,
                         )
                         for _ in request.prompts
                     )

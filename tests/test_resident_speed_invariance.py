@@ -28,6 +28,7 @@ from cacheon.eval.crossover_runtime import (
 from cacheon.eval.scoring import RawSpeedEvidenceError
 from cacheon.eval.speed_verdict import (
     SpeedStageDecision,
+    fail_reason,
     invariant_decision,
     speed_grade,
     v6_decision_limits,
@@ -305,3 +306,27 @@ def test_v6_out_of_ceiling_b_prime_is_discarded_and_still_terminates() -> None:
         _steady(100.0 * 1.006),
         _steady(80.0),
     )[2] is SpeedStageDecision.PASS
+
+
+def test_fail_reason_splits_the_band_miss_from_the_measured_slowdown() -> None:
+    # The retained defect this pins: a 1.003 speedup against a 1.005 bar was
+    # reported as a "regression". Inside the band -- above the mirrored bound
+    # 1-u for a bar of 1+u -- a FAIL proves only that the bar was not cleared.
+    policy = _policy(6)
+    in_band, decision = speed_grade(
+        policy, [_steady(1000.0), _steady(1000.0)], [_steady(1003.0)],
+        concluding=True,
+    )
+    assert decision is SpeedStageDecision.FAIL
+    assert fail_reason(in_band) == "speed_threshold_not_met"
+
+    slower, decision = speed_grade(
+        policy, [_steady(1000.0), _steady(1000.0)], [_steady(900.0)],
+        concluding=True,
+    )
+    assert decision is SpeedStageDecision.FAIL
+    assert fail_reason(slower) == "candidate_slower"
+
+    # A conditioning regression is a measured slowdown in its own right,
+    # whatever the timed band says.
+    assert fail_reason(in_band, conditioning_failed=True) == "candidate_slower"

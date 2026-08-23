@@ -38,6 +38,7 @@ from cacheon.capabilities import (
     msa_prefill_call_descriptor,
 )
 from cacheon.registry import Eligibility
+from cacheon.moe_nvfp4_contract import call_descriptor as moe_call_descriptor
 from cacheon.slots import SlotSpec
 from cacheon.tensor_spec import (
     allocate_output_spec,
@@ -74,6 +75,24 @@ def _compare(
     # Returns (passed, max_abs, max_rel, score, detail, metric_label).
     if actual.shape != expected.shape:
         return False, float("inf"), float("inf"), 0.0, f"shape mismatch {tuple(actual.shape)} vs {tuple(expected.shape)}", "ratio"
+    if correctness.mode == "topk_overlap" and not actual.dtype.is_floating_point:
+        ai, ei = actual.to(torch.long), expected.to(torch.long)
+        valid = ei >= 0
+        if bool((ai[~valid] != -1).any()):
+            return False, 0.0, 0.0, 0.0, "selection padding was not rewritten to -1", "overlap"
+        rows = valid.any(dim=-1)
+        if not bool(rows.any()):
+            return False, 0.0, 0.0, 0.0, "reference selected no blocks", "overlap"
+        hit = (ei.unsqueeze(-1) == ai.unsqueeze(-2)).any(dim=-1)
+        overlap = (hit & valid).sum(-1).float() / valid.sum(-1).clamp(min=1)
+        score = float(overlap[rows].mean())
+        passed = score >= correctness.min_overlap
+        detail = (
+            ""
+            if passed
+            else f"topk_overlap {score:.4f} < min_overlap {correctness.min_overlap}"
+        )
+        return passed, 0.0, 0.0, score, detail, "overlap"
     a = actual.float()
     e = expected.float()
     if correctness.mode == "topk_overlap":
@@ -529,7 +548,7 @@ def _jitter_shapes(shapes: list[dict], seed: int) -> list[dict]:
 _MSA_PROBE_MAX_HEAD_DIM = 512
 _MSA_PROBE_MAX_BLOCK_SIZE = 4096
 _MSA_PROBE_MAX_Q_LEN = 1024
-_MSA_PROBE_MAX_KV_LEN = 32768
+_MSA_PROBE_MAX_KV_LEN = 131072
 _MSA_PROBE_MAX_MATMUL_WORK = 300_000_000
 _MSA_PROBE_MAX_TOTAL_WORK = 600_000_000
 _MSA_MAX_CANDIDATE_COMBINATIONS = 64
@@ -538,7 +557,13 @@ _MSA_PREFILL_SHAPE_FIELDS = frozenset(
     {"q_len", "prefix_blocks", "head_dim", "block_size"}
 )
 _MSA_PREFILL_INPUT_FIELDS = frozenset(
-    {"q", "index_k", "prefix_len", "scale", "block_size"}
+    {
+        "q", "index_k_cache", "req_to_token", "slot_ids", "cu_seqlens",
+        "seq_lens", "prefix_lens", "max_seqlen_q", "max_seqlen_k",
+        "block_size_q", "block_size_k", "topk", "init_blocks",
+        "local_blocks", "scale", "cu_seqblocks_q", "max_seqblock_q",
+        "all_seqblock_q",
+    }
 )
 _MSA_SYNTHESIZED_CAPABILITY_FIELDS = frozenset(
     {"head_dim", "last_dim", "block_size", "q_len", "num_tokens", "kv_len"}
@@ -571,15 +596,15 @@ def _has_msa_prefill_probe_schema(
 
 
 def _has_msa_prefill_call_contract(slot: SlotSpec, inputs: dict) -> bool:
-    """Recognize the canonical score-sheet call from validator-owned values."""
+    """Recognize the canonical batched paged selection call."""
 
     return (
         slot.correctness.mode == "topk_overlap"
         and _MSA_PREFILL_INPUT_FIELDS <= set(inputs)
         and torch.is_tensor(inputs["q"])
-        and inputs["q"].dim() == 2
-        and torch.is_tensor(inputs["index_k"])
-        and inputs["index_k"].dim() == 2
+        and inputs["q"].dim() == 3
+        and torch.is_tensor(inputs["index_k_cache"])
+        and inputs["index_k_cache"].dim() == 3
     )
 
 
@@ -599,13 +624,19 @@ def _msa_shape_descriptor(
     block_size = int(shape["block_size"])
     if min(q_len, head_dim, block_size) < 1:
         return None
-    prefix_len = shape.get("prefix_len_override")
-    if prefix_len is None:
-        prefix_blocks = max(int(shape.get("prefix_blocks", 12)), 12)
-        prefix_len = prefix_blocks * block_size + 39
-    prefix_len = int(prefix_len)
-    kv_len = prefix_len + q_len
-    if prefix_len < 0 or kv_len < q_len:
+    batch_size = int(shape.get("batch_size", 2))
+    num_q_heads = int(shape.get("num_q_heads", 3))
+    ragged = bool(shape.get("ragged", True))
+    prefix_base = shape.get("prefix_len_override")
+    if prefix_base is None:
+        prefix_base = int(shape.get("prefix_blocks", 12)) * block_size + 1
+    prefix_base = int(prefix_base)
+    kv_len = prefix_base + q_len
+    num_tokens = sum(
+        max(1, q_len - batch) if ragged else q_len
+        for batch in range(batch_size)
+    )
+    if prefix_base < 0 or min(batch_size, num_q_heads, num_tokens) < 1:
         return None
     return msa_prefill_call_descriptor(
         dtype=_name(dtype),
@@ -614,7 +645,13 @@ def _msa_shape_descriptor(
         block_size=block_size,
         q_len=q_len,
         kv_len=kv_len,
-        top_k=int(slot.correctness.top_k),
+        top_k=int(shape.get("topk", slot.correctness.top_k)),
+        q_block_size=int(shape.get("block_size_q") or block_size),
+        init_blocks=int(shape.get("init_blocks", 0)),
+        local_blocks=int(shape.get("local_blocks", 1)),
+        batch_size=batch_size,
+        num_q_heads=num_q_heads,
+        num_tokens=num_tokens,
         num_kv_heads=1,
         tp_size=tp_size,
         world_size=world_size,
@@ -795,7 +832,7 @@ def _synthesize_msa_capability_shapes(
         block_size = int(shape["block_size"])
         prefix_len = shape.get("prefix_len_override")
         if prefix_len is None:
-            prefix_len = max(int(shape.get("prefix_blocks", 12)), 12) * block_size + 39
+            prefix_len = max(int(shape.get("prefix_blocks", 12)), 12) * block_size + 1
         prefix_len = int(prefix_len)
         seen.add((q_len, head_dim, block_size, prefix_len))
         catalog_prefixes.setdefault((q_len, head_dim, block_size), prefix_len)
@@ -832,6 +869,12 @@ def _synthesize_msa_capability_shapes(
                         "prefix_len_override": prefix_len,
                         "head_dim": head_dim,
                         "block_size": block_size,
+                        "batch_size": 1,
+                        "num_q_heads": 1,
+                        "topk": int(slot.correctness.top_k),
+                        "init_blocks": 0,
+                        "local_blocks": 1,
+                        "ragged": False,
                     }
                     descriptor = _msa_shape_descriptor(
                         slot,
@@ -891,6 +934,7 @@ def verify_entry(
     architecture: Optional[str] = None,
     tp_size: Optional[int] = None,
     world_size: Optional[int] = None,
+    model_key: Optional[str] = None,
     variant_name: Optional[str] = None,
     _graph_backend: Optional[_GraphBackend] = None,
 ) -> VerifyResult:
@@ -928,11 +972,11 @@ def verify_entry(
         architecture or _device_architecture(device) or torch.device(device).type
     )
 
-    def sealed_call(descriptor: CallDescriptor) -> dict:
+    def sealed_call(descriptor: CallDescriptor) -> CallDescriptor:
         return descriptor.with_updates(
             architecture=case_architecture, tp_size=case_tp_size,
             world_size=case_world_size, graph_mode=verification_graph_mode,
-        ).as_dict()
+        )
     if graph_required and graph_replays < 2:
         raise ValueError("CUDA graph verification requires at least two replays")
     tol = slot.tolerance_for(dtype)
@@ -969,6 +1013,8 @@ def verify_entry(
             architecture=architecture,
             tp_size=tp_size,
             world_size=world_size,
+            graph_mode=verification_graph_mode,
+            model_key=model_key,
         )
         if eligibility is not None:
             match = eligibility.match(descriptor)
@@ -993,6 +1039,8 @@ def verify_entry(
                     architecture=architecture,
                     tp_size=tp_size,
                     world_size=world_size,
+                    graph_mode=verification_graph_mode,
+                    model_key=model_key,
                 )
                 catalog_match = eligibility.match(catalog_descriptor)
                 if catalog_match.accepted:
@@ -1000,7 +1048,7 @@ def verify_entry(
                     inputs = catalog_inputs
                     descriptor = catalog_descriptor
                     match = catalog_match
-            case_descriptor = VerificationCaseDescriptor.from_call_dicts(
+            case_descriptor = VerificationCaseDescriptor(
                 slot_id=slot.name,
                 variant_id=variant_name or "default",
                 case_kind=VerificationCaseKind.ORDINARY_SINGLE,
@@ -1037,7 +1085,7 @@ def verify_entry(
                 ))
                 continue
         else:
-            case_descriptor = VerificationCaseDescriptor.from_call_dicts(
+            case_descriptor = VerificationCaseDescriptor(
                 slot_id=slot.name,
                 variant_id=variant_name or "default",
                 case_kind=VerificationCaseKind.ORDINARY_SINGLE,
@@ -1230,6 +1278,8 @@ def _verification_call_descriptor(
     architecture: Optional[str],
     tp_size: Optional[int],
     world_size: Optional[int],
+    graph_mode: str,
+    model_key: Optional[str],
 ) -> CallDescriptor:
     """Build the same canonical call description as a live arena binding.
 
@@ -1239,6 +1289,49 @@ def _verification_call_descriptor(
     """
 
     resolved_arch = architecture or _device_architecture(device)
+    if slot.name == "attention.decode" and {
+        "q", "k_cache", "v_cache", "req_to_token", "seq_lens",
+        "req_pool_indices", "topk_idx", "block_size",
+    } <= set(inputs):
+        q = inputs["q"]
+        k_cache = inputs["k_cache"]
+        return CallDescriptor(
+            dtype=_name(q.dtype),
+            architecture=resolved_arch,
+            graph_mode=graph_mode,
+            layout="paged_nhd",
+            model=model_key or "MiniMax-M3",
+            phase="decode",
+            quant="dense",
+            batch_size=int(q.shape[0]),
+            num_tokens=int(q.shape[0]),
+            q_len=1,
+            num_q_heads=int(q.shape[1]),
+            num_kv_heads=int(k_cache.shape[1]),
+            head_dim=int(q.shape[-1]),
+            kv_len=int(inputs["req_to_token"].shape[1]),
+            last_dim=int(q.shape[-1]),
+            block_size=int(inputs["block_size"]),
+            page_size=int(inputs["block_size"]),
+            top_k=int(inputs["topk_idx"].shape[-1]),
+            tp_size=tp_size,
+            world_size=world_size,
+        )
+    if slot.name == "moe.fused_experts" and {
+        "x", "topk_ids", "w13", "w2",
+    } <= set(inputs):
+        quant = str(inputs.get("__moe_quant__", "dense"))
+        return moe_call_descriptor(
+            inputs["x"],
+            inputs["topk_ids"],
+            architecture=resolved_arch,
+            graph_mode=graph_mode,
+            quant=quant,
+            num_experts=int(inputs["w13"].shape[0]),
+            intermediate_dim=int(inputs["w2"].shape[-1]),
+            tp_size=tp_size,
+            world_size=world_size,
+        )
     if not _has_msa_prefill_call_contract(slot, inputs):
         primary = next(
             (
@@ -1258,18 +1351,25 @@ def _verification_call_descriptor(
                 fields["num_tokens"] = int(primary.shape[0])
         return CallDescriptor(fields)
     q = inputs["q"]
-    index_k = inputs["index_k"]
+    index_k = inputs["index_k_cache"]
     return msa_prefill_call_descriptor(
         dtype=_name(q.dtype),
         architecture=resolved_arch,
         head_dim=int(q.shape[-1]),
-        block_size=int(inputs["block_size"]),
-        q_len=int(q.shape[0]),
-        kv_len=int(index_k.shape[0]),
-        top_k=int(slot.correctness.top_k),
-        num_kv_heads=1,
+        block_size=int(inputs["block_size_k"]),
+        q_len=int(inputs["max_seqlen_q"]),
+        kv_len=int(inputs["max_seqlen_k"]),
+        top_k=int(inputs["topk"]),
+        q_block_size=int(inputs["block_size_q"]),
+        init_blocks=int(inputs["init_blocks"]),
+        local_blocks=int(inputs["local_blocks"]),
+        batch_size=int(inputs["cu_seqlens"].shape[0] - 1),
+        num_q_heads=int(q.shape[1]),
+        num_tokens=int(q.shape[0]),
+        num_kv_heads=int(index_k.shape[1]),
         tp_size=tp_size,
         world_size=world_size,
+        model=model_key or "MiniMax-M3",
     )
 
 
@@ -1408,6 +1508,7 @@ def verify_entry_from_source(
                         shapes=shapes, jitter_seed=jitter_seed, graph_safe=graph_safe,
                         graph_replays=graph_replays, eligibility=eligibility,
                         tp_size=tp_size, world_size=world_size,
+                        model_key=model_key,
                         variant_name=variant_name)
 
 

@@ -150,7 +150,7 @@ the charged speed evidence.
 
 T uses a distinct reference session protocol. Its engine tree must contain no proposal
 contributions, and its native publication is control-only. The runtime rejects candidate
-artifacts or discovery activation in the reference session.
+artifacts in the reference session.
 
 This separates quality authority from both candidate C and potentially hostile incumbent
 B′.

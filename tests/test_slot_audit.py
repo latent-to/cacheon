@@ -333,14 +333,13 @@ def test_topk_disjoint_row_is_violation(monkeypatch):
     assert abs(s["worst_frac"] - 0.75) < 1e-6
 
 
-def test_topk_padding_rows_score_on_valid_entries_only(monkeypatch):
-    # -1 fill (short rows) is not a miss: overlap is over the stock row's valid set.
+def test_topk_candidate_may_not_replace_padding_with_extra_blocks(monkeypatch):
     _arm(monkeypatch)
     expected = _sel([[0, 1, 2, 3, -1, -1, -1, -1]])
     actual = _sel([[0, 1, 2, 3, 9, 10, 11, 12]])
     audit.record(MSA_SLOT, (actual,), (expected,))
     s = audit._stats[MSA_SLOT]
-    assert s["n"] == 1 and s["violations"] == 0 and s["worst_frac"] == 1.0
+    assert s["n"] == 1 and s["violations"] == 1 and s["worst_frac"] == 0.0
 
 
 def test_topk_all_invalid_expected_counts_refused(monkeypatch):
