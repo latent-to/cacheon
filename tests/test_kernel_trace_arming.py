@@ -36,7 +36,11 @@ class _Registry:
 def clean(monkeypatch):
     kernel_trace._PROFILED.clear()
     receipts._KERNELS.clear()
-    monkeypatch.setattr(receipts, "_GRAPH_PROBE", None)
+    # What production looks like: importing cacheon.dispatch installs the probe,
+    # and the trace only arms through that same module. An absent probe now
+    # means "assume capture" and suppresses profiling, which is its own test
+    # below rather than the silent default every other test inherits.
+    monkeypatch.setattr(receipts, "_GRAPH_PROBE", lambda: False)
     yield
     kernel_trace._PROFILED.clear()
     receipts._KERNELS.clear()
@@ -160,6 +164,41 @@ def test_repeating_one_shape_profiles_it_exactly_once(clean, monkeypatch) -> Non
     for _ in range(10):
         call(_Tensor())
     assert len(calls) == 1
+
+
+def test_no_capture_probe_suppresses_profiling_rather_than_assuming_eager(
+    clean, monkeypatch
+) -> None:
+    """Unknown must decide the same way as yes: never profile.
+
+    Profiling inside a CUDA graph capture is the failure this guard exists to
+    prevent, so an unanswerable probe cannot be read as "eager, go ahead".
+    """
+
+    monkeypatch.setenv(kernel_trace._ENV, "1")
+    monkeypatch.setattr(receipts, "_GRAPH_PROBE", None)
+    calls = []
+    monkeypatch.setattr(
+        kernel_trace, "launched_kernels", lambda enabled: _recording(calls)
+    )
+
+    class _Tensor:
+        shape = (8,)
+        dtype = "bf16"
+
+    registry = _registry(lambda t: t)
+    kernel_trace.arm(registry)
+    call = registry.variants("s.one")[0].entry
+
+    assert call(_Tensor()) is not None  # the kernel still runs
+    assert calls == []  # but nothing was profiled
+
+    # A probe that raises is equally unanswerable and decides the same way.
+    monkeypatch.setattr(
+        receipts, "_GRAPH_PROBE", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    call(_Tensor())
+    assert calls == []
 
 
 def _recording(sink):

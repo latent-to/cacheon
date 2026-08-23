@@ -367,20 +367,28 @@ def _calls_payload(slot: str) -> dict:
 
 
 def capturing() -> bool:
-    """Is a CUDA graph being captured right now? False when nothing can tell.
+    """Is a CUDA graph being captured right now? True when nothing can tell.
 
     Deliberately not tri-state. Its one caller arms a profiler, and profiling
     during capture is the failure it exists to avoid, so "we do not know" and
     "yes" must lead to the same decision. ``_calls_payload`` reports the same
     underlying probe as tri-state because there the honest answer matters.
+
+    The unknown answers used to be ``False``, which is the one thing the
+    docstring above says they must not be. It cost nothing while no production
+    path could arm the profiler; it stopped being free once one could. Failing
+    closed also costs no coverage: ``cacheon.dispatch`` installs the probe when
+    it is imported, and the trace arms only after the registry is enabled
+    through that same module, so an absent probe means no dispatch is running
+    and there is nothing to profile.
     """
 
     if _GRAPH_PROBE is None:
-        return False
+        return True
     try:
         return bool(_GRAPH_PROBE())
     except Exception:  # noqa: BLE001 - a probe must not break model execution
-        return False
+        return True
 
 
 def record_kernels(slot: str, signature: str, counts: dict) -> None:

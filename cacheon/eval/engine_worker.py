@@ -236,6 +236,48 @@ EXECUTION_SUMMARY_PREFIX = "CACHEON-EXECUTION-SUMMARY: "
 ENGINE_CONFIG_PREFIX = "CACHEON-ENGINE-CONFIG: "
 
 
+def build_session_environment(
+    *,
+    active: bool,
+    bundle_path: str,
+    framework_mode: bool,
+    receipt_dir: str,
+    audit_policy: object,
+    install_seams: bool,
+    gate_environment: dict[str, str],
+) -> dict[str, str]:
+    """The environment the in-container engine and its TP ranks inherit.
+
+    Pure and separate from the session so it can be asserted directly. The
+    previous kernel-trace attempt shipped with a commit message saying the
+    audit arm armed it while nothing in production set the variable at all;
+    that claim was unfalsifiable because this dict was unreachable from a test.
+    """
+
+    audited = audit_policy is not None
+    return {
+        "CACHEON_ACTIVE": "1" if active else "0",
+        "CACHEON_BUNDLE_PATH": bundle_path if active else "",
+        "CACHEON_FRAMEWORK_MODE": "1" if framework_mode else "0",
+        "CACHEON_SEAM_RECEIPT_DIR": receipt_dir,
+        "CACHEON_SLOT_AUDIT": (
+            format(audit_policy.sample_rate_ppm / 1_000_000, ".17g") if audited else ""
+        ),
+        "CACHEON_SLOT_AUDIT_SEED": (
+            str(int(audit_policy.validator_seed, 16)) if audited else ""
+        ),
+        # Names the kernels the candidate actually launched on the device.
+        # Bound to the audit role for the same reason ``disable_cuda_graph`` is:
+        # arming it replaces every registry entry with a wrapper for the life of
+        # the process, so on a timed arm it would tax the hot path of the thing
+        # being measured. Empty string reads as disarmed. Baseline arms load no
+        # bundle and have nothing to wrap, so it is inert there regardless.
+        "CACHEON_KERNEL_TRACE": "1" if audited else "",
+        "SGLANG_PLUGINS": "cacheon" if install_seams else "",
+        **gate_environment,
+    }
+
+
 def _emit_execution_summary(receipt_dir: str) -> None:
     """Write the execution facts to stderr before the receipt directory is removed.
 
@@ -459,24 +501,15 @@ def isolated_engine_session(
     )
     receipt_dir = tempfile.mkdtemp(prefix="cacheon_receipts_") if active else ""
     try:
-        session_environment = {
-            "CACHEON_ACTIVE": "1" if active else "0",
-            "CACHEON_BUNDLE_PATH": bundle_path if active else "",
-            "CACHEON_FRAMEWORK_MODE": "1" if framework_mode else "0",
-            "CACHEON_SEAM_RECEIPT_DIR": receipt_dir,
-            "CACHEON_SLOT_AUDIT": (
-                ""
-                if audit_policy is None
-                else format(audit_policy.sample_rate_ppm / 1_000_000, ".17g")
-            ),
-            "CACHEON_SLOT_AUDIT_SEED": (
-                ""
-                if audit_policy is None
-                else str(int(audit_policy.validator_seed, 16))
-            ),
-            "SGLANG_PLUGINS": "cacheon" if install_seams else "",
-            **gate_environment,
-        }
+        session_environment = build_session_environment(
+            active=active,
+            bundle_path=bundle_path,
+            framework_mode=framework_mode,
+            receipt_dir=receipt_dir,
+            audit_policy=audit_policy,
+            install_seams=install_seams,
+            gate_environment=gate_environment,
+        )
         with _environment(**session_environment):
             import sglang as sgl
 
