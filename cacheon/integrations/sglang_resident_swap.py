@@ -123,6 +123,24 @@ def _apply_pending_swap(
                 else {}
             )
             ack["receipt_scope"] = receipts.set_scope(generation)
+            # Same line the one-shot worker writes, so one reader explains both
+            # lanes. The ack is a file the controller may or may not keep; the
+            # log is drained and retained either way, and a closing generation's
+            # counts are final exactly here.
+            if prior_generation >= 0:
+                # The receipts themselves, not their counts: the counts say
+                # whether every rank ran, the rows say WHAT ran on this rank and
+                # why anything else routed to stock. A miner needs the rows.
+                print(
+                    "CACHEON-EXECUTION-SUMMARY: "
+                    + json.dumps(
+                        receipts.rows_for_scope(prior_generation, pid=os.getpid()),
+                        sort_keys=True,
+                        default=str,
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
         except Exception:  # noqa: BLE001 - diagnostics never break an engine
             logger.exception("cacheon: receipt scope failed at generation %s", generation)
 

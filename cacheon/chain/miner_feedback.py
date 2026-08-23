@@ -19,6 +19,7 @@ than being narrated into a failure.
 
 from __future__ import annotations
 
+import base64
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,27 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "This is not attributed to the candidate and is not a FAIL. It may be "
         "resubmitted.",
     ),
+    # The three below were persisted to real miners' rows before anything here
+    # explained them, so those miners were shown a bare code. Found by listing
+    # every reason mainnet has actually produced and diffing against this table,
+    # which is what ``tests/test_miner_feedback.py`` now does on every run.
+    "missing_eval_cost_payment": (
+        "No spendable evaluation-cost payment was matched to this submission, "
+        "so it was never queued for evaluation.",
+        "This is NOT a judgement on the bundle; nothing about it was measured. "
+        "Each evaluation needs its own payment bound to the submission.",
+    ),
+    "screen_receipt_service_rotated": (
+        "The arena service identity changed between the screen and its use, so "
+        "the screen receipt no longer described the running service.",
+        "This is validator-side and not attributed to the bundle. It is "
+        "re-screened against the current service rather than failed.",
+    ),
+    "screen_promoted": (
+        "Every non-crown screen passed and the submission is waiting to enter "
+        "qualification.",
+        "No action is needed. This is a queue position, not a verdict.",
+    ),
 }
 
 
@@ -164,7 +186,66 @@ def _compile_defect(publication_root: object) -> str | None:
     return None
 
 
-def _submission(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+def _attempt_evidence(
+    dispositions: list[dict[str, Any]], evidence_roots: tuple[Path, ...]
+) -> list[dict[str, Any]]:
+    """Reopen each attempt's retained evidence and render what it measured.
+
+    The durable row keeps the verdict and a digest; the bytes behind that digest
+    live in a content-addressed store keyed by the worker generation that ran, so
+    an attempt's evidence sits in whichever store was live at the time. Reading
+    it back is the difference between telling a miner "FAIL, candidate_slower"
+    and telling them which shapes passed, how many replays, and by how much they
+    lost.
+
+    Reports what it could not reopen instead of omitting it: a missing artifact
+    is an operator problem the miner should be able to see, not a silent gap.
+    """
+
+    from cacheon.eval.evidence_store import (
+        EvidenceArtifactRef,
+        reopen_evidence_anywhere,
+    )
+    from cacheon.eval.explain import explain
+
+    reports: list[dict[str, Any]] = []
+    for row in dispositions:
+        reference = row.get("attempt_ref")
+        if not isinstance(reference, dict):
+            continue
+        try:
+            typed = EvidenceArtifactRef(**reference)
+            payload = reopen_evidence_anywhere(evidence_roots, typed)
+        except Exception:  # noqa: BLE001 - reporting must survive a bad artifact
+            payload = None
+        entry: dict[str, Any] = {"attempt_index": row.get("attempt_index")}
+        if payload is None:
+            entry["retained"] = False
+            entry["note"] = (
+                "the evidence for this attempt was not found in any configured "
+                "store; the verdict above stands on the durable record"
+            )
+        else:
+            entry["retained"] = True
+            entry["explanation"] = explain(
+                {
+                    "evidence": [
+                        {
+                            "reference": {"domain": typed.domain},
+                            "payload_base64": base64.b64encode(payload).decode("ascii"),
+                        }
+                    ]
+                }
+            )
+        reports.append(entry)
+    return reports
+
+
+def _submission(
+    db: sqlite3.Connection,
+    row: sqlite3.Row,
+    evidence_roots: tuple[Path, ...] = (),
+) -> dict[str, Any]:
     reason = _reason(row["reason"])
     record: dict[str, Any] = {
         "content_hash": row["content_hash"],
@@ -181,6 +262,10 @@ def _submission(db: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
             db, row["reservation_id"]
         ),
     }
+    if evidence_roots:
+        record["attempt_evidence"] = _attempt_evidence(
+            record["qualification_dispositions"], evidence_roots
+        )
     if reason.get("code") == "candidate_kernel_does_not_compile":
         record["static_finding"] = _compile_defect(row["publication_root"])
     return record

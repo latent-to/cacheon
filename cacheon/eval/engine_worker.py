@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -226,6 +227,51 @@ def _routing_reasons(rows: list[dict]) -> str:
     return "; not_selected=" + " ".join(sorted(parts)) if parts else ""
 
 
+#: Prefix marking the one machine-readable execution line in a retained stderr
+#: stream. Grepping for it is the whole contract; see ``EXECUTION_SUMMARY_PREFIX``
+#: consumers in ``cacheon.eval.explain``.
+EXECUTION_SUMMARY_PREFIX = "CACHEON-EXECUTION-SUMMARY: "
+
+#: Same channel, same contract, for the settings the engine was built with.
+ENGINE_CONFIG_PREFIX = "CACHEON-ENGINE-CONFIG: "
+
+
+def _emit_execution_summary(receipt_dir: str) -> None:
+    """Write the execution facts to stderr before the receipt directory is removed.
+
+    The receipt directory is process-local, on a container tmpfs, and deleted at
+    teardown, so everything it knows — which slots registered, how many times each
+    ran, whether the run was inside a captured graph, and why a call routed to
+    stock instead — dies with the worker. Every one of those is what a miner is
+    asking for when they ask what happened to their bundle.
+
+    Stderr is the channel that outlives the container: the host drains it, hashes
+    every byte, and retains a bounded prefix with its own receipt. Emitted on
+    success as well as failure, because "it passed but lost on speed" needs this
+    evidence just as much as "it never ran" — and today only the failure path
+    says anything at all.
+
+    Never raises. This runs in a teardown path where an exception would mask the
+    real outcome of the run.
+    """
+
+    try:
+        from cacheon import receipts
+
+        summary: dict[str, Any] = {}
+        for kind in ("active", "completed", "load_failed", "not_selected"):
+            rows = receipts.collect(receipt_dir, kind)
+            if rows:
+                summary[kind] = rows
+        print(
+            EXECUTION_SUMMARY_PREFIX + json.dumps(summary, sort_keys=True, default=str),
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001 - a diagnostic must not mask the run's outcome
+        logger.exception("cacheon: execution summary emit failed")
+
+
 def _require_execution_completion(
     receipt_dir: str,
     *,
@@ -440,6 +486,21 @@ def isolated_engine_session(
                 # carry no audit policy and therefore retain their sealed graph
                 # configuration and zero audit overhead.
                 kwargs["disable_cuda_graph"] = True
+            # Emitted for the stock arm too, which has no receipt directory, so
+            # this cannot ride on the receipts. Without it the settings that
+            # decide which backend each arm ran on -- and therefore whether the
+            # pair was comparable at all -- are absent from the retained record
+            # and unrecoverable afterwards.
+            print(
+                ENGINE_CONFIG_PREFIX
+                + json.dumps(
+                    {"arm": "candidate" if active else "stock", "engine": kwargs},
+                    sort_keys=True,
+                    default=str,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
             engine = sgl.Engine(**kwargs)
             active_receipts: list[dict] = []
             expected_slots: list[str] = []
@@ -496,4 +557,5 @@ def isolated_engine_session(
                     pass
     finally:
         if receipt_dir:
+            _emit_execution_summary(receipt_dir)
             shutil.rmtree(receipt_dir, ignore_errors=True)

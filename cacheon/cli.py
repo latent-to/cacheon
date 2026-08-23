@@ -1918,6 +1918,49 @@ def cmd_chain_register(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_product(value: object, depth: int = 0) -> dict | None:
+    """Locate the evaluation product inside whatever wrapper it arrived in.
+
+    Operators publish the bare product; validators keep collections that embed it
+    under transport envelopes. Searching for the shape rather than the path means
+    a new wrapper does not need a new branch here.
+    """
+
+    if depth > 6:
+        return None
+    if isinstance(value, dict):
+        if "evidence" in value and ("batch" in value or "authority_manifest" in value):
+            return value
+        for nested in value.values():
+            found = _find_product(nested, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for nested in value[:16]:
+            found = _find_product(nested, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def cmd_explain(args: argparse.Namespace) -> int:
+    from cacheon.eval.explain import explain
+
+    with open(args.product, "r", encoding="utf-8") as handle:
+        raw = json.load(handle)
+    product = _find_product(raw)
+    if product is None:
+        print(f"{args.product}: no evaluation product found in this file")
+        return 2
+    log = None
+    if args.log:
+        with open(args.log, "rb") as handle:
+            log = handle.read()
+    for line in explain(product, stderr=log):
+        print(line)
+    return 0
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     from cacheon.sandbox import scan_compilability_path, scan_tree
 
@@ -3041,6 +3084,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("scan", help="static policy scan of a bundle")
     sp.add_argument("bundle")
     sp.set_defaults(func=cmd_scan)
+
+    sp = sub.add_parser(
+        "explain", help="say in plain language what happened to an evaluated bundle",
+        epilog=("examples:\n"
+                "  # the product an operator publishes for one evaluation\n"
+                "  cacheon explain qualification-product.json\n"
+                "  # or the collection a validator kept, which embeds the product\n"
+                "  cacheon explain collected-result.json"),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp.add_argument("product", help="path to an evaluation product JSON")
+    sp.add_argument("--log", default=None,
+                    help="retained worker stderr for this run; adds what each rank "
+                         "actually did (loaded, ran, how often, in a captured graph, "
+                         "or why the call routed to stock instead)")
+    sp.set_defaults(func=cmd_explain)
 
     sp = sub.add_parser(
         "verify", help="op-level correctness vs reference",
