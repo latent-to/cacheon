@@ -23,7 +23,7 @@ import torch
 from cacheon import audit as _audit
 from cacheon import moe_export as _moe_export
 from cacheon import receipts as _receipts
-from cacheon.capabilities import collective_call_descriptor
+from cacheon.capabilities import CallDescriptor, collective_call_descriptor
 from cacheon.moe_nvfp4_contract import (
     call_descriptor as moe_call_descriptor,
     supports_layer as supports_nvfp4_moe_layer,
@@ -165,6 +165,22 @@ def _allreduce_group_role(coordinator: object, group: object) -> Optional[str]:
     return None
 
 
+def _elementwise_descriptor(x: torch.Tensor, *, last_dim: int) -> CallDescriptor:
+    """Describe an elementwise op call the way the registry expects it.
+
+    ``num_tokens`` is everything but the last dimension. The legacy router used
+    to omit it, which silently ignored a declared token window: a kernel scoped
+    to decode-sized batches was routed on prefill-sized ones anyway.
+    """
+
+    return CallDescriptor.from_legacy(
+        dtype_name=_dtype_name(x.dtype),
+        last_dim=last_dim,
+        arch=_arch_tag(x.device.index or 0) if x.is_cuda else None,
+        num_tokens=int(x.numel() // last_dim) if last_dim else 0,
+    )
+
+
 def _collective_call_descriptor(
     x: torch.Tensor,
     *,
@@ -252,12 +268,9 @@ def make_silu_and_mul_dispatcher(
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_forward(self, x)
         last_dim = x.shape[-1]
-        impl = registry.lookup(
-            slot,
-            dtype_name=_dtype_name(x.dtype),
-            last_dim=last_dim,
-            arch=_arch_tag(x.device.index or 0) if x.is_cuda else None,
-        )
+        impl = registry.select(
+            slot, _elementwise_descriptor(x, last_dim=last_dim)
+        ).impl
         if impl is None:
             return baseline_forward(self, x)
 
@@ -301,12 +314,9 @@ def make_rmsnorm_dispatcher(
                 or getattr(self, "cast_x_before_out_mul", False)):
             return baseline_forward(self, x, residual, post_residual_addition)
 
-        impl = registry.lookup(
-            slot,
-            dtype_name=_dtype_name(x.dtype),
-            last_dim=x.shape[-1],
-            arch=_arch_tag(x.device.index or 0) if x.is_cuda else None,
-        )
+        impl = registry.select(
+            slot, _elementwise_descriptor(x, last_dim=x.shape[-1])
+        ).impl
         if impl is None:
             return baseline_forward(self, x, residual, post_residual_addition)
 

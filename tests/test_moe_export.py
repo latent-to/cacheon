@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from cacheon import moe_export
-from cacheon.capabilities import collective_call_descriptor
+from cacheon.capabilities import CallDescriptor, collective_call_descriptor
 from cacheon.dispatch import make_arfusion_dispatcher
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
@@ -668,8 +668,8 @@ def test_eligibility_min_num_tokens_from_metadata():
 
     e = eligibility_from_metadata({"min_num_tokens": 48}, ("bfloat16",))
     assert e.min_num_tokens == 48
-    assert not e.accepts(dtype_name="bfloat16", last_dim=64, arch=None, num_tokens=4)
-    assert e.accepts(dtype_name="bfloat16", last_dim=64, arch=None, num_tokens=48)
+    assert not e.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch=None, num_tokens=4)).accepted
+    assert e.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch=None, num_tokens=48)).accepted
 
 
 # ---- integrations (stub sglang modules) ------------------------------------------

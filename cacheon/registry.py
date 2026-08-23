@@ -32,6 +32,7 @@ from cacheon.capabilities import (
     capability_domain_from_metadata,
     canonical_value,
 )
+from cacheon import receipts as _receipts
 from cacheon.manifest import DEFAULT_VARIANT
 
 
@@ -108,41 +109,6 @@ class Eligibility:
             and self.min_num_tokens > self.max_num_tokens
         ):
             raise ValueError("min_num_tokens must not exceed max_num_tokens")
-
-    def accepts(self, *, dtype_name: str, last_dim: int, arch: Optional[str],
-                num_tokens: Optional[int] = None) -> bool:
-        try:
-            dtype_name = str(canonical_value("dtype", dtype_name))
-            arch = (
-                None
-                if arch is None
-                else str(canonical_value("architecture", arch))
-            )
-        except (TypeError, ValueError):
-            return False
-        if self.dtypes and dtype_name not in self.dtypes:
-            return False
-        if self.architectures and arch is not None and arch not in self.architectures:
-            return False
-        if self.max_last_dim is not None and last_dim > self.max_last_dim:
-            return False
-        if (self.max_num_tokens is not None and num_tokens is not None
-                and num_tokens > self.max_num_tokens):
-            return False
-        if (self.min_num_tokens is not None and num_tokens is not None
-                and num_tokens < self.min_num_tokens):
-            return False
-        # New normative predicates fail closed on missing live fields.  The
-        # legacy bridge provides the fields old dispatchers already know; a
-        # capability such as head_dim intentionally remains ineligible until its
-        # validator-owned arena binding supplies head_dim.
-        descriptor = CallDescriptor.from_legacy(
-            dtype_name=dtype_name,
-            last_dim=last_dim,
-            arch=arch,
-            num_tokens=num_tokens,
-        )
-        return self.capabilities.match(descriptor).accepted
 
     def match(self, descriptor: CallDescriptor) -> CapabilityMatch:
         """Match a complete canonical descriptor, including legacy constraints.
@@ -489,6 +455,13 @@ class KernelRegistry:
         if not accepted:
             only_impl = variants[0] if len(variants) == 1 else None
             only_match = variant_matches[0].match if len(variants) == 1 else None
+            _receipts.not_selected(
+                slot,
+                SelectionOutcome.OUT_OF_DOMAIN.value,
+                # Every variant's reasons, deduplicated by the receipt: with two
+                # variants the useful answer is why BOTH declined, not why one did.
+                {m for row in variant_matches for m in row.match.mismatches},
+            )
             return SelectionDecision(
                 slot,
                 descriptor,
@@ -501,6 +474,9 @@ class KernelRegistry:
             # Registration catches every overlap expressible in today's public
             # capability vocabulary.  This remains the authoritative guard for
             # future/private predicates whose intersection was not provable then.
+            _receipts.not_selected(
+                slot, SelectionOutcome.AMBIGUOUS.value, ()
+            )
             return SelectionDecision(
                 slot,
                 descriptor,
@@ -516,52 +492,6 @@ class KernelRegistry:
             capability_match=match,
             variant_matches=variant_matches,
         )
-
-    def lookup(
-        self, slot: str, *, dtype_name: str, last_dim: int, arch: Optional[str],
-        num_tokens: Optional[int] = None
-    ) -> Optional[KernelImpl]:
-        # Preserve the old API's special case: unknown architecture and token
-        # count do not reject legacy fields.  New normative capability fields are
-        # still checked (and missing ones fail closed) by Eligibility.accepts.
-        return self._legacy_select(
-            slot,
-            dtype_name=dtype_name,
-            last_dim=last_dim,
-            arch=arch,
-            num_tokens=num_tokens,
-        )
-
-    def _legacy_select(
-        self,
-        slot: str,
-        *,
-        dtype_name: str,
-        last_dim: int,
-        arch: Optional[str],
-        num_tokens: Optional[int],
-    ) -> Optional[KernelImpl]:
-        """Compatibility selection for integrations not yet on CallDescriptor.
-
-        The historical allowance for an unknown architecture/token count is
-        preserved by using Eligibility.accepts.  Multiple variants are still
-        fail-closed: old bindings may route only when their limited descriptor
-        identifies exactly one implementation.
-        """
-        if not self._active:
-            return None
-        variants = self._by_slot.get(slot, ())
-        matches = [
-            impl
-            for impl in variants
-            if impl.eligibility.accepts(
-                dtype_name=dtype_name,
-                last_dim=last_dim,
-                arch=arch,
-                num_tokens=num_tokens,
-            )
-        ]
-        return matches[0] if len(matches) == 1 else None
 
     def variants(self, slot: str) -> tuple[KernelImpl, ...]:
         """Return registered variants for ``slot`` in deterministic load order."""

@@ -150,16 +150,14 @@ def test_legacy_eligibility_metadata_is_preserved():
         ("bfloat16",),
     )
     assert eligibility.capabilities.predicates == ()
-    assert eligibility.accepts(
-        dtype_name="bfloat16", last_dim=128, arch="sm103", num_tokens=48
-    )
-    # Legacy behavior: unknown arch/token count was not a rejection.
-    assert eligibility.accepts(
+    assert eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=128, arch="sm103", num_tokens=48)).accepted
+    # A constrained field the caller does not supply is a rejection, not a pass.
+    # The legacy router used to wave these through, which routed a kernel outside
+    # its own declared token window.
+    assert not eligibility.match(CallDescriptor.from_legacy(
         dtype_name="bfloat16", last_dim=128, arch=None, num_tokens=None
-    )
-    assert not eligibility.accepts(
-        dtype_name="bfloat16", last_dim=129, arch="sm103", num_tokens=48
-    )
+    )).accepted
+    assert not eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=129, arch="sm103", num_tokens=48)).accepted
 
 
 def test_new_capability_metadata_requires_binding_to_supply_fields():
@@ -168,9 +166,7 @@ def test_new_capability_metadata_requires_binding_to_supply_fields():
         ("bfloat16",),
     )
     # An old dispatcher does not know these fields and therefore serves stock.
-    assert not eligibility.accepts(
-        dtype_name="bfloat16", last_dim=128, arch="sm103"
-    )
+    assert not eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=128, arch="sm103")).accepted
     assert eligibility.match(
         CallDescriptor(
             dtype="bfloat16", head_dim=128, block_size=128, last_dim=128
@@ -288,9 +284,7 @@ def test_legacy_domain_spellings_use_descriptor_canonicalization():
     assert eligibility.match(
         CallDescriptor(dtype="bfloat16", architecture="sm103")
     ).accepted
-    assert eligibility.accepts(
-        dtype_name="torch.bfloat16", last_dim=128, arch="SM_103"
-    )
+    assert eligibility.match(CallDescriptor.from_legacy(dtype_name="torch.bfloat16", last_dim=128, arch="SM_103")).accepted
 
 
 @pytest.mark.parametrize(

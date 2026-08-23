@@ -162,8 +162,8 @@ def test_manifest_architecture_claim_participates_in_eligibility():
     eligibility = eligibility_from_metadata({}, (), ("sm103",))
 
     assert eligibility.architectures == frozenset({"sm103"})
-    assert eligibility.accepts(dtype_name="bfloat16", last_dim=64, arch="sm103")
-    assert not eligibility.accepts(dtype_name="bfloat16", last_dim=64, arch="sm90")
+    assert eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch="sm103")).accepted
+    assert not eligibility.match(CallDescriptor.from_legacy(dtype_name="bfloat16", last_dim=64, arch="sm90")).accepted
 
 
 def test_registry_rejects_duplicate_id_and_provable_overlap():
@@ -202,47 +202,6 @@ def test_selection_fail_closes_runtime_ambiguity_for_future_private_predicate():
 
     assert decision.outcome is SelectionOutcome.AMBIGUOUS
     assert decision.impl is None and decision.use_baseline
-
-
-def test_legacy_lookup_and_peek_stay_compatible_and_fail_closed_on_ambiguity():
-    registry = KernelRegistry()
-    singleton = KernelImpl(
-        slot=SLOT,
-        bundle_id="candidate",
-        entry=lambda *_args: None,
-        eligibility=Eligibility(dtypes=frozenset({"bfloat16"})),
-    )
-    registry.register(singleton)
-    registry.enable()
-    kwargs = dict(dtype_name="bfloat16", last_dim=64, arch=None)
-    assert registry.lookup(SLOT, **kwargs) is singleton
-    assert registry.lookup(SLOT, **kwargs) is singleton
-
-    split = KernelRegistry()
-    split.register(
-        KernelImpl(
-            slot=SLOT,
-            bundle_id="candidate",
-            variant="small",
-            entry=lambda *_args: None,
-            eligibility=Eligibility(max_num_tokens=31),
-        )
-    )
-    split.register(
-        KernelImpl(
-            slot=SLOT,
-            bundle_id="candidate",
-            variant="large",
-            entry=lambda *_args: None,
-            eligibility=Eligibility(min_num_tokens=32),
-        )
-    )
-    split.enable()
-    assert split.lookup(SLOT, num_tokens=8, **kwargs).variant == "small"
-    assert split.lookup(SLOT, num_tokens=64, **kwargs).variant == "large"
-    # Historical lookup treats unknown num_tokens as unknown, so both accept it;
-    # row order must not become a priority rule.
-    assert split.lookup(SLOT, num_tokens=None, **kwargs) is None
 
 
 def test_selection_across_variants_writes_no_receipt(monkeypatch):

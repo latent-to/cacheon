@@ -113,6 +113,9 @@ _CALLS: dict[str, list[int]] = {}
 # it. None means nothing told us how to detect capture, which is reported as
 # unknown rather than as "not captured".
 _GRAPH_PROBE = None
+# slot -> {(outcome, mismatch detail): payload}. Bounded by the number of DISTINCT
+# routing reasons, not by call volume; see ``not_selected``.
+_NOT_SELECTED: dict[str, dict[tuple, dict]] = {}
 
 # Fallback receipt root for a process the driver launched WITHOUT one. The
 # one-shot driver mints a receipt directory only for an engine that is active at
@@ -364,6 +367,49 @@ def completed(slot: str) -> None:
     """
     _count_call(slot)
     _write_execution_once("completed", slot)
+
+
+def not_selected(slot: str, outcome: str, mismatches: Iterable) -> None:
+    """Record why a live call routed to stock while a candidate was registered.
+
+    Without this, "registered but never ran" is one shape on disk covering three
+    unrelated causes: the declared domain never matched a live call, the seam
+    never fired at all, or the entry was never reached. They need different
+    fixes, and the registry already computes which one it is and then discards
+    it. One receipt per slot holds every distinct reason seen, so the reader gets
+    the whole routing story from one file.
+
+    Keyed on the field names and reasons, never on observed values: a call that
+    is out of domain on ``num_tokens`` says so once, not once per token count.
+    """
+
+    reasons = _NOT_SELECTED.setdefault(slot, {})
+    detail = tuple(
+        (str(m.field), str(m.reason), str(m.expected)) for m in mismatches
+    )
+    key = (outcome, detail)
+    if key in reasons:
+        return
+    reasons[key] = {
+        "outcome": outcome,
+        "fields": [field for field, _reason, _expected in detail],
+        "mismatches": [
+            {"field": field, "reason": reason, "expected": expected}
+            for field, reason, expected in detail
+        ],
+    }
+    rdir = _dir()
+    if not rdir:
+        return
+    try:
+        _write_to(
+            _resolved_dir(rdir),
+            "not_selected",
+            {"slot": slot, "reasons": list(reasons.values())},
+            tag=slot,
+        )
+    except Exception:  # noqa: BLE001 - diagnostics never break an engine
+        logger.exception("cacheon: not-selected receipt failed")
 
 
 def flush_calls() -> None:

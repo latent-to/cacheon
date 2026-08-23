@@ -14,6 +14,7 @@ import os
 import pytest
 
 from cacheon import receipts
+from cacheon.capabilities import CallDescriptor
 from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
 
@@ -25,6 +26,7 @@ def receipt_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(receipts, "_CALLS", {})
     monkeypatch.setattr(receipts, "_GRAPH_PROBE", None)
     monkeypatch.setattr(receipts, "_IDENTITY", None)
+    monkeypatch.setattr(receipts, "_NOT_SELECTED", {})
     return rdir
 
 
@@ -108,8 +110,12 @@ def test_resolving_an_impl_writes_nothing(receipt_dir):
                             entry=lambda *a: None, eligibility=Eligibility()))
     reg.enable()
     for _ in range(3):
-        assert reg.lookup("activation.silu_and_mul", dtype_name="bfloat16",
-                          last_dim=128, arch=None) is not None
+        assert reg.select(
+            "activation.silu_and_mul",
+            CallDescriptor.from_legacy(
+                dtype_name="bfloat16", last_dim=128, arch=None, num_tokens=2
+            ),
+        ).impl is not None
     assert receipts.collect(receipt_dir, "completed") == []
 
 
@@ -126,9 +132,18 @@ def test_registry_miss_writes_nothing(receipt_dir, monkeypatch):
     reg.register(KernelImpl(slot="norm.rmsnorm", bundle_id="t", entry=lambda *a: None,
                             eligibility=Eligibility(dtypes=frozenset({"float16"}))))
     reg.enable()
-    # Ineligible (dtype mismatch) -> no selection -> no receipt.
-    assert reg.lookup("norm.rmsnorm", dtype_name="bfloat16", last_dim=128, arch=None) is None
+    # Ineligible (dtype mismatch) -> no selection -> no COMPLETED receipt, but the
+    # reason is recorded so "registered and never ran" is never a mystery.
+    assert reg.select(
+        "norm.rmsnorm",
+        CallDescriptor.from_legacy(
+            dtype_name="bfloat16", last_dim=128, arch=None, num_tokens=2
+        ),
+    ).impl is None
     assert receipts.collect(receipt_dir, "completed") == []
+    why = receipts.collect(receipt_dir, "not_selected")
+    assert [row["slot"] for row in why] == ["norm.rmsnorm"]
+    assert why[0]["reasons"][0]["fields"] == ["dtype"]
 
 
 def test_no_env_does_not_consume_execution_once_guard(tmp_path, monkeypatch):

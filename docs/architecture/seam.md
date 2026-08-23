@@ -233,8 +233,9 @@ Scheduler ranks can write process-local seam receipts:
 
 - `active` — the sealed tree loaded and registered slots;
 - `load_failed` — activation failed or registered nothing;
-- `completed` — the candidate produced the model-facing output;
-- `fallback` — a selected route failed and a trusted fallback served in a non-strict context.
+- `not_selected` — a candidate is registered for this slot but the routing
+  decision sent the call to stock, with the field-level reason;
+- `completed` — the candidate produced the model-facing output.
 
 A `completed` receipt carries two further fields:
 
@@ -251,7 +252,18 @@ Both fields are reported only when every rank carries them, and `captured` is
 true only when every rank agrees — one rank serving stock makes the measurement
 stock.
 
-These receipts are valuable positive accounting. They catch phantom passes where a benchmark accidentally measures stock code. They are also used by the signed-release serve smoke to require active/completed coverage and zero fallback.
+A `not_selected` receipt carries one entry per DISTINCT routing reason, never one
+per call: `outcome` (`out_of_domain` or `ambiguous`), the `fields` that declined,
+and the expected domain for each. It is written from
+`KernelRegistry.select`, so it covers every dispatcher without any of them having
+to remember to report.
+
+It exists because "registered but never ran" used to be one shape on disk
+covering three unrelated causes — the declared domain never matched a live call,
+the seam never fired, or the entry was never reached — and each needs a different
+fix. With it, the ladder answers the question directly.
+
+These receipts are valuable positive accounting. They catch phantom passes where a benchmark accidentally measures stock code. They are also used by the signed-release serve smoke to require active/completed coverage.
 
 `fired` was retired on 2026-08-23. It recorded that the registry *resolved* an
 implementation, which is weaker than it reads — the caller could still decline
@@ -295,7 +307,8 @@ Read receipts in lifecycle order instead of treating any single file as success:
 | Last trustworthy observation | Likely boundary | What to inspect |
 |---|---|---|
 | No `active` receipt | Bootstrap, watched import, sealed namespace, or registration | Pin, adapter canary, worker role, tree/release digests, scheduler logs |
-| `active`, no `completed` | Eligibility, wrong live chokepoint, or the entry raised | Call descriptor, variant domain, topology, workload coverage, adapter firing, exception, deadline, output layout, rank agreement, device state |
+| `active`, `not_selected` present | The declared domain never matched a live call | The receipt names the field and the expected domain; compare against the sealed workload |
+| `active`, no `not_selected`, no `completed` | The chokepoint never fired, or the entry was never reached | Adapter firing, seam env, topology, deadline, exception, rank agreement, device state |
 | `completed` with `captured: false` | Candidate never entered the captured graph; scored replays served stock | Whether the seam was reached during capture, and graph metadata against the captured shapes |
 | Full per-rank coverage, quality/speed fails | Seam worked; the contribution did not qualify | Qualification evidence and pristine T report, not bootstrap code |
 
