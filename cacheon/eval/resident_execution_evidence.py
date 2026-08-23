@@ -57,22 +57,21 @@ UNOBSERVED_EVIDENCE = ResidentExecutionEvidence(UNOBSERVED, UNOBSERVED)
 def _rank_executed_cleanly(counts: object) -> bool | None:
     """Whether one rank ran the candidate; ``None`` when its report is unusable.
 
-    ``completed`` is the positive evidence. ``fallback`` and ``load_failed`` are
-    disqualifying rather than merely absent evidence: they record that the seam
-    selected the candidate and then served the trusted baseline instead, which
-    is a stock measurement wearing a candidate's name.
+    ``completed`` is the positive evidence. ``load_failed`` is disqualifying rather
+    than merely absent evidence: it records that the seam attempted the bundle load
+    and ran stock instead, which is a stock measurement wearing a candidate's name.
     """
 
     if not isinstance(counts, dict):
         return None
     values = []
-    for kind in ("completed", "fallback", "load_failed"):
+    for kind in ("completed", "load_failed"):
         value = counts.get(kind)
         if type(value) is not int or value < 0:
             return None
         values.append(value)
-    completed, fallback, load_failed = values
-    return completed > 0 and fallback == 0 and load_failed == 0
+    completed, load_failed = values
+    return completed > 0 and load_failed == 0
 
 
 def summarize_rank_acks(

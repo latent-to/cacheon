@@ -624,12 +624,14 @@ def test_producer_variant_identity_blocks_head_trim_variant_switch(
     base_calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(base_calls), registry=reg)
     x = full[:32]
-    assert d(x, x.clone(), torch.ones(32, dtype=x.dtype))[0] == "baseline"
-    assert calls == []
-    assert len(base_calls) == 1 and moe_export._state["orphans"] == 1
+    # The export preflighted the 'large' variant; consume resolves 'small'. A deep
+    # candidate arm cannot quietly finish in the trusted epilogue.
+    with pytest.raises(ValueError, match="different or ineligible deep variant"):
+        d(x, x.clone(), torch.ones(32, dtype=x.dtype))
+    assert calls == [] and base_calls == []
 
 
-def test_consume_topology_mismatch_recovers_without_candidate(
+def test_consume_topology_mismatch_aborts_inside_a_candidate_arm(
     monkeypatch, _fake_group
 ):
     import cacheon.dispatch as dispatch
@@ -643,9 +645,9 @@ def test_consume_topology_mismatch_recovers_without_candidate(
     monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: other_group)
     base_calls = []
     d = make_arfusion_dispatcher(_baseline_recorder(base_calls), registry=reg)
-    assert d(x, x.clone(), torch.ones(32, dtype=x.dtype))[0] == "baseline"
-    assert record == []
-    assert len(base_calls) == 1 and moe_export._state["orphans"] == 1
+    with pytest.raises(ValueError, match="process group differs"):
+        d(x, x.clone(), torch.ones(32, dtype=x.dtype))
+    assert record == [] and base_calls == []
 
 
 def test_plain_calls_untouched_when_no_pend(monkeypatch, _fake_group):

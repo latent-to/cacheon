@@ -243,9 +243,9 @@ A `completed` receipt carries two further fields:
   graph was capturing.
 
 `captured` is the load-bearing one. Scored windows replay a captured graph and do
-not re-enter Python, so a candidate that did not declare `graph_safe` is skipped
-at capture: the graph holds stock, every replay serves stock, and the `completed`
-receipt is nevertheless already on disk from eager warmup. `captured: false` with
+not re-enter Python. A candidate absent from the captured graph serves stock on
+every replay, while its `completed` receipt is already on disk from eager warmup
+minutes earlier. `captured: false` with
 `calls > 0` is exactly that shape and must not be read as candidate execution.
 Both fields are reported only when every rank carries them, and `captured` is
 true only when every rank agrees — one rank serving stock makes the measurement
@@ -296,8 +296,7 @@ Read receipts in lifecycle order instead of treating any single file as success:
 |---|---|---|
 | No `active` receipt | Bootstrap, watched import, sealed namespace, or registration | Pin, adapter canary, worker role, tree/release digests, scheduler logs |
 | `active`, no `completed` | Eligibility, wrong live chokepoint, or the entry raised | Call descriptor, variant domain, topology, workload coverage, adapter firing, exception, deadline, output layout, rank agreement, device state |
-| `completed` with `captured: false` | Candidate was skipped at graph capture; scored replays served stock | `graph_safe` declaration, graph metadata against the captured shapes |
-| `fallback` after selection | Candidate route failed in a non-strict context | Preserve the failure; do not use the run as crown/release-smoke evidence |
+| `completed` with `captured: false` | Candidate never entered the captured graph; scored replays served stock | Whether the seam was reached during capture, and graph metadata against the captured shapes |
 | Full per-rank coverage, quality/speed fails | Seam worked; the contribution did not qualify | Qualification evidence and pristine T report, not bootstrap code |
 
 A common diagnostic mistake is to stop at “the server answered.” Stock fallback can keep

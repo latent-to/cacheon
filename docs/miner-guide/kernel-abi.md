@@ -394,7 +394,8 @@ predicate whose field is absent from the binding fails closed.
 
 ## Graph behavior
 
-`graph_safe: true` is a routing declaration, not evidence. A crownable path must
+A bundle declares nothing about graph safety; the validator decides which slots
+serve from the captured region. A crownable path must
 have validator-produced graph observations for every applicable selected
 variant and shape. CUDA host synchronization, data-dependent Python control
 flow, allocations tied to replay values, pointer retention, or incomplete

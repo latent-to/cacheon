@@ -110,7 +110,6 @@ The metadata narrows where the row may route:
 
 ```json
 {
-  "graph_safe": true,
   "capabilities": {
     "num_tokens": {"min": 1, "max": 4096}
   }
@@ -176,7 +175,6 @@ Use the `capabilities` object for named specialization predicates:
 
 ```json
 {
-  "graph_safe": true,
   "capabilities": {
     "model": {"exact": "MiniMax-M3-NVFP4"},
     "phase": {"exact": "prefill"},
@@ -201,7 +199,7 @@ Numeric fields may use inclusive `min`/`max`. Supported fields currently include
 Unknown capability names fail at metadata load. Manifest `dtypes` and
 `architectures` are real routing constraints and intersect with metadata
 constraints. Legacy metadata keys such as `min_num_tokens`, `max_num_tokens`,
-`max_last_dim`, `quant`, and `graph_safe` are still interpreted, but new
+`max_last_dim`, and `quant` are still interpreted, but new
 specializations should be expressed in `capabilities` where possible.
 
 The canonical vocabulary and normalization rules are in

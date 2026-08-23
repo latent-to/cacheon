@@ -113,7 +113,6 @@ def test_rmsnorm_catalog_exercises_exact_6144_hidden_domain():
     shapes = [shape for shape in slot.shapes if shape.get("hidden") == 6144]
     eligibility = eligibility_from_metadata(
         {
-            "graph_safe": False,
             "capabilities": {"dtype": "float32", "last_dim": 6144},
         },
         ("float32",),
@@ -127,7 +126,6 @@ def test_rmsnorm_catalog_exercises_exact_6144_hidden_domain():
         device="cpu",
         shapes=shapes,
         eligibility=eligibility,
-        graph_safe=False,
     )
 
     assert shapes == [{"num_tokens": 64, "hidden": 6144}]
@@ -162,7 +160,7 @@ def test_graph_replay_orchestration_passes_all_replays_with_cpu_backend():
     backend = _FakeGraphBackend()
     result = verify_entry(
         slot, _faithful_silu, dtype=torch.float32, device="cpu", seed=0,
-        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=True,
+        shapes=[{"num_tokens": 2, "d": 8}],
         graph_replays=3, _graph_backend=backend,
     )
     assert result.passed
@@ -182,7 +180,6 @@ def test_typed_not_applicable_outcome_never_claims_candidate_execution():
         dtype=torch.float32,
         device="cpu",
         shapes=[{"num_tokens": 2, "d": 8}],
-        graph_safe=False,
         eligibility=Eligibility(min_num_tokens=100),
     )
 
@@ -229,7 +226,6 @@ def test_candidate_capture_exception_is_typed_without_parsing_detail():
         dtype=torch.float32,
         device="cpu",
         shapes=[{"num_tokens": 2, "d": 8}],
-        graph_safe=True,
         graph_replays=3,
         _graph_backend=backend,
     )
@@ -258,7 +254,6 @@ def test_candidate_first_replay_exception_is_typed_at_zero_completed_replays():
         dtype=torch.float32,
         device="cpu",
         shapes=[{"num_tokens": 2, "d": 8}],
-        graph_safe=True,
         graph_replays=3,
         _graph_backend=backend,
     )
@@ -336,7 +331,6 @@ def test_moe_topk_one_graph_replay_verifies_dynamic_routing_weights():
         device="cpu",
         seed=29,
         shapes=[shape],
-        graph_safe=True,
         graph_replays=3,
         _graph_backend=backend,
     )
@@ -360,7 +354,7 @@ def test_capture_only_wrong_branch_fails_graph_verification():
 
     result = verify_entry(
         slot, capture_branch, dtype=torch.float32, device="cpu", seed=0,
-        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=True,
+        shapes=[{"num_tokens": 2, "d": 8}],
         graph_replays=3, _graph_backend=backend,
     )
     assert not result.passed
@@ -379,7 +373,7 @@ def test_output_poison_catches_graph_that_does_not_write():
 
     result = verify_entry(
         slot, capture_noop, dtype=torch.float32, device="cpu", seed=0,
-        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=True,
+        shapes=[{"num_tokens": 2, "d": 8}],
         graph_replays=3, _graph_backend=backend,
     )
     assert not result.passed
@@ -406,7 +400,7 @@ def test_fresh_graph_inputs_catch_cached_correct_output():
 
     result = verify_entry(
         slot, cached_capture, dtype=torch.float32, device="cpu", seed=0,
-        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=True,
+        shapes=[{"num_tokens": 2, "d": 8}],
         graph_replays=3, _graph_backend=backend,
     )
 
@@ -423,7 +417,7 @@ def test_candidate_may_not_mutate_validator_inputs():
 
     result = verify_entry(
         slot, mutating, dtype=torch.float32, device="cpu", seed=0,
-        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=False,
+        shapes=[{"num_tokens": 2, "d": 8}],
     )
 
     assert not result.passed
@@ -445,7 +439,6 @@ def test_candidate_may_not_rebind_validator_inputs_to_equal_storage():
         device="cpu",
         seed=0,
         shapes=[{"num_tokens": 2, "d": 8}],
-        graph_safe=False,
     )
 
     assert not result.passed
@@ -467,7 +460,6 @@ def test_candidate_may_not_replace_validator_output_storage():
         device="cpu",
         seed=0,
         shapes=[{"num_tokens": 2, "d": 8}],
-        graph_safe=False,
     )
 
     assert not result.passed
@@ -488,7 +480,6 @@ def test_candidate_may_not_change_validator_output_strides():
         device="cpu",
         seed=0,
         shapes=[{"num_tokens": 2, "d": 8}],
-        graph_safe=False,
     )
 
     assert not result.passed
@@ -512,44 +503,12 @@ def test_one_loaded_entry_cannot_cache_first_captured_shape():
     result = verify_entry(
         slot, first_shape_only, dtype=torch.float32, device="cpu", seed=0,
         shapes=[{"num_tokens": 2, "d": 8}, {"num_tokens": 5, "d": 8}],
-        graph_safe=True, graph_replays=3, _graph_backend=backend,
+        graph_replays=3, _graph_backend=backend,
     )
 
     assert not result.passed
     assert result.shape_results[0].passed
     assert not result.shape_results[1].passed
-
-
-def test_topk_graph_poison_catches_partial_selection_write():
-    # MSA serves eagerly; force graph orchestration here solely to prove that a
-    # candidate cannot leave poisoned int32 padding behind on replay.
-    slot = get_slot("attention.msa_prefill_block_score")
-    backend = _FakeGraphBackend()
-
-    def partial_during_capture(*args):
-        *values, out = args
-        inputs = dict(zip(INPUT_NAMES, values, strict=True))
-        expected = slot.invoke_reference(inputs)[0]
-        if backend.phase in {"capture", "replay"}:
-            valid = expected >= 0
-            out[valid] = expected[valid]
-        else:
-            out.copy_(expected)
-
-    result = verify_entry(
-        slot,
-        partial_during_capture,
-        dtype=torch.bfloat16,
-        device="cpu",
-        seed=0,
-        shapes=[slot.shapes[1]],
-        graph_safe=True,
-        graph_replays=3,
-        _graph_backend=backend,
-    )
-    assert not result.passed
-    assert result.shape_results[0].graph_replays == 1
-    assert "padding" in result.shape_results[0].detail
 
 
 def test_later_graph_replay_corruption_is_not_hidden_by_first_replay():
@@ -564,7 +523,7 @@ def test_later_graph_replay_corruption_is_not_hidden_by_first_replay():
 
     result = verify_entry(
         slot, stateful_capture, dtype=torch.float32, device="cpu", seed=0,
-        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=True,
+        shapes=[{"num_tokens": 2, "d": 8}],
         graph_replays=3, _graph_backend=backend,
     )
     assert not result.passed
@@ -575,20 +534,6 @@ def test_later_graph_replay_corruption_is_not_hidden_by_first_replay():
     assert outcome.replay_count == 2
     assert outcome.observation_complete
     assert outcome.failure_is_candidate_attributable
-
-
-def test_explicit_non_graph_safe_skips_graph_gate():
-    slot = get_slot("activation.silu_and_mul")
-    backend = _FakeGraphBackend()
-    result = verify_entry(
-        slot, _faithful_silu, dtype=torch.float32, device="cpu", seed=0,
-        shapes=[{"num_tokens": 2, "d": 8}], graph_safe=False,
-        _graph_backend=backend,
-    )
-    assert result.passed
-    assert not result.graph_required
-    assert not result.graph_verified
-    assert backend.replay_index == -1
 
 
 def test_ordinary_case_descriptor_binds_full_context_and_digest():
@@ -602,7 +547,6 @@ def test_ordinary_case_descriptor_binds_full_context_and_digest():
         world_size=2,
         variant_name="variant-a",
         shapes=[{"num_tokens": 2, "d": 8}],
-        graph_safe=True,
         graph_replays=3,
         _graph_backend=_FakeGraphBackend(),
     )
@@ -664,7 +608,6 @@ def test_silu_real_cuda_graph_capture_and_replay():
         device="cuda",
         seed=17,
         shapes=[{"num_tokens": 8, "d": 128}],
-        graph_safe=True,
         graph_replays=3,
     )
     assert result.passed, result.shape_results
@@ -710,7 +653,6 @@ def test_typed_strided_fp32_output_real_cuda_graph_capture_and_replay():
         device="cuda",
         seed=19,
         shapes=[{"num_tokens": 8, "d": 128}],
-        graph_safe=True,
         graph_replays=3,
     )
     assert result.passed, result.shape_results
@@ -734,7 +676,6 @@ def test_real_cuda_graph_uses_output_device_not_process_current_device():
             device="cuda:1",
             seed=23,
             shapes=[{"num_tokens": 8, "d": 128}],
-            graph_safe=True,
             graph_replays=3,
         )
         assert result.passed, result.shape_results

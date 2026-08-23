@@ -110,20 +110,6 @@ def test_every_member_must_complete_every_slot(tmp_path):
     assert "4/4" in detail
 
 
-def test_any_selected_path_fallback_disqualifies(tmp_path):
-    active = [_active(10, 0, slots=("a",), world_size=1)]
-    complete = {"slot": "a", "pid": 10, "rank": 0, "world_size": 1}
-    _write(tmp_path, "completed", complete, 0)
-    _write(tmp_path, "fallback", {**complete, "error_type": "RuntimeError"}, 0)
-    with pytest.raises(RuntimeError, match="selected-path fallbacks"):
-        engine_worker._require_execution_completion(
-            str(tmp_path),
-            active_receipts=active,
-            expected_slots=["a"],
-            expected_member_count=1,
-        )
-
-
 def test_sealed_aot_requires_load_and_use_on_every_active_member(tmp_path):
     active = [_active(10, 0, slots=("a",)), _active(11, 1, slots=("a",))]
     for index, (rank, pid) in enumerate(((0, 10), (1, 11))):
@@ -241,7 +227,7 @@ def test_total_silence_is_typed_as_the_candidate_never_executing(tmp_path):
     # boundary. The marker is the wire contract; a class name or a prose
     # fragment would be silently broken by any later edit.
     assert engine_worker.CANDIDATE_NEVER_EXECUTED_MARKER in str(caught.value)
-    assert "completed:0,fallback:0,aot_loaded:0,aot_invoked:0" in str(caught.value)
+    assert "completed:0,aot_loaded:0,aot_invoked:0" in str(caught.value)
 
 
 def test_partial_coverage_stays_infrastructure(tmp_path):

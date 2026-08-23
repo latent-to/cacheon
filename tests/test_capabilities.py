@@ -194,7 +194,6 @@ def _registry(eligibility: Eligibility) -> KernelRegistry:
 def test_registry_selection_exposes_validator_owned_fallback_reasons():
     eligibility = eligibility_from_metadata(
         {
-            "graph_safe": False,
             "quant": ["nvfp4"],
             "capabilities": {
                 "head_dim": 128,
@@ -240,25 +239,17 @@ def test_registry_selection_exposes_validator_owned_fallback_reasons():
     assert selected.use_candidate and selected.impl is selected.candidate
 
 
-def test_graph_and_quant_context_are_enforced_by_canonical_selection():
+def test_quant_context_is_enforced_by_canonical_selection():
     registry = _registry(
         Eligibility(
             dtypes=frozenset({"bfloat16"}),
             quant=frozenset({"nvfp4"}),
-            graph_safe=False,
         )
     )
     registry.enable()
     base = CallDescriptor(dtype="bfloat16", quant="nvfp4", graph_mode="eager")
     assert registry.select(
         "attention.msa_prefill_block_score", base,     ).use_candidate
-
-    graph = registry.select(
-        "attention.msa_prefill_block_score",
-        base.with_updates(graph_mode="cuda_graph"),
-    )
-    assert graph.outcome is SelectionOutcome.OUT_OF_DOMAIN
-    assert [m.field for m in graph.capability_match.mismatches] == ["graph_mode"]
 
     quant = registry.select(
         "attention.msa_prefill_block_score",
@@ -306,10 +297,6 @@ def test_legacy_domain_spellings_use_descriptor_canonicalization():
     "metadata, manifest_dtypes",
     [
         ({"capabilities": {"dtype": "float16"}}, ("bfloat16",)),
-        (
-            {"graph_safe": False, "capabilities": {"graph_mode": "cuda_graph"}},
-            (),
-        ),
     ],
 )
 def test_contradictory_variant_domain_rejects_at_registration(
@@ -330,7 +317,6 @@ def test_inverted_legacy_token_range_rejects_before_registration():
 @pytest.mark.parametrize(
     "metadata, message",
     [
-        ({"graph_safe": "false"}, "graph_safe.*boolean"),
         ({"dtypes": "bfloat16"}, "dtypes.*list of strings"),
         ({"architectures": ["sm103", 120]}, "architectures.*non-empty strings"),
         ({"quant": None}, "quant.*list of strings"),
@@ -381,7 +367,6 @@ def test_blockscore_metadata_declares_production_domain_normatively():
     metadata = {
         "dtypes": ["bfloat16"],
         "architectures": ["sm103"],
-        "graph_safe": False,
         "quant": ["dense"],
         "capabilities": {
             "dtype": "bfloat16",

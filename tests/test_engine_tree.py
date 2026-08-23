@@ -196,7 +196,6 @@ def test_singleton_materialization_projects_metadata_and_reopens(tmp_path: Path)
     assert manifest.competition is None
     assert [op.slot for op in manifest.ops] == [ref.target_id]
     metadata = json.loads((result.root / manifest.ops[0].metadata).read_text())
-    assert metadata["graph_safe"] is True
     assert "notes" not in metadata
     assert "regime" not in metadata
     assert all(path.stat().st_mode & 0o777 == 0o444 for path in result.root.rglob("*") if path.is_file())

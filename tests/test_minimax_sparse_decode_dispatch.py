@@ -15,7 +15,7 @@ from cacheon.registry import (  # noqa: E402
 from cacheon.slots import _msa_block_score_reference, get_slot  # noqa: E402
 
 
-def _registry(entry, *, graph_safe=True, capabilities=None) -> KernelRegistry:
+def _registry(entry, *, capabilities=None) -> KernelRegistry:
     registry = KernelRegistry()
     registry.register(
         KernelImpl(
@@ -23,7 +23,7 @@ def _registry(entry, *, graph_safe=True, capabilities=None) -> KernelRegistry:
             bundle_id="candidate",
             entry=entry,
             eligibility=eligibility_from_metadata(
-                {"graph_safe": graph_safe, "capabilities": capabilities or {}},
+                {"capabilities": capabilities or {}},
                 ("float32",),
             ),
         )
@@ -120,23 +120,6 @@ def test_eager_audit_runs_stock_first_and_mints_completion(monkeypatch) -> None:
     assert torch.equal(output, args[0])
     assert compared[0][0] == "attention.decode"
     assert completed == ["attention.decode"]
-
-
-def test_non_graph_safe_bundle_warms_but_graph_capture_stays_stock(monkeypatch) -> None:
-    calls: list[str] = []
-    stock = torch.full((2, 4, 8), 7.0)
-    wrapped = sparse_dispatch.make_minimax_sparse_decode_dispatcher(
-        lambda *_args, **_kwargs: stock,
-        registry=_registry(_candidate(calls), graph_safe=False),
-    )
-    monkeypatch.setattr(sparse_dispatch, "_in_cuda_graph", lambda: False)
-    wrapped(*_args())
-    monkeypatch.setattr(sparse_dispatch, "_in_cuda_graph", lambda: True)
-
-    output = wrapped(*_args())
-
-    assert output is stock
-    assert calls == ["candidate"]
 
 
 def test_selected_candidate_failure_never_falls_back_to_stock(monkeypatch) -> None:

@@ -157,7 +157,7 @@ def test_live_dispatch_selects_only_matching_finalized_nvfp4(
     registry.register(KernelImpl(
         slot="moe.fused_experts", bundle_id="candidate", entry=entry,
         prepare=prepare, eligibility=Eligibility(
-            dtypes=frozenset({"float32"}), quant=quant, graph_safe=True,
+            dtypes=frozenset({"float32"}), quant=quant,
         ),
     ))
     registry.enable()

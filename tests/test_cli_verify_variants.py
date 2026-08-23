@@ -20,14 +20,8 @@ def _write_variant_bundle(tmp_path):
     (tmp_path / "kernels" / "small.py").write_text("def run(*args):\n    return None\n")
     (tmp_path / "kernels" / "large.py").write_text("def run(*args):\n    return None\n")
 
-    small = {
-        "graph_safe": False,
-        "capabilities": {"q_len": {"max": 1}, "phase": ["prefill"]},
-    }
-    large = {
-        "graph_safe": True,
-        "capabilities": {"q_len": {"min": 2}, "phase": ["prefill"]},
-    }
+    small = {"capabilities": {"q_len": {"max": 1}, "phase": ["prefill"]}}
+    large = {"capabilities": {"q_len": {"min": 2}, "phase": ["prefill"]}}
     (tmp_path / "metadata" / "small.json").write_text(json.dumps(small))
     (tmp_path / "metadata" / "large.json").write_text(json.dumps(large))
     (tmp_path / "manifest.toml").write_text(
@@ -96,8 +90,6 @@ def test_cmd_verify_forwards_each_variant_with_its_declared_domain(
     assert large_kwargs["manifest_dtypes"] == ("bfloat16",)
     assert small_kwargs["manifest_architectures"] == ("sm_120",)
     assert large_kwargs["manifest_architectures"] == ("sm_100",)
-    assert small_kwargs["graph_safe"] is False
-    assert large_kwargs["graph_safe"] is True
     assert small_kwargs["tp_size"] is None
     assert large_kwargs["world_size"] is None
 
@@ -138,7 +130,6 @@ def test_cmd_verify_runs_two_shape_variants_through_real_verifier(
     )
     for variant, q_len, dtype in variants:
         metadata = {
-            "graph_safe": False,
             "capabilities": {
                 "dtype": dtype,
                 "head_dim": 128,
@@ -272,7 +263,6 @@ def test_cmd_verify_rejects_overlapping_variants_before_candidate_invocation(
         (tmp_path / "metadata" / f"{variant}.json").write_text(
             json.dumps(
                 {
-                    "graph_safe": False,
                     "capabilities": {
                         "dtype": "float32",
                         "q_len": q_domain,
@@ -329,13 +319,13 @@ def test_cmd_verify_rejects_overlapping_variants_before_candidate_invocation(
     assert "'left' and 'right'" in output
 
 
-def _write_collective_bundle(tmp_path, *, graph_safe=True):
+def _write_collective_bundle(tmp_path):
     (tmp_path / "kernels").mkdir()
     (tmp_path / "metadata").mkdir()
     (tmp_path / "kernels" / "all_reduce.py").write_text(
         "def all_reduce(x, out, group=None):\n    raise AssertionError('mocked')\n"
     )
-    metadata = {"graph_safe": graph_safe, "architectures": ["sm120"]}
+    metadata = {"architectures": ["sm120"]}
     (tmp_path / "metadata" / "all_reduce.json").write_text(json.dumps(metadata))
     (tmp_path / "manifest.toml").write_text(
         'bundle_id = "cli-collective-domain"\n'
@@ -388,10 +378,8 @@ def test_cmd_verify_forwards_collective_graph_and_capability_policy(
     assert cli.cmd_verify(args) == expected_rc
     assert len(calls) == 1
     _, kwargs = calls[0]
-    assert kwargs["graph_safe"] is True
     assert kwargs["dtype_name"] == "bfloat16"
     assert kwargs["world_size"] == 4
     assert kwargs["tp_size"] == 4
-    assert kwargs["eligibility"].graph_safe is True
     assert kwargs["eligibility"].architectures == frozenset({"sm120"})
     assert kwargs["eligibility"].dtypes == frozenset({"bfloat16"})

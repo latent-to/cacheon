@@ -361,10 +361,6 @@ def _load_candidate_bundle_locked(
                 return
         _load_bundle_into_registry(bundle)
         REGISTRY.enable()
-        if _truthy(os.environ.get("CACHEON_STRICT")):
-            # Surface kernel errors instead of silently falling back (debug/proof: a
-            # failing kernel crashes the engine rather than masquerading as baseline).
-            REGISTRY.set_strict(True)
         _bundle_loaded = True
         _bundle_pending = None
         logger.info("cacheon: bundle %s active -> slots %s", bundle, REGISTRY.slots())

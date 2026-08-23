@@ -15,27 +15,13 @@ from cacheon.registry import Eligibility, KernelImpl, KernelRegistry  # noqa: E4
 @pytest.fixture()
 def events(monkeypatch):
     completed: list[str] = []
-    fallbacks: list[tuple[str, str]] = []
     monkeypatch.setattr(dispatch._receipts, "completed", completed.append)
-    monkeypatch.setattr(
-        dispatch._receipts,
-        "fallback",
-        lambda slot, exc: fallbacks.append((slot, type(exc).__name__)),
-    )
     monkeypatch.setattr(dispatch._audit, "sampled", lambda: False)
     monkeypatch.setattr(dispatch, "_moe_data_parallel_world_size", lambda: 1)
-    return completed, fallbacks
+    return completed
 
 
-def _registry(
-    slot,
-    entry,
-    *,
-    prepare=None,
-    graph_safe=False,
-    strict=False,
-    dtype="float32",
-):
+def _registry(slot, entry, *, prepare=None, dtype="float32"):
     registry = KernelRegistry()
     registry.register(
         KernelImpl(
@@ -43,13 +29,10 @@ def _registry(
             bundle_id="test",
             entry=entry,
             prepare=prepare,
-            eligibility=Eligibility(
-                dtypes=frozenset({dtype}), graph_safe=graph_safe
-            ),
+            eligibility=Eligibility(dtypes=frozenset({dtype})),
         )
     )
     registry.enable()
-    registry.set_strict(strict)
     return registry
 
 
@@ -57,8 +40,8 @@ def _boom(*_args, **_kwargs):
     raise RuntimeError("candidate path failed")
 
 
-def test_op_dispatchers_receipt_success_and_fallback(events):
-    completed, fallbacks = events
+def test_op_dispatchers_receipt_success_and_never_serve_stock(events):
+    completed = events
     baseline = object()
     silu = dispatch.make_silu_and_mul_dispatcher(
         lambda *_: baseline,
@@ -82,41 +65,40 @@ def test_op_dispatchers_receipt_success_and_fallback(events):
     assert rms(rms_self, torch.randn(2, 8)) is not baseline
     assert completed == ["activation.silu_and_mul", "norm.rmsnorm"]
 
+    # A candidate that raises takes the run down with it. Serving stock instead
+    # would put stock inside a run that still carries the candidate's name.
     silu_bad = dispatch.make_silu_and_mul_dispatcher(
-        lambda *_: baseline,
+        lambda *_: pytest.fail("stock served inside a candidate arm"),
         registry=_registry("activation.silu_and_mul", _boom),
     )
     rms_bad = dispatch.make_rmsnorm_dispatcher(
-        lambda *_: baseline, registry=_registry("norm.rmsnorm", _boom)
+        lambda *_: pytest.fail("stock served inside a candidate arm"),
+        registry=_registry("norm.rmsnorm", _boom),
     )
-    assert silu_bad(object(), torch.randn(2, 8)) is baseline
-    assert rms_bad(rms_self, torch.randn(2, 8)) is baseline
-    assert fallbacks == [
-        ("activation.silu_and_mul", "RuntimeError"),
-        ("norm.rmsnorm", "RuntimeError"),
-    ]
+    for call in (
+        lambda: silu_bad(object(), torch.randn(2, 8)),
+        lambda: rms_bad(rms_self, torch.randn(2, 8)),
+    ):
+        with pytest.raises(RuntimeError, match="candidate path failed"):
+            call()
+    assert completed == ["activation.silu_and_mul", "norm.rmsnorm"]
 
 
-def test_fallback_requires_successful_stock_and_strict_never_falls_back(events):
-    completed, fallbacks = events
-
-    def stock_fails(*_args):
-        raise ValueError("stock also failed")
-
+def test_out_of_domain_call_serves_stock_and_mints_no_receipt(events):
+    # A registered candidate whose declared domain excludes this call is not a
+    # fallback: stock is the correct answer, and no receipt is minted, so the
+    # evidence cannot claim the candidate ran.
+    baseline = object()
     wrapped = dispatch.make_silu_and_mul_dispatcher(
-        stock_fails, registry=_registry("activation.silu_and_mul", _boom)
+        lambda *_: baseline,
+        registry=_registry(
+            "activation.silu_and_mul",
+            lambda x, out: out.copy_(x[..., : x.shape[-1] // 2]),
+            dtype="float16",
+        ),
     )
-    with pytest.raises(ValueError, match="stock also failed"):
-        wrapped(object(), torch.randn(2, 8))
-    assert completed == fallbacks == []
-
-    strict = dispatch.make_silu_and_mul_dispatcher(
-        lambda *_: pytest.fail("strict mode called stock"),
-        registry=_registry("activation.silu_and_mul", _boom, strict=True),
-    )
-    with pytest.raises(RuntimeError, match="candidate path failed"):
-        strict(object(), torch.randn(2, 8))
-    assert completed == fallbacks == []
+    assert wrapped(object(), torch.randn(2, 8)) is baseline
+    assert events == []
 
 
 def _moe_call(entry, *, slot="moe.fused_experts"):
@@ -140,7 +122,7 @@ def _moe_call(entry, *, slot="moe.fused_experts"):
 
 
 def test_moe_records_success_but_never_falls_back_after_selection(events, monkeypatch):
-    completed, fallbacks = events
+    completed = events
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
 
     def good_entry(x, _ids, _weights, _prepared, out):
@@ -152,11 +134,10 @@ def test_moe_records_success_but_never_falls_back_after_selection(events, monkey
     with pytest.raises(RuntimeError, match="candidate path failed"):
         bad(layer, x, topk)
     assert completed == ["moe.fused_experts"]
-    assert fallbacks == []
 
 
 def test_moe_selected_audit_prelude_failure_aborts(events, monkeypatch):
-    completed, fallbacks = events
+    completed = events
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
     monkeypatch.setattr(dispatch._audit, "sampled", lambda: True)
     monkeypatch.setattr(
@@ -172,11 +153,10 @@ def test_moe_selected_audit_prelude_failure_aborts(events, monkeypatch):
     with pytest.raises(RuntimeError, match="clone failed"):
         wrapped(layer, x, topk)
     assert completed == []
-    assert fallbacks == []
 
 
 def test_allreduce_dispatcher_receipts_and_topology_skip(events, monkeypatch):
-    completed, fallbacks = events
+    completed = events
     monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
     monkeypatch.setattr(dispatch, "_allreduce_group_role", lambda *_args: "tp")
     x = torch.randn(2, 4)
@@ -198,9 +178,10 @@ def test_allreduce_dispatcher_receipts_and_topology_skip(events, monkeypatch):
     )
     with pytest.raises(RuntimeError, match="candidate path failed"):
         bad(coordinator, x)
+    # Single-rank is outside the slot contract (world_size > 1), so stock serves
+    # it and no receipt is minted.
     assert good(SimpleNamespace(world_size=1, device_group=object()), x) == "stock"
     assert completed == ["collective.all_reduce"]
-    assert fallbacks == []
 
 
 def _fusion_baseline(x, residual, *_args, **_kwargs):
@@ -208,7 +189,7 @@ def _fusion_baseline(x, residual, *_args, **_kwargs):
 
 
 def test_shallow_and_deep_fusion_receipts(events, monkeypatch):
-    completed, fallbacks = events
+    completed = events
     monkeypatch.setenv("CACHEON_ARFUSION_SEAM", "1")
     group = SimpleNamespace(size=lambda: 2)
     monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: group)
@@ -303,11 +284,10 @@ def test_shallow_and_deep_fusion_receipts(events, monkeypatch):
         "collective.ar_residual_rmsnorm",
         "collective.moe_finalize_ar_rmsnorm",
     ]
-    assert fallbacks == []
 
 
 def test_deep_trusted_recovery_is_not_candidate_fallback(events, monkeypatch):
-    completed, fallbacks = events
+    completed = events
     monkeypatch.setattr(dispatch, "_arfusion_group", lambda _use_attn: None)
     monkeypatch.setattr(dispatch._moe_export, "trusted_finalize", lambda _exp, inp: inp)
     monkeypatch.setattr(dispatch._moe_export, "orphaned", lambda _exp: None)
@@ -328,11 +308,11 @@ def test_deep_trusted_recovery_is_not_candidate_fallback(events, monkeypatch):
         baseline_fn=_fusion_baseline,
     )
     assert result[0] == "stock"
-    assert completed == fallbacks == []
+    assert completed == []
 
 
-def test_deep_failed_recovery_does_not_claim_stock_was_served(events, monkeypatch):
-    completed, fallbacks = events
+def test_deep_export_mismatch_raises_when_a_candidate_is_registered(events, monkeypatch):
+    completed = events
     monkeypatch.setattr(
         dispatch, "_arfusion_group", lambda _use_attn: SimpleNamespace(size=lambda: 2)
     )
@@ -348,10 +328,12 @@ def test_deep_failed_recovery_does_not_claim_stock_was_served(events, monkeypatc
     monkeypatch.setattr(
         dispatch._moe_export,
         "trusted_finalize",
-        lambda *_args: (_ for _ in ()).throw(ValueError("recovery failed")),
+        lambda *_args: pytest.fail("stock recovery ran inside a candidate arm"),
     )
     registry = _registry("collective.moe_finalize_ar_rmsnorm", _boom)
-    with pytest.raises(ValueError, match="recovery failed"):
+    # A deep candidate is registered, so trusted recovery is off the table: the
+    # export mismatch is fatal rather than something to quietly finish in stock.
+    with pytest.raises(ValueError, match="no producer-bound selection"):
         dispatch._deep_consume(
             {"T": 2, "K": 1, "hid": 4},
             torch.randn(2, 4),
@@ -366,4 +348,4 @@ def test_deep_failed_recovery_does_not_claim_stock_was_served(events, monkeypatc
             registry=registry,
             baseline_fn=_fusion_baseline,
         )
-    assert completed == fallbacks == []
+    assert completed == []

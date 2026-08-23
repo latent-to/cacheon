@@ -1,7 +1,6 @@
 {
   "op": "attention.decode",
   "dtypes": ["float32", "bfloat16", "float16"],
-  "graph_safe": true,
   "max_last_dim": 256,
   "capabilities": {
     "model": "MiniMax-M3",

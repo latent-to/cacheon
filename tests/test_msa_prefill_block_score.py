@@ -141,7 +141,7 @@ def test_reference_preserves_padding_and_forces_initial_and_local_blocks():
 
 def test_faithful_candidate_verifies_for_multi_request_head_and_ragged_shapes():
     result = verify_entry(
-        SLOT, _faithful, dtype=torch.float32, device="cpu", graph_safe=False,
+        SLOT, _faithful, dtype=torch.float32, device="cpu",
     )
     assert result.passed, format_verify(result)
     assert all(row.metric == "overlap" for row in result.shape_results)
@@ -151,7 +151,7 @@ def test_faithful_candidate_verifies_for_multi_request_head_and_ragged_shapes():
 def test_wrong_selection_causality_or_paging_fails(candidate):
     shape = SLOT.shapes[2] if candidate is not _wrong_selection else SLOT.shapes[0]
     result = verify_entry(
-        SLOT, candidate, dtype=torch.float32, device="cpu", graph_safe=False,
+        SLOT, candidate, dtype=torch.float32, device="cpu",
         shapes=[shape],
     )
     assert not result.passed, format_verify(result)
@@ -195,7 +195,6 @@ def test_v2_accepts_declared_131k_only_domain():
         eligibility=_production_eligibility(
             q_len=1, head_dim=128, block_size=128, kv_len=131072
         ),
-        graph_safe=False,
     )
     assert result.passed and result.domain_coverage_complete, format_verify(result)
     assert any(

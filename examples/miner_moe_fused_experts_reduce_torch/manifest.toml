@@ -3,8 +3,8 @@
 # prepare lays out the expert weights; fused_experts_reduce computes the local experts
 # AND the cross-rank reduce, given the process group. Verified DISTRIBUTED vs the fp32
 # cross-rank sum. Pure torch here (a correctness demo); a real submission overlaps the
-# expert GEMM with the reduce. metadata sets graph_safe=false (this Python-loop demo is
-# eager-only); a real graph-capturable kernel sets graph_safe=true to be scored graphs-on.
+# expert GEMM with the reduce. This Python-loop demo is eager-only, so it is correct but
+# not crownable: the slot serves from the captured decode graph and capture is scored.
 
 bundle_id = "example-moe-fused-experts-reduce-torch"
 abi_version = "cacheon-op-abi-v0"

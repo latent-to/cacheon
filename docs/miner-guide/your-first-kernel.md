@@ -159,7 +159,6 @@ metadata = "metadata/silu_sm90.json"
 
 ```json
 {
-  "graph_safe": true,
   "capabilities": {
     "num_tokens": {"min": 1, "max": 4096}
   }

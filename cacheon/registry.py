@@ -47,15 +47,6 @@ class Eligibility:
     dtypes: frozenset[str] = frozenset()
     architectures: frozenset[str] = frozenset()
     max_last_dim: Optional[int] = None  # cap on x.shape[-1]
-    # The miner DECLARES the kernel is CUDA-graph-capturable: static shapes, no host
-    # syncs (.item()/.cpu()), no data-dependent Python control flow, writes only to the
-    # validator-allocated buffer. Required to run the block/collective seams under the
-    # scoring config (graphs ON) — that is the ONLY regime a real MoE/comms win is worth
-    # anything in (graphs-off cripples the baseline ~4.5-6.5x). Default False: an
-    # undeclared kernel stays eager-only (so it can't wedge graph capture); the seam
-    # falls back to the trusted baseline in-graph. A kernel that lies (declares graph_safe
-    # but isn't) either errors at capture -> fallback, or is caught by the fidelity gate.
-    graph_safe: bool = False
     # The quantization formats this kernel's (prepare, forward) handle, e.g.
     # ``{"nvfp4"}`` or ``{"fp8"}``. EMPTY (default) means the kernel takes DENSE
     # (unquantized) expert weights only. The MoE dispatcher pairs a kernel to a layer
@@ -207,9 +198,6 @@ class Eligibility:
                 _outside("quant", f"one of {sorted(self.quant)!r}", descriptor["quant"])
         elif descriptor.get("quant") not in (None, "dense"):
             _outside("quant", "dense", descriptor["quant"])
-        if descriptor.get("graph_mode") == "cuda_graph" and not self.graph_safe:
-            _outside("graph_mode", "eager (graph_safe is false)", "cuda_graph")
-
         mismatches.extend(self.capabilities.match(descriptor).mismatches)
         # A field may be constrained by both legacy and new metadata.  Preserve
         # the intersection semantics but avoid duplicate identical diagnostics.
@@ -290,8 +278,6 @@ def _add_eligibility_constraints(
             eligibility.min_num_tokens, eligibility.max_num_tokens
         )
     _field("quant").allow(set(eligibility.quant) or {"dense"})
-    if not eligibility.graph_safe:
-        _field("graph_mode").excluded.add("cuda_graph")
 
     complete = True
     for predicate in eligibility.capabilities.predicates:
@@ -415,7 +401,6 @@ class KernelRegistry:
         # match a call or stock is served.
         self._by_slot: dict[str, list[KernelImpl]] = {}
         self._active: bool = False
-        self._strict: bool = False  # if True, a kernel exception aborts instead of falling back
         self._lock = threading.Lock()
 
     # ---- registration (validator-side) ----
@@ -467,13 +452,6 @@ class KernelRegistry:
     @property
     def active(self) -> bool:
         return self._active
-
-    @property
-    def strict(self) -> bool:
-        return self._strict
-
-    def set_strict(self, value: bool) -> None:
-        self._strict = value
 
     # ---- lookup (dispatcher-side, hot path) ----
 
@@ -618,10 +596,6 @@ def eligibility_from_metadata(
             raise ValueError(f"metadata {name!r} must contain non-empty strings")
         return {value for value in values}
 
-    graph_safe = meta.get("graph_safe", False)
-    if not isinstance(graph_safe, bool):
-        raise ValueError("metadata 'graph_safe' must be a boolean")
-
     def _canonical_declared(
         field_name: str, values: set[str] | tuple[str, ...]
     ) -> set[str]:
@@ -667,7 +641,6 @@ def eligibility_from_metadata(
         dtypes=frozenset(dtypes),
         architectures=frozenset(archs),
         max_last_dim=_optional_bound("max_last_dim"),
-        graph_safe=graph_safe,
         quant=frozenset(_string_values("quant")),
         max_num_tokens=_optional_bound("max_num_tokens"),
         min_num_tokens=_optional_bound("min_num_tokens"),

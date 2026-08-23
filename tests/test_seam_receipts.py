@@ -232,14 +232,10 @@ def test_detected_identity_overrides_payload(receipt_dir, monkeypatch):
     assert (got["pid"], got["rank"], got["world_size"]) == (7, 1, 2)
 
 
-def test_completed_and_fallback_are_independently_once(receipt_dir):
+def test_completed_is_written_once_per_slot(receipt_dir):
     for _ in range(3):
         receipts.completed("norm.rmsnorm")
-        receipts.fallback("norm.rmsnorm", RuntimeError("candidate path failed"))
-    completed = receipts.collect(receipt_dir, "completed")
-    fallback = receipts.collect(receipt_dir, "fallback")
-    assert len(completed) == len(fallback) == 1
-    assert fallback[0]["error_type"] == "RuntimeError"
+    assert len(receipts.collect(receipt_dir, "completed")) == 1
 
 
 @pytest.mark.parametrize(
@@ -334,16 +330,6 @@ def test_scheduler_rejects_partial_native_artifact_authority(
             _load_bundle_into_registry("/sealed/candidate-tree")
     finally:
         REGISTRY.clear()
-
-
-def test_unprintable_fallback_error_never_breaks_receipt(receipt_dir):
-    class BadString(RuntimeError):
-        def __str__(self):
-            raise RuntimeError("format failed")
-
-    receipts.fallback("slot.a", BadString())
-    got = receipts.collect(receipt_dir, "fallback")[0]
-    assert got["error"] == "<unprintable exception>"
 
 
 @pytest.mark.parametrize("payload", ("{", "[]"))
@@ -529,19 +515,6 @@ def test_coverage_rejects_duplicate_and_unexpected_completion():
     )["ok"]
 
 
-def test_any_fallback_disqualifies_complete_execution():
-    active = _active_members(1)
-    completed = [{"slot": "a", "pid": 10, "rank": 0, "world_size": 1}]
-    ok, desc = receipts.completed_gate(
-        completed,
-        expected_slots=("a",),
-        member_receipts=active,
-        expected_member_count=1,
-        fallback_receipts=[{"unexpected": "still disqualifying"}],
-    )
-    assert not ok and "fallbacks" in desc
-
-
 def test_scope_lets_each_swap_generation_receipt_the_same_slot(
     tmp_path, monkeypatch
 ):
@@ -720,7 +693,6 @@ def test_counts_distinguish_unobservable_from_an_observed_zero(
     assert receipts.counts_for_scope(5) == {
         "active": 0,
         "completed": 0,
-        "fallback": 0,
         "load_failed": 0,
     }
 

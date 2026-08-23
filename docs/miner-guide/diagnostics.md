@@ -180,7 +180,7 @@ Graph failures are classified separately:
 
 Common causes are host synchronization, data-dependent Python branching,
 capture-time compilation/allocation, stale pointers, partial replay writes, or
-collective ordering changes. `graph_safe: true` is only a declaration.
+collective ordering changes.
 
 Do not “fix” graph failure by disabling CUDA graphs in a local profile; that changes the
 serving regime. See [Graph evidence](graph-safety.md).

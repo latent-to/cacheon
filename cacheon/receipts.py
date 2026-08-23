@@ -16,16 +16,21 @@ launch, ranks write receipts there, the driver requires them:
                       lets the driver report "bad bundle" instead of "no bootstrap".
   * ``completed``   — a dispatcher successfully produced the model-facing output
                       after invoking the selected implementation; once/slot/process.
-  * ``fallback``    — a selected path failed and the dispatcher served the trusted
-                      baseline instead; once/slot/process and disqualifying.
+
+Retired 2026-08-23: ``fallback``, and with it every path that could write one.
+A dispatcher that had reached a candidate used to catch its exception and serve
+stock instead, receipting the substitution. That made a candidate arm serve stock
+mid-run, which is not a measurement of the candidate or of stock. An invoked
+entry now either produces the output or raises. The same change retired
+``KernelRegistry.strict``, which existed only to turn that substitution off.
 
 Retired 2026-08-23: ``fired``. It meant "the registry RESOLVED an impl", which is
 weaker than it reads — the caller could still decline afterwards — so eight of
 eight production call sites had to opt out of the write, and a duplicate probe-only
 lookup method existed purely to avoid it. Once the entry is invoked there are
-exactly two outcomes, ``completed`` or ``fallback``, and either one proves
-selection. A third kind that is implied by both carries no information and cost an
-API parameter at every call site to keep honest.
+exactly one outcome that can be receipted, ``completed``, and it proves selection.
+A second kind implied by the first carries no information and cost an API parameter
+at every call site to keep honest.
 
 ``completed`` remains diagnostic execution evidence, not hostile-code proof.
 Candidate Python shares the scheduler process today and can forge process-local
@@ -48,11 +53,10 @@ The receipt now carries two facts the file's existence never did:
                    windows replay.
 
 ``captured`` is the one that matters, because a scored window does not re-enter
-Python at all: the graph is replayed by the driver. A candidate that did not
-declare ``graph_safe`` is skipped during capture, the captured graph holds STOCK,
-every replay serves stock — and the ``completed`` receipt was already on disk,
-written during eager warmup minutes earlier. That is a phantom pass wearing a
-receipt. ``captured=False`` with ``calls>0`` is exactly that shape.
+Python at all: the graph is replayed by the driver. A candidate absent from the
+captured graph serves stock on every replay — while its ``completed`` receipt sat
+on disk already, written during eager warmup minutes earlier. That is a phantom
+pass wearing a receipt. ``captured=False`` with ``calls>0`` is exactly that shape.
 
 Counting costs one list increment per call. Capture detection is delegated to the
 dispatch layer, which already owns it (pinned, legacy, and direct CUDA capture
@@ -84,7 +88,6 @@ _IDENTITY_KINDS = frozenset(
         "active",
         "load_failed",
         "completed",
-        "fallback",
         "audit",
         "aot_loaded",
         "aot_invoked",
@@ -374,11 +377,6 @@ def flush_calls() -> None:
 atexit.register(flush_calls)
 
 
-def fallback(slot: str, error: BaseException) -> None:
-    """Record that a selected path failed and trusted stock was served."""
-    _write_execution_once("fallback", slot, error=error)
-
-
 class ReceiptFormatError(RuntimeError):
     """A receipt file exists but is unreadable or not a JSON object."""
 
@@ -400,7 +398,7 @@ def collect(rdir: str | Path, kind: str) -> list[dict]:
     return out
 
 
-_EXECUTION_KINDS = ("active", "completed", "fallback", "load_failed")
+_EXECUTION_KINDS = ("active", "completed", "load_failed")
 
 
 def _summarize_calls(rows: list[dict]) -> dict:
@@ -694,23 +692,19 @@ def completed_gate(
     completed_receipts: Iterable[dict],
     *,
     expected_slots: Iterable[str],
-    member_receipts: Iterable[dict] = (),
+    member_receipts: Iterable[dict],
     expected_member_count: int | None = None,
-    fallback_receipts: Iterable[dict] = (),
 ) -> tuple[bool, str]:
-    """Require one completion per expected slot/member and zero selected fallbacks."""
+    """Require one completion per expected slot and member."""
     complete = list(completed_receipts)
     members = list(member_receipts)
-    fallbacks = list(fallback_receipts)
     detail = coverage_matrix(
         complete,
         expected_slots=expected_slots,
         member_receipts=members,
         expected_member_count=expected_member_count,
     )
-    # This directory is fresh per launch. Any fallback file—including a stale,
-    # unexpected or semantically malformed one—makes the evidence incoherent.
-    ok = detail["ok"] and not fallbacks
+    ok = detail["ok"]
     desc = (
         f"completed coverage {detail['covered_pairs']}/{detail['expected_pairs']} "
         "slot/member pairs"
@@ -728,6 +722,4 @@ def completed_gate(
             f"; members={detail['observed_member_count']}"
             f"/{detail['expected_member_count']}"
         )
-    if fallbacks:
-        desc += f"; selected-path fallbacks={fallbacks}"
     return ok, desc

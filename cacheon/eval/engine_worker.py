@@ -226,7 +226,6 @@ def _require_execution_completion(
     from cacheon import receipts
 
     completed = receipts.collect(receipt_dir, "completed")
-    fallbacks = receipts.collect(receipt_dir, "fallback")
     aot_loaded = receipts.collect(receipt_dir, "aot_loaded")
     aot_invoked = receipts.collect(receipt_dir, "aot_invoked")
     passed, detail = receipts.completed_gate(
@@ -234,11 +233,10 @@ def _require_execution_completion(
         expected_slots=expected_slots,
         member_receipts=active_receipts,
         expected_member_count=expected_member_count,
-        fallback_receipts=fallbacks,
     )
     if not passed:
         observed = (
-            f"observed_receipts=completed:{len(completed)},fallback:{len(fallbacks)},"
+            f"observed_receipts=completed:{len(completed)},"
             f"aot_loaded:{len(aot_loaded)},aot_invoked:{len(aot_invoked)}"
         )
         message = (
@@ -251,7 +249,7 @@ def _require_execution_completion(
         # the candidate's own defect: the seam wrote ``active`` into this very
         # root, so the path works and nothing dispatched. Anything partial is
         # ambiguous and stays infrastructure.
-        if not (completed or fallbacks or aot_loaded or aot_invoked):
+        if not (completed or aot_loaded or aot_invoked):
             raise CandidateNeverExecutedError(
                 message + "; " + CANDIDATE_NEVER_EXECUTED_MARKER
             )

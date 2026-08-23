@@ -156,6 +156,12 @@ class SlotSpec:
     # deliberately absent. Python scalars are capture-static; a future slot that needs
     # one to vary within a graph bucket must tensorize it.
     graph_dynamic_inputs: tuple[str, ...] = ()
+    # Is this slot's live serving seam inside the captured CUDA-graph region? The
+    # validator owns this, not the miner: production captures the candidate
+    # unconditionally, so a slot that serves from a captured region must PROVE
+    # capture+replay to be crownable. Only prefill seams, which SGLang runs eager,
+    # set this False.
+    serving_graph_captured: bool = True
     # Additive typed-output ABI. Existing slots inherit dtype/device and remain
     # contiguous through ``out_shapes``.
     output_spec: Optional[Callable[[dict], OutputSpec]] = None

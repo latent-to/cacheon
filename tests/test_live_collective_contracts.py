@@ -92,14 +92,11 @@ def _register(
     return registry
 
 
-def _offline(
-    shape, *, slot_name=None, world_size=2, graph_safe=False, model_key=None
-):
+def _offline(shape, *, slot_name=None, world_size=2, model_key=None):
     return _collective_descriptor(
         shape,
         dtype_name="float32",
         device="cpu",
-        graph_safe=graph_safe,
         model_key=model_key,
         architecture=None,
         world_size=world_size,
@@ -133,18 +130,18 @@ def _assert_two_phase_parity(registry, slot, expected):
     assert all(row[1] == expected for row in selections)
 
 
-@pytest.mark.parametrize("graph_safe", (False, True))
+@pytest.mark.parametrize("capturing", (False, True))
 def test_allreduce_live_descriptor_exactly_matches_offline(
-    monkeypatch, graph_safe
+    monkeypatch, capturing
 ):
     monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
-    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: graph_safe)
+    monkeypatch.setattr(dispatch, "_in_cuda_graph", lambda: capturing)
     group = _Group(2)
     registry = _register(
         ALL_REDUCE,
         lambda x, out, _group: out.copy_(x),
         eligibility=Eligibility(
-            dtypes=frozenset({"float32"}), graph_safe=graph_safe
+            dtypes=frozenset({"float32"})
         ),
     )
     wrapped = dispatch.make_allreduce_dispatcher(
@@ -156,7 +153,7 @@ def test_allreduce_live_descriptor_exactly_matches_offline(
 
     assert torch.equal(result, x)
     expected = _offline({"num_tokens": 3, "hidden": 8})
-    if graph_safe:
+    if capturing:
         expected = expected.with_updates(graph_mode="cuda_graph")
     _assert_two_phase_parity(
         registry,
@@ -253,7 +250,6 @@ def test_collective_model_constraint_is_consistently_unavailable_until_arena_bin
         {"num_tokens": 3, "hidden": 8},
         dtype_name="float32",
         device="cpu",
-        graph_safe=False,
         model_key="validator/local/model-path",
         architecture=None,
         world_size=2,

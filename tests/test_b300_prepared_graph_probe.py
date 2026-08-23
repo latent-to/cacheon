@@ -335,7 +335,6 @@ def test_singleton_execution_routes_exact_ordinary_kwargs_and_returns_restart_by
         "jitter_seed": request.policy.jitter_seed,
         "model_key": request.policy.model_profile_key,
         "override_point": op.override_point,
-        "graph_safe": True,
         "graph_replays": request.policy.expected_graph_replays,
         "eligibility_metadata": json.loads(
             (singleton.prepared.binding.tree.root / op.metadata).read_text()
@@ -652,7 +651,7 @@ def test_internal_ordinary_seam_preserves_prepare_override_metadata_and_bundle_p
     root = tmp_path.resolve()
     (root / "kernel.py").write_text("def entry(): pass\n")
     (root / "metadata.json").write_text(
-        json.dumps({"graph_safe": True, "dtypes": ["bfloat16"]})
+        json.dumps({"dtypes": ["bfloat16"]})
     )
     op = OpEntry(
         "activation.silu_and_mul",
@@ -681,7 +680,6 @@ def test_internal_ordinary_seam_preserves_prepare_override_metadata_and_bundle_p
     assert seen["prepare_name"] == "prepare"
     assert seen["override_point"] == "epilogue"
     assert seen["eligibility_metadata"] == {
-        "graph_safe": True,
         "dtypes": ["bfloat16"],
     }
     assert seen["bundle_path"] == str(root)
@@ -733,10 +731,10 @@ def test_multi_variant_singleton_executes_in_sorted_authority_order(
     )
     metadata = source / "metadata"
     (metadata / "small.json").write_text(
-        json.dumps({"dtypes": ["bfloat16"], "graph_safe": True, "max_num_tokens": 32})
+        json.dumps({"dtypes": ["bfloat16"], "max_num_tokens": 32})
     )
     (metadata / "large.json").write_text(
-        json.dumps({"dtypes": ["bfloat16"], "graph_safe": True, "min_num_tokens": 33})
+        json.dumps({"dtypes": ["bfloat16"], "min_num_tokens": 33})
     )
     (source / "manifest.toml").write_text(
         """bundle_id = "multi-variant-singleton"

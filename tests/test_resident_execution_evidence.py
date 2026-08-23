@@ -61,13 +61,6 @@ class TestSummary:
         rows = {rank: _ack(7) for rank in range(4)}
         assert summarize_rank_acks(rows, tp_size=4) == ResidentExecutionEvidence(7, 4)
 
-    def test_a_rank_that_fell_back_did_not_execute_the_candidate(self) -> None:
-        # Falling back means the seam selected the candidate and then served the
-        # trusted baseline: a stock measurement wearing a candidate's name.
-        rows = {rank: _ack(7) for rank in range(4)}
-        rows[2] = _ack(7, completed=1, fallback=1)
-        assert summarize_rank_acks(rows, tp_size=4) == ResidentExecutionEvidence(7, 3)
-
     def test_a_rank_that_failed_to_load_did_not_execute_the_candidate(self) -> None:
         rows = {rank: _ack(7) for rank in range(4)}
         rows[0] = _ack(7, completed=0, load_failed=1)

@@ -929,7 +929,6 @@ def verify_entry(
     seed: int = 0,
     shapes: Optional[list[dict]] = None,
     jitter_seed: Optional[int] = None,
-    graph_safe: Optional[bool] = None,
     graph_replays: int = _DEFAULT_GRAPH_REPLAYS,
     eligibility: Optional[Eligibility] = None,
     architecture: Optional[str] = None,
@@ -947,11 +946,12 @@ def verify_entry(
     the miner's ``prepare`` callable too — it runs once on the raw weights and its
     result is handed to ``entry`` as ``prepared`` (otherwise ``prepared`` is None).
 
-    On CUDA, op slots are graph-verified by default because their serving seam is
-    always captured.  Block slots are graph-verified when the caller passes their
-    declared ``graph_safe=True`` metadata.  CPU runs retain the eager numerical gate
-    but return ``graph_required=True, graph_verified=False`` when graph proof was
-    requested.  With ``eligibility``, validator code describes every generated
+    On CUDA, a slot whose live serving seam sits inside the captured region is
+    graph-verified — the validator owns that fact via
+    ``SlotSpec.serving_graph_captured``; a candidate cannot declare itself out of
+    it.  CPU runs retain the eager numerical gate but return
+    ``graph_required=True, graph_verified=False``.  With ``eligibility``, validator
+    code describes every generated
     call before invocation: off-domain shapes are reported N/A without entering
     miner code, and a domain matching zero catalog shapes fails verification.
     ``_graph_backend`` is a private CPU-test hook; production must omit it.
@@ -962,7 +962,7 @@ def verify_entry(
             "cacheon.verify_collective.verify_collective, not the single-process verify_entry"
         )
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    graph_required = slot.kind == "op" if graph_safe is None else bool(graph_safe)
+    graph_required = slot.serving_graph_captured
     graph_capable_run = str(device).startswith("cuda") or _graph_backend is not None
     verification_graph_mode = (
         "cuda_graph" if graph_required and graph_capable_run else "eager"
@@ -1444,7 +1444,6 @@ def verify_entry_from_source(
     jitter_seed: Optional[int] = None,
     model_key: Optional[str] = None,
     override_point: Optional[str] = None,
-    graph_safe: Optional[bool] = None,
     graph_replays: int = _DEFAULT_GRAPH_REPLAYS,
     eligibility_metadata: Optional[dict] = None,
     manifest_dtypes: tuple[str, ...] = (),
@@ -1521,7 +1520,7 @@ def verify_entry_from_source(
             eligibility_metadata, manifest_dtypes, manifest_architectures
         )
     return verify_entry(slot, entry, prepare=prepare, dtype=dtype, device=device, seed=seed,
-                        shapes=shapes, jitter_seed=jitter_seed, graph_safe=graph_safe,
+                        shapes=shapes, jitter_seed=jitter_seed,
                         graph_replays=graph_replays, eligibility=eligibility,
                         tp_size=tp_size, world_size=world_size,
                         model_key=model_key,

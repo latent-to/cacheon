@@ -128,6 +128,7 @@ def build_slot(SlotSpec, Correctness, tolerances, call_abi):
         ),)),
         invoke_reference=lambda i: [_reference(i)], invoke_entry=_invoke,
         graph_dynamic_inputs=("q", "index_k_cache"),
+        serving_graph_captured=False,  # prefill runs eager in SGLang
         shapes=(
             {"q_len": 7, "prefix_blocks": 5, "head_dim": 16, "block_size": 4,
              "batch_size": 2, "num_q_heads": 3, "topk": 5},

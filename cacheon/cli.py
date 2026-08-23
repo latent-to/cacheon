@@ -2081,10 +2081,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
                   "(activation + low-bit metric)")
         slot = slot_for_model(op.slot, model_key)
         src = resolve_source(args.bundle, op)
-        graph_safe = None if slot.kind == "op" else bool(
-            metadata.get("graph_safe", False)
-        )
-
         scan = scan_path(src)
         if not scan.ok:
             print(f"  [FAIL] {label}: failed policy scan")
@@ -2107,7 +2103,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
                                        # rebuild plan (declared cuda_sources) must apply
                                        # in the ranks that load the kernel
                                        bundle_path=str(args.bundle),
-                                       graph_safe=bool(graph_safe),
                                        eligibility=eligibility_by_row[row_index],
                                        tp_size=getattr(args, "tp_size", None),
                                        variant_name=op.variant)
@@ -2133,7 +2128,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
             jitter_seed=args.seed,  # count-dim jitter so shapes vary per run (anti shape-branch)
             model_key=model_key,  # validator per-model slot profile (activation + metric)
             override_point=op.override_point,  # compose a miner epilogue into the base kernel
-            graph_safe=graph_safe,
             eligibility_metadata=metadata,
             manifest_dtypes=op.dtypes,
             manifest_architectures=op.architectures,
