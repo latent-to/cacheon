@@ -69,9 +69,6 @@ _VALIDATOR_DOWNTIME_REQUEUE_REASON = "validator_downtime_requeued"
 # re-expired (operator/SLA mismatch).  A third attempt still fails closed.
 _VALIDATOR_DOWNTIME_REQUEUE_REFRESH_REASON = "validator_downtime_requeued_refresh"
 _SCHEMA3_MIGRATION_HOLD_REASON = "schema3_reproduction_required"
-# Durable "this row spent its automatic retry budget" mark. See
-# FinalizedIntakeStore.mark_hold_retry_exhausted.
-_EXHAUSTED_HOLD_SUFFIX = ":retry_budget_exhausted"
 _SCHEMA3_ARCHIVE_REASON_PREFIX = "schema3_archived@"
 
 # These domain separators are durable protocol identifiers, not product-facing
@@ -1952,8 +1949,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                         if row.screen_lane == "reproduction"
                         else "published"
                     )
+                    # Only a bisect re-enters the queue: it splits the cohort,
+                    # so the next run is a different experiment that isolates
+                    # which member poisoned the batch.  A "requeue" is the same
+                    # bundle, alone, against the same authority -- it spends
+                    # another full evaluation to observe the identical failure.
+                    # That one parks for an operator instead.
                     status = retry_status if (
-                        attempt + 1 < self.policy.max_qualification_retries
+                        reason == "qualification_bisect"
+                        and attempt + 1 < self.policy.max_qualification_retries
                     ) else "held"
                     self._db.execute(
                         "UPDATE reservations SET status=?,decision=?,reason=?,"
@@ -3410,58 +3414,6 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             )
             if reservation_update.rowcount != 1 or candidate_update.rowcount != 1:
                 raise IntakeError("schema3 migration hold changed during archival")
-        return self.get(reservation_id)
-
-    def auto_requeueable_holds(self, *, limit: int = 64) -> tuple[str, ...]:
-        """Held rows parked by a bounded evaluation hold, oldest arrival first.
-
-        An evaluation hold records that the stage produced no PASS/FAIL
-        evidence -- worker infrastructure loss, a non-verdict batch, or a
-        systemic release cap.  Both producers document ``release_hold`` as the
-        reopen path (``_cap_systemic_releases`` and
-        ``commit_remote_qualification_hold``), and on an autonomous validator
-        no operator is there to call it, so every such park is a permanent
-        queue leak.  Transport-retry limits, screen holds, and the schema3
-        migration hold are authority fences, not evaluation holds; they are
-        never listed here and ``release_hold`` refuses the last one outright.
-        """
-
-        if type(limit) is not int or isinstance(limit, bool) or limit < 1:
-            raise IntakeError("hold reconciliation limit is invalid")
-        rows = self._db.execute(
-            "SELECT reservation_id FROM reservations WHERE status='held' AND ("
-            "reason LIKE 'remote_qualification_hold:%' OR "
-            "reason LIKE 'systemic_release_cap:%' OR "
-            "reason LIKE 'auto_requeue_attempt_%') "
-            "AND reason NOT LIKE ? "
-            "ORDER BY block,event_index,event_subindex,hotkey,content_hash "
-            "LIMIT ?",
-            (f"%{_EXHAUSTED_HOLD_SUFFIX}", limit),
-        ).fetchall()
-        return tuple(row["reservation_id"] for row in rows)
-
-    def mark_hold_retry_exhausted(self, reservation_id: str) -> IntakeReservation:
-        """Stamp a held row that burned its whole automatic retry budget.
-
-        Attempt counts are in-memory and a supervisor restart forgets them, so
-        without a durable mark ``auto_requeueable_holds`` hands the same stuck
-        row a fresh budget on every respawn -- and with a watchdog respawning
-        the supervisor that is an unbounded loop, not a bounded retry.  A
-        stamped row stays held for an operator, which is the correct end state
-        once the bounded budget is genuinely spent.
-        """
-
-        with self._transaction():
-            row = self.get(reservation_id)
-            if row.status != "held":
-                raise IntakeError("only a held reservation may be marked retry-exhausted")
-            if row.reason.endswith(_EXHAUSTED_HOLD_SUFFIX):
-                return row
-            self._db.execute(
-                "UPDATE reservations SET reason=? "
-                "WHERE reservation_id=? AND status='held'",
-                (f"{row.reason}{_EXHAUSTED_HOLD_SUFFIX}", reservation_id),
-            )
         return self.get(reservation_id)
 
     def release_hold(self, reservation_id: str, *, reason: str) -> IntakeReservation:

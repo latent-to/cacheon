@@ -63,7 +63,6 @@ from cacheon.chain.remote_qualification_evidence import (
 )
 from cacheon.chain.remote_qualification_hold import (
     RemoteQualificationHoldProduct,
-    RemoteQualificationHoldReason,
     durable_remote_qualification_hold_reason,
 )
 from cacheon.chain.remote_worker_request_plan import (
@@ -72,7 +71,6 @@ from cacheon.chain.remote_worker_request_plan import (
     QualificationRequestPlan,
 )
 from cacheon.chain.publication import reopen_worker_bundle
-from cacheon.chain.qualification_hold_requeue import QualificationHoldRequeuePolicy
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_intake import QualificationIntakeBatch
 from cacheon.stack_identity import require_sha256_hex
@@ -365,7 +363,6 @@ class RecoverableQualificationDispatcher:
         self.qualification_evidence_root = root
         self.qualification_incumbent_stack = qualification_incumbent_stack
         self.qualification_incumbent_tree_digest = tree_digest
-        self.hold_requeue = QualificationHoldRequeuePolicy()
 
     def _validate_live_authority(self) -> None:
         self.coordinator.readiness.validate(self.coordinator.service)
@@ -524,16 +521,6 @@ class RecoverableQualificationDispatcher:
                 reservation_ids=product.reservation_digests,
                 lease_blocks=self.coordinator.lease_blocks,
             )
-            self.hold_requeue.after_hold(
-                store,
-                reservation_ids=lease.reservation_ids,
-                reason=reason,
-                retryable=not (
-                    product.reason
-                    is RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE
-                    and bool(product.failure_type)
-                ),
-            )
         finally:
             store.close()
         return CompletedQualificationHold(
@@ -569,11 +556,6 @@ class RecoverableQualificationDispatcher:
                 reservation_ids=reservation_ids,
                 lease_blocks=self.coordinator.lease_blocks,
             )
-            self.hold_requeue.after_hold(
-                store,
-                reservation_ids=lease.reservation_ids,
-                reason=reason,
-            )
         finally:
             store.close()
         return CompletedQualificationHold(
@@ -583,15 +565,6 @@ class RecoverableQualificationDispatcher:
             reason,
             product.digest,
         )
-
-    def reconcile_parked_holds(self) -> tuple[str, ...]:
-        """Reopen evaluation holds parked before this lifetime; see the policy."""
-
-        store, _point = self._open_store()
-        try:
-            return self.hold_requeue.reconcile_parked(store)
-        finally:
-            store.close()
 
     def _reopen_held_legacy_product(
         self,
@@ -972,8 +945,6 @@ class RecoverableQualificationDispatcher:
         """Run or resume one FIFO item without ever creating replacement work."""
 
         self._validate_live_authority()
-        if self.hold_requeue.refuse_fresh_claim():
-            return None
         selected = self._claim_or_reopen()
         if selected is None:
             return None
@@ -1106,9 +1077,7 @@ class RecoverableQualificationDispatcher:
                     recovery = self._record_import(recovery)
                     continue
                 if recovery.phase is RecoveryPhase.EVIDENCE_IMPORTED:
-                    run = self._commit_product(recovery, claim, product)
-                    self.hold_requeue.note_terminal()
-                    return run
+                    return self._commit_product(recovery, claim, product)
         except _PreResidentRefusalObserved as signal:
             return self._requeue(recovery, signal.refusal, signal.outcome)
         except _InfrastructureResultObserved as signal:

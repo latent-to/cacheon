@@ -1693,46 +1693,14 @@ def test_sqlite_weight_journal_reopen_rejects_corrupt_head_projection(tmp_path):
             SQLiteWeightPublicationJournal.reopen_from_head(store)
 
 
-def test_auto_requeueable_holds_lists_evaluation_parks_but_not_authority_fences(
-    tmp_path,
-):
-    with _store(tmp_path, max_transport_retries=1) as store:
-        rows = store.reserve_finalized(
-            (_arrival(0), _arrival(1), _arrival(2)),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )
-        no_decision, release_cap, fenced = rows
-        store.mark_held(
-            no_decision.reservation_id,
-            "remote_qualification_hold:legacy_no_decision",
-        )
-        store.mark_held(release_cap.reservation_id, "systemic_release_cap:3")
-        store.mark_fetching(fenced.reservation_id)
-        assert (
-            store.mark_transport_retry(
-                fenced.reservation_id, "host unavailable"
-            ).status
-            == "held"
-        )
+def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
+    """No automatic path reopens a hold: a rerun costs a full GPU evaluation.
 
-        parked = store.auto_requeueable_holds()
+    A qualification hold means the stage burned a run and produced no verdict.
+    Re-running it changes nothing the validator can observe, so the row stays
+    held until a person has looked at why.
+    """
 
-        assert parked == (
-            no_decision.reservation_id,
-            release_cap.reservation_id,
-        )
-        assert store.auto_requeueable_holds(limit=1) == (
-            no_decision.reservation_id,
-        )
-        for bad in (0, True, "2"):
-            with pytest.raises(IntakeError, match="reconciliation limit"):
-                store.auto_requeueable_holds(limit=bad)
-
-
-def test_retry_exhausted_mark_survives_and_removes_the_row_from_reconciliation(
-    tmp_path,
-):
     with _store(tmp_path) as store:
         row = store.reserve_finalized(
             (_arrival(0),),
@@ -1742,30 +1710,11 @@ def test_retry_exhausted_mark_survives_and_removes_the_row_from_reconciliation(
         store.mark_held(
             row.reservation_id, "remote_qualification_hold:legacy_no_decision"
         )
-        assert store.auto_requeueable_holds() == (row.reservation_id,)
 
-        stamped = store.mark_hold_retry_exhausted(row.reservation_id)
+        assert not hasattr(store, "auto_requeueable_holds")
+        assert not hasattr(store, "mark_hold_retry_exhausted")
+        assert store.get(row.reservation_id).status == "held"
 
-        assert stamped.status == "held"
-        assert stamped.reason == (
-            "remote_qualification_hold:legacy_no_decision:retry_budget_exhausted"
-        )
-        # The whole point: a later lifetime must not hand it a fresh budget.
-        assert store.auto_requeueable_holds() == ()
-        # Idempotent, so a repeated cap cannot stack suffixes.
-        assert store.mark_hold_retry_exhausted(row.reservation_id) == stamped
-        # Still releasable by an operator who has fixed the cause.
         assert store.release_hold(
             row.reservation_id, reason="operator fixed the cause"
         ).status != "held"
-
-
-def test_retry_exhausted_mark_refuses_a_row_that_is_not_held(tmp_path):
-    with _store(tmp_path) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
-        with pytest.raises(IntakeError, match="retry-exhausted"):
-            store.mark_hold_retry_exhausted(row.reservation_id)

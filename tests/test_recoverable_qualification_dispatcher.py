@@ -526,14 +526,12 @@ def test_completed_no_decision_product_terminalizes_without_retry_or_second_plan
         recovery = store.pending_qualification_recovery()
         retained = store.get(outcome.lease.reservation_ids[0])
     assert recovery is None
-    # The hold is committed exactly once and the row does not park: the bounded
-    # requeue policy puts it straight back into FIFO for a real re-execution,
-    # because an autonomous validator has no operator to release it by hand.
-    assert retained.status != "held"
+    # The hold is committed exactly once and the row parks. Re-running it would
+    # spend another full evaluation to observe the same non-verdict, so the
+    # queue stops here until an operator releases it.
+    assert retained.status == "held"
     assert retained.decision == ""
-    assert retained.reason == (
-        "auto_requeue_attempt_2_of_3:remote_qualification_hold:legacy_no_decision"
-    )
+    assert retained.reason == "remote_qualification_hold:legacy_no_decision"
 
 
 def test_already_held_no_decision_product_migrates_without_gpu_redispatch(
@@ -596,12 +594,10 @@ def test_already_held_no_decision_product_migrates_without_gpu_redispatch(
     with _store(authority) as store:
         assert store.pending_qualification_recovery() is None
         retained = store.get(migrated.lease.reservation_ids[0])
-    # Migration consumes no GPU work (asserted above) and still does not park:
-    # the migrated hold re-enters FIFO on the same bounded budget.
-    assert (retained.status != "held", retained.decision) == (True, "")
-    assert retained.reason == (
-        "auto_requeue_attempt_2_of_3:remote_qualification_hold:legacy_no_decision"
-    )
+    # Migration consumes no GPU work (asserted above) and the row parks for an
+    # operator rather than re-entering FIFO.
+    assert (retained.status, retained.decision) == ("held", "")
+    assert retained.reason == "remote_qualification_hold:legacy_no_decision"
 
 
 @pytest.mark.parametrize("profile", ("collective-hold", "block-hold"))
@@ -717,11 +713,8 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
         retained = store.get(outcome.lease.reservation_ids[0])
     assert completed is not None
     assert completed["result_digest"] == outcome.result_digest
-    assert retained.status == "published"
-    assert retained.reason == (
-        "auto_requeue_attempt_2_of_3:"
-        "remote_qualification_hold:graph_evidence_incomplete"
-    )
+    assert retained.status == "held"
+    assert retained.reason == "remote_qualification_hold:graph_evidence_incomplete"
     assert not (authority.root / "cpu-evidence").exists()
 
 
