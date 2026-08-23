@@ -406,9 +406,16 @@ def test_fail_is_not_rewritten(tmp_path: Path, executor_factory) -> None:
     assert resident.created == 0
 
 
-def test_no_decision_screen_evidence_is_waived_into_qualification(
+def test_no_decision_screen_evidence_parks_instead_of_reaching_qualification(
     tmp_path: Path, executor_factory
 ) -> None:
+    """An undecided ABI stage must not buy a seat on the GPU.
+
+    Qualification is the expensive half of the pipeline. Promoting on a stage
+    that returned no decision spends a full evaluation on a candidate whose
+    ABI was never actually checked.
+    """
+
     authorities, _runner, resident, _builder = _authorities(
         tmp_path,
         executor_factory,
@@ -419,9 +426,12 @@ def test_no_decision_screen_evidence_is_waived_into_qualification(
 
     receipt = service.screen(_binding(tmp_path / "no-decision"))
 
-    assert receipt.decision is PromotionDecision.PROMOTE
-    assert all(row.grade is ScreenGrade.PASS for row in receipt.results)
-    assert resident.created == 1
+    assert receipt.decision is PromotionDecision.HOLD
+    assert tuple(row.stage for row in receipt.results) == ("static", "build", "abi")
+    assert receipt.results[-1].grade is ScreenGrade.NO_DECISION
+    # The screen stops at the undecided stage: no later stage is run, and the
+    # candidate never reaches the resident lane.
+    assert resident.created == 0
     service._provider.close()
 
 

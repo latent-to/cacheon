@@ -30,7 +30,6 @@ from cacheon._strict import require_digest, require_identifier
 
 SERVICE_SCHEMA_VERSION = 2
 SCREEN_STAGES = ("static", "build", "abi", "graph", "abbreviated_serving")
-_SCREEN_WAIVER_SCHEMA = "cacheon.arena.screen-waiver.v1"
 _IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,255}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
@@ -613,33 +612,27 @@ class ArenaService:
             result = self._provider.run_screen(self.manifest, stage, candidate)
             if type(result) is not ScreenStageResult or result.stage != stage.stage:
                 raise ArenaServiceError("provider changed the requested screen stage")
-            if (
-                result.elapsed_ms > stage.timeout_ms
-                or result.grade is ScreenGrade.NO_DECISION
-            ):
-                reason = (
-                    "stage_timeout"
-                    if result.elapsed_ms > stage.timeout_ms
-                    else "stage_unavailable"
-                )
+            if result.elapsed_ms > stage.timeout_ms:
+                # Past its bound is not a decision either: the stage never
+                # finished the check the contract asked for.
                 result = ScreenStageResult(
                     result.stage,
-                    ScreenGrade.PASS,
-                    canonical_digest(
-                        _SCREEN_WAIVER_SCHEMA,
-                        {
-                            "candidate_digest": candidate.digest,
-                            "reason": reason,
-                            "service_digest": self.identity,
-                            "source_evidence_digest": result.evidence_digest,
-                            "stage": result.stage,
-                        },
-                    ),
+                    ScreenGrade.NO_DECISION,
+                    result.evidence_digest,
                     result.elapsed_ms,
                 )
             results.append(result)
             if result.grade is ScreenGrade.FAIL:
                 decision = PromotionDecision.REJECT
+                break
+            if result.grade is ScreenGrade.NO_DECISION:
+                # A stage that did not decide must never be converted into a
+                # PASS. Waiving it promoted a candidate on a gate that had not
+                # actually run -- and it erased the stage's own evidence digest
+                # behind a waiver digest, so nobody could see which gate was
+                # skipped or why. Park it instead: an operator releases the
+                # hold once they have looked at the cause.
+                decision = PromotionDecision.HOLD
                 break
         return ArenaScreenReceipt(
             self.identity,
