@@ -116,6 +116,9 @@ _GRAPH_PROBE = None
 # slot -> {(outcome, mismatch detail): payload}. Bounded by the number of DISTINCT
 # routing reasons, not by call volume; see ``not_selected``.
 _NOT_SELECTED: dict[str, dict[tuple, dict]] = {}
+# slot -> {input signature: {kernel name: launches}}. Filled by kernel_trace when
+# it is armed, empty otherwise. Bounded by that module's per-slot profile budget.
+_KERNELS: dict[str, dict[str, dict]] = {}
 
 # Fallback receipt root for a process the driver launched WITHOUT one. The
 # one-shot driver mints a receipt directory only for an engine that is active at
@@ -183,6 +186,7 @@ def set_scope(scope: object) -> str:
     # the closing candidate's invocations to the one arriving.
     flush_calls()
     _CALLS.clear()
+    _KERNELS.clear()
     with _SCOPE_LOCK:
         _SCOPE = cleaned
     # Create the scope eagerly. Receipt files are written lazily, so without
@@ -356,7 +360,41 @@ def _calls_payload(slot: str) -> dict:
     payload: dict = {"calls": entry[0]}
     if _GRAPH_PROBE is not None:
         payload["captured"] = bool(entry[1])
+    kernels = _KERNELS.get(slot)
+    if kernels:
+        payload["kernels"] = kernels
     return payload
+
+
+def capturing() -> bool:
+    """Is a CUDA graph being captured right now? False when nothing can tell.
+
+    Deliberately not tri-state. Its one caller arms a profiler, and profiling
+    during capture is the failure it exists to avoid, so "we do not know" and
+    "yes" must lead to the same decision. ``_calls_payload`` reports the same
+    underlying probe as tri-state because there the honest answer matters.
+    """
+
+    if _GRAPH_PROBE is None:
+        return False
+    try:
+        return bool(_GRAPH_PROBE())
+    except Exception:  # noqa: BLE001 - a probe must not break model execution
+        return False
+
+
+def record_kernels(slot: str, signature: str, counts: dict) -> None:
+    """Attach one observed launch table to ``slot``'s receipt for this scope.
+
+    Keyed by input signature rather than accumulated, because the question this
+    answers is which internal path a bundle took, and a bundle that branches
+    takes different paths at different shapes. Summing them would erase exactly
+    the distinction being measured.
+    """
+
+    if not counts:
+        return
+    _KERNELS.setdefault(slot, {})[signature] = dict(counts)
 
 
 def completed(slot: str) -> None:
@@ -480,6 +518,49 @@ def _summarize_calls(rows: list[dict]) -> dict:
     if rows and all(type(value) is bool for value in captured):
         totals["captured"] = all(captured)
     return totals
+
+
+def rows_for_scope(scope: object, *, pid: Optional[int] = None) -> dict:
+    """This scope's receipts themselves, by kind — not their counts.
+
+    ``counts_for_scope`` answers "did every rank run", which is what a gate needs.
+    It cannot answer "what ran, and why did the rest route to stock", because the
+    slot names and routing reasons are inside the rows it is counting. Reporting
+    to a miner needs the rows.
+
+    Never raises, and returns whatever it could read: a partial answer beats no
+    answer when the question is what went wrong.
+    """
+
+    out: dict = {}
+    try:
+        directory = _scope_directory(scope)
+        if directory is None:
+            return out
+        if pid == os.getpid():
+            flush_calls()
+        for kind in (*_EXECUTION_KINDS, "not_selected"):
+            rows = collect(directory, kind)
+            if pid is not None:
+                rows = [row for row in rows if row.get("pid") == pid]
+            if rows:
+                out[kind] = rows
+    except Exception:  # noqa: BLE001 - unreadable evidence is unobservable, not zero
+        logger.exception("cacheon: receipt scope rows failed (%s)", scope)
+    return out
+
+
+def _scope_directory(scope: object) -> Optional[Path]:
+    """Resolve one scope's receipt directory, or ``None`` when it is unusable."""
+
+    root = _root()
+    if not root:
+        return None
+    cleaned = "" if scope is None else _SAFE_RE.sub("_", str(scope))[:64]
+    if not cleaned or not cleaned[0].isalnum() or ".." in cleaned:
+        return None
+    directory = _resolved_dir(os.path.join(root, cleaned))
+    return directory if directory.is_dir() else None
 
 
 def counts_for_scope(scope: object, *, pid: Optional[int] = None) -> Optional[dict]:
