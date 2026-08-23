@@ -278,7 +278,7 @@ def make_silu_and_mul_dispatcher(
         out = torch.empty((*x.shape[:-1], d), dtype=x.dtype, device=x.device)
         aud = _audit.sampled()
         a_x = x.clone() if aud else None  # pre-call clone: the kernel may scribble on x
-        impl.entry(x, out)
+        _receipts.invoke(slot, impl.entry, x, out)
         if aud:
             _audit.run(slot, (out,), lambda: baseline_forward(self, a_x))
         _receipts.completed(slot)
@@ -326,7 +326,7 @@ def make_rmsnorm_dispatcher(
         if residual is None:
             a_x = x.clone() if aud else None
             out = torch.empty_like(x)
-            impl.entry(x, weight, out, eps)
+            _receipts.invoke(slot, impl.entry, x, weight, out, eps)
             if aud:
                 _audit.run(slot, (out,), lambda: baseline_forward(self, a_x, None, None))
             _receipts.completed(slot)
@@ -334,7 +334,7 @@ def make_rmsnorm_dispatcher(
         a_x, a_res = (x.clone(), residual.clone()) if aud else (None, None)
         new_residual = x + residual  # validator owns the add
         out = torch.empty_like(new_residual)
-        impl.entry(new_residual, weight, out, eps)
+        _receipts.invoke(slot, impl.entry, new_residual, weight, out, eps)
         if aud:
             _audit.run(slot, (out, new_residual),
                        lambda: baseline_forward(self, a_x, a_res, None))
@@ -684,7 +684,7 @@ def _run_moe_kernel(
         prepared = _moe_prepared(self, impl, slot)
         _clear_moe_reduced(out)
         try:
-            impl.entry(x, topk_ids, topk_weights, prepared, out, group)
+            _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out, group)
         finally:
             _clear_moe_reduced(out)
         _validate_live_outputs(
@@ -698,7 +698,7 @@ def _run_moe_kernel(
     prepared = _moe_prepared(self, impl, slot)
     _clear_moe_reduced(out)
     try:
-        impl.entry(x, topk_ids, topk_weights, prepared, out)
+        _receipts.invoke(slot, impl.entry, x, topk_ids, topk_weights, prepared, out)
     finally:
         _clear_moe_reduced(out)
     _validate_live_outputs(
@@ -837,7 +837,7 @@ def make_allreduce_dispatcher(
                         raise RuntimeError(
                             "collective selection changed between preflight and commit"
                         )
-                    impl.entry(input_, out, group)  # miner fills out with sum-over-ranks
+                    _receipts.invoke(slot, impl.entry, input_, out, group)  # miner fills out with sum-over-ranks
                     _validate_live_outputs(
                         contract,
                         allocation,
@@ -999,8 +999,8 @@ def make_arfusion_dispatcher(
                         raise RuntimeError(
                             "collective selection changed between preflight and commit"
                         )
-                    impl.entry(input_tensor, residual, weight, float(eps),
-                               out_norm, out_residual, group)
+                    _receipts.invoke(slot, impl.entry, input_tensor, residual, weight, float(eps),
+                            out_norm, out_residual, group)
                     _validate_live_outputs(
                         contract,
                         allocation,
@@ -1185,7 +1185,9 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
     committed = registry.select(_DEEP_SLOT, descriptor)
     if committed.impl is not impl:
         raise ValueError("deep selection changed between preflight and commit")
-    impl.entry(
+    _receipts.invoke(
+        _DEEP_SLOT,
+        impl.entry,
         gemm_out,
         row_map,
         scales,

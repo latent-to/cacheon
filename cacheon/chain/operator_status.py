@@ -329,24 +329,15 @@ def _screen_dispositions(
 ) -> list[dict[str, object]]:
     from cacheon.arena_service import (
         ArenaScreenReceipt,
+        ArenaServiceError,
         PromotionDecision,
-        ScreenGrade,
         ScreenStageResult,
     )
 
-    # This report is read-only and runs against databases the running validator
-    # has not migrated yet -- an operator copy, a node still on the previous
-    # deploy. Selecting a column that may not exist there would refuse the whole
-    # report to gain one footnote, so ask the table what it has.
-    has_authorities = any(
-        row["name"] == "stage_authorities"
-        for row in db.execute("PRAGMA table_info(arena_screen_dispositions)")
-    )
-    authorities_column = ",stage_authorities" if has_authorities else ""
     result: list[dict[str, object]] = []
     rows = db.execute(
         "SELECT attempt_index,service_digest,candidate_digest,receipt_digest,"
-        f"receipt_json,decision,stage_count,lane{authorities_column} "
+        "receipt_json,decision,stage_count,lane "
         "FROM arena_screen_dispositions "
         "WHERE reservation_id=? ORDER BY attempt_index",
         (reservation_id,),
@@ -355,13 +346,7 @@ def _screen_dispositions(
         try:
             raw = json.loads(row["receipt_json"])
             stages = tuple(
-                ScreenStageResult(
-                    item["stage"],
-                    ScreenGrade(item["grade"]),
-                    item["evidence_digest"],
-                    item["elapsed_ms"],
-                )
-                for item in raw["results"]
+                ScreenStageResult.from_dict(item) for item in raw["results"]
             )
             receipt = ArenaScreenReceipt(
                 raw["service_digest"],
@@ -370,7 +355,7 @@ def _screen_dispositions(
                 stages,
                 PromotionDecision(raw["decision"]),
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, ArenaServiceError) as exc:
             raise OperatorStatusError(f"screen receipt is corrupt: {exc}") from None
         if (
             receipt.digest != row["receipt_digest"]
@@ -390,38 +375,9 @@ def _screen_dispositions(
                 "candidate_digest": receipt.candidate_digest,
                 "receipt_digest": receipt.digest,
                 "stages": [stage.to_dict() for stage in receipt.results],
-                "stage_authorities": (
-                    _stage_authorities(row["stage_authorities"])
-                    if has_authorities
-                    else {}
-                ),
             }
         )
     return result
-
-
-def _stage_authorities(raw: object) -> dict[str, str]:
-    """Advisory explanation context, so a corrupt value degrades, not raises.
-
-    Unlike every other column here this one is not covered by the receipt
-    digest, so it cannot be validated against anything. A report that refused
-    to render because this failed to parse would trade the whole answer for the
-    footnote.
-    """
-
-    if not isinstance(raw, str) or not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return {}
-    if not isinstance(parsed, dict):
-        return {}
-    return {
-        stage: digest
-        for stage, digest in parsed.items()
-        if isinstance(stage, str) and isinstance(digest, str) and digest
-    }
 
 
 def _qualification_dispositions(

@@ -178,7 +178,7 @@ def make_dispatcher(
                 else None
             )
 
-        decision.impl.entry(*(inputs[name] for name in INPUT_NAMES), topk_idx)
+        _receipts.invoke(slot, decision.impl.entry, *(inputs[name] for name in INPUT_NAMES), topk_idx)
         if audited:
             if expected_idx is None:
                 _audit.baseline_refused(slot)

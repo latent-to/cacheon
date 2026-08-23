@@ -255,6 +255,22 @@ lane emitted no execution evidence at all — it is launched stock, so the
 one-shot driver's `active`-gated receipt directory was never created for it,
 and registration was the only thing the crossover could observe.
 
+Since **2026-08-23** (source on this branch, not yet deployed) the closing swap
+carries each rank's receipt rows, not only their count: per registered slot,
+the call count, whether any call happened inside a CUDA-graph capture, the
+exception a raising entry left behind, and the routing reasons for calls that
+went to stock. The host reduces the rows itself; a rank counts as executed only
+when it loaded, raised nothing, and was captured on every slot SGLang serves
+from its graph (`attention.msa_prefill_block_score` is the one eager exemption),
+so a candidate called only during eager warmup can no longer pass the guard.
+The rows are published by the worker as the unsealed `qualification.execution`
+artifact, travel in the product, and are rendered by `chain-miner-report
+--evidence-root` and `explain`. A hold raised by the guard names the faulting
+ranks. Retained mainnet evidence for this path is the four lane-A rank lines of
+2026-08-23 (msa_block_score, 1,140 calls per rank, captured), read back from
+the container log and used as the fixture; no run has yet produced the
+artifact on the pod.
+
 Since **2026-08-18** resident speed policy **version 8** serves candidates that
 cannot be hot-swapped into a loaded engine. A bundle declaring CUDA, C++ or PTX
 sources, AOT artifacts, dependency patches, or engine setup is routed to the

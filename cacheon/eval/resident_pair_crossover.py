@@ -413,7 +413,7 @@ def _rate_from_slice(
                 f"resident {role} candidate has no proof its kernel executed "
                 f"(generation {restoration.execution.prior_generation}, "
                 f"ranks {restoration.execution.prior_execution_ranks} of "
-                f"{restoration.expected_ranks})"
+                f"{restoration.expected_ranks}){restoration.execution.faults()}"
             )
             raise ResidentPairCrossoverHold(detail)
     previous = request.host_started_at

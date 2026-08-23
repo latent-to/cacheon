@@ -27,6 +27,12 @@ import statistics
 from collections.abc import Iterable
 from typing import Any
 
+from cacheon.eval.continuation_codec import ContinuationCodecError
+from cacheon.eval.resident_execution_evidence import (
+    EXECUTION_CODEC,
+    RankExecution,
+    eager_slots,
+)
 from cacheon.kernel_trace import format_kernels
 
 #: Kept in step with ``engine_worker.EXECUTION_SUMMARY_PREFIX``. Duplicated as a
@@ -126,15 +132,15 @@ def _number(value: object) -> float | None:
     return result if result == result and abs(result) != float("inf") else None
 
 
-def _decoded_evidence(product: dict) -> dict[str, dict]:
-    """Map evidence domain -> decoded payload, skipping anything unreadable.
+def _decoded_evidence(product: dict) -> list[tuple[str, dict]]:
+    """``(domain, payload)`` for every readable evidence row, in product order.
 
     An undecodable blob is not fatal here. This renders what a run produced; a
     reader that refused to explain the readable half because one blob was
     corrupt would fail exactly when a miner most needs an explanation.
     """
 
-    found: dict[str, dict] = {}
+    found: list[tuple[str, dict]] = []
     rows = product.get("evidence")
     for row in rows if isinstance(rows, list) else []:
         domain = _get(row, "reference", "domain")
@@ -146,22 +152,26 @@ def _decoded_evidence(product: dict) -> dict[str, dict]:
         except Exception:  # noqa: BLE001 - a corrupt blob is reported, not raised
             continue
         if isinstance(payload, dict):
-            found[domain] = payload
+            found.append((domain, payload))
     return found
 
 
-def _evidence(decoded: dict[str, dict], suffix: str) -> dict:
-    """Find one evidence payload by domain suffix, ignoring the stage prefix.
+def _evidence(decoded: list[tuple[str, dict]], suffix: str) -> list[dict]:
+    """Every evidence payload whose domain kind is ``suffix``, ignoring the stage.
 
     Domains are ``<stage>.<kind>`` — ``qualification.stage-exit``,
     ``screen.stage-exit``. Matching the kind alone is what lets one renderer
     serve every stage instead of growing a branch per lane.
     """
 
-    for domain, payload in decoded.items():
-        if domain.split(".", 1)[-1] == suffix:
-            return payload
-    return {}
+    return [
+        payload for domain, payload in decoded if domain.split(".", 1)[-1] == suffix
+    ]
+
+
+def _first(decoded: list[tuple[str, dict]], suffix: str) -> dict:
+    found = _evidence(decoded, suffix)
+    return found[0] if found else {}
 
 
 def _shape_rows(graph_evidence: dict) -> Iterable[tuple[str, str, dict]]:
@@ -338,6 +348,11 @@ def _headline(execution: list[str], speed: list[str]) -> str:
             "VERDICT  your kernel failed to load on at least one GPU, so part "
             "of this run was SGLang, not you."
         )
+    if "RAISED" in joined:
+        return (
+            "VERDICT  your kernel raised an exception and the engine went down "
+            "with it. This is attributed to the bundle, not to the validator."
+        )
     if any("NOT A REAL RESULT" in line for line in speed):
         return (
             "VERDICT  this run cannot tell your kernel apart from normal "
@@ -349,16 +364,15 @@ def _headline(execution: list[str], speed: list[str]) -> str:
 def explain(product: object, *, stderr: object = None) -> list[str]:
     """Render one evaluation product as the story of what happened to a bundle.
 
-    ``stderr`` is the retained worker log, when the caller has it. It answers a
-    different question than the product does — the product says how the run was
-    judged, the log says what the ranks actually did — and the two are stored
-    apart, so either may be present without the other.
+    What the ranks did comes from the product's own ``execution`` evidence when
+    the run published it. ``stderr`` is the retained worker log, for runs that
+    did not: it carries the same per-rank record as one printed line per rank.
     """
 
     if not isinstance(product, dict):
         return ["This is not an evaluation product."]
     decoded = _decoded_evidence(product)
-    stage_exit = _evidence(decoded, "stage-exit")
+    stage_exit = _first(decoded, "stage-exit")
 
     # Identity only as a heading. Which reservation, hotkey, and verdict this is
     # belongs to the durable record that ``chain.miner_feedback`` already reports;
@@ -371,7 +385,20 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
         }
     )
     lines = [f"evidence for {', '.join(targets) or 'an unnamed target'}"]
-    execution = execution_lines(stderr) if stderr is not None else []
+    execution: list[str] = []
+    for payload in _evidence(decoded, "execution"):
+        for swap in payload.get("swaps") or []:
+            if not isinstance(swap, dict):
+                continue
+            ranks = _typed_ranks(swap.get("ranks"))
+            execution.append(
+                f"  {'generation':<26s} {swap.get('generation')} on lane "
+                f"{swap.get('lane_id')}: {swap.get('executed_ranks')} of "
+                f"{swap.get('expected_ranks')} GPU(s) ran your kernel cleanly"
+            )
+            execution.extend(execution_lines(ranks))
+    if not execution and stderr is not None:
+        execution = execution_lines(ranks_from_log(stderr)) + _path_lines(_log_rows(stderr))
     # The headline exists because the sections below can be read in the wrong
     # order. A run where the kernel never executed still produces three speed
     # numbers and a ratio, and a miner who reads that first walks away believing
@@ -387,7 +414,7 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
         lines.extend(execution)
     lines.append("")
     lines.append("did it work")
-    lines.extend(_correctness_lines(_evidence(decoded, "graph-verification")))
+    lines.extend(_correctness_lines(_first(decoded, "graph-verification")))
     lines.append("")
     lines.append("was it faster")
     lines.extend(_speed_lines(stage_exit))
@@ -405,14 +432,30 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
     return lines
 
 
+def _typed_ranks(value: object) -> tuple[RankExecution, ...]:
+    """Rows as published, skipping any the renderer cannot read."""
+
+    ranks = []
+    for row in value if isinstance(value, list) else []:
+        try:
+            typed = EXECUTION_CODEC.decode(row)
+        except ContinuationCodecError:
+            continue
+        if type(typed) is RankExecution:
+            ranks.append(typed)
+    return tuple(ranks)
+
+
 def _path_lines(rows: list[dict]) -> list[str]:
     """Name the device kernels the bundle launched, per input shape.
 
-    This is the answer to "which of my branches ran". Ranks are merged by
-    signature rather than listed separately: they execute the same code on the
-    same shapes, so a per-rank listing would repeat one fact world size times,
-    and a signature that appears on only some ranks is the interesting case
-    precisely because it is rare.
+    This is the answer to "which of my branches ran", and only a retained log
+    carries it: the kernel trace is an audit-arm instrument, not part of the
+    generation evidence. Ranks are merged by signature rather than listed
+    separately: they execute the same code on the same shapes, so a per-rank
+    listing would repeat one fact world size times, and a signature that
+    appears on only some ranks is the interesting case precisely because it is
+    rare.
     """
 
     by_signature: dict[str, dict[str, int]] = {}
@@ -435,98 +478,131 @@ def _path_lines(rows: list[dict]) -> list[str]:
     return lines
 
 
-def execution_lines(stderr: object) -> list[str]:
-    """Render what the ranks recorded, read back out of a retained stderr stream.
+def _log_rows(stderr: object) -> list[dict]:
+    """Every ``completed`` receipt row in a retained log, across its rank lines."""
+
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    if not isinstance(stderr, str):
+        return []
+    return [
+        row
+        for parsed in _tagged(stderr, _SUMMARY_PREFIX)
+        for row in (parsed.get("completed") or [])
+        if isinstance(row, dict)
+    ]
+
+
+def ranks_from_log(stderr: object) -> tuple[RankExecution, ...]:
+    """Read the per-rank execution record back out of a retained stderr stream.
 
     The worker's receipt directory is deleted when its container goes, so the
-    per-rank facts reach us only as one machine-readable line in the stderr the
-    host retained. Parsing that line back is what turns "the container is gone"
-    into "here is what every rank did".
+    per-rank facts reach a reader of the log only as machine-readable lines the
+    host retained. Each resident rank prints its own line; the one-shot worker
+    prints one line holding every rank's rows with their rank identity. Rows
+    without an identity are taken to belong to the line they were printed on.
 
     Tolerates the stream being partial: stderr is retained as a bounded prefix,
-    so the marker may be missing or the line cut in half, and neither is a reason
+    so the marker may be missing or a line cut in half, and neither is a reason
     to explain nothing.
     """
 
     if isinstance(stderr, bytes):
         stderr = stderr.decode("utf-8", "replace")
-    if not isinstance(stderr, str) or _SUMMARY_PREFIX not in stderr:
-        return [f"  {'did not record':<26s} the saved log has no execution record"]
-
-    # One line per rank, all interleaved in one stream. Merging rather than
-    # keeping the last is the difference between "4 ranks ran it" and a report
-    # that silently describes only whichever rank happened to print last.
-    summary: dict = {}
-    for parsed in _tagged(stderr, _SUMMARY_PREFIX):
+    if not isinstance(stderr, str):
+        return ()
+    by_rank: dict[int, dict[str, list]] = {}
+    for index, parsed in enumerate(_tagged(stderr, _SUMMARY_PREFIX)):
         for kind, rows in parsed.items():
-            if isinstance(rows, list):
-                summary.setdefault(kind, []).extend(rows)
-    if not summary:
-        return [f"  {'did not record':<26s} the execution record is cut off or unreadable"]
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                rank = row.get("rank")
+                rank = rank if type(rank) is int and rank >= 0 else index
+                by_rank.setdefault(rank, {}).setdefault(kind, []).append(row)
+    ranks = []
+    for rank, rows in sorted(by_rank.items()):
+        try:
+            ranks.append(RankExecution.from_receipts(rank, rows))
+        except ValueError:
+            continue
+    return tuple(ranks)
 
+
+def execution_lines(ranks: tuple[RankExecution, ...] | list[RankExecution]) -> list[str]:
+    """Render what the ranks recorded for one closed generation."""
+
+    if not ranks:
+        return [f"  {'did not record':<26s} the run produced no execution record"]
     lines: list[str] = []
-    active = [r for r in summary.get("active") or [] if isinstance(r, dict)]
-    if active:
-        slots = sorted({s for row in active for s in (row.get("slots") or [])})
+    loaded = [row for row in ranks if row.loaded]
+    if loaded:
+        slots = sorted({slot.slot for row in loaded for slot in row.slots})
         lines.append(
-            f"  {'loaded':<26s} on {len(active)} GPU(s); it took over "
+            f"  {'loaded':<26s} on {len(loaded)} GPU(s); it took over "
             f"{', '.join(slots) or 'nothing'}"
         )
-    failed = [r for r in summary.get("load_failed") or [] if isinstance(r, dict)]
-    for row in failed:
-        lines.append(
-            f"  {'FAILED TO LOAD':<26s} {row.get('reason')} — that GPU ran SGLang's "
-            "own kernel instead of yours"
-        )
-
-    ran = [r for r in summary.get("completed") or [] if isinstance(r, dict)]
-    by_slot: dict[str, list[dict]] = {}
-    for row in ran:
-        by_slot.setdefault(str(row.get("slot")), []).append(row)
-    for slot, rows in sorted(by_slot.items()):
-        calls = [r.get("calls") for r in rows if isinstance(r.get("calls"), int)]
-        captured = [r.get("captured") for r in rows]
+    for row in ranks:
+        if row.load_error:
+            lines.append(
+                f"  {'FAILED TO LOAD':<26s} GPU {row.rank}: {row.load_error} — that GPU "
+                "ran SGLang's own kernel instead of yours"
+            )
+    eager = eager_slots()
+    by_slot: dict[str, list[tuple[int, object]]] = {}
+    for row in ranks:
+        for slot in row.slots:
+            by_slot.setdefault(slot.slot, []).append((row.rank, slot))
+    called_anything = False
+    for name, entries in sorted(by_slot.items()):
+        facts = [slot for _rank, slot in entries]
+        calls = [slot.calls for slot in facts if slot.calls >= 0]
+        if not any(calls):
+            continue
+        called_anything = True
+        captured = [slot.captured for slot in facts]
         # ``all``, not ``any``: one GPU serving SGLang's kernel out of a captured
         # graph makes the whole measurement SGLang's, so a partial yes is a no.
         graph = (
-            "inside the CUDA graph on every GPU"
+            "outside the CUDA graph, where SGLang runs this slot eagerly"
+            if name in eager
+            else "inside the CUDA graph on every GPU"
             if captured and all(c is True for c in captured)
             else "NOT inside the CUDA graph on every GPU — the timed runs would "
             "replay SGLang's kernel, not yours"
             if any(c is False for c in captured)
             else "we did not record whether it was inside the CUDA graph"
         )
-        total = f"called {sum(calls):,} times" if calls else "we did not record the call count"
-        lines.append(
-            f"  {'ran':<26s} {slot}: {total} across {len(rows)} GPU(s), {graph}"
+        total = (
+            f"called {sum(calls):,} times" if len(calls) == len(facts)
+            else "we did not record the call count"
         )
-        lines.extend(_path_lines(rows))
-    if active and not ran and not failed:
+        lines.append(
+            f"  {'ran':<26s} {name}: {total} across {len(facts)} GPU(s), {graph}"
+        )
+        for rank, slot in entries:
+            if slot.error:
+                lines.append(
+                    f"  {'RAISED':<26s} {name} on GPU {rank}: {slot.error} — the "
+                    "engine went down with it; nothing served SGLang's kernel in "
+                    "your name"
+                )
+    if loaded and not called_anything and not any(
+        slot.error for row in ranks for slot in row.slots
+    ):
         lines.append(
             f"  {'NEVER RAN':<26s} your kernel loaded and took over the slot, but "
             "the model never called it — nothing measured here is your kernel"
         )
-
-    for row in summary.get("not_selected") or []:
-        if not isinstance(row, dict):
-            continue
-        for reason in row.get("reasons") or []:
-            if not isinstance(reason, dict):
-                continue
-            fields = ", ".join(str(f) for f in reason.get("fields") or []) or "unrecorded"
-            lines.append(
-                f"  {'SKIPPED YOUR KERNEL':<26s} {row.get('slot')}: the model called this "
-                f"slot, but we ran SGLang's kernel instead ({reason.get('outcome')} "
-                f"on {fields})"
-            )
-            for mismatch in reason.get("mismatches") or []:
-                if isinstance(mismatch, dict):
-                    lines.append(
-                        f"  {'':<26s}   {mismatch.get('field')}: "
-                        f"{mismatch.get('reason')} — you said your kernel handles "
-                        f"{mismatch.get('expected')}"
-                    )
+    for row in ranks:
+        for slot in row.slots:
+            for reason in slot.skipped:
+                lines.append(
+                    f"  {'SKIPPED YOUR KERNEL':<26s} {slot.slot} on GPU {row.rank}: "
+                    f"the model called this slot, but we ran SGLang's kernel "
+                    f"instead ({reason})"
+                )
     return lines or [f"  {'nothing recorded':<26s} the run produced no execution record"]
 
 
-__all__ = ["config_lines", "execution_lines", "explain"]
+__all__ = ["config_lines", "execution_lines", "explain", "ranks_from_log"]

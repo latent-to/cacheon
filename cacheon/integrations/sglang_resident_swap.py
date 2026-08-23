@@ -117,27 +117,22 @@ def _apply_pending_swap(
         try:
             receipts.set_root(os.path.join(control_dir, "receipts"))
             ack["prior_generation"] = prior_generation
-            ack["prior_receipts"] = (
-                receipts.counts_for_scope(prior_generation, pid=os.getpid())
+            # The receipts themselves, not their counts: the controller reduces
+            # them to "did every rank run" and carries the rows on to the
+            # miner's report. ``None`` is the unobservable reading and stays
+            # distinct from an observed empty scope.
+            ack["prior_rows"] = (
+                receipts.rows_for_scope(prior_generation, pid=os.getpid())
                 if prior_generation >= 0
                 else {}
             )
             ack["receipt_scope"] = receipts.set_scope(generation)
             # Same line the one-shot worker writes, so one reader explains both
-            # lanes. The ack is a file the controller may or may not keep; the
-            # log is drained and retained either way, and a closing generation's
-            # counts are final exactly here.
+            # lanes from a retained log when the product is not at hand.
             if prior_generation >= 0:
-                # The receipts themselves, not their counts: the counts say
-                # whether every rank ran, the rows say WHAT ran on this rank and
-                # why anything else routed to stock. A miner needs the rows.
                 print(
                     "CACHEON-EXECUTION-SUMMARY: "
-                    + json.dumps(
-                        receipts.rows_for_scope(prior_generation, pid=os.getpid()),
-                        sort_keys=True,
-                        default=str,
-                    ),
+                    + json.dumps(ack["prior_rows"], sort_keys=True, default=str),
                     file=sys.stderr,
                     flush=True,
                 )

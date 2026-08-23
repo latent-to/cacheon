@@ -54,6 +54,7 @@ from cacheon.eval.b300_qualification_graph_store_io import (
 )
 from cacheon.eval.b300_resident_qualification import (
     B300ResidentQualificationError,
+    execution_evidence_refs,
     run_b300_resident_qualification_prefix,
 )
 from cacheon.eval.resident_pair_quality_lifecycle import (
@@ -637,6 +638,13 @@ class B300MainnetWorker:
                         continuation=continuation,
                         screen_lane=self._remote_qualification_lane,
                         deadline=float(work.deadline),
+                    )
+                    supporting_evidence_refs += execution_evidence_refs(
+                        resident_prefix.speed,
+                        evidence_root=plan.evidence_root,
+                        request_digest=request_digest,
+                        authority_digest=work.factory.manifest.authority_digest,
+                        source_digest=plan.prepared.source.digest,
                     )
                     resident_pair_lifecycle = ResidentPairMarginalLifecycleEvidence(
                         plan.prepared,

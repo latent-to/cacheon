@@ -358,7 +358,6 @@ def _screen_pending(
             active.reservation_id,
             candidate_digest=candidate.digest,
             receipt=receipt,
-            stage_authorities=service.screen_stage_authorities(),
         )
         decisions[active.reservation_id] = receipt.decision.value
     return decisions

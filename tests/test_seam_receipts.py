@@ -230,13 +230,6 @@ def test_without_a_probe_capture_is_unknown_not_false(receipt_dir):
     assert row["calls"] == 1 and "captured" not in row
 
 
-def test_one_uncaptured_member_makes_the_group_uncaptured():
-    # A rank serving stock out of its captured graph makes the whole measurement
-    # stock, so agreement — not a single optimistic member — is the reduction.
-    rows = [{"calls": 3, "captured": True}, {"calls": 3, "captured": False}]
-    assert receipts._summarize_calls(rows) == {"calls": 6, "captured": False}
-
-
 def test_scope_change_finalizes_and_resets_the_tally(receipt_dir, monkeypatch):
     monkeypatch.setattr(receipts, "_SCOPE", "")
     receipts.set_scope("1")
@@ -249,24 +242,35 @@ def test_scope_change_finalizes_and_resets_the_tally(receipt_dir, monkeypatch):
     assert receipts.collect(receipt_dir / "2", "completed")[0]["calls"] == 1
 
 
-def test_scope_counts_report_totals_for_the_live_scope(receipt_dir, monkeypatch):
+def test_scope_rows_report_the_live_tally_for_the_live_scope(receipt_dir, monkeypatch):
     monkeypatch.setattr(receipts, "_SCOPE", "")
     receipts.set_graph_probe(lambda: True)
     receipts.set_scope("7")
     for _ in range(7):
         receipts.completed("norm.rmsnorm")
-    counts = receipts.counts_for_scope("7", pid=os.getpid())
-    assert counts["completed"] == 1  # one receipt file
-    assert counts["calls"] == 7 and counts["captured"] is True
+    rows = receipts.rows_for_scope("7", pid=os.getpid())
+    (row,) = rows["completed"]  # one receipt file
+    assert row["calls"] == 7 and row["captured"] is True
 
 
-def test_a_receipt_without_counts_makes_the_total_unknown(receipt_dir):
-    # Mixed deployment: one rank on an older source writes no `calls`. Summing the
-    # rest would report a confident number that is quietly short.
-    receipts.write("completed", {"slot": "a"}, tag="a")
-    rows = receipts.collect(receipt_dir, "completed")
-    rows.append({"slot": "b", "calls": 5})
-    assert "calls" not in receipts._summarize_calls(rows)
+def test_reading_a_closed_scope_does_not_flush_the_live_tally_into_it(
+    receipt_dir, monkeypatch
+):
+    """The flush belongs to the scope being tallied, not to whichever is read.
+
+    A swap reads the generation it closes while the new generation is already
+    armed; flushing on that read would write the new scope's calls under the old
+    one's directory name.
+    """
+
+    monkeypatch.setattr(receipts, "_SCOPE", "")
+    receipts.set_scope("1")
+    receipts.completed("norm.rmsnorm")
+    receipts.set_scope("2")
+    for _ in range(3):
+        receipts.completed("norm.rmsnorm")
+    (row,) = receipts.rows_for_scope("1", pid=os.getpid())["completed"]
+    assert row["calls"] == 1
 
 
 def test_detected_identity_overrides_payload(receipt_dir, monkeypatch):
@@ -713,13 +717,13 @@ def test_seam_root_refuses_anything_that_is_not_an_absolute_path(
     assert receipts.set_root(hostile) == ""
 
 
-def test_counts_distinguish_unobservable_from_an_observed_zero(
+def test_rows_distinguish_unobservable_from_an_observed_zero(
     tmp_path, monkeypatch
 ):
     """The tri-state the whole guard rests on.
 
     ``None`` means the evidence path is unusable and no verdict may be drawn.
-    A dict of zeros means the scope existed and nothing ran under it, which is
+    An empty dict means the scope existed and nothing ran under it, which is
     a fact about the candidate rather than the plumbing.
     """
 
@@ -729,30 +733,26 @@ def test_counts_distinguish_unobservable_from_an_observed_zero(
     monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
 
     # No root at all: unobservable.
-    assert receipts.counts_for_scope(5) is None
+    assert receipts.rows_for_scope(5) is None
 
     root = tmp_path / "receipts"
     receipts.set_root(root)
     # Root, but that generation never opened a scope: still unobservable.
-    assert receipts.counts_for_scope(5) is None
+    assert receipts.rows_for_scope(5) is None
 
     # The scope is created eagerly by set_scope, before anything is written, so
     # "ran nothing" is observable rather than looking like a broken path.
     receipts.set_scope(5)
-    assert receipts.counts_for_scope(5) == {
-        "active": 0,
-        "completed": 0,
-        "load_failed": 0,
-    }
+    assert receipts.rows_for_scope(5) == {}
 
     receipts.completed("moe.fused_experts")
-    assert receipts.counts_for_scope(5)["completed"] == 1
+    assert len(receipts.rows_for_scope(5)["completed"]) == 1
 
 
-def test_counts_restricted_to_this_process_ignore_peer_ranks(
+def test_rows_restricted_to_this_process_ignore_peer_ranks(
     tmp_path, monkeypatch
 ):
-    """Each rank counts only what it wrote, so peers cannot race the reading."""
+    """Each rank reads only what it wrote, so peers cannot race the reading."""
 
     monkeypatch.setattr(receipts, "_ONCE", set())
     monkeypatch.setattr(receipts, "_SCOPE", "")
@@ -763,12 +763,12 @@ def test_counts_restricted_to_this_process_ignore_peer_ranks(
     receipts.set_scope(2)
     receipts.completed("moe.fused_experts")
 
-    assert receipts.counts_for_scope(2, pid=os.getpid())["completed"] == 1
-    assert receipts.counts_for_scope(2, pid=os.getpid() + 1)["completed"] == 0
+    assert len(receipts.rows_for_scope(2, pid=os.getpid())["completed"]) == 1
+    assert receipts.rows_for_scope(2, pid=os.getpid() + 1) == {}
 
 
 @pytest.mark.parametrize("hostile", ["..", "../escape", ".", "", None])
-def test_counts_refuse_a_scope_that_would_escape_the_root(
+def test_rows_refuse_a_scope_that_would_escape_the_root(
     tmp_path, monkeypatch, hostile
 ):
     monkeypatch.setattr(receipts, "_ONCE", set())
@@ -776,10 +776,10 @@ def test_counts_refuse_a_scope_that_would_escape_the_root(
     monkeypatch.setattr(receipts, "_ROOT", "")
     monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
     receipts.set_root(tmp_path / "receipts")
-    assert receipts.counts_for_scope(hostile) is None
+    assert receipts.rows_for_scope(hostile) is None
 
 
-def test_counts_treat_malformed_evidence_as_unobservable(tmp_path, monkeypatch):
+def test_rows_treat_malformed_evidence_as_unobservable(tmp_path, monkeypatch):
     """A corrupt receipt is not an execution of zero; it is no reading at all."""
 
     monkeypatch.setattr(receipts, "_ONCE", set())
@@ -790,4 +790,50 @@ def test_counts_treat_malformed_evidence_as_unobservable(tmp_path, monkeypatch):
     receipts.set_root(root)
     receipts.set_scope(8)
     (root / "8" / "completed.9999.json").write_text("{ not json")
-    assert receipts.counts_for_scope(8) is None
+    assert receipts.rows_for_scope(8) is None
+
+
+def test_a_candidate_raise_is_receipted_and_blamed_all_the_way_out(
+    tmp_path, monkeypatch
+):
+    """The path that used to crash the lane with nothing to show for it.
+
+    A raise inside the entry is receipted under the live scope, survives into
+    the rows the closing swap reads, reduces to a rank that is not clean, and
+    is named by the session worker when the engine dies under it.
+    """
+
+    from cacheon.eval import oci_session_worker as worker
+    from cacheon.eval.resident_execution_evidence import RankExecution
+
+    monkeypatch.setattr(receipts, "_ONCE", set())
+    monkeypatch.setattr(receipts, "_SCOPE", "")
+    monkeypatch.setattr(receipts, "_ROOT", "")
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
+    control = tmp_path / "ctl"
+    receipts.set_root(control / "receipts")
+    receipts.set_scope(4)
+
+    def entry(_x):
+        raise RuntimeError("CUDA error: illegal memory access\nat line 3")
+
+    with pytest.raises(RuntimeError, match="illegal memory access"):
+        receipts.invoke("attention.msa_block_score", entry, object())
+    # Once per slot per process: a second raise does not churn the receipt.
+    with pytest.raises(RuntimeError):
+        receipts.invoke("attention.msa_block_score", entry, object())
+
+    rows = receipts.rows_for_scope(4, pid=os.getpid())
+    (failed,) = rows["failed"]
+    assert failed["slot"] == "attention.msa_block_score"
+    assert failed["error_type"] == "RuntimeError"
+    assert failed["pid"] == os.getpid()
+
+    reduced = RankExecution.from_receipts(0, rows)
+    assert reduced.slots[0].error.startswith("RuntimeError: CUDA error: illegal memory access")
+    assert not reduced.clean(eager_slots=frozenset())
+
+    blame = worker._candidate_failures(str(control))
+    assert blame.startswith("candidate raised rank ")
+    assert "RuntimeError in attention.msa_block_score (generation 4)" in blame
+    assert worker._candidate_failures(str(tmp_path / "absent")) == ""

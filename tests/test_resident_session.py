@@ -16,6 +16,12 @@ from cacheon.eval.oci_session_protocol import (
     validate_swap_evidence,
     validate_swap_request,
 )
+from cacheon.eval.resident_execution_evidence import (
+    UNOBSERVED_EVIDENCE,
+    RankExecution,
+    ResidentExecutionEvidence,
+    SlotExecution,
+)
 
 SESSION = "1" * 32
 LAUNCH = "a" * 64
@@ -41,6 +47,7 @@ def _evidence(
     rank_count: int = 4,
     prior_generation: int = -1,
     prior_execution_ranks: int = -1,
+    ranks: tuple[RankExecution, ...] = (),
 ) -> dict:
     """Swap evidence defaulting to "nothing observed", the fail-closed state."""
 
@@ -48,9 +55,14 @@ def _evidence(
         request=request,
         slots=slots,
         rank_count=rank_count,
-        prior_generation=prior_generation,
-        prior_execution_ranks=prior_execution_ranks,
+        execution=ResidentExecutionEvidence(
+            prior_generation, prior_execution_ranks, ranks
+        ),
     )
+
+
+def _clean_rank(rank: int, slot: str = "moe.fused_experts") -> RankExecution:
+    return RankExecution(rank, True, "", (SlotExecution(slot, 12, True),))
 
 
 class TestSwapProtocol:
@@ -90,24 +102,59 @@ class TestSwapProtocol:
     def test_evidence_round_trip(self) -> None:
         request = _swap()
         message = _evidence(request, ("moe.fused_experts",))
-        slots, prior_generation, prior_ranks = validate_swap_evidence(
+        slots, execution = validate_swap_evidence(
             message, request=request, expected_rank_count=4
         )
         assert slots == ("moe.fused_experts",)
-        assert (prior_generation, prior_ranks) == (-1, -1)
+        assert execution == UNOBSERVED_EVIDENCE
 
     def test_evidence_carries_the_closed_generation_execution_count(self) -> None:
+        request = _swap(index=1, generation=3)
+        ranks = tuple(_clean_rank(rank) for rank in range(4))
+        message = _evidence(
+            request,
+            ("moe.fused_experts",),
+            prior_generation=2,
+            prior_execution_ranks=4,
+            ranks=ranks,
+        )
+        _, execution = validate_swap_evidence(
+            message, request=request, expected_rank_count=4
+        )
+        assert execution == ResidentExecutionEvidence(2, 4, ranks)
+        assert execution.proves_execution(generation=2, expected_ranks=4)
+
+    def test_evidence_rows_must_cover_the_whole_rank_group(self) -> None:
+        """Three rows for a group of four is a partial reading, not evidence."""
+
+        request = _swap(index=1, generation=3)
+        message = _evidence(
+            request,
+            ("moe.fused_experts",),
+            prior_generation=2,
+            prior_execution_ranks=3,
+            ranks=tuple(_clean_rank(rank) for rank in range(3)),
+        )
+        with pytest.raises(SessionProtocolError, match="cover the rank group"):
+            validate_swap_evidence(message, request=request, expected_rank_count=4)
+
+    def test_evidence_rows_are_validated_as_strictly_as_the_count(self) -> None:
         request = _swap(index=1, generation=3)
         message = _evidence(
             request,
             ("moe.fused_experts",),
             prior_generation=2,
             prior_execution_ranks=4,
+            ranks=tuple(_clean_rank(rank) for rank in range(4)),
         )
-        _, prior_generation, prior_ranks = validate_swap_evidence(
-            message, request=request, expected_rank_count=4
-        )
-        assert (prior_generation, prior_ranks) == (2, 4)
+        rows = message["prior_execution"]["value"]["ranks"]
+        rows[0]["slots"][0]["calls"] = "many"
+        with pytest.raises(SessionProtocolError, match="evidence is invalid"):
+            validate_swap_evidence(message, request=request, expected_rank_count=4)
+        rows[0]["slots"][0]["calls"] = 12
+        rows[0]["extra"] = True
+        with pytest.raises(SessionProtocolError, match="evidence is invalid"):
+            validate_swap_evidence(message, request=request, expected_rank_count=4)
 
     @pytest.mark.parametrize(
         "prior_generation, prior_execution_ranks",
@@ -123,12 +170,9 @@ class TestSwapProtocol:
         self, prior_generation: int, prior_execution_ranks: int
     ) -> None:
         request = _swap(index=1, generation=3)
-        message = _evidence(
-            request,
-            ("moe.fused_experts",),
-            prior_generation=prior_generation,
-            prior_execution_ranks=prior_execution_ranks,
-        )
+        message = _evidence(request, ("moe.fused_experts",))
+        message["prior_execution"]["value"]["prior_generation"] = prior_generation
+        message["prior_execution"]["value"]["prior_execution_ranks"] = prior_execution_ranks
         with pytest.raises(SessionProtocolError):
             validate_swap_evidence(message, request=request, expected_rank_count=4)
 
@@ -152,7 +196,7 @@ class TestSwapProtocol:
         message = _evidence(request, ())
         assert validate_swap_evidence(
             message, request=request, expected_rank_count=4
-        ) == ((), -1, -1)
+        ) == ((), UNOBSERVED_EVIDENCE)
 
     def test_bundle_evidence_must_register_slots(self) -> None:
         request = _swap()
@@ -180,21 +224,9 @@ class TestWorkerSwapApplication:
         *,
         tp: int = 2,
         slots=("s.one",),
-        prior_generation: int | None = None,
-        fired: int = 1,
-        completed: int = 1,
-        fallback: int = 0,
     ) -> None:
         for rank in range(tp):
             row = {"generation": generation, "ok": True, "slots": list(slots)}
-            if prior_generation is not None:
-                row["prior_generation"] = prior_generation
-                row["prior_receipts"] = {
-                    "fired": fired,
-                    "completed": completed,
-                    "fallback": fallback,
-                    "load_failed": 0,
-                }
             (Path(control) / f"ack.rank{rank}.json").write_text(json.dumps(row))
 
     def test_stock_swap_writes_command_and_collects_acks(self, tmp_path) -> None:

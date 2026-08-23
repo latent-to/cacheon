@@ -20,6 +20,7 @@ than being narrated into a failure.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -187,8 +188,49 @@ def _compile_defect(publication_root: object) -> str | None:
     return None
 
 
+def _execution_artifacts(
+    evidence_roots: tuple[Path, ...], publication_digest: object
+) -> list[dict[str, Any]]:
+    """Every published record of what the ranks did with this bundle.
+
+    The durable row points at the attempt artifact only; the execution rows are
+    a separate unsealed artifact the run published beside it, keyed by the
+    bundle they describe. The store is content-addressed, so each file is
+    authenticated against its own name before it is believed.
+    """
+
+    from cacheon.eval.b300_resident_qualification import EXECUTION_EVIDENCE_DOMAIN
+    from cacheon.eval.evidence_store import DEFAULT_MAX_EVIDENCE_BYTES
+
+    found: list[dict[str, Any]] = []
+    if not isinstance(publication_digest, str) or not publication_digest:
+        return found
+    for root in evidence_roots:
+        domain = Path(root) / EXECUTION_EVIDENCE_DOMAIN
+        for path in sorted(domain.glob("??/*")) if domain.is_dir() else ():
+            try:
+                raw = path.read_bytes()
+                if (
+                    len(raw) > DEFAULT_MAX_EVIDENCE_BYTES
+                    or hashlib.sha256(raw).hexdigest() != path.name
+                    or json.loads(raw).get("bundle_digest") != publication_digest
+                ):
+                    continue
+            except (OSError, ValueError, AttributeError):
+                continue
+            found.append(
+                {
+                    "reference": {"domain": EXECUTION_EVIDENCE_DOMAIN},
+                    "payload_base64": base64.b64encode(raw).decode("ascii"),
+                }
+            )
+    return found
+
+
 def _attempt_evidence(
-    dispositions: list[dict[str, Any]], evidence_roots: tuple[Path, ...]
+    dispositions: list[dict[str, Any]],
+    evidence_roots: tuple[Path, ...],
+    publication_digest: object,
 ) -> list[dict[str, Any]]:
     """Reopen each attempt's retained evidence and render what it measured.
 
@@ -196,8 +238,8 @@ def _attempt_evidence(
     live in a content-addressed store keyed by the worker generation that ran, so
     an attempt's evidence sits in whichever store was live at the time. Reading
     it back is the difference between telling a miner "FAIL, candidate_slower"
-    and telling them which shapes passed, how many replays, and by how much they
-    lost.
+    and telling them which shapes passed, how many replays, by how much they
+    lost, and whether their kernel was even running when it lost.
 
     Reports what it could not reopen instead of omitting it: a missing artifact
     is an operator problem the miner should be able to see, not a silent gap.
@@ -209,6 +251,7 @@ def _attempt_evidence(
     )
     from cacheon.eval.explain import explain
 
+    execution = _execution_artifacts(evidence_roots, publication_digest)
     reports: list[dict[str, Any]] = []
     for row in dispositions:
         reference = row.get("attempt_ref")
@@ -234,7 +277,8 @@ def _attempt_evidence(
                         {
                             "reference": {"domain": typed.domain},
                             "payload_base64": base64.b64encode(payload).decode("ascii"),
-                        }
+                        },
+                        *execution,
                     ]
                 }
             )
@@ -265,77 +309,28 @@ def _submission(
     }
     if evidence_roots:
         record["attempt_evidence"] = _attempt_evidence(
-            record["qualification_dispositions"], evidence_roots
+            record["qualification_dispositions"], evidence_roots, row["publication_digest"]
         )
     if reason.get("code") == "candidate_kernel_does_not_compile":
         record["static_finding"] = _compile_defect(row["publication_root"])
-    _explain_screen_stages(record, row)
     return record
-
-
-def _explain_screen_stages(record: dict[str, Any], row: sqlite3.Row) -> None:
-    """Name the gate that stopped the bundle, not merely that the screen did.
-
-    Without this the report says "rejected at the arena screen" and lists five
-    gates, leaving the miner to guess which one and the operator to go digging
-    through source. The stage recorded its reason; only the hash survived, and
-    ``recover_screen_reason`` turns the hash back into the sentence.
-    """
-
-    from cacheon.eval.screen_reason import recover_screen_reason
-
-    publication_digest = row["publication_digest"]
-    if not isinstance(publication_digest, str) or not publication_digest:
-        return
-    slots = _target_member_slots(row)
-    for disposition in record.get("screens") or ():
-        authorities = disposition.get("stage_authorities") or {}
-        for stage in disposition.get("stages") or ():
-            authority = authorities.get(stage.get("stage", ""))
-            if not authority:
-                continue
-            found = recover_screen_reason(
-                stage=stage.get("stage", ""),
-                grade=stage.get("grade", ""),
-                evidence_digest=stage.get("evidence_digest", ""),
-                authority_digest=authority,
-                candidate_digest=disposition.get("candidate_digest", ""),
-                publication_digest=publication_digest,
-                service_digest=disposition.get("service_digest", ""),
-                screen_attempt=int(disposition.get("attempt_index", 0)) + 1,
-                slots=slots,
-            )
-            if found is not None:
-                stage["reason"] = found.reason
-                stage["explanation"] = found.sentence()
-
-
-def _target_member_slots(row: sqlite3.Row) -> tuple[str, ...]:
-    """The slots a quant mismatch could name, which is the target's own members.
-
-    ``_quant_mismatch`` walks ``candidate.reservation.target_members``, so a
-    reported ``slot`` is always one of them. That makes the search space local
-    to this row -- no deployment, no pod -- and smaller than the full list of
-    slots the deployment demands a quantization for.
-    """
-
-    try:
-        members = json.loads(row["target_members_json"] or "[]")
-    except (KeyError, IndexError, ValueError):
-        return ()
-    return tuple(sorted({m for m in members if isinstance(m, str) and m}))
 
 
 def miner_submissions(
     intake_db: str | Path,
     *,
     hotkey: str,
+    evidence_roots: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     """Return every retained submission for one hotkey, oldest first.
 
     Unlike the single-reservation operator view this does not refuse a hotkey
     with several rows -- that is the normal case for a real miner and the whole
     point of the report.
+
+    ``evidence_roots`` are the content-addressed stores the validator kept; when
+    given, each qualification attempt's retained evidence is reopened and
+    rendered under ``attempt_evidence``.
     """
 
     if (
@@ -360,7 +355,7 @@ def miner_submissions(
             "hotkey": hotkey,
             "cursor": _cursor(db),
             "submission_count": len(rows),
-            "submissions": [_submission(db, row) for row in rows],
+            "submissions": [_submission(db, row, evidence_roots) for row in rows],
         }
     except OperatorStatusError:
         raise
@@ -403,13 +398,20 @@ def format_miner_submissions(value: dict[str, Any]) -> str:
             lines.append(f"  static finding: {finding}")
         for screen in record["screens"]:
             failed = [
-                stage["stage"]
-                for stage in screen["stages"]
-                if stage["grade"] != "pass"
+                stage for stage in screen["stages"] if stage["grade"] != "pass"
             ]
             if failed:
                 lines.append(
                     f"  screen[{screen['attempt_index']}] {screen['decision']}: "
-                    f"failed at {', '.join(failed)}"
+                    f"failed at {', '.join(stage['stage'] for stage in failed)}"
                 )
+            for stage in failed:
+                if stage.get("reason"):
+                    lines.append(f"    {stage['stage']}: {stage['reason']}")
+        for attempt in record.get("attempt_evidence") or ():
+            lines.append(f"  attempt[{attempt['attempt_index']}] evidence:")
+            if attempt["retained"]:
+                lines.extend(f"    {line}" for line in attempt["explanation"])
+            else:
+                lines.append(f"    {attempt['note']}")
     return "\n".join(lines)

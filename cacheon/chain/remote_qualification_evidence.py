@@ -17,8 +17,8 @@ from typing import Iterable
 
 from cacheon.arena_service import (
     ArenaScreenReceipt,
+    ArenaServiceError,
     PromotionDecision,
-    ScreenGrade,
     ScreenStageResult,
 )
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
@@ -455,26 +455,12 @@ def _screen_receipt_from_dict(value: object) -> ArenaScreenReceipt:
     fields = {"candidate_digest", "decision", "results", "screen_attempt", "service_digest"}
     if type(value) is not dict or set(value) != fields or type(value["results"]) is not list:
         raise RemoteEvaluationDispatcherError("screen response fields are not closed")
-    results = []
-    for row in value["results"]:
-        if type(row) is not dict or set(row) != {
-            "elapsed_ms",
-            "evidence_digest",
-            "grade",
-            "stage",
-        }:
-            raise RemoteEvaluationDispatcherError("screen stage response is malformed")
-        try:
-            results.append(
-                ScreenStageResult(
-                    row["stage"],
-                    ScreenGrade(row["grade"]),
-                    row["evidence_digest"],
-                    row["elapsed_ms"],
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise RemoteEvaluationDispatcherError("screen stage response is invalid") from exc
+    try:
+        results = [ScreenStageResult.from_dict(row) for row in value["results"]]
+    except ArenaServiceError as exc:
+        raise RemoteEvaluationDispatcherError(
+            f"screen stage response is invalid: {exc}"
+        ) from None
     try:
         return ArenaScreenReceipt(
             value["service_digest"],  # type: ignore[arg-type]

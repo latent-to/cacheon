@@ -21,6 +21,18 @@ def events(monkeypatch):
     return completed
 
 
+@pytest.fixture()
+def failures(monkeypatch):
+    """``(slot, exception type)`` for every candidate raise the dispatcher receipted."""
+
+    failed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        dispatch._receipts, "failed",
+        lambda slot, exc: failed.append((slot, type(exc).__name__)),
+    )
+    return failed
+
+
 def _registry(slot, entry, *, prepare=None, dtype="float32"):
     registry = KernelRegistry()
     registry.register(
@@ -40,7 +52,7 @@ def _boom(*_args, **_kwargs):
     raise RuntimeError("candidate path failed")
 
 
-def test_op_dispatchers_receipt_success_and_never_serve_stock(events):
+def test_op_dispatchers_receipt_success_and_never_serve_stock(events, failures):
     completed = events
     baseline = object()
     silu = dispatch.make_silu_and_mul_dispatcher(
@@ -82,6 +94,12 @@ def test_op_dispatchers_receipt_success_and_never_serve_stock(events):
         with pytest.raises(RuntimeError, match="candidate path failed"):
             call()
     assert completed == ["activation.silu_and_mul", "norm.rmsnorm"]
+    # The raise is receipted on the way out, naming the slot and the exception,
+    # so the verdict can blame the candidate instead of the lane.
+    assert failures == [
+        ("activation.silu_and_mul", "RuntimeError"),
+        ("norm.rmsnorm", "RuntimeError"),
+    ]
 
 
 def test_out_of_domain_call_serves_stock_and_mints_no_receipt(events):
@@ -121,7 +139,9 @@ def _moe_call(entry, *, slot="moe.fused_experts"):
     return wrapped, layer, x, topk
 
 
-def test_moe_records_success_but_never_falls_back_after_selection(events, monkeypatch):
+def test_moe_records_success_but_never_falls_back_after_selection(
+    events, failures, monkeypatch
+):
     completed = events
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
 
@@ -134,6 +154,7 @@ def test_moe_records_success_but_never_falls_back_after_selection(events, monkey
     with pytest.raises(RuntimeError, match="candidate path failed"):
         bad(layer, x, topk)
     assert completed == ["moe.fused_experts"]
+    assert failures == [("moe.fused_experts", "RuntimeError")]
 
 
 def test_moe_selected_audit_prelude_failure_aborts(events, monkeypatch):

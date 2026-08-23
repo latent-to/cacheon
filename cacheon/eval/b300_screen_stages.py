@@ -174,7 +174,16 @@ def _stage_result(
             "stage": stage,
         },
     )
-    return ScreenStageResult(stage, grade, evidence, _elapsed_ms(started))
+    # The receipt keeps the reason in clear, next to the digest that seals it.
+    # Only the exception's type name rides along, never its message: the type
+    # is the validator's own vocabulary, the message may be the candidate's.
+    exception_type = (facts or {}).get("exception_type")
+    stated = (
+        f"{reason} ({exception_type})"
+        if isinstance(exception_type, str) and exception_type
+        else reason
+    )
+    return ScreenStageResult(stage, grade, evidence, _elapsed_ms(started), stated)
 
 
 def _same_stat(left: os.stat_result, right: os.stat_result) -> bool:

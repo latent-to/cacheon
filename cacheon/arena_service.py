@@ -383,6 +383,13 @@ class ScreenStageResult:
     grade: ScreenGrade
     evidence_digest: str
     elapsed_ms: int
+    # Why the stage graded as it did, in the stage's own closed vocabulary
+    # ("static_policy (_CandidateStaticFailure)"). It travels in the signed
+    # receipt so the validator that stores the disposition and the miner who
+    # reads it see the same word the grader used. Empty means the stage did not
+    # say; it is then left out of the bytes, so every receipt written before
+    # the field existed keeps its digest.
+    reason: str = ""
 
     def __post_init__(self) -> None:
         if self.stage not in SCREEN_STAGES or type(self.grade) is not ScreenGrade:
@@ -391,14 +398,49 @@ class ScreenStageResult:
             self, "evidence_digest", _digest(self.evidence_digest, "screen evidence")
         )
         object.__setattr__(self, "elapsed_ms", _positive(self.elapsed_ms, "elapsed_ms"))
+        if (
+            type(self.reason) is not str
+            or len(self.reason) > MAX_SCREEN_REASON_CHARS
+            or _REASON.fullmatch(self.reason) is None
+        ):
+            raise ArenaServiceError("screen result reason is invalid")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        row: dict[str, object] = {
             "elapsed_ms": self.elapsed_ms,
             "evidence_digest": self.evidence_digest,
             "grade": self.grade.value,
             "stage": self.stage,
         }
+        if self.reason:
+            row["reason"] = self.reason
+        return row
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ScreenStageResult":
+        """Rebuild one retained stage row; a missing reason is an older receipt."""
+
+        if type(value) is not dict or not _STAGE_ROW_FIELDS <= set(value) <= (
+            _STAGE_ROW_FIELDS | {"reason"}
+        ):
+            raise ArenaServiceError("screen stage row fields are not closed")
+        try:
+            return cls(
+                value["stage"],
+                ScreenGrade(value["grade"]),
+                value["evidence_digest"],
+                value["elapsed_ms"],
+                value.get("reason", ""),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ArenaServiceError(f"screen stage row is invalid: {exc}") from None
+
+
+#: One line, printable, no control characters: a reason is a vocabulary word
+#: plus an exception type, never a message a candidate could have written.
+MAX_SCREEN_REASON_CHARS = 160
+_REASON = re.compile(r"[ -~]*\Z")
+_STAGE_ROW_FIELDS = frozenset({"elapsed_ms", "evidence_digest", "grade", "stage"})
 
 
 @dataclass(frozen=True)
@@ -555,27 +597,6 @@ class ArenaService:
     def identity(self) -> str:
         return self.manifest.digest
 
-    def screen_stage_authorities(self) -> dict[str, str]:
-        """Which adapter graded each stage, for later explanation.
-
-        A stage hashes its own identity into the evidence digest it returns and
-        keeps no payload, so that identity is the one field a reader cannot get
-        from the receipt or the reservation. Recorded here it travels with the
-        disposition; re-derived later it is merely a guess that silently fails
-        to match. Advisory only: it never enters a grade, a decision, or the
-        signed receipt, and a provider that does not publish handlers yields an
-        empty map rather than an error.
-        """
-
-        provider = getattr(self, "_provider", None)
-        authorities: dict[str, str] = {}
-        for handler in getattr(provider, "screen_handlers", ()) or ():
-            stage = getattr(handler, "stage", None)
-            digest = getattr(handler, "identity_digest", None)
-            if isinstance(stage, str) and isinstance(digest, str) and digest:
-                authorities[stage] = digest
-        return authorities
-
     def admit(self, state: ArenaQueueSnapshot) -> AdmissionDecision:
         if type(state) is not ArenaQueueSnapshot:
             raise ArenaServiceError("queue state is not exactly typed")
@@ -641,6 +662,7 @@ class ArenaService:
                     ScreenGrade.NO_DECISION,
                     result.evidence_digest,
                     result.elapsed_ms,
+                    f"stage_timeout ({result.elapsed_ms} ms > {stage.timeout_ms} ms)",
                 )
             results.append(result)
             if result.grade is ScreenGrade.FAIL:

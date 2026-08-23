@@ -82,7 +82,6 @@ from cacheon.eval.oci_session_protocol import (
     CONTAINER_SWAP_INTAKE_PATH,
     RuntimePreflightFacts,
 )
-from cacheon.eval import run_log_index
 from cacheon.eval.runtime_preflight import (
     HOST_RECEIPT_SCHEMA,
     RuntimePreflightReceipt,
@@ -1353,18 +1352,6 @@ class OCIEngineExecutor:
                     diagnostic = observed
         if isinstance(primary, OuterSessionError) and diagnostic is not None:
             primary.attach_diagnostic(lambda diagnostic=diagnostic: diagnostic)
-        # Above every exit below, so a PASS and a HOLD get the same pointer a
-        # crash gets. Attaching the diagnostic to an exception was the only thing
-        # that ever happened to it, which left the log findable for the one
-        # outcome that already announces itself and unfindable for the rest.
-        run_log_index.record(
-            self.manager.diagnostics_root,
-            launch_id=launch_id,
-            launch_digest=launch.digest,
-            session_protocol=session_protocol,
-            diagnostic=diagnostic,
-            error=primary or (cleanup_failures[0] if cleanup_failures else None),
-        )
         if cleanup_failures:
             cause = primary or cleanup_failures[0]
             raise OCIBackendRuntimeError(

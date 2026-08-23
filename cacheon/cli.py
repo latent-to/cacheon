@@ -1662,6 +1662,7 @@ def cmd_chain_miner_report(args: argparse.Namespace) -> int:
     """Report every retained submission for one hotkey with a stated cause."""
 
     import json
+    from pathlib import Path
 
     from cacheon.chain.miner_feedback import (
         format_miner_submissions,
@@ -1670,7 +1671,11 @@ def cmd_chain_miner_report(args: argparse.Namespace) -> int:
     from cacheon.chain.operator_status import OperatorStatusError
 
     try:
-        value = miner_submissions(args.intake_db, hotkey=args.miner_hotkey)
+        value = miner_submissions(
+            args.intake_db,
+            hotkey=args.miner_hotkey,
+            evidence_roots=tuple(Path(root) for root in args.evidence_root),
+        )
     except OperatorStatusError as exc:
         print(f"MINER REPORT REFUSED: {exc}")
         return 2
@@ -1843,6 +1848,23 @@ def cmd_chain_snapshot_verify(args: argparse.Namespace) -> int:
         print(f"restore_root:  {restored.restore_root}")
         print(f"restore_map:   {restored.restore_map_path}")
     print("private archive semantic reopen: verified")
+    return 0
+
+
+def cmd_chain_release_hold(args: argparse.Namespace) -> int:
+    """Return one held reservation to its queue under a stated operator reason."""
+
+    from cacheon import chain
+    from cacheon.chain.intake import FinalizedIntakeStore, IntakeScope
+
+    subtensor = chain.connect(args.network)
+    scope = IntakeScope(str(subtensor.get_block_hash(0)).lower(), args.netuid)
+    with FinalizedIntakeStore(args.intake_db, scope=scope) as store:
+        released = store.release_hold(args.reservation_id, reason=args.reason)
+    print(
+        f"released hold {released.reservation_id}: status={released.status} "
+        f"reason={released.reason}"
+    )
     return 0
 
 
@@ -2859,6 +2881,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
     sp.add_argument("--miner-hotkey", required=True)
+    sp.add_argument(
+        "--evidence-root",
+        action="append",
+        default=[],
+        help=(
+            "a retained qualification evidence store to reopen; repeatable, one "
+            "per worker generation. Renders what each attempt measured and what "
+            "every GPU did with the kernel, from the bytes the verdict rests on"
+        ),
+    )
     sp.add_argument("--json", action="store_true", help="emit canonical compact JSON")
     sp.set_defaults(func=cmd_chain_miner_report)
 
@@ -3071,6 +3103,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reservation-id", required=True)
     sp.add_argument("--reason", required=True, help="bounded operator audit reason")
     sp.set_defaults(func=cmd_chain_archive_schema3_hold)
+
+    sp = sub.add_parser(
+        "chain-release-hold",
+        help=(
+            "operator: return one held or no-decision reservation to its queue "
+            "with a stated reason; never signs, settles, or crowns"
+        ),
+    )
+    sp.add_argument("--netuid", type=int, required=True)
+    sp.add_argument("--network", required=True)
+    sp.add_argument("--intake-db", default="chain_intake/intake.sqlite3")
+    sp.add_argument("--reservation-id", required=True)
+    sp.add_argument("--reason", required=True, help="bounded operator audit reason")
+    sp.set_defaults(func=cmd_chain_release_hold)
 
     sp = sub.add_parser("chain-register",
                         help="register this hotkey on a subnet (burned_register; needs "

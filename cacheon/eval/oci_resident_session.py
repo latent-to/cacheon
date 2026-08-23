@@ -392,7 +392,7 @@ class ResidentOuterSession:
                 deadline=swap_deadline,
             )
             try:
-                slots, prior_generation, prior_ranks = validate_swap_evidence(
+                slots, execution = validate_swap_evidence(
                     _control_or_error(
                         self.transport,
                         session_id=self.session_id,
@@ -416,7 +416,7 @@ class ResidentOuterSession:
                 slots,
                 requested_at,
                 completed_at,
-                ResidentExecutionEvidence(prior_generation, prior_ranks),
+                execution,
                 self.plan.engine_config.tp_size,
             )
             self.swap_receipts.append(receipt)

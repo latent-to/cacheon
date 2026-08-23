@@ -28,6 +28,12 @@ from cacheon.eval.explain import (
     config_lines,
     execution_lines,
     explain,
+    ranks_from_log,
+)
+from cacheon.eval.resident_execution_evidence import (
+    EXECUTION_CODEC,
+    RankExecution,
+    SlotExecution,
 )
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -211,7 +217,7 @@ def test_execution_summary_merges_every_gpu_rather_than_the_last_one() -> None:
         _summary(completed=[{"slot": "s.one", "calls": 10, "captured": True}])
         for _ in range(4)
     )
-    text = "\n".join(execution_lines(log))
+    text = "\n".join(execution_lines(ranks_from_log(log)))
     assert "called 40 times across 4 GPU(s)" in text
     assert "inside the CUDA graph on every GPU" in text
 
@@ -223,7 +229,9 @@ def test_one_ungraphed_gpu_makes_the_whole_measurement_ungraphed() -> None:
             _summary(completed=[{"slot": "s.one", "calls": 1, "captured": False}]),
         ]
     )
-    assert "NOT inside the CUDA graph on every GPU" in "\n".join(execution_lines(log))
+    assert "NOT inside the CUDA graph on every GPU" in "\n".join(
+        execution_lines(ranks_from_log(log))
+    )
 
 
 def test_traced_kernels_name_the_branch_taken_at_each_input_shape() -> None:
@@ -251,7 +259,8 @@ def test_traced_kernels_name_the_branch_taken_at_each_input_shape() -> None:
             ),
         ]
     )
-    text = "\n".join(execution_lines(log))
+    product = {"evidence": []}
+    text = "\n".join(explain(product, stderr=log))
     assert "at 4096x8:bf16" in text and "my_fast_kernel" in text
     assert "at 1x8:bf16" in text and "at::native::fallback" in text
 
@@ -282,7 +291,7 @@ def test_a_truncated_log_still_explains_what_survived() -> None:
     """Retained stderr is a bounded prefix, so half a line is the normal case."""
 
     log = _summary(completed=[{"slot": "s.one", "calls": 3}]) + "\nCACHEON-EXEC"
-    assert "s.one: called 3 times" in "\n".join(execution_lines(log))
+    assert "s.one: called 3 times" in "\n".join(execution_lines(ranks_from_log(log)))
 
 
 def test_a_kernel_that_never_ran_is_said_so_before_any_speed_number() -> None:
@@ -336,4 +345,80 @@ def test_a_clean_win_carries_no_disqualifying_headline() -> None:
     speed = _speed_lines({"speed_witness": {"rates": rates}})
     ran = _summary(completed=[{"slot": "a.slot", "calls": 9, "captured": True}])
     assert "NOT A REAL RESULT" not in "\n".join(speed)
-    assert _headline(execution_lines(ran), speed) == ""
+    assert _headline(execution_lines(ranks_from_log(ran)), speed) == ""
+
+
+# --- the same record, read from the product the run published ---------------
+
+LANE_A_LOG = "\n".join(
+    "CACHEON-EXECUTION-SUMMARY: " + json.dumps(
+        {
+            "active": [{"bundle": "/cacheon/swap-intake/74de6706", "pid": 154 + rank,
+                        "rank": rank, "slots": ["attention.msa_block_score"], "world_size": 4}],
+            "completed": [{"calls": 1140, "captured": True, "pid": 154 + rank, "rank": rank,
+                           "slot": "attention.msa_block_score", "world_size": 4}],
+        }
+    )
+    for rank in (1, 0, 2, 3)
+)
+
+
+def _execution_product(ranks, *, executed: int = 4, expected: int = 4) -> dict:
+    import base64
+
+    payload = {
+        "schema": "cacheon.qualification.execution.v1",
+        "swaps": [
+            {
+                "generation": 3,
+                "lane_id": "A",
+                "executed_ranks": executed,
+                "expected_ranks": expected,
+                "ranks": [EXECUTION_CODEC.encode(row) for row in ranks],
+            }
+        ],
+    }
+    return {
+        "authority_manifest": {"reservations": [{"target_id": "attention.msa_block_score"}]},
+        "evidence": [
+            {
+                "reference": {"domain": "qualification.execution"},
+                "payload_base64": base64.b64encode(json.dumps(payload).encode()).decode(),
+            }
+        ],
+    }
+
+
+def test_the_real_lane_a_lines_render_the_same_as_the_published_rows() -> None:
+    """One renderer, two sources: the retained log and the product's evidence
+    must tell the miner the same thing about the same generation."""
+
+    from_log = ranks_from_log(LANE_A_LOG)
+    assert [row.rank for row in from_log] == [0, 1, 2, 3]
+    log_text = explain({"evidence": []}, stderr=LANE_A_LOG)
+    product_text = explain(_execution_product(from_log))
+    ran = "attention.msa_block_score: called 4,560 times across 4 GPU(s), inside the CUDA graph on every GPU"
+    assert any(ran in line for line in log_text)
+    assert any(ran in line for line in product_text)
+    assert any("4 of 4 GPU(s) ran your kernel cleanly" in line for line in product_text)
+    # The product wins when both are present; the log is the fallback only.
+    assert explain(_execution_product(from_log), stderr="CACHEON-EXECUTION-SUMMARY: {}") == product_text
+
+
+def test_a_raised_kernel_is_named_as_the_bundles_fault_before_the_numbers() -> None:
+    ranks = (
+        RankExecution(0, True, "", (SlotExecution("a.slot", 12, True),)),
+        RankExecution(1, True, "", (SlotExecution("a.slot", 12, True, "RuntimeError: CUDA error"),)),
+    )
+    report = explain(_execution_product(ranks, executed=1, expected=2))
+    assert report[2].startswith("VERDICT  your kernel raised an exception")
+    assert any("RAISED" in line and "GPU 1: RuntimeError: CUDA error" in line for line in report)
+
+
+def test_a_routing_reason_names_the_gpu_and_the_field() -> None:
+    ranks = (
+        RankExecution(0, True, "", (SlotExecution("a.slot", 0, None, "", ("out_of_domain on num_tokens",)),)),
+    )
+    text = "\n".join(execution_lines(ranks))
+    assert "NEVER RAN" in text
+    assert "SKIPPED YOUR KERNEL        a.slot on GPU 0" in text and "out_of_domain on num_tokens" in text

@@ -1,71 +1,42 @@
 """Seam execution receipts — positive accounting evidence for the referee.
 
-The failure mode this closes (hit for real on 2026-07-07): the candidate engine
-comes up WITHOUT the seam (missing ``cacheon.pth``, bad env, bundle load failure
-falling back to baseline) and the eval happily scores stock-vs-stock — identical
-logits, KL exactly 0.0, accuracy delta 0.0, verdict PASS. ``seam.activate()``
-deliberately never wedges the engine on a bad bundle, so the *engine* can't be
-the one to fail; the *eval driver* must demand positive evidence.
+The failure mode this closes: the candidate engine comes up WITHOUT the seam
+(missing ``cacheon.pth``, bad env, bundle load failure falling back to baseline)
+and the eval scores stock-vs-stock — identical logits, KL exactly 0.0, verdict
+PASS. ``seam.activate()`` deliberately never wedges the engine on a bad bundle,
+so the *engine* can't be the one to fail; the *eval driver* must demand positive
+evidence.
 
 Evidence lives where the seam lives — in sglang's spawned scheduler ranks — so it
 travels by file: the driver sets ``CACHEON_SEAM_RECEIPT_DIR`` for the candidate
-launch, ranks write receipts there, the driver requires them:
+launch (the resident lane sets a root and one scope per swap generation), ranks
+write receipts there, the driver requires them:
 
-  * ``active``      — bundle loaded + registry enabled in a rank (seam.activate).
-  * ``load_failed`` — a rank ATTEMPTED the bundle load and fell back to baseline;
-                      lets the driver report "bad bundle" instead of "no bootstrap".
-  * ``completed``   — a dispatcher successfully produced the model-facing output
-                      after invoking the selected implementation; once/slot/process.
+  * ``active``       — bundle loaded + registry enabled in a rank (seam.activate).
+  * ``load_failed``  — a rank ATTEMPTED the bundle load and fell back to baseline.
+  * ``completed``    — a dispatcher produced the model-facing output after invoking
+                       the selected implementation; one file per slot per process,
+                       carrying ``calls`` (invocations under this scope) and
+                       ``captured`` (at least one happened inside a CUDA-graph
+                       capture). ``captured`` is the fact that matters: a scored
+                       window replays the graph without re-entering Python, so a
+                       candidate absent from it serves stock on every replay while
+                       its receipt sits on disk from eager warmup.
+  * ``failed``       — the selected implementation raised. The exception still
+                       propagates (there is no fallback), but the rank names the
+                       slot and the exception before the engine goes down with it.
+  * ``not_selected`` — why a live call routed to stock while a candidate was
+                       registered, keyed on fields and reasons, never values.
 
-Retired 2026-08-23: ``fallback``, and with it every path that could write one.
-A dispatcher that had reached a candidate used to catch its exception and serve
-stock instead, receipting the substitution. That made a candidate arm serve stock
-mid-run, which is not a measurement of the candidate or of stock. An invoked
-entry now either produces the output or raises. The same change retired
-``KernelRegistry.strict``, which existed only to turn that substitution off.
-
-Retired 2026-08-23: ``fired``. It meant "the registry RESOLVED an impl", which is
-weaker than it reads — the caller could still decline afterwards — so eight of
-eight production call sites had to opt out of the write, and a duplicate probe-only
-lookup method existed purely to avoid it. Once the entry is invoked there are
-exactly one outcome that can be receipted, ``completed``, and it proves selection.
-A second kind implied by the first carries no information and cost an API parameter
-at every call site to keep honest.
-
-``completed`` remains diagnostic execution evidence, not hostile-code proof.
-Candidate Python shares the scheduler process today and can forge process-local
+An invoked entry either produces the output or raises; nothing serves stock in a
+candidate's name. ``completed`` is diagnostic execution evidence, not hostile-code
+proof: candidate Python shares the scheduler process and can forge process-local
 state; complete-engine isolation plus external qualification is the crown boundary.
 
-HOW MANY TIMES, AND WHEN (2026-08-23). The once-per-slot-per-process file write
-keeps the hot path free of I/O, but it also meant the only number a reader could
-form was a count of receipt *files*. That number is identical for a one-request
-launch and a twelve-request launch, so an operator reading "8 candidate
-executions" was reading eight files, not eight calls. Worse, every one of those
-files is written during arming — the first invocation of a slot happens in warmup
-and graph capture, minutes before the first scored window — so file presence
-proves setup and says nothing about scoring.
-
-The receipt now carries two facts the file's existence never did:
-
-  * ``calls``    — invocations of the candidate entry under this scope.
-  * ``captured`` — at least one of those invocations happened while a CUDA graph
-                   was capturing, so the candidate is inside the graph the scored
-                   windows replay.
-
-``captured`` is the one that matters, because a scored window does not re-enter
-Python at all: the graph is replayed by the driver. A candidate absent from the
-captured graph serves stock on every replay — while its ``completed`` receipt sat
-on disk already, written during eager warmup minutes earlier. That is a phantom
-pass wearing a receipt. ``captured=False`` with ``calls>0`` is exactly that shape.
-
-Counting costs one list increment per call. Capture detection is delegated to the
-dispatch layer, which already owns it (pinned, legacy, and direct CUDA capture
-authorities), and is probed only until the first capturing call is seen, so the
-steady-state hot path pays nothing. The file is rewritten at scope change and at
-exit, never per call.
-
-No env var set -> every helper is a silent no-op (verify paths, unit tests, and
-baseline launches don't produce receipt litter).
+Counting costs one list increment per call; capture detection is delegated to the
+dispatch layer and probed only until the first capturing call. Files are rewritten
+at scope change and at exit, never per call. No env var set -> every helper is a
+silent no-op.
 """
 
 from __future__ import annotations
@@ -76,18 +47,24 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("cacheon.receipts")
 
 _SAFE_RE = re.compile(r"[^0-9A-Za-z._\-]+")
+# Every kind a rank writes about itself carries the rank's identity. A kind left
+# out of this set has no ``pid`` on disk and is dropped by every per-process
+# reader — which is how the routing reasons vanished from the resident lane's
+# record while the code that wrote them was reported as working.
 _IDENTITY_KINDS = frozenset(
     {
         "active",
         "load_failed",
         "completed",
+        "failed",
+        "not_selected",
         "audit",
         "aot_loaded",
         "aot_invoked",
@@ -183,10 +160,13 @@ def set_scope(scope: object) -> str:
         cleaned = ""
     # The outgoing scope's counts are final the instant nothing more can run under
     # it. Persist them before the root moves, or a resident lane would attribute
-    # the closing candidate's invocations to the one arriving.
+    # the closing candidate's invocations to the one arriving. Every per-scope
+    # table resets here: a routing reason left over from the previous candidate
+    # would suppress the identical reason for the next one.
     flush_calls()
     _CALLS.clear()
     _KERNELS.clear()
+    _NOT_SELECTED.clear()
     with _SCOPE_LOCK:
         _SCOPE = cleaned
     # Create the scope eagerly. Receipt files are written lazily, so without
@@ -415,6 +395,34 @@ def completed(slot: str) -> None:
     _write_execution_once("completed", slot)
 
 
+def failed(slot: str, error: BaseException) -> None:
+    """Record that the selected implementation for ``slot`` raised.
+
+    Written by the dispatcher on its way out, before the exception reaches the
+    scheduler. The engine still dies — nothing serves stock in a candidate's
+    name — but the receipt outlives the rank, so the closing swap or the session
+    worker can report "your kernel raised X" instead of "the validator's lane
+    failed". Never raises.
+    """
+
+    _write_execution_once("failed", slot, error=error)
+
+
+def invoke(slot: str, entry: Callable[..., object], *args: object) -> object:
+    """Run the selected implementation; a raise is receipted before it propagates.
+
+    There is no fallback: the exception still takes the engine down. The receipt
+    is what lets the closing swap or the session worker say "the candidate raised
+    <Type> in <slot>" instead of reporting the lane as broken.
+    """
+
+    try:
+        return entry(*args)
+    except BaseException as exc:
+        failed(slot, exc)
+        raise
+
+
 def not_selected(slot: str, outcome: str, mismatches: Iterable) -> None:
     """Record why a live call routed to stock while a candidate was registered.
 
@@ -504,85 +512,22 @@ def collect(rdir: str | Path, kind: str) -> list[dict]:
     return out
 
 
-_EXECUTION_KINDS = ("active", "completed", "load_failed")
+_EXECUTION_KINDS = ("active", "completed", "failed", "load_failed")
 
 
-def _summarize_calls(rows: list[dict]) -> dict:
-    """Reduce the invocation evidence carried by ``completed`` rows.
-
-    A field is reported only when every row carries it. One receipt written by an
-    older source, or one malformed value, makes the answer unknowable — and an
-    unknown total must not be summed into a smaller number that reads like a fact.
-    ``captured`` needs every member to agree: one rank serving stock out of a
-    captured graph makes the whole measurement stock, so ``all`` is the honest
-    reduction, not ``any``.
-    """
-
-    totals: dict = {}
-    calls = [_exact_int(row.get("calls"), minimum=0) for row in rows]
-    if rows and all(value is not None for value in calls):
-        totals["calls"] = sum(calls)  # type: ignore[arg-type]
-    captured = [row.get("captured") for row in rows]
-    if rows and all(type(value) is bool for value in captured):
-        totals["captured"] = all(captured)
-    return totals
-
-
-def rows_for_scope(scope: object, *, pid: Optional[int] = None) -> dict:
-    """This scope's receipts themselves, by kind — not their counts.
-
-    ``counts_for_scope`` answers "did every rank run", which is what a gate needs.
-    It cannot answer "what ran, and why did the rest route to stock", because the
-    slot names and routing reasons are inside the rows it is counting. Reporting
-    to a miner needs the rows.
-
-    Never raises, and returns whatever it could read: a partial answer beats no
-    answer when the question is what went wrong.
-    """
-
-    out: dict = {}
-    try:
-        directory = _scope_directory(scope)
-        if directory is None:
-            return out
-        if pid == os.getpid():
-            flush_calls()
-        for kind in (*_EXECUTION_KINDS, "not_selected"):
-            rows = collect(directory, kind)
-            if pid is not None:
-                rows = [row for row in rows if row.get("pid") == pid]
-            if rows:
-                out[kind] = rows
-    except Exception:  # noqa: BLE001 - unreadable evidence is unobservable, not zero
-        logger.exception("cacheon: receipt scope rows failed (%s)", scope)
-    return out
-
-
-def _scope_directory(scope: object) -> Optional[Path]:
-    """Resolve one scope's receipt directory, or ``None`` when it is unusable."""
-
-    root = _root()
-    if not root:
-        return None
-    cleaned = "" if scope is None else _SAFE_RE.sub("_", str(scope))[:64]
-    if not cleaned or not cleaned[0].isalnum() or ".." in cleaned:
-        return None
-    directory = _resolved_dir(os.path.join(root, cleaned))
-    return directory if directory.is_dir() else None
-
-
-def counts_for_scope(scope: object, *, pid: Optional[int] = None) -> Optional[dict]:
-    """Count this scope's receipts by kind, or ``None`` when unobservable.
+def rows_for_scope(scope: object, *, pid: Optional[int] = None) -> Optional[dict]:
+    """One scope's receipts by kind, or ``None`` when they are unobservable.
 
     The tri-state is the whole point. ``None`` means the evidence path itself is
-    unusable (no root established, or a malformed receipt) and no verdict may be
-    drawn from it; a dict of zeros means the scope existed and nothing executed
-    under it, which is a fact about the candidate rather than the plumbing.
+    unusable (no root established, no such scope, or a malformed receipt) and no
+    verdict may be drawn from it; an empty dict means the scope existed and
+    nothing executed under it, which is a fact about the candidate rather than
+    the plumbing.
 
-    Passing ``pid`` restricts the count to receipts this process wrote itself.
+    Passing ``pid`` restricts the reading to receipts this process wrote itself.
     That is race-free across a TP group sharing one root: a rank finishes its own
     receipts before it acknowledges the swap that closes the scope, whereas a
-    global count could observe a peer mid-write.
+    global reading could observe a peer mid-write.
 
     Never raises: a diagnostic must not be able to kill an engine.
     """
@@ -600,17 +545,16 @@ def counts_for_scope(scope: object, *, pid: Optional[int] = None) -> Optional[di
         directory = _resolved_dir(os.path.join(root, cleaned))
         if not directory.is_dir():
             return None
-        counts: dict = {}
-        for kind in _EXECUTION_KINDS:
+        out: dict = {}
+        for kind in (*_EXECUTION_KINDS, "not_selected"):
             rows = collect(directory, kind)
             if pid is not None:
                 rows = [row for row in rows if row.get("pid") == pid]
-            counts[kind] = len(rows)
-            if kind == "completed":
-                counts.update(_summarize_calls(rows))
-        return counts
+            if rows:
+                out[kind] = rows
+        return out
     except Exception:  # noqa: BLE001 - unreadable evidence is unobservable, not zero
-        logger.exception("cacheon: receipt scope count failed (%s)", scope)
+        logger.exception("cacheon: receipt scope rows failed (%s)", scope)
         return None
 
 

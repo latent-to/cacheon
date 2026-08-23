@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
 from cacheon.arena_service import (
+    MAX_SCREEN_REASON_CHARS,
     ArenaCandidateBinding,
     ScreenGrade,
     ScreenStageResult,
@@ -95,7 +96,17 @@ def screen_waiver_result(
         ScreenGrade.PASS,
         evidence,
         elapsed_ms,
+        _stated("waived: " + reason),
     )
+
+
+def _stated(reason: str) -> str:
+    """Fit a validator-authored reason into the receipt's one-line field."""
+
+    printable = "".join(ch for ch in reason if " " <= ch <= "~")
+    if len(printable) <= MAX_SCREEN_REASON_CHARS:
+        return printable
+    return printable[: MAX_SCREEN_REASON_CHARS - 3] + "..."
 
 
 def screen_swappability(manifest: Manifest) -> str | None:
@@ -560,10 +571,26 @@ class ResidentServingScreenStage:
             _stage_grade(verdict),
             evidence,
             self._elapsed_ms(started),
+            _stage_reason(verdict),
         )
 
     def _elapsed_ms(self, started: float) -> int:
         return max(1, round((self._clock() - started) * 1000))
+
+
+def _stage_reason(verdict: CandidateScreenVerdict) -> str:
+    """The routing verdict in one line: what was measured and against what bar."""
+
+    if verdict.rejected_dispatch:
+        return _stated(f"rejected_dispatch: {verdict.failure}")
+    speed = verdict.verdict
+    if speed is None:
+        return ""
+    return _stated(
+        f"speedup {speed.speedup:.4f}x vs required {speed.required:.4f}x, "
+        f"noise {speed.noise:.4f}, "
+        + ("confident" if speed.confident else "inconclusive (passed on to qualification)")
+    )
 
 
 def _stage_grade(verdict: CandidateScreenVerdict) -> ScreenGrade:
