@@ -838,88 +838,87 @@ MOE_FUSED_EXPERTS_REDUCE = SlotSpec(
 )
 
 
-# ---------------------------------------------------------------------------
-# Slot (BLOCK): attention.msa_block_score   (the MSA / sparse-attention indexer)
-#   q:(B,Hq,D)  index_k:(B,S,1,D)  seq_lens:(B,)  block_size -> block_scores:(B, S//block_size)
-#   contract: entry(q, index_k, seq_lens, block_size, out)
-#
-# The FINER-than-attention.decode seam for a SELECTION win (the fp8 MSA indexer, M3). The kernel
-# computes per-128-token-block SCORES (block-max-pool of the index QK); the validator owns the
-# irreducible downstream step — the top-k block SELECTION and the bf16 attend over the chosen
-# blocks. So the kernel stays strictly upstream of the sampler (a wrong score just mis-selects,
-# caught by the gate + e2e KL). The output is a SELECTION, gated on `topk_overlap` (top-k block
-# SETS agree vs the bf16 reference), NOT cosine/KL: an fp8 index-K may perturb every score yet
-# pick the same blocks. No live adapter currently registers this decode-side score boundary.
-# ---------------------------------------------------------------------------
-
-_MSA_TOPK = 8  # the block-selection K this slot's correctness checks (<= every shape's n_blocks)
-
-
-def _msa_block_score_reference(q, index_k, seq_lens, block_size):
-    # q:(B,Hq,D) index_k:(B,S,1,D) seq_lens:(B,) -> (B, S//block_size) fp32 block-max-pool of QK.
-    B, Hq, D = q.shape
-    S = index_k.shape[1]
-    nblk = S // block_size
-    q32 = q.float().sum(dim=1)                       # (B,D): sum over index q-heads (1 shared idx-k head)
-    k32 = index_k.float()[:, :, 0, :]                # (B,S,D)
-    scores = torch.einsum("bd,bsd->bs", q32, k32)    # (B,S) per-token index QK
-    sidx = torch.arange(S, device=q.device).view(1, S)
-    scores = scores.masked_fill(sidx >= seq_lens.view(B, 1), float("-inf"))  # mask beyond context
-    return scores.view(B, nblk, block_size).amax(dim=-1)  # (B, nblk) block-max-pool
-
-
-def _msa_inputs(*, batch: int, num_q_heads: int, head_dim: int, ctx: int, block_size: int,
-                dtype: torch.dtype, device: str, seed: int) -> dict:
-    g = torch.Generator(device=device).manual_seed(seed)
-
-    def rnd(*shape: int) -> torch.Tensor:
-        return torch.randn(*shape, generator=g, device=device, dtype=torch.float32).to(dtype)
-
-    # Keep ctx a clean multiple of block_size with n_blocks comfortably ABOVE _MSA_TOPK,
-    # robust to count-dim jitter. n_blocks == top_k would make the gate vacuous (top-k of
-    # k blocks selects everything — any output, even all-zeros, scores overlap 1.0), so
-    # the floor keeps at least 4 distractor blocks the selection can get wrong.
-    nblk = max(_MSA_TOPK + 4, ctx // block_size)
-    ctx = nblk * block_size
-    seq_lens = torch.randint(_MSA_TOPK * block_size, ctx + 1, (batch,), generator=g, device=device).to(torch.int32)
-    seq_lens[0] = ctx  # one full-length request
+# MiniMax decode scores are paged and consumed per index head.  The old dense,
+# summed-head sheet modeled another operation: topk(sum(heads)) is not the stock
+# union/reduction of per-head top-k selections.
+def _msa_inputs(*, batch: int, context: int, num_q_heads: int, num_kv_heads: int,
+                head_dim: int, block_size: int, topk: int, init_blocks: int,
+                local_blocks: int, dtype: torch.dtype, device: str, seed: int) -> dict:
+    generator = torch.Generator(device=device).manual_seed(seed)
+    rnd = lambda *shape: torch.randn(  # noqa: E731
+        *shape, generator=generator, device=device, dtype=torch.float32
+    ).to(dtype)
+    context = max(topk + 4, (context + block_size - 1) // block_size) * block_size
+    pages, requests = context // block_size, batch + 2
+    req_to_token = torch.empty(requests, context, dtype=torch.int32, device=device)
+    logical = torch.arange(context, device=device)
+    for request in range(requests):
+        order = torch.randperm(pages, generator=generator, device=device)
+        req_to_token[request] = (
+            (request % 2) * context + order[logical // block_size] * block_size
+            + logical % block_size
+        ).int()
+    seq_lens = torch.randint(
+        context - 3 * block_size + 1, context + 1, (batch,), generator=generator,
+        dtype=torch.int32, device=device,
+    )
+    seq_lens[0] = context
     return {
         "q": rnd(batch, num_q_heads, head_dim),
-        "index_k": rnd(batch, ctx, 1, head_dim),
-        "seq_lens": seq_lens,
-        "block_size": block_size,
+        "k_cache": rnd(2 * context, num_kv_heads, head_dim),
+        "req_to_token": req_to_token,
+        "slot_ids": torch.randperm(requests, generator=generator, device=device)[:batch].int(),
+        "seq_lens": seq_lens, "sm_scale": head_dim**-0.5,
+        "block_size": block_size, "topk": topk,
+        "init_blocks": init_blocks, "local_blocks": local_blocks,
     }
+
+
+def _msa_block_score_reference(i):
+    q, cache, block = i["q"].float(), i["k_cache"].float(), i["block_size"]
+    physical = i["req_to_token"][i["slot_ids"].long()].long()
+    keys, kv_heads = cache[physical], cache.shape[1]
+    grouped_q = q.view(q.shape[0], kv_heads, q.shape[1] // kv_heads, q.shape[2])
+    token = torch.einsum("bkgd,bskd->bkgs", grouped_q, keys)
+    token = token.flatten(1, 2).permute(1, 0, 2) * i["sm_scale"] * 1.4426950409
+    positions = torch.arange(token.shape[-1], device=q.device)
+    token.masked_fill_(positions >= i["seq_lens"].view(-1, 1), float("-inf"))
+    scores = token.view(q.shape[1], q.shape[0], -1, block).amax(-1)
+    blocks = (i["seq_lens"] + block - 1) // block
+    columns = torch.arange(scores.shape[-1], device=q.device).view(1, 1, -1)
+    scores.masked_fill_(columns >= blocks.view(1, -1, 1), float("-inf"))
+    scores[:, :, :i["init_blocks"]] = 1e30
+    local = (columns >= (blocks - i["local_blocks"]).clamp_min(0).view(1, -1, 1))
+    scores.masked_fill_(local & (columns < blocks.view(1, -1, 1)), 1e29)
+    return scores
 
 
 ATTENTION_MSA_BLOCK_SCORE = SlotSpec(
     name="attention.msa_block_score",
     entry="msa_block_score",
     summary=(
-        "MSA indexer block scores: q:(B,Hq,D) index_k:(B,S,1,D) seq_lens:(B,) block_size -> "
-        "block_scores:(B,S//block_size) = block-max-pool of the index QK.  "
-        "entry(q, index_k, seq_lens, block_size, out).  The validator owns the top-k block "
-        "SELECTION + the attend; gated on topk_overlap (the SELECTED set), not score values."
+        "Paged MiniMax decode index scores: q:(B,Hq,D), k_cache:(slots,Hkv,D), "
+        "page mapping and row lengths -> fp32 scores:(Hq,B,blocks). The candidate "
+        "owns scores; the validator retains per-head top-k, reduction and attend."
     ),
     kind="block",
     make_inputs=_msa_inputs,
-    out_shapes=lambda i: [(i["q"].shape[0], i["index_k"].shape[1] // i["block_size"])],
-    invoke_reference=lambda i: [_msa_block_score_reference(i["q"], i["index_k"], i["seq_lens"], i["block_size"])],
+    out_shapes=lambda i: [(i["q"].shape[1], i["q"].shape[0],
+                           i["req_to_token"].shape[1] // i["block_size"])],
+    invoke_reference=lambda i: [_msa_block_score_reference(i)],
     invoke_entry=lambda entry, i, outs, prepared: entry(
-        i["q"], i["index_k"], i["seq_lens"], i["block_size"], outs[0]),
-    graph_dynamic_inputs=("q", "index_k", "seq_lens"),
-    shapes=(
-        # Every shape keeps n_blocks > _MSA_TOPK (=8): at n_blocks == top_k the overlap
-        # gate is vacuous (any selection of 8-of-8 blocks scores 1.0).
-        {"batch": 4, "num_q_heads": 4, "head_dim": 128, "ctx": 1536, "block_size": 128},   # 12 blocks
-        {"batch": 2, "num_q_heads": 4, "head_dim": 128, "ctx": 2048, "block_size": 128},   # 16 blocks
-        {"batch": 8, "num_q_heads": 8, "head_dim": 64, "ctx": 1536, "block_size": 128},    # 12 blocks
-        {"batch": 3, "num_q_heads": 4, "head_dim": 128, "ctx": 4096, "block_size": 128},   # 32 blocks
-    ),
-    # The output is a SELECTION: gate on the top-k block SETS agreeing, not the score values.
-    # 7/8 tolerates a thin selection drift (e.g. fp8 index-K flipping a borderline block).
-    correctness=Correctness("topk_overlap", top_k=_MSA_TOPK, min_overlap=0.875),
+        i["q"], i["k_cache"], i["req_to_token"], i["slot_ids"], i["seq_lens"],
+        outs[0], i["sm_scale"], i["block_size"], i["topk"], i["init_blocks"],
+        i["local_blocks"]),
+    graph_dynamic_inputs=("q", "k_cache", "req_to_token", "slot_ids", "seq_lens"),
+    # MiniMax-M3 has four global index heads; TP4 shards one head to each rank.
+    shapes=tuple({"batch": batch, "context": 2560, "num_q_heads": 1,
+                  "num_kv_heads": 1, "head_dim": 128, "block_size": 128,
+                  "topk": 16, "init_blocks": 0, "local_blocks": 1}
+                 for batch in (1, 8, 32)),
+    correctness=Correctness("topk_overlap", top_k=16, min_overlap=0.875),
     tolerances=_BF16_TOL,
-    kl_threshold=3e-2,  # attention's higher intrinsic floor (this rides the attention path)
+    kl_threshold=3e-2,
     call_abi=MSA_BLOCK_SCORE_CALL_ABI,
 )
 

@@ -1243,14 +1243,14 @@ _SINGLETON_CONTRACTS = {
         kind="block",
         entry="msa_block_score",
         prepare=None,
-        graph_dynamic_inputs=("q", "index_k", "seq_lens"),
-        input_abi_id="attention.msa_block_score.input.v1",
-        output_abi_id="attention.msa_block_score.output.v1",
-        reference_id="attention.msa_block_score.reference.v1",
-        verification_profile_id="attention.msa_block_score.verify.v1",
-        binding_family_id="sglang.attention.msa.decode-score.v1",
+        graph_dynamic_inputs=("q", "k_cache", "req_to_token", "slot_ids", "seq_lens"),
+        input_abi_id="attention.msa_block_score.input.v2",
+        output_abi_id="attention.msa_block_score.output.v2",
+        reference_id="attention.msa_block_score.reference.v2",
+        verification_profile_id="attention.msa_block_score.verify.v2",
+        binding_family_id="sglang.attention.msa.decode-score.v2",
         correctness=CorrectnessContractRef(
-            mode="topk_overlap", top_k=8, min_overlap="0.875"
+            mode="topk_overlap", top_k=16, min_overlap="0.875"
         ),
         kl_threshold="0.03",
     ),

@@ -51,6 +51,7 @@ The registered rows are:
 | `layernorm` | `RMSNorm.forward_cuda` | `norm.rmsnorm` | Registry-selected |
 | `attention` | `flash_decode_with_gqa_share_sparse` | graph-native MiniMax-M3 `attention.decode` sparse attend | `attention` |
 | `attention_audit_mode` | `MiniMaxSparseAttnBackend.__init__` | keeps MSA prefill but routes the untimed decode audit through the scored Triton insertion | `attention` |
+| `msa_decode_score` | `_decode_score_kernel` | paged per-head `attention.msa_block_score`; stock owns top-k and attend | `msa_decode_score` |
 | `moe` | `FusedMoE.forward_impl` | `moe.fused_experts`, `moe.fused_experts_reduce` | `moe` |
 | `collective` | `GroupCoordinator.all_reduce` | `collective.all_reduce` | `collective` |
 | `arfusion` | `flashinfer_allreduce_residual_rmsnorm` | `collective.ar_residual_rmsnorm`; consume side for the deep epilogue | `arfusion` |
@@ -65,16 +66,11 @@ The registered rows are:
 Several adapters may share one binding when they implement one semantic product. The shallow AR-fusion consume adapter and both deep producer adapters share `arfusion`; activating only part of that set would violate the protocol.
 
 The catalog can contain a verified slot before the pinned runtime exposes a safe
-live chokepoint. In the current MiniMax-M3 arena,
-`attention.msa_block_score` has a slot and verifier contract but no live
-adapter; its deleted placeholder only raised `NotImplementedError`. The
-registered `norm.rmsnorm` adapter targets `RMSNorm.forward_cuda`, while the
-deployed model uses the separate `GemmaRMSNorm` class at every relevant
-callsite. Candidate code for either target therefore cannot execute in this
-arena. The MSA prefill sibling has an installed adapter. The separate
-`attention.decode` adapter patches both the sparse-attend defining symbol and
-SGLang's by-value consumer so the candidate becomes a member of the recorded
-decode graph rather than an eager-only warmup call. See
+live chokepoint. `norm.rmsnorm` remains such a case because MiniMax-M3 uses
+`GemmaRMSNorm`, not the registered `RMSNorm.forward_cuda`. The decode-score
+adapter replaces the pinned `_decode_score_kernel`; unchanged stock code consumes
+its paged per-head slab for top-k and attend. The separate `attention.decode`
+adapter patches both its defining symbol and by-value consumer. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 `resident_swap` is deliberately outside the crown path. It is inert unless the

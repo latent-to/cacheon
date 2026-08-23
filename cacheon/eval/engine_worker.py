@@ -30,32 +30,7 @@ class CandidateExecutionCoverageError(RuntimeError):
 
 
 class CandidateNeverExecutedError(CandidateExecutionCoverageError):
-    """The receipt path provably worked and the candidate still never ran.
-
-    This is the one coverage shape that is a fact about the *candidate* rather
-    than the infrastructure, and the distinction rests on evidence rather than
-    on inference:
-
-    ``cacheon/seam.py`` writes the ``active`` receipt from the candidate's own
-    process, through this same module, into this same root. The caller has
-    already required those receipts and validated that every expected member
-    reported the expected slot set. So when the seam loaded, registered the
-    target slot, and successfully wrote into the root -- and then *every*
-    execution kind is empty, completed and fallback alike -- the path is sound
-    and the candidate simply never dispatched. A miner whose kernel registers a
-    slot it never serves has a broken bundle, not a broken validator.
-
-    Partial coverage stays :class:`CandidateExecutionCoverageError`. Some
-    receipts but not all can be a member that died mid-run or a read that raced
-    a write, and neither may be charged to a candidate.
-
-    Observed on mainnet 2026-08-18: two native-rebuild bundles
-    (``norm.rmsnorm``, ``attention.msa_block_score``) each reported
-    ``completed:0,fallback:0,aot_loaded:0,aot_invoked:0`` behind a passing
-    active-member check, burned their full retry budget as
-    ``qualification_worker_error``, and parked with no verdict -- while the
-    miners had paid a submission cost for a decision they never received.
-    """
+    """Every expected rank loaded the slot, but none recorded an execution."""
 
 
 def _truthy_env(name: str) -> bool:

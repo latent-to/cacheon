@@ -16,7 +16,7 @@ is authoritative; print it with `python -m cacheon.cli slots`.
 | `norm.rmsnorm` | op | `entry(x, weight, out, eps)` | allclose |
 | `attention.sdpa` | block | `entry(q, k, v, out, sm_scale, causal)` | matched ratio ≥ 0.99 |
 | `attention.decode` | block | `entry(q, k_cache, v_cache, req_to_token, seq_lens, req_pool_indices, topk_idx, out, sm_scale, block_size)` | matched ratio ≥ 0.99 |
-| `attention.msa_block_score` | block | `entry(q, index_k, seq_lens, block_size, out)` | top-8 overlap ≥ 0.875 |
+| `attention.msa_block_score` | block | `entry(q, k_cache, req_to_token, slot_ids, seq_lens, out, sm_scale, block_size, topk, init_blocks, local_blocks)` | top-16 overlap ≥ 0.875 |
 | `attention.msa_prefill_block_score` | block | `entry(q, paged_index_k, page/sequence metadata, block policy, out_topk)` | selected-set overlap ≥ 0.90 |
 | `moe.fused_experts` | block | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out)` | matched ratio ≥ 0.97 |
 | `moe.fused_experts_reduce` | collective | `prepare(w13, w2)` + `entry(x, topk_ids, topk_weights, prepared, out, group)` | matched ratio ≥ 0.97 |
@@ -47,13 +47,10 @@ Block slots follow the same ownership rule over a wider semantic region.
 Collective slots add the validator-owned process group; candidate code may use
 it but may not create a private group or let only some ranks fall back.
 
-!!! warning "Unavailable in the current MiniMax-M3 mainnet arena"
+!!! warning "Unavailable MiniMax-M3 target"
     `norm.rmsnorm` cannot execute because the deployed model uses
     `GemmaRMSNorm` rather than the registered `RMSNorm.forward_cuda` callsite.
-    `attention.msa_block_score` cannot execute because the pinned runtime has
-    no installing decode-side SGLang adapter. Do not pay for or submit
-    either target to this arena. The entries remain registered ABI and verifier
-    contracts; no other target is withdrawn by this notice. See
+    Do not pay for or submit that target. No other target is withdrawn. See
     [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 ## Kinds

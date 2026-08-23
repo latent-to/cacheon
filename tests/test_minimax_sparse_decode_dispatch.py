@@ -12,6 +12,7 @@ from cacheon.registry import (  # noqa: E402
     KernelRegistry,
     eligibility_from_metadata,
 )
+from cacheon.slots import _msa_block_score_reference, get_slot  # noqa: E402
 
 
 def _registry(entry, *, graph_safe=True, capabilities=None) -> KernelRegistry:
@@ -170,3 +171,98 @@ def test_live_descriptor_routes_a_complete_decode_domain() -> None:
 
     assert torch.equal(output, args[0])
     assert calls == ["candidate"]
+
+
+class _StockScoreKernel:
+    def __init__(self):
+        self.calls = 0
+
+    def __getitem__(self, _grid):
+        def launch(*args, **_meta):
+            self.calls += 1
+            args[3].fill_(-7)
+
+        return launch
+
+
+def _score_registry(entry) -> KernelRegistry:
+    registry = KernelRegistry()
+    registry.register(KernelImpl(
+        slot="attention.msa_block_score", bundle_id="candidate", entry=entry,
+        eligibility=eligibility_from_metadata({"graph_safe": True}, ("float32",)),
+    ))
+    registry.enable()
+    return registry
+
+
+def _score_launch_args():
+    slot = get_slot("attention.msa_block_score")
+    inputs = slot.make_inputs(
+        **slot.shapes[0], dtype=torch.float32, device="cpu", seed=4
+    )
+    q, cache, req, score = (
+        inputs["q"], inputs["k_cache"], inputs["req_to_token"],
+        torch.empty(slot.out_shapes(inputs)[0]),
+    )
+    args = (
+        q, cache, req, score, inputs["seq_lens"], inputs["slot_ids"],
+        cache.shape[0], q.shape[0], q.shape[1] // cache.shape[1], q.shape[-1],
+        inputs["block_size"], inputs["topk"], inputs["sm_scale"],
+        inputs["init_blocks"], inputs["local_blocks"], *q.stride(), *cache.stride(),
+        req.stride(0), *score.stride(),
+    )
+    return inputs, score, args
+
+
+def test_score_proxy_routes_graph_candidate_into_stock_consumed_slab(
+    monkeypatch,
+) -> None:
+    stock, completed = _StockScoreKernel(), []
+    monkeypatch.setenv("CACHEON_MSA_DECODE_SCORE_SEAM", "1")
+    monkeypatch.setattr(sparse_dispatch, "_in_cuda_graph", lambda: True)
+    monkeypatch.setattr(sparse_dispatch._receipts, "completed", completed.append)
+    inputs, score, args = _score_launch_args()
+
+    def candidate(q, cache, req, slots, seq, out, scale, block, topk, init, local):
+        out.copy_(_msa_block_score_reference({
+            "q": q, "k_cache": cache, "req_to_token": req, "slot_ids": slots,
+            "seq_lens": seq, "sm_scale": scale, "block_size": block,
+            "topk": topk, "init_blocks": init, "local_blocks": local,
+        }))
+
+    proxy = sparse_dispatch.make_msa_block_score_kernel(
+        stock, registry=_score_registry(candidate)
+    )
+    proxy[(1, 1)](*args, NUM_KV_CHUNKS=1, SCORE_TYPE="max",
+                  SKIP_TRIVIAL_TOPK_SCORE=False)
+
+    expected = _msa_block_score_reference(inputs)
+    assert stock.calls == 0 and torch.equal(score, expected)
+    assert torch.equal(score.topk(16).indices, expected.topk(16).indices)
+    assert completed == ["attention.msa_block_score"]
+
+
+def test_score_proxy_never_falls_back_after_selection(monkeypatch) -> None:
+    stock = _StockScoreKernel()
+    monkeypatch.setenv("CACHEON_MSA_DECODE_SCORE_SEAM", "1")
+    monkeypatch.setattr(sparse_dispatch, "_in_cuda_graph", lambda: True)
+    _inputs, _score, args = _score_launch_args()
+    proxy = sparse_dispatch.make_msa_block_score_kernel(
+        stock, registry=_score_registry(lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("score candidate failed")
+        ))
+    )
+    with pytest.raises(RuntimeError, match="score candidate failed"):
+        proxy[(1, 1)](*args, NUM_KV_CHUNKS=1, SCORE_TYPE="max",
+                      SKIP_TRIVIAL_TOPK_SCORE=False)
+    assert stock.calls == 0
+
+
+def test_score_proxy_uses_stock_before_selection(monkeypatch) -> None:
+    stock = _StockScoreKernel()
+    monkeypatch.delenv("CACHEON_MSA_DECODE_SCORE_SEAM", raising=False)
+    _inputs, score, args = _score_launch_args()
+    sparse_dispatch.make_msa_block_score_kernel(stock)[(1, 1)](
+        *args, NUM_KV_CHUNKS=1, SCORE_TYPE="max", SKIP_TRIVIAL_TOPK_SCORE=False
+    )
+    assert stock.calls == 1 and torch.all(score == -7)

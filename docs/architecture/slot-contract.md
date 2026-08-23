@@ -65,7 +65,7 @@ The current API contains **11 slots**.
 | `norm.rmsnorm` | `op` | `rmsnorm` | RMS normalization; residual addition remains outside |
 | `attention.sdpa` | `block` | `attention` | Scaled dot-product attention core |
 | `attention.decode` | `block` | `attention_decode` | Paged decode-attention boundary |
-| `attention.msa_block_score` | `block` | `msa_block_score` | MSA decode block-score sheet; validator owns top-k selection |
+| `attention.msa_block_score` | `block` | `msa_block_score` | Paged per-index-head decode scores; validator owns top-k and attend |
 | `attention.msa_prefill_block_score` | `block` | `msa_prefill_block_score` | Batched paged MSA prefill score-to-selection; validator audits indices and owns attend |
 | `moe.fused_experts` | `block` | `fused_experts` | Prepared MoE expert execution |
 | `moe.fused_experts_reduce` | `collective` | `fused_experts_reduce` | Prepared MoE experts plus owned trailing reduce |
@@ -74,10 +74,8 @@ The current API contains **11 slots**.
 | `collective.moe_finalize_ar_rmsnorm` | `collective` | `moe_finalize_ar_rmsnorm` | Deep MoE finalize, all-reduce, residual, and RMSNorm boundary |
 
 This table defines registered ABI contracts, not deployment availability. In
-the current MiniMax-M3 mainnet arena, `norm.rmsnorm` and
-`attention.msa_block_score` are unavailable because candidate code for those
-boundaries cannot execute. No other registered target is withdrawn by that
-arena-specific notice. See
+the current MiniMax-M3 mainnet arena, `norm.rmsnorm` is unavailable because
+MiniMax-M3 uses `GemmaRMSNorm`. No other registered target is withdrawn. See
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 Run `cacheon slots` against the installed code for the human-readable live list.

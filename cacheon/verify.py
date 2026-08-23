@@ -35,6 +35,7 @@ import torch
 from cacheon.capabilities import (
     CONTEXT_FIELDS,
     CallDescriptor,
+    msa_decode_score_call_descriptor,
     msa_prefill_call_descriptor,
 )
 from cacheon.registry import Eligibility
@@ -1289,6 +1290,21 @@ def _verification_call_descriptor(
     """
 
     resolved_arch = architecture or _device_architecture(device)
+    if slot.name == "attention.msa_block_score" and {
+        "q", "k_cache", "req_to_token", "slot_ids", "seq_lens", "block_size",
+        "topk", "init_blocks", "local_blocks",
+    } <= set(inputs):
+        q, k_cache = inputs["q"], inputs["k_cache"]
+        return msa_decode_score_call_descriptor(
+            dtype=_name(q.dtype), architecture=resolved_arch, graph_mode=graph_mode,
+            head_dim=int(q.shape[-1]), block_size=int(inputs["block_size"]),
+            kv_len=int(inputs["req_to_token"].shape[1]), top_k=int(inputs["topk"]),
+            init_blocks=int(inputs["init_blocks"]),
+            local_blocks=int(inputs["local_blocks"]), batch_size=int(q.shape[0]),
+            num_q_heads=int(q.shape[1]), num_kv_heads=int(k_cache.shape[1]),
+            quant="fp8" if "float8" in str(k_cache.dtype).lower() else "dense",
+            model=model_key or "MiniMax-M3", tp_size=tp_size, world_size=world_size,
+        )
     if slot.name == "attention.decode" and {
         "q", "k_cache", "v_cache", "req_to_token", "seq_lens",
         "req_pool_indices", "topk_idx", "block_size",

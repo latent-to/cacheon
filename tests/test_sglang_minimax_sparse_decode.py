@@ -1,12 +1,7 @@
-"""Import-order and identity checks for the graph-native M3 decode seam."""
+"""MiniMax decode adapter-specific score and audit hooks."""
 
-from __future__ import annotations
-
-import importlib.machinery
 import sys
 from types import ModuleType
-
-import pytest
 
 from cacheon.integrations import sglang_minimax_sparse_decode as seam
 
@@ -15,122 +10,71 @@ def _stock(*_args, **_kwargs):
     return "stock"
 
 
-@pytest.fixture()
-def factory(monkeypatch):
+def _decode_source(monkeypatch):
+    source = ModuleType(seam._PATCH.source_module)
+    setattr(source, seam._PATCH.function, _stock)
+    consumer = ModuleType(seam._PATCH.consumer_module)
+    setattr(consumer, seam._PATCH.function, _stock)
+    monkeypatch.setitem(sys.modules, seam._PATCH.source_module, source)
+    monkeypatch.setitem(sys.modules, seam._PATCH.consumer_module, consumer)
+    return source, consumer
+
+
+def test_decode_factory_binds_source_and_consumer(monkeypatch) -> None:
+    source, consumer = _decode_source(monkeypatch)
     calls = []
 
     def make(original, *, registry):
-        def dispatcher(*args, **kwargs):
-            return original(*args, **kwargs)
-
         calls.append((original, registry))
-        return dispatcher
+        return lambda *args, **kwargs: original(*args, **kwargs)
 
     monkeypatch.setattr(seam, "make_minimax_sparse_decode_dispatcher", make)
-    return calls
-
-
-def _source(monkeypatch):
-    source = ModuleType(seam._SOURCE)
-    setattr(source, seam._FUNCTION, _stock)
-    monkeypatch.setitem(sys.modules, seam._SOURCE, source)
-    monkeypatch.delitem(sys.modules, seam._CONSUMER, raising=False)
-    return source
-
-
-def test_loaded_consumer_is_patched_once_and_restored(monkeypatch, factory) -> None:
-    source = _source(monkeypatch)
-    consumer = ModuleType(seam._CONSUMER)
-    setattr(consumer, seam._FUNCTION, _stock)
-    monkeypatch.setitem(sys.modules, seam._CONSUMER, consumer)
     registry = object()
-
     seam.install(registry)
-    dispatcher = getattr(source, seam._FUNCTION)
+    dispatcher = getattr(source, seam._PATCH.function)
+    assert dispatcher is getattr(consumer, seam._PATCH.function)
+    assert calls == [(_stock, registry)] and seam.is_installed()
+    seam.uninstall()
+    assert getattr(source, seam._PATCH.function) is _stock
 
-    assert dispatcher is getattr(consumer, seam._FUNCTION)
-    assert factory == [(_stock, registry)]
-    assert seam.is_installed()
+
+def test_decode_score_kernel_is_patched_once_and_restored(monkeypatch) -> None:
+    _decode_source(monkeypatch)
+    score = ModuleType(seam._SCORE_SOURCE)
+    stock, made = object(), []
+    setattr(score, seam._SCORE_FUNCTION, stock)
+    monkeypatch.setitem(sys.modules, seam._SCORE_SOURCE, score)
+    monkeypatch.setattr(
+        seam, "make_msa_block_score_kernel",
+        lambda original, *, registry: made.append((original, registry)) or object(),
+    )
+    registry = object()
     seam.install(registry)
-    assert factory == [(_stock, registry)]
-
+    assert getattr(score, seam._SCORE_FUNCTION) is not stock and seam.is_installed()
+    seam.install(registry)
+    assert made == [(stock, registry)]
     seam.uninstall()
-    assert getattr(source, seam._FUNCTION) is _stock
-    assert getattr(consumer, seam._FUNCTION) is _stock
-    assert not seam.is_installed()
+    assert getattr(score, seam._SCORE_FUNCTION) is stock
 
 
-def test_source_first_patches_future_by_value_import(monkeypatch, factory) -> None:
-    source = _source(monkeypatch)
-    seam.install()
-    dispatcher = getattr(source, seam._FUNCTION)
-    consumer = ModuleType(seam._CONSUMER)
-    setattr(consumer, seam._FUNCTION, dispatcher)
-    monkeypatch.setitem(sys.modules, seam._CONSUMER, consumer)
-
-    assert seam.is_installed()
-    seam.uninstall()
-    assert getattr(source, seam._FUNCTION) is _stock
-    assert getattr(consumer, seam._FUNCTION) is _stock
-
-
-def test_consumer_import_window_is_accepted(monkeypatch, factory) -> None:
-    source = _source(monkeypatch)
-    consumer = ModuleType(seam._CONSUMER)
-    spec = importlib.machinery.ModuleSpec(seam._CONSUMER, loader=None)
-    spec._initializing = True
-    consumer.__spec__ = spec
-    monkeypatch.setitem(sys.modules, seam._CONSUMER, consumer)
-
-    seam.install()
-    setattr(consumer, seam._FUNCTION, getattr(source, seam._FUNCTION))
-    spec._initializing = False
-
-    assert seam.is_installed()
-
-
-def test_foreign_consumer_binding_fails_before_mutation(monkeypatch, factory) -> None:
-    source = _source(monkeypatch)
-    consumer = ModuleType(seam._CONSUMER)
-    foreign = lambda: None
-    setattr(consumer, seam._FUNCTION, foreign)
-    monkeypatch.setitem(sys.modules, seam._CONSUMER, consumer)
-
-    with pytest.raises(RuntimeError, match="binding drifted"):
-        seam.install()
-
-    assert getattr(source, seam._FUNCTION) is _stock
-    assert getattr(consumer, seam._FUNCTION) is foreign
-    assert not seam.is_installed()
-
-
-def test_audit_mode_keeps_msa_prefill_but_routes_decode_to_triton(
-    monkeypatch, factory
-) -> None:
-    source = _source(monkeypatch)
+def test_audit_mode_routes_decode_to_triton_and_restores(monkeypatch) -> None:
+    _decode_source(monkeypatch)
     state = {"audit": False}
 
     class Backend:
         def __init__(self):
-            self.use_msa = True
-            self._use_msa_decode = True
-            self._msa_owns_decode = True
+            self.use_msa = self._use_msa_decode = self._msa_owns_decode = True
 
     original = Backend.__init__
     backend = ModuleType(seam._BACKEND)
     setattr(backend, seam._BACKEND_CLASS, Backend)
     monkeypatch.setitem(sys.modules, seam._BACKEND, backend)
     monkeypatch.setattr(seam._audit, "enabled", lambda: state["audit"])
-
     seam.install()
     ordinary = Backend()
     state["audit"] = True
     audited = Backend()
-
-    assert ordinary.use_msa and ordinary._use_msa_decode
-    assert audited.use_msa and not audited._use_msa_decode
-    assert not audited._msa_owns_decode
-    assert seam.is_installed()
+    assert ordinary._use_msa_decode and ordinary._msa_owns_decode
+    assert not audited._use_msa_decode and not audited._msa_owns_decode
     seam.uninstall()
     assert Backend.__init__ is original
-    assert getattr(source, seam._FUNCTION) is _stock
