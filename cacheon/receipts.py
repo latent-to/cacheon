@@ -201,12 +201,6 @@ def set_scope(scope: object) -> str:
     return cleaned
 
 
-def current_scope() -> str:
-    """The scope receipts are currently being written under ("" when unscoped)."""
-
-    return _SCOPE
-
-
 def _dir() -> str:
     raw = _root()
     if not raw:
@@ -222,6 +216,10 @@ def _resolved_dir(raw: str) -> Path:
         return Path(os.path.abspath(os.path.expanduser(raw)))
 
 
+# Set the first time a real group identity resolves; see ``identity``.
+_IDENTITY: Optional[dict] = None
+
+
 def _env_int(name: str) -> Optional[int]:
     raw = os.environ.get(name)
     if raw is None or not raw.isascii() or not raw.isdecimal():
@@ -230,7 +228,20 @@ def _env_int(name: str) -> Optional[int]:
 
 
 def identity() -> dict:
-    """Best-effort scheduler-member identity, always including a stable PID."""
+    """Best-effort scheduler-member identity, always including a stable PID.
+
+    Memoized once it resolves. A process's rank in its group does not change, but
+    its ability to READ that rank does: every scheduler rank destroys its process
+    group before exit, and the counts receipt is rewritten after that, at
+    ``atexit``. Re-detecting there returns the degraded ``-1`` identity, which no
+    longer matches the ``active`` receipt written while the group was live — and
+    a coverage check that compares the two would call the whole run's execution
+    evidence malformed at the last instant. The PID guard keeps a forked child
+    from inheriting its parent's rank.
+    """
+    global _IDENTITY
+    if _IDENTITY is not None and _IDENTITY["pid"] == os.getpid():
+        return dict(_IDENTITY)
     pid = os.getpid()
     rank: Optional[int] = None
     world_size: Optional[int] = None
@@ -253,7 +264,10 @@ def identity() -> dict:
         or rank >= world_size
     ):
         rank = world_size = -1
-    return {"pid": pid, "rank": rank, "world_size": world_size}
+    resolved = {"pid": pid, "rank": rank, "world_size": world_size}
+    if rank >= 0:
+        _IDENTITY = resolved
+    return dict(resolved)
 
 
 def _write_to(root: Path, kind: str, payload: dict, *, tag: str = "") -> bool:

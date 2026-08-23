@@ -24,6 +24,7 @@ def receipt_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(receipts, "_ONCE", set())
     monkeypatch.setattr(receipts, "_CALLS", {})
     monkeypatch.setattr(receipts, "_GRAPH_PROBE", None)
+    monkeypatch.setattr(receipts, "_IDENTITY", None)
     return rdir
 
 
@@ -32,6 +33,39 @@ def test_no_env_is_a_silent_noop(tmp_path, monkeypatch):
     receipts.write("active", {"bundle": "x"})  # must not raise, must not create files
     receipts.completed("norm.rmsnorm")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_exit_flush_keeps_the_identity_the_execution_actually_had(
+    receipt_dir, monkeypatch
+):
+    """Regression: the counts flush runs at ``atexit``, after every scheduler rank
+    has destroyed its process group. Re-detecting identity there yields ``-1`` and
+    no longer matches the ``active`` receipt, so the coverage check would call a
+    perfectly good run's execution evidence malformed. Found on 4x B300, not here.
+    """
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    receipts.write("active", {"slots": ["slot.a"]})
+    receipts.completed("slot.a")
+
+    # The group goes away; so does every way to read the rank back.
+    monkeypatch.delenv("RANK")
+    monkeypatch.delenv("WORLD_SIZE")
+    receipts.flush_calls()
+
+    active = receipts.collect(receipt_dir, "active")[0]
+    done = receipts.collect(receipt_dir, "completed")[0]
+    assert (done["rank"], done["world_size"]) == (0, 1)
+    assert (done["rank"], done["world_size"]) == (
+        active["rank"], active["world_size"]
+    )
+    ok, detail = receipts.completed_gate(
+        [done],
+        expected_slots=("slot.a",),
+        member_receipts=[active],
+        expected_member_count=1,
+    )
+    assert ok, detail
 
 
 def test_write_and_collect_roundtrip(receipt_dir):

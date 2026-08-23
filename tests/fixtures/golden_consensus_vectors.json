@@ -2,7 +2,9 @@
   "_meta": {
     "captured": [
       "macOS arm64, CPython 3.11, 2026-08-09",
-      "Linux x86_64 (two-B200 validator host), CPython 3.12, 2026-08-09"
+      "Linux x86_64 (two-B200 validator host), CPython 3.12, 2026-08-09",
+      "macOS arm64, CPython 3.11, 2026-08-23 (two example bundles repinned)",
+      "Linux x86_64 (eight-B300 pod), CPython 3.12, 2026-08-23 (cross-check)"
     ],
     "contract": "content_hash(tree) for every committed example bundle and stack fixture; see tests/test_golden_consensus_vectors.py"
   },
