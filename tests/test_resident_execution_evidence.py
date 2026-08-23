@@ -13,13 +13,11 @@ from cacheon.eval.resident_execution_evidence import (
 
 
 def _ack(
-    prior: int, *, fired: int = 1, completed: int = 1,
-    fallback: int = 0, load_failed: int = 0,
+    prior: int, *, completed: int = 1, fallback: int = 0, load_failed: int = 0,
 ):
     return {
         "prior_generation": prior,
         "prior_receipts": {
-            "fired": fired,
             "completed": completed,
             "fallback": fallback,
             "load_failed": load_failed,
@@ -77,10 +75,6 @@ class TestSummary:
 
     def test_a_rank_that_ran_nothing_is_counted_as_such(self) -> None:
         rows = {rank: _ack(7, completed=0) for rank in range(4)}
-        assert summarize_rank_acks(rows, tp_size=4) == ResidentExecutionEvidence(7, 0)
-
-    def test_completion_without_selection_is_not_execution(self) -> None:
-        rows = {rank: _ack(7, fired=0) for rank in range(4)}
         assert summarize_rank_acks(rows, tp_size=4) == ResidentExecutionEvidence(7, 0)
 
     @pytest.mark.parametrize(

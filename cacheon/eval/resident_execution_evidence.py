@@ -66,13 +66,13 @@ def _rank_executed_cleanly(counts: object) -> bool | None:
     if not isinstance(counts, dict):
         return None
     values = []
-    for kind in ("fired", "completed", "fallback", "load_failed"):
+    for kind in ("completed", "fallback", "load_failed"):
         value = counts.get(kind)
         if type(value) is not int or value < 0:
             return None
         values.append(value)
-    fired, completed, fallback, load_failed = values
-    return fired > 0 and completed > 0 and fallback == 0 and load_failed == 0
+    completed, fallback, load_failed = values
+    return completed > 0 and fallback == 0 and load_failed == 0
 
 
 def summarize_rank_acks(

@@ -143,13 +143,11 @@ def test_registry_routes_two_disjoint_shape_variants_and_gaps_to_stock():
     registry.enable()
 
     base = CallDescriptor(dtype="bfloat16", head_dim=64)
-    first = registry.select(SLOT, base, write_fired_receipt=False)
+    first = registry.select(SLOT, base)
     second = registry.select(
-        SLOT, base.with_updates(head_dim=128), write_fired_receipt=False
-    )
+        SLOT, base.with_updates(head_dim=128),     )
     gap = registry.select(
-        SLOT, base.with_updates(head_dim=96), write_fired_receipt=False
-    )
+        SLOT, base.with_updates(head_dim=96),     )
 
     assert first.impl is registry.variants(SLOT)[0]
     assert first.impl.variant == "h64"
@@ -200,7 +198,6 @@ def test_selection_fail_closes_runtime_ambiguity_for_future_private_predicate():
     decision = registry.select(
         SLOT,
         CallDescriptor(private_shape="same"),
-        write_fired_receipt=False,
     )
 
     assert decision.outcome is SelectionOutcome.AMBIGUOUS
@@ -218,7 +215,7 @@ def test_legacy_lookup_and_peek_stay_compatible_and_fail_closed_on_ambiguity():
     registry.register(singleton)
     registry.enable()
     kwargs = dict(dtype_name="bfloat16", last_dim=64, arch=None)
-    assert registry.peek(SLOT, **kwargs) is singleton
+    assert registry.lookup(SLOT, **kwargs) is singleton
     assert registry.lookup(SLOT, **kwargs) is singleton
 
     split = KernelRegistry()
@@ -241,17 +238,16 @@ def test_legacy_lookup_and_peek_stay_compatible_and_fail_closed_on_ambiguity():
         )
     )
     split.enable()
-    assert split.peek(SLOT, num_tokens=8, **kwargs).variant == "small"
-    assert split.peek(SLOT, num_tokens=64, **kwargs).variant == "large"
+    assert split.lookup(SLOT, num_tokens=8, **kwargs).variant == "small"
+    assert split.lookup(SLOT, num_tokens=64, **kwargs).variant == "large"
     # Historical lookup treats unknown num_tokens as unknown, so both accept it;
     # row order must not become a priority rule.
-    assert split.peek(SLOT, num_tokens=None, **kwargs) is None
+    assert split.lookup(SLOT, num_tokens=None, **kwargs) is None
 
 
-def test_fired_receipt_is_semantic_slot_level_across_variants(monkeypatch):
-    from cacheon import registry as registry_module
-
-    registry_module._FIRED_SLOTS.clear()
+def test_selection_across_variants_writes_no_receipt(monkeypatch):
+    # Resolving an impl is routing, not execution. Whichever variant wins, nothing
+    # is claimed until a dispatcher actually invokes the entry.
     writes: list[tuple[str, dict, str | None]] = []
     monkeypatch.setattr(
         receipts,
@@ -266,8 +262,7 @@ def test_fired_receipt_is_semantic_slot_level_across_variants(monkeypatch):
     registry.select(SLOT, CallDescriptor(dtype="bfloat16", head_dim=64))
     registry.select(SLOT, CallDescriptor(dtype="bfloat16", head_dim=128))
 
-    assert writes == [("fired", {"slot": SLOT}, SLOT)]
-    registry_module._FIRED_SLOTS.clear()
+    assert writes == []
 
 
 def test_seam_loader_registers_every_variant(tmp_path):

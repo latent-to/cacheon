@@ -485,9 +485,7 @@ def maybe_export(orig: Callable[..., Any], args: tuple, kwargs: dict, *,
             "last_dim": hidden,
         },
     )
-    decision = registry.select(
-        DEEP_SLOT, descriptor, write_fired_receipt=False
-    )
+    decision = registry.select(DEEP_SLOT, descriptor)
     impl = decision.impl
     if impl is None:
         _dbg(

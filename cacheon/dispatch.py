@@ -441,11 +441,7 @@ def make_moe_dispatcher(
                                     quant=quant_fmt or "dense",
                                     **dimensions,
                                 )
-                                decision = registry.select(
-                                    slot,
-                                    descriptor,
-                                    write_fired_receipt=False,
-                                )
+                                decision = registry.select(slot, descriptor)
                                 impl = decision.impl
                             else:
                                 if (
@@ -477,9 +473,7 @@ def make_moe_dispatcher(
                                     tp_size=tp_size,
                                     world_size=world_size,
                                 )
-                                impl = registry.select(
-                                    slot, descriptor, write_fired_receipt=False
-                                ).impl
+                                impl = registry.select(slot, descriptor).impl
                             if impl is None:
                                 continue
                             if impl.prepare is None:
@@ -642,6 +636,13 @@ def _in_cuda_graph() -> bool:
         )
     except Exception:  # noqa: BLE001 - CPU/initialization failure means eager
         return False
+
+
+# Capture detection has exactly one authority and it is the one above. Receipts
+# record whether a candidate was invoked inside a capture — the fact that decides
+# whether the scored replays run its code or stock — and get it from here rather
+# than growing a second, quietly divergent detector.
+_receipts.set_graph_probe(_in_cuda_graph)
 
 
 def _standard_topk(topk_output):
@@ -844,7 +845,7 @@ def make_allreduce_dispatcher(
                             input_, group_size=group_size
                         )
                         impl = registry.select(
-                            slot, descriptor, write_fired_receipt=False
+                            slot, descriptor
                         ).impl
                     else:
                         impl = None
@@ -1021,7 +1022,7 @@ def make_arfusion_dispatcher(
                             input_tensor, group_size=group_size
                         )
                         impl = registry.select(
-                            slot, descriptor, write_fired_receipt=False
+                            slot, descriptor
                         ).impl
                     if impl is not None:
                         selected = True
@@ -1173,9 +1174,7 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
             group_size=topology.world_size,
             **dimensions,
         )
-        decision = registry.select(
-            _DEEP_SLOT, descriptor, write_fired_receipt=False
-        )
+        decision = registry.select(_DEEP_SLOT, descriptor)
         impl = decision.impl
         if impl is not selection.impl:
             raise ValueError("consume selected a different or ineligible deep variant")

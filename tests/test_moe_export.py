@@ -211,7 +211,6 @@ def test_export_preflight_writes_no_fired_receipt(monkeypatch, tmp_path):
     from cacheon import registry as registry_mod
 
     monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
-    monkeypatch.setattr(registry_mod, "_FIRED_SLOTS", set())
     out, kwargs = _export_kwargs()
     _armed(monkeypatch, _FakeRaw(export=(1, 1, 2, 3, 64, 32, 32, 5, 16)))
     moe_export.maybe_export(_orig_recorder([], out), (), kwargs,
@@ -453,7 +452,7 @@ def _pend(*, registry=None, group=None, t=64, k=5, hid=32):
     pend = {"g2": 1, "idx": 2, "scl": 3, "T": t, "K": k, "hid": hid}
     if registry is not None and group is not None:
         descriptor = _producer_descriptor(t=t, k=k, hid=hid, group=group)
-        impl = registry.select(DEEP, descriptor, write_fired_receipt=False).impl
+        impl = registry.select(DEEP, descriptor).impl
         assert impl is not None
         pend["selection"] = moe_export.DeepSelection(
             impl=impl,

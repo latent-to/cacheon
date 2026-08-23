@@ -405,12 +405,6 @@ class SelectionDecision:
         return not self.use_candidate
 
 
-# Slots whose miner impl was SELECTED at least once in this process — guards the
-# one-time routing-only "fired" receipt. This event is deliberately not evidence
-# that candidate execution completed; stronger execution accounting is a separate
-# referee-hardening layer.
-_FIRED_SLOTS: set[tuple[str, str]] = set()
-
 
 class KernelRegistry:
     """Process-global registry. One active bundle at a time (MVP)."""
@@ -487,8 +481,6 @@ class KernelRegistry:
         self,
         slot: str,
         descriptor: CallDescriptor,
-        *,
-        write_fired_receipt: bool = True,
     ) -> SelectionDecision:
         """Choose candidate or baseline for a canonical live call.
 
@@ -538,8 +530,6 @@ class KernelRegistry:
                 variant_matches=variant_matches,
             )
         impl, match = accepted[0]
-        if write_fired_receipt:
-            self._write_fired_once(slot)
         return SelectionDecision(
             slot,
             descriptor,
@@ -549,18 +539,6 @@ class KernelRegistry:
             variant_matches=variant_matches,
         )
 
-    @staticmethod
-    def _write_fired_once(slot: str) -> None:
-        from cacheon import receipts
-
-        key = (receipts.current_scope(), slot)
-        if key not in _FIRED_SLOTS:
-            # First time this process SELECTS the miner impl for this slot. This proves
-            # routing only: eligibility/graph checks and the call itself may still fail
-            # or decline downstream.
-            _FIRED_SLOTS.add(key)
-            receipts.write("fired", {"slot": slot}, tag=slot)
-
     def lookup(
         self, slot: str, *, dtype_name: str, last_dim: int, arch: Optional[str],
         num_tokens: Optional[int] = None
@@ -568,26 +546,6 @@ class KernelRegistry:
         # Preserve the old API's special case: unknown architecture and token
         # count do not reject legacy fields.  New normative capability fields are
         # still checked (and missing ones fail closed) by Eligibility.accepts.
-        impl = self._legacy_select(
-            slot,
-            dtype_name=dtype_name,
-            last_dim=last_dim,
-            arch=arch,
-            num_tokens=num_tokens,
-        )
-        if impl is None:
-            return None
-        self._write_fired_once(slot)
-        return impl
-
-    def peek(
-        self, slot: str, *, dtype_name: str, last_dim: int, arch: Optional[str],
-        num_tokens: Optional[int] = None
-    ) -> Optional[KernelImpl]:
-        """Eligibility probe WITHOUT the 'fired' receipt. For pre-flight gates (the
-        deep export seam asks "would the consume kernel run?" before arming
-        skip-finalize) — 'fired' must keep meaning "the miner entry was actually
-        selected at a call site", so probes must not write it."""
         return self._legacy_select(
             slot,
             dtype_name=dtype_name,

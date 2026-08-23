@@ -53,13 +53,9 @@ class _RecordingRegistry(KernelRegistry):
         super().__init__()
         self.selections = []
 
-    def select(self, slot, descriptor, *, write_fired_receipt=True):
-        self.selections.append((slot, descriptor, write_fired_receipt))
-        return super().select(
-            slot,
-            descriptor,
-            write_fired_receipt=write_fired_receipt,
-        )
+    def select(self, slot, descriptor):
+        self.selections.append((slot, descriptor))
+        return super().select(slot, descriptor)
 
 
 @pytest.fixture(autouse=True)
@@ -134,7 +130,6 @@ def _moe_layer(*, hidden=8, inter=4, experts=4, tp_size=2, reduce=True):
 def _assert_two_phase_parity(registry, slot, expected):
     selections = [row for row in registry.selections if row[0] == slot]
     assert len(selections) == 2
-    assert [row[2] for row in selections] == [False, True]
     assert all(row[1] == expected for row in selections)
 
 
@@ -379,7 +374,7 @@ def test_stock_group_not_layer_moe_tp_hint_defines_reduce_topology(monkeypatch):
     assert torch.equal(wrapped(_moe_layer(tp_size=2), x, routed), x)
     assert all(
         descriptor["tp_size"] == 4 and descriptor["world_size"] == 4
-        for slot, descriptor, _write in registry.selections
+        for slot, descriptor in registry.selections
         if slot == MOE_REDUCE
     )
 
@@ -701,7 +696,6 @@ def test_cuda_graph_detector_supports_current_legacy_and_direct_capture(monkeypa
 
 def test_post_selection_allocation_failure_aborts_without_fired_receipt(monkeypatch):
     monkeypatch.setenv("CACHEON_COLLECTIVE_SEAM", "1")
-    monkeypatch.setattr(registry_module, "_FIRED_SLOTS", set())
     written = []
     monkeypatch.setattr(receipts, "write", lambda kind, payload, **kw: written.append(kind))
     monkeypatch.setattr(

@@ -229,15 +229,13 @@ def test_registry_selection_exposes_validator_owned_fallback_reasons():
     wrong = registry.select(
         "attention.msa_prefill_block_score",
         good.with_updates(head_dim=64),
-        write_fired_receipt=False,
     )
     assert wrong.outcome is SelectionOutcome.OUT_OF_DOMAIN
     assert wrong.candidate is not None and wrong.impl is None
     assert [m.field for m in wrong.capability_match.mismatches] == ["head_dim"]
 
     selected = registry.select(
-        "attention.msa_prefill_block_score", good, write_fired_receipt=False
-    )
+        "attention.msa_prefill_block_score", good,     )
     assert selected.outcome is SelectionOutcome.SELECTED
     assert selected.use_candidate and selected.impl is selected.candidate
 
@@ -253,13 +251,11 @@ def test_graph_and_quant_context_are_enforced_by_canonical_selection():
     registry.enable()
     base = CallDescriptor(dtype="bfloat16", quant="nvfp4", graph_mode="eager")
     assert registry.select(
-        "attention.msa_prefill_block_score", base, write_fired_receipt=False
-    ).use_candidate
+        "attention.msa_prefill_block_score", base,     ).use_candidate
 
     graph = registry.select(
         "attention.msa_prefill_block_score",
         base.with_updates(graph_mode="cuda_graph"),
-        write_fired_receipt=False,
     )
     assert graph.outcome is SelectionOutcome.OUT_OF_DOMAIN
     assert [m.field for m in graph.capability_match.mismatches] == ["graph_mode"]
@@ -267,7 +263,6 @@ def test_graph_and_quant_context_are_enforced_by_canonical_selection():
     quant = registry.select(
         "attention.msa_prefill_block_score",
         base.with_updates(quant="dense"),
-        write_fired_receipt=False,
     )
     assert quant.outcome is SelectionOutcome.OUT_OF_DOMAIN
     assert [m.field for m in quant.capability_match.mismatches] == ["quant"]
@@ -288,11 +283,9 @@ def test_implicit_dense_and_nvfp4_domains_do_not_overlap():
     registry.enable()
     assert registry.select(
         "moe.fused_experts", CallDescriptor(quant="dense"),
-        write_fired_receipt=False,
     ).impl.variant == "dense"
     assert registry.select(
         "moe.fused_experts", CallDescriptor(quant="nvfp4"),
-        write_fired_receipt=False,
     ).impl.variant == "nvfp4"
 
 

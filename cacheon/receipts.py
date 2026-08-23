@@ -14,17 +14,51 @@ launch, ranks write receipts there, the driver requires them:
   * ``active``      — bundle loaded + registry enabled in a rank (seam.activate).
   * ``load_failed`` — a rank ATTEMPTED the bundle load and fell back to baseline;
                       lets the driver report "bad bundle" instead of "no bootstrap".
-  * ``fired``       — the registry SELECTED the miner impl for a slot at least once;
-                      this is routing evidence only.
   * ``completed``   — a dispatcher successfully produced the model-facing output
                       after invoking the selected implementation; once/slot/process.
   * ``fallback``    — a selected path failed and the dispatcher served the trusted
                       baseline instead; once/slot/process and disqualifying.
 
-``completed`` is stronger than ``fired`` but remains diagnostic execution evidence,
-not hostile-code proof. Candidate Python shares the scheduler process today and can
-forge process-local state; complete-engine isolation plus external qualification is
-the crown boundary.
+Retired 2026-08-23: ``fired``. It meant "the registry RESOLVED an impl", which is
+weaker than it reads — the caller could still decline afterwards — so eight of
+eight production call sites had to opt out of the write, and a duplicate probe-only
+lookup method existed purely to avoid it. Once the entry is invoked there are
+exactly two outcomes, ``completed`` or ``fallback``, and either one proves
+selection. A third kind that is implied by both carries no information and cost an
+API parameter at every call site to keep honest.
+
+``completed`` remains diagnostic execution evidence, not hostile-code proof.
+Candidate Python shares the scheduler process today and can forge process-local
+state; complete-engine isolation plus external qualification is the crown boundary.
+
+HOW MANY TIMES, AND WHEN (2026-08-23). The once-per-slot-per-process file write
+keeps the hot path free of I/O, but it also meant the only number a reader could
+form was a count of receipt *files*. That number is identical for a one-request
+launch and a twelve-request launch, so an operator reading "8 candidate
+executions" was reading eight files, not eight calls. Worse, every one of those
+files is written during arming — the first invocation of a slot happens in warmup
+and graph capture, minutes before the first scored window — so file presence
+proves setup and says nothing about scoring.
+
+The receipt now carries two facts the file's existence never did:
+
+  * ``calls``    — invocations of the candidate entry under this scope.
+  * ``captured`` — at least one of those invocations happened while a CUDA graph
+                   was capturing, so the candidate is inside the graph the scored
+                   windows replay.
+
+``captured`` is the one that matters, because a scored window does not re-enter
+Python at all: the graph is replayed by the driver. A candidate that did not
+declare ``graph_safe`` is skipped during capture, the captured graph holds STOCK,
+every replay serves stock — and the ``completed`` receipt was already on disk,
+written during eager warmup minutes earlier. That is a phantom pass wearing a
+receipt. ``captured=False`` with ``calls>0`` is exactly that shape.
+
+Counting costs one list increment per call. Capture detection is delegated to the
+dispatch layer, which already owns it (pinned, legacy, and direct CUDA capture
+authorities), and is probed only until the first capturing call is seen, so the
+steady-state hot path pays nothing. The file is rewritten at scope change and at
+exit, never per call.
 
 No env var set -> every helper is a silent no-op (verify paths, unit tests, and
 baseline launches don't produce receipt litter).
@@ -32,6 +66,7 @@ baseline launches don't produce receipt litter).
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -48,7 +83,6 @@ _IDENTITY_KINDS = frozenset(
     {
         "active",
         "load_failed",
-        "fired",
         "completed",
         "fallback",
         "audit",
@@ -65,6 +99,17 @@ _ONCE_LOCK = threading.Lock()
 # scope rather than once per process lifetime.
 _SCOPE = ""
 _SCOPE_LOCK = threading.Lock()
+
+# Invocation accounting for the current scope: slot -> [calls, captured].
+# Plain lists mutated in place by the dispatchers, which run single-threaded inside
+# one scheduler rank's model forward. A lost increment under an unexpected thread
+# would understate a diagnostic; it can never manufacture evidence that a candidate
+# ran, so this deliberately takes no lock on the hot path.
+_CALLS: dict[str, list[int]] = {}
+# CUDA-graph capture detector, installed by the dispatch layer that already owns
+# it. None means nothing told us how to detect capture, which is reported as
+# unknown rather than as "not captured".
+_GRAPH_PROBE = None
 
 # Fallback receipt root for a process the driver launched WITHOUT one. The
 # one-shot driver mints a receipt directory only for an engine that is active at
@@ -127,6 +172,11 @@ def set_scope(scope: object) -> str:
     # let a scope escape the root it is supposed to partition.
     if not cleaned or not cleaned[0].isalnum() or ".." in cleaned:
         cleaned = ""
+    # The outgoing scope's counts are final the instant nothing more can run under
+    # it. Persist them before the root moves, or a resident lane would attribute
+    # the closing candidate's invocations to the one arriving.
+    flush_calls()
+    _CALLS.clear()
     with _SCOPE_LOCK:
         _SCOPE = cleaned
     # Create the scope eagerly. Receipt files are written lazily, so without
@@ -251,9 +301,77 @@ def _write_execution_once(
             _ONCE.add(key)
 
 
+def set_graph_probe(probe: object) -> None:
+    """Install the CUDA-graph capture detector owned by the dispatch layer."""
+
+    global _GRAPH_PROBE
+    _GRAPH_PROBE = probe if callable(probe) else None
+
+
+def _count_call(slot: str) -> None:
+    """Tally one invocation of ``slot``. Hot path: keep it cheap.
+
+    The capture probe runs only until this slot has been seen inside a capture.
+    One capturing invocation is the whole claim — it puts the candidate in the
+    graph the scored windows replay — so continuing to probe would buy nothing.
+    """
+
+    entry = _CALLS.get(slot)
+    if entry is None:
+        entry = [0, 0]
+        _CALLS[slot] = entry
+    entry[0] += 1
+    if not entry[1] and _GRAPH_PROBE is not None:
+        try:
+            if _GRAPH_PROBE():
+                entry[1] = 1
+        except Exception:  # noqa: BLE001 - a probe must not break model execution
+            pass
+
+
+def _calls_payload(slot: str) -> dict:
+    entry = _CALLS.get(slot)
+    if entry is None:
+        return {}
+    payload: dict = {"calls": entry[0]}
+    if _GRAPH_PROBE is not None:
+        payload["captured"] = bool(entry[1])
+    return payload
+
+
 def completed(slot: str) -> None:
-    """Record successful candidate output production once for this slot/process."""
+    """Record successful candidate output production for this slot/process.
+
+    The file is written once — the count it carries is refreshed at every phase
+    boundary and at exit, so the hot path never touches the filesystem.
+    """
+    _count_call(slot)
     _write_execution_once("completed", slot)
+
+
+def flush_calls() -> None:
+    """Persist the current invocation counts into this scope's receipts.
+
+    Rewrites rather than appends: one receipt per slot per process holds the
+    running total, so a reader never has to sum files and can never double count.
+    Never raises — accounting must not be able to kill an engine.
+    """
+
+    rdir = _dir()
+    if not rdir or not _CALLS:
+        return
+    try:
+        root = _resolved_dir(rdir)
+        for slot in list(_CALLS):
+            _write_to(root, "completed", {"slot": slot, **_calls_payload(slot)}, tag=slot)
+    except Exception:  # noqa: BLE001 - diagnostics never break an engine
+        logger.exception("cacheon: receipt call flush failed")
+
+
+# A one-shot engine is read after it exits, so its final counts must reach disk
+# without anyone asking. The resident lane flushes at every swap and does not
+# depend on this.
+atexit.register(flush_calls)
 
 
 def fallback(slot: str, error: BaseException) -> None:
@@ -282,7 +400,28 @@ def collect(rdir: str | Path, kind: str) -> list[dict]:
     return out
 
 
-_EXECUTION_KINDS = ("active", "fired", "completed", "fallback", "load_failed")
+_EXECUTION_KINDS = ("active", "completed", "fallback", "load_failed")
+
+
+def _summarize_calls(rows: list[dict]) -> dict:
+    """Reduce the invocation evidence carried by ``completed`` rows.
+
+    A field is reported only when every row carries it. One receipt written by an
+    older source, or one malformed value, makes the answer unknowable — and an
+    unknown total must not be summed into a smaller number that reads like a fact.
+    ``captured`` needs every member to agree: one rank serving stock out of a
+    captured graph makes the whole measurement stock, so ``all`` is the honest
+    reduction, not ``any``.
+    """
+
+    totals: dict = {}
+    calls = [_exact_int(row.get("calls"), minimum=0) for row in rows]
+    if rows and all(value is not None for value in calls):
+        totals["calls"] = sum(calls)  # type: ignore[arg-type]
+    captured = [row.get("captured") for row in rows]
+    if rows and all(type(value) is bool for value in captured):
+        totals["captured"] = all(captured)
+    return totals
 
 
 def counts_for_scope(scope: object, *, pid: Optional[int] = None) -> Optional[dict]:
@@ -308,6 +447,9 @@ def counts_for_scope(scope: object, *, pid: Optional[int] = None) -> Optional[di
         cleaned = "" if scope is None else _SAFE_RE.sub("_", str(scope))[:64]
         if not cleaned or not cleaned[0].isalnum() or ".." in cleaned:
             return None
+        if cleaned == _SCOPE and pid == os.getpid():
+            # Reading our own live scope: the in-memory tally is ahead of the file.
+            flush_calls()
         directory = _resolved_dir(os.path.join(root, cleaned))
         if not directory.is_dir():
             return None
@@ -317,6 +459,8 @@ def counts_for_scope(scope: object, *, pid: Optional[int] = None) -> Optional[di
             if pid is not None:
                 rows = [row for row in rows if row.get("pid") == pid]
             counts[kind] = len(rows)
+            if kind == "completed":
+                counts.update(_summarize_calls(rows))
         return counts
     except Exception:  # noqa: BLE001 - unreadable evidence is unobservable, not zero
         logger.exception("cacheon: receipt scope count failed (%s)", scope)
@@ -363,94 +507,81 @@ def _validated_identity(receipt: dict) -> tuple[int, int, int] | None:
 
 
 def _expected_members(
-    observed: list[dict],
     members: list[dict],
     *,
     expected_member_count: int | None,
 ) -> tuple[
-    str,
     list[str],
     list[dict],
     list[dict],
     bool,
     dict[int, tuple[int, int]],
 ]:
-    """Resolve members without allowing observed completions to hide a silent rank."""
+    """Resolve members without allowing observed completions to hide a silent rank.
+
+    The roster comes from the ``active`` receipts and nothing else. Deriving it
+    from the completions instead — which this function used to do when handed no
+    members — lets a rank that silently stopped reporting shrink the roster to
+    exactly the ranks that did report, so short coverage reads as full coverage.
+    Every production caller has always supplied the roster; the derivation was
+    reachable only from its own tests.
+    """
     malformed: list[dict] = []
     duplicates: list[dict] = []
-    if members:
-        seen: set[int] = set()
-        member_identities: dict[int, tuple[int, int]] = {}
-        for receipt in members:
-            ident = _validated_identity(receipt)
-            if ident is None:
-                malformed.append(receipt)
-                continue
-            pid = ident[0]
-            if pid in seen:
-                duplicates.append(receipt)
-            seen.add(pid)
-            member_identities[pid] = (ident[1], ident[2])
-        labels = [f"pid:{pid}" for pid in sorted(seen)]
-        count_ok = expected_member_count is None or len(labels) == expected_member_count
-        known = [identity for identity in member_identities.values() if identity != (-1, -1)]
-        if known and len(known) != len(member_identities):
+    seen: set[int] = set()
+    member_identities: dict[int, tuple[int, int]] = {}
+    for receipt in members:
+        ident = _validated_identity(receipt)
+        if ident is None:
+            malformed.append(receipt)
+            continue
+        pid = ident[0]
+        if pid in seen:
+            duplicates.append(receipt)
+        seen.add(pid)
+        member_identities[pid] = (ident[1], ident[2])
+    labels = [f"pid:{pid}" for pid in sorted(seen)]
+    count_ok = (
+        bool(members)
+        and (expected_member_count is None or len(labels) == expected_member_count)
+    )
+    known = [identity for identity in member_identities.values() if identity != (-1, -1)]
+    if known and len(known) != len(member_identities):
+        malformed.extend(members)
+    elif known:
+        world_sizes = {world_size for _rank, world_size in known}
+        ranks = [rank for rank, _world_size in known]
+        if len(world_sizes) != 1:
             malformed.extend(members)
-        elif known:
-            world_sizes = {world_size for _rank, world_size in known}
-            ranks = [rank for rank, _world_size in known]
-            if len(world_sizes) != 1:
+        else:
+            world_size = next(iter(world_sizes))
+            if (
+                world_size != len(member_identities)
+                or (expected_member_count is not None
+                    and world_size != expected_member_count)
+                or set(ranks) != set(range(world_size))
+                or len(set(ranks)) != len(ranks)
+            ):
                 malformed.extend(members)
-            else:
-                world_size = next(iter(world_sizes))
-                if (
-                    world_size != len(member_identities)
-                    or (expected_member_count is not None
-                        and world_size != expected_member_count)
-                    or set(ranks) != set(range(world_size))
-                    or len(set(ranks)) != len(ranks)
-                ):
-                    malformed.extend(members)
-                    count_ok = False
-        return (
-            "pid",
-            labels,
-            malformed,
-            duplicates,
-            count_ok,
-            member_identities,
-        )
-
-    identities = [_validated_identity(receipt) for receipt in observed]
-    if not identities or any(ident is None for ident in identities):
-        malformed.extend(
-            receipt
-            for receipt, ident in zip(observed, identities)
-            if ident is None
-        )
-        return "unproven", [], malformed, duplicates, False, {}
-    known = [ident for ident in identities if ident is not None]
-    world_sizes = {ident[2] for ident in known}
-    if -1 in world_sizes or len(world_sizes) != 1:
-        malformed.extend(observed)
-        return "unproven", [], malformed, duplicates, False, {}
-    world_size = next(iter(world_sizes))
-    assert world_size > 0
-    labels = [f"rank:{rank}" for rank in range(world_size)]
-    count_ok = expected_member_count is None or world_size == expected_member_count
-    return "rank", labels, malformed, duplicates, count_ok, {}
+                count_ok = False
+    return labels, malformed, duplicates, count_ok, member_identities
 
 
 def coverage_matrix(
     observed: Iterable[dict],
     *,
     expected_slots: Iterable[str],
-    member_receipts: Iterable[dict] = (),
+    member_receipts: Iterable[dict],
     expected_member_count: int | None = None,
-    count_field: str | None = None,
-    min_count: int = 1,
 ) -> dict:
-    """Build fail-closed per-slot/per-member diagnostic coverage."""
+    """Build fail-closed per-slot/per-member diagnostic coverage.
+
+    Presence, not volume: one completion per slot per member is the whole gate.
+    Invocation counts belong on the receipt (see ``flush_calls``) where they are
+    reported to operators and miners; they are deliberately not a threshold here,
+    because how many times a captured kernel re-enters Python is a property of
+    CUDA graphs rather than of the candidate.
+    """
     got = list(observed)
     members = list(member_receipts)
     raw_slots = list(expected_slots)
@@ -461,20 +592,13 @@ def coverage_matrix(
         type(expected_member_count) is not int or expected_member_count < 1
     ):
         raise ValueError("expected_member_count must be a positive integer or None")
-    if type(min_count) is not int or min_count < 1:
-        raise ValueError("min_count must be a positive integer")
     (
-        basis,
         expected_members,
         malformed,
         duplicates,
         member_count_ok,
         active_identities,
-    ) = (
-        _expected_members(
-            got, members, expected_member_count=expected_member_count
-        )
-    )
+    ) = _expected_members(members, expected_member_count=expected_member_count)
     expected_pairs = {
         (slot, member) for slot in slots for member in expected_members
     }
@@ -486,40 +610,25 @@ def coverage_matrix(
         if not isinstance(slot, str) or not slot or ident is None:
             malformed.append(receipt)
             continue
-        if basis == "pid":
-            member = f"pid:{ident[0]}"
-            active_identity = active_identities.get(ident[0])
-            if (
-                active_identity is not None
-                and active_identity != (-1, -1)
-                and active_identity != (ident[1], ident[2])
-            ):
-                malformed.append(receipt)
-                continue
-        elif basis == "rank" and ident[1] >= 0:
-            member = f"rank:{ident[1]}"
-        else:
+        member = f"pid:{ident[0]}"
+        active_identity = active_identities.get(ident[0])
+        if (
+            active_identity is not None
+            and active_identity != (-1, -1)
+            and active_identity != (ident[1], ident[2])
+        ):
             malformed.append(receipt)
             continue
         if slot not in slots or member not in expected_members:
             unexpected.append(receipt)
             continue
-        if count_field is None:
-            count = 1
-        else:
-            count = _exact_int(receipt.get(count_field))
-            if count is None:
-                malformed.append(receipt)
-                continue
         key = (slot, member)
-        counts[key] = counts.get(key, 0) + count
-        if count_field is None and counts[key] > 1:
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] > 1:
             duplicates.append(receipt)
 
-    if (
-        basis == "pid"
-        and active_identities
-        and all(identity == (-1, -1) for identity in active_identities.values())
+    if active_identities and all(
+        identity == (-1, -1) for identity in active_identities.values()
     ):
         # Bootstrap may precede process-group initialization, so early active
         # receipts can be PID-only. For multi-member execution, the later
@@ -553,13 +662,8 @@ def coverage_matrix(
             }
             if known and known != {(0, 1)}:
                 malformed.extend(got)
-    present = {pair for pair, count in counts.items() if count >= min_count}
+    present = {pair for pair, count in counts.items() if count >= 1}
     missing = sorted(expected_pairs - present)
-    short = sorted(
-        (slot, member, counts.get((slot, member), 0))
-        for slot, member in expected_pairs
-        if 0 < counts.get((slot, member), 0) < min_count
-    )
     return {
         "ok": (
             bool(slots)
@@ -570,7 +674,6 @@ def coverage_matrix(
             and not unexpected
             and not duplicates
         ),
-        "basis": basis,
         "expected_slots": slots,
         "members": expected_members,
         "expected_member_count": expected_member_count,
@@ -580,10 +683,6 @@ def coverage_matrix(
         "covered_pairs": len(expected_pairs & present),
         "missing": [
             {"slot": slot, "member": member} for slot, member in missing
-        ],
-        "short": [
-            {"slot": slot, "member": member, "count": count, "required": min_count}
-            for slot, member, count in short
         ],
         "malformed": malformed,
         "unexpected": unexpected,
@@ -614,7 +713,7 @@ def completed_gate(
     ok = detail["ok"] and not fallbacks
     desc = (
         f"completed coverage {detail['covered_pairs']}/{detail['expected_pairs']} "
-        f"slot/member pairs (basis={detail['basis']})"
+        "slot/member pairs"
     )
     if detail["missing"]:
         desc += f"; missing={detail['missing']}"

@@ -103,7 +103,7 @@ def make_minimax_sparse_decode_dispatcher(
             q, k_cache, req_to_token, topk_idx,
             block_size=int(block_size), in_graph=in_graph,
         )
-        selected = registry.select(slot, descriptor, write_fired_receipt=False).impl
+        selected = registry.select(slot, descriptor).impl
         if selected is None:
             return stock()
 
@@ -203,9 +203,7 @@ class _MsaScoreKernel:
                 quant="fp8" if "float8" in str(k_cache.dtype).lower() else "dense",
                 tp_size=tp_size, world_size=world_size,
             )
-            selected = self._registry.select(
-                self._slot, descriptor, write_fired_receipt=False
-            ).impl
+            selected = self._registry.select(self._slot, descriptor).impl
             if selected is None:
                 return stock_launch(
                     q, k_cache, req_to_token, score, seq_lens, slot_ids,

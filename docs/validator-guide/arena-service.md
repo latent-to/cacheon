@@ -85,7 +85,7 @@ batch to the current swap generation. Stock reads bracket candidates and act as 
 B0 → swap(candidate-1) → C1 → swap(stock) → B1 → ...
 ```
 
-The closing stock swap must prove `fired` and `completed` on every rank, with no
+The closing stock swap must prove `completed` on every rank, with no
 fallback or load failure. A cold candidate is rejected before promotion.
 
 The queue may reuse a preceding stock bracket under policy and withdraws the lane when a
