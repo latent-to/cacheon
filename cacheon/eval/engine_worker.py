@@ -214,6 +214,18 @@ def _active_execution_members(
     return list(slot_sets[0])
 
 
+def _routing_reasons(rows: list[dict]) -> str:
+    """Render the recorded not-selected reasons for an execution-coverage error."""
+
+    parts: list[str] = []
+    for row in rows:
+        slot = row.get("slot")
+        for reason in row.get("reasons") or ():
+            fields = ",".join(reason.get("fields") or ()) or "-"
+            parts.append(f"{slot}:{reason.get('outcome')}({fields})")
+    return "; not_selected=" + " ".join(sorted(parts)) if parts else ""
+
+
 def _require_execution_completion(
     receipt_dir: str,
     *,
@@ -244,6 +256,10 @@ def _require_execution_completion(
             + detail
             + "; "
             + observed
+            # The routing reason, when the registry recorded one. Without it this
+            # error says only that nothing ran; with it, it says which declared
+            # field kept the candidate off every live call.
+            + _routing_reasons(receipts.collect(receipt_dir, "not_selected"))
         )
         # Total silence, behind an active-member check that already passed, is
         # the candidate's own defect: the seam wrote ``active`` into this very

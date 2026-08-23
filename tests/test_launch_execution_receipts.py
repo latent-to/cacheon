@@ -203,6 +203,40 @@ def test_real_distributed_receipts_cover_every_nccl_member(tmp_path):
     assert ok, detail
 
 
+def test_coverage_failure_names_the_field_that_kept_the_candidate_off(tmp_path):
+    """A run where nothing executed must say WHY, not just that nothing did."""
+    active = [_active(10, 0, slots=("a",), world_size=1)]
+    _write(
+        tmp_path,
+        "not_selected",
+        {
+            "slot": "a",
+            "reasons": [
+                {
+                    "outcome": "out_of_domain",
+                    "fields": ["num_tokens"],
+                    "mismatches": [
+                        {
+                            "field": "num_tokens",
+                            "reason": "outside_domain",
+                            "expected": "in [1, 2048]",
+                        }
+                    ],
+                }
+            ],
+        },
+        0,
+    )
+    with pytest.raises(engine_worker.CandidateNeverExecutedError) as caught:
+        engine_worker._require_execution_completion(
+            str(tmp_path),
+            active_receipts=active,
+            expected_slots=["a"],
+            expected_member_count=1,
+        )
+    assert "not_selected=a:out_of_domain(num_tokens)" in str(caught.value)
+
+
 def test_total_silence_is_typed_as_the_candidate_never_executing(tmp_path):
     """The one coverage shape that is provably the candidate's own defect.
 
