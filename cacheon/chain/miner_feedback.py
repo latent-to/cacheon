@@ -20,6 +20,7 @@ than being narrated into a failure.
 from __future__ import annotations
 
 import base64
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -283,14 +284,16 @@ def _explain_screen_stages(record: dict[str, Any], row: sqlite3.Row) -> None:
 
     from cacheon.eval.screen_reason import recover_screen_reason
 
-    authority, slots = _static_screen_authority()
-    if authority is None:
-        return
     publication_digest = row["publication_digest"]
     if not isinstance(publication_digest, str) or not publication_digest:
         return
+    slots = _target_member_slots(row)
     for disposition in record.get("screens") or ():
+        authorities = disposition.get("stage_authorities") or {}
         for stage in disposition.get("stages") or ():
+            authority = authorities.get(stage.get("stage", ""))
+            if not authority:
+                continue
             found = recover_screen_reason(
                 stage=stage.get("stage", ""),
                 grade=stage.get("grade", ""),
@@ -307,34 +310,20 @@ def _explain_screen_stages(record: dict[str, Any], row: sqlite3.Row) -> None:
                 stage["explanation"] = found.sentence()
 
 
-def _static_screen_authority() -> tuple[str | None, tuple[str, ...]]:
-    """The live static adapter's identity and its slot requirements.
+def _target_member_slots(row: sqlite3.Row) -> tuple[str, ...]:
+    """The slots a quant mismatch could name, which is the target's own members.
 
-    Read off the adapter rather than re-derived, so the identity formula lives
-    in exactly one place. Only the static stage is reconstructible away from a
-    commissioned pod: the build/ABI/graph adapter needs a live executor and
-    plan resolver, so its stages stay unexplained here until their authority is
-    recorded alongside the receipt.
-
-    A ``slot`` in a quant mismatch can only be one the deployment demanded a
-    quantization for, so the requirement list is the exact search space.
+    ``_quant_mismatch`` walks ``candidate.reservation.target_members``, so a
+    reported ``slot`` is always one of them. That makes the search space local
+    to this row -- no deployment, no pod -- and smaller than the full list of
+    slots the deployment demands a quantization for.
     """
 
     try:
-        from cacheon.eval.b300_screen_deployment import (
-            _MODEL_QUANTIZATION,
-            slot_quant_requirements,
-        )
-        from cacheon.eval.b300_screen_stages import B300StaticScreenAdapter
-        from cacheon.target_catalog import default_target_catalog
-
-        requirements = slot_quant_requirements(_MODEL_QUANTIZATION)
-        adapter = B300StaticScreenAdapter(
-            default_target_catalog(), required_slot_quant=requirements
-        )
-        return adapter.identity_digest, tuple(slot for slot, _ in requirements)
-    except Exception:  # noqa: BLE001 - a report must survive an unbuildable adapter
-        return None, ()
+        members = json.loads(row["target_members_json"] or "[]")
+    except (KeyError, IndexError, ValueError):
+        return ()
+    return tuple(sorted({m for m in members if isinstance(m, str) and m}))
 
 
 def miner_submissions(

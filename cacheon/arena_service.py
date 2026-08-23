@@ -555,6 +555,27 @@ class ArenaService:
     def identity(self) -> str:
         return self.manifest.digest
 
+    def screen_stage_authorities(self) -> dict[str, str]:
+        """Which adapter graded each stage, for later explanation.
+
+        A stage hashes its own identity into the evidence digest it returns and
+        keeps no payload, so that identity is the one field a reader cannot get
+        from the receipt or the reservation. Recorded here it travels with the
+        disposition; re-derived later it is merely a guess that silently fails
+        to match. Advisory only: it never enters a grade, a decision, or the
+        signed receipt, and a provider that does not publish handlers yields an
+        empty map rather than an error.
+        """
+
+        provider = getattr(self, "_provider", None)
+        authorities: dict[str, str] = {}
+        for handler in getattr(provider, "screen_handlers", ()) or ():
+            stage = getattr(handler, "stage", None)
+            digest = getattr(handler, "identity_digest", None)
+            if isinstance(stage, str) and isinstance(digest, str) and digest:
+                authorities[stage] = digest
+        return authorities
+
     def admit(self, state: ArenaQueueSnapshot) -> AdmissionDecision:
         if type(state) is not ArenaQueueSnapshot:
             raise ArenaServiceError("queue state is not exactly typed")

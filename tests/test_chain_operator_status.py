@@ -253,6 +253,7 @@ def test_typed_screen_stages_explain_rejection_without_status_inference(tmp_path
             arrival.reservation_id,
             candidate_digest=candidate_digest,
             receipt=receipt,
+            stage_authorities={"static": "4" * 64},
         )
         value = reservation_status(store.path, reservation_id=arrival.reservation_id)
 
@@ -277,6 +278,9 @@ def test_typed_screen_stages_explain_rejection_without_status_inference(tmp_path
                     "stage": "static",
                 }
             ],
+            # Which adapter graded the stage, carried so the reason behind this
+            # digest stays recoverable away from the machine that produced it.
+            "stage_authorities": {"static": "4" * 64},
         }
     ]
     assert value["evidence_limitations"] == []

@@ -337,7 +337,8 @@ def _screen_dispositions(
     result: list[dict[str, object]] = []
     rows = db.execute(
         "SELECT attempt_index,service_digest,candidate_digest,receipt_digest,"
-        "receipt_json,decision,stage_count,lane FROM arena_screen_dispositions "
+        "receipt_json,decision,stage_count,lane,stage_authorities "
+        "FROM arena_screen_dispositions "
         "WHERE reservation_id=? ORDER BY attempt_index",
         (reservation_id,),
     )
@@ -380,9 +381,34 @@ def _screen_dispositions(
                 "candidate_digest": receipt.candidate_digest,
                 "receipt_digest": receipt.digest,
                 "stages": [stage.to_dict() for stage in receipt.results],
+                "stage_authorities": _stage_authorities(row["stage_authorities"]),
             }
         )
     return result
+
+
+def _stage_authorities(raw: object) -> dict[str, str]:
+    """Advisory explanation context, so a corrupt value degrades, not raises.
+
+    Unlike every other column here this one is not covered by the receipt
+    digest, so it cannot be validated against anything. A report that refused
+    to render because this failed to parse would trade the whole answer for the
+    footnote.
+    """
+
+    if not isinstance(raw, str) or not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        stage: digest
+        for stage, digest in parsed.items()
+        if isinstance(stage, str) and isinstance(digest, str) and digest
+    }
 
 
 def _qualification_dispositions(

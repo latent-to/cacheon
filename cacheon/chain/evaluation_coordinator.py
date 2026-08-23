@@ -888,6 +888,7 @@ class EvaluationCoordinator:
                     active.reservation_id,
                     candidate_digest=claim.candidate.digest,
                     receipt=receipt,
+                    stage_authorities=self.service.screen_stage_authorities(),
                 )
             return result
         except IntakeError as exc:

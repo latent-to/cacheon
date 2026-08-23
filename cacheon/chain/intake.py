@@ -589,6 +589,7 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
                 decision TEXT NOT NULL,
                 stage_count INTEGER NOT NULL,
                 lane TEXT NOT NULL,
+                stage_authorities TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY(reservation_id, attempt_index)
             ) STRICT;
             CREATE TABLE IF NOT EXISTS settlement_qualifications (
@@ -711,6 +712,22 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             self._db.execute(
                 "ALTER TABLE settlement_qualifications ADD COLUMN "
                 "retained_block INTEGER NOT NULL DEFAULT 0 CHECK(retained_block>=0)"
+            )
+        disposition_columns = {
+            row["name"] for row in self._db.execute(
+                "PRAGMA table_info(arena_screen_dispositions)"
+            )
+        }
+        if "stage_authorities" not in disposition_columns:
+            # Which adapter graded each stage.  The stage hashes its own
+            # identity into the evidence digest and stores only the hash, so
+            # without this the digest can be reproduced on the commissioned pod
+            # and nowhere else -- and a rejected bundle can be told which gate
+            # stopped it but never why.  Empty is an honest unknown: rows
+            # written before this column stay unexplained rather than wrong.
+            self._db.execute(
+                "ALTER TABLE arena_screen_dispositions ADD COLUMN "
+                "stage_authorities TEXT NOT NULL DEFAULT '{}'"
             )
         settlement_columns = {
             row["name"] for row in self._db.execute(
@@ -1446,8 +1463,15 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
         *,
         candidate_digest: str,
         receipt,
+        stage_authorities: dict[str, str] | None = None,
     ) -> IntakeReservation:
-        """Atomically retain one non-crown screen and its derived disposition."""
+        """Atomically retain one non-crown screen and its derived disposition.
+
+        ``stage_authorities`` maps each stage to the identity of the adapter
+        that graded it.  It is validator-local explanation context, not part of
+        the signed receipt and never an input to a decision; omitting it costs
+        the report the *why* of a stage, never its verdict.
+        """
 
         from cacheon.arena_service import ArenaScreenReceipt, PromotionDecision
 
@@ -1456,6 +1480,14 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             raise IntakeError("arena screen receipt is not exactly typed")
         encoded = json.dumps(
             receipt.to_dict(), separators=(",", ":"), sort_keys=True
+        )
+        authorities = json.dumps(
+            {
+                str(stage): str(digest)
+                for stage, digest in dict(stage_authorities or {}).items()
+            },
+            separators=(",", ":"),
+            sort_keys=True,
         )
         with self._transaction():
             row = self.get(reservation_id)
@@ -1470,11 +1502,11 @@ class FinalizedIntakeStore(EvaluationLeaseStoreMixin):
             self._db.execute(
                 "INSERT INTO arena_screen_dispositions(reservation_id,attempt_index,"
                 "service_digest,candidate_digest,receipt_digest,receipt_json,decision,"
-                "stage_count,lane) VALUES(?,?,?,?,?,?,?,?,?)",
+                "stage_count,lane,stage_authorities) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     reservation_id, attempt, receipt.service_digest,
                     candidate_digest, receipt.digest, encoded, receipt.decision.value,
-                    len(receipt.results), row.screen_lane,
+                    len(receipt.results), row.screen_lane, authorities,
                 ),
             )
             if receipt.decision is PromotionDecision.PROMOTE:
