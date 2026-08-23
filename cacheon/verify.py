@@ -47,6 +47,7 @@ from cacheon.tensor_spec import (
     validate_output_allocation,
     validate_tensor_binding,
 )
+from cacheon.kernel_trace import format_kernels, launched_kernels
 from cacheon.verification_outcomes import (
     _CandidateGraphCallError,
     _GraphCheck,
@@ -1171,7 +1172,8 @@ def verify_entry(
                 )
                 if mutation:
                     raise RuntimeError(f"prepare {mutation}")
-            slot.invoke_entry(entry, inputs, outs, prepared)
+            with launched_kernels(str(device).startswith("cuda")) as kernels_seen:
+                slot.invoke_entry(entry, inputs, outs, prepared)
             validate_output_allocation(
                 output_contract,
                 allocation,
@@ -1234,7 +1236,8 @@ def verify_entry(
                         detail="; ".join(details), metric=metric,
                         graph_replays=checked_replays,
                         phase_outcome=phase_outcome,
-                        case_descriptor=case_descriptor)
+                        case_descriptor=case_descriptor,
+                        kernels=dict(kernels_seen))
         )
 
     applicable = [result for result in results if result.applicable]
@@ -1572,4 +1575,5 @@ def format_verify(result: VerifyResult) -> str:
             f"  {status} shape={r.shape} max_abs={r.max_abs_err:.3e} max_rel={r.max_rel_err:.3e}{score}"
             + replay + (f"  {r.detail}" if r.detail else "")
         )
+        lines.extend(format_kernels(r.kernels))
     return "\n".join(lines)

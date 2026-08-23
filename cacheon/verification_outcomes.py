@@ -437,6 +437,9 @@ class ShapeResult:
         default_factory=GraphPhaseOutcome.unobserved
     )
     case_descriptor: VerificationCaseDescriptor | None = None
+    # {kernel_name: launches} observed on the device inside the candidate's own
+    # invocation window. Diagnostic only, and empty off CUDA.
+    kernels: dict = field(default_factory=dict)
 
 
 @dataclass
