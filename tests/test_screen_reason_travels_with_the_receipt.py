@@ -213,6 +213,28 @@ def test_a_corrupt_authority_column_degrades_the_footnote_not_the_report(tmp_pat
         store.close()
 
 
+def test_a_database_without_the_column_still_renders_its_whole_report(tmp_path):
+    """The report runs against databases the running validator has not migrated.
+
+    An operator copy, or a node still on the previous deploy, has no such
+    column. Selecting it unconditionally refused the entire report -- every
+    submission, every verdict -- to gain one footnote. Measured against live
+    mainnet: `no such column: stage_authorities`.
+    """
+
+    store, reservation_id = _rejected_store(tmp_path)
+    try:
+        store._db.execute(
+            "ALTER TABLE arena_screen_dispositions DROP COLUMN stage_authorities"
+        )
+        disposition = _screen_dispositions(store._db, reservation_id)[0]
+        assert disposition["decision"] == "reject"
+        assert disposition["stages"][0]["stage"] == "static"
+        assert disposition["stage_authorities"] == {}
+    finally:
+        store.close()
+
+
 def test_an_existing_database_gains_the_column_without_losing_its_rows(tmp_path):
     """Every receipt already on disk predates this column."""
 

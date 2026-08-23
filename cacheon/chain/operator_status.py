@@ -334,10 +334,19 @@ def _screen_dispositions(
         ScreenStageResult,
     )
 
+    # This report is read-only and runs against databases the running validator
+    # has not migrated yet -- an operator copy, a node still on the previous
+    # deploy. Selecting a column that may not exist there would refuse the whole
+    # report to gain one footnote, so ask the table what it has.
+    has_authorities = any(
+        row["name"] == "stage_authorities"
+        for row in db.execute("PRAGMA table_info(arena_screen_dispositions)")
+    )
+    authorities_column = ",stage_authorities" if has_authorities else ""
     result: list[dict[str, object]] = []
     rows = db.execute(
         "SELECT attempt_index,service_digest,candidate_digest,receipt_digest,"
-        "receipt_json,decision,stage_count,lane,stage_authorities "
+        f"receipt_json,decision,stage_count,lane{authorities_column} "
         "FROM arena_screen_dispositions "
         "WHERE reservation_id=? ORDER BY attempt_index",
         (reservation_id,),
@@ -381,7 +390,11 @@ def _screen_dispositions(
                 "candidate_digest": receipt.candidate_digest,
                 "receipt_digest": receipt.digest,
                 "stages": [stage.to_dict() for stage in receipt.results],
-                "stage_authorities": _stage_authorities(row["stage_authorities"]),
+                "stage_authorities": (
+                    _stage_authorities(row["stage_authorities"])
+                    if has_authorities
+                    else {}
+                ),
             }
         )
     return result
