@@ -58,58 +58,29 @@ from cacheon.eval.oci_process import (
 )
 from cacheon.eval.oci_session_protocol import EngineSessionConfig
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
+from tests.support.b300 import gpu, prebuild_policy, runtime_policy, sha as _digest
+
+
+def _gpu() -> GPUConfiguration:
+    return gpu(model="rtx6000")
+
+
+def _runtime_policy() -> OCIRuntimeResourcePolicy:
+    return runtime_policy()
+
+
+def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
+    return prebuild_policy(runtime)
 
 
 DOCKER = "/usr/bin/docker"
 IMAGE_ID = "sha256:" + "a" * 64
 
 
-def _digest(label: str) -> str:
-    return hashlib.sha256(label.encode()).hexdigest()
-
-
 def _mkdir(path: Path) -> Path:
     path.mkdir(parents=True, mode=0o700)
     path.chmod(0o700)
     return path
-
-
-def _runtime_policy() -> OCIRuntimeResourcePolicy:
-    return OCIRuntimeResourcePolicy(
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        cpu_millis=8_000,
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        nofile_limit=65_536,
-        cache_bytes=4 << 30,
-        cache_inodes=100_000,
-        tmpfs_bytes=1 << 30,
-        shm_bytes=8 << 30,
-        init_timeout_seconds=120.0,
-        batch_timeout_seconds=60.0,
-        container_python="/usr/local/bin/python3",
-    )
-
-
-def _prebuild_policy(runtime: OCIRuntimeResourcePolicy) -> OCIPrebuildPolicy:
-    return OCIPrebuildPolicy(
-        uid=runtime.uid,
-        gid=runtime.gid,
-        cpu_millis=8_000,
-        memory_bytes=32 << 30,
-        pids_limit=4_096,
-        tmpfs_bytes=1 << 30,
-        stage_bytes=16 << 30,
-        stage_inodes=100_000,
-        timeout_seconds=7_200.0,
-        native_compile_timeout_seconds=6_000,
-        container_python=runtime.container_python,
-        build_path=("/usr/local/cuda/bin", "/usr/local/bin", "/usr/bin", "/bin"),
-        build_tmpdir="/tmp",
-        pinned_build_roots=("/usr/include", "/usr/lib", "/usr/local/cuda"),
-        runtime_policy_digest=runtime.digest,
-    )
 
 
 def _preflight(
@@ -143,24 +114,6 @@ def _preflight(
         cuda_visible_devices="",
         nvidia_visible_devices="void",
         security_argv_sha256=_digest("preflight-argv"),
-    )
-
-
-def _gpu() -> GPUConfiguration:
-    return GPUConfiguration(
-        physical_id=0,
-        uuid="GPU-00000000-0000-0000-0000-000000000000",
-        pci_bus_id="00000000:01:00.0",
-        name="NVIDIA RTX PRO 6000 Blackwell Server Edition",
-        memory_total_mib=98_304,
-        driver_version="595.71.05",
-        power_limit_mw=600_000,
-        compute_mode="Default",
-        persistence_mode="Enabled",
-        application_graphics_clock_mhz=None,
-        application_memory_clock_mhz=None,
-        max_graphics_clock_mhz=2_100,
-        max_memory_clock_mhz=4_000,
     )
 
 
@@ -1159,6 +1112,136 @@ def test_execute_failure_attaches_finalized_stderr_artifact_after_abort(
     assert raised.value is failure
     assert raised.value.diagnostic == diagnostic
     assert receipt.receipt_sha256 in str(raised.value)
+
+
+def _stderr_diagnostic(tmp_path: Path) -> OCIAttachedDiagnostic:
+    raw = b"engine output\n"
+    artifact_path = tmp_path / ("runtime." + "c" * 32 + ".stderr")
+    digest = hashlib.sha256(raw).hexdigest()
+    return OCIAttachedDiagnostic(
+        raw,
+        False,
+        True,
+        client_returncode=0,
+        stream_bytes=len(raw),
+        stream_sha256=digest,
+        artifact=OCIStderrArtifactReceipt(
+            STDERR_ARTIFACT_SCHEMA,
+            "validator-a",
+            "runtime",
+            artifact_path,
+            artifact_path.with_name(artifact_path.name + ".json"),
+            digest,
+            digest,
+            len(raw),
+            len(raw),
+            False,
+            os.geteuid(),
+            os.getegid(),
+            0o600,
+        ),
+    )
+
+
+def _run_pointers(manager: OCIProcessManager) -> list[dict]:
+    import json
+
+    from cacheon.eval import run_log_index
+
+    return [
+        json.loads(path.read_text())
+        for path in sorted(manager.diagnostics_root.glob("*" + run_log_index.SUFFIX))
+    ]
+
+
+def test_a_successful_run_still_records_where_its_log_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The quiet outcomes are the ones that used to lose their log.
+
+    A PASS, a speed FAIL and a HOLD all leave this function without raising, and
+    the diagnostic was only ever attached to an exception. The log was written
+    and retained; nothing said which run it belonged to.
+    """
+
+    case = _case(tmp_path)
+    manager = _manager(case)
+    diagnostic = _stderr_diagnostic(tmp_path)
+
+    class DiagnosticTransport:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def abort(self) -> None:
+            pass
+
+        def stderr_diagnostic(self) -> OCIAttachedDiagnostic:
+            return diagnostic
+
+    def session_runner(plan: SessionExecutionPlan, **kwargs) -> SessionExecutionEvidence:
+        del plan
+        callback, deadline = kwargs["boundary_callback"], kwargs["deadline"]
+        callback("before_final_warmup", 0, deadline)
+        callback("after_final_warmup", 0, deadline)
+        callback("before_first_timed", 1, deadline)
+        return _session_evidence(case)
+
+    executor = OCIEngineExecutor(
+        case.config,
+        case.device_policy,
+        manager=manager,
+        session_runner=session_runner,
+    )
+    _install_execution_fakes(case, executor, monkeypatch)
+    monkeypatch.setattr(backend, "AttachedSessionTransport", DiagnosticTransport)
+    executor.execute(case.launch, case.binding, case.mount, case.plan, deadline=200.0)
+
+    pointers = _run_pointers(manager)
+    assert len(pointers) == 1
+    assert pointers[0]["outcome"] == "ok"
+    assert pointers[0]["error"] is None
+    assert pointers[0]["log"]["path"] == str(diagnostic.artifact.artifact_path)
+    # The join a miner report depends on: qualification evidence records this
+    # same value as candidate_launch_digest.
+    assert pointers[0]["launch_digest"] == case.launch.digest
+
+
+def test_a_failed_run_records_the_failure_beside_its_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _case(tmp_path)
+    manager = _manager(case)
+    diagnostic = _stderr_diagnostic(tmp_path)
+
+    class DiagnosticTransport:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def abort(self) -> None:
+            pass
+
+        def stderr_diagnostic(self) -> OCIAttachedDiagnostic:
+            return diagnostic
+
+    def fail_session(*_args, **_kwargs) -> SessionExecutionEvidence:
+        raise OuterSessionProtocolError("worker protocol failed")
+
+    executor = OCIEngineExecutor(
+        case.config,
+        case.device_policy,
+        manager=manager,
+        session_runner=fail_session,
+    )
+    _install_execution_fakes(case, executor, monkeypatch)
+    monkeypatch.setattr(backend, "AttachedSessionTransport", DiagnosticTransport)
+    with pytest.raises(OuterSessionProtocolError):
+        executor.execute(case.launch, case.binding, case.mount, case.plan, deadline=200.0)
+
+    pointers = _run_pointers(manager)
+    assert len(pointers) == 1
+    assert pointers[0]["outcome"] == "error"
+    assert "worker protocol failed" in pointers[0]["error"]
+    assert pointers[0]["log"]["path"] == str(diagnostic.artifact.artifact_path)
 
 
 def test_execute_reference_selects_reference_transport_and_binds_plan(
