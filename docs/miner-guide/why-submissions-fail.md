@@ -36,7 +36,8 @@ Two consequences worth stating plainly:
 
 83 bundles — the second largest group — failed with
 `candidate_kernel_does_not_compile`. They never executed, so they could not be
-scored. Every one of these was detectable on the miner's own machine.
+scored. Every one of these was detectable by invoking the declared entry in a
+matching local Triton/CUDA environment before submission.
 
 One error accounted for the great majority of them, across 81 distinct hotkeys:
 
@@ -77,16 +78,23 @@ This is the idiom in Triton's official fused-softmax tutorial. `tl.arange`
 requires a compile-time power-of-two bound in any case, so the bound has to be
 computed where real Python integers exist.
 
-Run the bundle checks before submitting. They cost seconds and catch this class
-of failure:
+Run the bundle checks before submitting. `scan` reports this known source shape,
+but its compilability check is advisory because it cannot tell whether a flagged
+kernel is reachable; it may return exit 2 for dead code that production never
+invokes. Inspect the finding, then actually exercise the declared entry on CUDA:
 
 ```bash
 python -m cacheon.cli scan path/to/your_bundle
 ```
 
 ```bash
-python -m cacheon.cli verify path/to/your_bundle --device cpu --dtype float32
+python -m cacheon.cli verify path/to/your_bundle --device cuda --dtype bfloat16 \
+  --model <registered-model-key>
 ```
+
+Only the sandboxed production build/execution path can issue an attributable
+compile `FAIL`. The local checks are there to prevent paying for an obvious
+failure, not to recreate validator authority.
 
 ## Losing on speed is a real result
 

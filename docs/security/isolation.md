@@ -27,19 +27,22 @@ sequenceDiagram
 
     H->>P: Read-only engine tree + lease-scoped staging
     P-->>H: Sealed native publication + inventory
-    H->>L0: Load exact incumbent once
-    H->>L1: Load one-target-transition candidate once
-    H->>L0: B
-    L0-->>H: Opening charged rate
-    H->>L1: C
-    L1-->>H: Candidate rate + sealed trajectory
-    H->>L0: B′
-    L0-->>H: Closing rate + drift evidence
-    opt Frozen policy requires repeat reads
-        H->>L1: C′
-        L1-->>H: Repeat candidate rate
-        H->>L0: B″
-        L0-->>H: Repeat baseline rate
+    alt v7 hot-swappable candidate
+        H->>L0: stock-to-stock swap + B
+        L0-->>H: Opening timed rate
+        H->>L1: candidate swap + C
+        L1-->>H: Candidate rate + sealed trajectory
+        opt B/C cannot decide
+            H->>L0: stock-to-stock swap + B′
+            L0-->>H: Bookend rate
+        end
+    else v8 non-swappable candidate
+        H->>L0: launch/read B
+        L0-->>H: Opening timed rate
+        H->>L1: launch/read C
+        L1-->>H: Candidate rate + sealed trajectory
+        H->>L0: read B′ unconditionally
+        L0-->>H: Stock-drift control
     end
     H->>H: Prove resident speed lanes quiescent
     H->>A: Run registered eager, untimed audit
@@ -125,12 +128,13 @@ bounded private tmpfs that permits execution for just-in-time kernel compilation
 Mount roots are required to be pairwise disjoint and cannot expose the controller's
 working directory, referee source, wallet, or other ambient host data.
 
-Production speed qualification uses two isolated resident TP lanes under one frozen
-authority while the controller serializes GPU work. The primary attempt fixes incumbent
-and candidate physical roles; an eligible reproduction must exchange those roles. The
-adaptive schedule begins with B/C/B′ and adds C′/B″ only when the registered escalation
-rule requires it. Residency avoids model reloads; it does not relax mount, protocol,
-device, deadline, or evidence identity.
+Production speed qualification uses two isolated physical TP lanes under one
+frozen authority while the controller serializes GPU work. The primary attempt
+fixes incumbent and candidate roles; an eligible reproduction must exchange
+them. Current v7 uses the standing resident pair and reads B/C plus B′ only when
+needed. Current v8 launches separate engine processes and always reads B/C/B′.
+Neither residency nor a request-local launch relaxes containment: mount,
+protocol, device, deadline, and evidence identities remain exact.
 
 The earlier resident **screen** is a different lifetime and authority. Its hot-swap
 control directory exists only in the routing tier, admits only safely swappable bundles,

@@ -106,6 +106,13 @@ Copy the printed content hash and the public HTTPS URL. Set `URL` to that
 exact URL. Bucket variables, CDN origins, and fetch limits are under
 [Publish from the miner's object store](#publish-from-the-miners-object-store).
 
+!!! warning "Unavailable MiniMax-M3 targets"
+    Do not pay for or submit `norm.rmsnorm` or
+    `attention.msa_block_score` to the current MiniMax-M3 mainnet arena. A
+    candidate for either registered contract cannot execute in the deployed
+    model/runtime. This restriction does not apply to the other registered
+    targets. See [Current MiniMax-M3 availability](slots.md#current-minimax-m3-availability).
+
 ### 4. Dry-run the unpaid payload
 
 ```bash
@@ -351,9 +358,9 @@ The authoritative path is staged:
    selected delta.
 4. Target resolution and the `static → build → ABI → graph → abbreviated
    serving` non-crown screens run through a registered arena service.
-5. A promoted candidate receives a complete isolated v3 qualification attempt:
-   resident B/C/B′, conditional C′/B″, registered eager audit A, then pristine
-   T.
+5. A promoted candidate receives a complete isolated version-3 qualification
+   attempt: current v7 resident B/C/[B′] or v8 two-process B/C/B′,
+   registered eager audit A, then pristine T.
 6. One PASS moves the proposal to `reproduction_pending`. It has **not** crowned.
 7. A second independent matching PASS completes qualification; the lower of the
    two reproduced speedups is retained.
@@ -389,8 +396,8 @@ Suppose the revealed content hash is `H` and its target is
    A validator storage fault should instead produce uncertainty for operator retry, not a
    fabricated candidate failure.
 5. `promoted` means all five non-crown screens passed and capacity may now be
-   spent on resident B/C/B′, conditional C′/B″, registered eager audit A, then
-   pristine T. It carries no speed score and no reward.
+   spent on the sealed v7 B/C/[B′] or v8 B/C/B′ schedule, registered eager
+   audit A, then pristine T. It carries no speed score and no reward.
 6. `reproduction_pending` means the first full attempt passed. Continue to describe the
    object as a proposal awaiting independent reproduction.
 7. `qualified` means two matching passes exist. Settlement still reopens evidence and

@@ -70,6 +70,16 @@ as separate reviewed-build tiers; undeclared executable files, binaries, and sym
 rejected. Static scanning is defense in depth; a clean result does not make contribution
 code trusted.
 
+`scan` also runs a separate Triton compilability heuristic over each declared
+op source. A known host-only helper inside `@triton.jit` prints
+`BROKEN KERNEL` and makes this local command exit 2. That is deliberately not a
+production verdict: Triton compiles each kernel only when first invoked, and the
+static heuristic cannot tell whether a flagged helper is reachable from the
+declared entry. In the retained 2026-08-18 corpus it also flagged dead kernels
+inside bundles that had demonstrably compiled. Only sandboxed execution of the
+reachable entry can support an attributable compile `FAIL`; treat the local
+finding as an inexpensive reason to inspect or fix the source before submission.
+
 ### `verify`
 
 ```bash
@@ -316,12 +326,24 @@ or target, model, hotkey, netuid, mission, endpoint, or path default.
 Each invocation performs exactly one operator request and exits. It is not an
 evaluation worker, daemon, or scheduler.
 
-The operations are `preview`, `claim`, `heartbeat <lease-id>`, and
-`release <lease-id> --reason <reason> [--result-digest <sha256>]`. Preview is
-non-mutating. Claim ordering, reproduction priority, qualification cohorts, lease
-generation, heartbeat CAS, infrastructure release, and the finalized block clock remain
-owned by `FinalizedIntakeStore`; this command does not evaluate or settle work. Every
-success prints canonical JSON bound to the retained finalized cursor.
+The operations are `preview`, `claim`, `heartbeat <lease-id>`,
+`release <lease-id> --reason <reason> [--result-digest <sha256>]`, and
+`requeue-expired --authority <SEALED_JSON>`. Preview is non-mutating. Claim
+ordering, reproduction priority, qualification cohorts, lease generation,
+heartbeat CAS, infrastructure release, and the finalized block clock remain
+owned by `FinalizedIntakeStore`; this command does not evaluate or settle work.
+Every success prints canonical JSON bound to the retained finalized cursor.
+
+`requeue-expired` is the narrow validator-downtime recovery. Its owner-only
+authority file must use the closed
+`cacheon-validator-downtime-requeue-authority-v1` schema, the exact reason
+`validator_worker_unavailable`, a nonempty reservation-ID cohort, and a disjoint
+list of retained-result reservation IDs. It atomically restores only exact
+expired rows to their durable pre-expiry `published` or `promoted` lane and
+starts a fresh finalized-block SLA without erasing prior evidence. One ordinary
+refresh is allowed if the cohort expires again; a further refresh requires the
+authority to set the explicit boolean `allow_repeat_refresh`. This is not a
+generic resurrection or a way to rerun a favorable terminal result.
 
 For claim, heartbeat, and release, the durable store mutation and canonical JSON
 emission are not one transaction. A process or output failure after the store commits

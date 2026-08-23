@@ -7,7 +7,7 @@ manifest types. They are deliberately not interchangeable.
 
 | Manifest | Question | Proposal source? | Arena identity? | Timed? |
 |---|---|---:|---:|---:|
-| `EvaluationStackManifest` | What complete incumbent does this arena evaluate? | allowed | yes | as resident B/B′ and conditional B″ |
+| `EvaluationStackManifest` | What complete incumbent does this arena evaluate? | allowed | yes | as the policy-required B and optional/required B′ reads |
 | `EngineReleaseManifest` | What reviewed set may be materialized and shipped? | rejected | no | serving policy is separate |
 | `ReferenceManifest` | What pristine candidate-free engine grades sealed trajectories? | rejected | yes, with reference identities | no |
 
@@ -121,9 +121,9 @@ runtime, base engine, arena, catalog, controller/worker distributions, exact
 model bytes, logical hardware, workload, tokenizer, hidden corpus commitment,
 hidden judge, and selection policy.
 
-T is untimed. It grades trajectories sealed by resident B/C/B′ and conditional
-C′/B″ only after any registered eager audit A has completed and candidate
-engines have been destroyed. Neither the incumbent evaluation stack nor a
+T is untimed. It grades trajectories sealed by the current v7 B/C/[B′] or v8
+B/C/B′ schedule only after any registered eager audit A has completed and
+candidate engines have been destroyed. Neither the incumbent evaluation stack nor a
 candidate's self-reported scores can substitute for this authority.
 
 Reference identity is intentionally broader than a kernel catalog. It binds
@@ -183,8 +183,7 @@ old identity for audit and rollback.
 ## When to use each API
 
 - Construct an `EvaluationStackContext` from validator-owned arena policy and
-  call `validate_against()` before planning resident B/C/B′ or conditional
-  C′/B″.
+  call `validate_against()` before planning the versioned speed schedule.
 - Use `with_contribution()` only for a catalog-valid evaluation transition; it
   returns a new manifest and never edits the old one.
 - Construct a `ReleaseStackContext` from reviewed release inputs and validate

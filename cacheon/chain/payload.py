@@ -241,5 +241,3 @@ def decode_payload(hotkey: str, block: int, data: object) -> SubmissionRef | Non
     """Decode hostile production bytes under the HTTPS-only policy."""
 
     return _decode_payload(hotkey, block, data, schemes=ALLOWED_URL_SCHEMES)
-
-

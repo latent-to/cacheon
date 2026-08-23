@@ -42,10 +42,11 @@ or treated as production authority.
   bound PASS pair and uses the lower accepted speedup.
 - The resident hot-swap screen is routing-only. Its measurements cannot crown,
   settle, or authorize rewards.
-- Production version-3 qualification uses two resident TP lanes, adaptive
-  B/C/B′ then optional C′/B″ speed evidence, a separate eager/untimed audit
-  role when registered, pristine T, and a physical-lane role swap across
-  reproduction.
+- Production version-3 qualification binds two physical TP lanes. Current
+  speed policy uses v7 resident B/C with B′ only when inconclusive for
+  hot-swappable candidates, or v8 two-process B/C/B′ for non-swappable
+  candidates; both retain a separate eager/untimed audit role when registered,
+  pristine T, and a physical-lane role swap across reproduction.
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
 - Legacy V1 weights are a fenced state machine. The V2 finite-debt economics

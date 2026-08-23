@@ -10,19 +10,19 @@ different events. Evidence for one does not authorize another.
 
 ## Source snapshot
 
-Snapshot date: **2026-07-31**
+Snapshot date: **2026-08-19**
 
 | Item | Value |
 |---|---|
 | Repository | [`latent-to/cacheon`](https://github.com/latent-to/cacheon) |
-| Implementation parent | [`a04b824f`](https://github.com/latent-to/cacheon/commit/a04b824f); this page accompanies the Optima→Cacheon identifier rename |
-| Production Python | 129 files and 106,756 lines under `cacheon/` |
-| Tests | 127 Python files and 65,135 lines under `tests/` |
-| Complete local suite | 2,420 passed, 17 skipped, 0 failed at the 2026-08-03 protocol rename head; the 2026-07-31 rename head recorded 2,417 passed and 19 skipped |
-| Test command | `python3 -m pytest -q tests` with Python 3.10.4 in an unrestricted local environment |
+| Implementation revision | [`d94713a7`](https://github.com/latent-to/cacheon/commit/d94713a74a78f8123a18338aca0e7239f988ba6b), merge commit for PR #95; PR head [`53aaff30`](https://github.com/latent-to/cacheon/commit/53aaff3072a9c5a81898fe26f2922c25ed22ec3e) |
+| Production Python | 207 files and 144,474 lines under `cacheon/` |
+| Tests | 199 Python files and 98,322 lines under `tests/` |
+| Merge validation | All required PR #95 checks were non-failing at `53aaff30`: seven passed and the frontend rebuild was skipped; the CPU suite completed in 4m44s alongside distribution, hygiene, documentation, and code-analysis checks |
+| Test command | `python3 -m pytest -q tests`; CI used Python 3.11 |
 | SGLang pin | `0.5.13.post1` in `cacheon/compat.py` |
 | Bittensor raw-reveal storage ABI | `10.3.2` in `cacheon/chain_canary.py` |
-| Public CLI | 25 commands after the 2026-08-09 V2 economics extraction |
+| Public CLI | 28 commands |
 
 The public product, Python package, CLI, environment-variable, HTTP-header,
 and protocol-identity names formerly branded Optima are now Cacheon
@@ -90,6 +90,13 @@ The evidence classes are intentionally non-substitutable:
   quotes freeze that amount for 300 blocks (~1 hour). A later reveal of the
   same bundle may attach an unused payment pointer; intake consumes the pointer
   only on reserved or deferred admission.
+- `chain-eval-cost-credit` can grant one audited, hotkey-scoped artificial
+  make-good. It admits the oldest matching unpaid reveal exactly once, consumes
+  transactionally only on admission, and never masks an invalid payment pointer.
+- `chain-reservation-status` and `chain-miner-report` expose privacy-safe private
+  diagnostics without taking the controller's writer lock. They report typed
+  retained causes and evidence limitations rather than inferring candidate blame
+  from a status string.
 
 ### Validator recovery archive
 
@@ -139,6 +146,20 @@ The executable catalog contains 11 slots and one registered atomic target:
 | Block | `attention.sdpa`, `attention.decode`, `attention.msa_block_score`, `attention.msa_prefill_block_score`, `moe.fused_experts` |
 | Collective | `moe.fused_experts_reduce`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.moe_finalize_ar_rmsnorm` |
 | Atomic target | `collective.moe_epilogue.v1` over the two MoE epilogue collective members |
+
+The table records registered contracts, not deployment availability. As of
+2026-08-20, two targets are unavailable in the current MiniMax-M3 mainnet
+arena:
+
+- `norm.rmsnorm`: MiniMax-M3 uses `GemmaRMSNorm` at the relevant model
+  callsites, while the registered adapter targets `RMSNorm.forward_cuda`;
+- `attention.msa_block_score`: the pinned runtime has no installing
+  decode-side adapter for this contract.
+
+Candidate code for either target cannot execute, so miners must not pay for or
+submit them to this arena. Their ABI/verifier registrations remain, and this
+finding does not withdraw any other registered target. The miner-facing notice
+is [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 The closed direct-artifact registry has one crownable provider,
 `cutlass.cute.cubin.v1`. Candidate compiler-factory code runs in a GPU-hidden,
@@ -296,8 +317,8 @@ against its most favorable bookend, passes when it clears the requirement
 against its least favorable one, and an undecidable spread terminates as
 `FAIL` (`valid_not_faster`) because a crown requires demonstrated
 improvement. Retained version-1..3 evidence regrades under its own sealed
-arithmetic; cross-version splicing remains refused. The adaptive lane
-choreography below is unchanged from version 3.
+arithmetic; cross-version splicing remains refused. Later policies retain the
+same versioned witness family but change the permitted read schedule.
 
 Since **2026-08-10** the sealable range also includes resident speed policy
 **version 5**, which adds the bracket-drift ruling: when the flanking
@@ -307,9 +328,9 @@ excluded — and the candidate is graded against B alone under version 4's
 terminating arithmetic. Bracket drift therefore resolves to a decision at
 the initial grade instead of escalating or re-queueing. Sealed version-4
 evidence continues to regrade under bookend invariance without the
-exclusion. The current commission constructor selects version 5
-prospectively for the next provider registration; already sealed version-4
-providers and evidence keep their original policy identity.
+exclusion. The 2026-08-10 commission selected version 5 prospectively at that
+time; current swappable work selects v7 and current non-swappable work selects
+v8. Already sealed providers and evidence keep their original policy identity.
 
 Production providers previously selected qualification policy version 3:
 
@@ -375,8 +396,9 @@ authoritative only when the frozen plan registers the matching requirement.
 ### Settlement
 
 Settlement requires two complete PASS attempts over the same economic identity
-with distinct authority/evidence commitments and, for version 3, the required
-physical-lane role swap. It uses the lower accepted speedup, reopens exact
+with distinct authority/evidence commitments and, for version-3 resident-family
+evidence including current v7/v8 witnesses, the required physical-lane role
+swap. It uses the lower accepted speedup, reopens exact
 evidence, and commits the candidate disposition, hash-chained events, claims,
 and optional evaluation-stack transition transactionally.
 
@@ -403,6 +425,18 @@ readback, pending, held, released, and confirmed states. It supports:
 - continuous `--watch` operation with bounded retry for retryable transport /
   submit / readback faults.
 
+The standing CPU supervisor can now enable a wallet-free `weights` stage from a
+second sealed config. At each refresh it reads finalized authority and pushes
+either the live V1 offer or the explicitly configured crownless burn offer to
+the gateway; it never signs. Configuration must name `enable_weights` and
+`weights_stage_config` consistently or startup fails closed.
+
+When a valid active claimant is absent from the current metagraph, that
+family's allocated ppm is sent to the validator hotkey for the tick rather than
+holding unrelated families. The claim remains active and resumes at its
+then-current decayed share if the hotkey returns. Stale, incompatible, missing,
+or unreopenable evidence still holds the complete projection.
+
 Both burn bootstraps become invalid when a claim, crown, or active V2
 composition exists: the projection builders refuse, the refusal is a
 nonretryable publication fault, and a `--watch` loop stops with a typed error
@@ -424,6 +458,12 @@ The implementation separates evaluator, gateway, and chain signer:
   bounds initial projection age by the refresh cadence, verifies stable UIDs,
   and publishes through the normal readback reconciler using a dedicated
   signer-only journal that accepts both V1 and V2 offers.
+
+The signer resolves the subnet's live `WeightsVersionKey` and passes it to the
+chain call; it does not rely on the SDK's default. Chain connections may use a
+primary WebSocket endpoint plus explicit archive/fallback endpoints, with
+reconnect between watch passes while one healthy client is retained instead of
+recreated on every tick.
 
 Current-offer persistence rejects effective-block rollback, same-block
 equivocation, and V2-to-V1 regression. The combined legacy `set-weights`
@@ -503,6 +543,44 @@ runtime support. It does not close the serving release.
 
 ## Empirical evidence
 
+### Unattended mainnet loop and PR #95 merge boundary (2026-08-15–19)
+
+By 2026-08-18 the deployed, frozen source cohort on netuid 14 had exercised the
+ordinary finalized path through intake, remote screening, commissioned remote
+qualification, independent reproduction, and transactional settlement without a
+human manually importing each evaluator result. The retained database contained
+two mechanically crowned rows and four settlement holds. The two crowned targets
+and sealed pair values were:
+
+| Target | Primary / reproduction speedups | Stored settlement speedup |
+|---|---:|---:|
+| `activation.silu_and_mul` | 1.0224 / 1.1465 | 1.0224 |
+| `collective.moe_finalize_ar_rmsnorm` | 1.0178 / 1.0075 | 1.0075 |
+
+This establishes that the live chain-ordered control plane could carry real work
+through the terminal settlement transaction and retain both attempt artifacts. It
+does **not** upgrade those rows into an uncontested performance claim. A post-hoc
+review of the sealed reads identified boot-state/lane anomalies in the small-kernel
+measurements, including a same-bytes near-null reading for the first target;
+subsequent analyses disagreed on whether the large pair spread was a physical-lane
+bias or a transient engine state. The pair-native per-generation execution guard
+was also record-only. The stored settlement events remain historical facts, while
+their performance interpretation remains explicitly unresolved and the expensive
+artifacts must be preserved rather than rerun or silently regraded.
+
+The same 2026-08-18 snapshot did not show a complete weight-publication outcome:
+the chain still carried the crownless burn vector and the follower lane was not
+healthy. Later PR #95 commits added the standing wallet-free weight-offer stage,
+live `WeightsVersionKey` stamping, endpoint failover, and follower reconnect
+behavior; those code changes are implementation evidence, not retroactive proof
+that the earlier chain vector changed.
+
+PR #95 then merged 180 commits as `d94713a7` on 2026-08-19 after all required
+checks were non-failing at head `53aaff30`. At merge time the live VM and pod still ran explicit
+frozen source directories; merging `main` did not perform a deployment cutover.
+Accordingly, this ledger makes no claim that merge commit `d94713a7` itself has
+executed a mainnet GPU qualification or weight publication.
+
 ### Retained B200 qualification and settlement
 
 The strongest retained production-shaped crown evidence predating the resident
@@ -534,7 +612,7 @@ hardware. They are not retroactive current-schema crowns and do not qualify the
 resident version-3 path. See the
 [MiniMax-M3 evidence note](../results/minimax-m3.md).
 
-### Current audit-path canary status
+### Audit-path canary status on 2026-07-19
 
 A bounded 4×B300 run on 2026-07-19 did not satisfy the current launch gate. The
 sabotage control was rejected. The honest primary produced no verdict after
@@ -545,10 +623,12 @@ failed at 1.005507×. Zero observed audit comparison violations did not repair
 insufficient coverage.
 
 This is retained failure evidence. It is not an activation canary, PASS, or
-performance authority. The subsequent resident screen and two-lane adaptive
-qualification implementation are test-covered and informed by GPU calibration,
-but no retained end-to-end current-revision version-3 primary/reproduction
-canary is claimed here.
+performance authority. At that point the subsequent resident screen and
+two-lane adaptive qualification implementation were test-covered and informed
+by GPU calibration, but no retained end-to-end version-3
+primary/reproduction canary existed. Later mainnet attempts are recorded in the
+2026-08-15–19 section above with their separate unresolved limitations; they do
+not rewrite this failed July attempt.
 
 ### First production version-3 speed verdict (2026-07-24)
 
@@ -853,8 +933,10 @@ The live command inventory is:
 
 ```text
 slots  compat  chain-compat  scan  verify
-chain-package  chain-publish  chain-eval-cost  chain-submit  chain-status  chain-register
-chain-reservation-status  chain-validate  chain-snapshot  chain-snapshot-verify
+chain-package  chain-publish  chain-eval-cost  chain-eval-cost-credit
+chain-submit  chain-status  chain-register
+chain-reservation-status  chain-miner-report  chain-validate
+chain-snapshot  chain-snapshot-verify
 chain-archive-schema3-hold  chain-evaluation-lease
 model-provision  release-verify  release-context
 set-weights
@@ -876,13 +958,18 @@ full model, quality authority, or performance claim was exercised.
 
 ## Deployment boundary
 
-The source implements the mainnet-shaped intake, evaluation, settlement, and
-publication control planes. Moving from a completed production-shaped testnet
-exercise to a live subnet still requires deployment-owned inputs and evidence:
-endpoint/netuid, registrations, permit/stake, validator/miner/burn identities,
-wallet/key custody, immutable hosted bundles, GPU capacity, backups,
-monitoring, and the required current-version GPU canary. This page does not
-claim that a live mainnet deployment or receipt exists.
+A live netuid-14 deployment exists and has produced the dated mainnet control-plane
+evidence above. Deployment-owned inputs remain outside this repository: endpoints,
+registrations, permit/stake, validator/miner/burn identities, wallet/key custody,
+immutable hosted bundles, GPU capacity, sealed capability bytes, backups,
+monitoring, and frozen source-directory selection.
+
+Repository merge, deployment cutover, and runtime qualification are separate
+events. PR #95 put the live dependency set on `main`, but the 2026-08-19 merge did
+not switch the running VM or pod away from their frozen revisions. A later cutover
+must revalidate every runtime path and identity and produce fresh acceptance
+artifacts; CI, this ledger, and the existence of earlier mainnet rows cannot stand
+in for that proof.
 
 ## Source anchors
 
@@ -891,8 +978,12 @@ claim that a live mainnet deployment or receipt exists.
 - [Hardened fetch](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/fetch.py)
 - [Miner object-store publication](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/publish.py)
 - [Eval-cost quote and payment](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost.py)
+- [Eval-cost make-good credits](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/eval_cost_credit.py)
 - [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
+- [Standing CPU supervisor](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/standing_cpu_supervisor.py)
+- [Persistent B300 remote adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_worker_adapter.py)
 - [Resident screening](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_screen_lane.py)
+- [Resident-pair crossover](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/resident_pair_crossover.py)
 - [Adaptive resident runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py)
 - [Qualification](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py)
 - [Audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)

@@ -133,8 +133,8 @@ The quickstart did not exercise:
 - distributed collective verification;
 - CUDA graph capture and replay;
 - no-egress OCI candidate execution;
-- v3 resident B/C/B′, conditional C′/B″, registered eager audit A, and
-  pristine T qualification;
+- production version-3 qualification (current v7 resident B/C with conditional
+  B′ or v8 two-process B/C/B′), registered eager audit A, and pristine T;
 - independent reproduction or settlement; or
 - release construction and serving.
 

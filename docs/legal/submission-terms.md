@@ -17,9 +17,10 @@ repository code; it does not automatically license source submitted by miners.
 Submitting a bundle to the subnet by committing its content hash and fetch URL
 through the `cacheon chain-submit` path constitutes acceptance of
 the version of these terms designated at the commitment block. The signed
-on-chain commitment is the record of acceptance. When the operator requires an
-eval-cost transfer, that payment is an admission condition and does not purchase a
-qualification result or a reward claim.
+on-chain commitment is the record of acceptance. When the operator enables an
+eval-cost gate, the required transfer or an explicit one-use operator credit is
+an admission condition; neither purchases a qualification result or a reward
+claim.
 
 ## 2. License grant to the operator
 

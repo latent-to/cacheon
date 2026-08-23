@@ -165,6 +165,11 @@ dtypes = ["bfloat16"]
 architectures = ["sm103"]
 ```
 
+This example demonstrates variant syntax only. `norm.rmsnorm` is unavailable
+for paid submission in the current MiniMax-M3 mainnet arena because that model
+does not execute the registered RMSNorm callsite. See
+[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+
 ## Sealed direct-artifact exports
 
 `[[ops.aot_exports]]` is a strict, closed table. It is accepted only for a slot

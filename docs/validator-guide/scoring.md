@@ -12,22 +12,28 @@ non-crownable. Their timings and grades cannot update the evaluation stack.
 
 ## Marginal comparison
 
-For a registered target, the v3 production policy constructs two isolated resident TP
-lanes:
+For a registered target, the production version-3 evidence protocol constructs
+one exact marginal comparison and selects its speed subpolicy from candidate
+features:
 
 - B: the exact frozen incumbent stack;
 - C: that same stack with one registered target replaced; and
-- B′: a second incumbent read from the same resident baseline lane.
+- B′: a second incumbent read, conditional under v7 and mandatory under v8.
 
-Clear results stop after resident B/C/B′. A policy-defined borderline result
-adds C′ and B″ without reloading either engine. During execution, the controller
-fixes prompt batches and token budgets, serializes the two lanes, validates
-bounded batch frames and token numerators, and records for every read both the
-charged intervals (registered conditioning plus timed) and the timed window
-alone. The durable resident witness retains the actual three-or-five-read
-schedule, physical-lane authority, operational timing, and budget. After the
-speed lifetimes are quiescent, qualification runs registered eager audit A when
-the plan requires it, destroys candidate lifetimes, and then runs pristine T.
+Hot-swappable candidates use v7 on the standing resident pair: B/C decides a
+clear result under precommitted invariant bounds, and only an inconclusive ratio
+authorizes B′. Both arms enter measurement through a swap/recapture in v7.
+Non-swappable candidates use v8's separate baseline and candidate engine
+processes and always read B/C/B′ because the quality gate consumes the second
+stock read. C′/B″ are unreachable under both current policies; they survive only
+in historical v2–v5 evidence. During execution, the controller fixes prompt
+batches and token budgets, serializes timed GPU work, validates bounded batch
+frames and token numerators, and records both charged intervals (registered
+conditioning plus timed) and timed windows. The durable resident witness retains
+the actual versioned schedule, physical-lane authority, operational timing, and
+budget. After the speed lifetimes are quiescent, qualification runs registered
+eager audit A when the plan requires it, destroys candidate lifetimes, and then
+runs pristine T.
 Reopen recomputes tokens/second and the frozen decision from typed counts and intervals,
 not from raw session frames. Candidate-reported aggregate throughput and resident-screen
 rates are never accepted as authority.
@@ -36,12 +42,13 @@ The speed estimate is conceptually:
 
 ```text
 scored_rate = timed_tokens / timed_seconds
-speedup     = candidate_scored_rate / mean(baseline_before, baseline_after)
+v7 clear speedup = C / B
+bookended speedup = C / mean(B, B′)
 noise       = relative spread of the baseline scored rates
 bar         = 1 + max(min_margin, noise_multiplier * noise)
 ```
 
-The resident policy grades the steady-state timed windows (policy version 2).
+Current v7/v8 policy grades the median over steady-state timed windows.
 The first read of a resident session pays residual cold-start inside its
 conditioning window while a continuation read does not; a scored rate that
 charges conditioning turns that positional split into apparent baseline noise
@@ -52,12 +59,17 @@ graded the charged rate, regrade only under their own sealed arithmetic; the
 policy version is part of the witness digest and cross-version splicing is
 refused.
 
-The exact thresholds come from a frozen `CalibrationManifest` bound to the reference,
-arena, runtime, model, hardware, workload, verifier, and controller distribution. If
-baseline disagreement exceeds the calibrated maximum, the result is `NO_DECISION`,
-never a candidate `FAIL`; a version-2 policy requires that calibrated maximum to be
-at most 2%, so the referee refuses to convict or crown from a measurement noisier
-than the hardened stack honestly produces.
+The exact thresholds come from a frozen `CalibrationManifest` bound to the
+measured reference, arena, runtime, model, hardware, workload, and verifier.
+Provenance still records the exact controller, but measurement reuse is not
+invalidated by an unrelated controller revision. Under historical v2/v3,
+excessive baseline disagreement or per-read scatter could yield
+`NO_DECISION`. V4 made every retained read gradable and terminates an
+undetermined final spread as `FAIL valid_not_faster`; v5 additionally excludes
+later baseline brackets that drift past the sealed ceiling and decides from the
+adjacent C/B pair. V6 made B′ conditional, v7 added the symmetric baseline
+swap, and v8 precommits B′ on the two-process substrate. Retained evidence
+always regrades under the version that produced it.
 
 Policy version 3 replaces each read's single timed aggregate with the median
 over per-batch timed windows. The window is the timed batch because host
@@ -84,9 +96,10 @@ stage. Evaluation work never shares the clock with a speed measurement. A versio
 conditioning slowdown bound: the conditioning span is the only place a
 candidate's prefill cost is host-visible, so the candidate's conditioning
 seconds must stay within the bound of the baseline's, compared at equal
-warmth position (C against B as cold first reads, C-prime against B-prime
-as warm continuations — conditioning spans carry warm/cold session
-structure and positions must never be mixed). A violation is a clear
+warmth position. Historical repeat schedules compare C′ with the matching
+warm baseline; current v7/v8 have no C′ and grade the initial C/B pair.
+Conditioning spans carry warm/cold session structure and positions must never
+be mixed. A violation is a clear
 candidate `FAIL`: a decode win cannot hide a prefill regression. The check
 grades numbers already sealed in every read and adds no measurement time.
 Version-1 and version-2 witnesses keep their exact historical bytes and
@@ -98,15 +111,17 @@ A candidate can pass only when all required products agree:
 
 | Product | Failure meaning |
 |---|---|
-| Execution evidence | Wrong/missing role, launch, device, protocol, or completion |
+| Execution evidence | Wrong/missing role, launch, device, protocol, or completion; current source requires the complete pair-native per-generation rank count before grading |
 | Graph evidence | Missing target member/variant/shape coverage or capture/replay failure |
-| Speed evidence | Below the calibrated bar, or too noisy to decide |
+| Speed evidence | Below the calibrated bar, or missing/unfit evidence that prevents a valid decision |
 | Audit-only evidence | Missing slot × rank/PID coverage, retained violation, or protocol error |
 | Pristine quality evidence | Regression against frozen metric envelopes or hidden work |
 | Identity checks | Evidence does not describe the committed arena, stack, target, or delta |
 
-Attributable violations yield `FAIL`. Infrastructure, missing evidence, stale identity,
-or excessive drift yields `NO_DECISION`. Only complete green evidence yields `PASS`.
+Attributable violations yield `FAIL`. Infrastructure, missing evidence, or stale
+identity yields `NO_DECISION`; current v5+ bracket drift is retained and handled
+by the registered exclusion rule rather than automatically becoming a non-answer.
+Only complete green evidence yields `PASS`.
 
 ## Independent reproduction
 
@@ -120,9 +135,10 @@ settled_speedup = min(primary_speedup, reproduction_speedup)
 
 There is no single-pass fast path to a crown.
 
-For resident v3, reproduction must also swap the baseline and candidate physical TP-lane
-orientations exactly while retaining the same speed-policy and settlement-control
-digests.
+For version-3 resident-family evidence, including current v7/v8 witnesses,
+reproduction must also swap the baseline and candidate physical TP-lane
+orientations exactly while retaining the same speed-policy and
+settlement-control digests.
 
 Here “independent” means the seven required authority, plan, attempt, report, commitment,
 secret-commitment, and selection-evidence digests differ. It does not by itself prove
@@ -158,9 +174,13 @@ An active atomic target suppresses overlapping singleton families. Packaging,
 integration, and release records do not create additional families. Discovery bounties
 are non-renewable, expire, and share a policy-bounded pool.
 
-The final multi-arena projection is exact integer ppm and is built only after every
-active family reopens against current stack and metagraph authority. A stale or missing
-active claim holds the entire projection rather than silently redistributing its share.
+The final multi-arena projection is exact integer ppm and is built only after
+every active family reopens against current stack and metagraph authority. A
+stale, incompatible, or unreopenable claim holds the complete projection. If a
+valid active claimant is merely absent from the current metagraph, that family's
+allocated ppm is sent to the validator hotkey for the tick; other families keep
+their allocations, and the claimant resumes receiving its decayed share if it
+returns.
 
 Finite-debt V2 does not reuse this standing-decay formula. It issues finite principal
 from reproduced log-relative improvement and a family clock, composes registered-CROWN

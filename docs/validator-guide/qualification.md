@@ -3,11 +3,13 @@
 Qualification asks a narrow question: does one exact submitted delta improve one frozen
 evaluation stack, in one registered arena, at acceptable quality?
 
-The production answer comes from an adaptive resident crossover protocol executed by a
-trusted host controller. Two isolated physical TP lanes keep the incumbent and candidate
-resident while timed GPU work remains serialized. It does not come from a routing screen,
-local diagnostic launch, candidate-side self-audit, miner report, or arbitrary evaluator
-command.
+The production answer comes from the version-3 qualification protocol executed
+by a trusted host controller. Hot-swappable candidates use the standing pair of
+isolated TP lanes; non-swappable candidates use separate baseline and candidate
+engine processes on the same sealed physical-lane authority. Timed GPU work is
+serialized in either case. The answer does not come from a routing screen, local
+diagnostic launch, candidate-side self-audit, miner report, or arbitrary
+evaluator command.
 
 ## Identities before execution
 
@@ -79,12 +81,13 @@ reopen binds the retained evidence's own policy explicitly, and historical
 serialized artifacts regrade byte-for-byte without reinterpretation. Merely
 changing the policy label does not upgrade old evidence.
 
-## Resident adaptive timeline
+## Current adaptive timeline
 
-The v3 plan binds two non-overlapping physical TP lanes, equivalent topology, separate
-runtime namespaces, lane-specific NUMA policy, exact workload, and a total qualification
-budget. Both engine lifetimes remain resident, but the controller permits only one lane
-to execute GPU work at a time.
+The version-3 protocol binds two non-overlapping physical TP lanes, equivalent
+topology, separate runtime namespaces, lane-specific NUMA policy, exact
+workload, and a total qualification budget. V7 keeps the standing pair resident;
+v8 launches its baseline and candidate processes for the request. The controller
+permits only one lane to execute timed GPU work at a time.
 
 Every read's evidence carries the engine-observed prompt token count for each request,
 and the protocol layer rejects any read whose counts differ from the sealed workload
@@ -99,19 +102,22 @@ sequenceDiagram
     participant L1 as Physical lane 1
     participant A as Audit-only role
     participant T as Pristine reference
-    H->>L0: Load incumbent once
-    H->>L1: Load candidate once
-    H->>L0: B
-    L0-->>H: charged rate + witness
-    H->>L1: C
-    L1-->>H: charged rate + witness
-    H->>L0: B′
-    L0-->>H: charged rate + drift witness
-    opt Borderline decision
-        H->>L1: C′
-        L1-->>H: repeat candidate rate
-        H->>L0: B″
-        L0-->>H: repeat baseline rate
+    alt v7 hot-swappable candidate
+        H->>L0: stock-to-stock swap + B
+        L0-->>H: timed rate + witness
+        H->>L1: candidate swap + C
+        L1-->>H: timed rate + sealed trajectory
+        opt B/C is inside the inconclusive band
+            H->>L0: stock-to-stock swap + B′
+            L0-->>H: timed rate + bookend witness
+        end
+    else v8 non-swappable candidate
+        H->>L0: launch/read B
+        L0-->>H: timed rate + witness
+        H->>L1: launch/read C
+        L1-->>H: timed rate + sealed trajectory
+        H->>L0: read B′ unconditionally
+        L0-->>H: timed rate + stock-drift control
     end
     H->>H: prove both speed executors quiescent
     H->>A: run sealed audit-only plan
@@ -122,10 +128,12 @@ sequenceDiagram
     H->>H: prove final quiescence and regrade
 ```
 
-The cheap B/C/B′ sequence decides clear wins, clear losses, and excessive-noise cases.
-Only a policy-defined borderline result authorizes C′/B″. The candidate cannot request
-extra reads. The retained witness records which reads occurred, lane identities,
-operational timing, and the stage and total budgets.
+V7 decides clear wins and losses from B/C under precommitted invariant bounds;
+only the inconclusive band authorizes B′. V8 always reads B/C/B′ because the
+quality stage requires a second stock observation. C′/B″ are unreachable in
+both current policies. The candidate cannot request extra reads. The retained
+witness records which reads occurred, lane identities, operational timing, and
+the stage and total budgets.
 
 Speed is graded before the expensive audit and pristine-reference stages. An ordinary
 speed non-PASS emits a durable stage-exit and does not run audit or T. A separately bound
@@ -199,7 +207,7 @@ Qualification reopens and grades several evidence products:
 1. **Execution:** required roles completed under the expected launch and device state.
 2. **Graph verification:** required target members, variants, shapes, capture, and replay
    have complete evidence.
-3. **Speed:** C, and C′ when required, beat the calibrated baseline bracket and
+3. **Speed:** C beats the policy-required B or B/B′ comparison and
    noise-derived bar.
 4. **Audit:** the sealed audit-only plan has complete exact slot × rank authority.
 5. **Quality:** pristine T validates sealed trajectories and hidden work under the
@@ -256,9 +264,10 @@ converted into candidate PASS or FAIL. The durable store represents this as a
 reservation HOLD with no candidate decision, which is semantically
 `NO_DECISION` without reviving the retired literal decision field.
 
-This evidence is written from inside the candidate's own process. It closes accidental
-non-invocation; it is not proof against a deliberate forger, for which complete-engine
-isolation and external qualification remain the boundary.
+This evidence is written from inside the candidate's own process. It closes
+accidental non-invocation as a verdict condition, but it is not proof against a
+deliberate forger; complete-engine isolation and external qualification remain
+the boundary.
 
 ## Independent reproduction
 
@@ -273,11 +282,12 @@ It must differ in qualification authority, attempt evidence, report, and selecti
 evidence. Reusing the first attempt under a new filename is rejected. Settlement uses the
 lower of the two measured speedups.
 
-For resident v3 evidence, the reproduction must also use the exact physical-lane role
-swap: the primary candidate lane becomes the reproduction baseline lane, and the primary
-baseline lane becomes the reproduction candidate lane. The resident speed policy and
-settlement control digest remain equal. Using fresh process labels on the same orientation
-is not an independent resident reproduction.
+For version-3 resident-family evidence, including current v7/v8 witnesses, the
+reproduction must also use the exact physical-lane role swap: the primary
+candidate lane becomes the reproduction baseline lane, and the primary baseline
+lane becomes the reproduction candidate lane. The resident speed policy and
+settlement control digest remain equal. Using fresh process labels on the same
+orientation is not an independent resident reproduction.
 
 More precisely, the pair must keep the contribution identity equal while all seven
 independence fields differ:
@@ -322,12 +332,13 @@ The final report is derived from the serialized attempt, referenced graph/qualit
 artifacts, and calibration manifests. Reopen can regrade graph and raw quality evidence.
 Speed regrading uses the retained witness type registered by the speed-policy
 version. Legacy v1/v2 use `SpeedWitness`: v1 contains three aggregate B/C/B′
-`ChargedExecutionRate` rows and v2 contains a fixed five B/C/B′/C′/B″ rows. V3
-requires `ResidentSpeedWitness`, which retains the actual adaptive
-three-or-five-read schedule, resident physical-lane authority, operational timings,
-and budget. Regrading recomputes rates and the frozen decision from those typed
-facts; it does not reconstruct them from raw session frames. A summary JSON line
-without these products is not authority.
+`ChargedExecutionRate` rows and v2 contains a fixed five B/C/B′/C′/B″ rows.
+Version-3 resident-family attempts use `ResidentSpeedWitness`, which retains the
+actual schedule: historical three-or-five-read v3–v5, current v7 B/C with
+optional B′, or current v8 B/C/B′. It also retains physical-lane authority,
+operational timings, and budget. Regrading recomputes rates and the frozen
+decision from those typed facts; it does not reconstruct them from raw session
+frames. A summary JSON line without these products is not authority.
 
 See [Evidence and replay](../security/evidence.md) for retention and audit requirements.
 
@@ -389,20 +400,25 @@ arena on first commit and rejects any later mismatch atomically. Transport,
 authentication, and identity-check failures release the durable lease as
 infrastructure outcomes; they are never converted into a candidate verdict.
 
-This composition surface is deliberately not yet a production caller: the module
-tracks the missing commissioning authorities explicitly, and production activation
-requires supplying them through a reviewed provider rather than through test
-fixtures.
+The persistent production consumer is
+`eval/b300_remote_worker_adapter.py`. In `--serve` mode it loads one
+digest-exact qualification-capabilities factory, calls
+`build_commissioned_b300_qualification_service`, and derives both the screen
+worker and qualification commission from the same registered READY authority.
+Each authenticated qualification request resolves its closed promoted cohort,
+derives a candidate-local `B300RemoteQualificationAdapter`, and runs through
+`B300MainnetWorker.run_remote_qualification`. Screen-only construction and
+one-shot adapter mode still refuse qualification before resident work.
 
 `eval/resident_evaluation_pair.py` is a distinct authority in this design: it owns
 the standing resident-pair service lifecycle — two persistent sessions, request
 admission and history, capability revocation, and one explicit close — while
 `eval/crossover_runtime.py` owns qualification planning and scoring. The two are
 not interchangeable and must not be merged: one is lifecycle, the other is
-evidence policy. Deployment composition currently commissions the standing pair
-outside the tracked qualification path; wiring it into tracked commissioning is
-part of the qualification-activation work, and the module must not be treated as
-removable in the meantime.
+evidence policy. The commissioned service now constructs the standing pair through
+the tracked resident-pair factory and shares it with the remote qualification
+worker. Deployment-private capability bytes still supply sealed identities and
+must match their configured source digest; they do not create a second evaluator.
 
 ## Nonclaims
 

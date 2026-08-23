@@ -73,6 +73,13 @@ The current API contains **11 slots**.
 | `collective.ar_residual_rmsnorm` | `collective` | `ar_residual_rmsnorm` | Fused all-reduce, residual add, and RMSNorm |
 | `collective.moe_finalize_ar_rmsnorm` | `collective` | `moe_finalize_ar_rmsnorm` | Deep MoE finalize, all-reduce, residual, and RMSNorm boundary |
 
+This table defines registered ABI contracts, not deployment availability. In
+the current MiniMax-M3 mainnet arena, `norm.rmsnorm` and
+`attention.msa_block_score` are unavailable because candidate code for those
+boundaries cannot execute. No other registered target is withdrawn by that
+arena-specific notice. See
+[Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
+
 Run `cacheon slots` against the installed code for the human-readable live list.
 The command prints multi-line summaries rather than a JSON/structured schema;
 automation should import the typed catalog instead of scraping this page or the
@@ -97,7 +104,9 @@ The target catalog freezes a stdlib-only projection of each live slot into `Targ
 
 ### One call, end to end
 
-For a non-collective slot such as `norm.rmsnorm`, the important sequence is:
+For a non-collective contract such as `norm.rmsnorm`, the important sequence is
+shown below. The example explains the ABI even though that target is unavailable
+in the current MiniMax-M3 arena:
 
 ```mermaid
 sequenceDiagram
