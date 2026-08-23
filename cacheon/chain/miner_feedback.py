@@ -268,7 +268,73 @@ def _submission(
         )
     if reason.get("code") == "candidate_kernel_does_not_compile":
         record["static_finding"] = _compile_defect(row["publication_root"])
+    _explain_screen_stages(record, row)
     return record
+
+
+def _explain_screen_stages(record: dict[str, Any], row: sqlite3.Row) -> None:
+    """Name the gate that stopped the bundle, not merely that the screen did.
+
+    Without this the report says "rejected at the arena screen" and lists five
+    gates, leaving the miner to guess which one and the operator to go digging
+    through source. The stage recorded its reason; only the hash survived, and
+    ``recover_screen_reason`` turns the hash back into the sentence.
+    """
+
+    from cacheon.eval.screen_reason import recover_screen_reason
+
+    authority, slots = _static_screen_authority()
+    if authority is None:
+        return
+    publication_digest = row["publication_digest"]
+    if not isinstance(publication_digest, str) or not publication_digest:
+        return
+    for disposition in record.get("screens") or ():
+        for stage in disposition.get("stages") or ():
+            found = recover_screen_reason(
+                stage=stage.get("stage", ""),
+                grade=stage.get("grade", ""),
+                evidence_digest=stage.get("evidence_digest", ""),
+                authority_digest=authority,
+                candidate_digest=disposition.get("candidate_digest", ""),
+                publication_digest=publication_digest,
+                service_digest=disposition.get("service_digest", ""),
+                screen_attempt=int(disposition.get("attempt_index", 0)) + 1,
+                slots=slots,
+            )
+            if found is not None:
+                stage["reason"] = found.reason
+                stage["explanation"] = found.sentence()
+
+
+def _static_screen_authority() -> tuple[str | None, tuple[str, ...]]:
+    """The live static adapter's identity and its slot requirements.
+
+    Read off the adapter rather than re-derived, so the identity formula lives
+    in exactly one place. Only the static stage is reconstructible away from a
+    commissioned pod: the build/ABI/graph adapter needs a live executor and
+    plan resolver, so its stages stay unexplained here until their authority is
+    recorded alongside the receipt.
+
+    A ``slot`` in a quant mismatch can only be one the deployment demanded a
+    quantization for, so the requirement list is the exact search space.
+    """
+
+    try:
+        from cacheon.eval.b300_screen_deployment import (
+            _MODEL_QUANTIZATION,
+            slot_quant_requirements,
+        )
+        from cacheon.eval.b300_screen_stages import B300StaticScreenAdapter
+        from cacheon.target_catalog import default_target_catalog
+
+        requirements = slot_quant_requirements(_MODEL_QUANTIZATION)
+        adapter = B300StaticScreenAdapter(
+            default_target_catalog(), required_slot_quant=requirements
+        )
+        return adapter.identity_digest, tuple(slot for slot, _ in requirements)
+    except Exception:  # noqa: BLE001 - a report must survive an unbuildable adapter
+        return None, ()
 
 
 def miner_submissions(
