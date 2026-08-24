@@ -35,15 +35,21 @@ BLOCK_HASH = "0x" + "9" * 64
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
 
 
-def _bundle(root: Path, body: str) -> Path:
+def _bundle(
+    root: Path,
+    body: str,
+    *,
+    slot: str = "activation.silu_and_mul",
+    entry: str = "silu_and_mul",
+) -> Path:
     (root / "kernels").mkdir(parents=True)
     (root / "manifest.toml").write_text(
         'bundle_id = "test"\n'
         'abi_version = "cacheon-op-abi-v0"\n\n'
         '[[ops]]\n'
-        'slot = "activation.silu_and_mul"\n'
+        f'slot = "{slot}"\n'
         'source = "kernels/k.py"\n'
-        'entry = "silu_and_mul"\n'
+        f'entry = "{entry}"\n'
         'dtypes = ["float32"]\n'
     )
     (root / "kernels/k.py").write_text(body)
@@ -653,3 +659,73 @@ def test_settlement_head_refresh_failure_cannot_create_a_lease():
             finalized_block_provider=unavailable_head,
         )
     assert store.lease_calls == 0
+
+
+def test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes(
+    tmp_path, monkeypatch
+):
+    """Closing a target closes its standalone lane only.
+
+    The closed-family check keys on the SUBMITTED target name. A bundle for an
+    open target whose kernel body computes -- and even names -- a closed slot's
+    math is never parked for it: what an implementation absorbs inside its own
+    boundary is not a rejection surface. Normative statement:
+    docs/architecture/slot-contract.md.
+    """
+    closed = _bundle(
+        tmp_path / "closed-src",
+        "def silu_and_mul(x, out):\n    out.copy_(x)\n",
+    )
+    fused = _bundle(
+        tmp_path / "fused-src",
+        '"""Fuses activation.silu_and_mul into the norm epilogue."""\n'
+        "def rmsnorm(x, weight, out):\n"
+        "    silu_and_mul = x * x.sigmoid() * weight\n"
+        "    out.copy_(silu_and_mul)\n",
+        slot="norm.rmsnorm",
+        entry="rmsnorm",
+    )
+    closed_digest = content_hash(closed)
+    fused_digest = content_hash(fused)
+    snapshot = _snapshot([
+        ("miner-closed", encode_payload(closed_digest, "https://example.com/a")),
+        ("miner-fused", encode_payload(fused_digest, "https://example.com/b")),
+    ])
+
+    service = object.__new__(ArenaService)
+    service.manifest = type(
+        "Manifest",
+        (),
+        {
+            "digest": "e" * 64,
+            "qualification_policy_digest": "f" * 64,
+            "capacity": type("Capacity", (), {"max_cohort_size": 1})(),
+            "closed_targets": ("activation.silu_and_mul", "attention.sdpa"),
+        },
+    )()
+    registry = object.__new__(ArenaServiceRegistry)
+    monkeypatch.setattr(ArenaServiceRegistry, "require", lambda *_: service)
+    monkeypatch.setattr(ArenaService, "admit", lambda *_: AdmissionDecision.QUEUE)
+
+    result, _calls, options = _run(
+        tmp_path,
+        monkeypatch,
+        snapshot,
+        {closed_digest: closed, fused_digest: fused},
+        intake_only=False,
+        arena_registry=registry,
+        arena_id="test-arena",
+    )
+
+    assert list(result.rejected.values()) == [
+        "target_unavailable:activation.silu_and_mul"
+    ]
+    assert len(result.published) == 1
+    with FinalizedIntakeStore(options["intake_db"], scope=SCOPE) as store:
+        by_hotkey = {row.arrival.hotkey: row for row in store.all()}
+        parked = by_hotkey["miner-closed"]
+        assert parked.status == "expired"
+        assert parked.decision == "NO_DECISION"
+        passed = by_hotkey["miner-fused"]
+        assert passed.status == "published"
+        assert passed.reason == ""

@@ -39,14 +39,31 @@ manifest; it does not require the Python function itself to be named `entry`.
 
 ## Current MiniMax-M3 availability
 
-As of 2026-08-23, one registered slot contract is **unavailable for paid
+As of 2026-08-24, four registered slot contracts are **unavailable for paid
 submission in the current MiniMax-M3 mainnet arena**:
 
 - `norm.rmsnorm`: the deployed model uses `GemmaRMSNorm` at every relevant
   normalization callsite. The registered adapter patches the separate
   `RMSNorm.forward_cuda` boundary, so a candidate for this slot cannot execute.
-Do not pay for or submit that target. This arena-specific notice does not
-withdraw any other registered target.
+- `activation.silu_and_mul`: the deployed model computes expert activation
+  inside the MoE grouped-GEMM epilogue on 57 of 60 layers, and its three dense
+  layers route a swigluoai function the registered adapter does not patch. A
+  candidate for this slot loads but is never called.
+- `attention.sdpa`: no serving adapter binds this contract in the deployed
+  runtime, so a candidate can never execute in a measured arm.
+- `moe.fused_experts_reduce`: sealed closed pending its full-engine
+  outer-reduction proof.
+
+Do not pay for or submit those targets; intake parks them without judgement
+and the payment is not consumed. Every other registered target remains open.
+
+Closure removes only the standalone lane. The same computation remains fully
+claimable **inside open targets**: activation belongs to the
+`moe.fused_experts` boundary (the validator-owned per-model table carries the
+swigluoai parameters for exactly that), normalization belongs to the two fused
+collective boundaries, and a fused kernel is judged only by the contract of
+the target it names — never by what it absorbs internally. See the slot
+contract's closure section.
 
 The decode MSA slot follows `req_to_token[slot_ids]` and fills one FP32 score
 slab per local index head. Stock code retains top-k and attend. Prefill V2
@@ -119,10 +136,9 @@ Start from the published arena, not from an isolated kernel idea:
 
 For a first offline implementation, `activation.silu_and_mul` and
 `norm.rmsnorm` have the smallest single-process ABIs. They are useful for
-learning the contract, not a promise of current-arena availability or economic
-headroom; `norm.rmsnorm` is specifically unavailable in the current
-MiniMax-M3 arena as stated above. Advanced collective and deep-MoE targets
-require the matching multi-GPU and build environment to test honestly.
+learning the contract only: both are unavailable for paid submission in the
+current MiniMax-M3 arena as stated above. Advanced collective and deep-MoE
+targets require the matching multi-GPU and build environment to test honestly.
 
 ### A decision procedure
 

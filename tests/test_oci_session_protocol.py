@@ -167,6 +167,7 @@ def test_seam_binding_table_is_closed_and_deep_epilogue_shares_arfusion() -> Non
         "attention": "CACHEON_ATTENTION_SEAM",
         "collective": "CACHEON_COLLECTIVE_SEAM",
         "moe": "CACHEON_MOE_SEAM",
+        "msa_decode_score": "CACHEON_MSA_DECODE_SCORE_SEAM",
         "msa_prefill": "CACHEON_MSA_PREFILL_SEAM",
     }
     bindings = {binding.binding_id: binding for binding in SEAM_BINDINGS}
@@ -195,6 +196,7 @@ def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> Non
         "CACHEON_ATTENTION_SEAM": "0",
         "CACHEON_COLLECTIVE_SEAM": "0",
         "CACHEON_MOE_SEAM": "0",
+        "CACHEON_MSA_DECODE_SCORE_SEAM": "0",
         "CACHEON_MSA_PREFILL_SEAM": "1",
     }
     assert seam_binding_environment(()) == {
@@ -202,6 +204,7 @@ def test_seam_bindings_normalize_and_emit_complete_explicit_environment() -> Non
         "CACHEON_ATTENTION_SEAM": "0",
         "CACHEON_COLLECTIVE_SEAM": "0",
         "CACHEON_MOE_SEAM": "0",
+        "CACHEON_MSA_DECODE_SCORE_SEAM": "0",
         "CACHEON_MSA_PREFILL_SEAM": "0",
     }
 

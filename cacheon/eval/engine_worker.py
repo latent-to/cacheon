@@ -170,8 +170,6 @@ def engine_kwargs(cfg, *, active: bool = False) -> dict[str, Any]:
     if moe_runner_backend:
         kwargs["moe_runner_backend"] = moe_runner_backend
     disable_custom_all_reduce = getattr(cfg, "disable_custom_all_reduce", False)
-    if active and getattr(cfg, "candidate_disable_custom_all_reduce", None) is not None:
-        disable_custom_all_reduce = cfg.candidate_disable_custom_all_reduce
     if disable_custom_all_reduce:
         kwargs["disable_custom_all_reduce"] = True
     kwargs.update(getattr(cfg, "extra_engine_kwargs", {}) or {})

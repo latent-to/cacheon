@@ -45,6 +45,17 @@ The host times requests outside the candidate process. The validator owns worklo
 
 A feature that cannot preserve all four invariants is not a core slot. It needs a reviewed catalog or integration change, not a submission.
 
+### 5. Closure is arena-scoped and never inspects an implementation
+
+An arena may close a registered target it cannot currently measure. Closure
+keys on the **submitted target name only**: intake parks a submission for a
+closed target without judgement and releases its payment. Closing a target
+closes its standalone lane and nothing else — implementing that computation
+inside any open target's boundary is always legal and can never be a rejection
+reason. A fused kernel is judged solely by the contract of the one target it
+names. This property is pinned by
+`tests/test_chain_validator_loop.py::test_closed_target_parks_by_name_only_and_fused_closed_slot_math_passes`.
+
 ## Slot kinds
 
 The live catalog supports three kinds. Kind changes the breadth and capability of the boundary, not the trust model.

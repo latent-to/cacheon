@@ -147,9 +147,16 @@ The executable catalog contains 11 slots and one registered atomic target:
 | Collective | `moe.fused_experts_reduce`, `collective.all_reduce`, `collective.ar_residual_rmsnorm`, `collective.moe_finalize_ar_rmsnorm` |
 | Atomic target | `collective.moe_epilogue.v1` over the two MoE epilogue collective members |
 
-The table records contracts, not deployment availability. As of 2026-08-23,
-only `norm.rmsnorm` is unavailable: MiniMax-M3 uses `GemmaRMSNorm`, outside
-the registered `RMSNorm.forward_cuda` seam. The miner-facing notice is
+The table records contracts, not deployment availability. As of 2026-08-24,
+four targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
+(GemmaRMSNorm outside the registered seam), `activation.silu_and_mul` (the
+model activates inside the MoE GEMM epilogue; the dense-layer swigluoai
+callsite is unpatched — measured never-called on 2026-08-23),
+`attention.sdpa` (no serving adapter binds it), and
+`moe.fused_experts_reduce` (sealed closed pending its full-engine
+outer-reduction proof). Their computation stays claimable inside open fused
+targets; closure keys on the submitted target name only. The miner-facing
+notice is
 [Current MiniMax-M3 availability](../miner-guide/slots.md#current-minimax-m3-availability).
 
 `attention.msa_block_score` binds the pinned `_decode_score_kernel`; candidate
