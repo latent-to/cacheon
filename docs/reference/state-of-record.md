@@ -148,11 +148,13 @@ The executable catalog contains 11 slots and one registered atomic target:
 | Atomic target | `collective.moe_epilogue.v1` over the two MoE epilogue collective members |
 
 The table records contracts, not deployment availability. As of 2026-08-24,
-four targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
+five targets are unavailable in the MiniMax-M3 arena: `norm.rmsnorm`
 (GemmaRMSNorm outside the registered seam), `activation.silu_and_mul` (the
 model activates inside the MoE GEMM epilogue; the dense-layer swigluoai
 callsite is unpatched — measured never-called on 2026-08-23),
-`attention.sdpa` (no serving adapter binds it), and
+`attention.sdpa` (no serving adapter binds it),
+`attention.msa_prefill_block_score` (closed pending its first clean
+end-to-end control run; the decode sibling is open), and
 `moe.fused_experts_reduce` (sealed closed pending its full-engine
 outer-reduction proof). Their computation stays claimable inside open fused
 targets; closure keys on the submitted target name only. The miner-facing

@@ -39,7 +39,7 @@ manifest; it does not require the Python function itself to be named `entry`.
 
 ## Current MiniMax-M3 availability
 
-As of 2026-08-24, four registered slot contracts are **unavailable for paid
+As of 2026-08-24, five registered slot contracts are **unavailable for paid
 submission in the current MiniMax-M3 mainnet arena**:
 
 - `norm.rmsnorm`: the deployed model uses `GemmaRMSNorm` at every relevant
@@ -51,6 +51,9 @@ submission in the current MiniMax-M3 mainnet arena**:
   candidate for this slot loads but is never called.
 - `attention.sdpa`: no serving adapter binds this contract in the deployed
   runtime, so a candidate can never execute in a measured arm.
+- `attention.msa_prefill_block_score`: closed pending its first clean
+  end-to-end control run on the deployed arena; the decode sibling
+  `attention.msa_block_score` is open.
 - `moe.fused_experts_reduce`: sealed closed pending its full-engine
   outer-reduction proof.
 
