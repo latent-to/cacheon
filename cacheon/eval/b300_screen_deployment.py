@@ -541,7 +541,14 @@ def _engine_config(
         deterministic=False,
         attention_backend=None,
         disable_cuda_graph=disable_cuda_graph,
-        mem_fraction_static=0.75,
+        # 0.70 keeps >=13 GiB/GPU free for the post-swap decode-graph rebuild:
+        # the pinned fork shares no graph memory pool across runner
+        # generations, so a rebuild on a traffic-warmed engine needs fresh
+        # headroom (OOMed 3/3 at 0.75 on 2026-08-24, 9.07 GiB ask vs ~3.7 GiB
+        # free). expandable_segments cannot substitute here: flashinfer
+        # allreduce fusion needs cudaIpcGetMemHandle, which VMM-backed
+        # allocation breaks.
+        mem_fraction_static=0.70,
         log_level="error",
         max_running_requests=cell.concurrency,
         tp_size=TP_SIZE,
