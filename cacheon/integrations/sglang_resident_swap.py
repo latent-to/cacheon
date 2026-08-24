@@ -1,9 +1,7 @@
 """Swap a resident engine's kernel bundle and rebuild its decode graphs.
 
 Each rank acknowledges only after recapture succeeds or records the exact failure.
-Candidate-prepared state and the prior graph are released before every rebuild,
-and the rebuild records into the prior generation's graph memory pool so it
-needs no fresh driver memory on a traffic-warmed engine.
+Candidate-prepared state and the prior graph are released before every rebuild.
 """
 
 from __future__ import annotations
@@ -39,15 +37,9 @@ _SCHED_HOOK_FLAG = "_cacheon_resident_swap_flush"
 _applied_generation = -1
 _MOE_PREPARED_ATTR = "_cacheon_moe_prepared_by_impl"
 
-# Recapture memory contract, measured 2026-08-24 on B300/torch 2.11 (mode
-# matrix in .slot-run/artifacts-2026-08-24/poolproof.kv): the rebuilt
-# runner's graphs must record into the PRIOR generation's pool id, and the
-# release between generations must NOT call empty_cache. A fresh pool id —
-# or an empty_cache with the id carried — makes every rebuild ask the
-# driver for the full pool size again (~11 GiB), which a traffic-warmed
-# engine cannot serve (4/4 capture OOMs on 2026-08-24 at mem fractions
-# 0.75 and 0.70 alike). With the id carried and the purge skipped, the
-# rebuild's fresh driver ask measured 0.0 GiB.
+# B300/torch 2.11 measurement: fresh or purged pools ask the driver for
+# ~11 GiB per rebuild; reusing the prior id without empty_cache asks 0 GiB.
+# The retained receipt is `poolproof-authoritative.kv` in the handoff.
 _BACKEND_HOOKS = (
     (
         "sglang.srt.model_executor.runner_backend.full_cuda_graph_backend",
@@ -60,6 +52,7 @@ _BACKEND_HOOKS = (
 )
 _POOL_HOOK_FLAG = "_cacheon_pool_carry"
 _carried_graph_pool: object | None = None
+_graph_pool_reused = False
 
 
 def _read_command(control_dir: str) -> tuple[int, str | None] | None:
@@ -100,7 +93,7 @@ def _release_cuda_state(model_runner: object) -> int:
     purging between generations returns the pool's segments to the driver
     and forfeits the reuse (measured mode D, 2026-08-24)."""
 
-    global _carried_graph_pool
+    global _carried_graph_pool, _graph_pool_reused
 
     import torch
 
@@ -108,8 +101,8 @@ def _release_cuda_state(model_runner: object) -> int:
         torch.cuda.synchronize()
     old_runner = getattr(model_runner, "decode_cuda_graph_runner", None)
     old_pool = getattr(getattr(old_runner, "backend", None), "_pool", None)
-    if old_pool is not None:
-        _carried_graph_pool = old_pool
+    _carried_graph_pool = old_pool
+    _graph_pool_reused = False
     evicted = 0
     modules = getattr(getattr(model_runner, "model", None), "modules", None)
     if callable(modules):
@@ -145,10 +138,7 @@ def _apply_pending_swap(
         "pid": os.getpid(),
     }
     ack["evicted_prepared_entries"] = _release_cuda_state(model_runner)
-    # Visible in every rank's ack: whether the rebuild records into the
-    # prior generation's pool (the zero-driver-ask path) or falls back to
-    # a fresh pool (the OOM-prone path this line exists to expose).
-    ack["graph_pool_carried"] = _carried_graph_pool is not None
+    ack["graph_pool_carried"] = False
     try:
         from cacheon import receipts, seam
 
@@ -198,6 +188,7 @@ def _finish_swap(
     if pending is None:
         return
     generation, rank, started, ack = pending
+    ack["graph_pool_carried"] = _graph_pool_reused
     if error is not None:
         ack["ok"] = False
         ack["error"] = f"recapture failed: {error}"[:2048]
@@ -269,12 +260,14 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
             continue
 
         def capture_session(self, stream, _orig=bfn):
+            global _graph_pool_reused
             if (
                 hasattr(self, "_pool")
                 and self._pool is None
                 and _carried_graph_pool is not None
             ):
                 self._pool = _carried_graph_pool
+                _graph_pool_reused = True
             return _orig(self, stream)
 
         functools.update_wrapper(capture_session, bfn)

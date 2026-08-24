@@ -16,7 +16,7 @@ class _Layer:
         self._cacheon_moe_prepared_by_impl = {"a": object(), "b": object()}
 
 
-def _runtime(monkeypatch, tmp_path, *, recapture_error=None):
+def _runtime(monkeypatch, tmp_path, *, recapture_error=None, recapture_hook=None):
     layer = _Layer()
     events = []
 
@@ -32,6 +32,8 @@ def _runtime(monkeypatch, tmp_path, *, recapture_error=None):
             events.append("recapture")
             assert not hasattr(layer, "_cacheon_moe_prepared_by_impl")
             assert self.decode_cuda_graph_runner is None
+            if recapture_hook is not None:
+                recapture_hook()
             if recapture_error is not None:
                 raise recapture_error
 
@@ -119,8 +121,13 @@ def test_swap_carries_graph_pool_and_skips_empty_cache(monkeypatch, tmp_path):
     backend_module.FullCudaGraphBackend = Backend
     monkeypatch.setitem(sys.modules, swap._BACKEND_HOOKS[0][0], backend_module)
     monkeypatch.setattr(swap, "_carried_graph_pool", None)
+    rebuilt = Backend()
 
-    scheduler, _layer, events = _runtime(monkeypatch, tmp_path)
+    scheduler, _layer, events = _runtime(
+        monkeypatch,
+        tmp_path,
+        recapture_hook=lambda: rebuilt.capture_session("stream"),
+    )
     runner = scheduler.tp_worker.model_runner
     runner.decode_cuda_graph_runner = SimpleNamespace(
         backend=SimpleNamespace(_pool=pool)
@@ -131,7 +138,6 @@ def test_swap_carries_graph_pool_and_skips_empty_cache(monkeypatch, tmp_path):
     assert ack["graph_pool_carried"] is True
     assert "empty" not in events, "purge between generations forfeits the pool"
 
-    rebuilt = Backend()
-    assert rebuilt.capture_session("stream") == (pool, "stream")
+    assert rebuilt._pool is pool
     swap.uninstall()
     assert Backend().capture_session("stream") == (None, "stream")
