@@ -710,6 +710,8 @@ class B300ArenaServiceProvider:
                         "resident screen request failed"
                     ) from exc
                 bypass_reason = lifetime.screen_stage.bypass_reason
+                if lifetime.screen_stage.lifetime_failed:
+                    self._resident_failed = True
                 if bypass_reason is not None:
                     self._resident_screen_bypass_reason = bypass_reason
                     self._release_resident()

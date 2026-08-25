@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from cacheon import receipts, seam
+from cacheon import bootstrap, receipts, seam
 from cacheon.integrations import sglang_artifact_context as artifact_context
 from cacheon.integrations import sglang_scheduler_gate as gate
 from cacheon.registry import REGISTRY
@@ -95,6 +95,24 @@ def test_load_candidate_bundle_loads_and_receipts(armed_env):
     # idempotent: a second call must not double-register or double-receipt
     seam.load_candidate_bundle()
     assert len(receipts.collect(armed_env, "active")) == 1
+
+
+def test_bundle_activation_failure_writes_receipt_and_propagates(
+    armed_env, monkeypatch
+):
+    monkeypatch.setattr(seam, "_enable_loaded_bundle", lambda _bundle: [])
+    with pytest.raises(RuntimeError, match="registered no slots"):
+        seam.load_candidate_bundle()
+    assert receipts.collect(armed_env, "load_failed")
+
+
+def test_bootstrap_does_not_swallow_seam_activation_failure(monkeypatch):
+    def fail():
+        raise RuntimeError("seam install failed")
+
+    monkeypatch.setattr(seam, "activate", fail)
+    with pytest.raises(RuntimeError, match="seam install failed"):
+        bootstrap._run_activate()
 
 
 def test_direct_bundle_stages_until_post_device_hook(

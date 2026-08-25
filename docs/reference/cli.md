@@ -113,6 +113,7 @@ or settlement.
 ```bash
 python -m cacheon.cli explain qualification-product.json
 python -m cacheon.cli explain collected-result.json --log worker-stderr.log
+python -m cacheon.cli explain --evidence-dir retained-failed-run/
 ```
 
 Renders one evaluation product — or a validator's collected result, which
@@ -121,6 +122,10 @@ and whether it was faster, with the disqualifying fact stated before any
 number. What the GPUs did comes from the product's `qualification.execution`
 artifact when the run published one; `--log` supplies a retained worker stderr
 for runs that did not, and is the only source of the per-shape kernel trace.
+When a failed run produced no product, `--evidence-dir` reads its retained
+`*.stderr` artifacts directly and reports the candidate bundle hash, source
+file, line, callable phase, exception, affected GPU/ranks, and failing call
+chain.
 
 ## Submission commands
 

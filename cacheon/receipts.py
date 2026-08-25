@@ -1,11 +1,9 @@
 """Seam execution receipts — positive accounting evidence for the referee.
 
 The failure mode this closes: the candidate engine comes up WITHOUT the seam
-(missing ``cacheon.pth``, bad env, bundle load failure falling back to baseline)
-and the eval scores stock-vs-stock — identical logits, KL exactly 0.0, verdict
-PASS. ``seam.activate()`` deliberately never wedges the engine on a bad bundle,
-so the *engine* can't be the one to fail; the *eval driver* must demand positive
-evidence.
+(missing ``cacheon.pth`` or bad env) and the eval scores stock-vs-stock —
+identical logits, KL exactly 0.0, verdict PASS. Candidate activation failures
+propagate after writing a receipt; the driver also demands positive evidence.
 
 Evidence lives where the seam lives — in sglang's spawned scheduler ranks — so it
 travels by file: the driver sets ``CACHEON_SEAM_RECEIPT_DIR`` for the candidate
@@ -13,7 +11,7 @@ launch (the resident lane sets a root and one scope per swap generation), ranks
 write receipts there, the driver requires them:
 
   * ``active``       — bundle loaded + registry enabled in a rank (seam.activate).
-  * ``load_failed``  — a rank ATTEMPTED the bundle load and fell back to baseline.
+  * ``load_failed``  — a rank attempted the bundle load and then failed loudly.
   * ``completed``    — a dispatcher produced the model-facing output after invoking
                        the selected implementation; one file per slot per process,
                        carrying ``calls`` (invocations under this scope) and
@@ -49,11 +47,19 @@ import re
 import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from types import FunctionType
 from typing import Optional
 
 logger = logging.getLogger("cacheon.receipts")
 
 _SAFE_RE = re.compile(r"[^0-9A-Za-z._\-]+")
+_SAFE_SOURCE_RE = re.compile(r"[^0-9A-Za-z._/\-]+")
+_VALIDATOR_WRITABLE_ROOTS = (
+    "/usr/local/lib/",
+    "/sgl-workspace/sglang/python/",
+    "/cacheon/runtime-cache/",
+    "/tmp/",
+)
 # Every kind a rank writes about itself carries the rank's identity. A kind left
 # out of this set has no ``pid`` on disk and is dropped by every per-process
 # reader — which is how the routing reasons vanished from the resident lane's
@@ -280,8 +286,23 @@ def write(kind: str, payload: dict, *, tag: str = "") -> None:
         _write_to(_resolved_dir(raw), kind, payload, tag=tag)
 
 
+def validator_runtime_permission(error_type: object, message: object) -> bool:
+    """Whether the validator denied a write in its own runtime/JIT filesystem."""
+
+    return (
+        str(error_type).endswith("PermissionError")
+        and "Permission denied" in str(message)
+        and any(root in str(message).replace("\\", "/") for root in _VALIDATOR_WRITABLE_ROOTS)
+    )
+
+
 def _write_execution_once(
-    kind: str, slot: str, *, error: BaseException | None = None
+    kind: str,
+    slot: str,
+    *,
+    error: BaseException | None = None,
+    phase: str = "",
+    entry: Callable[..., object] | None = None,
 ) -> None:
     """Write one slot execution receipt without adding hot-path file churn."""
     rdir = _dir()
@@ -301,6 +322,26 @@ def _write_execution_once(
             except Exception:  # noqa: BLE001 - hostile exception formatting is diagnostic
                 message = "<unprintable exception>"
             payload.update(error_type=type(error).__name__, error=message)
+            if validator_runtime_permission(payload["error_type"], message):
+                payload["failure_owner"] = "validator_runtime"
+            if phase in {"prepare", "entry"}:
+                payload["phase"] = phase
+            if type(entry) is FunctionType:
+                code = entry.__code__
+                cursor = error.__traceback__
+                while cursor is not None:
+                    if cursor.tb_frame.f_code is code:
+                        source = code.co_filename.replace("\\", "/")
+                        marker = "/kernels/"
+                        if marker in source:
+                            source = "kernels/" + source.rsplit(marker, 1)[1]
+                        else:
+                            source = source.rsplit("/", 1)[-1]
+                        source = _SAFE_SOURCE_RE.sub("_", source)[:128]
+                        if source:
+                            payload.update(source=source, line=cursor.tb_lineno)
+                        break
+                    cursor = cursor.tb_next
         if _write_to(root, kind, payload, tag=slot):
             _ONCE.add(key)
 
@@ -395,7 +436,13 @@ def completed(slot: str) -> None:
     _write_execution_once("completed", slot)
 
 
-def failed(slot: str, error: BaseException) -> None:
+def failed(
+    slot: str,
+    error: BaseException,
+    *,
+    phase: str = "entry",
+    entry: Callable[..., object] | None = None,
+) -> None:
     """Record that the selected implementation for ``slot`` raised.
 
     Written by the dispatcher on its way out, before the exception reaches the
@@ -405,10 +452,17 @@ def failed(slot: str, error: BaseException) -> None:
     failed". Never raises.
     """
 
-    _write_execution_once("failed", slot, error=error)
+    _write_execution_once(
+        "failed", slot, error=error, phase=phase, entry=entry
+    )
 
 
-def invoke(slot: str, entry: Callable[..., object], *args: object) -> object:
+def invoke(
+    slot: str,
+    entry: Callable[..., object],
+    *args: object,
+    phase: str = "entry",
+) -> object:
     """Run the selected implementation; a raise is receipted before it propagates.
 
     There is no fallback: the exception still takes the engine down. The receipt
@@ -419,7 +473,7 @@ def invoke(slot: str, entry: Callable[..., object], *args: object) -> object:
     try:
         return entry(*args)
     except BaseException as exc:
-        failed(slot, exc)
+        failed(slot, exc, phase=phase, entry=entry)
         raise
 
 
@@ -566,9 +620,9 @@ def require(rdir: str | Path, kind: str, *, context: str) -> list[dict]:
     failed = collect(rdir, "load_failed")
     if failed:
         raise RuntimeError(
-            f"{context}: seam rank(s) attempted the bundle load and FELL BACK to baseline "
-            f"(load_failed receipts: {failed}). The run would have scored stock-vs-stock; "
-            "fix the bundle, do not trust any output from this launch."
+            f"{context}: seam rank(s) failed bundle activation "
+            f"(load_failed receipts: {failed}). The engine stopped; fix the named "
+            "cause before another launch."
         )
     raise RuntimeError(
         f"{context}: no '{kind}' seam receipt was written by any engine rank. The candidate "

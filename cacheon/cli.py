@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from cacheon.manifest import (all_declared_cuda_sources, all_declared_dep_patches,
                              load_manifest, resolve_source)
@@ -1968,17 +1969,32 @@ def _find_product(value: object, depth: int = 0) -> dict | None:
 def cmd_explain(args: argparse.Namespace) -> int:
     from cacheon.eval.explain import explain
 
-    with open(args.product, "r", encoding="utf-8") as handle:
-        raw = json.load(handle)
-    product = _find_product(raw)
-    if product is None:
-        print(f"{args.product}: no evaluation product found in this file")
+    product = {"evidence": []}
+    if args.product:
+        with open(args.product, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+        product = _find_product(raw)
+        if product is None:
+            print(f"{args.product}: no evaluation product found in this file")
+            return 2
+    elif not args.evidence_dir:
+        print("explain requires a product JSON or --evidence-dir")
         return 2
-    log = None
+    logs: list[bytes] = []
     if args.log:
         with open(args.log, "rb") as handle:
-            log = handle.read()
-    for line in explain(product, stderr=log):
+            logs.append(handle.read())
+    if args.evidence_dir:
+        root = Path(args.evidence_dir)
+        if not root.is_dir():
+            print(f"{root}: evidence directory not found")
+            return 2
+        paths = sorted(root.rglob("*.stderr"))
+        receipted = [
+            path for path in paths if path.with_name(path.name + ".json").is_file()
+        ]
+        logs.extend(path.read_bytes() for path in (receipted or paths))
+    for line in explain(product, stderr=b"\n".join(logs) if logs else None):
         print(line)
     return 0
 
@@ -3137,13 +3153,18 @@ def build_parser() -> argparse.ArgumentParser:
                 "  # the product an operator publishes for one evaluation\n"
                 "  cacheon explain qualification-product.json\n"
                 "  # or the collection a validator kept, which embeds the product\n"
-                "  cacheon explain collected-result.json"),
+                "  cacheon explain collected-result.json\n"
+                "  # a failed run that produced no product\n"
+                "  cacheon explain --evidence-dir retained-run/"),
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    sp.add_argument("product", help="path to an evaluation product JSON")
+    sp.add_argument("product", nargs="?", help="path to an evaluation product JSON")
     sp.add_argument("--log", default=None,
                     help="retained worker stderr for this run; adds what each rank "
                          "actually did (loaded, ran, how often, in a captured graph, "
                          "or why the call routed to stock instead)")
+    sp.add_argument("--evidence-dir", default=None,
+                    help="retained run directory; reads worker *.stderr artifacts, "
+                         "including failures that produced no product")
     sp.set_defaults(func=cmd_explain)
 
     sp = sub.add_parser(

@@ -28,6 +28,7 @@ from cacheon.eval.explain import (
     config_lines,
     execution_lines,
     explain,
+    failure_lines,
     ranks_from_log,
 )
 from cacheon.eval.resident_execution_evidence import (
@@ -232,6 +233,45 @@ def test_one_ungraphed_gpu_makes_the_whole_measurement_ungraphed() -> None:
     assert "NOT inside the CUDA graph on every GPU" in "\n".join(
         execution_lines(ranks_from_log(log))
     )
+
+
+def test_retained_candidate_traceback_names_exact_prepare_failure() -> None:
+    bundle = "a9b3d8a8" + "0" * 56
+    traces = []
+    for gpu, free in ((3, "8.11"), (0, "7.86"), (1, "7.80"), (2, "7.80")):
+        traces.append(
+            f'''Traceback (most recent call last):
+  File "/cacheon/swap-intake/{bundle}/kernels/moe.py", line 10, in prepare
+    return dequantize_prepare_args((tag, view))
+  File "/usr/local/lib/python3.12/dist-packages/cacheon/moe_nvfp4_contract.py", line 217, in dequantize_prepare_args
+    w13 = codec.dequantize_nvfp4(w13_q, w13_sf.float())
+  File "/usr/local/lib/python3.12/dist-packages/cacheon_kernels/codec/nvfp4.py", line 48, in dequantize_nvfp4
+    cb = lut[nibbles.long()]
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 9.07 GiB. GPU {gpu} has {free} GiB free.
+'''
+        )
+    report = "\n".join(failure_lines("\n".join(traces)))
+    assert "bundle" in report and bundle in report
+    assert "kernels/moe.py:10 in prepare raised torch.OutOfMemoryError" in report
+    assert "CUDA out of memory. Tried to allocate 9.07 GiB." in report
+    assert "affected GPU/ranks" in report and "0, 1, 2, 3" in report
+    assert "cacheon_kernels/codec/nvfp4.py:48 dequantize_nvfp4" in report
+
+
+def test_installed_library_permission_failure_is_validator_attributed() -> None:
+    bundle = "b" * 64
+    trace = f'''Traceback (most recent call last):
+  File "/cacheon/swap-intake/{bundle}/kernels/moe.py", line 74, in fused_experts
+    return flashinfer_moe(x)
+  File "/usr/local/lib/python3.12/dist-packages/flashinfer/jit/cubin_loader.py", line 252, in ensure_symlink
+    path.mkdir(parents=True, exist_ok=True)
+PermissionError: [Errno 13] Permission denied: '/usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer'
+'''
+    report = "\n".join(explain({"evidence": []}, stderr=trace))
+    assert "VALIDATOR RUNTIME BLOCK" in report
+    assert "validator setup failure, not a bundle failure" in report
+    assert "kernels/moe.py:74" in report
+    assert "flashinfer/jit/cubin_loader.py:252 ensure_symlink" in report
 
 
 def test_traced_kernels_name_the_branch_taken_at_each_input_shape() -> None:

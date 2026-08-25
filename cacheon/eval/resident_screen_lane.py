@@ -39,6 +39,7 @@ from cacheon.arena_service import (
     ScreenStageResult,
 )
 from cacheon.eval.oci_backend import stage_swap_bundle
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.resident_queue import (
     CandidateScreenVerdict,
     ResidentScreenLoop,
@@ -53,6 +54,9 @@ from cacheon.stack_identity import canonical_digest
 SERVING_SCREEN_STAGE = "abbreviated_serving"
 _STAGE_EVIDENCE_SCHEMA = "cacheon.arena.resident-screen-stage.v2"
 _WAIVER_EVIDENCE_SCHEMA = "cacheon.arena.resident-screen-waiver.v1"
+_CANDIDATE_FAILURE_EVIDENCE_SCHEMA = (
+    "cacheon.arena.resident-screen-candidate-failure.v1"
+)
 
 
 class ResidentScreenLaneError(RuntimeError):
@@ -296,6 +300,8 @@ class ResidentScreenLane:
                 return item.verdict
             self._join_lifetime()
             if item.error is not None:
+                if isinstance(item.error, OuterSessionCandidateError):
+                    raise item.error
                 raise ResidentScreenLifetimeFailed(
                     f"resident screen lifetime failed: {item.error}"
                 ) from item.error
@@ -502,10 +508,15 @@ class ResidentServingScreenStage:
         self._root = Path(swap_intake_root)
         self._clock = clock
         self._bypass_reason: str | None = None
+        self._lifetime_failed = False
 
     @property
     def bypass_reason(self) -> str | None:
         return self._bypass_reason
+
+    @property
+    def lifetime_failed(self) -> bool:
+        return self._lifetime_failed
 
     def run_screen(self, candidate: ArenaCandidateBinding) -> ScreenStageResult:
         if type(candidate) is not ArenaCandidateBinding:
@@ -535,6 +546,25 @@ class ResidentServingScreenStage:
                 ScreenCandidate(
                     candidate.reservation.reservation_digest, staged_digest, slots
                 )
+            )
+        except OuterSessionCandidateError as exc:
+            self._lifetime_failed = True
+            evidence = canonical_digest(
+                _CANDIDATE_FAILURE_EVIDENCE_SCHEMA,
+                {
+                    "candidate_digest": candidate.digest,
+                    "failure": exc.candidate_failure,
+                    "publication_content_hash": publication.content_hash,
+                    "session_id": self._lane.session_id,
+                    "staged_digest": staged_digest,
+                },
+            )
+            return ScreenStageResult(
+                self.stage,
+                ScreenGrade.FAIL,
+                evidence,
+                self._elapsed_ms(started),
+                _stated(exc.candidate_failure),
             )
         except ResidentScreenLifetimeFailed:
             raise

@@ -28,6 +28,54 @@ authoritative.
 records. They are ignored and must not be committed, linked from public docs,
 or treated as production authority.
 
+## Owner directive: exact paths, no unsolicited rigor or fallback
+
+This section records a repeated agent failure. Agents have repeatedly added
+“graceful” fallback, trust/strictness machinery, parallel harnesses, and
+ceremony that Shiv did not request. July's silent stock fallbacks then cost a
+week of diagnosis. On 2026-08-25, an agent again fabricated off-chain wrapper
+inputs instead of using identities the production intake already derives.
+Shiv is explicitly sick of this behavior.
+
+- Do not add trustlessness, rigor, strictness, policy machinery, abstraction,
+  or fallback behavior unless Shiv explicitly orders that exact change.
+- Never silently substitute stock, downgrade, retry, waive, or convert the
+  requested path's failure into a graceful result. The exact requested path
+  either succeeds or fails loudly with its original cause.
+- Do not infer policy from an agent's idea of safety or elegance. Existing
+  product invariants constrain implementation; they do not authorize new
+  machinery.
+- Reuse the real production consumer and the inputs its existing producer
+  derives. Do not fabricate a parallel harness, reservation identity, digest,
+  epoch, or authority when the production path already makes it.
+- Slot/GPU behavior must be proven off-chain on the exact commissioned
+  image/model/TP topology and production entrypoint before mainnet. CPU tests,
+  a toy slot call, one GPU, or another image/model are not that proof.
+- Chain transport may add authentication, lease, publication, and durable
+  commit behavior. It must not change kernel correctness, memory use, CUDA
+  graph capture/replay, rank coverage, or stock restoration. If on-chain and
+  exact off-chain GPU outcomes differ, treat the off-chain claim as false until
+  the identity or consumer difference is named.
+- Anything short of the complete requested outcome is a failure. Do not report
+  partial setup, a pre-GPU stop, or a non-terminal product as success.
+- The miner capability boundary is simple: a bundle may compile and execute
+  optimized CUDA and use installed CUDA/Python libraries, including their
+  ordinary JIT, cache, and temporary writes inside the disposable container.
+  Do not impose a library allowlist or make package/cache directories
+  artificially unwritable. A bundle may replace only its registered slot
+  through the declared ABI; it may not mutate or reconfigure unrelated SGLang
+  or model-serving behavior (for example speculative decoding, batching,
+  engine flags, or unrelated chokepoints) to manufacture throughput.
+- Before mainnet, verify the actual live processes through `/proc/<pid>/environ`
+  and require source, image, READY receipt, registration, service identity,
+  worker epoch, watchdog epoch/source, dispatcher, supervisor, and intake to
+  agree. Stale tmux argv and broad `pgrep` matches have repeatedly lied.
+
+For the incident evidence behind this directive, read the local ignored ledger
+`.slot-run/LEDGER_2026-08-25_MAINNET_RECAPTURE.md` when present, then query
+AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
+`i:claude:1261519`, `i:claude:1266016`, and `i:codex:1266477`.
+
 ## Product invariants
 
 - A miner proposal is hostile input, not production source.

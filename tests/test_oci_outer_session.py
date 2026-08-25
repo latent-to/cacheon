@@ -13,6 +13,7 @@ import cacheon.eval.oci_outer_session as outer
 from cacheon.eval.oci_outer_session import (
     AttachedSessionTransport,
     OpenedOuterSession,
+    OuterSessionCandidateError,
     OuterSessionInfrastructureError,
     OuterSessionProcessError,
     OuterSessionProtocolError,
@@ -836,6 +837,36 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
         os.write(client.response_write, frame + b"x")
         assert transport.read_evidence(current, deadline=time.monotonic() + 1)
         assert transport.has_pending_output()
+    finally:
+        transport.abort()
+        client.close_fds()
+
+
+def test_candidate_failure_type_survives_resident_control_frame() -> None:
+    class CandidateExecutionFailure(RuntimeError):
+        pass
+
+    transport, client = _attached()
+    try:
+        error = error_message(
+            session_id="1" * 32,
+            launch_digest=LAUNCH,
+            stage="resident",
+            error=CandidateExecutionFailure(
+                "rank 0 moe.fused_experts during prepare at kernels/moe.py:10: "
+                "CUDA out of memory. Tried to allocate 9.07 GiB"
+            ),
+        )
+        os.write(client.response_write, frame_message(error, max_bytes=MAX_CONTROL_BYTES))
+        with pytest.raises(OuterSessionCandidateError) as raised:
+            outer._control_or_error(
+                transport,
+                session_id="1" * 32,
+                launch_digest=LAUNCH,
+                deadline=time.monotonic() + 1,
+            )
+        assert "kernels/moe.py:10" in raised.value.candidate_failure
+        assert "9.07 GiB" in raised.value.candidate_failure
     finally:
         transport.abort()
         client.close_fds()

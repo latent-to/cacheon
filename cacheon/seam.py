@@ -166,10 +166,12 @@ def _install_adapters(release_required: bool) -> None:
         try:
             mod = import_module(f"cacheon.integrations.{adapter.integration}")
             mod.install(REGISTRY)
-        except Exception:  # noqa: BLE001 - never break engine startup
+        except Exception:  # noqa: BLE001 - preserve the adapter's exact cause
             logger.exception("cacheon: failed to install seam %s", adapter.name)
             if release_required:
                 _release_abort(f"seam {adapter.name} did not install")
+            if _truthy(os.environ.get("CACHEON_ACTIVE")):
+                raise
 
 
 def load_candidate_bundle() -> None:
@@ -354,8 +356,10 @@ def _load_candidate_bundle_locked(
                 )
                 return
         _bundle_pending = None
-        if not _enable_loaded_bundle(bundle) and release_required:
-            _release_abort("bundle registered no slots")
+        if not _enable_loaded_bundle(bundle):
+            if release_required:
+                _release_abort("bundle registered no slots")
+            raise RuntimeError("bundle registered no slots")
         # Registry-conditional adapters (defer_gate/moe_export install only once
         # the deep slot is registered) saw an empty registry on every pre-load
         # activate() pass. Retry them NOW rather than hoping a later watched
@@ -370,6 +374,7 @@ def _load_candidate_bundle_locked(
         REGISTRY.clear()
         if release_required:
             _release_abort("bundle activation failed")
+        raise
 
 
 def _enable_loaded_bundle(bundle: str) -> list[str]:

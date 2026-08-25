@@ -12,7 +12,6 @@ import pytest
 torch = pytest.importorskip("torch")
 
 import cacheon.dispatch as dispatch  # noqa: E402
-import cacheon.registry as registry_module  # noqa: E402
 from cacheon import receipts  # noqa: E402
 from cacheon.registry import (  # noqa: E402
     Eligibility,
@@ -428,8 +427,14 @@ def test_moe_reduce_rejects_unverified_routing_dtypes(
     assert prepared == entered == []
 
 
-def test_collective_moe_prepare_failure_aborts_without_stock(monkeypatch):
+def test_collective_moe_prepare_failure_is_receipted_without_stock(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("CACHEON_MOE_SEAM", "1")
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
+    monkeypatch.setattr(receipts, "_ONCE", set())
+    monkeypatch.setattr(receipts, "_SCOPE", "")
+    receipts.set_scope("prepare-failure")
     monkeypatch.setattr(dispatch, "_tp_device_group", lambda: _Group(2))
     stock_calls = []
 
@@ -453,6 +458,11 @@ def test_collective_moe_prepare_failure_aborts_without_stock(monkeypatch):
     with pytest.raises(RuntimeError, match="prepare failed"):
         wrapped(_moe_layer(), x, routed)
     assert stock_calls == []
+    (failed,) = receipts.collect(tmp_path / "prepare-failure", "failed")
+    assert failed["slot"] == MOE_REDUCE
+    assert failed["phase"] == "prepare"
+    assert failed["source"] == "test_live_collective_contracts.py"
+    assert failed["line"] > 0
 
 
 def test_two_moe_variants_prepare_once_and_gap_serves_stock(monkeypatch):

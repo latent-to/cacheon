@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import statistics
 from collections.abc import Iterable
 from typing import Any
@@ -34,12 +35,24 @@ from cacheon.eval.resident_execution_evidence import (
     eager_slots,
 )
 from cacheon.kernel_trace import format_kernels
+from cacheon.receipts import validator_runtime_permission
 
 #: Kept in step with ``engine_worker.EXECUTION_SUMMARY_PREFIX``. Duplicated as a
 #: literal rather than imported: this renderer must read a log written by any
 #: worker version, including one older than the module it would import from.
 _SUMMARY_PREFIX = "CACHEON-EXECUTION-SUMMARY: "
 _CONFIG_PREFIX = "CACHEON-ENGINE-CONFIG: "
+_TRACE_FRAME = re.compile(
+    r'^  File "(?P<path>[^"\n]+)", line (?P<line>[1-9][0-9]*), in (?P<call>[^\n]+)$',
+    re.MULTILINE,
+)
+_CANDIDATE_FRAME = re.compile(
+    r"/swap-intake/(?P<bundle>[0-9a-f]{64})/(?P<source>[^\"\n]+)"
+)
+_TRACE_ERROR = re.compile(
+    r"^(?P<kind>[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):\s+(?P<message>[^\n]+)$",
+    re.MULTILINE,
+)
 
 #: Internally the timed runs are named B, C, B'. A miner has no reason to know
 #: that vocabulary, and using it in their report makes the one number they care
@@ -348,6 +361,11 @@ def _headline(execution: list[str], speed: list[str]) -> str:
             "VERDICT  your kernel failed to load on at least one GPU, so part "
             "of this run was SGLang, not you."
         )
+    if "VALIDATOR RUNTIME BLOCK" in joined:
+        return (
+            "VERDICT  the validator runtime denied an installed library's write. "
+            "This is a validator setup failure, not a bundle failure."
+        )
     if "RAISED" in joined:
         return (
             "VERDICT  your kernel raised an exception and the engine went down "
@@ -398,7 +416,11 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
             )
             execution.extend(execution_lines(ranks))
     if not execution and stderr is not None:
-        execution = execution_lines(ranks_from_log(stderr)) + _path_lines(_log_rows(stderr))
+        ranks = ranks_from_log(stderr)
+        execution = ([] if not ranks else execution_lines(ranks))
+        execution += failure_lines(stderr) + _path_lines(_log_rows(stderr))
+        if not execution:
+            execution = execution_lines(())
     # The headline exists because the sections below can be read in the wrong
     # order. A run where the kernel never executed still produces three speed
     # numbers and a ratio, and a miner who reads that first walks away believing
@@ -429,6 +451,81 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
             "note           this product carries no readable evidence at all; the run"
             " ended before it produced any."
         )
+    return lines
+
+
+def _trace_path(path: str, bundle: str) -> str:
+    candidate = f"/swap-intake/{bundle}/"
+    if candidate in path:
+        return path.split(candidate, 1)[1]
+    for marker in ("/site-packages/", "/dist-packages/", "/sglang/python/"):
+        if marker in path:
+            return path.split(marker, 1)[1]
+    return path.rsplit("/", 1)[-1]
+
+
+def failure_lines(stderr: object) -> list[str]:
+    """Extract candidate-owned tracebacks from a retained worker stream."""
+
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    if not isinstance(stderr, str) or not stderr:
+        return []
+    failures: dict[tuple[str, str, int, str, str, str], dict] = {}
+    for frame in _TRACE_FRAME.finditer(stderr):
+        candidate = _CANDIDATE_FRAME.search(frame.group("path"))
+        if candidate is None:
+            continue
+        boundary = stderr.find("\n\n", frame.end())
+        segment_end = len(stderr) if boundary < 0 else boundary
+        error = _TRACE_ERROR.search(stderr, frame.end(), segment_end)
+        if error is None:
+            continue
+        message = error.group("message")
+        summary = message.split(" GPU ", 1)[0]
+        key = (
+            candidate.group("bundle"),
+            candidate.group("source"),
+            int(frame.group("line")),
+            frame.group("call").strip(),
+            error.group("kind"),
+            summary,
+        )
+        row = failures.setdefault(
+            key, {"devices": set(), "chain": [], "occurrences": 0}
+        )
+        row["occurrences"] += 1
+        device = re.search(r"\bGPU ([0-9]+)\b", message)
+        if device:
+            row["devices"].add(int(device.group(1)))
+        chain = [
+            f"{_trace_path(nested.group('path'), key[0])}:"
+            f"{nested.group('line')} {nested.group('call').strip()}"
+            for nested in _TRACE_FRAME.finditer(stderr, frame.start(), error.start())
+        ]
+        if len(chain) > len(row["chain"]):
+            row["chain"] = chain
+    lines = []
+    for (bundle, source, line, phase, kind, message), row in failures.items():
+        label = (
+            "VALIDATOR RUNTIME BLOCK"
+            if validator_runtime_permission(kind, message)
+            else "RAISED"
+        )
+        verb = "reached" if label == "VALIDATOR RUNTIME BLOCK" else "raised"
+        lines.append(f"  {label:<26s} {source}:{line} in {phase} {verb} {kind}")
+        lines.append(f"  {'bundle':<26s} {bundle}")
+        lines.append(f"  {'error':<26s} {message}")
+        if row["devices"]:
+            devices = ", ".join(str(value) for value in sorted(row["devices"]))
+            lines.append(f"  {'affected GPU/ranks':<26s} {devices}")
+        elif row["occurrences"] > 1:
+            lines.append(
+                f"  {'affected GPU/ranks':<26s} {row['occurrences']} rank tracebacks; "
+                "rank IDs absent from stream"
+            )
+        if row["chain"]:
+            lines.append(f"  {'call chain':<26s} " + " -> ".join(row["chain"]))
     return lines
 
 
@@ -605,4 +702,10 @@ def execution_lines(ranks: tuple[RankExecution, ...] | list[RankExecution]) -> l
     return lines or [f"  {'nothing recorded':<26s} the run produced no execution record"]
 
 
-__all__ = ["config_lines", "execution_lines", "explain", "ranks_from_log"]
+__all__ = [
+    "config_lines",
+    "execution_lines",
+    "explain",
+    "failure_lines",
+    "ranks_from_log",
+]

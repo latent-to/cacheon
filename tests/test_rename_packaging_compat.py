@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from types import SimpleNamespace
 
 from cacheon import bootstrap
 
@@ -26,6 +27,16 @@ def test_bootstrap_installs_one_cacheon_finder_without_legacy_alias() -> None:
         if isinstance(finder, bootstrap._SeamFinder)
     ]
     assert len(finders) == 1
+
+
+def test_bootstrap_redirects_pinned_flashinfer_cubins_to_runtime_cache(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    target = tmp_path / "flashinfer-cubins"
+    monkeypatch.setenv("FLASHINFER_CUBIN_DIR", str(target))
+    module = SimpleNamespace(FLASHINFER_CUBIN_DIR=Path("/read-only/site-packages"))
+    bootstrap._redirect_flashinfer_cubins(module)
+    assert module.FLASHINFER_CUBIN_DIR == target
 
 
 def test_wheel_build_removes_stale_optima_packages(tmp_path: Path) -> None:

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import os
 import time
 from pathlib import Path
 
@@ -16,7 +14,6 @@ from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
     ArenaQualificationWork,
-    ArenaRuntimeIdentity,
     ArenaService,
     ArenaServiceManifest,
     NonCrownScreenPolicy,
@@ -45,13 +42,12 @@ from cacheon.eval.b300_arena_provider import (
 from cacheon.eval.b300_qualification_graph_store_io import (
     B300QualificationGraphEvidenceHold,
 )
-from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
+from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.oci_backend import (
     OCIBackendConfig,
     OCIEngineExecutor,
-    OCIRuntimeResourcePolicy,
 )
-from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
+from cacheon.eval.oci_prebuild import OCIPrebuildConfig
 from cacheon.eval.qualification_intake import (
     QualificationAuthorityManifest,
     QualificationPlanFactory,
@@ -556,6 +552,37 @@ def test_engine_death_latches_epoch_without_silent_reboot(
     assert resident.closed == 0
     provider.close()
     assert resident.closed == 1
+
+
+def test_candidate_failure_returns_fail_then_latches_dead_resident(
+    tmp_path: Path, executor_factory, monkeypatch
+) -> None:
+    authorities, _runner, resident, _builder = _authorities(
+        tmp_path, executor_factory
+    )
+    manifest = _manifest(authorities)
+    provider = B300ArenaServiceProvider(manifest, authorities)
+    candidate = _binding(tmp_path / "candidate")
+
+    def candidate_fail(stage, _candidate):
+        stage._lifetime_failed = True
+        return ScreenStageResult(
+            "abbreviated_serving",
+            ScreenGrade.FAIL,
+            _h("candidate-prepare-failure"),
+            1,
+            "candidate prepare OOM at kernels/moe.py:10",
+        )
+
+    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", candidate_fail)
+    result = provider.run_screen(
+        manifest, manifest.screens.stages[-1], candidate
+    )
+    assert result.grade is ScreenGrade.FAIL
+    with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
+        provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
+    assert resident.created == 1
+    provider.close()
 
 
 def test_canary_bypass_survives_resident_retirement(

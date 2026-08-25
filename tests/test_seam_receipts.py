@@ -98,9 +98,9 @@ def test_require_diagnoses_missing_bootstrap(receipt_dir):
         receipts.require(receipt_dir, "active", context="test")
 
 
-def test_require_diagnoses_bundle_fallback(receipt_dir):
+def test_require_diagnoses_loud_bundle_activation_failure(receipt_dir):
     receipts.write("load_failed", {"bundle": "b", "reason": "exception during load"})
-    with pytest.raises(RuntimeError, match="FELL BACK to baseline"):
+    with pytest.raises(RuntimeError, match="failed bundle activation"):
         receipts.require(receipt_dir, "active", context="test")
 
 
@@ -837,3 +837,31 @@ def test_a_candidate_raise_is_receipted_and_blamed_all_the_way_out(
     assert blame.startswith("candidate raised rank ")
     assert "RuntimeError in attention.msa_block_score (generation 4)" in blame
     assert worker._candidate_failures(str(tmp_path / "absent")) == ""
+
+
+def test_validator_library_permission_is_not_blamed_on_candidate(
+    tmp_path, monkeypatch
+):
+    from cacheon.eval import oci_session_worker as worker
+
+    monkeypatch.setattr(receipts, "_ONCE", set())
+    monkeypatch.setattr(receipts, "_SCOPE", "")
+    monkeypatch.setattr(receipts, "_ROOT", "")
+    monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", "")
+    control = tmp_path / "ctl"
+    receipts.set_root(control / "receipts")
+    receipts.set_scope(5)
+
+    def entry(_x):
+        raise PermissionError(
+            13,
+            "Permission denied",
+            "/usr/local/lib/python3.12/dist-packages/library/jit-cache",
+        )
+
+    with pytest.raises(PermissionError):
+        receipts.invoke("moe.fused_experts", entry, object())
+    rows = receipts.rows_for_scope(5, pid=os.getpid())
+    (failed,) = rows["failed"]
+    assert failed["failure_owner"] == "validator_runtime"
+    assert worker._candidate_failures(str(control)) == ""

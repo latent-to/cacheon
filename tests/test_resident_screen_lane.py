@@ -12,6 +12,7 @@ from cacheon.arena_service import ArenaCandidateBinding, ScreenGrade
 from cacheon.bundle_hash import content_hash
 from cacheon.chain.publication import publish_worker_bundle
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, SwapReceipt
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.resident_execution_evidence import ResidentExecutionEvidence
@@ -514,6 +515,37 @@ class TestResidentServingScreenStage:
         with pytest.raises(ResidentScreenLifetimeFailed, match="lifetime failed"):
             stage.run_screen(binding)
         assert stage.bypass_reason is None
+        with pytest.raises(ResidentScreenLifetimeFailed, match="explicit service restart"):
+            stage.run_screen(binding)
+        assert factory.calls == 1
+        lane.close()
+
+    def test_candidate_prepare_oom_is_a_terminal_screen_fail(self, tmp_path) -> None:
+        binding = _binding(tmp_path)
+        staged = binding.publication.content_hash
+
+        class PrepareOOMSession(FakeResidentSession):
+            def swap(self, bundle_digest):
+                if bundle_digest is not None:
+                    failure = (
+                        "rank 0 OutOfMemoryError in moe.fused_experts "
+                        "during prepare at kernels/moe.py:10: "
+                        "CUDA out of memory. Tried to allocate 9.07 GiB"
+                    )
+                    raise OuterSessionCandidateError(
+                        "resident: CandidateExecutionFailure: " + failure,
+                        candidate_failure=failure,
+                    )
+                return super().swap(bundle_digest)
+
+        stage, lane, _root, factory = self._stage(
+            tmp_path, lambda _n: PrepareOOMSession(100.0, {staged: 112.0})
+        )
+        result = stage.run_screen(binding)
+        assert result.grade is ScreenGrade.FAIL
+        assert "during prepare at kernels/moe.py:10" in result.reason
+        assert "9.07 GiB" in result.reason
+        assert stage.lifetime_failed
         with pytest.raises(ResidentScreenLifetimeFailed, match="explicit service restart"):
             stage.run_screen(binding)
         assert factory.calls == 1

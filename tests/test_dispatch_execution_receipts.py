@@ -28,7 +28,7 @@ def failures(monkeypatch):
     failed: list[tuple[str, str]] = []
     monkeypatch.setattr(
         dispatch._receipts, "failed",
-        lambda slot, exc: failed.append((slot, type(exc).__name__)),
+        lambda slot, exc, **_details: failed.append((slot, type(exc).__name__)),
     )
     return failed
 

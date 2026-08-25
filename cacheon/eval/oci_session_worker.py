@@ -73,6 +73,7 @@ CONTAINER_ARTIFACT_BASE = "/cacheon/native-artifacts"
 CONTAINER_CACHE_PATH = "/cacheon/runtime-cache"
 _WRITABLE_RUNTIME_DIRECTORIES = (
     "CUDA_CACHE_PATH",
+    "FLASHINFER_CUBIN_DIR",
     "FLASHINFER_WORKSPACE_BASE",
     "HF_HOME",
     "HOME",
@@ -743,6 +744,8 @@ def _candidate_failures(control_dir: str | None) -> str:
 
     if not control_dir:
         return ""
+    from cacheon.receipts import validator_runtime_permission
+
     found: list[str] = []
     try:
         for path in sorted(Path(control_dir, "receipts").glob("*/failed*.json"))[:16]:
@@ -750,9 +753,22 @@ def _candidate_failures(control_dir: str | None) -> str:
             if not isinstance(row, dict):
                 continue
             message = str(row.get("error", ""))[:256].replace("\n", " ")
+            if row.get("failure_owner") == "validator_runtime" or validator_runtime_permission(
+                row.get("error_type"), message
+            ):
+                continue
+            phase = str(row.get("phase", "entry"))[:16]
+            source = str(row.get("source", ""))[:128]
+            line = row.get("line")
+            location = (
+                f" at {source}:{line}"
+                if source and type(line) is int and line > 0
+                else ""
+            )
             found.append(
                 f"rank {row.get('rank')} {row.get('error_type')} in "
-                f"{row.get('slot')} (generation {path.parent.name}): {message}"
+                f"{row.get('slot')} (generation {path.parent.name}) "
+                f"during {phase}{location}: {message}"
             )
     except (OSError, ValueError):
         return ""

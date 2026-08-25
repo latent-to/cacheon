@@ -360,7 +360,6 @@ def make_moe_dispatcher(
     def dispatched(self, hidden_states, topk_output):
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_forward(self, hidden_states, topk_output)
-        selected_slot = None
         if _moe_seam_active():
             if not (_moe_supported(self) and hidden_states.dim() == 2):
                 pass
@@ -470,7 +469,6 @@ def make_moe_dispatcher(
                         if impl is None:
                             continue
                         if impl.prepare is None:
-                            selected_slot = slot
                             raise RuntimeError(
                                 f"selected MoE candidate for {slot} has no prepare"
                             )
@@ -478,7 +476,6 @@ def make_moe_dispatcher(
                             # Commit the routing receipt only after every non-miner
                             # preflight gate passed. Registry state is immutable in a
                             # live engine, so identity must remain exact.
-                            selected_slot = slot
                             committed = registry.select(slot, descriptor)
                             if committed.impl is not impl:
                                 raise RuntimeError(
@@ -486,7 +483,6 @@ def make_moe_dispatcher(
                                     "preflight and commit"
                                 )
                         else:
-                            selected_slot = slot
                             committed = registry.select(slot, descriptor)
                             if committed.impl is not impl:
                                 raise RuntimeError(
@@ -645,7 +641,9 @@ def _moe_prepared(self, impl, slot):
             args = spec.prepare_from_layer(self)
         else:
             args = (self.w13_weight.data, self.w2_weight.data)
-        cache[key] = impl.prepare(*args)
+        cache[key] = _receipts.invoke(
+            slot, impl.prepare, *args, phase="prepare"
+        )
     return cache[key]
 
 
@@ -782,7 +780,6 @@ def make_allreduce_dispatcher(
     def dispatched(self, input_, *args, **kwargs):
         if _dynamo_compiling():  # traced region bakes pure stock (see _dynamo_compiling)
             return baseline_all_reduce(self, input_, *args, **kwargs)
-        selected = False
         if _collective_seam_active() and not args and not kwargs:
             if (
                 torch.is_tensor(input_)
@@ -816,7 +813,6 @@ def make_allreduce_dispatcher(
                 else:
                     impl = None
                 if impl is not None:
-                    selected = True
                     # Audited baseline is COLLECTIVE (see arfusion note): rank-seeded
                     # sampling + lockstep dispatch make the extra reduce safe.
                     aud = not _in_cuda_graph() and _audit.sampled()
@@ -932,7 +928,6 @@ def make_arfusion_dispatcher(
                         exp, input_tensor, residual, weight, eps, max_token_num,
                         use_oneshot, trigger_completion_at_end, fp32_acc,
                         use_attn_tp_group, registry=registry, baseline_fn=baseline_fn)
-            selected = False
             # Contiguity guard = STOCK PARITY: the stock function refuses
             # non-contiguous input/residual/weight (real call sites pass views —
             # upstream guards for it, flashinfer_comm_fusion.py). A raw-pointer
@@ -971,7 +966,6 @@ def make_arfusion_dispatcher(
                         slot, descriptor
                     ).impl
                 if impl is not None:
-                    selected = True
                     # The audited baseline is COLLECTIVE: safe only because the
                     # sampling RNG is rank-identically seeded (audit.py) and all
                     # ranks reach this dispatcher in lockstep; never under capture.
@@ -1071,7 +1065,6 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
             f"/{exp_h} K={exp_k}) — refusing to serve an unfinalized output"
         )
 
-    route_committed = False
     selection = exp.get("selection")
     if not isinstance(selection, _moe_export.DeepSelection):
         raise ValueError("export pend has no producer-bound selection")
@@ -1134,8 +1127,6 @@ def _deep_consume(exp, input_tensor, residual, weight, eps, max_token_num,
     # lockstep ranks. From here onward, pointer wrapping, cloning, allocation,
     # candidate execution, and post-validation are rank-local fallible work: a
     # failure must abort the engine, never enter stock on only one rank.
-    route_committed = True
-
     gemm_out, row_map, scales = _moe_export.export_views(exp, input_tensor.device)
     if not (
         tuple(gemm_out.shape) == (exp_t * exp_k, exp_h)

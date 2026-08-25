@@ -669,6 +669,7 @@ def build_runtime_argv(
         "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256": worker_policy_digest,
         "CACHEON_DISPOSABLE_WRITABLE_ROOT": "1",
         "CUDA_CACHE_PATH": f"{CONTAINER_CACHE}/cuda",
+        "FLASHINFER_CUBIN_DIR": f"{CONTAINER_CACHE}/flashinfer-cubins",
         "FLASHINFER_WORKSPACE_BASE": f"{CONTAINER_CACHE}/flashinfer",
         "HF_HOME": f"{CONTAINER_CACHE}/huggingface",
         "HF_HUB_OFFLINE": "1",
