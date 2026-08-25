@@ -14,8 +14,8 @@ loaded between arrivals — the inference-service shape — and each
 ``screen`` call hands its candidate to that standing lifetime.  Candidate
 budgets and recovered canary withdrawals reset the scoring bracket inside the
 same engine session.  An unrecovered stock canary retires that untrusted
-routing lifetime once and bypasses screening; it never cold-loads a
-replacement lifetime for the same candidate.
+routing lifetime and returns a measured ``NO_DECISION``; it never promotes the
+candidate or cold-loads a replacement lifetime.
 
 Trust tier: screen/routing only, exactly like the queue module underneath.
 Non-swappable bundles (AOT device artifacts, native rebuild inputs,
@@ -57,6 +57,9 @@ _WAIVER_EVIDENCE_SCHEMA = "cacheon.arena.resident-screen-waiver.v1"
 _CANDIDATE_FAILURE_EVIDENCE_SCHEMA = (
     "cacheon.arena.resident-screen-candidate-failure.v1"
 )
+_STOCK_CANARY_FAILURE_EVIDENCE_SCHEMA = (
+    "cacheon.arena.resident-screen-stock-canary-failure.v1"
+)
 
 
 class ResidentScreenLaneError(RuntimeError):
@@ -67,8 +70,25 @@ class ResidentScreenLifetimeFailed(ResidentScreenLaneError):
     """The standing engine failed and may not be silently recreated."""
 
 
-class ResidentScreenUnavailable(ResidentScreenLaneError):
-    """The routing-only stock canary is unusable; qualify the candidate."""
+class ResidentStockCanaryFailure(ResidentScreenLaneError):
+    """Stock dispatch did not return to its measured pre-candidate band."""
+
+    def __init__(
+        self,
+        reference: float,
+        recovery: tuple[float, float],
+        tolerance: float,
+    ) -> None:
+        self.reference = reference
+        self.recovery = recovery
+        self.tolerance = tolerance
+        super().__init__(
+            "validator_stock_canary_not_recovered "
+            f"reference={format(reference, '.8g')} "
+            "recovery="
+            f"{format(recovery[0], '.8g')},{format(recovery[1], '.8g')} "
+            f"tolerance={format(tolerance, '.8g')}"
+        )
 
 
 def screen_waiver_result(
@@ -246,6 +266,7 @@ class ResidentScreenLane:
         self._session_id: str | None = None
         self._lifetime_error: BaseException | None = None
         self._last_evidence: object | None = None
+        self._last_canary_reference: float | None = None
         self._last_canary_recovery: tuple[float, float] | None = None
         self._last_canary_recovered: bool | None = None
         self._closed = False
@@ -274,9 +295,8 @@ class ResidentScreenLane:
         """Screen one candidate on the live lifetime, booting one if needed.
 
         Budget exhaustion resets inside the same session.  An unrecovered
-        stock canary ends this routing lifetime and tells the caller to bypass
-        screening; it never cold-loads a second model or emits a candidate
-        ``NO_DECISION``.
+        stock canary ends this routing lifetime and returns its exact measured
+        recovery as ``NO_DECISION``.  It never cold-loads a second model.
         """
 
         if type(candidate) is not ScreenCandidate:
@@ -285,6 +305,7 @@ class ResidentScreenLane:
             if self._closed:
                 raise ResidentScreenLaneError("resident screen lane is closed")
             with self._state:
+                self._last_canary_reference = None
                 self._last_canary_recovery = None
                 self._last_canary_recovered = None
             self._ensure_lifetime()
@@ -293,8 +314,18 @@ class ResidentScreenLane:
             self._await(item)
             if item.error is None and item.recycle:
                 self._join_lifetime()
-                raise ResidentScreenUnavailable(
-                    "stock canary did not recover; routing screen bypassed"
+                with self._state:
+                    reference = self._last_canary_reference
+                    recovery = self._last_canary_recovery
+                    recovered = self._last_canary_recovered
+                if reference is None or recovery is None or recovered is not False:
+                    raise ResidentScreenLaneError(
+                        "stock canary failure lost its measured recovery"
+                    )
+                raise ResidentStockCanaryFailure(
+                    reference,
+                    recovery,
+                    self._policy.canary_tolerance,
                 )
             if item.error is None and item.verdict is not None:
                 return item.verdict
@@ -380,6 +411,7 @@ class ResidentScreenLane:
                             session, reference
                         )
                         with self._state:
+                            self._last_canary_reference = reference
                             self._last_canary_recovery = recovery
                             self._last_canary_recovered = recovered
                         if recovered and not recovered_once:
@@ -485,8 +517,9 @@ class ResidentServingScreenStage:
     Swappable bundles are staged into the content-addressed swap intake and
     screened through the resident lane; the verdict maps to the stage grade
     (confident pass -> PASS, confident regression or wrong dispatch -> FAIL,
-    noisy but valid evidence -> PASS to qualification).  Canary withdrawal is
-    retried inside the lane and cannot become a screen result.  Non-swappable
+    noisy but valid evidence -> PASS to qualification).  A recovered canary
+    withdrawal is retried inside the lane; an unrecovered stock canary is a
+    measured ``NO_DECISION`` and can never promote the candidate.  Non-swappable
     bundles receive an explicitly recorded
     waiver PASS: the screen tier cannot pre-price them cheaply, so
     qualification — the deciding authority for every candidate — prices them
@@ -507,12 +540,7 @@ class ResidentServingScreenStage:
         self._lane = lane
         self._root = Path(swap_intake_root)
         self._clock = clock
-        self._bypass_reason: str | None = None
         self._lifetime_failed = False
-
-    @property
-    def bypass_reason(self) -> str | None:
-        return self._bypass_reason
 
     @property
     def lifetime_failed(self) -> bool:
@@ -521,6 +549,10 @@ class ResidentServingScreenStage:
     def run_screen(self, candidate: ArenaCandidateBinding) -> ScreenStageResult:
         if type(candidate) is not ArenaCandidateBinding:
             raise ResidentScreenLaneError("stage candidate is not exactly typed")
+        if self._lifetime_failed:
+            raise ResidentScreenLifetimeFailed(
+                "resident lifetime failed; explicit service restart required"
+            )
         started = self._clock()
         publication = candidate.publication
         manifest = load_manifest(publication.root)
@@ -529,12 +561,6 @@ class ResidentServingScreenStage:
             return screen_waiver_result(
                 candidate,
                 refusal,
-                self._elapsed_ms(started),
-            )
-        if self._bypass_reason is not None:
-            return screen_waiver_result(
-                candidate,
-                self._bypass_reason,
                 self._elapsed_ms(started),
             )
         staged_digest = stage_swap_bundle(
@@ -568,12 +594,28 @@ class ResidentServingScreenStage:
             )
         except ResidentScreenLifetimeFailed:
             raise
-        except ResidentScreenUnavailable as exc:
-            self._bypass_reason = str(exc)
-            return screen_waiver_result(
-                candidate,
-                self._bypass_reason,
+        except ResidentStockCanaryFailure as exc:
+            self._lifetime_failed = True
+            evidence = canonical_digest(
+                _STOCK_CANARY_FAILURE_EVIDENCE_SCHEMA,
+                {
+                    "candidate_digest": candidate.digest,
+                    "publication_content_hash": publication.content_hash,
+                    "recovery": [
+                        format(value, ".17g") for value in exc.recovery
+                    ],
+                    "reference": format(exc.reference, ".17g"),
+                    "session_id": self._lane.session_id,
+                    "staged_digest": staged_digest,
+                    "tolerance": format(exc.tolerance, ".17g"),
+                },
+            )
+            return ScreenStageResult(
+                self.stage,
+                ScreenGrade.NO_DECISION,
+                evidence,
                 self._elapsed_ms(started),
+                _stated(str(exc)),
             )
         recovery = self._lane.last_canary_recovery
         evidence = canonical_digest(
@@ -640,7 +682,7 @@ __all__ = [
     "ResidentScreenLane",
     "ResidentScreenLaneError",
     "ResidentScreenLifetimeFailed",
-    "ResidentScreenUnavailable",
+    "ResidentStockCanaryFailure",
     "ResidentServingScreenStage",
     "SERVING_SCREEN_STAGE",
     "make_backend_lifetime_factory",

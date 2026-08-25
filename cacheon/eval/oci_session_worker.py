@@ -141,21 +141,16 @@ def _write_all(fd: int, payload: bytes) -> None:
 
 
 def _reserve_protocol_fd() -> int:
-    """Keep stdout as CLOEXEC protocol and isolate engine stdout from it.
+    """Keep stdout as CLOEXEC protocol and retain engine stdout as diagnostics.
 
-    Stderr remains the container's stderr.  The trusted host continuously drains
-    that separate pipe, retains a fixed-size tail, and discards older bytes, so a
-    scheduler traceback survives without letting candidate output contaminate the
-    framed protocol or grow host memory without bound.
+    The trusted host continuously drains the separate stderr pipe and retains its
+    bounded artifact.  Redirecting fd 1 there keeps Python and native-library
+    stdout out of the framed protocol without throwing miner diagnostics away.
     """
 
     protocol = os.dup(1)
     os.set_inheritable(protocol, False)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, 1)
-    finally:
-        os.close(devnull)
+    os.dup2(2, 1)
     return protocol
 
 

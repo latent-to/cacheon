@@ -59,7 +59,6 @@ from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
-    screen_waiver_result,
 )
 from tests.support.b300 import arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
 
@@ -585,7 +584,7 @@ def test_candidate_failure_returns_fail_then_latches_dead_resident(
     provider.close()
 
 
-def test_canary_bypass_survives_resident_retirement(
+def test_canary_failure_holds_and_latches_resident_epoch(
     tmp_path: Path, executor_factory, monkeypatch
 ) -> None:
     authorities, _runner, resident, _builder = _authorities(
@@ -596,21 +595,26 @@ def test_canary_bypass_survives_resident_retirement(
     candidate = _binding(tmp_path / "candidate")
     calls = 0
 
-    def bypass(stage, item):
+    def canary_failure(stage, _item):
         nonlocal calls
         calls += 1
-        stage._bypass_reason = "stock canary unavailable"
-        return screen_waiver_result(item, stage._bypass_reason, 1)
+        stage._lifetime_failed = True
+        return ScreenStageResult(
+            "abbreviated_serving",
+            ScreenGrade.NO_DECISION,
+            _h("stock-canary-failure"),
+            1,
+            "validator_stock_canary_not_recovered reference=100 recovery=90,90",
+        )
 
-    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", bypass)
+    monkeypatch.setattr(ResidentServingScreenStage, "run_screen", canary_failure)
     assert provider.run_screen(
         manifest, manifest.screens.stages[-1], candidate
-    ).grade is ScreenGrade.PASS
-    assert (calls, resident.created, resident.closed) == (1, 1, 1)
-    assert provider.run_screen(
-        manifest, manifest.screens.stages[-1], candidate
-    ).grade is ScreenGrade.PASS
-    assert (calls, resident.created, resident.closed) == (1, 1, 1)
+    ).grade is ScreenGrade.NO_DECISION
+    assert (calls, resident.created, resident.closed) == (1, 1, 0)
+    with pytest.raises(B300ArenaProviderError, match="epoch restart required"):
+        provider.run_screen(manifest, manifest.screens.stages[-1], candidate)
+    assert (calls, resident.created, resident.closed) == (1, 1, 0)
     provider.close()
 
 

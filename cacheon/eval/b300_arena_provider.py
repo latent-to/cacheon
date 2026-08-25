@@ -54,7 +54,6 @@ from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLifetimeFailed,
     ResidentServingScreenStage,
-    screen_waiver_result,
 )
 from cacheon.stack_identity import canonical_digest
 
@@ -634,7 +633,6 @@ class B300ArenaServiceProvider:
             capabilities.qualification_stage if capabilities is not None else None
         )
         self._resident_lifetime: B300ResidentScreenLifetime | None = None
-        self._resident_screen_bypass_reason: str | None = None
         self._resident_failed = False
         self._resident_teardown_failed = False
         self._closed = False
@@ -676,12 +674,6 @@ class B300ArenaServiceProvider:
             self._require_open_and_current()
             started = time.monotonic()
             if stage.stage == _SERVING_STAGE:
-                if self._resident_screen_bypass_reason is not None:
-                    return screen_waiver_result(
-                        candidate,
-                        self._resident_screen_bypass_reason,
-                        max(1, round((time.monotonic() - started) * 1000)),
-                    )
                 lifetime = self._resident_lifetime
                 if lifetime is None:
                     try:
@@ -709,12 +701,8 @@ class B300ArenaServiceProvider:
                     raise B300ArenaProviderError(
                         "resident screen request failed"
                     ) from exc
-                bypass_reason = lifetime.screen_stage.bypass_reason
                 if lifetime.screen_stage.lifetime_failed:
                     self._resident_failed = True
-                if bypass_reason is not None:
-                    self._resident_screen_bypass_reason = bypass_reason
-                    self._release_resident()
             else:
                 configured = self._handlers.get(stage.stage)
                 if configured is None:

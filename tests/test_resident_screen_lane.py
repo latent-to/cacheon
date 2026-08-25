@@ -21,7 +21,7 @@ from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentScreenLaneError,
     ResidentScreenLifetimeFailed,
-    ResidentScreenUnavailable,
+    ResidentStockCanaryFailure,
     ResidentServingScreenStage,
     screen_swappability,
 )
@@ -234,13 +234,19 @@ class TestResidentScreenLane:
         lane = ResidentScreenLane(
             factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
         )
-        with pytest.raises(ResidentScreenUnavailable, match="screen bypassed"):
+        with pytest.raises(
+            ResidentStockCanaryFailure,
+            match=(
+                r"validator_stock_canary_not_recovered reference=95 "
+                r"recovery=90,90 tolerance=0\.012"
+            ),
+        ):
             lane.screen(_candidate())
         assert factory.calls == 1
         assert factory.sessions[0].finished
         lane.close()
 
-    def test_persistent_canary_drift_is_not_a_worker_epoch_failure(self) -> None:
+    def test_persistent_canary_drift_retains_measured_failure(self) -> None:
         factory = FakeLifetimeFactory(
             lambda _n: FakeResidentSession(
                 100.0, {DIGEST_A: 112.0}, stock_drift_after=1
@@ -249,8 +255,11 @@ class TestResidentScreenLane:
         lane = ResidentScreenLane(
             factory, prompts=("p",), verdict_timeout_s=30.0, close_timeout_s=30.0
         )
-        with pytest.raises(ResidentScreenUnavailable, match="screen bypassed"):
+        with pytest.raises(ResidentStockCanaryFailure) as captured:
             lane.screen(_candidate())
+        assert captured.value.reference == pytest.approx(95.0)
+        assert captured.value.recovery == pytest.approx((90.0, 90.0))
+        assert captured.value.tolerance == pytest.approx(0.012)
         assert factory.calls == 1
         assert all(session.finished for session in factory.sessions)
         lane.close()
@@ -484,7 +493,9 @@ class TestResidentServingScreenStage:
         assert stage.run_screen(binding).grade is ScreenGrade.FAIL
         lane.close()
 
-    def test_canary_drift_bypasses_without_second_lifetime(self, tmp_path) -> None:
+    def test_canary_drift_holds_with_measurements_without_second_lifetime(
+        self, tmp_path
+    ) -> None:
         binding = _binding(tmp_path)
         staged = binding.publication.content_hash
         stage, lane, _root, factory = self._stage(
@@ -493,12 +504,18 @@ class TestResidentServingScreenStage:
                 100.0, {staged: 112.0}, stock_drift_after=1
             ),
         )
-        assert stage.run_screen(binding).grade is ScreenGrade.PASS
-        assert factory.calls == 1
-        assert stage.bypass_reason == (
-            "stock canary did not recover; routing screen bypassed"
+        result = stage.run_screen(binding)
+        assert result.grade is ScreenGrade.NO_DECISION
+        assert result.reason == (
+            "validator_stock_canary_not_recovered reference=95 "
+            "recovery=90,90 tolerance=0.012"
         )
-        assert stage.run_screen(binding).grade is ScreenGrade.PASS
+        assert factory.calls == 1
+        assert stage.lifetime_failed
+        with pytest.raises(
+            ResidentScreenLifetimeFailed, match="explicit service restart"
+        ):
+            stage.run_screen(binding)
         assert factory.calls == 1
         lane.close()
 
@@ -514,7 +531,6 @@ class TestResidentServingScreenStage:
 
         with pytest.raises(ResidentScreenLifetimeFailed, match="lifetime failed"):
             stage.run_screen(binding)
-        assert stage.bypass_reason is None
         with pytest.raises(ResidentScreenLifetimeFailed, match="explicit service restart"):
             stage.run_screen(binding)
         assert factory.calls == 1
