@@ -765,13 +765,9 @@ def run_adapter(
         return final
     temporary = results / f".{request_id}.{os.getpid()}"
     temporary.mkdir(mode=0o700)
-    append_run_event(
-        journal_path(temporary),
-        request_id,
-        "pod.adapter",
-        "started",
-        worker_epoch=registration["worker_epoch"],
-    )
+    # The adapter requires an empty result directory before resident entry.
+    # Writing the run journal here made every screen refuse as
+    # adapter_request_failed and retry forever as remote_screen_infrastructure.
     deadline = min(request["deadline_unix"], int(time.time()) + MAX_JOB_SECONDS)
     owns_process = adapter_process is None
     process = adapter_process or PersistentAdapterProcess(
@@ -804,11 +800,16 @@ def run_adapter(
             "pod.adapter",
             "failed",
             failure_code=failure,
+            worker_epoch=registration["worker_epoch"],
         )
         infrastructure_result(request, temporary, failure, credential=credential)
     else:
         append_run_event(
-            journal_path(temporary), request_id, "pod.adapter", "completed"
+            journal_path(temporary),
+            request_id,
+            "pod.adapter",
+            "completed",
+            worker_epoch=registration["worker_epoch"],
         )
         try:
             finalize_adapter_response(

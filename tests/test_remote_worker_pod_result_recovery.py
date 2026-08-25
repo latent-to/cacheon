@@ -668,6 +668,35 @@ def test_invalid_resident_marker_holds_without_cleanup(
     assert process.calls == 1 and infrastructure == []
 
 
+def test_run_adapter_hands_empty_result_dir_to_evaluate(
+    authority: RecoveryAuthority,
+) -> None:
+    """Pod must not seed the result journal before the adapter empty-dir check.
+
+    Mainnet 2026-08-25: writing ``pod.adapter`` started into the temporary
+    result directory made every screen refuse as ``adapter_request_failed``
+    and retry forever as ``remote_screen_infrastructure``.
+    """
+
+    seen: dict[str, list[str]] = {}
+
+    class Guard(FailedAdapter):
+        def evaluate(self, request, job_root, result_root, *, deadline):
+            seen["names"] = sorted(path.name for path in result_root.iterdir())
+            return super().evaluate(
+                request, job_root, result_root, deadline=deadline
+            )
+
+    process = Guard("adapter_request_failed")
+    result = _run_failed_adapter(authority, process)
+    assert seen["names"] == []
+    row = spool.load_json(result / "result.json")
+    assert row["state"] == "no_decision"
+    assert row["failure_code"] == "adapter_request_failed"
+    assert journal_path(result).is_file()
+    assert process.calls == 1
+
+
 @pytest.mark.parametrize("failure", ["adapter_request_failed", "adapter_start_failed"])
 def test_typed_pre_resident_failure_without_marker_remains_no_decision(
     authority: RecoveryAuthority,
