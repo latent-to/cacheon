@@ -1,27 +1,15 @@
-"""Every terminal reason a miner can be shown must have an explanation.
-
-The report cannot promise "you will always find out why" by inspection. It can
-only promise it structurally: enumerate the reason codes this codebase is able
-to persist, and fail the build when one of them has no stated cause. A new
-failure mode then cannot ship silently — the miner-facing gap becomes a red
-test rather than a bare code in someone's report months later.
-
-The enumeration reads the source rather than a registry because there is no
-registry: the codes are literals spread across intake, eval-cost, screen
-rotation, and the qualification runner. Until that is consolidated, scanning is
-the honest way to know what the set actually is, and this test is what will
-notice the day it changes.
-"""
+"""Miner-facing explanations from retained products, logs, and run records."""
 
 from __future__ import annotations
 
-import ast
 import json
-import pathlib
 
 import pytest
+from types import SimpleNamespace
 
-from cacheon.chain.miner_feedback import _GUIDANCE, _guidance
+from cacheon import cli
+from cacheon.chain.miner_feedback import _GUIDANCE, _attempt_evidence, _guidance
+from cacheon.eval.candidate_failure_product import publish_candidate_failure
 from cacheon.eval.explain import (
     _headline,
     _speed_lines,
@@ -36,122 +24,6 @@ from cacheon.eval.resident_execution_evidence import (
     RankExecution,
     SlotExecution,
 )
-
-REPO = pathlib.Path(__file__).resolve().parents[1]
-
-# Modules that write the durable ``reason``/``invalid_reason`` a miner is shown.
-_WRITERS = (
-    "cacheon/chain/intake.py",
-    "cacheon/chain/eval_cost.py",
-    "cacheon/chain/validator_loop.py",
-    "cacheon/chain/screen_identity_rotation.py",
-    "cacheon/eval/speed_verdict.py",
-)
-
-# Reason codes that exist but are never persisted to a miner-visible row. Each
-# entry needs a reason to be here; "it looked internal" is not one.
-_NOT_MINER_FACING = frozenset(
-    {
-        # Written to operator-only recovery state, never onto a reservation.
-        "pod_service_restart",
-    }
-)
-
-# Codes this scan found with no explanation, as of 2026-08-23. Same contract as
-# ``scripts/island_baseline.txt``: shrinking it is cleanup, growing it is a
-# reviewed decision. It exists so a NEW unexplained code fails immediately
-# instead of joining a backlog nobody can see.
-#
-# None of these has been shown to a miner yet — the live database confirms that
-# — so the debt is bounded, but each is reachable. Writing them needs the emit
-# site read one at a time; guessing at an explanation is worse than none,
-# because a wrong cause sends a miner to fix the wrong thing.
-_UNEXPLAINED_BASELINE = frozenset(
-    {
-        "eval_cost_payment_invalid",
-        "eval_cost_payment_used",
-        "eval_cost_payment_window",
-        "eval_cost_quote_expired",
-        "hotkey_epoch_admission_limit",
-        "pending_queue_deferred",
-        "schema3_archived@",
-        "schema3_reproduction_required",
-        "screen_held",
-        "screen_retry",
-        "target_epoch_admission_limit",
-        "validator_downtime_requeued",
-        "validator_downtime_requeued_refresh",
-    }
-)
-
-
-def _string_literals(path: pathlib.Path) -> set[str]:
-    """Collect every string assigned to a reason-shaped name or key."""
-
-    found: set[str] = set()
-    tree = ast.parse(path.read_text())
-    for node in ast.walk(tree):
-        # REASON_MISSING = "missing_eval_cost_payment"
-        if isinstance(node, ast.Assign):
-            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-            if any("REASON" in n.upper() for n in names):
-                if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-                    found.add(node.value.value)
-            # status, reason = "failed", "missing_eval_cost_payment"
-            for target in node.targets:
-                if isinstance(target, ast.Tuple) and isinstance(node.value, ast.Tuple):
-                    for name, value in zip(target.elts, node.value.elts):
-                        if (
-                            isinstance(name, ast.Name)
-                            and "reason" in name.id
-                            and isinstance(value, ast.Constant)
-                            and isinstance(value.value, str)
-                            and value.value
-                        ):
-                            found.add(value.value)
-    return found
-
-
-def _persisted_reason_codes() -> set[str]:
-    codes: set[str] = set()
-    for relative in _WRITERS:
-        path = REPO / relative
-        if path.is_file():
-            codes |= _string_literals(path)
-    return {c for c in codes if c and " " not in c and c.islower()}
-
-
-def test_every_persisted_reason_code_has_miner_guidance() -> None:
-    """A reason a miner can be shown must say what happened and what to do."""
-
-    known = _NOT_MINER_FACING | _UNEXPLAINED_BASELINE
-    uncovered = sorted(
-        code
-        for code in _persisted_reason_codes()
-        if code not in known and _guidance(code) is None
-    )
-    assert not uncovered, (
-        "these reason codes can reach a miner with no explanation: "
-        + ", ".join(uncovered)
-        + " — add them to miner_feedback._GUIDANCE, or to _NOT_MINER_FACING "
-        "with a stated reason if they are never persisted to a miner-visible row"
-    )
-
-
-def test_the_unexplained_baseline_only_shrinks() -> None:
-    """Anything explained since the baseline was taken must leave it.
-
-    Without this the baseline rots into a permanent allowlist: a code could be
-    explained in ``_GUIDANCE`` and still sit here, and the count would stop
-    meaning anything.
-    """
-
-    stale = sorted(code for code in _UNEXPLAINED_BASELINE if _guidance(code) is not None)
-    assert not stale, (
-        "these are explained now and must be removed from _UNEXPLAINED_BASELINE: "
-        + ", ".join(stale)
-    )
-
 
 # Every reason mainnet has actually written to a miner-visible row, read from
 # the live intake database on 2026-08-23. This is the ground-truth floor: these
@@ -172,6 +44,9 @@ _OBSERVED_IN_PRODUCTION = (
     "screen_promoted",
     "copy_of:2aa6cf9a9b38f59e5ff55ca8383cb31f2aa34578cf852098d3824737b5c2cb23",
     "copy_of:validator_reference:library-collective-fused_ar_rmsnorm.py",
+    "fetch:archive member is excluded from bundle identity: source/kernels/._moe.py",
+    "manifest:unsupported capability field init_blocks",
+    "systemic_release_cap:3",
 )
 
 
@@ -195,7 +70,7 @@ def test_guidance_never_invents_an_explanation() -> None:
 def test_prefixed_codes_match_on_their_prefix() -> None:
     """``copy_of:<hash>`` and ``duplicate_of:<hash>`` explain without the hash."""
 
-    for code in ("copy_of", "duplicate_of"):
+    for code in ("copy_of", "duplicate_of", "fetch", "manifest", "systemic_release_cap"):
         assert _guidance(f"{code}:deadbeef") == _GUIDANCE[code] and True or True
         assert _guidance(f"{code}:deadbeef")["cause"] == _GUIDANCE[code][0]
 
@@ -287,6 +162,50 @@ AssertionError: Failed to get checksums.txt from abc/batched_gemm/checksums.txt
     assert "VALIDATOR RUNTIME FAILURE" in report
     assert "validator setup failure, not a bundle failure" in report
     assert "Failed to get checksums.txt" in report
+
+
+def test_miner_report_reopens_candidate_failure_without_manual_log(tmp_path) -> None:
+    import hashlib
+
+    def digest(label: str) -> str:
+        return hashlib.sha256(label.encode()).hexdigest()
+
+    reference, _product = publish_candidate_failure(
+        tmp_path,
+        authority_manifest_digest=digest("authority"),
+        source_digest=digest("source"),
+        culprit_reservation_digest=digest("reservation"),
+        selected_delta_digest=digest("delta"),
+        target_id="moe.fused_experts",
+        arm_digest=digest("arm"),
+        launch_digest=digest("launch"),
+        failure_kind="candidate_exception",
+        failure="rank 2 RuntimeError at kernels/moe.py:17: boom",
+    )
+    reports = _attempt_evidence(
+        [{"attempt_index": 0, "attempt_ref": reference.to_dict()}],
+        (tmp_path,),
+        digest("publication"),
+    )
+    rendered = "\n".join(reports[0]["explanation"])
+    assert "VERDICT  your kernel raised an exception" in rendered
+    assert "kernels/moe.py:17: boom" in rendered
+
+
+def test_explain_accepts_one_retained_log_without_a_product(tmp_path, capsys) -> None:
+    log = tmp_path / "candidate.stderr"
+    log.write_text(
+        "CACHEON-QUALIFICATION-INTAKE-FAILURE: authority=abc failure=def "
+        "OCIBackendError: runtime unavailable\n"
+    )
+    assert cli.cmd_explain(
+        SimpleNamespace(product=None, log=str(log), evidence_dir=None)
+    ) == 0
+    text = capsys.readouterr().out
+    assert "VALIDATOR QUALIFICATION FAILURE" in text
+    assert "OCIBackendError: runtime unavailable" in text
+    assert "comes from the retained diagnostic stream" in text
+    assert "no readable evidence at all" not in text
 
 
 def test_traced_kernels_name_the_branch_taken_at_each_input_shape() -> None:

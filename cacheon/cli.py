@@ -1676,6 +1676,7 @@ def cmd_chain_miner_report(args: argparse.Namespace) -> int:
             args.intake_db,
             hotkey=args.miner_hotkey,
             evidence_roots=tuple(Path(root) for root in args.evidence_root),
+            spool_roots=tuple(Path(root) for root in args.remote_spool_root),
         )
     except OperatorStatusError as exc:
         print(f"MINER REPORT REFUSED: {exc}")
@@ -1977,8 +1978,8 @@ def cmd_explain(args: argparse.Namespace) -> int:
         if product is None:
             print(f"{args.product}: no evaluation product found in this file")
             return 2
-    elif not args.evidence_dir:
-        print("explain requires a product JSON or --evidence-dir")
+    elif not args.evidence_dir and not args.log:
+        print("explain requires a product JSON, --log, or --evidence-dir")
         return 2
     logs: list[bytes] = []
     if args.log:
@@ -2906,6 +2907,12 @@ def build_parser() -> argparse.ArgumentParser:
             "per worker generation. Renders what each attempt measured and what "
             "every GPU did with the kernel, from the bytes the verdict rests on"
         ),
+    )
+    sp.add_argument(
+        "--remote-spool-root",
+        action="append",
+        default=[],
+        help="retained VM remote-worker spool; repeat for preserved worker epochs",
     )
     sp.add_argument("--json", action="store_true", help="emit canonical compact JSON")
     sp.set_defaults(func=cmd_chain_miner_report)

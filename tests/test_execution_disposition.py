@@ -40,6 +40,7 @@ from cacheon.chain.remote_qualification_evidence import (
     capture_remote_qualification_product,
     publish_evidence,
 )
+from cacheon.eval.remote_run_forensics import append_event as append_run_event, journal_path
 
 
 def _fixtures():
@@ -335,6 +336,10 @@ def _dispatcher(authority, transport):
 def _write_pod_refusal_result(authority, plan, failure_code):
     authority.results.mkdir(parents=True, exist_ok=True)
     result_root = authority.results / plan.request_id
+    append_run_event(
+        journal_path(result_root), plan.request_id, "pod.adapter", "failed",
+        failure_code=failure_code,
+    )
     pod_service.infrastructure_result(
         plan.request_dict(), result_root, failure_code, credential=authority.credential
     )
@@ -374,6 +379,9 @@ def _write_completed_result_for_plan(authority, fixtures, plan):
     result_root.mkdir(parents=True)
     (result_root / "response.json").write_bytes(
         spool.spool_canonical_json(response.to_dict()) + b"\n"
+    )
+    append_run_event(
+        journal_path(result_root), plan.request_id, "adapter.terminal", "completed"
     )
     spool.finalize_adapter_response(
         plan.request_dict(),

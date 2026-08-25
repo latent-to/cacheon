@@ -48,13 +48,13 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     verify_remote_request,
 )
 from cacheon.chain import remote_qualification_hold as remote_hold
+from cacheon.eval.remote_run_forensics import publish_worker_log
 from cacheon.stack_identity import (
     StackIdentityError,
     canonical_digest,
     canonical_json_bytes,
     sha256_hex,
 )
-
 
 SCHEMA_REGISTRATION = "cacheon-remote-worker-registration-v1"
 SCHEMA_REQUEST = "cacheon-remote-evaluation-request-v1"
@@ -165,7 +165,6 @@ ALLOWED_FAILURE_CODES = frozenset(
         "worker_epoch_superseded",
     }
 )
-
 MAX_JSON_BYTES = 4 * 1024 * 1024
 MAX_WIRE_PAYLOAD_BYTES = 64 << 20
 MAX_ARTIFACTS = 64
@@ -835,7 +834,8 @@ def finalize_adapter_response(
         result_root / "result.json",
         {
             "artifacts": [
-                {"role": "adapter_result", "sha256": digest, "size": len(raw)}
+                {"role": "adapter_result", "sha256": digest, "size": len(raw)},
+                publish_worker_log(result_root, request["request_id"]),
             ],
             "failure_code": None,
             "request_id": request["request_id"],

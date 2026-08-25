@@ -58,6 +58,7 @@ from cacheon.eval.oci_backend import (
 )
 from cacheon.eval.oci_outer_session import (
     BatchExecutionEvidence,
+    OuterSessionCandidateError,
     SessionExecutionEvidence,
     SessionExecutionPlan,
 )
@@ -715,6 +716,56 @@ def test_pipeline_order_or_execution_exception_is_no_decision_and_clears_carrier
     assert build.grade is ScreenGrade.PASS
     assert abi.grade is ScreenGrade.NO_DECISION
     assert graph_after_clear.grade is ScreenGrade.NO_DECISION
+
+
+def test_typed_candidate_exception_is_exact_terminal_screen_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog = default_target_catalog()
+    manifest, candidate, executor, plan, prebuild, _identity = _screen_case(
+        tmp_path, catalog,
+    )
+    monkeypatch.setattr(screen_stages, "_resolve_candidate_tree", lambda *_a, **_k: None)
+    monkeypatch.setattr(screen_stages, "run_oci_prebuild", lambda *_a, **_k: prebuild)
+    failure = (
+        "rank 3 RuntimeError in moe.fused_experts during entry at "
+        "kernels/moe.py:117: invalid launch geometry"
+    )
+    monkeypatch.setattr(
+        OCIEngineExecutor,
+        "execute",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            OuterSessionCandidateError(
+                "batch: CandidateEngineFailure",
+                candidate_failure=failure,
+                candidate_failure_type="CandidateEngineFailure",
+            )
+        ),
+    )
+    adapter = B300BuildABIGraphScreenAdapter(
+        catalog=catalog,
+        executor=executor,
+        plan_resolver_digest=_h("plan-resolver"),
+        plan_resolver=lambda _manifest, _candidate: plan,
+        evidence_policy_digest=_h("evidence-policy"),
+        evidence_root=tmp_path / "evidence",
+    )
+    try:
+        assert adapter.run_screen(
+            manifest, ScreenStagePolicy("build", 30_000), candidate
+        ).grade is ScreenGrade.PASS
+        abi = adapter.run_screen(
+            manifest, ScreenStagePolicy("abi", 30_000), candidate
+        )
+    finally:
+        adapter.close()
+        executor.manager.close()
+
+    assert abi.grade is ScreenGrade.FAIL
+    assert abi.reason.startswith("candidate_exception (CandidateEngineFailure:")
+    assert "kernels/moe.py:117" in abi.reason
+    assert "invalid launch geometry" in abi.reason
 
 
 def test_composition_exposes_only_the_exact_non_serving_order(tmp_path: Path) -> None:

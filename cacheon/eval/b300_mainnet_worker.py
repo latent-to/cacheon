@@ -62,7 +62,9 @@ from cacheon.eval.resident_pair_quality_lifecycle import (
     ResidentPairQualityLifecycleError,
 )
 from cacheon.eval.evidence_store import EvidenceArtifactRef
+from cacheon.eval.candidate_failure_product import candidate_failure_batch
 from cacheon.eval.oci_backend import OCIEngineExecutor
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.qualification_continuation import (
     QualificationContinuationError,
@@ -657,6 +659,18 @@ class B300MainnetWorker:
                             None if resident_prefix.count_result is None
                             else self._resident_count_quality.stock_authority
                         ),
+                    )
+                except OuterSessionCandidateError as exc:
+                    batch = candidate_failure_batch(
+                        work.factory.manifest,
+                        plan,
+                        exc,
+                    )
+                    self._validate_batch(batch, work, candidates)
+                    return (
+                        batch,
+                        work.factory.manifest,
+                        supporting_evidence_refs,
                     )
                 except (
                     B300ResidentQualificationError,

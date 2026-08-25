@@ -867,6 +867,20 @@ def test_candidate_failure_type_survives_resident_control_frame() -> None:
             )
         assert "kernels/moe.py:10" in raised.value.candidate_failure
         assert "9.07 GiB" in raised.value.candidate_failure
+        assert raised.value.candidate_failure_type == "CandidateExecutionFailure"
     finally:
         transport.abort()
         client.close_fds()
+
+
+@pytest.mark.parametrize(
+    "error_type", ("CandidateEngineFailure", "CandidateNeverExecutedError")
+)
+def test_all_typed_candidate_failures_survive_worker_boundary(error_type) -> None:
+    error = outer._worker_error(
+        ("batch", error_type, "rank 2 kernels/fail.py:17 RuntimeError: boom"),
+        diagnostic_provider=None,
+    )
+    assert type(error) is OuterSessionCandidateError
+    assert error.candidate_failure_type == error_type
+    assert "kernels/fail.py:17" in error.candidate_failure

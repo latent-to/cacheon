@@ -436,9 +436,9 @@ class ScreenStageResult:
             raise ArenaServiceError(f"screen stage row is invalid: {exc}") from None
 
 
-#: One line, printable, no control characters: a reason is a vocabulary word
-#: plus an exception type, never a message a candidate could have written.
-MAX_SCREEN_REASON_CHARS = 160
+#: One bounded printable line. Candidate text is diagnostic evidence only; it
+#: cannot select a grade, stage, policy, or authority.
+MAX_SCREEN_REASON_CHARS = 4_096
 _REASON = re.compile(r"[ -~]*\Z")
 _STAGE_ROW_FIELDS = frozenset({"elapsed_ms", "evidence_digest", "grade", "stage"})
 

@@ -22,6 +22,7 @@ from cacheon.chain.remote_evaluation_dispatcher import (
     seal_remote_response,
 )
 from cacheon.stack_identity import canonical_json_bytes
+from cacheon.eval.remote_run_forensics import append_event as append_run_event, journal_path
 
 
 def _dispatcher_fixtures():
@@ -242,6 +243,9 @@ def test_spool_screen_request_and_response_are_exact_authenticated_authority(
     result_root.mkdir()
     (result_root / "response.json").write_bytes(
         spool.spool_canonical_json(response.to_dict()) + b"\n"
+    )
+    append_run_event(
+        journal_path(result_root), request_id, "adapter.terminal", "completed"
     )
     spool.finalize_adapter_response(
         outer, job_dir, result_root, identity=identity, credential=credential

@@ -25,6 +25,7 @@ from cacheon.eval.crossover_runtime import (
 )
 from cacheon.eval.continuation_codec import ContinuationCodec, ContinuationCodecError
 from cacheon.eval.oci_resident_session import ResidentBatchEvidence, ResidentBatchShape
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.resident_evaluation_pair import (
     ResidentEvaluationHandle,
@@ -694,6 +695,9 @@ def run_resident_pair_crossover(
                 expected_swap_count=2 if candidate else int(symmetric_swap),
                 deadline=stage_deadline,
             )
+            fatal = pair.fatal_error
+            if isinstance(fatal, OuterSessionCandidateError):
+                raise fatal
         except ResidentEvaluationPairError as exc:
             raise ResidentPairCrossoverHold(f"resident {role} execution is on HOLD: {exc}") from None
         completed = _within_wall(clock, stage_deadline)

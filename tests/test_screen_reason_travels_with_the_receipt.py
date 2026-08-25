@@ -13,9 +13,12 @@ same row reader -- with no second mechanism to drift.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from cacheon.arena_service import (
+    MAX_SCREEN_REASON_CHARS,
     ArenaScreenReceipt,
     ArenaServiceError,
     PromotionDecision,
@@ -25,6 +28,11 @@ from cacheon.arena_service import (
 from cacheon.chain.intake import FinalizedArrival, FinalizedIntakeStore, IntakeScope
 from cacheon.chain.miner_feedback import format_miner_submissions, miner_submissions
 from cacheon.chain.operator_status import _screen_dispositions
+from cacheon.eval.remote_run_forensics import (
+    append_event as append_run_event,
+    journal_path,
+    publish_worker_log,
+)
 
 
 SCOPE = IntakeScope("0x" + "0" * 64, 307)
@@ -90,6 +98,70 @@ def test_the_reason_survives_the_round_trip_through_storage(tmp_path):
     assert "    static: static_policy (_CandidateStaticFailure)" in text
 
 
+def test_miner_report_joins_lease_transport_and_exact_worker_failure(tmp_path):
+    store, reservation_id = _rejected_store(tmp_path, reason="static_policy")
+    path = store.path
+    store.close()
+    request_id = "a" * 64
+    spool = tmp_path / "remote-worker"
+    carrier = spool / "outbox" / f"00000000000000000001-{request_id}"
+    carrier.mkdir(parents=True)
+    (carrier / "request.json").write_text(
+        json.dumps(
+            {
+                "lease": {"members": [{"reservation_id": reservation_id}]},
+                "request_id": request_id,
+            }
+        )
+    )
+    (spool / "events.jsonl").write_text(
+        json.dumps({"event": "request_transferred", "request_id": request_id})
+        + "\n"
+    )
+    result = spool / "results" / request_id
+    result.mkdir(parents=True)
+    append_run_event(
+        journal_path(result),
+        request_id,
+        "adapter.screen",
+        "failed",
+        failure={
+            "component": "sglang",
+            "exceptions": [
+                {
+                    "frames": [
+                        {
+                            "component": "sglang",
+                            "file": "/usr/local/lib/python3.12/dist-packages/sglang/runtime.py",
+                            "function": "capture",
+                            "line": 77,
+                        }
+                    ],
+                    "message": "graph capture failed",
+                    "type": "RuntimeError",
+                }
+            ],
+        },
+    )
+    worker_log = publish_worker_log(result, request_id)
+    (result / "result.json").write_text(
+        json.dumps(
+            {
+                "artifacts": [worker_log],
+                "failure_code": "adapter_epoch_failed",
+                "request_id": request_id,
+                "state": "no_decision",
+            }
+        )
+    )
+
+    report = miner_submissions(path, hotkey="miner-0", spool_roots=(spool,))
+    text = format_miner_submissions(report)
+    assert "remote request aaaaaaaaaaaaaaaa: no_decision (adapter_epoch_failed)" in text
+    assert "adapter.screen in sglang" in text
+    assert "sglang/runtime.py:77 in capture" in text
+
+
 def test_a_receipt_written_before_reasons_existed_keeps_its_digest(tmp_path):
     """Every receipt already on disk carries no reason and must verify as-is."""
 
@@ -119,7 +191,7 @@ def test_the_reason_is_inside_the_signed_receipt(tmp_path):
 
 @pytest.mark.parametrize(
     "reason",
-    ["x" * 161, "non-ascii é", "newline\nreason", 7],
+    ["x" * (MAX_SCREEN_REASON_CHARS + 1), "non-ascii é", "newline\nreason", 7],
 )
 def test_an_unprintable_or_oversized_reason_is_refused(reason):
     with pytest.raises(ArenaServiceError):

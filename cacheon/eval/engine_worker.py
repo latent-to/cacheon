@@ -34,6 +34,10 @@ class CandidateNeverExecutedError(CandidateExecutionCoverageError):
     """Every expected rank loaded the slot, but none recorded an execution."""
 
 
+class CandidateEngineFailure(RuntimeError):
+    """Candidate load or invocation receipts identify the failing bundle."""
+
+
 def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -251,7 +255,6 @@ def build_session_environment(
     audit arm armed it while nothing in production set the variable at all;
     that claim was unfalsifiable because this dict was unreachable from a test.
     """
-
     audited = audit_policy is not None
     return {
         "CACHEON_ACTIVE": "1" if active else "0",
@@ -299,7 +302,7 @@ def _emit_execution_summary(receipt_dir: str) -> None:
         from cacheon import receipts
 
         summary: dict[str, Any] = {}
-        for kind in ("active", "completed", "load_failed", "not_selected"):
+        for kind in ("active", "completed", "failed", "load_failed", "not_selected"):
             rows = receipts.collect(receipt_dir, kind)
             if rows:
                 summary[kind] = rows
@@ -310,6 +313,24 @@ def _emit_execution_summary(receipt_dir: str) -> None:
         )
     except Exception:  # noqa: BLE001 - a diagnostic must not mask the run's outcome
         logger.exception("cacheon: execution summary emit failed")
+
+
+def _candidate_receipt_failure(receipt_dir: str, receipt_module: object) -> str:
+    """Return the bounded candidate-owned load/invocation receipt rows."""
+
+    failures = [
+        {"kind": kind, **row}
+        for kind in ("failed", "load_failed")
+        for row in receipt_module.collect(receipt_dir, kind)
+        if row.get("failure_owner") != "validator_runtime"
+        and row.get("reason") != "pending candidate authority changed"
+    ]
+    return (
+        ""
+        if not failures
+        else "candidate receipts reported failure: "
+        + json.dumps(failures[:16], sort_keys=True, default=str)[:12_000]
+    )
 
 
 def _require_execution_completion(
@@ -586,6 +607,12 @@ def isolated_engine_session(
                     kill_process_tree(os.getpid(), include_parent=False)
                 except Exception:  # noqa: BLE001 - outer OCI teardown remains authoritative
                     pass
+    except BaseException as exc:
+        if receipt_dir and receipts is not None:
+            failure = _candidate_receipt_failure(receipt_dir, receipts)
+            if failure:
+                raise CandidateEngineFailure(failure) from exc
+        raise
     finally:
         if receipt_dir:
             _emit_execution_summary(receipt_dir)

@@ -14,6 +14,7 @@ from cacheon.eval.oci_resident_session import (
     ResidentBatchShape,
     SwapReceipt,
 )
+from cacheon.eval.oci_outer_session import OuterSessionCandidateError
 from cacheon.eval.oci_session_protocol import BatchEvidence, PromptEvidence
 from cacheon.eval.resident_execution_evidence import (
     UNOBSERVED_EVIDENCE,
@@ -538,6 +539,41 @@ def test_a_candidate_without_complete_execution_cannot_be_graded(
             plan, pair=pair, deadline=clock() + 120.0, clock=clock
         )
     assert "no proof its kernel executed" in str(caught.value), why
+
+
+def test_candidate_exception_crosses_the_real_resident_pair_path_typed(
+    tmp_path, cleanup_pairs
+):
+    plan, pair, clock, _activity, _factory_a, factory_b = _setup(
+        tmp_path,
+        cleanup_pairs,
+        baseline=(1.0,),
+        candidate=(0.8,),
+    )
+    session = factory_b.sessions[0]
+    candidate_error = OuterSessionCandidateError(
+        "batch: CandidateExecutionFailure: rank 2 failed",
+        candidate_failure="rank 2 RuntimeError at kernels/moe.py:17: boom",
+    )
+
+    def fail_candidate(_prompts, *, shape, canary=False):
+        assert type(shape) is ResidentBatchShape and not canary
+        session.closed = True
+        raise candidate_error
+
+    session.execute_batch_with_shape = fail_candidate
+    cleanup_pairs.remove(pair)
+    try:
+        with pytest.raises(OuterSessionCandidateError) as raised:
+            run_resident_pair_crossover(
+                plan, pair=pair, deadline=clock() + 120.0, clock=clock
+            )
+        assert raised.value is candidate_error
+    finally:
+        try:
+            pair.close()
+        except ResidentEvaluationPairError:
+            pass
 
 
 def test_v6_leaves_the_baseline_unswapped(tmp_path, cleanup_pairs):

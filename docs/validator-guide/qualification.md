@@ -194,11 +194,11 @@ evidence-publication exceptions abort the pass and recover through controller
 restart/hold handling rather than this typed batch product. Neither mechanism changes
 finalized arrival order.
 
-A typed candidate-worker error is attributable only when it binds the exact candidate
-arm and identity. The controller can contain that candidate and continue producing
-durable outcomes for unaffected cohort members. Baseline-lane, shared-controller,
-audit/T, or untyped worker failures are infrastructure authority failures; they are never
-assigned to a convenient candidate.
+A typed candidate-worker error is attributable only when rank receipts bind the exact
+registered singleton arm and identity. It publishes a terminal candidate failure product
+instead of entering the generic retry path. Baseline-lane, shared-controller, audit/T,
+multi-candidate, or untyped worker failures are infrastructure authority failures; they
+are never assigned to a convenient candidate.
 
 ## Gates and three-way decisions
 

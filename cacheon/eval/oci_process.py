@@ -1199,6 +1199,9 @@ class OCIProcessManager:
             temporary.unlink()
             temporary_created = False
             self._fsync_directory(self.diagnostics_root)
+            from cacheon.eval.remote_run_forensics import record_oci_artifact
+
+            record_oci_artifact(receipt)
         except BaseException:
             if fd >= 0:
                 os.close(fd)

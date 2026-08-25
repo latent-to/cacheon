@@ -25,6 +25,41 @@ def _write(root, kind, payload, index):
     (root / f"{kind}.{index}.json").write_text(json.dumps(payload))
 
 
+def test_teardown_summary_retains_failed_receipts(tmp_path, capsys):
+    _write(
+        tmp_path,
+        "failed",
+        {
+            "error": "boom",
+            "error_type": "RuntimeError",
+            "line": 17,
+            "phase": "entry",
+            "rank": 1,
+            "slot": "slot.a",
+            "source": "kernels/fail.py",
+        },
+        0,
+    )
+    engine_worker._emit_execution_summary(str(tmp_path))
+    summary = json.loads(capsys.readouterr().err.split(engine_worker.EXECUTION_SUMMARY_PREFIX)[1])
+    assert summary["failed"][0]["source"] == "kernels/fail.py"
+    assert summary["failed"][0]["line"] == 17
+
+
+def test_only_candidate_owned_receipts_type_the_engine_failure(tmp_path):
+    candidate = tmp_path / "candidate"
+    runtime = tmp_path / "runtime"
+    _write(candidate, "failed", {"slot": "a", "error": "boom"}, 0)
+    _write(
+        runtime,
+        "failed",
+        {"slot": "a", "error": "permission", "failure_owner": "validator_runtime"},
+        0,
+    )
+    assert "boom" in engine_worker._candidate_receipt_failure(str(candidate), receipts)
+    assert engine_worker._candidate_receipt_failure(str(runtime), receipts) == ""
+
+
 def _distributed_receipt_worker(rank, world_size, store_path, receipt_dir):
     import torch.distributed as dist
 

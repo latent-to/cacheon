@@ -366,6 +366,11 @@ def _headline(execution: list[str], speed: list[str]) -> str:
             "VERDICT  an installed validator library failed on its runtime files. "
             "This is a validator setup failure, not a bundle failure."
         )
+    if "VALIDATOR QUALIFICATION FAILURE" in joined:
+        return (
+            "VERDICT  qualification stopped on validator-side code. This is not "
+            "attributed to the bundle; the exact exception is retained below."
+        )
     if "RAISED" in joined:
         return (
             "VERDICT  your kernel raised an exception and the engine went down "
@@ -418,7 +423,11 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
     if not execution and stderr is not None:
         ranks = ranks_from_log(stderr)
         execution = ([] if not ranks else execution_lines(ranks))
-        execution += failure_lines(stderr) + _path_lines(_log_rows(stderr))
+        execution += (
+            failure_lines(stderr)
+            + qualification_failure_lines(stderr)
+            + _path_lines(_log_rows(stderr))
+        )
         if not execution:
             execution = execution_lines(())
     # The headline exists because the sections below can be read in the wrong
@@ -448,8 +457,13 @@ def explain(product: object, *, stderr: object = None) -> list[str]:
     if not decoded:
         lines.append("")
         lines.append(
-            "note           this product carries no readable evidence at all; the run"
-            " ended before it produced any."
+            (
+                "note           no product was supplied; the explanation above comes "
+                "from the retained diagnostic stream."
+                if stderr is not None
+                else "note           this product carries no readable evidence at all; "
+                "the run ended before it produced any."
+            )
         )
     return lines
 
@@ -526,6 +540,120 @@ def failure_lines(stderr: object) -> list[str]:
             )
         if row["chain"]:
             lines.append(f"  {'call chain':<26s} " + " -> ".join(row["chain"]))
+    return lines
+
+
+def qualification_failure_lines(stderr: object) -> list[str]:
+    """Render exact pre-product qualification errors retained by the OCI stream."""
+
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    if not isinstance(stderr, str):
+        return []
+    prefix = "CACHEON-QUALIFICATION-INTAKE-FAILURE: "
+    return [
+        f"  {'VALIDATOR QUALIFICATION FAILURE':<26s} {line.split(prefix, 1)[1]}"
+        for line in stderr.splitlines()
+        if prefix in line
+    ]
+
+
+def traceback_lines(stderr: object) -> list[str]:
+    """Render each distinct retained Python traceback without guessing ownership."""
+
+    from cacheon.eval.remote_run_forensics import component_for_path
+
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    if not isinstance(stderr, str):
+        return []
+    lines: list[str] = []
+    seen: set[tuple] = set()
+    for segment in stderr.split("Traceback (most recent call last):")[1:]:
+        frames = tuple(
+            (frame.group("path"), int(frame.group("line")), frame.group("call").strip())
+            for frame in _TRACE_FRAME.finditer(segment)
+        )
+        errors = tuple(_TRACE_ERROR.finditer(segment))
+        if not frames or not errors:
+            continue
+        error = errors[-1]
+        key = (*frames, error.group("kind"), error.group("message"))
+        if key in seen:
+            continue
+        seen.add(key)
+        component = component_for_path(frames[-1][0])
+        lines.append(
+            f"  {'TRACEBACK':<26s} {component}: {error.group('kind')}: "
+            f"{error.group('message')}"
+        )
+        lines.extend(
+            f"    {component_for_path(path)} {path}:{line} in {call}"
+            for path, line, call in frames
+        )
+    return lines
+
+
+def worker_log_lines(value: object) -> list[str]:
+    """Render one request-scoped worker log through the existing explain vocabulary."""
+
+    if type(value) is not dict or type(value.get("events")) is not list:
+        return ["worker log is unreadable"]
+    lines = [f"request {value.get('request_id', 'unknown')}"]
+    events = [row for row in value["events"] if isinstance(row, dict)]
+    completed = [
+        f"{row.get('phase')}={row.get('state')}"
+        for row in events
+        if row.get("state") != "started"
+    ]
+    if completed:
+        lines.append("  phases                     " + " -> ".join(completed))
+    for event in reversed(events):
+        failure = event.get("failure")
+        if not isinstance(failure, dict):
+            if event.get("state") == "failed" and event.get("failure_code"):
+                lines.append(
+                    f"  {'FAILED':<26s} {event.get('phase')}: {event.get('failure_code')}"
+                )
+            continue
+        lines.append(
+            f"  {'FAILED':<26s} {event.get('phase')} in "
+            f"{failure.get('component', 'unknown')}"
+        )
+        for exception in failure.get("exceptions", []):
+            if not isinstance(exception, dict):
+                continue
+            lines.append(
+                f"    {exception.get('type', 'Exception')}: {exception.get('message', '')}"
+            )
+            for frame in exception.get("frames", []):
+                if isinstance(frame, dict):
+                    lines.append(
+                        f"      {frame.get('component')} {frame.get('file')}:"
+                        f"{frame.get('line')} in {frame.get('function')}"
+                    )
+        break
+    for stream in value.get("oci_streams", []):
+        if not isinstance(stream, dict) or not isinstance(stream.get("receipt"), dict):
+            continue
+        receipt = stream["receipt"]
+        try:
+            raw = base64.b64decode(stream.get("payload_base64", ""), validate=True)
+        except (TypeError, ValueError):
+            continue
+        lines.append(
+            f"  {'OCI OUTPUT':<26s} {receipt.get('executor_id')}/"
+            f"{receipt.get('lease_id')}: {len(raw)} bytes, sha256 "
+            f"{receipt.get('artifact_sha256')}"
+        )
+        details = failure_lines(raw) + qualification_failure_lines(raw)
+        details += traceback_lines(raw)
+        ranks = ranks_from_log(raw)
+        if ranks:
+            details += execution_lines(ranks)
+        for detail in details:
+            if detail not in lines:
+                lines.append(detail)
     return lines
 
 
@@ -626,6 +754,30 @@ def ranks_from_log(stderr: object) -> tuple[RankExecution, ...]:
     return tuple(ranks)
 
 
+def candidate_failure_lines(value: object) -> list[str]:
+    """Render one authenticated candidate-failure attempt without log hunting."""
+
+    from cacheon.eval.candidate_failure_product import validate_candidate_failure
+
+    product = validate_candidate_failure(value)
+    culprit = product["culprit"]
+    never = product["failure_kind"] == "candidate_never_executed"
+    lines = [
+        (
+            "VERDICT  your kernel loaded but never executed; no timing result can "
+            "be attributed to it."
+            if never
+            else "VERDICT  your kernel raised an exception and terminated its candidate arm."
+        ),
+        f"  {'target':<26s} {culprit['target_id']}",
+        f"  {'reservation':<26s} {culprit['reservation_digest']}",
+        f"  {'candidate arm':<26s} {culprit['arm_digest']}",
+        f"  {'candidate launch':<26s} {culprit['launch_digest']}",
+        f"  {'exact failure':<26s} {product['failure']}",
+    ]
+    return lines
+
+
 def execution_lines(ranks: tuple[RankExecution, ...] | list[RankExecution]) -> list[str]:
     """Render what the ranks recorded for one closed generation."""
 
@@ -703,9 +855,13 @@ def execution_lines(ranks: tuple[RankExecution, ...] | list[RankExecution]) -> l
 
 
 __all__ = [
+    "candidate_failure_lines",
     "config_lines",
     "execution_lines",
     "explain",
     "failure_lines",
+    "qualification_failure_lines",
     "ranks_from_log",
+    "traceback_lines",
+    "worker_log_lines",
 ]

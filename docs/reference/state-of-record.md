@@ -97,6 +97,22 @@ The evidence classes are intentionally non-substitutable:
   diagnostics without taking the controller's writer lock. They report typed
   retained causes and evidence limitations rather than inferring candidate blame
   from a status string.
+- Candidate load/invocation exceptions now cross the OCI boundary as a distinct
+  candidate-owned type only when scheduler receipts prove ownership. Qualification
+  publishes a content-addressed failure product containing the exact arm, launch,
+  reservation, rank/slot/phase/file/line error, and retained diagnostic hash.
+  Fresh registered qualification is singleton-bound, so that proved exception is
+  terminal `FAIL` without a retry. Validator-runtime receipts remain infrastructure
+  outcomes.
+- Engine/native stdout and stderr share the retained bounded OCI diagnostic after
+  the framed protocol descriptor is reserved. `explain --log <artifact>` works
+  without a product. Fetch and manifest failures retain safe generic guidance
+  without exposing the validator's private path or transport detail.
+- Every new remote request also publishes the existing `worker_log` output role.
+  It joins adapter phase events and every OCI diagnostic receipt/raw prefix to the
+  request ID on both success and infrastructure failure. `chain-miner-report
+  --remote-spool-root` combines it with immutable lease/recovery and transport
+  events, so the displayed failure names its observed component and exact traceback.
 
 ### Validator recovery archive
 

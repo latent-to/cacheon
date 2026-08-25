@@ -19,6 +19,9 @@ if TYPE_CHECKING:
     from cacheon.settlement import SettlementQualification
 
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
+from cacheon.eval.candidate_failure_product import (
+    candidate_failure_batch,
+)
 from cacheon.eval.qualification import (
     GRAPH_EVIDENCE_DOMAIN,
     GRAPH_EVIDENCE_MEDIA_TYPE,
@@ -51,11 +54,10 @@ from cacheon.eval.qualification_runner import (
 )
 from cacheon.eval.oci_backend import OCIBackendError
 from cacheon.eval.oci_outer_session import (
+    OuterSessionCandidateError,
     OuterSessionProcessError,
 )
 from cacheon.eval.qualification_continuation import QualificationContinuationStore
-from cacheon.eval.qualification_failure_ledger import record_qualification_failure
-from cacheon.eval.marginal_runtime import CandidateArmWorkerError
 from cacheon.eval.resident_pair_quality_lifecycle import (
     ResidentPairMarginalLifecycleEvidence,
 )
@@ -702,11 +704,9 @@ def _failure_digest(manifest: QualificationAuthorityManifest, exc: BaseException
     )
     # The digest binds the failure text but does not carry it, and the batch
     # crosses the trust boundary carrying only NO_DECISION plus this digest.
-    # Without an operator-readable copy on the worker side, a non-verdict is
-    # undiagnosable: on 2026-08-15 six reservations parked with reason
-    # "qualification_runner" and the cause could not be read back from any
-    # retained artifact.  Emit the text to the worker log only -- widening the
-    # wire schema is what broke two consumers earlier the same day.
+    # Pre-plan failures have no evidence root yet. Emit their exact text to the
+    # worker diagnostic stream, which the OCI manager now retains and ``explain
+    # --evidence-dir`` renders, instead of maintaining a second optional ledger.
     import sys
 
     print(
@@ -715,12 +715,6 @@ def _failure_digest(manifest: QualificationAuthorityManifest, exc: BaseException
         f"{type(exc).__name__}: {str(exc)[:2048]}",
         flush=True,
         file=sys.stderr,
-    )
-    # A rotating log answers this for as long as it happens to survive. The
-    # ledger keeps the digest -> why mapping durably, so a miner asking why a
-    # bundle reached no verdict has an answer that outlives the log.
-    record_qualification_failure(
-        failure_digest=digest, authority_digest=manifest.digest, exc=exc
     )
     return digest
 
@@ -977,22 +971,10 @@ def run_qualification_intake(
         return _no_decision_batch(manifest, exc, reason="raw_speed_evidence")
     except OuterSessionProcessError as exc:
         return _no_decision_batch(manifest, exc, reason="outer_session_process")
-    except CandidateArmWorkerError as exc:
-        # The marginal lifecycle creates this type only while an exact C arm is
-        # active.  A failed multi-candidate run has no complete causal evidence,
-        # so retain NO_DECISION and use manifest-bound bisection; the offending
-        # singleton is eventually held while unrelated retry groups continue.
-        if (
-            exc.candidate_index >= len(manifest.reservations)
-            or manifest.reservations[
-                exc.candidate_index
-            ].selected_delta_digest
-            != exc.selected_delta_digest
-        ):
-            raise QualificationIntakeError(
-                "candidate worker identity differs from intake authority"
-            ) from exc
-        return _no_decision_batch(manifest, exc, reason="candidate_worker")
+    except OuterSessionCandidateError as exc:
+        if len(manifest.reservations) != 1:
+            return _no_decision_batch(manifest, exc, reason="candidate_worker")
+        return candidate_failure_batch(manifest, value, exc)
     except OCIBackendError as exc:
         return _no_decision_batch(manifest, exc, reason="oci_backend")
     except QualificationRunnerError as exc:

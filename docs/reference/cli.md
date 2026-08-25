@@ -289,7 +289,8 @@ more than one row:
 ```bash
 python -m cacheon.cli chain-miner-report \
   --intake-db /srv/cacheon/state/intake.sqlite3 \
-  --miner-hotkey <SS58>
+  --miner-hotkey <SS58> \
+  --remote-spool-root /srv/cacheon/remote-worker
 ```
 
 Each submission is reported with its typed outcome, the persisted reason code, a
@@ -308,6 +309,20 @@ and why any call routed to SGLang's kernel instead. Those rows are published by
 the run as the unsealed `qualification.execution` artifact and matched to the
 submission by its publication digest; an attempt whose store is not configured
 is reported as not retained rather than omitted.
+
+Pass `--remote-spool-root <dir>` once per retained worker epoch to join the
+immutable lease/recovery history with request transport events and the result's
+request-scoped `worker_log`. That artifact contains adapter phases and the
+bounded combined stdout/stderr bytes plus sidecar identity for every OCI
+lifetime in the request. A crash report therefore names the last completed
+phase, observed component, exception chain, file and line, and retained raw-log
+hash without searching VM or pod logs.
+
+A candidate-owned load or invocation error is retained as its own qualification
+failure product. With the corresponding `--evidence-root`, this command prints
+the offending reservation and candidate arm, exact error, and diagnostic
+stream hash. Fresh registered qualification is singleton-bound, so a
+proved candidate exception is terminal `FAIL` without a retry or a cohort guess.
 
 The report never derives a decision. A row carrying no typed decision is reported
 as having none. It reads the same durable rows through the same read-only

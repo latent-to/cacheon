@@ -32,6 +32,7 @@ from cacheon.eval.qualification_intake import (
     QualificationIntakeOutcome,
     QualificationRetryPlan,
 )
+from cacheon.eval.remote_run_forensics import append_event as append_run_event, journal_path
 
 
 def _fixtures():
@@ -136,6 +137,9 @@ def _write_hold_result(authority, plan, carrier) -> None:
     result_root.mkdir(parents=True)
     (result_root / "response.json").write_bytes(
         spool.spool_canonical_json(response.to_dict()) + b"\n"
+    )
+    append_run_event(
+        journal_path(result_root), plan.request_id, "adapter.terminal", "completed"
     )
     spool.finalize_adapter_response(
         plan.request_dict(),

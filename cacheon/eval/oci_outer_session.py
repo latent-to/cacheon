@@ -125,9 +125,11 @@ class OuterSessionCandidateError(OuterSessionWorkerError):
         diagnostic_provider: Callable[[], OCIAttachedDiagnostic] | None = None,
         *,
         candidate_failure: str,
+        candidate_failure_type: str = "CandidateExecutionFailure",
     ) -> None:
         super().__init__(message, diagnostic_provider)
         self.candidate_failure = candidate_failure
+        self.candidate_failure_type = candidate_failure_type
 
 
 class SessionTransport(Protocol):
@@ -600,11 +602,16 @@ def _worker_error(
 
     stage, error_type, message = detail
     rendered = ": ".join(detail)
-    if error_type == "CandidateExecutionFailure":
+    if error_type in {
+        "CandidateEngineFailure",
+        "CandidateExecutionFailure",
+        "CandidateNeverExecutedError",
+    }:
         return OuterSessionCandidateError(
             rendered,
             diagnostic_provider,
             candidate_failure=message,
+            candidate_failure_type=error_type,
         )
     return OuterSessionWorkerError(rendered, diagnostic_provider)
 

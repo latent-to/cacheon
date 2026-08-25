@@ -365,12 +365,33 @@ def _load_candidate_bundle_locked(
         # activate() pass. Retry them NOW rather than hoping a later watched
         # module import re-triggers activate() after this load.
         _install_adapters(release_required)
-    except Exception:  # noqa: BLE001 - a bad bundle must not wedge the engine
+    except Exception as exc:  # noqa: BLE001 - a bad bundle must not wedge the engine
         _bundle_pending = None
         logger.exception("cacheon: bundle load failed for %s", bundle)
         from cacheon import receipts
 
-        receipts.write("load_failed", {"bundle": bundle, "reason": "exception during load"})
+        payload = {
+            "bundle": bundle,
+            "error_type": type(exc).__name__,
+            "reason": str(exc)[:512],
+        }
+        if receipts.validator_runtime_failure(payload["error_type"], payload["reason"]):
+            payload["failure_owner"] = "validator_runtime"
+        root = Path(bundle)
+        cursor = exc.__traceback__
+        location = None
+        while cursor is not None:
+            source = Path(cursor.tb_frame.f_code.co_filename)
+            try:
+                relative = source.relative_to(root)
+            except ValueError:
+                cursor = cursor.tb_next
+                continue
+            location = (relative.as_posix()[:128], cursor.tb_lineno)
+            cursor = cursor.tb_next
+        if location is not None:
+            payload.update(source=location[0], line=location[1])
+        receipts.write("load_failed", payload)
         REGISTRY.clear()
         if release_required:
             _release_abort("bundle activation failed")

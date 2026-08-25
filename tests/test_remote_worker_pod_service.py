@@ -13,6 +13,7 @@ from cacheon.chain import remote_worker_pod_service as pod_service
 from cacheon.chain import remote_worker_service as service_cli
 from cacheon.chain import remote_worker_spool as spool
 from cacheon.chain.remote_worker_registration import PodPaths
+from cacheon.eval.remote_run_forensics import append_event as append_run_event, journal_path
 
 
 def _pod_paths(tmp_path: Path) -> PodPaths:
@@ -423,6 +424,9 @@ def test_publish_result_emits_verifiable_ready_receipt(tmp_path: Path) -> None:
         result_root.mkdir()
         (result_root / "response.json").write_bytes(
             spool.spool_canonical_json(response.to_dict()) + b"\n"
+        )
+        append_run_event(
+            journal_path(result_root), request_id, "adapter.terminal", "completed"
         )
         spool.finalize_adapter_response(
             outer, job_dir, result_root, identity=identity, credential=credential

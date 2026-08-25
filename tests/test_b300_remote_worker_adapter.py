@@ -292,7 +292,7 @@ def test_adapter_pre_resident_carrier_failure_never_calls_worker(
 
     monkeypatch.setattr(adapter, "verify_request", rejecting_verify)
     with pytest.raises(adapter.AdapterRequestFailed) as captured:
-        adapter.run_with_runtime(tmp_path / "request", tmp_path / "result", runtime)
+        adapter.run_with_runtime(tmp_path / ("1" * 64), tmp_path / "result", runtime)
     assert isinstance(captured.value.__cause__, spool.RemoteWorkerError)
     assert runtime.worker.calls == 0
 
@@ -306,7 +306,7 @@ def test_qualification_requests_are_refused_before_resident_work(
         monkeypatch, stage="qualification", wire=object()
     )
     with pytest.raises(adapter.AdapterRequestFailed) as captured:
-        adapter.run_with_runtime(tmp_path / "request", tmp_path / "result", runtime)
+        adapter.run_with_runtime(tmp_path / ("1" * 64), tmp_path / "result", runtime)
     assert "qualification execution authority" in str(captured.value.__cause__)
     assert runtime.worker.calls == 0
 
@@ -541,7 +541,7 @@ def test_qualification_execution_failure_is_epoch_fatal(
     result_dir = tmp_path / "result"
     result_dir.mkdir(mode=0o700)
     with pytest.raises(adapter.AdapterEpochFailed) as captured:
-        adapter.run_with_runtime(tmp_path / "request", result_dir, runtime)
+        adapter.run_with_runtime(tmp_path / ("1" * 64), result_dir, runtime)
     assert isinstance(captured.value.__cause__, QualificationContinuationError)
     assert runtime.worker.retire_calls == 1
     assert (result_dir / "RESIDENT_ENTRY_ARMED.json").is_file()
@@ -638,7 +638,7 @@ def test_screen_requests_still_use_only_screen_worker(
     result_dir = tmp_path / "result"
     result_dir.mkdir(mode=0o700)
 
-    adapter.run_with_runtime(tmp_path / "request", result_dir, runtime)
+    adapter.run_with_runtime(tmp_path / ("1" * 64), result_dir, runtime)
 
     assert (result_dir / "response.json").is_file()
     assert screen_calls == [(lease, candidate)]
