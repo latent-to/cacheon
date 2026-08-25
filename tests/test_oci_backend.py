@@ -682,7 +682,6 @@ def test_runtime_argv_is_exact_closed_and_mount_minimal(
         f"--env=CACHEON_NATIVE_BUILD_SPEC_DIGEST={case.native.digest}",
         f"--env=CACHEON_NATIVE_ARTIFACT_PUBLICATION_DIGEST={case.publication.publication_digest}",
         "--env=CACHEON_REBUILD_PHASE=load",
-        "--env=FLASHINFER_CUBIN_DIR=/cacheon/runtime-cache/flashinfer-cubins",
         "--env=SGLANG_CACHE_DIR=/cacheon/runtime-cache/sglang",
         "--env=TORCHINDUCTOR_CACHE_DIR=/cacheon/runtime-cache/torchinductor",
         "--env=TRITON_HOME=/cacheon/runtime-cache/triton-home",

@@ -35,7 +35,7 @@ from cacheon.eval.resident_execution_evidence import (
     eager_slots,
 )
 from cacheon.kernel_trace import format_kernels
-from cacheon.receipts import validator_runtime_permission
+from cacheon.receipts import validator_runtime_failure
 
 #: Kept in step with ``engine_worker.EXECUTION_SUMMARY_PREFIX``. Duplicated as a
 #: literal rather than imported: this renderer must read a log written by any
@@ -361,9 +361,9 @@ def _headline(execution: list[str], speed: list[str]) -> str:
             "VERDICT  your kernel failed to load on at least one GPU, so part "
             "of this run was SGLang, not you."
         )
-    if "VALIDATOR RUNTIME BLOCK" in joined:
+    if "VALIDATOR RUNTIME FAILURE" in joined:
         return (
-            "VERDICT  the validator runtime denied an installed library's write. "
+            "VERDICT  an installed validator library failed on its runtime files. "
             "This is a validator setup failure, not a bundle failure."
         )
     if "RAISED" in joined:
@@ -508,11 +508,11 @@ def failure_lines(stderr: object) -> list[str]:
     lines = []
     for (bundle, source, line, phase, kind, message), row in failures.items():
         label = (
-            "VALIDATOR RUNTIME BLOCK"
-            if validator_runtime_permission(kind, message)
+            "VALIDATOR RUNTIME FAILURE"
+            if validator_runtime_failure(kind, message)
             else "RAISED"
         )
-        verb = "reached" if label == "VALIDATOR RUNTIME BLOCK" else "raised"
+        verb = "reached" if label == "VALIDATOR RUNTIME FAILURE" else "raised"
         lines.append(f"  {label:<26s} {source}:{line} in {phase} {verb} {kind}")
         lines.append(f"  {'bundle':<26s} {bundle}")
         lines.append(f"  {'error':<26s} {message}")

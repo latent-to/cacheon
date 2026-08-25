@@ -18,9 +18,7 @@ from __future__ import annotations
 
 import importlib.abc
 import importlib.machinery
-import os
 import sys
-from pathlib import Path
 
 # Modules whose import should trigger seam installation — derived from the single seam
 # table (cacheon/seams.py), so adding a seam there is the only edit. seams.py is stdlib-only
@@ -28,29 +26,19 @@ from pathlib import Path
 # whatever is loaded.
 from cacheon.seams import TARGET_MODULES as _TARGETS
 
-_FLASHINFER_ENV = "flashinfer.jit.env"
 
-
-def _run_activate(_module=None) -> None:
+def _run_activate() -> None:
     from cacheon import seam
 
     seam.activate()
 
 
-def _redirect_flashinfer_cubins(module) -> None:
-    """Apply upstream #3062 semantics to pinned FlashInfer 0.6.12."""
-
-    target = os.environ.get("FLASHINFER_CUBIN_DIR", "")
-    if target:
-        module.FLASHINFER_CUBIN_DIR = Path(target)
-
-
-def _wrap_loader(loader, callback=_run_activate):
+def _wrap_loader(loader):
     orig_exec = loader.exec_module
 
     def exec_module(module):
         orig_exec(module)
-        callback(module)
+        _run_activate()
 
     loader.exec_module = exec_module
     return loader
@@ -58,7 +46,7 @@ def _wrap_loader(loader, callback=_run_activate):
 
 class _SeamFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname not in _TARGETS and fullname != _FLASHINFER_ENV:
+        if fullname not in _TARGETS:
             return None
         # Resolve SGLang through the standard path machinery instead of walking
         # ``sys.meta_path`` ourselves: PathFinder honors the normal filesystem
@@ -66,18 +54,11 @@ class _SeamFinder(importlib.abc.MetaPathFinder):
         # re-entering this seam finder.
         spec = importlib.machinery.PathFinder.find_spec(fullname, path, target)
         if spec is not None and spec.loader is not None:
-            callback = (
-                _redirect_flashinfer_cubins
-                if fullname == _FLASHINFER_ENV
-                else _run_activate
-            )
-            spec.loader = _wrap_loader(spec.loader, callback)
+            spec.loader = _wrap_loader(spec.loader)
         return spec
 
 
 def install() -> None:
-    if _FLASHINFER_ENV in sys.modules:
-        _redirect_flashinfer_cubins(sys.modules[_FLASHINFER_ENV])
     if any(t in sys.modules for t in _TARGETS):
         # Something already imported (e.g. re-entry); patch what's available now.
         _run_activate()

@@ -73,7 +73,6 @@ CONTAINER_ARTIFACT_BASE = "/cacheon/native-artifacts"
 CONTAINER_CACHE_PATH = "/cacheon/runtime-cache"
 _WRITABLE_RUNTIME_DIRECTORIES = (
     "CUDA_CACHE_PATH",
-    "FLASHINFER_CUBIN_DIR",
     "FLASHINFER_WORKSPACE_BASE",
     "HF_HOME",
     "HOME",
@@ -744,7 +743,7 @@ def _candidate_failures(control_dir: str | None) -> str:
 
     if not control_dir:
         return ""
-    from cacheon.receipts import validator_runtime_permission
+    from cacheon.receipts import validator_runtime_failure
 
     found: list[str] = []
     try:
@@ -753,7 +752,7 @@ def _candidate_failures(control_dir: str | None) -> str:
             if not isinstance(row, dict):
                 continue
             message = str(row.get("error", ""))[:256].replace("\n", " ")
-            if row.get("failure_owner") == "validator_runtime" or validator_runtime_permission(
+            if row.get("failure_owner") == "validator_runtime" or validator_runtime_failure(
                 row.get("error_type"), message
             ):
                 continue

@@ -286,14 +286,20 @@ def write(kind: str, payload: dict, *, tag: str = "") -> None:
         _write_to(_resolved_dir(raw), kind, payload, tag=tag)
 
 
-def validator_runtime_permission(error_type: object, message: object) -> bool:
-    """Whether the validator denied a write in its own runtime/JIT filesystem."""
+def validator_runtime_failure(error_type: object, message: object) -> bool:
+    """Whether an installed validator library failed on its runtime files."""
 
-    return (
-        str(error_type).endswith("PermissionError")
-        and "Permission denied" in str(message)
-        and any(root in str(message).replace("\\", "/") for root in _VALIDATOR_WRITABLE_ROOTS)
+    kind = str(error_type)
+    text = str(message)
+    permission = (
+        kind.endswith("PermissionError")
+        and "Permission denied" in text
+        and any(root in text.replace("\\", "/") for root in _VALIDATOR_WRITABLE_ROOTS)
     )
+    missing_cubin_metadata = kind.endswith("AssertionError") and (
+        "Failed to get checksums.txt" in text
+    )
+    return permission or missing_cubin_metadata
 
 
 def _write_execution_once(
@@ -322,7 +328,7 @@ def _write_execution_once(
             except Exception:  # noqa: BLE001 - hostile exception formatting is diagnostic
                 message = "<unprintable exception>"
             payload.update(error_type=type(error).__name__, error=message)
-            if validator_runtime_permission(payload["error_type"], message):
+            if validator_runtime_failure(payload["error_type"], message):
                 payload["failure_owner"] = "validator_runtime"
             if phase in {"prepare", "entry"}:
                 payload["phase"] = phase

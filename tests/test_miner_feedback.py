@@ -268,10 +268,25 @@ def test_installed_library_permission_failure_is_validator_attributed() -> None:
 PermissionError: [Errno 13] Permission denied: '/usr/local/lib/python3.12/dist-packages/flashinfer_cubin/cubins/flashinfer'
 '''
     report = "\n".join(explain({"evidence": []}, stderr=trace))
-    assert "VALIDATOR RUNTIME BLOCK" in report
+    assert "VALIDATOR RUNTIME FAILURE" in report
     assert "validator setup failure, not a bundle failure" in report
     assert "kernels/moe.py:74" in report
     assert "flashinfer/jit/cubin_loader.py:252 ensure_symlink" in report
+
+
+def test_missing_installed_cubin_metadata_is_validator_attributed() -> None:
+    bundle = "b" * 64
+    trace = f'''Traceback (most recent call last):
+  File "/cacheon/swap-intake/{bundle}/kernels/moe.py", line 74, in fused_experts
+    return native_moe(x)
+  File "/usr/local/lib/python3.12/dist-packages/flashinfer/jit/fused_moe.py", line 256, in gen_trtllm_gen_fused_moe_sm100_module
+    assert checksum
+AssertionError: Failed to get checksums.txt from abc/batched_gemm/checksums.txt
+'''
+    report = "\n".join(explain({"evidence": []}, stderr=trace))
+    assert "VALIDATOR RUNTIME FAILURE" in report
+    assert "validator setup failure, not a bundle failure" in report
+    assert "Failed to get checksums.txt" in report
 
 
 def test_traced_kernels_name_the_branch_taken_at_each_input_shape() -> None:
