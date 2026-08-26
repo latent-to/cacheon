@@ -32,7 +32,6 @@ from cacheon.eval.b300_sealed_qualification_commission import (
     QUALIFICATION_DEADLINE_MAXIMUM_SECONDS,
 )
 from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_manifest
-from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import gpu as _gpu

@@ -208,7 +208,6 @@ def test_cpu_export_double_does_not_claim_host_cuda_architecture(monkeypatch):
 
 
 def test_export_preflight_writes_no_fired_receipt(monkeypatch, tmp_path):
-    from cacheon import registry as registry_mod
 
     monkeypatch.setenv("CACHEON_SEAM_RECEIPT_DIR", str(tmp_path))
     out, kwargs = _export_kwargs()

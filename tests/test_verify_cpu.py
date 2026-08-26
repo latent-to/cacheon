@@ -14,7 +14,6 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from cacheon.capabilities import CallDescriptor  # noqa: E402
-from cacheon.minimax_sparse_prefill_slot import INPUT_NAMES  # noqa: E402
 from cacheon.registry import Eligibility, eligibility_from_metadata  # noqa: E402
 from cacheon.sandbox import load_entry  # noqa: E402
 from cacheon.slots import get_slot  # noqa: E402
