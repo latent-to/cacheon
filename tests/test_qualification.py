@@ -945,43 +945,20 @@ def test_width_zero_trajectory_digests_seal_absence_and_match_raw_shape(tmp_path
     )
 
 
-def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
-    from cacheon.eval.qualification import _selected_prompt_texts, _trajectory_rows
-    from cacheon.eval.calibration import CalibrationContext
-    from cacheon.eval.oci_reference_session import (
-        ReferenceExchangeEvidence,
-        ReferenceSessionEvidence,
-    )
-    from cacheon.eval.oci_backend import PristineReferenceExecutionEvidence
-    from cacheon.eval.reference_protocol import (
-        ReferenceEvidence,
-        ReferencePromptEvidence,
-        ReferencePromptInput,
-        ReferenceRequest,
-        ReferenceRoleEvidence,
-        ReferenceRoleInput,
-        ReferenceTokenEvidence,
-        encode_reference_evidence,
-        request_sha256,
-    )
-    from cacheon.eval.reference_quality import (
-        RawHiddenTaskResult,
-        RawPromptQualityEvidence,
-        RawRolloutEvidence,
-        RawTokenEvidence,
-        ReferenceQualityRawArtifact,
-        ReferenceQualityRawBinding,
-        distribution_from_f32_logprobs,
-        retained_support_policy_digest,
-        target_nll_from_f32,
-    )
-    from cacheon.stack_identity import canonical_digest, sha256_hex
-    from tests.test_oci_reference_session import (
-        _config as reference_config,
-        _facts as reference_facts,
-    )
+def _quality_world(tmp_path, *, top_logprobs_num=1, topk_width=1, metric_names=None):
+    """The shared world of the two quality-binding composition tests. Every
+    parameter is fixture data (a width, a metric list); the structurally
+    different per-token evidence loops stay inside the tests themselves."""
 
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(tmp_path)
+    from types import SimpleNamespace
+
+    from cacheon.eval.calibration import CalibrationContext
+    from cacheon.eval.qualification import _selected_prompt_texts, _trajectory_rows
+    from cacheon.eval.reference_quality import retained_support_policy_digest
+
+    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(
+        tmp_path, top_logprobs_num=top_logprobs_num
+    )
     reference = ReferenceManifest(
         *(_d(f"pristine:{index}") for index in range(3)),
         case.launch.runtime_digest, case.launch.base_engine_digest, case.launch.arena_digest,
@@ -993,14 +970,13 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         _d("hidden-judge"), _d("entropy-source"),
     )
     arm = lifecycle.candidates[0].arm
-    candidate = lifecycle.candidates[0].candidate
     requirement = _requirement()
     requirement = replace(
         requirement,
         binding=replace(
             requirement.binding,
             marginal_arm_digest=arm.digest,
-            candidate_launch_digest=candidate.launch.digest,
+            candidate_launch_digest=lifecycle.candidates[0].candidate.launch.digest,
             contribution_ref_digest=arm.transition.replacement.digest,
             selected_delta_digest=delta,
             target_id=arm.transition.target_id,
@@ -1011,30 +987,36 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
     calibration = replace(
         calibration,
         context=CalibrationContext(
-            reference.measured_digest,
-            reference.arena_digest,
-            reference.runtime_digest,
-            reference.base_engine_digest,
-            reference.model_revision_digest,
-            reference.model_manifest_digest,
-            reference.model_content_digest,
-            reference.logical_hardware_digest,
-            reference.workload_digest,
+            reference.measured_digest, reference.arena_digest, reference.runtime_digest,
+            reference.base_engine_digest, reference.model_revision_digest,
+            reference.model_manifest_digest, reference.model_content_digest,
+            reference.logical_hardware_digest, reference.workload_digest,
             requirement.binding.verification_policy_digest,
+        ),
+        **(
+            {}
+            if metric_names is None
+            else {
+                "quality_metrics": tuple(
+                    row
+                    for row in calibration.quality_metrics
+                    if row.name in metric_names
+                )
+            }
         ),
     )
     profile = QualificationProfile(
         reference, calibration.context.digest, calibration.digest, requirement.digest,
-        tuple(row.name for row in calibration.quality_metrics), "2", 10, 1, 2,
+        tuple(row.name for row in calibration.quality_metrics), "2", 10, topk_width, 2,
         retained_support_policy_digest(), _d("hidden-task-policy"), runtime_policy, True, 2,
     )
-    prompts = lifecycle_prompt_digests(lifecycle)
     commitment = SelectionCommitment.seal(
         source_plan_digest=lifecycle.source.digest, reference_manifest=reference,
         entropy_source_digest=declared_qualification_entropy_digest(
             reference.selection_policy_digest
         ),
-        prompt_digests=prompts, select_count=2, secret=b"s" * 32,
+        prompt_digests=lifecycle_prompt_digests(lifecycle), select_count=2,
+        secret=b"s" * 32,
     )
     entropy = SelectionEntropyReceipt(
         commitment.entropy_source_digest, commitment.digest,
@@ -1045,27 +1027,163 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         sealed_cohort_trajectory_digest=cohort_trajectory_digest(lifecycle),
     )
     _, trajectory_rows = _trajectory_rows(lifecycle)
-    trajectories = dict(trajectory_rows)
-    prompt_texts = _selected_prompt_texts(lifecycle)
+    return SimpleNamespace(
+        lifecycle=lifecycle, delta=delta, case=case, calibration=calibration,
+        runtime_policy=runtime_policy, reference=reference, requirement=requirement,
+        profile=profile, commitment=commitment, entropy=entropy, selection=selection,
+        trajectories=dict(trajectory_rows),
+        prompt_texts=_selected_prompt_texts(lifecycle),
+    )
+
+
+def _hidden_tasks(reference, profile, prompt_digest):
+    from cacheon.eval.reference_quality import RawHiddenTaskResult
+
+    return tuple(sorted(
+        (RawHiddenTaskResult(
+            canonical_digest("cacheon.qualification.hidden-task", {
+                "corpus": reference.hidden_corpus_commitment,
+                "judge": reference.hidden_judge_digest,
+                "policy": profile.hidden_task_policy_digest,
+                "prompt": prompt_digest,
+                "index": index,
+            }),
+            True,
+        ) for index in range(profile.hidden_tasks_per_prompt)),
+        key=lambda row: row.task_digest,
+    ))
+
+
+def _pristine_t(world, request_prompts, evidence_prompts, *, width):
+    from cacheon.eval.oci_backend import PristineReferenceExecutionEvidence
+    from cacheon.eval.oci_reference_session import (
+        ReferenceExchangeEvidence,
+        ReferenceSessionEvidence,
+    )
+    from cacheon.eval.reference_protocol import (
+        ReferenceEvidence,
+        ReferenceRequest,
+        encode_reference_evidence,
+        request_sha256,
+    )
+    from cacheon.stack_identity import sha256_hex
+    from tests.test_oci_reference_session import (
+        _config as reference_config,
+        _facts as reference_facts,
+    )
+
+    reference = world.reference
+    request_plan = _d("reference-request-plan")
+    request = ReferenceRequest(
+        "1" * 32, reference.pristine_launch_digest, request_plan,
+        "2" * 32, "3" * 32, 0, 10, width, tuple(request_prompts),
+    )
+    teacher_evidence = ReferenceEvidence(
+        request.session_id, request.launch_digest, request.plan_digest,
+        request_sha256(request), request.request_id, request.nonce, 0, 32_000,
+        tuple(evidence_prompts),
+    )
+    reference_request_sha256 = request_sha256(request)
+    exchange = ReferenceExchangeEvidence(
+        0, request, reference_request_sha256,
+        sha256_hex(encode_reference_evidence(teacher_evidence, request)),
+        1.0, 2.0, teacher_evidence,
+    )
+    t_session = ReferenceSessionEvidence(
+        "cacheon.pristine-reference-session.v1", request.session_id,
+        reference.pristine_launch_digest, reference.digest,
+        _d("reference-session-plan"), request_plan,
+        reference_facts(reference, reference_config()), 0.5, (exchange,), 3.0,
+    )
+    baseline = world.lifecycle.crossover.baseline_execution
+    reference_execution = PristineReferenceExecutionEvidence(
+        "cacheon.oci-pristine-reference-execution.v1",
+        reference.pristine_launch_digest,
+        baseline.runtime_identity,
+        baseline.runtime_preflight_receipt_sha256,
+        baseline.arena_model_receipt_digest,
+        baseline.resource_policy_digest,
+        baseline.prebuild,
+        baseline.native_publication_digest,
+        baseline.runtime_argv_sha256,
+        (),
+        (baseline.device_receipts[0], baseline.device_receipts[-1]),
+        t_session,
+    )
+    return t_session, reference_request_sha256, reference_execution
+
+
+def _quality_binding(world, t_session, reference_request_sha256, *, width):
+    from cacheon.eval.reference_quality import ReferenceQualityRawBinding
+
+    lifecycle_digest = candidate_lifecycle_digest(
+        world.lifecycle, selected_delta_digest=world.delta
+    )
+    identity_digest = qualification_identity_digest(
+        world.profile,
+        graph_requirement=world.requirement,
+        selection=world.selection,
+        calibration=world.calibration,
+        candidate_lifecycle=lifecycle_digest,
+        t_session=t_session,
+        t_request_sha256=reference_request_sha256,
+        selected_delta_digest=world.delta,
+    )
+    selected = world.selection.selected_prompt_digests
+    binding = ReferenceQualityRawBinding(
+        identity_digest, world.reference.measured_digest, world.calibration.digest,
+        world.selection.digest, lifecycle_digest,
+        selected_trajectory_digest(
+            world.lifecycle, selected_delta_digest=world.delta,
+            selected_prompt_digests=selected,
+        ),
+        selected_trajectory_projection_digest(
+            world.lifecycle, selected_delta_digest=world.delta,
+            selected_prompt_digests=selected,
+        ), selected,
+        t_session.digest, reference_request_sha256, world.profile.support_policy_digest,
+        derived_hidden_task_plan_digest(world.profile, selected),
+        world.profile.nll_tail_threshold, 10, width, 2,
+    )
+    return lifecycle_digest, identity_digest, binding
+
+
+def _validate(world, raw_artifact, reference_execution, reference_request_sha256, *, profile=None):
+    return validate_quality_binding(
+        profile or world.profile, raw_artifact, world.lifecycle,
+        selected_delta_digest=world.delta,
+        commitment=world.commitment, entropy=world.entropy, selection=world.selection,
+        calibration=world.calibration, graph_requirement=world.requirement,
+        reference_execution=reference_execution,
+        reference_request_sha256=reference_request_sha256,
+    )
+
+
+def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
+    from cacheon.eval.reference_protocol import (
+        ReferencePromptEvidence,
+        ReferencePromptInput,
+        ReferenceRoleEvidence,
+        ReferenceRoleInput,
+        ReferenceTokenEvidence,
+    )
+    from cacheon.eval.reference_quality import (
+        RawPromptQualityEvidence,
+        RawRolloutEvidence,
+        RawTokenEvidence,
+        ReferenceQualityRawArtifact,
+        distribution_from_f32_logprobs,
+        target_nll_from_f32,
+    )
+
+    world = _quality_world(tmp_path)
     request_prompts = []
     evidence_prompts = []
     raw_prompts = []
-    for prompt_digest in selection.selected_prompt_digests:
-        frames = [trajectories[prompt_digest][index] for index in (0, 1, -1)]
+    for prompt_digest in world.selection.selected_prompt_digests:
+        frames = [world.trajectories[prompt_digest][index] for index in (0, 1, -1)]
         role_inputs, role_evidence, raw_rollouts = [], [], []
-        tasks = tuple(sorted(
-            (RawHiddenTaskResult(
-                canonical_digest("cacheon.qualification.hidden-task", {
-                    "corpus": reference.hidden_corpus_commitment,
-                    "judge": reference.hidden_judge_digest,
-                    "policy": profile.hidden_task_policy_digest,
-                    "prompt": prompt_digest,
-                    "index": index,
-                }),
-                True,
-            ) for index in range(profile.hidden_tasks_per_prompt)),
-            key=lambda row: row.task_digest,
-        ))
+        tasks = _hidden_tasks(world.reference, world.profile, prompt_digest)
         for frame in frames:
             inputs, teacher, tokens = [], [], []
             for position, (output_id, topk) in enumerate(zip(
@@ -1087,7 +1205,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
             role_evidence.append(ReferenceRoleEvidence(tuple(teacher)))
             raw_rollouts.append(RawRolloutEvidence(tuple(tokens), tasks))
         request_prompts.append(ReferencePromptInput(
-            prompt_digest, prompt_texts[prompt_digest], tuple(role_inputs)
+            prompt_digest, world.prompt_texts[prompt_digest], tuple(role_inputs)
         ))
         evidence_prompts.append(ReferencePromptEvidence(
             prompt_digest, 3, _d("prompt-tokens:" + prompt_digest), tuple(role_evidence)
@@ -1095,109 +1213,40 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         raw_prompts.append(RawPromptQualityEvidence(
             prompt_digest, *raw_rollouts
         ))
-    config = reference_config()
-    request_plan = _d("reference-request-plan")
-    request = ReferenceRequest(
-        "1" * 32, reference.pristine_launch_digest, request_plan,
-        "2" * 32, "3" * 32, 0, 10, 1, tuple(request_prompts),
+    t_session, reference_request_sha256, reference_execution = _pristine_t(
+        world, request_prompts, evidence_prompts, width=1
     )
-    teacher_evidence = ReferenceEvidence(
-        request.session_id, request.launch_digest, request.plan_digest,
-        request_sha256(request), request.request_id, request.nonce, 0, 32_000,
-        tuple(evidence_prompts),
-    )
-    reference_request_sha256 = request_sha256(request)
-    exchange = ReferenceExchangeEvidence(
-        0, request, reference_request_sha256,
-        sha256_hex(encode_reference_evidence(teacher_evidence, request)),
-        1.0, 2.0, teacher_evidence,
-    )
-    t_session = ReferenceSessionEvidence(
-        "cacheon.pristine-reference-session.v1", request.session_id,
-        reference.pristine_launch_digest, reference.digest,
-        _d("reference-session-plan"), request_plan,
-        reference_facts(reference, config), 0.5, (exchange,), 3.0,
-    )
-    baseline = lifecycle.crossover.baseline_execution
-    reference_execution = PristineReferenceExecutionEvidence(
-        "cacheon.oci-pristine-reference-execution.v1",
-        reference.pristine_launch_digest,
-        baseline.runtime_identity,
-        baseline.runtime_preflight_receipt_sha256,
-        baseline.arena_model_receipt_digest,
-        baseline.resource_policy_digest,
-        baseline.prebuild,
-        baseline.native_publication_digest,
-        baseline.runtime_argv_sha256,
-        (),
-        (baseline.device_receipts[0], baseline.device_receipts[-1]),
-        t_session,
-    )
-    lifecycle_digest = candidate_lifecycle_digest(
-        lifecycle, selected_delta_digest=delta
-    )
-    identity_digest = qualification_identity_digest(
-        profile,
-        graph_requirement=requirement,
-        selection=selection,
-        calibration=calibration,
-        candidate_lifecycle=lifecycle_digest,
-        t_session=t_session,
-        t_request_sha256=reference_request_sha256,
-        selected_delta_digest=delta,
+    lifecycle_digest, identity_digest, binding = _quality_binding(
+        world, t_session, reference_request_sha256, width=1
     )
     assert identity_digest == canonical_digest(
         "cacheon.qualification.candidate-identity",
         {
-            "calibration_digest": calibration.digest,
+            "calibration_digest": world.calibration.digest,
             "candidate_lifecycle_digest": lifecycle_digest,
-            "graph_requirement_digest": requirement.digest,
-            "profile_digest": profile.digest,
-            "selected_delta_digest": delta,
-            "selection_digest": selection.digest,
+            "graph_requirement_digest": world.requirement.digest,
+            "profile_digest": world.profile.digest,
+            "selected_delta_digest": world.delta,
+            "selection_digest": world.selection.digest,
             "t_session_digest": t_session.digest,
             "t_request_sha256": reference_request_sha256,
         },
     )
-    binding = ReferenceQualityRawBinding(
-        identity_digest, reference.measured_digest, calibration.digest, selection.digest,
-        lifecycle_digest, selected_trajectory_digest(
-            lifecycle, selected_delta_digest=delta,
-            selected_prompt_digests=selection.selected_prompt_digests,
-        ),
-        selected_trajectory_projection_digest(
-            lifecycle, selected_delta_digest=delta,
-            selected_prompt_digests=selection.selected_prompt_digests,
-        ), selection.selected_prompt_digests,
-        t_session.digest, reference_request_sha256, profile.support_policy_digest,
-        derived_hidden_task_plan_digest(profile, selection.selected_prompt_digests),
-        profile.nll_tail_threshold, 10, 1, 2,
-    )
     raw_artifact = ReferenceQualityRawArtifact(binding, tuple(raw_prompts))
-    assert validate_quality_binding(
-        profile, raw_artifact, lifecycle, selected_delta_digest=delta,
-        commitment=commitment, entropy=entropy, selection=selection,
-        calibration=calibration, graph_requirement=requirement,
-        reference_execution=reference_execution,
-        reference_request_sha256=reference_request_sha256,
+    assert _validate(
+        world, raw_artifact, reference_execution, reference_request_sha256
     ) == raw_artifact
     with pytest.raises(QualificationError, match="frozen workload"):
-        validate_quality_binding(
-            replace(profile, hidden_task_policy_digest=_d("other-hidden-policy")),
-            raw_artifact, lifecycle, selected_delta_digest=delta,
-            commitment=commitment, entropy=entropy, selection=selection,
-            calibration=calibration, graph_requirement=requirement,
-            reference_execution=reference_execution,
-            reference_request_sha256=reference_request_sha256,
+        _validate(
+            world, raw_artifact, reference_execution, reference_request_sha256,
+            profile=replace(
+                world.profile, hidden_task_policy_digest=_d("other-hidden-policy")
+            ),
         )
     with pytest.raises(QualificationError, match="frozen workload"):
-        validate_quality_binding(
-            replace(profile, tokens_per_prompt=1), raw_artifact, lifecycle,
-            selected_delta_digest=delta, commitment=commitment,
-            entropy=entropy, selection=selection, calibration=calibration,
-            graph_requirement=requirement,
-            reference_execution=reference_execution,
-            reference_request_sha256=reference_request_sha256,
+        _validate(
+            world, raw_artifact, reference_execution, reference_request_sha256,
+            profile=replace(world.profile, tokens_per_prompt=1),
         )
     forged = replace(
         raw_artifact.prompts[0].candidate.tokens[0],
@@ -1213,13 +1262,7 @@ def test_quality_binding_projects_exact_lifecycle_coverage(tmp_path: Path):
         prompts=(forged_prompt, *raw_artifact.prompts[1:]),
     )
     with pytest.raises(QualificationError, match="differs from pristine T"):
-        validate_quality_binding(
-            profile, forged_artifact, lifecycle, selected_delta_digest=delta,
-            commitment=commitment, entropy=entropy, selection=selection,
-            calibration=calibration, graph_requirement=requirement,
-            reference_execution=reference_execution,
-            reference_request_sha256=reference_request_sha256,
-        )
+        _validate(world, forged_artifact, reference_execution, reference_request_sha256)
 
 
 def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path):
@@ -1228,126 +1271,32 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
     # the 2026-07-25 r3 calibration died on (_validate_teacher_source derived
     # a distribution from empty support).  Everything the live validator
     # recomputes must accept sealed absence end to end.
-    from cacheon.eval.qualification import _selected_prompt_texts, _trajectory_rows
-    from cacheon.eval.calibration import CalibrationContext
-    from cacheon.eval.oci_reference_session import (
-        ReferenceExchangeEvidence,
-        ReferenceSessionEvidence,
-    )
-    from cacheon.eval.oci_backend import PristineReferenceExecutionEvidence
     from cacheon.eval.reference_protocol import (
-        ReferenceEvidence,
         ReferencePromptEvidence,
         ReferencePromptInput,
-        ReferenceRequest,
         ReferenceRoleEvidence,
         ReferenceRoleInput,
         ReferenceTokenEvidence,
-        encode_reference_evidence,
-        request_sha256,
     )
     from cacheon.eval.reference_quality import (
-        RawHiddenTaskResult,
         RawPromptQualityEvidence,
         RawRolloutEvidence,
         RawTokenEvidence,
         ReferenceQualityRawArtifact,
-        ReferenceQualityRawBinding,
-        retained_support_policy_digest,
         target_nll_from_f32,
     )
-    from cacheon.stack_identity import sha256_hex
-    from tests.test_oci_reference_session import (
-        _config as reference_config,
-        _facts as reference_facts,
-    )
 
-    lifecycle, delta, case, calibration, runtime_policy = _lifecycle(
-        tmp_path, top_logprobs_num=0
+    world = _quality_world(
+        tmp_path, top_logprobs_num=0, topk_width=0,
+        metric_names={"mean_nll", "worst_nll", "task_score"},
     )
-    reference = ReferenceManifest(
-        *(_d(f"pristine:{index}") for index in range(3)),
-        case.launch.runtime_digest, case.launch.base_engine_digest, case.launch.arena_digest,
-        lifecycle.candidates[0].arm.candidate.catalog_digest,
-        case.launch.controller_distribution_digest, case.launch.worker_distribution_digest,
-        case.launch.model_revision_digest, case.launch.model_manifest_digest,
-        case.launch.model_content_digest, case.launch.hardware.digest,
-        calibration.context.workload_digest, _d("tokenizer"), _d("hidden-corpus"),
-        _d("hidden-judge"), _d("entropy-source"),
-    )
-    arm = lifecycle.candidates[0].arm
-    candidate = lifecycle.candidates[0].candidate
-    requirement = _requirement()
-    requirement = replace(
-        requirement,
-        binding=replace(
-            requirement.binding,
-            marginal_arm_digest=arm.digest,
-            candidate_launch_digest=candidate.launch.digest,
-            contribution_ref_digest=arm.transition.replacement.digest,
-            selected_delta_digest=delta,
-            target_id=arm.transition.target_id,
-            target_spec_digest=arm.transition.target_spec_digest,
-            catalog_digest=arm.candidate.catalog_digest,
-        ),
-    )
-    calibration = replace(
-        calibration,
-        context=CalibrationContext(
-            reference.measured_digest, reference.arena_digest, reference.runtime_digest,
-            reference.base_engine_digest, reference.model_revision_digest,
-            reference.model_manifest_digest, reference.model_content_digest,
-            reference.logical_hardware_digest, reference.workload_digest,
-            requirement.binding.verification_policy_digest,
-        ),
-        quality_metrics=tuple(
-            row for row in calibration.quality_metrics
-            if row.name in {"mean_nll", "worst_nll", "task_score"}
-        ),
-    )
-    profile = QualificationProfile(
-        reference, calibration.context.digest, calibration.digest, requirement.digest,
-        tuple(row.name for row in calibration.quality_metrics), "2", 10, 0, 2,
-        retained_support_policy_digest(), _d("hidden-task-policy"), runtime_policy, True, 2,
-    )
-    prompts = lifecycle_prompt_digests(lifecycle)
-    commitment = SelectionCommitment.seal(
-        source_plan_digest=lifecycle.source.digest, reference_manifest=reference,
-        entropy_source_digest=declared_qualification_entropy_digest(
-            reference.selection_policy_digest
-        ),
-        prompt_digests=prompts, select_count=2, secret=b"s" * 32,
-    )
-    entropy = SelectionEntropyReceipt(
-        commitment.entropy_source_digest, commitment.digest,
-        _d("entropy-value"), _d("entropy-authority"),
-    )
-    selection = SelectionReceipt.reveal(
-        commitment, secret=b"s" * 32, entropy=entropy,
-        sealed_cohort_trajectory_digest=cohort_trajectory_digest(lifecycle),
-    )
-    _, trajectory_rows = _trajectory_rows(lifecycle)
-    trajectories = dict(trajectory_rows)
-    prompt_texts = _selected_prompt_texts(lifecycle)
     request_prompts = []
     evidence_prompts = []
     raw_prompts = []
-    for prompt_digest in selection.selected_prompt_digests:
-        frames = [trajectories[prompt_digest][index] for index in (0, 1, -1)]
+    for prompt_digest in world.selection.selected_prompt_digests:
+        frames = [world.trajectories[prompt_digest][index] for index in (0, 1, -1)]
         role_inputs, role_evidence, raw_rollouts = [], [], []
-        tasks = tuple(sorted(
-            (RawHiddenTaskResult(
-                canonical_digest("cacheon.qualification.hidden-task", {
-                    "corpus": reference.hidden_corpus_commitment,
-                    "judge": reference.hidden_judge_digest,
-                    "policy": profile.hidden_task_policy_digest,
-                    "prompt": prompt_digest,
-                    "index": index,
-                }),
-                True,
-            ) for index in range(profile.hidden_tasks_per_prompt)),
-            key=lambda row: row.task_digest,
-        ))
+        tasks = _hidden_tasks(world.reference, world.profile, prompt_digest)
         for frame in frames:
             inputs, teacher, tokens = [], [], []
             for position, (output_id, topk) in enumerate(zip(
@@ -1363,7 +1312,7 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
             role_evidence.append(ReferenceRoleEvidence(tuple(teacher)))
             raw_rollouts.append(RawRolloutEvidence(tuple(tokens), tasks))
         request_prompts.append(ReferencePromptInput(
-            prompt_digest, prompt_texts[prompt_digest], tuple(role_inputs)
+            prompt_digest, world.prompt_texts[prompt_digest], tuple(role_inputs)
         ))
         evidence_prompts.append(ReferencePromptEvidence(
             prompt_digest, 3, _d("prompt-tokens:" + prompt_digest), tuple(role_evidence)
@@ -1371,78 +1320,15 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         raw_prompts.append(RawPromptQualityEvidence(
             prompt_digest, *raw_rollouts
         ))
-    config = reference_config()
-    request_plan = _d("reference-request-plan")
-    request = ReferenceRequest(
-        "1" * 32, reference.pristine_launch_digest, request_plan,
-        "2" * 32, "3" * 32, 0, 10, 0, tuple(request_prompts),
+    t_session, reference_request_sha256, reference_execution = _pristine_t(
+        world, request_prompts, evidence_prompts, width=0
     )
-    teacher_evidence = ReferenceEvidence(
-        request.session_id, request.launch_digest, request.plan_digest,
-        request_sha256(request), request.request_id, request.nonce, 0, 32_000,
-        tuple(evidence_prompts),
-    )
-    reference_request_sha256 = request_sha256(request)
-    exchange = ReferenceExchangeEvidence(
-        0, request, reference_request_sha256,
-        sha256_hex(encode_reference_evidence(teacher_evidence, request)),
-        1.0, 2.0, teacher_evidence,
-    )
-    t_session = ReferenceSessionEvidence(
-        "cacheon.pristine-reference-session.v1", request.session_id,
-        reference.pristine_launch_digest, reference.digest,
-        _d("reference-session-plan"), request_plan,
-        reference_facts(reference, config), 0.5, (exchange,), 3.0,
-    )
-    baseline = lifecycle.crossover.baseline_execution
-    reference_execution = PristineReferenceExecutionEvidence(
-        "cacheon.oci-pristine-reference-execution.v1",
-        reference.pristine_launch_digest,
-        baseline.runtime_identity,
-        baseline.runtime_preflight_receipt_sha256,
-        baseline.arena_model_receipt_digest,
-        baseline.resource_policy_digest,
-        baseline.prebuild,
-        baseline.native_publication_digest,
-        baseline.runtime_argv_sha256,
-        (),
-        (baseline.device_receipts[0], baseline.device_receipts[-1]),
-        t_session,
-    )
-    lifecycle_digest = candidate_lifecycle_digest(
-        lifecycle, selected_delta_digest=delta
-    )
-    identity_digest = qualification_identity_digest(
-        profile,
-        graph_requirement=requirement,
-        selection=selection,
-        calibration=calibration,
-        candidate_lifecycle=lifecycle_digest,
-        t_session=t_session,
-        t_request_sha256=reference_request_sha256,
-        selected_delta_digest=delta,
-    )
-    binding = ReferenceQualityRawBinding(
-        identity_digest, reference.measured_digest, calibration.digest, selection.digest,
-        lifecycle_digest, selected_trajectory_digest(
-            lifecycle, selected_delta_digest=delta,
-            selected_prompt_digests=selection.selected_prompt_digests,
-        ),
-        selected_trajectory_projection_digest(
-            lifecycle, selected_delta_digest=delta,
-            selected_prompt_digests=selection.selected_prompt_digests,
-        ), selection.selected_prompt_digests,
-        t_session.digest, reference_request_sha256, profile.support_policy_digest,
-        derived_hidden_task_plan_digest(profile, selection.selected_prompt_digests),
-        profile.nll_tail_threshold, 10, 0, 2,
+    _lifecycle_digest, _identity_digest, binding = _quality_binding(
+        world, t_session, reference_request_sha256, width=0
     )
     raw_artifact = ReferenceQualityRawArtifact(binding, tuple(raw_prompts))
-    assert validate_quality_binding(
-        profile, raw_artifact, lifecycle, selected_delta_digest=delta,
-        commitment=commitment, entropy=entropy, selection=selection,
-        calibration=calibration, graph_requirement=requirement,
-        reference_execution=reference_execution,
-        reference_request_sha256=reference_request_sha256,
+    assert _validate(
+        world, raw_artifact, reference_execution, reference_request_sha256
     ) == raw_artifact
 
     # Continue down the exact runner path (qualification_runner :3819-3831):
@@ -1471,10 +1357,10 @@ def test_quality_binding_validates_width_zero_nll_only_end_to_end(tmp_path: Path
         for rollout in (prompt.baseline, prompt.candidate, prompt.stock_control):
             assert rollout.rollout_kl is None
     verdict = score_reference_quality(
-        derived, calibration=calibration, expected_context=calibration.context
+        derived, calibration=world.calibration, expected_context=world.calibration.context
     )
     assert verdict.decision in {"PASS", "FAIL", "NO_DECISION"}
-    assert verdict.calibration_digest == calibration.digest
+    assert verdict.calibration_digest == world.calibration.digest
 
 
 def test_teacher_nll_only_profile_admits_width_zero_and_refuses_kl_metrics():
