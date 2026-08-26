@@ -676,6 +676,59 @@ def _add_object_store_args(parser: argparse.ArgumentParser) -> None:
         default="",
         help="filesystem root for provider=local",
     )
+
+
+def _add_archive_store_args(parser: argparse.ArgumentParser) -> None:
+    from cacheon.chain.archive import DEFAULT_VALIDATOR_ARCHIVE_PREFIX
+
+    parser.add_argument(
+        "--object-store-provider",
+        default="",
+        help=(
+            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
+            "hippius/minio map provider defaults)"
+        ),
+    )
+    parser.add_argument(
+        "--object-store-bucket",
+        default="",
+        help="private validator bucket (or CACHEON_OBJECT_STORE_BUCKET)",
+    )
+    parser.add_argument(
+        "--object-store-prefix",
+        default="",
+        help=(
+            "private archive key prefix (default "
+            f"{DEFAULT_VALIDATOR_ARCHIVE_PREFIX}; env "
+            "CACHEON_VALIDATOR_ARCHIVE_PREFIX)"
+        ),
+    )
+    parser.add_argument(
+        "--object-store-endpoint",
+        default="",
+        help="S3-compatible API endpoint; no provider preset is required",
+    )
+    parser.add_argument("--object-store-region", default="", help="override signing region")
+    parser.add_argument(
+        "--object-store-access-key",
+        default="",
+        help="access key (or CACHEON_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
+    )
+    parser.add_argument(
+        "--object-store-secret-key",
+        default="",
+        help=(
+            "secret key (or CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY / "
+            "AWS_SECRET_ACCESS_KEY)"
+        ),
+    )
+    parser.add_argument(
+        "--object-store-addressing",
+        default="",
+        help="S3 addressing style: path | virtual | auto",
+    )
+
+
 def cmd_serve_weights(args: argparse.Namespace) -> int:
     """Serve the current weight offer from object storage to permitted validators.
 
@@ -3004,52 +3057,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(models/images are never discovered automatically)"
         ),
     )
-    sp.add_argument(
-        "--object-store-provider",
-        default="",
-        help=(
-            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
-            "hippius/minio map provider defaults)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-bucket",
-        default="",
-        help="private validator bucket (or CACHEON_OBJECT_STORE_BUCKET)",
-    )
-    sp.add_argument(
-        "--object-store-prefix",
-        default="",
-        help=(
-            "private archive key prefix (default "
-            f"{DEFAULT_VALIDATOR_ARCHIVE_PREFIX}; env "
-            "CACHEON_VALIDATOR_ARCHIVE_PREFIX)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-endpoint",
-        default="",
-        help="S3-compatible API endpoint; no provider preset is required",
-    )
-    sp.add_argument("--object-store-region", default="", help="override signing region")
-    sp.add_argument(
-        "--object-store-access-key",
-        default="",
-        help="access key (or CACHEON_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
-    )
-    sp.add_argument(
-        "--object-store-secret-key",
-        default="",
-        help=(
-            "secret key (or CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY / "
-            "AWS_SECRET_ACCESS_KEY)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-addressing",
-        default="",
-        help="S3 addressing style: path | virtual | auto",
-    )
+    _add_archive_store_args(sp)
     sp.set_defaults(func=cmd_chain_snapshot)
 
     sp = sub.add_parser(
@@ -3065,52 +3073,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="optional fresh private staging path; omitted means temporary verification",
     )
-    sp.add_argument(
-        "--object-store-provider",
-        default="",
-        help=(
-            "S3 backend/preset: s3 | hippius | minio (default: generic s3; "
-            "hippius/minio map provider defaults)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-bucket",
-        default="",
-        help="private validator bucket (or CACHEON_OBJECT_STORE_BUCKET)",
-    )
-    sp.add_argument(
-        "--object-store-prefix",
-        default="",
-        help=(
-            "private archive key prefix (default "
-            f"{DEFAULT_VALIDATOR_ARCHIVE_PREFIX}; env "
-            "CACHEON_VALIDATOR_ARCHIVE_PREFIX)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-endpoint",
-        default="",
-        help="S3-compatible API endpoint; no provider preset is required",
-    )
-    sp.add_argument("--object-store-region", default="", help="override signing region")
-    sp.add_argument(
-        "--object-store-access-key",
-        default="",
-        help="access key (or CACHEON_OBJECT_STORE_ACCESS_KEY_ID / AWS_ACCESS_KEY_ID)",
-    )
-    sp.add_argument(
-        "--object-store-secret-key",
-        default="",
-        help=(
-            "secret key (or CACHEON_OBJECT_STORE_SECRET_ACCESS_KEY / "
-            "AWS_SECRET_ACCESS_KEY)"
-        ),
-    )
-    sp.add_argument(
-        "--object-store-addressing",
-        default="",
-        help="S3 addressing style: path | virtual | auto",
-    )
+    _add_archive_store_args(sp)
     sp.set_defaults(func=cmd_chain_snapshot_verify)
 
     sp = sub.add_parser(
