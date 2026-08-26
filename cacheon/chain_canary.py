@@ -39,8 +39,6 @@ _EXPECTED_SUBTENSOR_METHODS: tuple[tuple[str, str], ...] = (
                     "drand commit-reveal path when the subnet enables it)"),
     ("metagraph", "read uids / hotkeys / stake / validator_permit"),
     ("weights", "read the validator sparse row at an exact historical block"),
-    ("get_all_commitments", "read every hotkey's commitment (the salted commit hash)"),
-    ("set_commitment", "miner posts a commitment on-chain"),
     ("set_reveal_commitment", "miner posts the timelock-encrypted submission payload"),
     ("query_map", "validator reads raw finalized reveal storage without lossy SDK decoding"),
     ("is_hotkey_registered", "preflight: this validator is registered"),

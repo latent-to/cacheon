@@ -31,7 +31,7 @@
 "tests/test_cacheon_kernels.py": 17,
 "tests/test_calibration.py": 43,
 "tests/test_capabilities.py": 44,
-"tests/test_chain.py": 88,
+"tests/test_chain.py": 81,
 "tests/test_chain_archive.py": 42,
 "tests/test_chain_canary.py": 21,
 "tests/test_chain_evaluation_leases.py": 82,

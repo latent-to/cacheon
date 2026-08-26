@@ -14,7 +14,7 @@ from cacheon.chain_canary import Check, format_checks, run_checks
 
 
 _FULL_METHODS = (
-    "set_weights", "metagraph", "weights", "get_all_commitments", "set_commitment",
+    "set_weights", "metagraph", "weights",
     "set_reveal_commitment", "query_map", "is_hotkey_registered",
     "burned_register", "get_current_block", "get_block_hash", "commit",
     "reveal_commitment",
