@@ -132,7 +132,7 @@
 "tests/test_qualification_graph_exit.py": 23,
 "tests/test_qualification_intake.py": 68,
 "tests/test_qualification_reasons.py": 7,
-"tests/test_qualification_runner.py": 174,
+"tests/test_qualification_runner.py": 172,
 "tests/test_rebuild.py": 28,
 "tests/test_recoverable_qualification_dispatcher.py": 170,
 "tests/test_refactor_d_golden_families.py": 8,
