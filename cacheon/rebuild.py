@@ -2,7 +2,7 @@
 
 Framework mode lets a candidate open a larger backend surface than the narrow
 tensor-in/out dispatcher can express (a backend swap, a source recompile). That is
-the *fenced escape hatch*, NOT the core slot contract — see docs/SLOT_CONTRACT.md.
+the *fenced escape hatch*, NOT the core slot contract — see docs/architecture/slot-contract.md.
 
 The hard rule here: a ``rebuild.json`` step may reference **only a validator-shipped,
 reviewed patcher** that lives in this repo's dedicated patcher directory

@@ -19,7 +19,7 @@ import inspect
 from dataclasses import dataclass
 
 # The sglang version scored against. Bump DELIBERATELY and in a coordinated way —
-# see docs/SGLANG_TRACKING.md. All validators must run the same version (consensus).
+# see docs/dev/sglang-tracking.md. All validators must run the same version (consensus).
 #
 # 0.5.13.post1 (CUDA 13). VALIDATION STATE — read before treating as authoritative:
 #   * static seam canary: GREEN — all chokepoints intact on 0.5.13.post1 (sglang-canary CI,

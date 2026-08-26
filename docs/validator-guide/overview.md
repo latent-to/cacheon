@@ -198,9 +198,6 @@ consistent with one dialect; mixed headers, schemas, or digests fail closed.
 Existing authenticated objects can therefore be reopened without normalization,
 while newly configured services should use the Cacheon dialect.
 
-The current documentation redirect is `HOW_CACHEON_WORKS.md`;
-`HOW_CACHEON_WORKS.md` is retained so inbound links continue to resolve.
-
 ## Durable state
 
 Production referee state lives in `FinalizedIntakeStore`. The store binds its database to

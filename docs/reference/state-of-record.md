@@ -34,8 +34,7 @@ refused fail-closed, and domain-stamped digests (model provision, weight
 projections, intake scope) rotated with the vocabulary. One reader-only
 exception preserves the exact hash-bound `optima-op-abi-v0` manifest spelling
 for already-finalized bundles; readers do not rewrite its committed bytes.
-`HOW_CACHEON_WORKS.md` redirects to the canonical
-architecture documentation. The rename does not alter kernels, timed
+The rename does not alter kernels, timed
 evaluation arithmetic, or crown/settlement formulas. File and line counts describe the accompanying
 change set; they are not quality metrics. The suite is
 CPU/non-empirical validation and does not establish GPU performance,

@@ -11,7 +11,7 @@ no final output to substitute.
 This is a COLLECTIVE slot: the kernel is handed the process group (a wider capability
 than the op/block "fill a tensor" contract), so it is verified DISTRIBUTED
 (cacheon.verify_collective) and the end-to-end gate is mandatory. See
-docs/SLOT_CONTRACT.md.
+docs/architecture/slot-contract.md.
 """
 
 from __future__ import annotations

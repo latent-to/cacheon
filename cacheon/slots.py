@@ -551,7 +551,7 @@ MOE_FUSED_EXPERTS = SlotSpec(
 # so the lever is a lower-latency reduce or compute-comm overlap — both expressible here
 # while staying inside the four invariants. WIDER SURFACE: handing the miner the
 # communicator is more capability than "fill a tensor"; the invariants still bound it,
-# but distributed verify + the end-to-end gate are MANDATORY (docs/SLOT_CONTRACT.md).
+# but distributed verify + the end-to-end gate are MANDATORY (docs/architecture/slot-contract.md).
 # ---------------------------------------------------------------------------
 
 

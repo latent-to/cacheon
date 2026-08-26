@@ -775,7 +775,7 @@ def make_allreduce_dispatcher(
     so a kernel that cannot be captured fails loudly here. The miner gets
     the process group (``self.device_group``) — a wider capability than op/block slots —
     so this slot is verified DISTRIBUTED (cacheon.verify_collective) and the end-to-end
-    gate is mandatory (docs/SLOT_CONTRACT.md).
+    gate is mandatory (docs/architecture/slot-contract.md).
     """
 
     def dispatched(self, input_, *args, **kwargs):

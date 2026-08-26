@@ -2145,7 +2145,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if effective_device == "cpu":
         print("[note] some or all of this verify runs on CPU: it checks op-correctness "
               "only — it does not predict GPU throughput, CUDA-graph capture, or the "
-              "fidelity gates (see docs/GPU_SETUP.md).")
+              "fidelity gates (see docs/dev/gpu-setup.md).")
     rc = 0
     known_rows = 0
     context_inapplicable_rows = 0
@@ -2248,7 +2248,7 @@ def build_parser() -> argparse.ArgumentParser:
             "                               chain-eval-cost-credit\n"
             "  environment checks ......... compat, chain-compat\n"
             "\n"
-            "New to Cacheon? Start with docs/MINER_GUIDE.md."
+            "New to Cacheon? Start with docs/miner-guide/overview.md."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
