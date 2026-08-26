@@ -250,12 +250,27 @@ def _oci_streams(events: list[dict[str, Any]]) -> list[dict[str, object]]:
         if (
             not path.is_absolute()
             or path.is_symlink()
-            or not path.is_file()
             or not receipt_path.is_absolute()
             or receipt_path.is_symlink()
-            or not receipt_path.is_file()
         ):
             raise RemoteRunForensicsError("linked OCI output path is not retained")
+        if not path.is_file() or not receipt_path.is_file():
+            # A pod interrupt takes the runtime's --rm resource tree with it, so a
+            # recovery seal can outlive the stream its journal points at.  Raising
+            # here would abort the only result the request will ever get and leave
+            # the next recovery to raise again, so the loss is stated and named.
+            absent = str(receipt.get("artifact_sha256", ""))
+            if absent in seen:
+                continue
+            seen.add(absent)
+            streams.append(
+                {
+                    "receipt": receipt,
+                    "receipt_sha256": event.get("receipt_sha256"),
+                    "state": "not_retained",
+                }
+            )
+            continue
         raw = path.read_bytes()
         receipt_raw = receipt_path.read_bytes()
         digest = hashlib.sha256(raw).hexdigest()
