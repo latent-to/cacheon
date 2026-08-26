@@ -55,6 +55,7 @@ ATTEMPT = EvidenceArtifactRef(
     "application/json",
     "cacheon.qualification.cohort-attempt.v1",
 )
+POLICY = EmissionsPolicyManifest(100, 20, 100_000)
 
 
 def _arrival(index: int, *, hotkey: str = "miner", block: int = 10) -> FinalizedArrival:
@@ -119,17 +120,101 @@ def _promote(store: FinalizedIntakeStore, reservation_id: str) -> None:
     )
 
 
+def _bh(block: int) -> str:
+    return "0x" + f"{block:064x}"
+
+
+def _reserve(store, arrivals, *, block=10):
+    return store.reserve_finalized(
+        arrivals, finalized_block=block, finalized_block_hash=_bh(block)
+    )
+
+
+def _reserve_one(store, *, index=0, hotkey="miner", block=10):
+    return _reserve(
+        store, (_arrival(index, hotkey=hotkey, block=block),), block=block
+    )[0]
+
+
+def _publish(store, reservation_id, fingerprint, *, digest, root):
+    store.mark_fetching(reservation_id)
+    store.mark_published(
+        reservation_id,
+        delta_fingerprint=fingerprint,
+        publication_digest=digest,
+        publication_root=root,
+    )
+
+
+def _publish_pair(store, rows):
+    for row, marker in zip(rows, ("a", "b"), strict=True):
+        _publish(
+            store,
+            row.reservation_id,
+            _fingerprint(f"target.{marker}", f"slot.{marker}", marker),
+            digest=marker * 64,
+            root=f"/published/{marker}",
+        )
+        _promote(store, row.reservation_id)
+        store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+
+
+def _settlement_plan(store, lease):
+    plan = plan_settlement(
+        lease.candidates,
+        current_manifest=lease.stack.manifest,
+        current_tree_digest=lease.stack.tree_digest,
+        initial_event_sequence=lease.initial_event_sequence,
+        previous_event_digest=lease.previous_event_digest,
+    )
+    evidence = tuple(
+        store.reopen_settlement_evidence(row) for row in lease.candidates
+    )
+    return plan, evidence
+
+
+def _context(*hotkeys):
+    return GlobalRewardProjectionContext(
+        SCOPE.digest,
+        "validator",
+        12,
+        _bh(12),
+        tuple(MetagraphMember(uid, hotkey) for uid, hotkey in enumerate(hotkeys)),
+    )
+
+
+def _staging_manifest(prefix, catalog):
+    return EvaluationStackManifest(
+        runtime_digest=_h(f"{prefix}-runtime"),
+        base_engine_digest=_h(f"{prefix}-base"),
+        arena_digest=_h(f"{prefix}-arena"),
+        catalog_snapshot=catalog.snapshot(),
+        catalog_digest=catalog.digest,
+        entries={},
+    )
+
+
+def _policy_metadata(store):
+    return store._db.execute(
+        "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
+    ).fetchone()
+
+
+def _journal_projection():
+    return WeightProjection(
+        _h("scope"), 307, "validator", _h("policy"), _h("settlement"),
+        _h("evaluation"), _h("metagraph"), (_h("arena-state"),),
+        1, 10, 1, (_h("evidence"),), (("miner", 1_000_000),),
+    )
+
+
 def test_exact_manifest_compatibility_failure_can_return_to_fifo(tmp_path) -> None:
     reason = (
         "manifest:submission is not a registered component: "
         "unsupported abi_version 'pre-cutover'"
     )
     with _store(tmp_path) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        row = _reserve_one(store)
         store.mark_fetching(row.reservation_id)
         terminal = store.mark_failed(row.reservation_id, reason)
         assert terminal.status == "failed"
@@ -221,21 +306,13 @@ def _qualified_settlement_candidate(
         media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1",
     )
-    row = store.reserve_finalized(
-        (_arrival(0),),
-        finalized_block=10,
-        finalized_block_hash="0x" + f"{10:064x}",
-    )[0]
-    store.mark_fetching(row.reservation_id)
-    store.mark_published(
+    row = _reserve_one(store)
+    _publish(
+        store,
         row.reservation_id,
-        delta_fingerprint=_fingerprint(
-            target,
-            target,
-            selected_delta=arm.selected_delta_digest,
-        ),
-        publication_digest="d" * 64,
-        publication_root="/published/candidate",
+        _fingerprint(target, target, selected_delta=arm.selected_delta_digest),
+        digest="d" * 64,
+        root="/published/candidate",
     )
     _promote(store, row.reservation_id)
     def qualification(marker: str, authority: str, attempt, speedup: str):
@@ -316,9 +393,7 @@ def _qualified_settlement_candidate(
 def test_finalized_batch_is_reserved_atomically_before_transport(tmp_path):
     rows = (_arrival(0), _arrival(1, hotkey="other"))
     with _store(tmp_path) as store:
-        reserved = store.reserve_finalized(
-            rows, finalized_block=10, finalized_block_hash="0x" + f"{10:064x}"
-        )
+        reserved = _reserve(store, rows)
         assert tuple(row.arrival for row in reserved) == rows
         assert store.pending() == reserved
         assert oct(os.stat(store.path).st_mode & 0o777) == "0o600"
@@ -329,9 +404,7 @@ def test_finalized_batch_is_reserved_atomically_before_transport(tmp_path):
 
     with _store(tmp_path) as reopened:
         assert tuple(row.arrival for row in reopened.all()) == rows
-        assert reopened.reserve_finalized(
-            rows, finalized_block=10, finalized_block_hash="0x" + f"{10:064x}"
-        ) == ()
+        assert _reserve(reopened, rows) == ()
 
 
 def test_malformed_payload_still_reserves_its_finalized_position(tmp_path):
@@ -340,10 +413,7 @@ def test_malformed_payload_still_reserves_its_finalized_position(tmp_path):
         "9" * 64, "invalid_payload",
     )
     with _store(tmp_path) as store:
-        row = store.reserve_finalized(
-            (invalid,), finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        row = _reserve(store, (invalid,))[0]
         assert row.status == "failed" and row.reason == "invalid_payload"
         assert store.pending() == ()
 
@@ -379,47 +449,29 @@ def test_store_binds_chain_scope_and_excludes_a_second_controller(tmp_path):
 
 def test_finalized_cursor_rejects_hash_change_or_regression(tmp_path):
     with _store(tmp_path) as store:
-        store.reserve_finalized(
-            (_arrival(0),), finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )
+        _reserve_one(store)
         with pytest.raises(IntakeError, match="cursor"):
             store.reserve_finalized(
                 (), finalized_block=10, finalized_block_hash="0x" + "f" * 64
             )
         with pytest.raises(IntakeError, match="cursor"):
-            store.reserve_finalized(
-                (), finalized_block=9, finalized_block_hash="0x" + f"{9:064x}"
-            )
+            _reserve(store, (), block=9)
 
 
 def test_cursor_rejection_rolls_back_automatic_expiry(tmp_path, monkeypatch):
     with _store(tmp_path, expiry_blocks=20) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),), finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        row = _reserve_one(store)
         # Force the cursor check after the in-transaction expiry update to reject
         # this proposed head.  No partial liveness transition may survive.
-        monkeypatch.setattr(
-            store,
-            "_cursor",
-            lambda: (31, "0x" + f"{31:064x}"),
-        )
+        monkeypatch.setattr(store, "_cursor", lambda: (31, _bh(31)))
         with pytest.raises(IntakeError, match="cursor"):
-            store.reserve_finalized(
-                (), finalized_block=30,
-                finalized_block_hash="0x" + f"{30:064x}",
-            )
+            _reserve(store, (), block=30)
         assert store.get(row.reservation_id).status == "reserved"
 
 
 def test_restart_holds_interrupted_work_instead_of_replaying(tmp_path):
     with _store(tmp_path) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),), finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        row = _reserve_one(store)
         store.mark_fetching(row.reservation_id)
     with _store(tmp_path) as reopened:
         held = reopened.get(row.reservation_id)
@@ -429,22 +481,17 @@ def test_restart_holds_interrupted_work_instead_of_replaying(tmp_path):
 
 def test_restart_applies_finalized_sla_before_admitting_a_new_arrival(tmp_path):
     with _store(tmp_path, max_pending=1, max_cohort=1, expiry_blocks=20) as store:
-        stale = store.reserve_finalized(
-            (_arrival(0),), finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        stale = _reserve_one(store)
         store.mark_fetching(stale.reservation_id)
 
     with _store(
         tmp_path, max_pending=1, max_cohort=1, expiry_blocks=20
     ) as reopened:
         assert reopened.get(stale.reservation_id).status == "held"
-        delayed, admitted = reopened.reserve_finalized(
-            (
-                _arrival(2, hotkey="late-miner", block=10),
-                _arrival(1, block=30),
-            ), finalized_block=30,
-            finalized_block_hash="0x" + f"{30:064x}",
+        delayed, admitted = _reserve(
+            reopened,
+            (_arrival(2, hotkey="late-miner", block=10), _arrival(1, block=30)),
+            block=30,
         )
         expired = reopened.get(stale.reservation_id)
         assert (expired.status, expired.decision, expired.reason) == (
@@ -471,35 +518,30 @@ def test_admission_bounds_and_epoch_cutoff_are_durable(tmp_path):
             _arrival(1, block=96),
             _arrival(2, hotkey="other", block=97),
         )
-        result = store.reserve_finalized(
-            rows, finalized_block=100, finalized_block_hash="0x" + f"{100:064x}"
-        )
+        result = _reserve(store, rows, block=100)
         assert [row.admission_epoch for row in result] == [1, 1, 1]
         assert [row.status for row in result] == ["reserved", "failed", "reserved"]
 
 
 def test_unknown_older_and_overlapping_target_block_later_settlement(tmp_path):
     with _store(tmp_path) as store:
-        first, second, third = store.reserve_finalized(
-            (_arrival(0), _arrival(1, hotkey="b"), _arrival(2, hotkey="c")),
-            finalized_block=10, finalized_block_hash="0x" + f"{10:064x}",
+        first, second, third = _reserve(
+            store, (_arrival(0), _arrival(1, hotkey="b"), _arrival(2, hotkey="c"))
         )
         for row, target, members in (
             (second, "target.a", ("slot.a",)),
             (third, "target.b", ("slot.b",)),
         ):
-            store.mark_fetching(row.reservation_id)
-            store.mark_published(
-                row.reservation_id, delta_fingerprint=_fingerprint(target, members[0]),
-                publication_digest="d" * 64, publication_root=f"/published/{target}",
+            _publish(
+                store, row.reservation_id, _fingerprint(target, members[0]),
+                digest="d" * 64, root=f"/published/{target}",
             )
         assert store.settlement_blockers(second.reservation_id) == (first,)
         assert store.settlement_blockers(third.reservation_id) == (first,)
 
-        store.mark_fetching(first.reservation_id)
-        store.mark_published(
-            first.reservation_id, delta_fingerprint=_fingerprint("target.a", "slot.a", "b"),
-            publication_digest="e" * 64, publication_root="/published/first",
+        _publish(
+            store, first.reservation_id, _fingerprint("target.a", "slot.a", "b"),
+            digest="e" * 64, root="/published/first",
         )
         assert store.settlement_blockers(second.reservation_id) == (store.get(first.reservation_id),)
         assert store.settlement_blockers(third.reservation_id) == ()
@@ -507,17 +549,13 @@ def test_unknown_older_and_overlapping_target_block_later_settlement(tmp_path):
 
 def test_copy_decision_uses_only_durable_delta_fingerprints(tmp_path):
     with _store(tmp_path) as store:
-        first, second = store.reserve_finalized(
-            (_arrival(0, hotkey="author"), _arrival(1, hotkey="copycat")),
-            finalized_block=10, finalized_block_hash="0x" + f"{10:064x}",
+        first, second = _reserve(
+            store, (_arrival(0, hotkey="author"), _arrival(1, hotkey="copycat"))
         )
         for row in (first, second):
-            store.mark_fetching(row.reservation_id)
-            store.mark_published(
-                row.reservation_id,
-                delta_fingerprint=_fingerprint("target.a", "slot.a"),
-                publication_digest="d" * 64,
-                publication_root=f"/published/{row.reservation_id}",
+            _publish(
+                store, row.reservation_id, _fingerprint("target.a", "slot.a"),
+                digest="d" * 64, root=f"/published/{row.reservation_id}",
             )
         assert store.copy_predecessors(second.reservation_id) == (
             store.get(first.reservation_id),
@@ -528,10 +566,7 @@ def test_copy_decision_uses_only_durable_delta_fingerprints(tmp_path):
 
 def test_expiry_and_retry_release_are_explicit(tmp_path):
     with _store(tmp_path, expiry_blocks=20) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),), finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        row = _reserve_one(store)
         store.mark_fetching(row.reservation_id)
         store.mark_transport_retry(row.reservation_id, "host unavailable")
         with pytest.raises(IntakeError, match="not old enough"):
@@ -542,11 +577,7 @@ def test_expiry_and_retry_release_are_explicit(tmp_path):
 
 def test_transport_retry_exhaustion_becomes_an_explicit_hold(tmp_path):
     with _store(tmp_path, max_transport_retries=1) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        row = _reserve_one(store)
         store.mark_fetching(row.reservation_id)
         held = store.mark_transport_retry(row.reservation_id, "host unavailable")
         assert held.status == "held"
@@ -562,10 +593,7 @@ def test_transport_retry_exhaustion_becomes_an_explicit_hold(tmp_path):
 
 def test_finalized_sla_removes_old_blocker_but_preserves_settled_candidate(tmp_path):
     with _store(tmp_path, max_transport_retries=1, expiry_blocks=20) as store:
-        blocker = store.reserve_finalized(
-            (_arrival(99, block=9),), finalized_block=9,
-            finalized_block_hash="0x" + f"{9:064x}",
-        )[0]
+        blocker = _reserve_one(store, index=99, block=9)
         store.mark_fetching(blocker.reservation_id)
         blocker = store.mark_transport_retry(
             blocker.reservation_id, "host unavailable"
@@ -580,16 +608,7 @@ def test_finalized_sla_removes_old_blocker_but_preserves_settled_candidate(tmp_p
         assert (expired.status, expired.reason) == (
             "expired", "finalized_block_sla_expired",
         )
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
+        plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=30)
         assert store.get(candidate.reservation_digest).status == "qualified"
         assert store.expire_stale(current_block=100) == ()
@@ -717,22 +736,15 @@ def test_schema3_archival_is_terminal_preserves_evidence_and_releases_priority(
             )
         )
 
-        later = reopened.reserve_finalized(
-            (_arrival(1, block=11),),
-            finalized_block=11,
-            finalized_block_hash="0x" + f"{11:064x}",
-        )[0]
-        reopened.mark_fetching(later.reservation_id)
-        reopened.mark_published(
+        later = _reserve_one(reopened, index=1, block=11)
+        _publish(
+            reopened,
             later.reservation_id,
-            delta_fingerprint=_fingerprint(
-                candidate.target_id,
-                candidate.target_id,
-                "b",
-                selected_delta="6" * 64,
+            _fingerprint(
+                candidate.target_id, candidate.target_id, "b", selected_delta="6" * 64
             ),
-            publication_digest="e" * 64,
-            publication_root="/published/later",
+            digest="e" * 64,
+            root="/published/later",
         )
         assert reopened.settlement_blockers(later.reservation_id) == (legacy,)
 
@@ -786,11 +798,7 @@ def test_schema3_archival_is_terminal_preserves_evidence_and_releases_priority(
 
 def test_schema3_archival_rejects_ordinary_or_inconsistent_holds(tmp_path):
     with _store(tmp_path) as store:
-        ordinary = store.reserve_finalized(
-            (_arrival(0),),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        ordinary = _reserve_one(store)
         ordinary = store.mark_held(ordinary.reservation_id, "ordinary operator hold")
         with pytest.raises(IntakeError, match="exact schema3"):
             store.archive_schema3_migration_hold(
@@ -835,9 +843,7 @@ def test_schema3_archival_cli_uses_finalized_public_scope_without_a_wallet(
 
     monkeypatch.setattr(chain, "connect", lambda network: Subtensor())
     monkeypatch.setattr(
-        chain,
-        "read_finalized_head",
-        lambda _subtensor: (12, "0x" + f"{12:064x}"),
+        chain, "read_finalized_head", lambda _subtensor: (12, _bh(12))
     )
     args = cli.build_parser().parse_args(
         [
@@ -866,23 +872,8 @@ def test_schema3_archival_cli_uses_finalized_public_scope_without_a_wallet(
 
 def test_qualification_batch_persists_dispositions_and_groups_atomically(tmp_path):
     with _store(tmp_path, max_cohort=2) as store:
-        rows = store.reserve_finalized(
-            (_arrival(0), _arrival(1, hotkey="other")),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )
-        for row, marker in zip(rows, ("a", "b"), strict=True):
-            store.mark_fetching(row.reservation_id)
-            store.mark_published(
-                row.reservation_id,
-                delta_fingerprint=_fingerprint(
-                    f"target.{marker}", f"slot.{marker}", marker
-                ),
-                publication_digest=marker * 64,
-                publication_root=f"/published/{marker}",
-            )
-            _promote(store, row.reservation_id)
-            store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+        rows = _reserve(store, (_arrival(0), _arrival(1, hotkey="other")))
+        _publish_pair(store, rows)
         failure = "6" * 64
         outcomes = tuple(
             QualificationIntakeOutcome(
@@ -924,23 +915,10 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
     with _store(
         tmp_path, max_cohort=2, max_qualification_retries=2
     ) as store:
-        offender, peer = store.reserve_finalized(
-            (_arrival(0), _arrival(1, hotkey="peer")),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
+        offender, peer = _reserve(
+            store, (_arrival(0), _arrival(1, hotkey="peer"))
         )
-        for row, marker in zip((offender, peer), ("a", "b"), strict=True):
-            store.mark_fetching(row.reservation_id)
-            store.mark_published(
-                row.reservation_id,
-                delta_fingerprint=_fingerprint(
-                    f"target.{marker}", f"slot.{marker}", marker
-                ),
-                publication_digest=marker * 64,
-                publication_root=f"/published/{marker}",
-            )
-            _promote(store, row.reservation_id)
-            store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
+        _publish_pair(store, (offender, peer))
 
         first_failure = "6" * 64
         first_outcomes = tuple(
@@ -1040,17 +1018,12 @@ def test_worker_failure_retry_holds_offender_without_stranding_peer(tmp_path):
 
 def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_path):
     with _store(tmp_path) as store:
-        first, later = store.reserve_finalized(
-            (_arrival(0, hotkey="author"), _arrival(1, hotkey="copycat")),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
+        first, later = _reserve(
+            store, (_arrival(0, hotkey="author"), _arrival(1, hotkey="copycat"))
         )
-        store.mark_fetching(later.reservation_id)
-        store.mark_published(
-            later.reservation_id,
-            delta_fingerprint=_fingerprint("target.a", "slot.a"),
-            publication_digest="b" * 64,
-            publication_root="/published/later",
+        _publish(
+            store, later.reservation_id, _fingerprint("target.a", "slot.a"),
+            digest="b" * 64, root="/published/later",
         )
         _promote(store, later.reservation_id)
         store.mark_qualifying(later.reservation_id, "5" * 64, AUTHORITY)
@@ -1075,12 +1048,9 @@ def test_late_earlier_fingerprint_retroactively_identifies_a_qualified_copy(tmp_
             current_finalized_block=10,
         )
 
-        store.mark_fetching(first.reservation_id)
-        store.mark_published(
-            first.reservation_id,
-            delta_fingerprint=_fingerprint("target.a", "slot.a"),
-            publication_digest="a" * 64,
-            publication_root="/published/first",
+        _publish(
+            store, first.reservation_id, _fingerprint("target.a", "slot.a"),
+            digest="a" * 64, root="/published/first",
         )
         assert store.reconcile_copies() == (
             (later.reservation_id, first.reservation_id),
@@ -1097,16 +1067,7 @@ def test_pass_projection_settles_atomically_and_recovers_stack_and_claim(tmp_pat
         assert genesis.manifest.digest == candidate.incumbent_stack_digest
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None and lease.candidates == (candidate,)
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
+        plan, evidence = _settlement_plan(store, lease)
         current = store.commit_settlement(
             lease, plan, evidence, current_block=11
         )
@@ -1159,37 +1120,19 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
         candidate = _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
+        plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=11)
-        context = GlobalRewardProjectionContext(
-            SCOPE.digest,
-            "validator",
-            12,
-            "0x" + f"{12:064x}",
-            (MetagraphMember(0, "validator"), MetagraphMember(1, "miner")),
-        )
-        policy = EmissionsPolicyManifest(100, 20, 100_000)
+        context = _context("validator", "miner")
         with pytest.raises(IntakeError, match="catalogs"):
             store.build_weight_projection(
-                policy=policy,
+                policy=POLICY,
                 context=context,
                 catalogs={},
                 netuid=SCOPE.netuid,
             )
-        assert store._db.execute(
-            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
-        ).fetchone() is None
+        assert _policy_metadata(store) is None
         projection = store.build_weight_projection(
-            policy=policy,
+            policy=POLICY,
             context=context,
             catalogs={candidate.arena_digest: catalog},
             netuid=SCOPE.netuid,
@@ -1229,7 +1172,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
         )
         with pytest.raises(IntakeError, match="absent evaluation arena"):
             store.build_weight_projection(
-                policy=policy,
+                policy=POLICY,
                 context=context,
                 catalogs={candidate.arena_digest: catalog},
                 netuid=SCOPE.netuid,
@@ -1256,7 +1199,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
         artifact.unlink()
         with pytest.raises(IntakeError, match="cannot reopen"):
             store.build_weight_projection(
-                policy=policy,
+                policy=POLICY,
                 context=context,
                 catalogs={candidate.arena_digest: catalog},
                 netuid=SCOPE.netuid,
@@ -1268,42 +1211,19 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(tmp_path
 
 def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
     catalog = default_target_catalog()
-    policy = EmissionsPolicyManifest(100, 20, 100_000)
-    context = GlobalRewardProjectionContext(
-        SCOPE.digest,
-        "validator",
-        12,
-        "0x" + f"{12:064x}",
-        (MetagraphMember(0, "validator"), MetagraphMember(1, "miner")),
-    )
-    staging = EvaluationStackManifest(
-        runtime_digest=_h("staging-runtime"),
-        base_engine_digest=_h("staging-base"),
-        arena_digest=_h("staging-arena"),
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        entries={},
-    )
+    context = _context("validator", "miner")
+    staging = _staging_manifest("staging", catalog)
 
     with _store(tmp_path) as store:
         candidate = _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
+        plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=11)
         store.initialize_evaluation_stack(staging, tree_digest=_h("staging-tree"))
 
         projection = store.build_weight_projection(
-            policy=policy,
+            policy=POLICY,
             context=context,
             catalogs={candidate.arena_digest: catalog, staging.arena_digest: catalog},
             netuid=SCOPE.netuid,
@@ -1317,7 +1237,7 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
         # A restart must not reactivate a persisted generation-zero arena.  Its
         # catalog is optional because it has no economic authority yet.
         projection = reopened.build_weight_projection(
-            policy=policy,
+            policy=POLICY,
             context=context,
             catalogs={candidate.arena_digest: catalog},
             netuid=SCOPE.netuid,
@@ -1328,67 +1248,36 @@ def test_uncrowned_arena_is_staging_and_cannot_halt_a_crowned_arena(tmp_path):
 
 def test_all_uncrowned_bootstrap_remains_an_explicit_fail_closed_policy(tmp_path):
     catalog = default_target_catalog()
-    staging = EvaluationStackManifest(
-        runtime_digest=_h("bootstrap-runtime"),
-        base_engine_digest=_h("bootstrap-base"),
-        arena_digest=_h("bootstrap-arena"),
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        entries={},
-    )
-    context = GlobalRewardProjectionContext(
-        SCOPE.digest,
-        "validator",
-        12,
-        "0x" + f"{12:064x}",
-        (MetagraphMember(0, "validator"),),
-    )
+    staging = _staging_manifest("bootstrap", catalog)
+    context = _context("validator")
     with _store(tmp_path) as store:
         store.initialize_evaluation_stack(staging, tree_digest=_h("bootstrap-tree"))
         with pytest.raises(EconomicsError, match="typed arena authorities"):
             store.build_weight_projection(
-                policy=EmissionsPolicyManifest(100, 20, 100_000),
+                policy=POLICY,
                 context=context,
                 catalogs={staging.arena_digest: catalog},
                 netuid=SCOPE.netuid,
             )
-        assert store._db.execute(
-            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
-        ).fetchone() is None
+        assert _policy_metadata(store) is None
 
 
 def test_burn_weight_projection_covers_only_the_all_uncrowned_bootstrap(tmp_path):
     catalog = default_target_catalog()
-    policy = EmissionsPolicyManifest(100, 20, 100_000)
-    context = GlobalRewardProjectionContext(
-        SCOPE.digest,
-        "validator",
-        12,
-        "0x" + f"{12:064x}",
-        (MetagraphMember(0, "owner-burn"), MetagraphMember(1, "validator")),
-    )
-    staging = EvaluationStackManifest(
-        runtime_digest=_h("bootstrap-runtime"),
-        base_engine_digest=_h("bootstrap-base"),
-        arena_digest=_h("bootstrap-arena"),
-        catalog_snapshot=catalog.snapshot(),
-        catalog_digest=catalog.digest,
-        entries={},
-    )
+    context = _context("owner-burn", "validator")
+    staging = _staging_manifest("bootstrap", catalog)
     with _store(tmp_path) as store:
         store.initialize_evaluation_stack(staging, tree_digest=_h("bootstrap-tree"))
         with pytest.raises(IntakeError, match="not registered"):
             store.build_burn_weight_projection(
-                policy=policy,
+                policy=POLICY,
                 context=context,
                 netuid=SCOPE.netuid,
                 burn_hotkey="stranger",
             )
-        assert store._db.execute(
-            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
-        ).fetchone() is None
+        assert _policy_metadata(store) is None
         projection = store.build_burn_weight_projection(
-            policy=policy,
+            policy=POLICY,
             context=context,
             netuid=SCOPE.netuid,
             burn_hotkey="owner-burn",
@@ -1399,7 +1288,7 @@ def test_burn_weight_projection_covers_only_the_all_uncrowned_bootstrap(tmp_path
         assert projection.evidence_digests == ()
         assert projection.settlement_state_digest == store.settlement_state_digest()
         again = store.build_burn_weight_projection(
-            policy=policy,
+            policy=POLICY,
             context=context,
             netuid=SCOPE.netuid,
             burn_hotkey="owner-burn",
@@ -1422,60 +1311,31 @@ def test_burn_weight_projection_covers_only_the_all_uncrowned_bootstrap(tmp_path
 
 
 def test_burn_weight_projection_refuses_any_real_economic_authority(tmp_path):
-    policy = EmissionsPolicyManifest(100, 20, 100_000)
     with _store(tmp_path) as store:
         lease_candidate = _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
+        plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=11)
         assert lease_candidate.arena_digest in {
             row.arena_digest for row in store.evaluation_stacks()
         }
-        context = GlobalRewardProjectionContext(
-            SCOPE.digest,
-            "validator",
-            12,
-            "0x" + f"{12:064x}",
-            (
-                MetagraphMember(0, "owner-burn"),
-                MetagraphMember(1, "validator"),
-                MetagraphMember(2, "miner"),
-            ),
-        )
+        context = _context("owner-burn", "validator", "miner")
         with pytest.raises(IntakeError, match="burn weights refused"):
             store.build_burn_weight_projection(
-                policy=policy,
+                policy=POLICY,
                 context=context,
                 netuid=SCOPE.netuid,
                 burn_hotkey="owner-burn",
             )
-        assert store._db.execute(
-            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
-        ).fetchone() is None
+        assert _policy_metadata(store) is None
 
 
 def test_subnet_owner_burn_projection_binds_settlement_and_policy(tmp_path):
-    policy = EmissionsPolicyManifest(100, 20, 100_000)
-    context = GlobalRewardProjectionContext(
-        SCOPE.digest,
-        "validator",
-        12,
-        "0x" + f"{12:064x}",
-        (MetagraphMember(0, "owner-burn"), MetagraphMember(1, "validator")),
-    )
+    context = _context("owner-burn", "validator")
     with _store(tmp_path) as store:
         projection = store.build_subnet_owner_burn_weight_projection(
-            policy=policy,
+            policy=POLICY,
             context=context,
             netuid=SCOPE.netuid,
             burn_hotkey="owner-burn",
@@ -1488,9 +1348,9 @@ def test_subnet_owner_burn_projection_binds_settlement_and_policy(tmp_path):
         assert projection.stack_generation == 0
         assert projection.evidence_digests == ()
         assert projection.settlement_state_digest == store.settlement_state_digest()
-        assert projection.policy_digest == policy.digest
+        assert projection.policy_digest == POLICY.digest
         again = store.build_subnet_owner_burn_weight_projection(
-            policy=policy,
+            policy=POLICY,
             context=context,
             netuid=SCOPE.netuid,
             burn_hotkey="owner-burn",
@@ -1499,48 +1359,26 @@ def test_subnet_owner_burn_projection_binds_settlement_and_policy(tmp_path):
             candidate_uids=(0,),
         )
         assert again.digest == projection.digest
-        bound = store._db.execute(
-            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
-        ).fetchone()
-        assert bound is not None and bound[0] == policy.digest
+        bound = _policy_metadata(store)
+        assert bound is not None and bound[0] == POLICY.digest
 
 
 def test_subnet_owner_burn_projection_refuses_any_real_economic_authority(
     tmp_path,
 ):
-    policy = EmissionsPolicyManifest(100, 20, 100_000)
     with _store(tmp_path) as store:
         lease_candidate = _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11)
         assert lease is not None
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
+        plan, evidence = _settlement_plan(store, lease)
         store.commit_settlement(lease, plan, evidence, current_block=11)
         assert lease_candidate.arena_digest in {
             row.arena_digest for row in store.evaluation_stacks()
         }
-        context = GlobalRewardProjectionContext(
-            SCOPE.digest,
-            "validator",
-            12,
-            "0x" + f"{12:064x}",
-            (
-                MetagraphMember(0, "owner-burn"),
-                MetagraphMember(1, "validator"),
-                MetagraphMember(2, "miner"),
-            ),
-        )
+        context = _context("owner-burn", "validator", "miner")
         with pytest.raises(IntakeError, match="subnet-owner burn weights refused"):
             store.build_subnet_owner_burn_weight_projection(
-                policy=policy,
+                policy=POLICY,
                 context=context,
                 netuid=SCOPE.netuid,
                 burn_hotkey="owner-burn",
@@ -1548,9 +1386,7 @@ def test_subnet_owner_burn_projection_refuses_any_real_economic_authority(
                 owner_hotkey="owner-burn",
                 candidate_uids=(0,),
             )
-        assert store._db.execute(
-            "SELECT value FROM metadata WHERE key='emissions_policy_digest'"
-        ).fetchone() is None
+        assert _policy_metadata(store) is None
 
 
 def test_expired_settlement_lease_cannot_commit(tmp_path):
@@ -1558,16 +1394,7 @@ def test_expired_settlement_lease_cannot_commit(tmp_path):
         _qualified_settlement_candidate(store)
         lease = store.lease_settlement_cohort(current_block=11, lease_blocks=2)
         assert lease is not None
-        plan = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-        )
-        evidence = tuple(
-            store.reopen_settlement_evidence(row) for row in lease.candidates
-        )
+        plan, evidence = _settlement_plan(store, lease)
         with pytest.raises(IntakeError, match="deadline"):
             store.commit_settlement(lease, plan, evidence, current_block=13)
         assert store.evaluation_stack(lease.stack.arena_digest) == lease.stack
@@ -1575,16 +1402,10 @@ def test_expired_settlement_lease_cannot_commit(tmp_path):
 
 def test_pass_without_exact_settlement_projection_is_rejected_atomically(tmp_path):
     with _store(tmp_path) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),), finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
-        store.mark_fetching(row.reservation_id)
-        store.mark_published(
-            row.reservation_id,
-            delta_fingerprint=_fingerprint("target.a", "slot.a"),
-            publication_digest="d" * 64,
-            publication_root="/published/a",
+        row = _reserve_one(store)
+        _publish(
+            store, row.reservation_id, _fingerprint("target.a", "slot.a"),
+            digest="d" * 64, root="/published/a",
         )
         _promote(store, row.reservation_id)
         store.mark_qualifying(row.reservation_id, "7" * 64, AUTHORITY)
@@ -1608,21 +1429,7 @@ def test_pass_without_exact_settlement_projection_is_rejected_atomically(tmp_pat
 
 
 def test_sqlite_weight_journal_is_cas_bound_and_restart_reopenable(tmp_path):
-    projection = WeightProjection(
-        _h("scope"),
-        307,
-        "validator",
-        _h("policy"),
-        _h("settlement"),
-        _h("evaluation"),
-        _h("metagraph"),
-        (_h("arena-state"),),
-        1,
-        10,
-        1,
-        (_h("evidence"),),
-        (("miner", 1_000_000),),
-    )
+    projection = _journal_projection()
     intent = WeightPublicationRecord(
         projection.digest,
         "intent",
@@ -1659,21 +1466,7 @@ def test_sqlite_weight_journal_is_cas_bound_and_restart_reopenable(tmp_path):
 
 
 def test_sqlite_weight_journal_reopen_rejects_corrupt_head_projection(tmp_path):
-    projection = WeightProjection(
-        _h("scope"),
-        307,
-        "validator",
-        _h("policy"),
-        _h("settlement"),
-        _h("evaluation"),
-        _h("metagraph"),
-        (_h("arena-state"),),
-        1,
-        10,
-        1,
-        (_h("evidence"),),
-        (("miner", 1_000_000),),
-    )
+    projection = _journal_projection()
     pending = WeightPublicationRecord(
         projection.digest,
         "pending",
@@ -1702,11 +1495,7 @@ def test_a_held_bundle_only_reopens_when_an_operator_releases_it(tmp_path):
     """
 
     with _store(tmp_path) as store:
-        row = store.reserve_finalized(
-            (_arrival(0),),
-            finalized_block=10,
-            finalized_block_hash="0x" + f"{10:064x}",
-        )[0]
+        row = _reserve_one(store)
         store.mark_held(
             row.reservation_id, "remote_qualification_hold:legacy_no_decision"
         )
