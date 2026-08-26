@@ -109,6 +109,116 @@ def _arm(plan):
     )
 
 
+def _count_row(session, prompts, outputs, *, canary):
+    started, completed = session.clock.span(0.1)
+    raw = BatchEvidence(
+        tuple(
+            PromptEvidence(outputs[prompt], tuple(() for _ in outputs[prompt]), 5)
+            for prompt in prompts
+        )
+    )
+    index = len(session.batch_rows)
+    row = ResidentBatchEvidence(
+        index,
+        _h(f"{session.session_id}:count-request:{index}")[:32],
+        _h(f"{session.session_id}:count-nonce:{index}")[:32],
+        session.active_generation,
+        session.active_slots,
+        canary,
+        started,
+        completed,
+        raw.observed_tokens,
+        raw,
+    )
+    session.batch_rows.append(row)
+    return row
+
+
+def _count_template(profile, lane_a_digest, lane_b_digest):
+    template, judge, unused_pair, factory_a, _factory_b = count_fixtures._fixture(
+        total=4, barrier=False, profile=profile
+    )
+    unused_pair.close()
+    admission = replace(
+        template.admission,
+        lane_a_allocation_digest=lane_a_digest,
+        lane_b_allocation_digest=lane_b_digest,
+    )
+    envelope = replace(template.envelope, admission_policy_digest=admission.digest)
+    return template, judge, factory_a.outputs, admission, envelope
+
+
+def _run_prefix(coordinator, commissioned, harness, plan, capability, continuation):
+    return coordinator.run_b300_resident_qualification_prefix(
+        factory=commissioned.factory,
+        capability=capability,
+        candidate=harness.candidate,
+        plan=plan,
+        continuation=continuation,
+        screen_lane="primary",
+        deadline=time.monotonic() + 30.0,
+    )
+
+
+def _plan_scope(root, request_digest, plan):
+    return QualificationContinuationStore(root).scope(
+        request_digest=request_digest,
+        authority_digest=qualification_authority_digest(plan),
+        source_digest=plan.prepared.source.digest,
+    )
+
+
+def _authority_scope(root, authority):
+    return QualificationContinuationStore(root).scope(
+        request_digest=authority.authenticated_request_digest,
+        authority_digest=authority.qualification_authority_digest,
+        source_digest=_h("source"),
+    )
+
+
+def _forbidden_judge(profile, message):
+    class Forbidden:
+        binding = HiddenJudgeBinding(
+            profile.reference.hidden_corpus_commitment,
+            profile.reference.hidden_judge_digest,
+            profile.hidden_task_policy_digest,
+        )
+
+        def __call__(self, **_kwargs):  # pragma: no cover - must never run
+            raise AssertionError(message)
+
+    return Forbidden()
+
+
+def _never_called(message):
+    def refuse(*_args, **_kwargs):  # pragma: no cover - must never run
+        raise AssertionError(message)
+
+    return refuse
+
+
+def _readiness(plan, reference, name):
+    hardware = plan.pristine_launch.hardware
+    return WorkerReadiness(
+        _h(f"{name}-ready"), 1, plan.pristine_stack.arena_digest, name,
+        _h(f"{name}-provider"), plan.pristine_stack.runtime_digest,
+        reference.worker_distribution_digest, reference.model_revision_digest,
+        reference.model_manifest_digest, reference.model_content_digest,
+        hardware.architecture, hardware.topology_class, hardware.topology_digest,
+        hardware.visible_gpu_count, plan.reference_engine_config.tp_size,
+        reference.workload_digest, _h(f"{name}-policy"))
+
+
+def _capture(batch, authority, plan, reference, readiness, refs):
+    return capture_remote_qualification_product(
+        batch=batch, authority_manifest=authority,
+        incumbent_stack=plan.pristine_stack,
+        incumbent_tree_digest=reference.pristine_tree_digest,
+        screen_lane="primary", service_digest=readiness.service_digest,
+        readiness=readiness, evidence_root=plan.evidence_root,
+        evidence_references=refs)
+
+
 def _install_exact_lifetimes(monkeypatch, commissioned, lifetimes):
     original = pair_fixtures._Factory.__call__
 
@@ -180,54 +290,25 @@ def _install_exact_lifetimes(monkeypatch, commissioned, lifetimes):
 
 
 def _run_count_on_pair(borrowed, speed_plan, sessions, *, fast_lane):
-    template, judge, unused_pair, factory_a, _factory_b = count_fixtures._fixture(
-        total=4, barrier=False, profile=f"retirement-{fast_lane.lower()}"
-    )
-    unused_pair.close()
-    admission = replace(
-        template.admission,
-        lane_a_allocation_digest=borrowed.binding.lanes[0].allocation_digest,
-        lane_b_allocation_digest=borrowed.binding.lanes[1].allocation_digest,
+    template, judge, outputs, admission, envelope = _count_template(
+        f"retirement-{fast_lane.lower()}",
+        borrowed.binding.lanes[0].allocation_digest,
+        borrowed.binding.lanes[1].allocation_digest,
     )
     plan = replace(
         template,
         candidate_bundle_digest=speed_plan.candidate_bundle_digest,
-        envelope=replace(
-            template.envelope, admission_policy_digest=admission.digest
-        ),
+        envelope=envelope,
         admission=admission,
         pair_binding=borrowed.binding,
     )
     release = threading.Event()
     fast_session = borrowed.binding.lookup(fast_lane).session_id
-    outputs = factory_a.outputs
 
     def execute(session, prompts, *, shape, canary=False):
         if session.session_id != fast_session:
             assert release.wait(2.0)
-        started, completed = session.clock.span(0.1)
-        raw = BatchEvidence(
-            tuple(
-                PromptEvidence(
-                    outputs[prompt], tuple(() for _ in outputs[prompt]), 5
-                )
-                for prompt in prompts
-            )
-        )
-        index = len(session.batch_rows)
-        row = ResidentBatchEvidence(
-            index,
-            _h(f"{session.session_id}:count-request:{index}")[:32],
-            _h(f"{session.session_id}:count-nonce:{index}")[:32],
-            session.active_generation,
-            session.active_slots,
-            canary,
-            started,
-            completed,
-            raw.observed_tokens,
-            raw,
-        )
-        session.batch_rows.append(row)
+        row = _count_row(session, prompts, outputs, canary=canary)
         if session.session_id == fast_session:
             release.set()
         return row
@@ -260,19 +341,11 @@ def _coordinator_case(
         source_fixture=source_fixture,
     )
     plan = replace(plan, model_mount=commissioned.model_mount)
-    template, judge, unused_pair, output_a, _output_b = count_fixtures._fixture(
-        total=4, barrier=False, profile="coordinator"
+    template, judge, outputs, admission, envelope = _count_template(
+        "coordinator",
+        commissioned.plans[0].lane_policy.digest,
+        commissioned.plans[1].lane_policy.digest,
     )
-    unused_pair.close()
-    admission = replace(
-        template.admission,
-        lane_a_allocation_digest=commissioned.plans[0].lane_policy.digest,
-        lane_b_allocation_digest=commissioned.plans[1].lane_policy.digest,
-    )
-    envelope = replace(
-        template.envelope, admission_policy_digest=admission.digest
-    )
-    outputs = output_a.outputs
     stock_rows = tuple(
         ResidentCountPromptObservation(
             ordinal,
@@ -316,30 +389,7 @@ def _coordinator_case(
     def execute(session, prompts, *, shape, canary=False):
         prompts = tuple(prompts)
         if shape == template.batch_shape and all(row in outputs for row in prompts):
-            started, completed = session.clock.span(0.1)
-            raw = BatchEvidence(
-                tuple(
-                    PromptEvidence(
-                        outputs[prompt], tuple(() for _ in outputs[prompt]), 5
-                    )
-                    for prompt in prompts
-                )
-            )
-            index = len(session.batch_rows)
-            row = ResidentBatchEvidence(
-                index,
-                _h(f"{session.session_id}:count-request:{index}")[:32],
-                _h(f"{session.session_id}:count-nonce:{index}")[:32],
-                session.active_generation,
-                session.active_slots,
-                canary,
-                started,
-                completed,
-                raw.observed_tokens,
-                raw,
-            )
-            session.batch_rows.append(row)
-            return row
+            return _count_row(session, prompts, outputs, canary=canary)
         return original_execute(session, prompts, shape=shape, canary=canary)
 
     monkeypatch.setattr(
@@ -381,13 +431,8 @@ def _coordinator_case(
         )
 
     monkeypatch.setattr(coordinator, "_speed_plan", speed_plan)
-    request_digest = _h("coordinator:authenticated-request")
-    continuation = QualificationContinuationStore(
-        tmp_path / "continuation"
-    ).scope(
-        request_digest=request_digest,
-        authority_digest=qualification_authority_digest(plan),
-        source_digest=plan.prepared.source.digest,
+    continuation = _plan_scope(
+        tmp_path / "continuation", _h("coordinator:authenticated-request"), plan
     )
     return coordinator, commissioned, harness, plan, capability, continuation
 
@@ -442,20 +487,11 @@ def test_retirement_publishes_once_and_reopens_without_live_pair(
         for row in retirement_evidence.request_history[-2:]
     )[0] == fast_lane
     store_root = tmp_path / "continuations"
-    continuation = QualificationContinuationStore(store_root).scope(
-        request_digest=authority.authenticated_request_digest,
-        authority_digest=authority.qualification_authority_digest,
-        source_digest=_h("source"),
-    )
+    continuation = _authority_scope(store_root, authority)
     continuation.record_resident_pair_retirement(checkpoint)
     continuation.record_resident_pair_retirement(checkpoint)
 
-    reopened_scope = QualificationContinuationStore(store_root).scope(
-        request_digest=authority.authenticated_request_digest,
-        authority_digest=authority.qualification_authority_digest,
-        source_digest=_h("source"),
-    )
-    reopened = reopened_scope.load_resident_pair_retirement()
+    reopened = _authority_scope(store_root, authority).load_resident_pair_retirement()
     assert regrade_resident_pair_retirement_checkpoint(
         reopened,
         factory=commissioned.factory,
@@ -576,20 +612,15 @@ def test_production_coordinator_reopens_without_new_pair_or_evaluator_work(
         _coordinator_case(
             tmp_path, monkeypatch, lifetimes, managed_executors,
             source_fixture=source_fixture, escalated=escalated))
-    deadline = time.monotonic() + 30.0
-    first = coordinator.run_b300_resident_qualification_prefix(
-        factory=commissioned.factory, capability=capability,
-        candidate=harness.candidate, plan=plan, continuation=continuation,
-        screen_lane="primary", deadline=deadline)
+    first = _run_prefix(
+        coordinator, commissioned, harness, plan, capability, continuation)
     assert first.count_result.decision == "PASS"
     assert first.speed.escalated is escalated
     assert len(lifetimes.calls) == 2
     history = tuple(len(row.sessions[0].batch_rows) for row in lifetimes.factories)
 
-    second = coordinator.run_b300_resident_qualification_prefix(
-        factory=commissioned.factory, capability=capability,
-        candidate=harness.candidate, plan=plan, continuation=continuation,
-        screen_lane="primary", deadline=deadline)
+    second = _run_prefix(
+        coordinator, commissioned, harness, plan, capability, continuation)
 
     assert second == first
     assert len(lifetimes.calls) == 2
@@ -621,42 +652,22 @@ def test_production_coordinator_reopens_without_new_pair_or_evaluator_work(
 
 
 def test_registered_count_fail_is_a_durable_terminal_without_audit_or_t(
-    tmp_path,
-    monkeypatch,
-    lifetimes,
-    managed_executors,
+    tmp_path, monkeypatch, lifetimes, managed_executors
 ):
     coordinator, commissioned, harness, plan, capability, continuation = (
         _coordinator_case(
-            tmp_path,
-            monkeypatch,
-            lifetimes,
-            managed_executors,
-            count_drop=2,
+            tmp_path, monkeypatch, lifetimes, managed_executors, count_drop=2
         )
     )
-    prefix = coordinator.run_b300_resident_qualification_prefix(
-        factory=commissioned.factory,
-        capability=capability,
-        candidate=harness.candidate,
-        plan=plan,
-        continuation=continuation,
-        screen_lane="primary",
-        deadline=time.monotonic() + 30.0,
-    )
+    prefix = _run_prefix(
+        coordinator, commissioned, harness, plan, capability, continuation)
     assert prefix.count_result is not None
     assert prefix.count_result.decision == "FAIL"
     monkeypatch.setattr(
-        ResidentSpeedPolicy,
-        "read_window_scatter",
-        lambda _policy, _row: 0.0,
+        ResidentSpeedPolicy, "read_window_scatter", lambda _policy, _row: 0.0
     )
     prepared, resident, lifecycle = _exact_lifecycle(
-        harness,
-        plan,
-        capability,
-        prefix,
-        preserve_workload=True,
+        harness, plan, capability, prefix, preserve_workload=True
     )
     assert prepared is plan.prepared
     assert resident is plan.resident_speed_plan
@@ -664,42 +675,28 @@ def test_registered_count_fail_is_a_durable_terminal_without_audit_or_t(
     assert lifecycle.count_result.decision == "FAIL"
     assert lifecycle.count_checkpoint is not None
     assert lifecycle.stock_authority == capability.stock_authority
-    fail_continuation = QualificationContinuationStore(
-        tmp_path / "count-fail-continuation"
-    ).scope(
-        request_digest=lifecycle.retirement.authenticated_request_digest,
-        authority_digest=qualification_authority_digest(plan),
-        source_digest=plan.prepared.source.digest,
+    fail_continuation = _plan_scope(
+        tmp_path / "count-fail-continuation",
+        lifecycle.retirement.authenticated_request_digest,
+        plan,
     )
     fail_continuation.record_resident_pair_speed(lifecycle.crossover)
     fail_continuation.record_resident_count_quality(lifecycle.count_checkpoint)
     fail_continuation.record_resident_pair_retirement(lifecycle.retirement)
 
-    profile = plan.candidates[0].profile
-
-    class NoLaterJudge:
-        binding = HiddenJudgeBinding(
-            profile.reference.hidden_corpus_commitment,
-            profile.reference.hidden_judge_digest,
-            profile.hidden_task_policy_digest,
-        )
-
-        def __call__(self, **_kwargs):  # pragma: no cover - must stay pre-audit
-            raise AssertionError("resident-count FAIL entered the hidden judge")
-
-    def no_entropy(*_args, **_kwargs):  # pragma: no cover - must stay pre-T
-        raise AssertionError("resident-count FAIL entered entropy selection")
-
     pair_calls = len(lifetimes.calls)
-    reference = run_causal_qualification(
-        plan,
+    kwargs = dict(
         executor=commissioned.plans[1].executor,
-        entropy_provider=no_entropy,
-        hidden_judge=NoLaterJudge(),
+        entropy_provider=_never_called(
+            "resident-count FAIL entered entropy selection"),
+        hidden_judge=_forbidden_judge(
+            plan.candidates[0].profile,
+            "resident-count FAIL entered the hidden judge"),
         deadline=time.monotonic() + 30.0,
         continuation=fail_continuation,
         resident_pair_lifecycle=lifecycle,
     )
+    reference = run_causal_qualification(plan, **kwargs)
     terminal = reopen_qualification_stage_exit(
         plan.evidence_root,
         reference,
@@ -715,15 +712,7 @@ def test_registered_count_fail_is_a_durable_terminal_without_audit_or_t(
     assert terminal.resident_count_result == lifecycle.count_result
     assert terminal.retirement_digest == lifecycle.retirement.digest
     assert len(lifetimes.calls) == pair_calls
-    assert run_causal_qualification(
-        plan,
-        executor=commissioned.plans[1].executor,
-        entropy_provider=no_entropy,
-        hidden_judge=NoLaterJudge(),
-        deadline=time.monotonic() + 30.0,
-        continuation=fail_continuation,
-        resident_pair_lifecycle=lifecycle,
-    ) == reference
+    assert run_causal_qualification(plan, **kwargs) == reference
     assert len(lifetimes.calls) == pair_calls
     assert not (fail_continuation.directory / "audit_armed.json").exists()
     assert not (fail_continuation.directory / "t_armed.json").exists()
@@ -735,15 +724,8 @@ def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
     coordinator, commissioned, harness, old_plan, capability, prefix_scope = (
         _coordinator_case(tmp_path, monkeypatch, lifetimes, managed_executors)
     )
-    prefix = coordinator.run_b300_resident_qualification_prefix(
-        factory=commissioned.factory,
-        capability=capability,
-        candidate=harness.candidate,
-        plan=old_plan,
-        continuation=prefix_scope,
-        screen_lane="primary",
-        deadline=time.monotonic() + 30.0,
-    )
+    prefix = _run_prefix(
+        coordinator, commissioned, harness, old_plan, capability, prefix_scope)
     assert prefix.count_result.decision == "PASS"
     resident = old_plan.resident_speed_plan
     assert resident is not None
@@ -755,9 +737,7 @@ def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
         ),
     )
     monkeypatch.setattr(
-        ResidentSpeedPolicy,
-        "read_window_scatter",
-        lambda _policy, _row: 0.0,
+        ResidentSpeedPolicy, "read_window_scatter", lambda _policy, _row: 0.0
     )
     _prepared, _resident, lifecycle = _exact_lifecycle(
         harness, plan, capability, prefix, preserve_workload=True
@@ -786,26 +766,12 @@ def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
 
     executor = commissioned.plans[1].executor
 
-    def no_audit(*_args, **_kwargs):  # pragma: no cover - must stay post-fidelity
-        raise AssertionError("v6 resident PASS entered the obsolete slot audit")
-
-    monkeypatch.setattr(runner_module, "_run_slot_audits", no_audit)
-
+    monkeypatch.setattr(
+        runner_module,
+        "_run_slot_audits",
+        _never_called("v6 resident PASS entered the obsolete slot audit"),
+    )
     profile = plan.candidates[0].profile
-
-    class NoPristineT:
-        binding = HiddenJudgeBinding(
-            profile.reference.hidden_corpus_commitment,
-            profile.reference.hidden_judge_digest,
-            profile.hidden_task_policy_digest,
-        )
-
-        def __call__(self, **_kwargs):  # pragma: no cover - must stay pre-T
-            raise AssertionError("v6 resident PASS entered pristine T")
-
-    def no_entropy(*_args, **_kwargs):  # pragma: no cover - must stay pre-T
-        raise AssertionError("v6 resident PASS requested pristine-T entropy")
-
     authority = QualificationAuthorityManifest.seal(
         plan,
         reservations=(harness.candidate.reservation,),
@@ -819,8 +785,9 @@ def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
     pair_calls = len(lifetimes.calls)
     kwargs = dict(
         executor=executor,
-        entropy_provider=no_entropy,
-        hidden_judge=NoPristineT(),
+        entropy_provider=_never_called(
+            "v6 resident PASS requested pristine-T entropy"),
+        hidden_judge=_forbidden_judge(profile, "v6 resident PASS entered pristine T"),
         deadline=time.monotonic() + 30.0,
         continuation_store=store,
         request_digest=request_digest,
@@ -850,52 +817,20 @@ def test_v6_two_leg_pass_is_durable_importable_and_never_enters_pristine_t(
 
     closure = lifecycle.closure
     reference = profile.reference
-    hardware = plan.pristine_launch.hardware
-    readiness = WorkerReadiness(
-        _h("v6-pass-ready"),
-        1,
-        plan.pristine_stack.arena_digest,
-        "v6-pass",
-        _h("v6-pass-provider"),
-        plan.pristine_stack.runtime_digest,
-        reference.worker_distribution_digest,
-        reference.model_revision_digest,
-        reference.model_manifest_digest,
-        reference.model_content_digest,
-        hardware.architecture,
-        hardware.topology_class,
-        hardware.topology_digest,
-        hardware.visible_gpu_count,
-        plan.reference_engine_config.tp_size,
-        reference.workload_digest,
-        _h("v6-pass-policy"),
-    )
+    readiness = _readiness(plan, reference, "v6-pass")
     supports = (
         closure.count_checkpoint.raw_execution_evidence,
         closure.count_checkpoint.candidate_observation,
         closure.stock_authority.artifact,
     )
-
-    def capture(refs):
-        return capture_remote_qualification_product(
-            batch=batch,
-            authority_manifest=authority,
-            incumbent_stack=plan.pristine_stack,
-            incumbent_tree_digest=reference.pristine_tree_digest,
-            screen_lane="primary",
-            service_digest=readiness.service_digest,
-            readiness=readiness,
-            evidence_root=plan.evidence_root,
-            evidence_references=refs,
-        )
-
-    product = capture(supports)
+    product = _capture(batch, authority, plan, reference, readiness, supports)
     assert import_remote_qualification_evidence(
         product, tmp_path / "v6-pass-import"
     ) == product.evidence_inventory
     with pytest.raises(RemoteEvaluationDispatcherError, match="supporting evidence"):
         import_remote_qualification_evidence(
-            capture(supports[:-1]), tmp_path / "v6-pass-missing-stock"
+            _capture(batch, authority, plan, reference, readiness, supports[:-1]),
+            tmp_path / "v6-pass-missing-stock",
         )
 
 
@@ -905,10 +840,8 @@ def test_real_v4_attempt_restarts_and_imports_through_cpu_semantic_reopen(
     coordinator, commissioned, harness, plan, capability, continuation0 = (
         _coordinator_case(tmp_path, monkeypatch, lifetimes, managed_executors)
     )
-    prefix = coordinator.run_b300_resident_qualification_prefix(
-        factory=commissioned.factory, capability=capability,
-        candidate=harness.candidate, plan=plan, continuation=continuation0,
-        screen_lane="primary", deadline=time.monotonic() + 30.0)
+    prefix = _run_prefix(
+        coordinator, commissioned, harness, plan, capability, continuation0)
     monkeypatch.setattr(
         ResidentSpeedPolicy, "read_window_scatter", lambda _policy, _row: 0.0)
     _prepared, _resident, lifecycle = _exact_lifecycle(
@@ -1046,22 +979,15 @@ def test_real_v4_attempt_restarts_and_imports_through_cpu_semantic_reopen(
 
     monkeypatch.setattr(runner_module, "QualificationContinuation", PairContinuation)
 
-    class Judge:
-        binding = HiddenJudgeBinding(
-            profile.reference.hidden_corpus_commitment,
-            profile.reference.hidden_judge_digest,
-            profile.hidden_task_policy_digest)
-
-        def __call__(self, **_kwargs):  # pragma: no cover - raw stage is fixed
-            raise AssertionError("synthetic CPU T entered the live hidden judge")
-
     continuation = PairContinuation(
         authority_digest=qualification_authority_digest(plan),
         source_digest=plan.prepared.source.digest)
     kwargs = dict(
         executor=commissioned.plans[1].executor,
         entropy_provider=lambda _commitment, _teardown: entropy,
-        hidden_judge=Judge(), deadline=time.monotonic() + 30.0,
+        hidden_judge=_forbidden_judge(
+            profile, "synthetic CPU T entered the live hidden judge"),
+        deadline=time.monotonic() + 30.0,
         continuation=continuation,
         resident_pair_lifecycle=lifecycle)
     attempt_ref = run_causal_qualification(plan, **kwargs)
@@ -1085,35 +1011,19 @@ def test_real_v4_attempt_restarts_and_imports_through_cpu_semantic_reopen(
             attempt_artifact_sha256=attempt_ref.sha256,
             report_digest=report.digest),), attempt_ref)
     reference = profile.reference
-    hardware = plan.pristine_launch.hardware
-    readiness = WorkerReadiness(
-        _h("cpu-v4-ready"), 1, plan.pristine_stack.arena_digest, "cpu-v4",
-        _h("cpu-v4-provider"), plan.pristine_stack.runtime_digest,
-        reference.worker_distribution_digest, reference.model_revision_digest,
-        reference.model_manifest_digest, reference.model_content_digest,
-        hardware.architecture, hardware.topology_class, hardware.topology_digest,
-        hardware.visible_gpu_count, plan.reference_engine_config.tp_size,
-        reference.workload_digest, _h("cpu-v4-policy"))
+    readiness = _readiness(plan, reference, "cpu-v4")
     supports = (
         report.raw_quality_artifact,
         closure.count_checkpoint.raw_execution_evidence,
         closure.count_checkpoint.candidate_observation,
         closure.stock_authority.artifact)
-    def capture(refs):
-        return capture_remote_qualification_product(
-            batch=batch, authority_manifest=authority,
-            incumbent_stack=plan.pristine_stack,
-            incumbent_tree_digest=reference.pristine_tree_digest,
-            screen_lane="primary", service_digest=readiness.service_digest,
-            readiness=readiness, evidence_root=plan.evidence_root,
-            evidence_references=refs)
-
-    product = capture(supports)
+    product = _capture(batch, authority, plan, reference, readiness, supports)
     assert import_remote_qualification_evidence(
         product, tmp_path / "cpu-v4-import") == product.evidence_inventory
     with pytest.raises(RemoteEvaluationDispatcherError, match="supporting evidence"):
         import_remote_qualification_evidence(
-            capture(supports[:-1]), tmp_path / "cpu-v4-missing-support")
+            _capture(batch, authority, plan, reference, readiness, supports[:-1]),
+            tmp_path / "cpu-v4-missing-support")
 
 
 def test_count_checkpoint_without_retirement_holds_and_never_reopens_pair(
@@ -1129,17 +1039,8 @@ def test_count_checkpoint_without_retirement_holds_and_never_reopens_pair(
             coordinator.ResidentPairRetirementHold("interrupted before retirement")
         ),
     )
-    deadline = time.monotonic() + 30.0
     with pytest.raises(coordinator.B300ResidentQualificationHold):
-        coordinator.run_b300_resident_qualification_prefix(
-            factory=commissioned.factory,
-            capability=capability,
-            candidate=harness.candidate,
-            plan=plan,
-            continuation=continuation,
-            screen_lane="primary",
-            deadline=deadline,
-        )
+        _run_prefix(coordinator, commissioned, harness, plan, capability, continuation)
     assert len(lifetimes.calls) == 2
     history = tuple(len(row.sessions[0].batch_rows) for row in lifetimes.factories)
 
@@ -1147,14 +1048,6 @@ def test_count_checkpoint_without_retirement_holds_and_never_reopens_pair(
         coordinator.B300ResidentQualificationHold,
         match="without exact pair retirement",
     ):
-        coordinator.run_b300_resident_qualification_prefix(
-            factory=commissioned.factory,
-            capability=capability,
-            candidate=harness.candidate,
-            plan=plan,
-            continuation=continuation,
-            screen_lane="primary",
-            deadline=deadline,
-        )
+        _run_prefix(coordinator, commissioned, harness, plan, capability, continuation)
     assert len(lifetimes.calls) == 2
     assert tuple(len(row.sessions[0].batch_rows) for row in lifetimes.factories) == history

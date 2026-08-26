@@ -10,4 +10,4 @@ dashboard 1987
 docs 16061
 examples 761
 scripts 2020
-tests 95417
+tests 95310
