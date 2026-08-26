@@ -301,6 +301,18 @@ contributor and subagent:
 - `python scripts/check_islands.py` enforces reachability against
   `scripts/island_baseline.txt`. Shrinking the baseline is cleanup; growing it
   is a reviewed decision that must be justified in the pull request.
+- `python scripts/check_loc_ratchet.py` enforces per-directory tracked-line
+  ceilings against `scripts/loc_baseline.txt`, and
+  `python scripts/check_assert_ratchet.py` enforces per-test-file assertion
+  floors against `scripts/assert_baseline.json`. Raising a ceiling or
+  lowering a floor happens in the same diff that needs it and is justified
+  in review; lowering a ceiling locks a deletion in.
+- Removal contract: a change that supersedes a path deletes it in the same
+  pull request, or names the concrete change that will. Alias shims are
+  acceptable; marking code "legacy" and keeping it indefinitely is not.
+- A new `*Receipt`/`*Evidence`/`*Witness`/`*Record` wire class must name the
+  existing record it replaces or extends. Debugging and observability needs
+  default to artifacts in the evidence store, not new typed wire surface.
 - Target files under roughly 600 physical lines. The 1,000-line cap is a
   ceiling, not a budget; packing files to just under it is a design smell.
   Never split tests into `_partN` files — split by behavior with named scopes.
