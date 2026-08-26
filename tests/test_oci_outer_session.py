@@ -49,6 +49,11 @@ from cacheon.eval.oci_session_protocol import (
     validate_init,
     validate_preflight_accept,
 )
+from tests.support.pipes import (
+    DiagnosticPipeClient as _DiagnosticPipeClient,
+    PipeClient as _PipeClient,
+    PipeManager as _PipeManager,
+)
 from tests.support.preflight import preflight_facts
 
 
@@ -559,56 +564,6 @@ def test_duplicate_internal_binding_is_infrastructure_failure(
     assert transport.aborted
 
 
-class _PipeClient:
-    def __init__(self) -> None:
-        request_read, request_write = os.pipe()
-        response_read, response_write = os.pipe()
-        self.stdin = os.fdopen(request_write, "wb", buffering=0)
-        self.stdout = os.fdopen(response_read, "rb", buffering=0)
-        self.request_read = request_read
-        self.response_write = response_write
-        self.closed = False
-        self.finalized = False
-        self.aborted = False
-
-    def finalize(self) -> None:
-        self.finalized = True
-        self.closed = True
-
-    def abort(self) -> None:
-        self.aborted = True
-        self.closed = True
-
-    def close_fds(self) -> None:
-        for stream in (self.stdin, self.stdout):
-            if not stream.closed:
-                stream.close()
-        for fd in (self.request_read, self.response_write):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-
-
-class _DiagnosticPipeClient(_PipeClient):
-    def __init__(self, diagnostic: OCIAttachedDiagnostic) -> None:
-        super().__init__()
-        self._diagnostic = diagnostic
-
-    def stderr_diagnostic(self) -> OCIAttachedDiagnostic:
-        return self._diagnostic
-
-
-class _PipeManager:
-    def __init__(self, client: _PipeClient) -> None:
-        self.client = client
-        self.calls = 0
-
-    def spawn_attached(self, _lease, _argv):
-        self.calls += 1
-        return self.client
-
-
 def _attached(
     diagnostic: OCIAttachedDiagnostic | None = None,
 ) -> tuple[AttachedSessionTransport, _PipeClient]:
@@ -660,14 +615,14 @@ def test_attached_transport_is_nonblocking_and_manager_owns_both_teardown_paths(
         transport.finalize()
         assert client.finalized and not client.aborted
     finally:
-        client.close_fds()
+        client.close()
 
     transport, client = _attached()
     try:
         transport.abort()
         assert client.aborted and not client.finalized
     finally:
-        client.close_fds()
+        client.close()
 
 
 def test_attached_transport_rejects_partial_wrong_magic_oversized_and_timeout() -> None:
@@ -693,7 +648,7 @@ def test_attached_transport_rejects_partial_wrong_magic_oversized_and_timeout() 
                 )
         finally:
             transport.abort()
-            client.close_fds()
+            client.close()
 
     transport, client = _attached()
     try:
@@ -703,7 +658,7 @@ def test_attached_transport_rejects_partial_wrong_magic_oversized_and_timeout() 
             )
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
 
 def test_process_error_preserves_only_a_bounded_terminal_safe_stderr_tail() -> None:
@@ -732,7 +687,7 @@ def test_process_error_preserves_only_a_bounded_terminal_safe_stderr_tail() -> N
         assert "complete=true" in rendered
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
 
 def test_worker_error_attaches_private_artifact_receipt_path_and_digest(
@@ -788,7 +743,7 @@ def test_worker_error_attaches_private_artifact_receipt_path_and_digest(
         assert receipt.receipt_sha256 in rendered
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
 
 def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
@@ -801,7 +756,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
             transport.read_evidence(current, deadline=time.monotonic() + 1)
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
     transport, client = _attached()
     try:
@@ -817,7 +772,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
             transport.read_evidence(current, deadline=time.monotonic() + 1)
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
     transport, client = _attached()
     try:
@@ -827,7 +782,7 @@ def test_attached_transport_rejects_replay_error_and_trailing_bytes() -> None:
         assert transport.has_pending_output()
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
 
 def test_candidate_failure_type_survives_resident_control_frame() -> None:
@@ -858,7 +813,7 @@ def test_candidate_failure_type_survives_resident_control_frame() -> None:
         assert raised.value.candidate_failure_type == "CandidateExecutionFailure"
     finally:
         transport.abort()
-        client.close_fds()
+        client.close()
 
 
 @pytest.mark.parametrize(
