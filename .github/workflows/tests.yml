@@ -34,6 +34,9 @@ jobs:
       - name: Check module reachability and code volume
         run: python scripts/check_islands.py
 
+      - name: Check the tracked-line ratchet
+        run: python scripts/check_loc_ratchet.py
+
       - name: Check the lint correctness floor
         run: |
           python -m pip install --quiet ruff==0.12.7
