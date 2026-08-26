@@ -47,7 +47,7 @@
 "tests/test_cli_chain.py": 20,
 "tests/test_cli_examples_e2e.py": 11,
 "tests/test_cli_verify_variants.py": 34,
-"tests/test_cli_weights.py": 88,
+"tests/test_cli_weights.py": 83,
 "tests/test_collective.py": 90,
 "tests/test_collective_cuda_graph.py": 32,
 "tests/test_compat.py": 4,

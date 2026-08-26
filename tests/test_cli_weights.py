@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
+import types
 
 import pytest
 
@@ -41,65 +43,43 @@ def _view(block: int) -> chain.MetagraphView:
     )
 
 
-def _projection() -> WeightProjection:
-    bound = _view(10)
-    metagraph_digest = canonical_digest(
+def _metagraph_digest(view) -> str:
+    return canonical_digest(
         "cacheon.economics.metagraph-membership",
         {
-            "block": bound.block,
-            "block_hash": bound.block_hash,
+            "block": view.block,
+            "block_hash": view.block_hash,
             "chain_scope_digest": SCOPE.digest,
             "members": [
                 {"hotkey": hotkey, "uid": uid}
-                for uid, hotkey in zip(bound.uids, bound.hotkeys, strict=True)
+                for uid, hotkey in zip(view.uids, view.hotkeys, strict=True)
             ],
         },
     )
+
+
+def _projection() -> WeightProjection:
     return WeightProjection(
-        SCOPE.digest,
-        307,
-        "validator",
-        POLICY.digest,
-        _h("settlement"),
-        _h("evaluation"),
-        metagraph_digest,
-        (_h("arena-state"),),
-        1,
-        10,
-        1,
-        (_h("off-pod-evidence"),),
-        (("miner", 1_000_000),),
+        SCOPE.digest, 307, "validator", POLICY.digest,
+        _h("settlement"), _h("evaluation"), _metagraph_digest(_view(10)),
+        (_h("arena-state"),), 1, 10, 1,
+        (_h("off-pod-evidence"),), (("miner", 1_000_000),),
     )
 
 
-def _seed_pending(path) -> tuple[WeightProjection, WeightPublicationRecord]:
+def _seed(
+    path, status: str = "pending", reason: str = "sdk_result_unconfirmed"
+) -> tuple[WeightProjection, WeightPublicationRecord]:
     projection = _projection()
-    pending = WeightPublicationRecord(
-        projection.digest,
-        "pending",
-        submit_block=10,
-        retry_after_block=30,
-        reason="sdk_result_unconfirmed",
+    record = WeightPublicationRecord(
+        projection.digest, status, submit_block=10, retry_after_block=30,
+        reason=reason,
     )
     with FinalizedIntakeStore(path, scope=SCOPE) as store:
         SQLiteWeightPublicationJournal(store, projection).compare_and_swap(
-            None, pending
+            None, record
         )
-    return projection, pending
-
-
-def _seed_held(path) -> tuple[WeightProjection, WeightPublicationRecord]:
-    projection = _projection()
-    held = WeightPublicationRecord(
-        projection.digest,
-        "held",
-        submit_block=10,
-        retry_after_block=30,
-        reason="publication_readback_deadline_expired",
-    )
-    with FinalizedIntakeStore(path, scope=SCOPE) as store:
-        SQLiteWeightPublicationJournal(store, projection).compare_and_swap(None, held)
-    return projection, held
+    return projection, record
 
 
 def _args(path, **updates) -> argparse.Namespace:
@@ -148,13 +128,13 @@ class _Subtensor:
         return 29
 
 
-def _install_chain_readback(monkeypatch) -> None:
+def _install_chain_readback(monkeypatch, fresh_block: int = 11) -> None:
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
     monkeypatch.setattr(
         chain,
         "fetch_metagraph",
         lambda _subtensor, _netuid, *, block=None: _view(
-            11 if block is None else block
+            fresh_block if block is None else block
         ),
     )
     monkeypatch.setattr(
@@ -166,11 +146,83 @@ def _install_chain_readback(monkeypatch) -> None:
     )
 
 
+def _install_wallet(monkeypatch, *, expect_name: str | None = None) -> None:
+    class Hotkey:
+        ss58_address = "validator"
+
+    class Wallet:
+        def __init__(self, name, hotkey):
+            assert expect_name is None or name == expect_name
+            self.hotkey = Hotkey()
+
+    monkeypatch.setitem(
+        sys.modules, "bittensor", types.SimpleNamespace(Wallet=Wallet)
+    )
+
+
+def _owner_view(*, block_hash: str = "0x" + f"{11:064x}", last_update=(5, 0)):
+    return chain.MetagraphView(
+        netuid=307,
+        block=11,
+        block_hash=block_hash,
+        uids=[0, 7],
+        hotkeys=["validator", "owner-hk"],
+        validator_permit=[True, False],
+        last_update=list(last_update),
+    )
+
+
+def _owner_target(view) -> chain.SubnetOwnerBurnTarget:
+    return chain.SubnetOwnerBurnTarget(
+        uid=7,
+        hotkey="owner-hk",
+        owner_coldkey="owner-ck",
+        owner_hotkey="owner-hk",
+        candidate_uids=(7,),
+        block=11,
+        block_hash=view.block_hash,
+        metagraph=view,
+    )
+
+
+def _fetch_factory(view):
+    def fetch(_subtensor, _netuid, *, block=None):
+        if block is None or block == view.block:
+            return view
+        return chain.MetagraphView(
+            view.netuid,
+            block,
+            "0x" + f"{block:064x}",
+            list(view.uids),
+            list(view.hotkeys),
+            list(view.validator_permit),
+            list(view.last_update),
+        )
+
+    return fetch
+
+
+def _burn_args(path, **updates) -> argparse.Namespace:
+    return _args(
+        path,
+        reconcile_only=False,
+        validator_hotkey="",
+        burn_to_subnet_owner=True,
+        **updates,
+    )
+
+
+def _empty_store(path) -> None:
+    # An empty all-uncrowned store is the entire precondition.
+    with FinalizedIntakeStore(path, scope=SCOPE):
+        pass
+
+
 def test_reconcile_only_cli_uses_retained_head_without_reopening_evidence(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "private" / "intake.sqlite3"
-    projection, pending = _seed_pending(path)
+    projection, pending = _seed(path)
     _install_chain_readback(monkeypatch)
 
     def forbidden_fresh_projection(*_args, **_kwargs):
@@ -197,22 +249,8 @@ def test_reconcile_only_cli_reports_historical_confirmation_that_needs_refresh(
     tmp_path, monkeypatch, capsys
 ):
     path = tmp_path / "private" / "intake.sqlite3"
-    _projection_row, pending = _seed_pending(path)
-    monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
-    monkeypatch.setattr(
-        chain,
-        "fetch_metagraph",
-        lambda _subtensor, _netuid, *, block=None: _view(
-            31 if block is None else block
-        ),
-    )
-    monkeypatch.setattr(
-        chain,
-        "read_validator_weight_snapshot",
-        lambda *_args, **_kwargs: chain.ValidatorWeightSnapshot(
-            {"miner": 1.0}, 10
-        ),
-    )
+    _projection_row, pending = _seed(path)
+    _install_chain_readback(monkeypatch, fresh_block=31)
 
     assert cli.cmd_set_weights(_args(path)) == 3
     output = capsys.readouterr().out
@@ -230,7 +268,9 @@ def test_release_hold_reopens_retained_head_without_off_pod_evidence(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "private" / "intake.sqlite3"
-    projection, held = _seed_held(path)
+    projection, held = _seed(
+        path, "held", "publication_readback_deadline_expired"
+    )
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
 
     def forbidden_fresh_projection(*_args, **_kwargs):
@@ -263,7 +303,9 @@ def test_release_hold_authority_mismatch_does_not_mutate_head(
     tmp_path, monkeypatch
 ):
     path = tmp_path / "private" / "intake.sqlite3"
-    projection, held = _seed_held(path)
+    projection, held = _seed(
+        path, "held", "publication_readback_deadline_expired"
+    )
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
 
     with pytest.raises(WeightPublicationError, match="public validator hotkey"):
@@ -293,7 +335,7 @@ def test_reconcile_only_cli_rejects_public_authority_mismatch_before_readback(
     tmp_path, monkeypatch, updates, message
 ):
     path = tmp_path / "private" / "intake.sqlite3"
-    projection, pending = _seed_pending(path)
+    projection, pending = _seed(path)
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
 
     def forbidden_readback(*_args, **_kwargs):
@@ -313,12 +355,8 @@ def test_reconcile_only_cli_rejects_public_authority_mismatch_before_readback(
 def test_burn_hotkey_cli_dry_run_projects_the_full_pool_pre_crown(
     tmp_path, monkeypatch, capsys
 ):
-    import sys
-    import types
-
     path = tmp_path / "private" / "intake.sqlite3"
-    with FinalizedIntakeStore(path, scope=SCOPE):
-        pass  # an empty all-uncrowned store is the entire precondition
+    _empty_store(path)
     _install_chain_readback(monkeypatch)
     fresh_blocks = iter((10, 11))
     monkeypatch.setattr(
@@ -329,17 +367,7 @@ def test_burn_hotkey_cli_dry_run_projects_the_full_pool_pre_crown(
         ),
     )
 
-    class _Hotkey:
-        ss58_address = "validator"
-
-    class _PublicWallet:
-        def __init__(self, name, hotkey):
-            assert name == "must-not-load"
-            self.hotkey = _Hotkey()
-
-    monkeypatch.setitem(
-        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_PublicWallet)
-    )
+    _install_wallet(monkeypatch, expect_name="must-not-load")
 
     assert cli.cmd_set_weights(
         _args(
@@ -378,28 +406,15 @@ def test_burn_hotkey_cli_refuses_head_only_combinations(tmp_path):
 def test_burn_hotkey_cli_publishes_real_weights_without_a_crown(
     tmp_path, monkeypatch, capsys
 ):
-    import sys
-    import types
-
     path = tmp_path / "private" / "intake.sqlite3"
-    with FinalizedIntakeStore(path, scope=SCOPE):
-        pass
-    monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
-    monkeypatch.setattr(
-        chain,
-        "fetch_metagraph",
-        lambda _subtensor, _netuid, *, block=None: _view(
-            11 if block is None else block
-        ),
-    )
+    _empty_store(path)
+    _install_chain_readback(monkeypatch)
     snapshots = [
         chain.ValidatorWeightSnapshot({"validator": 1.0}, 5),
         chain.ValidatorWeightSnapshot({"miner": 1.0}, 11),
     ]
     monkeypatch.setattr(
-        chain,
-        "read_validator_weight_snapshot",
-        lambda *_args, **_kwargs: snapshots.pop(0),
+        chain, "read_validator_weight_snapshot", lambda *_args, **_kwargs: snapshots.pop(0)
     )
     submissions = []
 
@@ -409,16 +424,7 @@ def test_burn_hotkey_cli_publishes_real_weights_without_a_crown(
 
     monkeypatch.setattr(chain, "set_weights", _set_weights)
 
-    class _Hotkey:
-        ss58_address = "validator"
-
-    class _SignerWallet:
-        def __init__(self, name, hotkey):
-            self.hotkey = _Hotkey()
-
-    monkeypatch.setitem(
-        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_SignerWallet)
-    )
+    _install_wallet(monkeypatch)
 
     assert cli.cmd_set_weights(
         _args(
@@ -505,43 +511,15 @@ def test_watch_does_not_retry_nonretryable_publication_fault(tmp_path, monkeypat
 def test_burn_to_subnet_owner_cli_dry_run_journals_through_reconcile(
     tmp_path, monkeypatch, capsys
 ):
-    import sys
-    import types
-
     path = tmp_path / "private" / "intake.sqlite3"
-    with FinalizedIntakeStore(path, scope=SCOPE):
-        pass
+    _empty_store(path)
 
-    view = chain.MetagraphView(
-        netuid=307,
-        block=11,
-        block_hash="0x" + "ab" * 32,
-        uids=[0, 7],
-        hotkeys=["validator", "owner-hk"],
-        validator_permit=[True, False],
-        last_update=[1, 1],
-    )
-    target = chain.SubnetOwnerBurnTarget(
-        uid=7,
-        hotkey="owner-hk",
-        owner_coldkey="owner-ck",
-        owner_hotkey="owner-hk",
-        candidate_uids=(7,),
-        block=11,
-        block_hash="0x" + "ab" * 32,
-        metagraph=view,
-    )
-
-    class _Subtensor:
-        def get_block_hash(self, block: int) -> str:
-            assert block == 0
-            return SCOPE.genesis_hash
+    view = _owner_view(block_hash="0x" + "ab" * 32, last_update=(1, 1))
+    target = _owner_target(view)
 
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
     monkeypatch.setattr(
-        chain,
-        "resolve_subnet_owner_burn_target",
-        lambda *_args, **_kwargs: target,
+        chain, "resolve_subnet_owner_burn_target", lambda *_args, **_kwargs: target
     )
     monkeypatch.setattr(
         chain,
@@ -567,29 +545,9 @@ def test_burn_to_subnet_owner_cli_dry_run_journals_through_reconcile(
 
     monkeypatch.setattr(chain, "set_weights", _set_weights)
 
-    class _Hotkey:
-        ss58_address = "validator"
+    _install_wallet(monkeypatch)
 
-    class _Wallet:
-        def __init__(self, name, hotkey):
-            self.hotkey = _Hotkey()
-
-    monkeypatch.setitem(
-        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_Wallet)
-    )
-
-    assert (
-        cli.cmd_set_weights(
-            _args(
-                path,
-                reconcile_only=False,
-                dry_run=True,
-                validator_hotkey="",
-                burn_to_subnet_owner=True,
-            )
-        )
-        == 0
-    )
+    assert cli.cmd_set_weights(_burn_args(path, dry_run=True)) == 0
     out = capsys.readouterr().out
     assert "subnet-owner burn:" in out
     assert "uid 7 hotkey owner-hk" in out
@@ -605,56 +563,16 @@ def test_burn_to_subnet_owner_cli_dry_run_journals_through_reconcile(
 def test_burn_to_subnet_owner_cli_confirms_via_journal(
     tmp_path, monkeypatch, capsys
 ):
-    import sys
-    import types
-
     path = tmp_path / "private" / "intake.sqlite3"
-    with FinalizedIntakeStore(path, scope=SCOPE):
-        pass
+    _empty_store(path)
 
-    view = chain.MetagraphView(
-        netuid=307,
-        block=11,
-        block_hash="0x" + f"{11:064x}",
-        uids=[0, 7],
-        hotkeys=["validator", "owner-hk"],
-        validator_permit=[True, False],
-        last_update=[5, 0],
-    )
-    target = chain.SubnetOwnerBurnTarget(
-        uid=7,
-        hotkey="owner-hk",
-        owner_coldkey="owner-ck",
-        owner_hotkey="owner-hk",
-        candidate_uids=(7,),
-        block=11,
-        block_hash=view.block_hash,
-        metagraph=view,
-    )
+    view = _owner_view()
+    target = _owner_target(view)
 
-    class _Subtensor:
-        def get_block_hash(self, block: int) -> str:
-            assert block == 0
-            return SCOPE.genesis_hash
-
-    def _fetch(_subtensor, _netuid, *, block=None):
-        if block is None or block == view.block:
-            return view
-        return chain.MetagraphView(
-            view.netuid,
-            block,
-            "0x" + f"{block:064x}",
-            list(view.uids),
-            list(view.hotkeys),
-            list(view.validator_permit),
-            list(view.last_update),
-        )
-
+    _fetch = _fetch_factory(view)
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
     monkeypatch.setattr(
-        chain,
-        "resolve_subnet_owner_burn_target",
-        lambda *_args, **_kwargs: target,
+        chain, "resolve_subnet_owner_burn_target", lambda *_args, **_kwargs: target
     )
     monkeypatch.setattr(chain, "fetch_metagraph", _fetch)
 
@@ -663,9 +581,7 @@ def test_burn_to_subnet_owner_cli_confirms_via_journal(
         chain.ValidatorWeightSnapshot({"owner-hk": 1.0}, 11),
     ]
     monkeypatch.setattr(
-        chain,
-        "read_validator_weight_snapshot",
-        lambda *_args, **_kwargs: snapshots.pop(0),
+        chain, "read_validator_weight_snapshot", lambda *_args, **_kwargs: snapshots.pop(0)
     )
     submissions = []
 
@@ -675,28 +591,9 @@ def test_burn_to_subnet_owner_cli_confirms_via_journal(
 
     monkeypatch.setattr(chain, "set_weights", _set_weights)
 
-    class _Hotkey:
-        ss58_address = "validator"
+    _install_wallet(monkeypatch)
 
-    class _Wallet:
-        def __init__(self, name, hotkey):
-            self.hotkey = _Hotkey()
-
-    monkeypatch.setitem(
-        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_Wallet)
-    )
-
-    assert (
-        cli.cmd_set_weights(
-            _args(
-                path,
-                reconcile_only=False,
-                validator_hotkey="",
-                burn_to_subnet_owner=True,
-            )
-        )
-        == 0
-    )
+    assert cli.cmd_set_weights(_burn_args(path)) == 0
     out = capsys.readouterr().out
     assert "status=confirmed" in out
     assert "submitted=True" in out
@@ -716,66 +613,23 @@ def test_burn_to_subnet_owner_cli_confirms_via_journal(
 def test_burn_to_subnet_owner_refuses_foreign_in_flight_projection(
     tmp_path, monkeypatch
 ):
-    import sys
-    import types
-
     path = tmp_path / "private" / "intake.sqlite3"
-    settlement, pending = _seed_pending(path)
+    settlement, pending = _seed(path)
     assert pending.status == "pending"
     assert settlement.weights == {"miner": 1.0}
 
-    view = chain.MetagraphView(
-        netuid=307,
-        block=11,
-        block_hash="0x" + f"{11:064x}",
-        uids=[0, 7],
-        hotkeys=["validator", "owner-hk"],
-        validator_permit=[True, False],
-        last_update=[5, 0],
-    )
-    target = chain.SubnetOwnerBurnTarget(
-        uid=7,
-        hotkey="owner-hk",
-        owner_coldkey="owner-ck",
-        owner_hotkey="owner-hk",
-        candidate_uids=(7,),
-        block=11,
-        block_hash=view.block_hash,
-        metagraph=view,
-    )
-
-    class _Subtensor:
-        def get_block_hash(self, block: int) -> str:
-            assert block == 0
-            return SCOPE.genesis_hash
+    view = _owner_view()
+    target = _owner_target(view)
 
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
     monkeypatch.setattr(
-        chain,
-        "resolve_subnet_owner_burn_target",
-        lambda *_args, **_kwargs: target,
+        chain, "resolve_subnet_owner_burn_target", lambda *_args, **_kwargs: target
     )
 
-    class _Hotkey:
-        ss58_address = "validator"
-
-    class _Wallet:
-        def __init__(self, name, hotkey):
-            self.hotkey = _Hotkey()
-
-    monkeypatch.setitem(
-        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_Wallet)
-    )
+    _install_wallet(monkeypatch)
 
     with pytest.raises(WeightPublicationError, match="in-flight weight publication"):
-        cli.cmd_set_weights(
-            _args(
-                path,
-                reconcile_only=False,
-                validator_hotkey="",
-                burn_to_subnet_owner=True,
-            )
-        )
+        cli.cmd_set_weights(_burn_args(path))
 
 
 @pytest.mark.parametrize(
@@ -790,32 +644,9 @@ def test_burn_to_subnet_owner_resumes_own_in_flight_refresh(
     head (confirm by readback, or keep waiting inside its retry bounds)
     instead of refusing it as a foreign in-flight publication."""
 
-    import sys
-    import types
-
     path = tmp_path / "private" / "intake.sqlite3"
-    view = chain.MetagraphView(
-        netuid=307,
-        block=11,
-        block_hash="0x" + f"{11:064x}",
-        uids=[0, 7],
-        hotkeys=["validator", "owner-hk"],
-        validator_permit=[True, False],
-        last_update=[5, 0],
-    )
-
-    def _fetch(_subtensor, _netuid, *, block=None):
-        if block is None or block == view.block:
-            return view
-        return chain.MetagraphView(
-            view.netuid,
-            block,
-            "0x" + f"{block:064x}",
-            list(view.uids),
-            list(view.hotkeys),
-            list(view.validator_permit),
-            list(view.last_update),
-        )
+    view = _owner_view()
+    _fetch = _fetch_factory(view)
 
     bound = _fetch(None, 307, block=10)
     retained = WeightProjection(
@@ -856,27 +687,11 @@ def test_burn_to_subnet_owner_resumes_own_in_flight_refresh(
             None, pending
         )
 
-    target = chain.SubnetOwnerBurnTarget(
-        uid=7,
-        hotkey="owner-hk",
-        owner_coldkey="owner-ck",
-        owner_hotkey="owner-hk",
-        candidate_uids=(7,),
-        block=11,
-        block_hash=view.block_hash,
-        metagraph=view,
-    )
-
-    class _Subtensor:
-        def get_block_hash(self, block: int) -> str:
-            assert block == 0
-            return SCOPE.genesis_hash
+    target = _owner_target(view)
 
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
     monkeypatch.setattr(
-        chain,
-        "resolve_subnet_owner_burn_target",
-        lambda *_a, **_k: target,
+        chain, "resolve_subnet_owner_burn_target", lambda *_a, **_k: target
     )
     monkeypatch.setattr(chain, "fetch_metagraph", _fetch)
     monkeypatch.setattr(
@@ -894,28 +709,9 @@ def test_burn_to_subnet_owner_resumes_own_in_flight_refresh(
 
     monkeypatch.setattr(chain, "set_weights", _set_weights)
 
-    class _Hotkey:
-        ss58_address = "validator"
+    _install_wallet(monkeypatch)
 
-    class _Wallet:
-        def __init__(self, name, hotkey):
-            self.hotkey = _Hotkey()
-
-    monkeypatch.setitem(
-        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_Wallet)
-    )
-
-    assert (
-        cli.cmd_set_weights(
-            _args(
-                path,
-                reconcile_only=False,
-                validator_hotkey="",
-                burn_to_subnet_owner=True,
-            )
-        )
-        == 0
-    )
+    assert cli.cmd_set_weights(_burn_args(path)) == 0
     out = capsys.readouterr().out
     assert f"status={expected_status}" in out
     assert f"weight projection={retained.digest}" in out
@@ -931,43 +727,15 @@ def test_burn_to_subnet_owner_resumes_own_in_flight_refresh(
 def test_burn_to_subnet_owner_settlement_refusal_is_nonretryable(
     tmp_path, monkeypatch
 ):
-    import sys
-    import types
-
     path = tmp_path / "private" / "intake.sqlite3"
-    with FinalizedIntakeStore(path, scope=SCOPE):
-        pass
+    _empty_store(path)
 
-    view = chain.MetagraphView(
-        netuid=307,
-        block=11,
-        block_hash="0x" + "ab" * 32,
-        uids=[0, 7],
-        hotkeys=["validator", "owner-hk"],
-        validator_permit=[True, False],
-        last_update=[1, 1],
-    )
-    target = chain.SubnetOwnerBurnTarget(
-        uid=7,
-        hotkey="owner-hk",
-        owner_coldkey="owner-ck",
-        owner_hotkey="owner-hk",
-        candidate_uids=(7,),
-        block=11,
-        block_hash=view.block_hash,
-        metagraph=view,
-    )
-
-    class _Subtensor:
-        def get_block_hash(self, block: int) -> str:
-            assert block == 0
-            return SCOPE.genesis_hash
+    view = _owner_view(block_hash="0x" + "ab" * 32, last_update=(1, 1))
+    target = _owner_target(view)
 
     monkeypatch.setattr(chain, "connect", lambda _network: _Subtensor())
     monkeypatch.setattr(
-        chain,
-        "resolve_subnet_owner_burn_target",
-        lambda *_args, **_kwargs: target,
+        chain, "resolve_subnet_owner_burn_target", lambda *_args, **_kwargs: target
     )
 
     def _refuse(self, **_kwargs):
@@ -982,28 +750,12 @@ def test_burn_to_subnet_owner_settlement_refusal_is_nonretryable(
         _refuse,
     )
 
-    class _Hotkey:
-        ss58_address = "validator"
-
-    class _Wallet:
-        def __init__(self, name, hotkey):
-            self.hotkey = _Hotkey()
-
-    monkeypatch.setitem(
-        sys.modules, "bittensor", types.SimpleNamespace(Wallet=_Wallet)
-    )
+    _install_wallet(monkeypatch)
 
     with pytest.raises(
         WeightPublicationError, match="burn weights refused"
     ) as excinfo:
-        cli.cmd_set_weights(
-            _args(
-                path,
-                reconcile_only=False,
-                validator_hotkey="",
-                burn_to_subnet_owner=True,
-            )
-        )
+        cli.cmd_set_weights(_burn_args(path))
     # A settlement-state refusal must stop --watch, not spin behind it.
     assert excinfo.value.retryable is False
 
