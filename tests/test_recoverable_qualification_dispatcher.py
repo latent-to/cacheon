@@ -153,6 +153,27 @@ def _write_hold_result(authority, plan, carrier) -> None:
     )
 
 
+def _hold(store, recovery, authority, reason):
+    return store.hold_recovery(
+        recovery,
+        current_block=authority.fixtures.BLOCK,
+        reason=reason,
+    )
+
+
+def _release(store, held, authority, failure_code, **over):
+    return store.release_worker_infrastructure_recovery(
+        held,
+        failure_code=failure_code,
+        current_block=authority.fixtures.BLOCK,
+        **over,
+    )
+
+
+def _authority_for(fixtures, root, profile):
+    return fixtures._authority(root, profile=profile, recoverable=True)
+
+
 def _advance_finalized(authority, block: int) -> None:
     cursor = authority.coordinator.advance_finalized_cursor
     assert hasattr(cursor, "set")
@@ -325,11 +346,7 @@ def test_parked_worker_infrastructure_hold_migrates_to_requeue(
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None and recovery.phase.value == "request_ready"
-        store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="transport_hold:worker_infrastructure_result",
-        )
+        _hold(store, recovery, authority, "transport_hold:worker_infrastructure_result")
 
     outcome = _dispatcher(authority, _Transport(authority, fixtures)).dispatch_once()
     assert type(outcome).__name__ == "RecoverableQualificationRequeue"
@@ -353,17 +370,9 @@ def test_worker_infrastructure_release_refuses_other_holds(tmp_path: Path) -> No
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None
-        held = store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="operator_hold",
-        )
+        held = _hold(store, recovery, authority, "operator_hold")
         with pytest.raises(Exception, match="forbidden"):
-            store.release_worker_infrastructure_recovery(
-                held,
-                failure_code="adapter_start_failed",
-                current_block=authority.fixtures.BLOCK,
-            )
+            _release(store, held, authority, "adapter_start_failed")
         still_held = store.pending_qualification_recovery()
     assert still_held is not None and still_held.phase.value == "held"
 
@@ -392,11 +401,7 @@ def test_authority_changed_held_recovery_migrates_into_bounded_requeue(
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None and recovery.phase.value == "request_ready"
-        store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="transport_hold:authority_changed",
-        )
+        _hold(store, recovery, authority, "transport_hold:authority_changed")
 
     transport.fail_resume = False
     outcome = dispatcher.dispatch_once()
@@ -450,11 +455,7 @@ def test_orphaned_carrier_held_recovery_migrates_into_bounded_requeue(
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None and recovery.phase.value == "request_ready"
-        store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="transport_hold:published_carrier_missing",
-        )
+        _hold(store, recovery, authority, "transport_hold:published_carrier_missing")
 
     transport.fail_resume = False
     outcome = dispatcher.dispatch_once()
@@ -611,11 +612,7 @@ def test_authenticated_remote_hold_records_once_then_restarts_same_ids(
     profile: str,
 ) -> None:
     fixtures = _fixtures()
-    authority = fixtures._authority(
-        tmp_path,
-        profile=profile,
-        recoverable=True,
-    )
+    authority = _authority_for(fixtures, tmp_path, profile)
 
     class HoldTransport(_Transport):
         def publish_planned_qualification(self, plan):
@@ -732,11 +729,7 @@ def test_claimed_restart_at_or_after_expiry_holds_without_creating_request(
     profile: str,
 ) -> None:
     fixtures = _fixtures()
-    authority = fixtures._authority(
-        tmp_path / profile,
-        profile=profile,
-        recoverable=True,
-    )
+    authority = _authority_for(fixtures, tmp_path / profile, profile)
     with _store(authority) as store:
         original = store.pending_qualification_recovery()
         assert original is not None and original.phase.value == "claimed"
@@ -797,11 +790,7 @@ def test_prepared_restart_after_expiry_reuses_request_without_second_plan(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
-    authority = fixtures._authority(
-        tmp_path,
-        profile="prepared-restart",
-        recoverable=True,
-    )
+    authority = _authority_for(fixtures, tmp_path, "prepared-restart")
 
     class InterruptedMaterialization(_Transport):
         def materialize_planned_qualification(self, plan, request):
@@ -856,11 +845,7 @@ def test_publication_restart_at_expiry_renews_before_reusing_request(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
-    authority = fixtures._authority(
-        tmp_path,
-        profile="publication-restart",
-        recoverable=True,
-    )
+    authority = _authority_for(fixtures, tmp_path, "publication-restart")
 
     class InterruptedPublication(_Transport):
         def publish_planned_qualification(self, plan):
@@ -921,11 +906,7 @@ def test_expired_prepared_recovery_holds_before_transport_when_renewal_denied(
     tmp_path: Path,
 ) -> None:
     fixtures = _fixtures()
-    authority = fixtures._authority(
-        tmp_path,
-        profile="renewal-denied",
-        recoverable=True,
-    )
+    authority = _authority_for(fixtures, tmp_path, "renewal-denied")
 
     class InterruptedMaterialization(_Transport):
         def materialize_planned_qualification(self, plan, request):
@@ -1022,17 +1003,9 @@ def test_completed_no_decision_hold_stays_parked_while_members_are_active(
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None
-        held = store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="post_publication_no_decision",
-        )
+        held = _hold(store, recovery, authority, "post_publication_no_decision")
         with pytest.raises(Exception, match="forbidden"):
-            store.release_worker_infrastructure_recovery(
-                held,
-                failure_code="retained_epoch_retired",
-                current_block=authority.fixtures.BLOCK,
-            )
+            _release(store, held, authority, "retained_epoch_retired")
         assert store.pending_qualification_recovery() is not None
 
 
@@ -1047,17 +1020,11 @@ def test_completed_no_decision_hold_stays_parked_for_the_live_epoch(
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None
-        held = store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="post_publication_no_decision",
-        )
+        held = _hold(store, recovery, authority, "post_publication_no_decision")
         live_epoch = store.reopen_recovery_request_plan(held).worker_epoch
         with pytest.raises(Exception, match="forbidden"):
-            store.release_worker_infrastructure_recovery(
-                held,
-                failure_code="retained_epoch_retired",
-                current_block=authority.fixtures.BLOCK,
+            _release(
+                store, held, authority, "retained_epoch_retired",
                 live_worker_epoch=live_epoch,
             )
         assert store.pending_qualification_recovery() is not None
@@ -1078,17 +1045,11 @@ def test_completed_no_decision_hold_migrates_when_its_epoch_is_retired(
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None
-        held = store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="post_publication_no_decision",
-        )
+        held = _hold(store, recovery, authority, "post_publication_no_decision")
         plan_epoch = store.reopen_recovery_request_plan(held).worker_epoch
         live_epoch = "0" * 32 if plan_epoch != "0" * 32 else "1" * 32
-        store.release_worker_infrastructure_recovery(
-            held,
-            failure_code="retained_epoch_retired",
-            current_block=authority.fixtures.BLOCK,
+        _release(
+            store, held, authority, "retained_epoch_retired",
             live_worker_epoch=live_epoch,
         )
         assert store.pending_qualification_recovery() is None
@@ -1122,11 +1083,7 @@ def test_epoch_orphaned_completed_hold_migrates_autonomously(
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None
-        store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="post_publication_no_decision",
-        )
+        _hold(store, recovery, authority, "post_publication_no_decision")
 
     live_epoch = "0" * 32 if plan_epoch != "0" * 32 else "1" * 32
     transport.registration = {"worker_epoch": live_epoch}
@@ -1157,11 +1114,7 @@ def test_completed_hold_for_the_live_epoch_parks_at_the_dispatcher(
     with _store(authority) as store:
         recovery = store.pending_qualification_recovery()
         assert recovery is not None
-        store.hold_recovery(
-            recovery,
-            current_block=authority.fixtures.BLOCK,
-            reason="post_publication_no_decision",
-        )
+        _hold(store, recovery, authority, "post_publication_no_decision")
 
     transport.registration = {"worker_epoch": transport.plan.worker_epoch}
     outcome = dispatcher.dispatch_once()
