@@ -5,7 +5,8 @@ written so that the *validator* owns everything risky around the call:
 
   * output allocation (shape/dtype/device/stride) — never the miner,
   * eligibility gating via the registry,
-  * a fallback to the trusted baseline on ineligibility or error,
+  * trusted stock routing before selection when the candidate is ineligible,
+  * fail-closed propagation after selection when the candidate raises,
   * a single, auditable call into the miner ``entry(*inputs, out)``.
 
 The miner's ``entry`` therefore only ever sees already-allocated tensors and is
