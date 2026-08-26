@@ -49,6 +49,7 @@ from cacheon.eval.oci_session_protocol import (
     validate_init,
     validate_preflight_accept,
 )
+from tests.support.preflight import preflight_facts
 
 
 def _digest(label: str) -> str:
@@ -76,23 +77,10 @@ def _config() -> EngineSessionConfig:
 
 
 def _facts(config: EngineSessionConfig | None = None) -> RuntimePreflightFacts:
-    cfg = config or _config()
-    return RuntimePreflightFacts(
+    return preflight_facts(
         launch_digest=LAUNCH,
-        runtime_digest=_digest("runtime"),
-        stack_digest=_digest("stack"),
-        tree_digest=_digest("tree"),
-        engine_config_digest=cfg.digest,
-        worker_distribution_digest=_digest("worker"),
-        model_revision_digest=_digest("revision"),
-        model_manifest_digest=_digest("manifest"),
-        model_content_digest=_digest("content"),
-        sglang_version="0.0.0.dev1+g56e290315",
+        engine_config_digest=(config or _config()).digest,
         gpu_architectures=("sm120",) * 8,
-        topology_digest=_digest("topology"),
-        loopback_only=True,
-        read_only_inputs=True,
-        private_writable_cache=True,
     )
 
 

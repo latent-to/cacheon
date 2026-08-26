@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
 import time
 from dataclasses import replace
@@ -34,7 +32,7 @@ from cacheon.eval.b300_screen_stages import (
     B300StaticScreenAdapter,
     compose_b300_non_serving_screen_handlers,
 )
-from cacheon.eval.device_state import DeviceStatePolicy, GPUConfiguration
+from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     LogicalHardwareSpec,
@@ -77,6 +75,7 @@ from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.target_catalog import TargetCatalog, default_target_catalog
 from tests.support.b300 import gpu as _gpu, prebuild_policy, runtime_policy, sha as _h
+from tests.support.preflight import preflight_receipt
 
 
 def _runtime_policy() -> OCIRuntimeResourcePolicy:
@@ -266,34 +265,15 @@ def _preflight(
     worker: str,
     runtime: OCIRuntimeResourcePolicy,
 ) -> RuntimePreflightReceipt:
-    return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
-        requested_image="registry.example/cacheon@sha256:" + image,
-        image_digest=image,
-        local_image_id="sha256:" + "a" * 64,
-        repo_digests=("registry.example/cacheon@sha256:" + image,),
-        oci_platform="linux/amd64",
-        platform_digest=platform,
-        docker_binary="/usr/bin/docker",
+    return preflight_receipt(
+        image=image,
+        platform=platform,
+        worker=worker,
         uid=runtime.uid,
         gid=runtime.gid,
-        sglang_version="0.0.0.dev1+g56e290315",
-        worker_distribution="cacheon-harness",
-        worker_version="0.0.1",
-        worker_distribution_digest=worker,
+        python_executable=runtime.container_python,
         worker_file_count=100,
         worker_total_bytes=100_000,
-        python_implementation="cpython",
-        python_executable=runtime.container_python,
-        python_version="3.12.0",
-        python_abi="cpython-312-x86_64-linux-gnu",
-        python_platform="linux-x86_64",
-        machine="x86_64",
-        package_versions=(),
-        cudart_library="libcudart.so.13",
-        cuda_visible_devices="",
-        nvidia_visible_devices="void",
-        security_argv_sha256=_h("preflight-argv"),
     )
 
 

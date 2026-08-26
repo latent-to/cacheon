@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import stat
 from dataclasses import replace
@@ -25,6 +24,7 @@ from cacheon.eval.qualification_intake import QualificationReservation
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import gpu as _gpu
+from tests.support.preflight import preflight_receipt
 
 
 def _h(label: str) -> str:
@@ -39,35 +39,12 @@ def _write(path: Path, value: object) -> str:
 
 
 def _preflight() -> RuntimePreflightReceipt:
-    image = _h("image")
-    return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
-        requested_image="registry.example/cacheon@sha256:" + image,
-        image_digest=image,
-        local_image_id="sha256:" + "a" * 64,
-        repo_digests=("registry.example/cacheon@sha256:" + image,),
-        oci_platform="linux/amd64",
-        platform_digest=_h("platform"),
-        docker_binary="/usr/bin/docker",
-        uid=max(1, os.getuid()),
-        gid=max(1, os.getgid()),
-        sglang_version="0.0.0.dev1+g56e290315",
-        worker_distribution="cacheon-harness",
-        worker_version="0.0.1",
-        worker_distribution_digest=_h("worker-distribution"),
+    return preflight_receipt(
+        image=_h("image"),
+        platform=_h("platform"),
+        worker=_h("worker-distribution"),
         worker_file_count=100,
         worker_total_bytes=100_000,
-        python_implementation="cpython",
-        python_executable="/usr/local/bin/python3",
-        python_version="3.12.0",
-        python_abi="cpython-312-x86_64-linux-gnu",
-        python_platform="linux-x86_64",
-        machine="x86_64",
-        package_versions=(),
-        cudart_library="libcudart.so.13",
-        cuda_visible_devices="",
-        nvidia_visible_devices="void",
-        security_argv_sha256=_h("preflight-argv"),
     )
 
 

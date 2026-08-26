@@ -59,6 +59,7 @@ from cacheon.eval.oci_process import (
 from cacheon.eval.oci_session_protocol import EngineSessionConfig
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 from tests.support.b300 import gpu, prebuild_policy, runtime_policy, sha as _digest
+from tests.support.preflight import preflight_receipt
 
 
 def _gpu() -> GPUConfiguration:
@@ -86,34 +87,13 @@ def _mkdir(path: Path) -> Path:
 def _preflight(
     *, image: str, platform: str, worker: str, runtime: OCIRuntimeResourcePolicy
 ) -> RuntimePreflightReceipt:
-    return RuntimePreflightReceipt(
-        schema="cacheon-runtime-preflight-v2",
-        requested_image="registry.example/cacheon@sha256:" + image,
-        image_digest=image,
-        local_image_id=IMAGE_ID,
-        repo_digests=("registry.example/cacheon@sha256:" + image,),
-        oci_platform="linux/amd64",
-        platform_digest=platform,
-        docker_binary=DOCKER,
+    return preflight_receipt(
+        image=image,
+        platform=platform,
+        worker=worker,
         uid=runtime.uid,
         gid=runtime.gid,
-        sglang_version="0.0.0.dev1+g56e290315",
-        worker_distribution="cacheon-harness",
-        worker_version="0.0.1",
-        worker_distribution_digest=worker,
-        worker_file_count=200,
-        worker_total_bytes=1_000_000,
-        python_implementation="cpython",
         python_executable=runtime.container_python,
-        python_version="3.12.0",
-        python_abi="cpython-312-x86_64-linux-gnu",
-        python_platform="linux-x86_64",
-        machine="x86_64",
-        package_versions=(),
-        cudart_library="libcudart.so.13",
-        cuda_visible_devices="",
-        nvidia_visible_devices="void",
-        security_argv_sha256=_digest("preflight-argv"),
     )
 
 
