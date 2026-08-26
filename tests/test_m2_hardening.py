@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from cacheon.blessed_base import BLESSED_BASE, PinnedDep, check_blessed_base
+from cacheon.compat import BLESSED_BASE, PinnedDep, check_blessed_base
 from cacheon.sandbox import scan_path, scan_tree
 
 

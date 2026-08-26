@@ -6,7 +6,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import cacheon.minimax_sparse_decode_dispatch as sparse_dispatch  # noqa: E402
+import cacheon.integrations.sglang_minimax_sparse_decode as sparse_dispatch  # noqa: E402
 from cacheon.registry import (  # noqa: E402
     KernelImpl,
     KernelRegistry,
