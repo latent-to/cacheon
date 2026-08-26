@@ -210,7 +210,8 @@ class TestResidentScreenLane:
             lambda _n: FakeResidentSession(
                 100.0,
                 {DIGEST_A: 130.0, DIGEST_B: 130.0},
-                stock_rates=[100.0, 90.0, 80.0, 95.0, 95.0],
+                # discard, opening, drifted close, failed recoveryx2, then recoverx2
+                stock_rates=[100.0, 100.0, 90.0, 80.0, 95.0, 95.0],
             )
         )
         lane = ResidentScreenLane(
@@ -228,7 +229,8 @@ class TestResidentScreenLane:
             lambda n: FakeResidentSession(
                 100.0,
                 {DIGEST_A: 112.0},
-                stock_drift_after=1 if n == 1 else None,
+                # Discarded cold read + opening stay clean; drift afterward.
+                stock_drift_after=2 if n == 1 else None,
             )
         )
         lane = ResidentScreenLane(
@@ -249,7 +251,7 @@ class TestResidentScreenLane:
     def test_persistent_canary_drift_retains_measured_failure(self) -> None:
         factory = FakeLifetimeFactory(
             lambda _n: FakeResidentSession(
-                100.0, {DIGEST_A: 112.0}, stock_drift_after=1
+                100.0, {DIGEST_A: 112.0}, stock_drift_after=2
             )
         )
         lane = ResidentScreenLane(
@@ -501,7 +503,7 @@ class TestResidentServingScreenStage:
         stage, lane, _root, factory = self._stage(
             tmp_path,
             lambda _n: FakeResidentSession(
-                100.0, {staged: 112.0}, stock_drift_after=1
+                100.0, {staged: 112.0}, stock_drift_after=2
             ),
         )
         result = stage.run_screen(binding)
