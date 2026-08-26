@@ -113,6 +113,9 @@ The evidence classes are intentionally non-substitutable:
   request ID on both success and infrastructure failure. `chain-miner-report
   --remote-spool-root` combines it with immutable lease/recovery and transport
   events, so the displayed failure names its observed component and exact traceback.
+  The read-only submissions dashboard now renders the same explanation and exposes
+  a per-request raw diagnostic log, with partial retention stated in the section
+  headers.
 
 ### Validator recovery archive
 

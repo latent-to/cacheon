@@ -82,9 +82,9 @@ tr.clickable { cursor: pointer; }
 input[type=text], select { background: var(--panel); color: var(--fg);
   border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; }
 input[type=text] { min-width: 260px; }
-button.btn { background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+.btn { display: inline-block; background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
   border-radius: 8px; padding: 7px 12px; font: inherit; cursor: pointer; }
-button.btn:hover { border-color: var(--muted); }
+.btn:hover { border-color: var(--muted); text-decoration: none; }
 .copy { cursor: pointer; color: var(--muted); }
 .copy:hover { color: var(--fg); }
 #drawer { position: fixed; top: 0; right: -560px; width: 540px; max-width: 94vw;
@@ -95,6 +95,13 @@ button.btn:hover { border-color: var(--muted); }
 #drawer .kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px;
   margin: 14px 0; font-size: 12.5px; }
 #drawer .kv dt { color: var(--muted); } #drawer .kv dd { margin: 0; word-break: break-all; }
+.forensics-run { border: 1px solid var(--line); border-radius: 9px; padding: 12px;
+  margin: 10px 0; background: var(--bg); }
+.forensics-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.forensics-head .btn { margin-left: auto; }
+.forensics-log { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px;
+  overflow-y: auto; padding: 10px; border-radius: 7px; background: var(--panel2);
+  color: var(--fg); font: 11px/1.55 "JetBrains Mono", ui-monospace, monospace; }
 .spark { display: flex; gap: 2px; padding: 8px 0 0; }
 /* Cap column width so a short history stays thin; a full 45-day window fills the row. */
 .spark .col { flex: 1 1 0; max-width: 26px; position: relative; }
@@ -541,6 +548,28 @@ window.openDetail = async (rid) => {
   const leases = (d.leases || []).map((l) =>
     `<tr><td>${pill(l.stage)}</td><td>${pill(l.state)}</td><td>${fmtTime(l.claimed)}</td>
      <td class="small muted">${esc(short(l.reason, 40))}</td></tr>`);
+  const forensicRuns = (d.forensics || []).map((r) => {
+    const log = r.worker_log;
+    if (!log) return `<div class="forensics-run">
+      <div class="forensics-head"><code>${esc(short(r.request_id, 16))}</code>
+        ${pill(r.result_state || "no result")}</div>
+      <p class="muted small">${esc(r.worker_log_state || "No request log was retained.")}</p>
+    </div>`;
+    const complete = log.retention === "complete";
+    return `<div class="forensics-run">
+      <div class="forensics-head"><code>${esc(short(r.request_id, 16))}</code>
+        ${pill(r.result_state || "no result")}
+        <span class="pill ${complete ? "ok" : "warn"}">${esc(log.retention)} logs</span>
+        <a class="btn" href="${esc(log.download_url)}">Download ${complete ? "full" : "retained"} raw output (.log)</a>
+      </div>
+      <p class="muted small">Worker log ${Number(log.size).toLocaleString()} bytes · sha256 <code>${esc(short(log.sha256, 18))}</code></p>
+      <pre class="forensics-log">${esc((log.explanation || []).join("\n"))}</pre>
+    </div>`;
+  }).join("");
+  const forensics = `<h2>What happened in evaluation</h2>
+    ${d.forensics_error ? `<div class="callout">Forensics unreadable: ${esc(d.forensics_error)}</div>` :
+      forensicRuns || '<div class="empty">No request-scoped log was retained for this submission. Older evaluations predate worker-log retention.</div>'}
+    ${forensicRuns ? '<p class="muted small">The download contains the exact request-scoped adapter diagnostics and engine stdout/stderr. Engine stdout is redirected into this retained diagnostic stream after the framed protocol channel is reserved. A partial badge means a stream was truncated or removed before sealing.</p>' : ""}`;
   el.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:start">
       <div><h3>Submission</h3><code class="small">${esc(d.reservation_id)}</code></div>
@@ -563,7 +592,8 @@ window.openDetail = async (rid) => {
     ${settle}
     ${screens.length ? "<h2>Screen attempts</h2>" + table(["#","Decision","Lane","Stages"], screens) : ""}
     ${quals.length ? "<h2>Qualification attempts</h2>" + table(["#","Decision","Reason"], quals) : ""}
-    ${leases.length ? "<h2>Evaluation leases</h2>" + table(["Stage","State","Claimed","Reason"], leases) : ""}`;
+    ${leases.length ? "<h2>Evaluation leases</h2>" + table(["Stage","State","Claimed","Reason"], leases) : ""}
+    ${forensics}`;
 };
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") $("#drawer").classList.remove("open");

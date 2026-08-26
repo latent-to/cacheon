@@ -89,10 +89,11 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "Reproduce locally with `cacheon.cli verify` before submitting.",
     ),
     "screen_rejected": (
-        "The bundle was rejected at the arena screen, before any timed "
-        "measurement.",
-        "The screen checks static scan, build, ABI, graph, and abbreviated "
-        "serving. Run `cacheon.cli scan` and `cacheon.cli verify` locally.",
+        "The bundle was rejected by one of the arena screen stages and did "
+        "not enter qualification.",
+        "Read the failed stage below. Abbreviated serving is a timed stock/"
+        "candidate bracket; earlier stages cover static scan, build, ABI, "
+        "and graph behavior.",
     ),
     "copy_of": (
         "The bundle was detected as a copy of an earlier submission or of the "
@@ -546,6 +547,8 @@ def format_miner_submissions(value: dict[str, Any]) -> str:
                 lines.extend(f"    {line}" for line in worker_log["explanation"])
             elif run.get("worker_log_error"):
                 lines.append(f"    worker log unreadable: {run['worker_log_error']}")
+            elif run.get("worker_log_state"):
+                lines.append(f"    worker log: {run['worker_log_state']}")
             elif run.get("events"):
                 last = run["events"][-1]
                 lines.append(f"    last transport event: {last.get('event')}")

@@ -356,6 +356,57 @@ def reopen_worker_log(result_root: Path, result: Mapping[str, object]) -> dict[s
     return value
 
 
+def worker_log_retention(value: Mapping[str, object]) -> str:
+    """State whether every retained diagnostic stream is downloadable in full."""
+
+    streams = value.get("oci_streams")
+    if not isinstance(streams, list):
+        return "unreadable"
+    for stream in streams:
+        if not isinstance(stream, dict) or not isinstance(stream.get("receipt"), dict):
+            return "unreadable"
+        if stream.get("state") == "not_retained" or "payload_base64" not in stream:
+            return "partial"
+        if stream["receipt"].get("truncated") is True:
+            return "partial"
+    return "complete"
+
+
+def _epoch_dirs(root: Path, kind: str) -> list[Path]:
+    """Return one spool kind's current and retired directories by name."""
+
+    return sorted(
+        path
+        for path in root.glob(f"{kind}*")
+        if path.is_dir() and (path.name == kind or path.name.startswith(f"{kind}-"))
+    )
+
+
+def result_dir_for_request(root: Path, request_id: str) -> Path | None:
+    """Locate one exact result across current and retired worker epochs.
+
+    Cutover moves a result rather than copying it. Byte-identical duplicate
+    ``result.json`` files are therefore one record; differing records for one
+    request ID are an integrity error rather than a choice for the caller.
+    """
+
+    request_id = _request_id(request_id)
+    found: dict[bytes, Path] = {}
+    for results in _epoch_dirs(Path(root), "results"):
+        try:
+            payload = (results / request_id / "result.json").read_bytes()
+        except OSError:
+            continue
+        found.setdefault(payload, results)
+    if len(found) > 1:
+        raise RemoteRunForensicsError(
+            f"request {request_id} has differing retained results in "
+            + ", ".join(sorted(path.name for path in found.values()))
+        )
+    epoch = next(iter(found.values()), None)
+    return None if epoch is None else epoch / request_id
+
+
 def remote_runs(
     spool_roots: tuple[Path, ...], reservation_id: str, request_ids: set[str]
 ) -> list[dict[str, Any]]:
@@ -365,17 +416,18 @@ def remote_runs(
 
     runs: dict[str, dict[str, Any]] = {}
     for root in spool_roots:
-        for carrier in (root / "outbox").glob("*/request.json"):
-            try:
-                request = json.loads(carrier.read_text())
-                members = request["lease"]["members"]
-            except (OSError, ValueError, KeyError, TypeError):
-                continue
-            request_id = request.get("request_id")
-            if isinstance(request_id, str) and any(
-                row.get("reservation_id") == reservation_id for row in members
-            ):
-                request_ids.add(request_id)
+        for outbox in _epoch_dirs(root, "outbox"):
+            for carrier in outbox.glob("*/request.json"):
+                try:
+                    request = json.loads(carrier.read_text())
+                    members = request["lease"]["members"]
+                except (OSError, ValueError, KeyError, TypeError):
+                    continue
+                request_id = request.get("request_id")
+                if isinstance(request_id, str) and any(
+                    row.get("reservation_id") == reservation_id for row in members
+                ):
+                    request_ids.add(request_id)
         event_index: dict[str, list[dict[str, Any]]] = {}
         try:
             event_lines = (root / "events.jsonl").read_text().splitlines()
@@ -392,7 +444,9 @@ def remote_runs(
         for request_id in sorted(request_ids):
             entry = runs.setdefault(request_id, {"events": [], "request_id": request_id})
             entry["events"].extend(event_index.get(request_id, []))
-            result_root = root / "results" / request_id
+            result_root = result_dir_for_request(root, request_id)
+            if result_root is None:
+                continue
             try:
                 result = json.loads((result_root / "result.json").read_text())
             except (OSError, ValueError):
@@ -400,17 +454,24 @@ def remote_runs(
             entry.update(
                 failure_code=result.get("failure_code"), result_state=result.get("state")
             )
+            if result_root.parent.name != "results":
+                entry["epoch"] = result_root.parent.name
             try:
                 worker_log = reopen_worker_log(result_root, result)
             except (OSError, ValueError, RemoteRunForensicsError) as exc:
                 entry["worker_log_error"] = str(exc)
             else:
-                if worker_log is not None:
+                if worker_log is None:
+                    entry["worker_log_state"] = (
+                        "not retained by the worker generation that ran this request"
+                    )
+                else:
                     artifact = next(
                         row for row in result["artifacts"] if row["role"] == "worker_log"
                     )
                     entry["worker_log"] = {
                         "explanation": worker_log_lines(worker_log),
+                        "retention": worker_log_retention(worker_log),
                         "sha256": artifact["sha256"],
                         "size": artifact["size"],
                     }
@@ -432,4 +493,6 @@ __all__ = [
     "record_oci_artifact",
     "remote_runs",
     "reopen_worker_log",
+    "result_dir_for_request",
+    "worker_log_retention",
 ]

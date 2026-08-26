@@ -232,6 +232,12 @@ and retained OCI output to lease, recovery, and transport events. Historical
 digest-only failures remain explicitly limited because later code cannot recreate
 bytes that were never retained.
 
+The read-only submissions dashboard uses the same `worker_log` reader. A request
+with retained forensics shows that explanation in its detail drawer and provides a
+hash-verified raw log containing its adapter diagnostics and retained engine
+stdout/stderr. Section headers state when an older or interrupted runtime lost or
+truncated a stream.
+
 For support across every retained submission by one miner, use
 `chain-miner-report --miner-hotkey <HOTKEY>`. It composes the same privacy-safe
 reservation facts with duplicate-replay history and prints the stated cause and

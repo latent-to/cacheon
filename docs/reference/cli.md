@@ -313,10 +313,17 @@ is reported as not retained rather than omitted.
 Pass `--remote-spool-root <dir>` once per retained worker epoch to join the
 immutable lease/recovery history with request transport events and the result's
 request-scoped `worker_log`. That artifact contains adapter phases and the
-bounded combined stdout/stderr bytes plus sidecar identity for every OCI
-lifetime in the request. A crash report therefore names the last completed
+bounded engine/native output routed to OCI stderr, plus sidecar identity for
+every OCI lifetime in the request. A crash report therefore names the last completed
 phase, observed component, exception chain, file and line, and retained raw-log
 hash without searching VM or pod logs.
+
+The submissions dashboard consumes this same reader. Its detail drawer shows the
+plain-English explanation and offers one raw `.log` containing the exact
+request-scoped adapter diagnostics and retained OCI diagnostic streams. The OCI
+worker reserves stdout for framed protocol and redirects ordinary Python/native
+stdout into that retained stream. Section headers mark missing or truncated bytes;
+a bounded prefix is never labeled complete.
 
 A candidate-owned load or invocation error is retained as its own qualification
 failure product. With the corresponding `--evidence-root`, this command prints

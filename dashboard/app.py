@@ -5,8 +5,8 @@ Read-only over the live intake SQLite. Never writes the intake DB; keeps its
 own enrichment cache (block timestamps, extrinsic signers, metagraph) in a
 separate SQLite file so chain lookups survive restarts.
 
-Run with:  /root/miniconda3/envs/prod/bin/python -m uvicorn app:app \
-               --host 127.0.0.1 --port 8788   (see run.sh / bin/cacheon-dashboard)
+Run with:  /root/miniconda3/envs/prod/bin/python -m dashboard.app
+           (see run.sh / bin/cacheon-dashboard)
 """
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 import threading
 import time
 from collections import Counter
@@ -23,7 +22,15 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
+
+from dashboard.forensics import (
+    DashboardForensicsError,
+    ForensicsNotFound,
+    ForensicsUnavailable,
+    forensics_log,
+    submission_forensics,
+)
 
 # ---------------------------------------------------------------- config ---
 
@@ -797,7 +804,33 @@ def submission_detail(reservation_id: str) -> dict[str, Any]:
         lease["claimed"] = with_time(int(lease["claimed_block"]))
         lease["expires"] = with_time(int(lease["expires_block"]))
     con.close()
+    try:
+        detail["forensics"] = submission_forensics(SPOOL, rid)
+    except DashboardForensicsError as exc:
+        detail["forensics"] = []
+        detail["forensics_error"] = str(exc)
     return detail
+
+
+@app.get("/api/submissions/{reservation_id}/forensics/{request_id}.log")
+def download_forensics(reservation_id: str, request_id: str) -> Response:
+    try:
+        log = forensics_log(SPOOL, reservation_id, request_id)
+    except ForensicsNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    except ForensicsUnavailable as exc:
+        raise HTTPException(404, str(exc)) from None
+    except DashboardForensicsError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return Response(
+        content=log.payload,
+        media_type="text/plain",
+        headers={
+            "Content-Disposition": f'attachment; filename="{log.filename}"',
+            "ETag": f'"{log.etag}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.get("/api/queue")

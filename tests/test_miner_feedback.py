@@ -67,6 +67,13 @@ def test_guidance_never_invents_an_explanation() -> None:
     assert _guidance(17) is None
 
 
+def test_screen_rejection_does_not_deny_its_timed_serving_stage() -> None:
+    guidance = _guidance("screen_rejected")
+    assert guidance is not None
+    assert "before any timed measurement" not in guidance["cause"]
+    assert "timed stock/candidate bracket" in guidance["next_step"]
+
+
 def test_prefixed_codes_match_on_their_prefix() -> None:
     """``copy_of:<hash>`` and ``duplicate_of:<hash>`` explain without the hash."""
 

@@ -24,7 +24,7 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 |-----|---------|
 | Overview | Status counts, submissions/day sparkline, failure reasons, currently running eval |
 | Queue | Pending submissions in queue order with wait times, running evals with wall clock + lease countdown, GPU spool requests, supervisor/heartbeat |
-| Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement) |
+| Submissions | All reservations: status, hotkey, submit time/block, fee tx, screen state, decisions, full detail drawer (screen/qual attempts, leases, settlement, plain-English worker forensics, downloadable logs) |
 | Payments | Eval-cost payments (1 τ each): tx ref block-extrinsic with tao.app link, paying **coldkey** (resolved from chain), applied/consumed status, submission outcome; operator credits |
 | Winners | Crowned improvements: which op was improved (short summary), speedup %, when, reward-claim status, whether hotkey is still registered + current emission |
 | Miners | Per-hotkey leaderboard: submissions, crowns, qualified/failed, fees paid, registration + emission |
@@ -52,6 +52,7 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 | `CACHEON_DASH_HOST` | `127.0.0.1` |
 | `CACHEON_DASH_PORT` | `8788` |
 | `CACHEON_DASH_DB` | mission intake.sqlite3 |
+| `CACHEON_DASH_SPOOL` | `/root/cacheon-ops/remote-worker/spool` |
 | `CACHEON_DASH_NETWORK` | `wss://archive.sub.latent.to` |
 | `CACHEON_DASH_ENRICH` | `1` (set `0` to disable chain lookups) |
 
@@ -61,3 +62,13 @@ already has fastapi, uvicorn, bittensor 10.3.2, and async-substrate-interface.
 `hotkey`, `q`, `active`, `limit`, `offset`, `order`),
 `/api/submissions/{id}`, `/api/payments`, `/api/winners`, `/api/miners`,
 `/api/events`, `/api/weights`, `/api/hotkey/{ss58}`, `/api/health`.
+
+The submission detail reuses the validator's `worker_log` explanation. Each
+request with retained forensics links to
+`/api/submissions/{reservation_id}/forensics/{request_id}.log`. The response is
+built read-only from the hash-verified result and contains the exact
+request-scoped adapter diagnostics and retained OCI diagnostic streams. The OCI
+worker reserves stdout for framed protocol and redirects ordinary Python/native
+stdout into the retained stderr stream, so miner prints and crash diagnostics are
+both present. Section headers state byte counts, hashes, and whether the 16 MiB
+stream bound truncated the output.
