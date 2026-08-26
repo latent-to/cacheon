@@ -126,7 +126,9 @@ class RepoGraph:
 
     def external_import_roots(self) -> set[str]:
         roots: set[str] = set()
-        for directory in ("scripts", "examples"):
+        # dashboard/ is the deployed operator app (run.sh: python -m
+        # dashboard.app); its cacheon imports are production consumption.
+        for directory in ("scripts", "examples", "dashboard"):
             base = self.root / directory
             if not base.is_dir():
                 continue
