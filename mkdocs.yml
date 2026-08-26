@@ -153,7 +153,6 @@ nav:
       - Bundle manifest: reference/manifest-schema.md
       - Stack manifests: reference/stack-manifests.md
       - Emissions policy: reference/emissions-policy.md
-      - Arena service types: reference/arenas.md
       - Codebase map: reference/codebase-map.md
       - Glossary: reference/glossary.md
   - Results and development:

@@ -12,7 +12,7 @@ release operations authoritative. Keep the plane boundaries explicit:
 | Intake | Finalized history, reservation, fetch, re-hash, publication, restart | Validator-owned storage and policy |
 | Arena | Selection of a registered arena ID after injection | Production provider, worker fleet, prompts, topology, calibration |
 | Qualification | Persistence/settlement joins when a real provider executes them | Resident crossover, audit/T GPU execution, and retained evidence |
-| Emissions | Finalized metagraph/readback, V1 dry run, signer-free V2 shadows | Genuine crown, approved activation bundle, signer operations |
+| Emissions | Finalized metagraph/readback, V1 dry run | Genuine crown, approved activation bundle, signer operations |
 | Release | Nothing inherently chain-hosted | Integration review, release key, registry, build and serving fleet |
 
 ## What is on chain
@@ -246,7 +246,6 @@ reopened. Do not infer a stronger boundary from testnet connectivity:
 | Metagraph-backed weight dry run | Projection construction against live chain state without an extrinsic | Signing, submission, inclusion, or confirmation |
 | Structural two-pass fixture | State-machine transitions, independence checks, evidence reopening, and settlement plumbing | Empirical GPU speedup, production calibration, or arena-provider readiness |
 | Builder-authenticated reproducible OCI pair plus release/session-bound serving receipts | Release-image identity and execution through the approved serving seams for that exact session; include AOT coverage for sealed direct artifacts | Qualification authority unless separate resident crossover, audit, and T evidence exists; clean-wheel, native-provider, and effective-policy gates remain separate prerequisites |
-| Signer-free V2 shadow | Policy arithmetic and exact supplied-state binding | Activation, signing, publication, debit, or live economic authority |
 
 The [state of record](../reference/state-of-record.md) identifies which of these evidence
 products have been completed. Deployment must supply and commission its production arena
@@ -263,7 +262,6 @@ Before treating a deployment as production-capable, require evidence for all of:
 - real isolated primary and independent reproduction attempts with evidence restore;
 - settlement lease expiry, blocker, atomic-commit, and stale-incumbent controls;
 - live V1 dry-run projection plus signer journal/readback drills under approved policy;
-- V2 shadows and, when authorized, exact activation/gapless publication/readback drills;
   and
 - independently verified release build/serve/rollback if operating the release plane.
 
@@ -280,8 +278,6 @@ Passing only the first two bullets proves intake, not a launch-ready validator.
 | No qualification | `--intake-only`, or missing injected registry/provider |
 | Weight projection refused | No genuine crown, incomplete/stale family, metagraph change, held publication journal |
 | Burn projection refused | A claim/crown/V2 activation exists, or burn hotkey is absent from the exact metagraph |
-| V2 activation refused | Approval, retained arena/roster/membership/audit authority, cursor, or quiescence differs |
-| V2 boundary remains pending | Preserve the earliest boundary; inspect finalized readback and cursor catch-up; do not skip ahead |
 | Database ownership error | Another validator pass or signer owns the exclusive store; coordinate, never remove the lock |
 | `pending` weight publication persists | Wait until retry block, inspect authoritative readback, preserve the journal |
 | Weight publication becomes `held` | Audit projection/readback/signer state; append a reasoned release only after review |

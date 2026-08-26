@@ -249,11 +249,6 @@ convert an existing V1 claim or create retroactive principal.
 - principal changes only after finalized weight readback and retained intake
   catch-up.
 
-The implementation currently accepts one immutable MiniMax-M3 campaign. Model
-rotation, a second live campaign, and successor activation need a new protocol.
-The deterministic load study tests accounting behavior, not live miner income or
-token value.
-
 See [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2) for the
 exact policy and [Current status](../reference/state-of-record.md#inactive-v2-finite-debt)
 for the maintained activation boundary.
