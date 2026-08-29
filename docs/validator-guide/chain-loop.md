@@ -80,6 +80,16 @@ Several terminal paths are omitted from the diagram for readability: an operator
 explicitly expire sufficiently old inactive work, copy reconciliation can turn a later
 submission into `failed`, and bounded retry exhaustion leads to `held`.
 
+Retry exhaustion is enforced at the lease layer. Every released evaluation lease
+counts toward a per-reservation cap of three, regardless of which infrastructure
+class released it, unless its release reason begins with `operator` (a deliberate
+operator disposition) or `screen_claim_` (a pre-dispatch claim race). The count is
+consecutive: it covers releases since the reservation's most recent completed lease,
+so a successful stage resets it and a fleet-wide transient does not permanently
+poison rows that later succeed. At the cap the reservation is parked as `held` with
+reason `systemic_release_cap:<count>` and waits for the operator `release_hold`
+disposition. Infrastructure failures are never converted into a candidate verdict.
+
 ## Public CLI: intake only
 
 The supported standalone command is:
