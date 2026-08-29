@@ -386,6 +386,18 @@ Screen measurements do not enter this authority. Candidate-attributable
 failure can produce `FAIL`; infrastructure, drift, missing evidence, or broken
 authority produces `NO_DECISION`.
 
+From 2026-08-29 the qualification commission constructs its measured baseline
+from the durable incumbent stack the qualification-capabilities factory
+declares (`incumbent_entries`; empty at genesis, where it reproduces the
+stock tree exactly), while pristine T remains the empty stock stack and the
+resident screen keeps its stock baseline. The change followed the first
+production crown (2026-08-28), which advanced the durable evaluation stack
+while the worker could only construct a stock baseline. The former
+empty-incumbent resolver mode is removed; an empty closed resolver is the
+genesis authority and fails closed on any lookup. Commission registrations
+sealed before this revision do not replay against it; a fresh commission is
+required.
+
 From 2026-07-25 the resident speed policy of record was version 2: the scored
 rate is the
 steady-state timed window (`timed_tokens / timed_seconds`), conditioning stays

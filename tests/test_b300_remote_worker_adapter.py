@@ -15,6 +15,9 @@ from cacheon.chain import remote_worker_spool as spool
 from cacheon.chain.publication import reopen_worker_bundle
 from cacheon.eval import b300_publication_intake as publication_intake
 from cacheon.eval import b300_remote_worker_adapter as adapter
+from tests.support.b300 import (
+    qualification_capabilities as _qualification_capabilities,
+)
 
 
 def _spool_fixtures():
@@ -742,45 +745,6 @@ def test_adapter_epoch_failure_exits_before_next_command(
             "schema": spool.SCHEMA_ADAPTER_CONTROL,
             "state": "epoch_failed",
         },
-    )
-
-
-def _qualification_capabilities():
-    import hashlib
-
-    from cacheon.eval.b300_qualification_commission import (
-        B300QualificationCapabilities,
-    )
-    from cacheon.eval.qualification_runner import HiddenJudgeBinding
-
-    def _h(seed: str) -> str:
-        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
-
-    class _Judge:
-        binding = HiddenJudgeBinding(
-            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
-        )
-
-        def __call__(self, **_kwargs):
-            raise AssertionError("wiring tests must not execute the hidden judge")
-
-    class _Resolver:
-        def resolve_proposal(self, *_args, **_kwargs):
-            raise AssertionError("wiring tests must not resolve sources")
-
-        def resolve_integrated(self, *_args, **_kwargs):
-            raise AssertionError("wiring tests must not resolve sources")
-
-    return B300QualificationCapabilities(
-        secret_loader=lambda _reference: b"s" * 32,
-        entropy_provider=lambda *_args: None,
-        hidden_judge=_Judge(),
-        source_resolver=_Resolver(),
-        source_resolver_digest=_h("source-resolver"),
-        graph_facts_builder=lambda *_args: None,
-        graph_facts_builder_digest=_h("graph-facts"),
-        resident_count_quality_builder=lambda *_args: None,
-        resident_count_quality_builder_digest=_h("resident-count-builder"),
     )
 
 

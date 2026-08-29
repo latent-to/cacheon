@@ -30,7 +30,7 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     B300RegisteredQualificationError,
     registered_b300_member_contract_projection,
 )
-from cacheon.eval.qualification_runner import HiddenJudgeBinding
+from tests.support.b300 import StubHiddenJudge as _Judge
 from cacheon.stack_identity import canonical_json_bytes
 from cacheon.stack_manifest import EvaluationStackManifest
 from cacheon.target_catalog import default_target_catalog
@@ -205,16 +205,6 @@ def _block() -> dict[str, object]:
             "min_windows": 3,
         },
     }
-
-
-class _Judge:
-    def __init__(self) -> None:
-        self.binding = HiddenJudgeBinding(
-            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
-        )
-
-    def __call__(self, **_kwargs):
-        raise AssertionError("identity checks must not execute the hidden judge")
 
 
 def test_sealed_commission_block_round_trips() -> None:

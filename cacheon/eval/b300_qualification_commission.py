@@ -85,8 +85,17 @@ def _pristine_reference_authority(
     incumbent_launch: EngineLaunchSpec,
     baseline_session_plan: SessionExecutionPlan,
     runtime_preflight: object,
+    *,
+    pristine_tree,
+    pristine_native,
 ) -> tuple[EngineLaunchSpec, SessionExecutionPlan]:
-    """Derive pristine T without the candidate/stock seam selection."""
+    """Derive pristine T without the candidate/stock seam selection.
+
+    Pristine T stays anchored to the empty stock tree even when the incumbent
+    carries crowned entries, so the quality/audit reference never moves with
+    the speed baseline; at genesis the two trees coincide and every replaced
+    field below is a no-op.
+    """
 
     pristine_config = replace(
         baseline_session_plan.engine_config,
@@ -94,6 +103,9 @@ def _pristine_reference_authority(
     )
     pristine_launch = replace(
         incumbent_launch,
+        stack_digest=pristine_tree.stack_digest,
+        tree_digest=pristine_tree.tree_digest,
+        native_build_spec_digest=pristine_native.digest,
         engine_config_digest=pristine_config.digest,
     )
     pristine_session_plan = replace(
@@ -414,7 +426,20 @@ def _compose_locked(
 ) -> B300RemoteQualificationCommission:
     snapshot = catalog.snapshot()
     lane_pair = inputs.qualification_lane_pair
-    target_members, context, stock, tree = (
+    target_members, context, stock, stock_tree = (
+        screen_deployment._commissioned_stock_authority(
+            inputs,
+            manifest,
+            catalog,
+            snapshot,
+            error=B300QualificationCommissionError,
+            label="pristine reference",
+        )
+    )
+    # The measured baseline is the durable incumbent the capabilities declare;
+    # at genesis the declared entries are empty and this reopens the exact
+    # stock tree above, so both arms of the branchless pair coincide.
+    _, _, incumbent, incumbent_tree = (
         screen_deployment._commissioned_stock_authority(
             inputs,
             manifest,
@@ -422,6 +447,8 @@ def _compose_locked(
             snapshot,
             error=B300QualificationCommissionError,
             label="qualification",
+            entries=capabilities.incumbent_entries,
+            resolver=capabilities.source_resolver,
         )
     )
     engine_config = screen_deployment._engine_config(
@@ -452,8 +479,13 @@ def _compose_locked(
         dp_size=1,
         device_policy_digest=candidate_executor.device_policy.policy_sha256,
     )
-    stock_native = screen_deployment._native_build(
-        tree.tree_digest,
+    incumbent_native = screen_deployment._native_build(
+        incumbent_tree.tree_digest,
+        inputs.preflight,
+        candidate_executor.config.prebuild.policy,
+    )
+    pristine_native = screen_deployment._native_build(
+        stock_tree.tree_digest,
         inputs.preflight,
         candidate_executor.config.prebuild.policy,
     )
@@ -461,8 +493,8 @@ def _compose_locked(
         runtime_digest=inputs.runtime.runtime_digest,
         base_engine_digest=inputs.runtime.base_engine_digest,
         arena_digest=manifest.digest,
-        stack_digest=tree.stack_digest,
-        tree_digest=tree.tree_digest,
+        stack_digest=incumbent_tree.stack_digest,
+        tree_digest=incumbent_tree.tree_digest,
         image_digest=inputs.preflight.image_digest,
         platform_digest=inputs.preflight.platform_digest,
         controller_distribution_digest=inputs.controller_distribution_digest,
@@ -478,17 +510,25 @@ def _compose_locked(
         resource_policy_digest=(
             candidate_executor.config.prebuild.policy.resource_policy_digest
         ),
-        native_build_spec_digest=stock_native.digest,
+        native_build_spec_digest=incumbent_native.digest,
         hardware=baseline_hardware,
     )
     trusted_baseline = TrustedLaunchBinding(
-        materialized_tree_root=tree.root,
+        materialized_tree_root=incumbent_tree.root,
         controller_distribution_digest=inputs.controller_distribution_digest,
-        native_build_spec=stock_native,
+        native_build_spec=incumbent_native,
         runtime_preflight_receipt=inputs.preflight,
         physical_hardware=baseline_physical,
     )
-    incumbent_binding = MaterializedArmBinding(tree, trusted_baseline)
+    incumbent_binding = MaterializedArmBinding(incumbent_tree, trusted_baseline)
+    trusted_pristine = TrustedLaunchBinding(
+        materialized_tree_root=stock_tree.root,
+        controller_distribution_digest=inputs.controller_distribution_digest,
+        native_build_spec=pristine_native,
+        runtime_preflight_receipt=inputs.preflight,
+        physical_hardware=baseline_physical,
+    )
+    pristine_binding = MaterializedArmBinding(stock_tree, trusted_pristine)
     baseline_session_plan = SessionExecutionPlan(
         launch_digest=incumbent_launch.digest,
         expected_engine_config_digest=engine_config.digest,
@@ -510,6 +550,8 @@ def _compose_locked(
         incumbent_launch,
         baseline_session_plan,
         inputs.preflight,
+        pristine_tree=stock_tree,
+        pristine_native=pristine_native,
     )
     workload_digest = marginal_workload_digest(baseline_session_plan)
     hidden_judge = _bind_hidden_judge(
@@ -530,7 +572,7 @@ def _compose_locked(
     reference = ReferenceManifest.from_pristine(
         stock,
         pristine_launch,
-        incumbent_binding,
+        pristine_binding,
         workload_digest=workload_digest,
         tokenizer_digest=inputs.prompt_identity["tokenizer_digest"],
         hidden_corpus_commitment=hidden_binding.hidden_corpus_commitment,
@@ -571,7 +613,7 @@ def _compose_locked(
         device_policy_digest=baseline_executor.device_policy.policy_sha256,
     )
     resident_native = screen_deployment._native_build(
-        tree.tree_digest,
+        incumbent_tree.tree_digest,
         inputs.preflight,
         baseline_executor.config.prebuild.policy,
     )
@@ -587,7 +629,7 @@ def _compose_locked(
         ),
     )
     resident_binding = TrustedLaunchBinding(
-        materialized_tree_root=tree.root,
+        materialized_tree_root=incumbent_tree.root,
         controller_distribution_digest=inputs.controller_distribution_digest,
         native_build_spec=resident_native,
         runtime_preflight_receipt=inputs.preflight,
@@ -640,7 +682,7 @@ def _compose_locked(
     orientation = lane_pair.orientation(screen_lane)
     baseline_lane_plan = B300ResidentStockLanePlan(
         orientation.resident_baseline,
-        tree,
+        incumbent_tree,
         resident_launch,
         resident_binding,
         _resident_plan(resident_launch, resident_binding, resident_session_plan),
@@ -649,7 +691,7 @@ def _compose_locked(
     )
     candidate_lane_plan = B300ResidentStockLanePlan(
         orientation.candidate,
-        tree,
+        incumbent_tree,
         incumbent_launch,
         incumbent_binding.launch_binding,
         _resident_plan(
@@ -673,7 +715,7 @@ def _compose_locked(
     try:
         count_context = B300ResidentCountQualityBuilderContext(
             catalog,
-            stock,
+            incumbent,
             incumbent_launch,
             incumbent_binding,
             evidence_root,
@@ -698,7 +740,7 @@ def _compose_locked(
             catalog=catalog,
             policy=policy,
             expected_context=context,
-            incumbent_stack=stock,
+            incumbent_stack=incumbent,
             incumbent_binding=incumbent_binding,
             incumbent_launch=incumbent_launch,
             baseline_session_plan=baseline_session_plan,
@@ -719,7 +761,7 @@ def _compose_locked(
             calibration_context=calibration_context,
             calibration_artifact_ref=calibration_ref,
             pristine_stack=stock,
-            pristine_binding=incumbent_binding,
+            pristine_binding=pristine_binding,
             pristine_launch=pristine_launch,
             pristine_session_plan=pristine_session_plan,
             resident_baseline_arm=resident_baseline_arm,
@@ -759,10 +801,10 @@ def _compose_locked(
     construction = B300QualificationConstructionAuthority(
         catalog=catalog,
         profiles=profiles,
-        incumbent_stack=stock,
-        incumbent_tree_digest=tree.tree_digest,
+        incumbent_stack=incumbent,
+        incumbent_tree_digest=incumbent_tree.tree_digest,
         pristine_stack=stock,
-        pristine_tree_digest=tree.tree_digest,
+        pristine_tree_digest=stock_tree.tree_digest,
         evidence_root=evidence_root,
         evidence_policy_digest=QUALIFICATION_EVIDENCE_POLICY_DIGEST,
         builder_source_digest=block["builder_source_digest"],

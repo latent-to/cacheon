@@ -16,42 +16,11 @@ from cacheon.eval import qualification_capability_loader as loader
 from cacheon.eval.b300_qualification_commission import (
     B300QualificationCapabilities,
 )
-from cacheon.eval.qualification_runner import HiddenJudgeBinding
+from tests.support.b300 import qualification_capabilities as _capabilities
 
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _capabilities() -> B300QualificationCapabilities:
-    class _Judge:
-        binding = HiddenJudgeBinding(
-            _sha256("hidden-corpus"),
-            _sha256("hidden-judge"),
-            _sha256("hidden-policy"),
-        )
-
-        def __call__(self, **_kwargs):
-            raise AssertionError("loader tests do not execute the hidden judge")
-
-    class _Resolver:
-        def resolve_proposal(self, *_args, **_kwargs):
-            raise AssertionError("loader tests do not resolve candidate sources")
-
-        def resolve_integrated(self, *_args, **_kwargs):
-            raise AssertionError("loader tests do not resolve integrated sources")
-
-    return B300QualificationCapabilities(
-        secret_loader=lambda _reference: b"s" * 32,
-        entropy_provider=lambda *_args: None,
-        hidden_judge=_Judge(),
-        source_resolver=_Resolver(),
-        source_resolver_digest=_sha256("source-resolver"),
-        graph_facts_builder=lambda *_args: None,
-        graph_facts_builder_digest=_sha256("graph-facts"),
-        resident_count_quality_builder=lambda *_args: None,
-        resident_count_quality_builder_digest=_sha256("resident-count-builder"),
-    )
 
 
 @pytest.fixture

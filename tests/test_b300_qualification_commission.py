@@ -34,29 +34,15 @@ from cacheon.eval.b300_sealed_qualification_commission import (
 from cacheon.eval.calibration import CalibrationEvidenceSet, derive_calibration_manifest
 from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.target_catalog import default_target_catalog
-from tests.support.b300 import gpu as _gpu
+from tests.support.b300 import (
+    StubHiddenJudge as _Judge,
+    gpu as _gpu,
+    qualification_capabilities as _capabilities,
+)
 
 
 def _h(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
-
-
-class _Judge:
-    def __init__(self) -> None:
-        self.binding = HiddenJudgeBinding(
-            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
-        )
-
-    def __call__(self, **_kwargs):
-        raise AssertionError("capability checks must not execute the hidden judge")
-
-
-class _Resolver:
-    def resolve_proposal(self, *_args, **_kwargs):
-        raise AssertionError("capability checks must not resolve sources")
-
-    def resolve_integrated(self, *_args, **_kwargs):
-        raise AssertionError("capability checks must not resolve sources")
 
 
 class _DeferredJudge:
@@ -70,22 +56,6 @@ class _DeferredJudge:
         result = _Judge()
         result.binding = self.binding
         return result
-
-
-def _capabilities(**overrides: object) -> commission.B300QualificationCapabilities:
-    values: dict[str, object] = {
-        "secret_loader": lambda _reference: b"s" * 32,
-        "entropy_provider": lambda *_args: None,
-        "hidden_judge": _Judge(),
-        "source_resolver": _Resolver(),
-        "source_resolver_digest": _h("source-resolver"),
-        "graph_facts_builder": lambda *_args: None,
-        "graph_facts_builder_digest": _h("graph-facts"),
-        "resident_count_quality_builder": lambda *_args: None,
-        "resident_count_quality_builder_digest": _h("resident-count-builder"),
-    }
-    values.update(overrides)
-    return commission.B300QualificationCapabilities(**values)
 
 
 def test_capabilities_seal_exact_callables_and_identities() -> None:
@@ -102,6 +72,10 @@ def test_capabilities_seal_exact_callables_and_identities() -> None:
         _capabilities(graph_facts_builder_digest="not-a-digest")
     with pytest.raises(commission.B300QualificationCommissionError):
         _capabilities(source_resolver_digest=_h("upper").upper())
+    with pytest.raises(commission.B300QualificationCommissionError):
+        _capabilities(incumbent_entries=[("moe.fused_experts_reduce", object())])
+    with pytest.raises(commission.B300QualificationCommissionError):
+        _capabilities(incumbent_entries={"moe.fused_experts_reduce": object()})
 
 
 def test_deferred_hidden_judge_binds_only_the_exact_composed_plan() -> None:
@@ -173,10 +147,19 @@ def test_pristine_reference_authority_removes_seam_selection(
         ),
     )
 
+    # Genesis: the declared incumbent is the empty stock stack, so the
+    # pristine tree/native identities coincide with the incumbent's.
     pristine_launch, pristine_plan = commission._pristine_reference_authority(
         incumbent_launch,
         incumbent_plan,
         case.preflight,
+        pristine_tree=SimpleNamespace(
+            stack_digest=incumbent_launch.stack_digest,
+            tree_digest=incumbent_launch.tree_digest,
+        ),
+        pristine_native=SimpleNamespace(
+            digest=incumbent_launch.native_build_spec_digest
+        ),
     )
 
     assert incumbent_plan.engine_config.seam_bindings == ("collective",)
@@ -187,6 +170,23 @@ def test_pristine_reference_authority_removes_seam_selection(
     assert pristine_plan.expected_preflight.engine_config_digest == (
         pristine_plan.engine_config.digest
     )
+
+    # Post-crown: pristine T stays anchored to the empty stock tree even when
+    # the incumbent baseline carries crowned contributions.
+    divergent, _ = commission._pristine_reference_authority(
+        incumbent_launch,
+        incumbent_plan,
+        case.preflight,
+        pristine_tree=SimpleNamespace(
+            stack_digest=_h("stock-stack"), tree_digest=_h("stock-tree")
+        ),
+        pristine_native=SimpleNamespace(digest=_h("stock-native")),
+    )
+    assert (
+        divergent.stack_digest,
+        divergent.tree_digest,
+        divergent.native_build_spec_digest,
+    ) == (_h("stock-stack"), _h("stock-tree"), _h("stock-native"))
 
 
 def test_commission_rejects_an_eleven_row_factory_registry_before_runtime() -> None:

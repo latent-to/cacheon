@@ -13,15 +13,53 @@ import hashlib
 import os
 
 from cacheon.arena_service import ArenaRuntimeIdentity
+from cacheon.eval.b300_qualification_commission import B300QualificationCapabilities
 from cacheon.eval.device_state import GPUConfiguration
 from cacheon.eval.oci_backend import OCIRuntimeResourcePolicy
 from cacheon.eval.oci_prebuild import OCIPrebuildPolicy
+from cacheon.eval.qualification_runner import HiddenJudgeBinding
 
 
 def sha(label: str) -> str:
     """A deterministic stand-in digest, named by what it stands for."""
 
     return hashlib.sha256(label.encode()).hexdigest()
+
+
+class StubHiddenJudge:
+    """Carries a judge binding; asserts if a capability check executes it."""
+
+    binding = HiddenJudgeBinding(
+        sha("hidden-corpus"), sha("hidden-judge"), sha("hidden-policy")
+    )
+
+    def __call__(self, **_kwargs):
+        raise AssertionError("capability stubs must not execute the hidden judge")
+
+
+class StubSourceResolver:
+    def resolve_proposal(self, *_args, **_kwargs):
+        raise AssertionError("capability stubs must not resolve sources")
+
+    def resolve_integrated(self, *_args, **_kwargs):
+        raise AssertionError("capability stubs must not resolve sources")
+
+
+def qualification_capabilities(**overrides: object) -> B300QualificationCapabilities:
+    values: dict[str, object] = {
+        "secret_loader": lambda _reference: b"s" * 32,
+        "entropy_provider": lambda *_args: None,
+        "hidden_judge": StubHiddenJudge(),
+        "source_resolver": StubSourceResolver(),
+        "source_resolver_digest": sha("source-resolver"),
+        "graph_facts_builder": lambda *_args: None,
+        "graph_facts_builder_digest": sha("graph-facts"),
+        "resident_count_quality_builder": lambda *_args: None,
+        "resident_count_quality_builder_digest": sha("resident-count-builder"),
+        "incumbent_entries": {},
+    }
+    values.update(overrides)
+    return B300QualificationCapabilities(**values)
 
 
 def arena_runtime() -> ArenaRuntimeIdentity:

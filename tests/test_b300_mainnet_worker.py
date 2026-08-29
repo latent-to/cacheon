@@ -72,13 +72,12 @@ from cacheon.eval.qualification_intake import (
     QualificationReservation,
     QualificationRetryPlan,
 )
-from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.eval.resident_queue import ScreenPolicy
 from cacheon.eval.resident_screen_lane import (
     ResidentScreenLane,
     ResidentServingScreenStage,
 )
-from tests.support.b300 import arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
+from tests.support.b300 import StubHiddenJudge as _Judge, arena_runtime as _runtime, gpu as _gpu, prebuild_policy as _prebuild_policy, runtime_policy as _runtime_policy, sha as _h
 
 
 SLOT = "activation.silu_and_mul"
@@ -131,16 +130,6 @@ def executor_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     yield create
     for executor in executors:
         executor.manager.close()
-
-
-class _Judge:
-    def __init__(self) -> None:
-        self.binding = HiddenJudgeBinding(
-            _h("hidden-corpus"), _h("hidden-judge"), _h("hidden-policy")
-        )
-
-    def __call__(self, **_kwargs):
-        raise AssertionError("the CPU contract must not execute the hidden judge")
 
 
 class _FactoryBuilder:

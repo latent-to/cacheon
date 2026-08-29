@@ -410,6 +410,16 @@ derives a candidate-local `B300RemoteQualificationAdapter`, and runs through
 `B300MainnetWorker.run_remote_qualification`. Screen-only construction and
 one-shot adapter mode still refuse qualification before resident work.
 
+The commission measures B against the durable incumbent stack the
+capabilities factory declares (`incumbent_entries`, resolved through the same
+closed source resolver); at genesis the declaration is empty and the baseline
+is the stock tree. Pristine T stays anchored to the empty stock stack
+regardless of the declared incumbent, so the untimed audit reference never
+inherits crowned contributions. A declaration that does not reproduce the
+durable stack identity fails closed at the dispatcher's incumbent pin and at
+the durable commit. Screens keep the stock baseline: the resident hot-swap
+screen is routing-only and cannot crown.
+
 `eval/resident_evaluation_pair.py` is a distinct authority in this design: it owns
 the standing resident-pair service lifecycle — two persistent sessions, request
 admission and history, capability revocation, and one explicit close — while
